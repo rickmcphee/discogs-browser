@@ -841,3 +841,34 @@ dev:
   - No top-level `volumes:` key.
 - [x] Create `bootstrap.sh` (repo root): creates `workspace/` directory and runs `docker-compose build`.
 - [x] Update `backend/config.py`: read `DISCOGS_BROWSER_DATA` env var to override `CONFIG_DIR`; read `PLAYWRIGHT_CHANNEL` and `HEADLESS_AUTH` env vars and expose as module-level constants.
+
+---
+
+## Post-v1.0 Changes (v1.43–v1.45)
+
+### eBay Browse API crawler (v1.43)
+
+- [x] Replaced `backend/crawlers/ccmusic.py` (Playwright) with `backend/crawlers/ebay.py` (eBay Browse API, httpx).
+  - `site_name = "CC Music"`, filters to `collectorschoicemusic` seller, BIN-only, lowest price first.
+  - Module-level OAuth token cache with 60-second expiry buffer.
+  - URL fallback: `itemWebUrl` → `legacyItemId` → `search_url()`.
+  - No Playwright dependency; `page` argument ignored.
+- [x] Added `ebay_app_id` and `ebay_cert_id` config fields; surfaced in Settings UI as password inputs.
+- [x] Added `backend/tests/test_ebay_crawler.py` (respx mocks).
+- [x] `seed_bundled_crawlers` stale-file guard: removes data-dir crawler files whose source no longer exists in `backend/crawlers/`.
+- [x] Removed top-level `from playwright.async_api import Page` from `amazon.py` (caused startup hang on NAS).
+
+### Startup overlay + health endpoint (v1.44)
+
+- [x] Added `GET /api/health` → `{"ok": true}` (`backend/routers/health.py`).
+- [x] Frontend polls `/api/health` on mount (2 s interval, `status < 500` = ready); shows spinner overlay until ready, then fetches crawlers.
+- [x] Version logged at startup start and "ready" in backend. `ENV APP_VERSION` logged in frontend container CMD.
+- [x] `ENV PYTHONUNBUFFERED=1` added to `backend/Dockerfile` to prevent log-buffer hang in Docker.
+- [x] `crawl_manager._run()` opens a dedicated SQLite connection per crawl run (avoids DB locked errors).
+- [x] `LogViewer.tsx`: only linkify `https://www.` URLs, not API endpoints.
+
+### Remove prepopulate_listings (v1.45)
+
+- [x] Deleted `prepopulate_listings()` from `db.py`.
+- [x] Removed all call sites: `main.py`, `crawl_manager.py`, `routers/collection.py`.
+- [x] Removed related tests from `test_db.py` and `test_ebay_crawler.py`.

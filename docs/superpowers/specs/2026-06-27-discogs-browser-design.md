@@ -1,12 +1,12 @@
 # Discogs Browser — Design Spec
 
-_2026-06-27, updated 2026-06-28_
+_2026-06-27, updated 2026-06-28, 2026-06-28 (v1.45)_
 
 ---
 
 ## Overview
 
-Discogs Browser is a self-hosted FastAPI + React app that browses a Discogs vinyl collection and cross-references each record with current prices from third-party sites (Amazon, CCMusic) via Playwright-based web crawlers. All persistent state lives under a configurable data directory (default `~/.discogs-browser`). The crawlers run in the background, fully decoupled from the frontend; progress is delivered over a persistent SSE stream.
+Discogs Browser is a self-hosted FastAPI + React app that browses a Discogs vinyl collection and cross-references each record with current prices from third-party sites (Amazon via Playwright, CC Music via eBay Browse API). All persistent state lives under a configurable data directory (default `~/.discogs-browser`). The crawlers run in the background, fully decoupled from the frontend; progress is delivered over a persistent SSE stream.
 
 ---
 
@@ -56,7 +56,9 @@ nginx (:8080)
 
 ## Database Connection Model
 
-`db.py` uses `threading.local()` so each thread gets exactly one persistent SQLite connection (opened on first use, never closed). WAL journal mode and a 60-second busy timeout are applied on connection creation. Routers and `crawl_manager` never call `conn.close()`.
+`db.py` uses `threading.local()` so each thread gets exactly one persistent SQLite connection (opened on first use, never closed). WAL journal mode and a 60-second busy timeout are applied on connection creation. Routers never call `conn.close()`.
+
+`crawl_manager._run()` opens its own dedicated SQLite connection per crawl run (not the thread-local singleton) to avoid lock contention with the request-handling event loop. This connection is always closed in `finally` when the crawl ends.
 
 ---
 
@@ -95,14 +97,14 @@ nginx (:8080)
 | `release_id` | TEXT FK | → releases.discogs_id |
 | `crawler_id` | INTEGER FK | → crawlers.id |
 | `url` | TEXT | Search URL or product URL |
-| `price` | REAL | Nullable — NULL means pre-populated or price not parseable |
+| `price` | REAL | Nullable — NULL means price not found or not yet crawled |
 | `shipping` | REAL | Nullable |
 | `currency` | TEXT | |
 | `condition` | TEXT | |
 | `last_checked` | TIMESTAMP | |
 | UNIQUE | | `(release_id, crawler_id)` |
 
-`price IS NULL` means either a pre-populated search URL row (not yet crawled) or a crawled page where no price could be parsed. A real crawl result always has a URL; price may remain null if the page loaded but price extraction failed.
+`price IS NULL` means a crawled page where no price could be parsed. A real crawl result always has a URL; price may remain null if the page loaded but price extraction failed.
 
 ---
 
@@ -113,8 +115,8 @@ Each plugin is a Python module defining a `Crawler` class with:
 - `site_name: str` — display name (e.g. `"Amazon"`)
 - `base_url: str` — site root
 - `login_url: str` — URL opened for manual session auth
-- `classmethod search_url(release: dict) -> str` — returns a pre-built search URL for the release; used by `prepopulate_listings`
-- `async def search(self, release: dict, page: playwright.Page) -> dict` — navigates, scrapes, returns `{url, price, shipping, currency, condition}`. Raises `BotDetectedError` on bot interstitials.
+- `classmethod search_url(release: dict) -> str` — returns a pre-built search URL for the release
+- `async def search(self, release: dict, page) -> dict` — navigates or queries the source, returns `{url, price, shipping, currency, condition}`. Playwright-based crawlers receive a `playwright.Page`; API-based crawlers receive `None` and manage their own HTTP client. Raises `BotDetectedError` on bot interstitials (Playwright crawlers only).
 
 Plugins are stored in `DISCOGS_BROWSER_DATA/crawlers/`. Bundled plugins in `backend/crawlers/` are copied there on every startup, so they always reflect the latest shipped version.
 
@@ -132,15 +134,9 @@ Playwright uses `launch_persistent_context` with `DISCOGS_BROWSER_DATA/chrome_pr
 
 ---
 
-## Pre-population
-
-On startup (and available as `POST /crawl/prepopulate`), `prepopulate_listings()` inserts a NULL-price listing row for every `release × enabled crawler` pair that doesn't already have a listing. The `url` field is set to the crawler's `search_url(release)` output. This means the frontend can immediately show a "View" link for every release before any crawl has run.
-
----
-
 ## Bundled Crawlers
 
-`backend/crawlers/amazon.py` and `backend/crawlers/ccmusic.py` are bundled with the backend. On startup, `main.py` copies them to `DISCOGS_BROWSER_DATA/crawlers/` and registers them in the `crawlers` table (INSERT OR IGNORE). This ensures the shipped plugins are always current even if the data directory was created by an older version.
+`backend/crawlers/amazon.py` and `backend/crawlers/ebay.py` are bundled with the backend. On startup, `main.py` copies them to `DISCOGS_BROWSER_DATA/crawlers/` and registers them in the `crawlers` table (INSERT OR IGNORE). This ensures the shipped plugins are always current even if the data directory was created by an older version.
 
 `seed_bundled_crawlers` reads `site_name` from each crawler's source text using a regex (`re.search(r'site_name(?:\s*:\s*\w+)?\s*=\s*["\']([^"\']+)["\']', text)`) rather than importing the module. This avoids triggering a full Playwright import at startup — which hung on slow hardware (NAS). Falls back to a filename-derived name if the regex finds no match.
 
@@ -185,6 +181,8 @@ All fields live in `DISCOGS_BROWSER_DATA/config.json`.
 | `consecutive_failure_limit` | `10` | Stop crawl after N consecutive failures (0 = disabled) |
 | `crawl_schedule` | `""` | Cron expression for scheduled crawl; blank = disabled |
 | `crawl_schedule_mode` | `"missing"` | `"missing"` (skip already-priced) or `"all"` |
+| `ebay_app_id` | `""` | eBay Developer App ID (client_id) for Browse API OAuth |
+| `ebay_cert_id` | `""` | eBay Developer Cert ID (client_secret) for Browse API OAuth |
 
 ---
 
@@ -197,6 +195,26 @@ On macOS (dev mode), the auth flow opens the site's login URL in the user's real
 When `HEADLESS_AUTH=1` (Docker), `POST /auth/login` returns HTTP 501 and the browser-launch step is skipped.
 
 `DELETE /auth/state` deletes `browser_state.json` to force a clean session on the next crawl.
+
+---
+
+## eBay Browse API Crawler (CC Music)
+
+`backend/crawlers/ebay.py` implements the CC Music price lookup using the eBay Browse API rather than Playwright. It presents as `site_name = "CC Music"` and filters to the `collectorschoicemusic` eBay seller.
+
+**OAuth**: Client credentials flow against `https://api.ebay.com/identity/v1/oauth2/token`. Token is cached module-level with a 60-second expiry buffer; refreshed automatically on the next request after expiry. Credentials (`ebay_app_id`, `ebay_cert_id`) are read from `config.json` on each search call.
+
+**Search**: `GET /buy/browse/v1/item_summary/search` with `filter=sellers:{collectorschoicemusic},buyingOptions:{FIXED_PRICE}` and `sort=price+shippingCost`. Returns the lowest-price BIN listing.
+
+**URL fallback**: `itemWebUrl` from the API response is preferred. If absent or not an `https://www.ebay.com` URL, falls back to `https://www.ebay.com/itm/{legacyItemId}`. If both are missing, falls back to `search_url(release)`.
+
+**No Playwright dependency**: `async def search(self, release, page)` ignores the `page` argument and uses `httpx.AsyncClient` directly.
+
+---
+
+## Startup Health Check and Frontend Overlay
+
+`GET /api/health` returns `{"ok": true}`. The frontend polls this endpoint on mount (2-second interval, status < 500 = ready) and displays a spinner overlay until the backend responds. Once ready, crawlers are fetched and the UI populates. This provides visual feedback during Docker container startup before the backend finishes initializing.
 
 ---
 
@@ -243,7 +261,7 @@ After navigating from the search results page to a product page, the crawler set
 ### Refresh Collection
 
 1. Frontend calls `POST /collection/refresh`.
-2. Backend fetches all pages from the Discogs API (httpx), upserts each release, then calls `prepopulate_listings()` to ensure every release × crawler pair has at least a search-URL row.
+2. Backend fetches all pages from the Discogs API (httpx), upserts each release.
 3. Returns `{synced, username}`.
 
 ### Crawl
@@ -323,7 +341,7 @@ discogs-browser/
 │   ├── config.py               # CONFIG_DIR, env var overrides, load/save_config
 │   ├── version.py              # VERSION string
 │   ├── logging_config.py       # rotating file + stdout, get_logger()
-│   ├── db.py                   # schema, all DB helpers, prepopulate_listings(); thread-local connection singleton (WAL, 60s timeout)
+│   ├── db.py                   # schema, all DB helpers; thread-local connection singleton (WAL, 60s timeout)
 │   ├── discogs.py              # httpx-based Discogs API client
 │   ├── crawler.py              # BotDetectedError, clean_search_text(), plugin loader, crawl_releases()
 │   ├── crawl_manager.py        # CrawlManager singleton: asyncio task, broadcast queues, 500-event buffer
@@ -332,9 +350,10 @@ discogs-browser/
 │   ├── main.py                 # FastAPI app, startup (init_db, seed crawlers, prepopulate, start scheduler)
 │   ├── Dockerfile              # python:3.11-slim + playwright install chromium
 │   ├── crawlers/
-│   │   ├── amazon.py
-│   │   └── ccmusic.py
+│   │   ├── amazon.py           # Playwright-based Amazon crawler
+│   │   └── ebay.py             # eBay Browse API crawler (CC Music seller, OAuth)
 │   ├── routers/
+│   │   ├── health.py           # GET /health
 │   │   ├── collection.py       # POST /collection/refresh, GET /collection/status
 │   │   ├── releases.py         # GET /releases, /artists, /crawlers
 │   │   ├── crawl.py            # POST /crawl/start, POST /crawl/stop, GET /crawl/stream, GET /crawl/status
@@ -350,6 +369,7 @@ discogs-browser/
 │       ├── test_crawler_utils.py
 │       ├── test_crawl_manager.py
 │       ├── test_db.py
+│       ├── test_ebay_crawler.py
 │       ├── test_discogs.py
 │       ├── crawlers/
 │       │   └── test_amazon_price_extraction.py
@@ -394,7 +414,8 @@ discogs-browser/
 | `tests/test_crawler.py` | validate_crawler_code, load_crawler_from_path |
 | `tests/test_crawler_utils.py` | clean_search_text, _strip_stop_words, _title_variants, _amazon_format_keywords, Crawler._artist |
 | `tests/test_crawl_manager.py` | subscribe/broadcast, start/stop, event buffer |
-| `tests/test_db.py` | all DB helpers, prepopulate_listings; `conn` fixture creates a plain `sqlite3.connect(":memory:")` and injects it into `db_module._local.conn` directly (avoids closing the thread-local singleton between tests) |
+| `tests/test_db.py` | all DB helpers; `conn` fixture creates a plain `sqlite3.connect(":memory:")` and injects it into `db_module._local.conn` directly (avoids closing the thread-local singleton between tests) |
+| `tests/test_ebay_crawler.py` | eBay OAuth token fetch/caching, search result parsing, URL fallback, config round-trip (`respx` mocks) |
 | `tests/test_discogs.py` | httpx-mocked Discogs API calls |
 | `tests/crawlers/test_amazon_price_extraction.py` | offline regression tests using saved HTML fixtures via `page.set_content()` |
 
