@@ -156,7 +156,7 @@ def get_logger(name: str) -> logging.Logger:
 - Create: `backend/db.py`
 
 - [ ] Create `backend/db.py` implementing these functions:
-  - `get_conn()` → `sqlite3.Connection` pointing to `~/.discogs-browser/db.sqlite`, row_factory=sqlite3.Row
+  - `get_conn()` → `sqlite3.Connection` using `threading.local()` so each thread gets one persistent connection; WAL journal mode + 60s busy timeout set on creation; never closed by callers
   - `init_db(conn)` — creates tables; uses `ALTER TABLE ... ADD COLUMN` migrations for new columns
   - `upsert_release(conn, release: dict)` — INSERT OR REPLACE into `releases`
   - `upsert_listing(conn, release_id, crawler_id, listing: dict)` — INSERT OR REPLACE into `listings`
@@ -453,8 +453,7 @@ def startup():
     log.info("Discogs Browser started (v%s)", VERSION)
     conn = get_conn()
     init_db(conn)
-    conn.close()
-    # Sync bundled crawlers to ~/.discogs-browser/crawlers/
+    # conn.close() not called — thread-local singleton; Sync bundled crawlers to ~/.discogs-browser/crawlers/
     bundled = Path(__file__).parent / "crawlers"
     CRAWLERS_DIR.mkdir(parents=True, exist_ok=True)
     for src in bundled.glob("*.py"):
@@ -470,7 +469,7 @@ def _register_crawler(path: Path):
         [path.stem.capitalize(), str(path)]
     )
     conn.commit()
-    conn.close()
+    # conn.close() not called — thread-local singleton
 ```
 
 - [ ] Create `backend/routers/collection.py`:
@@ -523,10 +522,10 @@ def _register_crawler(path: Path):
 
 - [ ] Init Vite + React + TS project, install tailwindcss + autoprefixer + postcss.
 
-- [ ] `frontend/vite.config.ts` — proxy `/api` to `http://localhost:8000`:
+- [ ] `frontend/vite.config.ts` — proxy `/api` to `http://localhost:8000`. Import `defineConfig` from `vitest/config` (not `vite`) so the `test` key is correctly typed:
 
 ```typescript
-import { defineConfig } from 'vite'
+import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 
 export default defineConfig({
@@ -673,6 +672,8 @@ export type SortOrder = 'asc' | 'desc'
 - [ ] Create `frontend/src/App.tsx`:
   - Root: `<div className="h-screen bg-gray-950 text-gray-100 flex flex-col overflow-hidden">`
   - Nav: Collection | Settings | Logs tabs; header buttons: "Refresh Collection", "Refresh Prices"
+  - `crawlers` fetched once in `App` and passed as props to both `Settings` and `CollectionBrowser`; neither view fetches crawlers independently
+  - Settings tab wrapper has `overflow-y-auto` for independent scrolling
   - `handleRefresh` — checks `getCollectionStatus()`; if records exist, shows collection modal (Refresh New Only / Refresh All / Cancel)
   - `handleFindPrices` — checks `getCrawlStatus()`; if `missing > 0 && missing < total`, shows checkpoint modal (Resume / Restart / Cancel); otherwise starts crawl directly
   - Crawl SSE: `openCrawlStream`, parse events, update `crawlEvents` state
@@ -820,7 +821,7 @@ dev:
 
 - [x] Create `backend/Dockerfile`:
   - Base: `python:3.11-slim`.
-  - Install system deps, copy backend source, `pip install -e .`.
+  - Install system deps, copy backend source, install deps by parsing `pyproject.toml` with `tomllib` and running `pip install` directly (`pip install -e .` was removed — hatchling can't locate the package directory in the Docker build context).
   - Run `playwright install chromium --with-deps`.
   - Set `ENV PLAYWRIGHT_CHANNEL=""`, `ENV HEADLESS_AUTH=1`, `ENV DISCOGS_BROWSER_DATA=/data`.
   - `CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]`.
@@ -829,9 +830,10 @@ dev:
   - Stage 2: `nginx:alpine` — copy `dist/` and `nginx.conf`.
 - [x] Create `frontend/nginx.conf`:
   - Serve static files from `/usr/share/nginx/html`.
-  - `location /api/ { proxy_pass http://backend:8000; proxy_buffering off; chunked_transfer_encoding on; }` for SSE compatibility.
+  - `location /api/ { proxy_pass http://backend:8000; proxy_buffering off; chunked_transfer_encoding on; proxy_read_timeout 600s; }` for SSE compatibility and large-collection refresh support.
 - [x] Create `docker-compose.yml`:
-  - `backend` service: build `./backend`, mount `discogs_data:/data`.
+  - `backend` service: build `./backend`, bind-mount `./workspace:/data` (no named volume).
   - `frontend` service: build `./frontend`, expose `8080:80`, depends on `backend`.
-  - Named volume `discogs_data`.
+  - No top-level `volumes:` key.
+- [x] Create `bootstrap.sh` (repo root): creates `workspace/` directory and runs `docker-compose build`.
 - [x] Update `backend/config.py`: read `DISCOGS_BROWSER_DATA` env var to override `CONFIG_DIR`; read `PLAYWRIGHT_CHANNEL` and `HEADLESS_AUTH` env vars and expose as module-level constants.

@@ -33,7 +33,7 @@ FastAPI (:8000)
 
 ### Docker / production mode
 
-nginx serves the React SPA on `:8080` and reverse-proxies `/api/` to the backend service on `:8000`. A named Docker volume at `/data` holds all persistent state.
+nginx serves the React SPA on `:8080` and reverse-proxies `/api/` to the backend service on `:8000`. A bind-mounted host directory (`./workspace`) is mounted at `/data` and holds all persistent state.
 
 ```
 nginx (:8080)
@@ -51,6 +51,12 @@ nginx (:8080)
 | `DISCOGS_BROWSER_DATA` | `~/.discogs-browser` | Root data directory |
 | `PLAYWRIGHT_CHANNEL` | `"chrome"` | Browser channel for Playwright. Set to `""` to use the bundled Chromium (Docker). |
 | `HEADLESS_AUTH` | `""` | Set to `"1"` to disable the macOS browser-launch login flow (required in Docker). |
+
+---
+
+## Database Connection Model
+
+`db.py` uses `threading.local()` so each thread gets exactly one persistent SQLite connection (opened on first use, never closed). WAL journal mode and a 60-second busy timeout are applied on connection creation. Routers and `crawl_manager` never call `conn.close()`.
 
 ---
 
@@ -262,11 +268,15 @@ After navigating from the search results page to a product page, the crawler set
 
 Artist sidebar (independent scroll, `shrink-0` buttons) + main area with search bar, sortable table, and pagination (250/page). Table columns: thumbnail, Artist, Title, Year, Label, Format, Price (discogs_price), one column per enabled crawler. Crawler cells show `$X.XX` (green) if priced, a "View" link if URL exists but no price, or `—` if no listing. Live SSE events update cells in place. Per-row refresh button triggers a single-release crawl.
 
+`crawlers` state is fetched once in `App.tsx` and passed as props to both `CollectionBrowser` and `Settings`; neither view fetches crawlers independently.
+
 ### Crawl Status Bar
 
 Fixed bottom bar visible while a crawl is active (or just completed). Shows progress count, current release/site, and a Dismiss button. The bar appears automatically when a scheduled crawl starts (via the `"started"` SSE event) with no user interaction required.
 
 ### Settings
+
+The Settings tab wrapper has `overflow-y-auto` so the panel scrolls independently when content is tall.
 
 - **Discogs**: token + username inputs.
 - **Crawlers**: enable/disable toggle per crawler; Login button (opens auth flow) + Done button.
@@ -291,7 +301,7 @@ Screenshot browser showing session directories and per-search screenshots. Only 
 | Web framework | FastAPI + uvicorn |
 | HTTP client (Discogs) | httpx |
 | Browser automation | Playwright + playwright-stealth |
-| Database | SQLite (stdlib) |
+| Database | SQLite (stdlib), thread-local connection singleton, WAL mode |
 | Scheduling | APScheduler (AsyncIOScheduler) |
 | SSE | sse-starlette |
 | Frontend framework | React 18 + TypeScript |
@@ -311,7 +321,7 @@ discogs-browser/
 │   ├── config.py               # CONFIG_DIR, env var overrides, load/save_config
 │   ├── version.py              # VERSION string
 │   ├── logging_config.py       # rotating file + stdout, get_logger()
-│   ├── db.py                   # schema, all DB helpers, prepopulate_listings()
+│   ├── db.py                   # schema, all DB helpers, prepopulate_listings(); thread-local connection singleton (WAL, 60s timeout)
 │   ├── discogs.py              # httpx-based Discogs API client
 │   ├── crawler.py              # BotDetectedError, clean_search_text(), plugin loader, crawl_releases()
 │   ├── crawl_manager.py        # CrawlManager singleton: asyncio task, broadcast queues, 500-event buffer
@@ -364,7 +374,8 @@ discogs-browser/
 │           ├── Settings.tsx
 │           ├── LogViewer.tsx
 │           └── DebugView.tsx
-├── docker-compose.yml          # backend + frontend services, discogs_data volume
+├── docker-compose.yml          # backend + frontend services, ./workspace bind mount
+├── bootstrap.sh                # creates workspace/, runs docker-compose build
 ├── Makefile
 └── .gitignore
 ```
@@ -393,28 +404,27 @@ HTML fixtures in `tests/fixtures/crawlers/amazon/` were captured with `scripts/c
 
 Target: Synology NAS (x86_64).
 
-`backend/Dockerfile` builds from `python:3.11-slim`, installs Playwright and runs `playwright install chromium` to bundle Chromium. Sets `PLAYWRIGHT_CHANNEL=""`, `HEADLESS_AUTH=1`, `DISCOGS_BROWSER_DATA=/data`.
+`backend/Dockerfile` builds from `python:3.11-slim`, installs Playwright and runs `playwright install chromium` to bundle Chromium. Sets `PLAYWRIGHT_CHANNEL=""`, `HEADLESS_AUTH=1`, `DISCOGS_BROWSER_DATA=/data`. Dependencies are installed by parsing `pyproject.toml` with `tomllib` and running `pip install` directly (not `pip install -e .`, which requires hatchling to locate the package directory in the build context).
 
-`frontend/Dockerfile` uses a two-stage build: Node 20 to build `dist/`, then `nginx:alpine` to serve it. Copies `nginx.conf` which proxies `/api/` to `backend:8000` with `proxy_buffering off` and `chunked_transfer_encoding on` for SSE compatibility.
+`frontend/Dockerfile` uses a two-stage build: Node 20 to build `dist/`, then `nginx:alpine` to serve it. Copies `nginx.conf` which proxies `/api/` to `backend:8000` with `proxy_buffering off`, `chunked_transfer_encoding on` (SSE compatibility), and `proxy_read_timeout 600s` (prevents timeout on large collection refreshes).
 
-`docker-compose.yml` defines two services (`backend`, `frontend`) and a named volume `discogs_data` mounted at `/data` on the backend. The frontend is exposed on host port `8080`.
+`docker-compose.yml` defines two services (`backend`, `frontend`). The backend bind-mounts `./workspace` at `/data` — no named volume. The frontend is exposed on host port `8080`. nginx's `/api/` proxy block sets `proxy_read_timeout 600s` to avoid timeouts on large collection refreshes.
 
 ```yaml
 services:
   backend:
     build: ./backend
     volumes:
-      - discogs_data:/data
+      - ./workspace:/data
   frontend:
     build: ./frontend
     ports:
       - "8080:80"
     depends_on:
       - backend
-
-volumes:
-  discogs_data:
 ```
+
+`bootstrap.sh` (repo root) creates the `workspace/` directory and runs `docker-compose build`.
 
 ---
 
