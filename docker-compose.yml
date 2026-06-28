@@ -1,0 +1,21 @@
+services:
+  backend:
+    build: ./backend
+    volumes:
+      - discogs_data:/data
+    environment:
+      DISCOGS_BROWSER_DATA: /data
+      PLAYWRIGHT_CHANNEL: ""
+      HEADLESS_AUTH: "1"
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  discogs_data:
