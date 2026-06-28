@@ -15,20 +15,24 @@ log = get_logger("main")
 BUNDLED_CRAWLERS_DIR = Path(__file__).parent / "crawlers"
 
 
+def _read_site_name(path: Path, fallback: str) -> str:
+    import re
+    try:
+        text = path.read_text()
+        m = re.search(r'site_name(?:\s*:\s*\w+)?\s*=\s*["\']([^"\']+)["\']', text)
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
+    return fallback
+
+
 def seed_bundled_crawlers(conn):
     for src in BUNDLED_CRAWLERS_DIR.glob("*.py"):
         dest = CRAWLERS_DIR / src.name
         shutil.copy2(src, dest)
         log.info("Synced bundled crawler %s -> %s", src.name, dest)
-        site_name = src.stem.replace("_", " ").title()
-        try:
-            import importlib.util
-            spec = importlib.util.spec_from_file_location(src.stem, dest)
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            site_name = mod.Crawler.site_name
-        except Exception as e:
-            log.warning("Could not load site_name from %s: %s", src.name, e)
+        site_name = _read_site_name(dest, src.stem.replace("_", " ").title())
         register_crawler(conn, site_name, str(dest))
         log.info("Registered bundled crawler: %s", site_name)
 
