@@ -14,6 +14,7 @@ RUN playwright install chromium && playwright install-deps chromium
 
 COPY . .
 
+ENV PYTHONUNBUFFERED=1
 ENV PLAYWRIGHT_CHANNEL=""
 ENV HEADLESS_AUTH=1
 ENV DISCOGS_BROWSER_DATA=/data
