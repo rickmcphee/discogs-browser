@@ -12,4 +12,8 @@ FROM nginx:alpine
 COPY --from=builder /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
+ENV APP_VERSION="1.42"
+
 EXPOSE 80
+
+CMD sh -c 'echo "Discogs Browser frontend v${APP_VERSION} starting" && exec nginx -g "daemon off;"'

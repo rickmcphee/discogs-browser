@@ -56,6 +56,8 @@ app.add_middleware(
 
 @app.on_event("startup")
 def startup():
+    log.info("=" * 60)
+    log.info("Discogs Browser backend v%s starting", VERSION)
     ensure_dirs()
     conn = get_connection()
     init_db(conn)
@@ -73,7 +75,7 @@ def startup():
             log.warning("Ignoring invalid saved crawl schedule: %s", e)
 
     log.info("=" * 60)
-    log.info("Discogs Browser started (v%s)", VERSION)
+    log.info("Discogs Browser backend v%s ready", VERSION)
 
 
 app.include_router(health.router, prefix="/api")
