@@ -2,7 +2,7 @@ services:
   backend:
     build: ./backend
     volumes:
-      - discogs_data:/data
+      - ./workspace:/data
     environment:
       DISCOGS_BROWSER_DATA: /data
       PLAYWRIGHT_CHANNEL: ""
@@ -16,6 +16,3 @@ services:
     depends_on:
       - backend
     restart: unless-stopped
-
-volumes:
-  discogs_data:
