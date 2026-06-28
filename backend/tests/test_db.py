@@ -25,9 +25,15 @@ def _release(discogs_id="r1", artist="Artist", title="Title", year=2000,
 
 @pytest.fixture
 def conn(tmp_config_dir):
-    c = get_connection()
+    import db as db_module
+    c = sqlite3.connect(":memory:")
+    c.row_factory = sqlite3.Row
+    c.execute("PRAGMA foreign_keys = ON")
+    # Point the thread-local singleton at this test connection
+    db_module._local.conn = c
     init_db(c)
     yield c
+    db_module._local.conn = None
     c.close()
 
 

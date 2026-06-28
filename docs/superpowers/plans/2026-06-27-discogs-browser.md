@@ -463,10 +463,14 @@ def startup():
 
 def _register_crawler(path: Path):
     from db import get_conn
+    import re
+    text = path.read_text()
+    m = re.search(r'site_name(?:\s*:\s*\w+)?\s*=\s*["\']([^"\']+)["\']', text)
+    site_name = m.group(1) if m else path.stem.capitalize()
     conn = get_conn()
     conn.execute(
         "INSERT OR IGNORE INTO crawlers (site_name, module_path) VALUES (?, ?)",
-        [path.stem.capitalize(), str(path)]
+        [site_name, str(path)]
     )
     conn.commit()
     # conn.close() not called — thread-local singleton

@@ -142,6 +142,8 @@ On startup (and available as `POST /crawl/prepopulate`), `prepopulate_listings()
 
 `backend/crawlers/amazon.py` and `backend/crawlers/ccmusic.py` are bundled with the backend. On startup, `main.py` copies them to `DISCOGS_BROWSER_DATA/crawlers/` and registers them in the `crawlers` table (INSERT OR IGNORE). This ensures the shipped plugins are always current even if the data directory was created by an older version.
 
+`seed_bundled_crawlers` reads `site_name` from each crawler's source text using a regex (`re.search(r'site_name(?:\s*:\s*\w+)?\s*=\s*["\']([^"\']+)["\']', text)`) rather than importing the module. This avoids triggering a full Playwright import at startup — which hung on slow hardware (NAS). Falls back to a filename-derived name if the regex finds no match.
+
 ---
 
 ## CrawlManager
@@ -392,7 +394,7 @@ discogs-browser/
 | `tests/test_crawler.py` | validate_crawler_code, load_crawler_from_path |
 | `tests/test_crawler_utils.py` | clean_search_text, _strip_stop_words, _title_variants, _amazon_format_keywords, Crawler._artist |
 | `tests/test_crawl_manager.py` | subscribe/broadcast, start/stop, event buffer |
-| `tests/test_db.py` | all DB helpers, prepopulate_listings |
+| `tests/test_db.py` | all DB helpers, prepopulate_listings; `conn` fixture creates a plain `sqlite3.connect(":memory:")` and injects it into `db_module._local.conn` directly (avoids closing the thread-local singleton between tests) |
 | `tests/test_discogs.py` | httpx-mocked Discogs API calls |
 | `tests/crawlers/test_amazon_price_extraction.py` | offline regression tests using saved HTML fixtures via `page.set_content()` |
 
