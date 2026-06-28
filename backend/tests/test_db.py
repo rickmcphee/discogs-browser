@@ -1,7 +1,6 @@
-import sqlite3
 import pytest
 from db import (
-    init_db, get_connection, upsert_release, get_releases,
+    get_connection, upsert_release, get_releases,
     upsert_listing, get_listings_for_release, get_crawl_status,
     get_missing_releases, prepopulate_listings, register_crawler,
     get_enabled_crawlers, set_crawler_enabled,
@@ -21,20 +20,6 @@ def _release(discogs_id="r1", artist="Artist", title="Title", year=2000,
         "cover_image_url": "",
         "discogs_url": f"https://discogs.com/release/{discogs_id}",
     }
-
-
-@pytest.fixture
-def conn(tmp_config_dir):
-    import db as db_module
-    c = sqlite3.connect(":memory:")
-    c.row_factory = sqlite3.Row
-    c.execute("PRAGMA foreign_keys = ON")
-    # Point the thread-local singleton at this test connection
-    db_module._local.conn = c
-    init_db(c)
-    yield c
-    db_module._local.conn = None
-    c.close()
 
 
 @pytest.fixture

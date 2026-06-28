@@ -46,6 +46,8 @@ export interface Settings {
   consecutive_failure_limit: number
   crawl_schedule?: string
   crawl_schedule_mode?: 'missing' | 'all'
+  ebay_app_id?: string
+  ebay_cert_id?: string
 }
 
 export type SortField = 'artist' | 'title' | 'year' | 'label' | 'format' | string

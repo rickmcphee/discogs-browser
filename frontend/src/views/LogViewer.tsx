@@ -16,11 +16,12 @@ interface LogEntry {
 const LOG_RE = /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+(DEBUG|INFO|WARNING|ERROR)\s+(\S+)\s+(.+)$/
 const SCREENSHOT_RE = /\s+SCREENSHOT:(\S+\.png)\s*$/
 const URL_RE = /(https?:\/\/[^\s]+)/g
+const BROWSABLE_URL_RE = /^https?:\/\/www\./
 
 function renderMessage(msg: string) {
   const parts = msg.split(URL_RE)
   return parts.map((part, i) =>
-    URL_RE.test(part)
+    URL_RE.test(part) && BROWSABLE_URL_RE.test(part)
       ? <a key={i} href={part} target="_blank" rel="noreferrer"
            className="text-indigo-400 hover:text-indigo-300 underline break-all">{part}</a>
       : part

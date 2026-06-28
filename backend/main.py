@@ -28,6 +28,14 @@ def _read_site_name(path: Path, fallback: str) -> str:
 
 
 def seed_bundled_crawlers(conn):
+    # Remove stale crawlers that were once bundled but no longer exist
+    for stale in CRAWLERS_DIR.glob("*.py"):
+        if stale.name == "__init__.py":
+            continue
+        if not (BUNDLED_CRAWLERS_DIR / stale.name).exists():
+            stale.unlink(missing_ok=True)
+            log.info("Removed stale crawler %s from data dir", stale.name)
+
     for src in BUNDLED_CRAWLERS_DIR.glob("*.py"):
         dest = CRAWLERS_DIR / src.name
         shutil.copy2(src, dest)

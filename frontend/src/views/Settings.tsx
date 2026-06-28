@@ -42,6 +42,20 @@ const SETTING_ROWS: SettingRow[] = [
     description: 'Stop bulk crawl after this many consecutive failures (not_found or error). Only active when shuffle is on. 0 = disabled.',
     type: 'number',
   },
+  {
+    key: 'ebay_app_id',
+    label: 'eBay App ID',
+    description: 'eBay Client ID (App ID) for Browse API access.',
+    type: 'password',
+    placeholder: 'your App ID',
+  },
+  {
+    key: 'ebay_cert_id',
+    label: 'eBay Cert ID',
+    description: 'eBay Client Secret (Cert ID) for Browse API access.',
+    type: 'password',
+    placeholder: 'your Cert ID',
+  },
 ]
 
 interface Props {
@@ -58,6 +72,8 @@ export default function Settings({ crawlers, onCrawlersChange }: Props) {
     consecutive_failure_limit: 10,
     crawl_schedule: '',
     crawl_schedule_mode: 'missing',
+    ebay_app_id: '',
+    ebay_cert_id: '',
   })
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
