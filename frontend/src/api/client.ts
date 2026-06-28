@@ -7,7 +7,8 @@ const BASE = '/api'
 export async function checkHealth(): Promise<boolean> {
   try {
     const r = await fetch(`${BASE}/health`)
-    return r.ok
+    // Any non-5xx means the backend is reachable (5xx = nginx gateway error)
+    return r.status < 500
   } catch {
     return false
   }
