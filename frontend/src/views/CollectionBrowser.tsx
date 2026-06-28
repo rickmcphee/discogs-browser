@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { getReleases, getArtists, getCrawlers } from '../api/client'
+import { getReleases, getArtists } from '../api/client'
 import type { Release, Crawler, SortField, SortOrder, CrawlEvent } from '../api/types'
 
 interface Props {
@@ -7,16 +7,16 @@ interface Props {
   crawling?: boolean
   crawlingReleaseId?: string
   crawlEvents?: CrawlEvent[]
+  crawlers?: Crawler[]
 }
 
-export default function CollectionBrowser({ onRefreshPrices, crawling, crawlingReleaseId, crawlEvents }: Props) {
+export default function CollectionBrowser({ onRefreshPrices, crawling, crawlingReleaseId, crawlEvents, crawlers = [] }: Props) {
   const [releases, setReleases] = useState<Release[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
   const [selectedArtist, setSelectedArtist] = useState('')
   const [artists, setArtists] = useState<string[]>([])
-  const [crawlers, setCrawlers] = useState<Crawler[]>([])
   const [sort, setSort] = useState<SortField>('artist')
   const [order, setOrder] = useState<SortOrder>('asc')
   const [loading, setLoading] = useState(false)
@@ -41,8 +41,12 @@ export default function CollectionBrowser({ onRefreshPrices, crawling, crawlingR
       const updatedListings = { ...r.listings }
       for (const e of events) {
         updatedListings[e.site!] = {
-          ...(updatedListings[e.site!] ?? {}),
+          url: updatedListings[e.site!]?.url ?? '',
           price: e.price ?? null,
+          shipping: updatedListings[e.site!]?.shipping ?? null,
+          currency: updatedListings[e.site!]?.currency ?? null,
+          condition: updatedListings[e.site!]?.condition ?? null,
+          last_checked: updatedListings[e.site!]?.last_checked ?? new Date().toISOString(),
         }
       }
       return { ...r, listings: updatedListings }
@@ -73,7 +77,6 @@ export default function CollectionBrowser({ onRefreshPrices, crawling, crawlingR
 
   useEffect(() => { load() }, [load])
   useEffect(() => { getArtists().then(setArtists) }, [])
-  useEffect(() => { getCrawlers().then(setCrawlers) }, [])
 
   function toggleSort(field: SortField) {
     if (sort === field) {

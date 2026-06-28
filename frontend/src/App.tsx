@@ -2,8 +2,8 @@ import { useState, useEffect } from 'react'
 import CollectionBrowser from './views/CollectionBrowser'
 import Settings from './views/Settings'
 import LogViewer from './views/LogViewer'
-import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart } from './api/client'
-import type { CrawlEvent, CrawlStatus, CollectionStatus } from './api/types'
+import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, getCrawlers } from './api/client'
+import type { CrawlEvent, CrawlStatus, CollectionStatus, Crawler } from './api/types'
 
 type View = 'collection' | 'settings' | 'logs'
 
@@ -17,9 +17,12 @@ export default function App() {
   const [crawlCount, setCrawlCount] = useState(0)
   const [crawlTotal, setCrawlTotal] = useState(0)
   const [checkpointStatus, setCheckpointStatus] = useState<CrawlStatus | null>(null)
-  const [pendingReleaseId, setPendingReleaseId] = useState<string | undefined>(undefined)
+
   const [collectionStatus, setCollectionStatus] = useState<CollectionStatus | null>(null)
   const [crawlingReleaseId, setCrawlingReleaseId] = useState<string | undefined>(undefined)
+  const [crawlers, setCrawlers] = useState<Crawler[]>([])
+
+  useEffect(() => { getCrawlers().then(setCrawlers) }, [])
 
   // Persistent SSE connection — reconnects on error.
   // Handles both user-triggered and scheduled crawls.
@@ -103,7 +106,7 @@ export default function App() {
     try {
       const status = await getCrawlStatus()
       if (status.total > 0 && status.missing > 0 && status.missing < status.total) {
-        setPendingReleaseId(undefined)
+
         setCheckpointStatus(status)
         return
       }
@@ -183,9 +186,10 @@ export default function App() {
             crawling={crawling}
             crawlingReleaseId={crawlingReleaseId}
             crawlEvents={crawlEvents}
+            crawlers={crawlers}
           />
         </div>
-        <div className={view === 'settings' ? 'h-full' : 'hidden'}><Settings /></div>
+        <div className={view === 'settings' ? 'h-full overflow-y-auto' : 'hidden'}><Settings crawlers={crawlers} onCrawlersChange={setCrawlers} /></div>
         <div className={view === 'logs' ? 'h-full' : 'hidden'}><LogViewer /></div>
       </main>
 
