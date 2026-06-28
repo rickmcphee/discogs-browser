@@ -48,9 +48,40 @@ Open http://localhost:8080. Set your Discogs token in Settings.
 
 The Docker container uses bundled Chromium (no real Chrome required) and headless mode. The login flow for session-authenticated crawlers is not available in Docker.
 
-## Deployment
+## Deployment (Synology NAS)
 
-Designed to run permanently on a Synology NAS or any always-on Docker host. The `discogs_data` volume persists your collection, crawler state, and logs across container restarts.
+Designed to run on a Synology NAS via Container Manager. Persistent data (config, database, logs) is stored in `workspace/` inside the repo directory, which is mounted into the container.
+
+**One-time setup via SSH:**
+
+```bash
+ssh admin@<nas-ip>
+mkdir -p /volume1/docker/discogs-browser
+cd /volume1/docker/discogs-browser
+git clone https://github.com/rickmcphee/discogs-browser.git .
+bash bootstrap.sh
+```
+
+`bootstrap.sh` creates the `workspace/` directory and builds the Docker images.
+
+**Create the project in Container Manager:**
+
+1. Open Container Manager → Project → Create
+2. Name: `discogs-browser`
+3. Path: `/volume1/docker/discogs-browser`
+4. Container Manager picks up `docker-compose.yml` automatically
+5. Click Next → Done
+
+Open `http://<nas-ip>:8080` and set your Discogs token in Settings.
+
+**Updating to a new version:**
+
+```bash
+cd /volume1/docker/discogs-browser
+git pull
+bash bootstrap.sh
+docker-compose up -d
+```
 
 ## Environment variables
 
