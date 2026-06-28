@@ -55,11 +55,18 @@ class CrawlManager:
             await q.put(event)
 
     async def _run(self, mode: str, release_id: Optional[str]):
-        from db import get_connection, get_releases, get_enabled_crawlers, get_missing_releases, prepopulate_listings
+        import sqlite3
+        import config as cfg_module
+        from db import init_db, get_releases, get_enabled_crawlers, get_missing_releases, prepopulate_listings
         from crawler import load_enabled_crawlers, crawl_releases
         from config import load_config
 
-        conn = get_connection()
+        # Dedicated connection for the crawl task — avoids contention with the
+        # thread-local singleton used by request handlers on the same event loop.
+        conn = sqlite3.connect(cfg_module.DB_FILE, check_same_thread=False, timeout=60)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA journal_mode = WAL")
         try:
             enabled = get_enabled_crawlers(conn)
             crawlers = load_enabled_crawlers(enabled)
@@ -101,6 +108,8 @@ class CrawlManager:
         except Exception as e:
             log.error("Crawl failed: %s", e, exc_info=True)
             await self._broadcast({"status": "error", "error": str(e)})
+        finally:
+            conn.close()
 
 
 crawl_manager = CrawlManager()
