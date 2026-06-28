@@ -6,7 +6,7 @@ from logging_config import setup_logging, get_logger
 from config import ensure_dirs, CRAWLERS_DIR, load_config
 from version import VERSION
 from db import get_connection, init_db, register_crawler, prepopulate_listings
-from routers import collection, releases, settings, crawl, logs, screenshots, auth
+from routers import collection, releases, settings, crawl, logs, screenshots, auth, health
 import scheduler
 
 setup_logging()
@@ -76,6 +76,7 @@ def startup():
     log.info("Discogs Browser started (v%s)", VERSION)
 
 
+app.include_router(health.router, prefix="/api")
 app.include_router(collection.router, prefix="/api")
 app.include_router(releases.router, prefix="/api")
 app.include_router(settings.router, prefix="/api")

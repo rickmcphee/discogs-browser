@@ -4,6 +4,15 @@ import type {
 
 const BASE = '/api'
 
+export async function checkHealth(): Promise<boolean> {
+  try {
+    const r = await fetch(`${BASE}/health`)
+    return r.ok
+  } catch {
+    return false
+  }
+}
+
 export async function getCollectionStatus(): Promise<CollectionStatus> {
   const r = await fetch(`${BASE}/collection/status`)
   if (!r.ok) throw new Error(await r.text())

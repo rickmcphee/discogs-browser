@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import CollectionBrowser from './views/CollectionBrowser'
 import Settings from './views/Settings'
 import LogViewer from './views/LogViewer'
-import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, getCrawlers } from './api/client'
+import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, getCrawlers, checkHealth } from './api/client'
 import type { CrawlEvent, CrawlStatus, CollectionStatus, Crawler } from './api/types'
 
 type View = 'collection' | 'settings' | 'logs'
@@ -21,10 +21,29 @@ export default function App() {
   const [collectionStatus, setCollectionStatus] = useState<CollectionStatus | null>(null)
   const [crawlingReleaseId, setCrawlingReleaseId] = useState<string | undefined>(undefined)
   const [crawlers, setCrawlers] = useState<Crawler[]>([])
+  const [serverReady, setServerReady] = useState(false)
 
-  useEffect(() => { getCrawlers().then(setCrawlers) }, [])
+  // Poll /api/health until the backend is up, then load initial data.
+  useEffect(() => {
+    let cancelled = false
+    async function poll() {
+      while (!cancelled) {
+        const ok = await checkHealth()
+        if (ok) {
+          if (!cancelled) {
+            setServerReady(true)
+            getCrawlers().then(setCrawlers)
+          }
+          return
+        }
+        await new Promise(r => setTimeout(r, 2000))
+      }
+    }
+    poll()
+    return () => { cancelled = true }
+  }, [])
 
-  // Persistent SSE connection — reconnects on error.
+  // Persistent SSE connection — reconnects on error. Waits for server to be ready.
   // Handles both user-triggered and scheduled crawls.
   useEffect(() => {
     let source: EventSource | null = null
@@ -269,6 +288,14 @@ export default function App() {
               Cancel
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Server startup overlay */}
+      {!serverReady && (
+        <div className="fixed inset-0 bg-gray-950/90 flex flex-col items-center justify-center z-50 gap-4">
+          <div className="w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+          <p className="text-gray-300 text-sm">Server is starting up…</p>
         </div>
       )}
 
