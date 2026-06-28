@@ -1,14 +1,11 @@
 import shutil
-import sqlite3
-import threading
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from logging_config import setup_logging, get_logger
 from config import ensure_dirs, CRAWLERS_DIR, load_config
-import config as _cfg
 from version import VERSION
-from db import get_connection, init_db, register_crawler, prepopulate_listings
+from db import get_connection, init_db, register_crawler
 from routers import collection, releases, settings, crawl, logs, screenshots, auth, health
 import scheduler
 
@@ -47,21 +44,6 @@ def seed_bundled_crawlers(conn):
         register_crawler(conn, site_name, str(dest))
         log.info("Registered bundled crawler: %s", site_name)
 
-def _prepopulate_background():
-    conn = sqlite3.connect(_cfg.DB_FILE, check_same_thread=False, timeout=60)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
-    try:
-        inserted = prepopulate_listings(conn)
-        if inserted:
-            log.info("Pre-populated %d listing(s) with search URLs", inserted)
-    except Exception as e:
-        log.warning("prepopulate_listings failed: %s", e)
-    finally:
-        conn.close()
-
-
 app = FastAPI(title="Discogs Browser")
 
 app.add_middleware(
@@ -80,7 +62,6 @@ def startup():
     conn = get_connection()
     init_db(conn)
     seed_bundled_crawlers(conn)
-    threading.Thread(target=_prepopulate_background, daemon=True).start()
     scheduler.start()
     cfg = load_config()
     schedule = cfg.get("crawl_schedule", "")

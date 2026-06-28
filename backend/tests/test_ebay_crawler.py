@@ -134,23 +134,6 @@ def test_search_url_encodes_spaces():
     assert "collectorschoicemusic" in url
 
 
-@respx.mock
-async def test_prepopulate_with_ebay_crawler(conn, tmp_path):
-    from pathlib import Path
-    from db import register_crawler, prepopulate_listings, upsert_release
-    real_ebay = Path(__file__).parent.parent / "crawlers" / "ebay.py"
-    register_crawler(conn, "CC Music", str(real_ebay))
-    upsert_release(conn, {
-        "discogs_id": "r1", "artist": "Miles Davis", "title": "Kind of Blue",
-        "year": 1959, "label": "Columbia", "format": "Vinyl",
-        "discogs_price": None, "cover_image_url": "", "discogs_url": "https://discogs.com/r/1",
-    })
-    inserted = prepopulate_listings(conn)
-    assert inserted == 1
-    row = conn.execute("SELECT url FROM listings WHERE release_id='r1'").fetchone()
-    assert row is not None
-    assert "collectorschoicemusic" in row[0]
-
 
 async def test_config_round_trip(tmp_config_dir):
     import config as config_module

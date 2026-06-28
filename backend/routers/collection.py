@@ -1,7 +1,7 @@
 from typing import Optional
 from fastapi import APIRouter, HTTPException
 from config import load_config
-from db import get_connection, upsert_release, prepopulate_listings
+from db import get_connection, upsert_release
 from discogs import get_identity, fetch_collection, fetch_collection_fields, parse_release
 from logging_config import get_logger
 import httpx
@@ -58,10 +58,6 @@ def refresh_collection(mode: Optional[str] = None):
     for item in items_to_sync:
         upsert_release(conn, parse_release(item, price_field_id=price_field_id))
         count += 1
-
-    inserted = prepopulate_listings(conn)
-    if inserted:
-        log.info("Pre-populated %d new listing(s) with search URLs", inserted)
 
     log.info("Collection refresh complete: %d releases synced for %s", count, username)
     return {"synced": count, "username": username}

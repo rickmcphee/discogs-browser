@@ -227,43 +227,6 @@ def update_crawler_last_run(conn: sqlite3.Connection, crawler_id: int):
     conn.commit()
 
 
-def prepopulate_listings(conn: sqlite3.Connection):
-    """Upsert a search-URL listing for every release×enabled-crawler pair that has no listing yet."""
-    from pathlib import Path
-    from crawler import load_crawler_from_path
-
-    crawlers = get_enabled_crawlers(conn)
-    releases = conn.execute(
-        "SELECT discogs_id, artist, title, format FROM releases"
-    ).fetchall()
-
-    inserted = 0
-    for crawler_row in crawlers:
-        path = Path(crawler_row["module_path"])
-        if not path.exists():
-            continue
-        try:
-            crawler = load_crawler_from_path(path)
-        except Exception:
-            continue
-        if not hasattr(crawler, "search_url"):
-            continue
-        for release in releases:
-            has_price = conn.execute(
-                "SELECT id FROM listings WHERE release_id=? AND crawler_id=? AND price IS NOT NULL",
-                [release["discogs_id"], crawler_row["id"]],
-            ).fetchone()
-            if has_price:
-                continue
-            url = crawler.search_url(dict(release))
-            if url:
-                upsert_listing(conn, release["discogs_id"], crawler_row["id"], {
-                    "url": url, "price": None, "shipping": None,
-                    "currency": None, "condition": None,
-                })
-                inserted += 1
-    return inserted
-
 
 def get_distinct_artists(conn: sqlite3.Connection) -> list[str]:
     rows = conn.execute("SELECT DISTINCT artist FROM releases ORDER BY artist").fetchall()

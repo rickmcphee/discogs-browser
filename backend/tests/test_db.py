@@ -2,7 +2,7 @@ import pytest
 from db import (
     get_connection, upsert_release, get_releases,
     upsert_listing, get_listings_for_release, get_crawl_status,
-    get_missing_releases, prepopulate_listings, register_crawler,
+    get_missing_releases, register_crawler,
     get_enabled_crawlers, set_crawler_enabled,
 )
 
@@ -197,20 +197,3 @@ def test_set_crawler_enabled(conn):
     row = conn.execute("SELECT enabled FROM crawlers WHERE id=?", (cid,)).fetchone()
     assert row[0] == 0
 
-
-# ---------------------------------------------------------------------------
-# prepopulate_listings
-# ---------------------------------------------------------------------------
-
-def test_prepopulate_listings(conn, tmp_path):
-    from pathlib import Path
-    real_amazon = Path(__file__).parent.parent / "crawlers" / "amazon.py"
-    register_crawler(conn, "Amazon", str(real_amazon))
-    upsert_release(conn, _release("r1"))
-    upsert_release(conn, _release("r2"))
-    inserted = prepopulate_listings(conn)
-    assert inserted == 2
-    # Second call upserts again (no real prices), but produces no duplicate rows
-    prepopulate_listings(conn)
-    count = conn.execute("SELECT COUNT(*) FROM listings").fetchone()[0]
-    assert count == 2

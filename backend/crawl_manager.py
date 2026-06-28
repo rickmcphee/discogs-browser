@@ -57,7 +57,7 @@ class CrawlManager:
     async def _run(self, mode: str, release_id: Optional[str]):
         import sqlite3
         import config as cfg_module
-        from db import init_db, get_releases, get_enabled_crawlers, get_missing_releases, prepopulate_listings
+        from db import get_releases, get_enabled_crawlers, get_missing_releases
         from crawler import load_enabled_crawlers, crawl_releases
         from config import load_config
 
@@ -82,7 +82,6 @@ class CrawlManager:
                 result = get_releases(conn, per_page=10000)
                 releases = [r for r in result["releases"] if r["discogs_id"] in missing_ids]
             else:
-                prepopulate_listings(conn)
                 result = get_releases(conn, per_page=10000)
                 releases = result["releases"]
 
