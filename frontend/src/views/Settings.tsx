@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { getSettings, saveSettings, getCrawlers, setCrawlerEnabled, getAuthStatus, startLogin, finishLogin, clearAuthState } from '../api/client'
+import { getSettings, saveSettings, setCrawlerEnabled, getAuthStatus, startLogin, finishLogin, clearAuthState } from '../api/client'
 import type { Settings as SettingsType, Crawler } from '../api/types'
 
 interface SettingRow {
@@ -44,7 +44,12 @@ const SETTING_ROWS: SettingRow[] = [
   },
 ]
 
-export default function Settings() {
+interface Props {
+  crawlers: Crawler[]
+  onCrawlersChange: (crawlers: Crawler[]) => void
+}
+
+export default function Settings({ crawlers, onCrawlersChange }: Props) {
   const [settings, setSettings] = useState<SettingsType>({
     discogs_token: '',
     debug_screenshot_interval: 20,
@@ -54,7 +59,6 @@ export default function Settings() {
     crawl_schedule: '',
     crawl_schedule_mode: 'missing',
   })
-  const [crawlers, setCrawlers] = useState<Crawler[]>([])
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [authStatus, setAuthStatus] = useState<{ active: boolean; active_site: string | null; has_state: boolean; state_mtime: number | null }>({ active: false, active_site: null, has_state: false, state_mtime: null })
@@ -62,7 +66,6 @@ export default function Settings() {
 
   useEffect(() => {
     getSettings().then(setSettings)
-    getCrawlers().then(setCrawlers)
     getAuthStatus().then(setAuthStatus)
   }, [])
 
@@ -105,9 +108,7 @@ export default function Settings() {
 
   async function handleToggleCrawler(crawler: Crawler) {
     await setCrawlerEnabled(crawler.id, !crawler.enabled)
-    setCrawlers((prev) =>
-      prev.map((c) => c.id === crawler.id ? { ...c, enabled: !c.enabled } : c)
-    )
+    onCrawlersChange(crawlers.map((c) => c.id === crawler.id ? { ...c, enabled: !c.enabled } : c))
   }
 
   return (
