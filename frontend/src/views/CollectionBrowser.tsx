@@ -1,0 +1,286 @@
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { getReleases, getArtists, getCrawlers } from '../api/client'
+import type { Release, Crawler, SortField, SortOrder, CrawlEvent } from '../api/types'
+
+interface Props {
+  onRefreshPrices: (releaseId: string) => void
+  crawling?: boolean
+  crawlingReleaseId?: string
+  crawlEvents?: CrawlEvent[]
+}
+
+export default function CollectionBrowser({ onRefreshPrices, crawling, crawlingReleaseId, crawlEvents }: Props) {
+  const [releases, setReleases] = useState<Release[]>([])
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(1)
+  const [search, setSearch] = useState('')
+  const [selectedArtist, setSelectedArtist] = useState('')
+  const [artists, setArtists] = useState<string[]>([])
+  const [crawlers, setCrawlers] = useState<Crawler[]>([])
+  const [sort, setSort] = useState<SortField>('artist')
+  const [order, setOrder] = useState<SortOrder>('asc')
+  const [loading, setLoading] = useState(false)
+  const PER_PAGE = 250
+
+  const processedCount = useRef(0)
+  const tableScrollRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!crawlEvents) return
+    if (crawlEvents.length === 0) { processedCount.current = 0; return }
+    const newEvents = crawlEvents.slice(processedCount.current)
+    if (newEvents.length === 0) return
+    processedCount.current = crawlEvents.length
+
+    const foundEvents = newEvents.filter(e => e.status === 'found' && e.discogs_id && e.site)
+    if (foundEvents.length === 0) return
+
+    setReleases(prev => prev.map(r => {
+      const events = foundEvents.filter(e => e.discogs_id === r.discogs_id)
+      if (events.length === 0) return r
+      const updatedListings = { ...r.listings }
+      for (const e of events) {
+        updatedListings[e.site!] = {
+          ...(updatedListings[e.site!] ?? {}),
+          price: e.price ?? null,
+        }
+      }
+      return { ...r, listings: updatedListings }
+    }))
+  }, [crawlEvents])
+
+  useEffect(() => {
+    tableScrollRef.current?.scrollTo({ top: 0 })
+  }, [selectedArtist])
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const result = await getReleases({
+        search: search || undefined,
+        artist: selectedArtist || undefined,
+        sort,
+        order,
+        page,
+        per_page: PER_PAGE,
+      })
+      setReleases(result.releases)
+      setTotal(result.total)
+    } finally {
+      setLoading(false)
+    }
+  }, [search, selectedArtist, sort, order, page])
+
+  useEffect(() => { load() }, [load])
+  useEffect(() => { getArtists().then(setArtists) }, [])
+  useEffect(() => { getCrawlers().then(setCrawlers) }, [])
+
+  function toggleSort(field: SortField) {
+    if (sort === field) {
+      setOrder((o) => (o === 'asc' ? 'desc' : 'asc'))
+    } else {
+      setSort(field)
+      setOrder('asc')
+    }
+    setPage(1)
+  }
+
+  const enabledCrawlers = crawlers.filter((c) => c.enabled)
+  const totalPages = Math.ceil(total / PER_PAGE)
+
+  return (
+    <div className="flex h-full overflow-hidden">
+      {/* Sidebar */}
+      <aside className="w-48 bg-gray-900 border-r border-gray-800 flex flex-col shrink-0 min-h-0">
+        <div className="px-3 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider border-b border-gray-800 shrink-0">Artist</div>
+        <div className="flex flex-col gap-2 overflow-y-auto p-3">
+          <button
+            onClick={() => { setSelectedArtist(''); setPage(1) }}
+            className={`shrink-0 text-left text-sm px-2 py-1 rounded ${!selectedArtist ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white'}`}
+          >
+            All
+          </button>
+          {artists.map((a) => (
+            <button
+              key={a}
+              onClick={() => { setSelectedArtist(a); setPage(1) }}
+              className={`shrink-0 text-left text-sm px-2 py-1 rounded truncate ${selectedArtist === a ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white'}`}
+            >
+              {a}
+            </button>
+          ))}
+        </div>
+      </aside>
+
+      {/* Main */}
+      <div className="flex-1 flex flex-col overflow-hidden">
+        {/* Search bar */}
+        <div className="px-4 py-3 border-b border-gray-800 bg-gray-950">
+          <input
+            type="text"
+            placeholder="Search artist or title…"
+            value={search}
+            onChange={(e) => { setSearch(e.target.value); setPage(1) }}
+            className="w-full max-w-md bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500"
+          />
+          <span className="ml-3 text-xs text-gray-500">{total} records</span>
+        </div>
+
+        {/* Table */}
+        <div className="flex-1 overflow-auto" ref={tableScrollRef}>
+          <table className="w-full text-sm border-collapse">
+            <thead className="sticky top-0 bg-gray-900 text-xs text-gray-400 uppercase">
+              <tr>
+                <th className="w-12 px-3 py-2"></th>
+                <th
+                  className="px-3 py-2 text-center cursor-pointer hover:text-white select-none"
+                  onClick={() => toggleSort('artist')}
+                >
+                  Artist {sort === 'artist' ? (order === 'asc' ? '↑' : '↓') : ''}
+                </th>
+                <th
+                  className="px-3 py-2 text-center cursor-pointer hover:text-white select-none"
+                  onClick={() => toggleSort('title')}
+                >
+                  Title {sort === 'title' ? (order === 'asc' ? '↑' : '↓') : ''}
+                </th>
+                <th
+                  className="px-3 py-2 text-center cursor-pointer hover:text-white select-none"
+                  onClick={() => toggleSort('year')}
+                >
+                  Year {sort === 'year' ? (order === 'asc' ? '↑' : '↓') : ''}
+                </th>
+                <th
+                  className="px-3 py-2 text-center cursor-pointer hover:text-white select-none"
+                  onClick={() => toggleSort('label')}
+                >
+                  Label {sort === 'label' ? (order === 'asc' ? '↑' : '↓') : ''}
+                </th>
+                <th
+                  className="px-3 py-2 text-center cursor-pointer hover:text-white select-none"
+                  onClick={() => toggleSort('format')}
+                >
+                  Format {sort === 'format' ? (order === 'asc' ? '↑' : '↓') : ''}
+                </th>
+                <th
+                  className="px-3 py-2 text-center cursor-pointer hover:text-white select-none"
+                  onClick={() => toggleSort('discogs_price')}
+                >
+                  Price {sort === 'discogs_price' ? (order === 'asc' ? '↑' : '↓') : ''}
+                </th>
+                {enabledCrawlers.map((c) => (
+                  <th
+                    key={c.id}
+                    className="px-3 py-2 text-center cursor-pointer hover:text-white select-none"
+                    onClick={() => toggleSort(`price_${c.site_name}`)}
+                  >
+                    {c.site_name} {sort === `price_${c.site_name}` ? (order === 'asc' ? '↑' : '↓') : ''}
+                  </th>
+                ))}
+                <th className="px-3 py-2"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading && (
+                <tr>
+                  <td colSpan={8 + enabledCrawlers.length} className="text-center py-8 text-gray-500">
+                    Loading…
+                  </td>
+                </tr>
+              )}
+              {!loading && releases.length === 0 && (
+                <tr>
+                  <td colSpan={8 + enabledCrawlers.length} className="text-center py-8 text-gray-500">
+                    No records found. Click "Refresh Collection" to sync from Discogs.
+                  </td>
+                </tr>
+              )}
+              {releases.map((r) => (
+                <tr key={r.discogs_id} className="border-t border-gray-800 hover:bg-gray-900/50">
+                  <td className="px-3 py-2">
+                    {r.cover_image_url ? (
+                      <img
+                        src={r.cover_image_url}
+                        alt={r.title}
+                        className="w-10 h-10 object-cover rounded"
+                      />
+                    ) : (
+                      <div className="w-10 h-10 bg-gray-800 rounded" />
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-gray-200">
+                    <a
+                      href={r.discogs_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="hover:text-indigo-400"
+                    >
+                      {r.artist}
+                    </a>
+                  </td>
+                  <td className="px-3 py-2 text-gray-300">{r.title}</td>
+                  <td className="px-3 py-2 text-gray-400">{r.year ?? '—'}</td>
+                  <td className="px-3 py-2 text-gray-400 truncate max-w-32">{r.label}</td>
+                  <td className="px-3 py-2 text-gray-400">{r.format}</td>
+                  <td className="px-3 py-2 text-gray-400">{r.discogs_price ?? '—'}</td>
+                  {enabledCrawlers.map((c) => {
+                    const listing = r.listings[c.site_name]
+                    return (
+                      <td key={c.id} className="px-3 py-2">
+                        {listing ? (
+                          <a
+                            href={listing.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-green-400 hover:text-green-300 font-medium"
+                          >
+                            {listing.price != null
+                              ? `$${listing.price.toFixed(2)}`
+                              : 'View'}
+                          </a>
+                        ) : (
+                          <span className="text-gray-600">—</span>
+                        )}
+                      </td>
+                    )
+                  })}
+                  <td className="px-3 py-2">
+                    <button
+                      onClick={() => onRefreshPrices(r.discogs_id)}
+                      disabled={crawling}
+                      className="text-xs text-gray-500 hover:text-indigo-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                      title="Refresh prices for this record"
+                    >
+                      {crawlingReleaseId === r.discogs_id ? '⟳' : '↻'}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Pagination */}
+        {totalPages > 1 && (
+          <div className="border-t border-gray-800 px-4 py-2 flex items-center gap-2 text-sm text-gray-400">
+            <button
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={page === 1}
+              className="px-2 py-1 rounded hover:bg-gray-800 disabled:opacity-40"
+            >
+              ← Prev
+            </button>
+            <span>Page {page} of {totalPages}</span>
+            <button
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={page === totalPages}
+              className="px-2 py-1 rounded hover:bg-gray-800 disabled:opacity-40"
+            >
+              Next →
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
