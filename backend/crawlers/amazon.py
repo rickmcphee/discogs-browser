@@ -1,7 +1,6 @@
 import asyncio
 import random
 import re
-from playwright.async_api import Page
 from logging_config import get_logger
 from crawler import BotDetectedError, clean_search_text
 
@@ -158,7 +157,7 @@ class Crawler:
         query = f"{artist} {title} {fmt}".strip().replace(" ", "+")
         return f"https://www.amazon.com/s?k={query}&i=popular"
 
-    async def search(self, release: dict, page: Page) -> list[dict]:
+    async def search(self, release: dict, page) -> list[dict]:
         artist = self._artist(release)
         title = clean_search_text(release.get("title", ""))
         fmt = release.get("format", "vinyl") or "vinyl"
