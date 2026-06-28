@@ -57,5 +57,4 @@ def update_settings(body: SettingsUpdate):
 def update_crawler(crawler_id: int, body: CrawlerUpdate):
     conn = get_connection()
     set_crawler_enabled(conn, crawler_id, body.enabled)
-    conn.close()
     return {"ok": True}

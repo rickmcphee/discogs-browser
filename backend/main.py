@@ -51,8 +51,6 @@ def startup():
     inserted = prepopulate_listings(conn)
     if inserted:
         log.info("Pre-populated %d listing(s) with search URLs", inserted)
-    conn.close()
-
     scheduler.start()
     cfg = load_config()
     schedule = cfg.get("crawl_schedule", "")

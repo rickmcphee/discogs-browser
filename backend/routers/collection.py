@@ -13,13 +13,10 @@ router = APIRouter()
 @router.get("/collection/status")
 def collection_status():
     conn = get_connection()
-    try:
-        row = conn.execute(
-            "SELECT COUNT(*) as total, MAX(last_synced) as last_synced FROM releases"
-        ).fetchone()
-        return {"total": row["total"], "last_synced": row["last_synced"]}
-    finally:
-        conn.close()
+    row = conn.execute(
+        "SELECT COUNT(*) as total, MAX(last_synced) as last_synced FROM releases"
+    ).fetchone()
+    return {"total": row["total"], "last_synced": row["last_synced"]}
 
 
 @router.post("/collection/refresh")
@@ -48,26 +45,23 @@ def refresh_collection(mode: Optional[str] = None):
         log.info("No 'Price' custom field found in Discogs collection fields")
 
     conn = get_connection()
-    try:
-        if mode == "new":
-            existing = {
-                row[0] for row in conn.execute("SELECT discogs_id FROM releases").fetchall()
-            }
-            items_to_sync = [i for i in raw_items if f"r{i['basic_information']['id']}" not in existing]
-            log.info("New-only mode: %d new of %d total from Discogs", len(items_to_sync), len(raw_items))
-        else:
-            items_to_sync = raw_items
+    if mode == "new":
+        existing = {
+            row[0] for row in conn.execute("SELECT discogs_id FROM releases").fetchall()
+        }
+        items_to_sync = [i for i in raw_items if f"r{i['basic_information']['id']}" not in existing]
+        log.info("New-only mode: %d new of %d total from Discogs", len(items_to_sync), len(raw_items))
+    else:
+        items_to_sync = raw_items
 
-        count = 0
-        for item in items_to_sync:
-            upsert_release(conn, parse_release(item, price_field_id=price_field_id))
-            count += 1
+    count = 0
+    for item in items_to_sync:
+        upsert_release(conn, parse_release(item, price_field_id=price_field_id))
+        count += 1
 
-        inserted = prepopulate_listings(conn)
-        if inserted:
-            log.info("Pre-populated %d new listing(s) with search URLs", inserted)
-    finally:
-        conn.close()
+    inserted = prepopulate_listings(conn)
+    if inserted:
+        log.info("Pre-populated %d new listing(s) with search URLs", inserted)
 
     log.info("Collection refresh complete: %d releases synced for %s", count, username)
     return {"synced": count, "username": username}

@@ -29,7 +29,5 @@ async def discover_stream():
         except Exception as e:
             log.error("Discovery stream failed: %s", e, exc_info=True)
             yield {"data": json.dumps({"type": "error", "message": str(e)})}
-        finally:
-            conn.close()
 
     return EventSourceResponse(generate())

@@ -20,12 +20,9 @@ class CrawlStartRequest(BaseModel):
 @router.get("/crawl/status")
 def crawl_status():
     conn = get_connection()
-    try:
-        status = get_crawl_status(conn)
-        status["running"] = crawl_manager.running
-        return status
-    finally:
-        conn.close()
+    status = get_crawl_status(conn)
+    status["running"] = crawl_manager.running
+    return status
 
 
 @router.post("/crawl/start")

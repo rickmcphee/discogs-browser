@@ -101,8 +101,6 @@ class CrawlManager:
         except Exception as e:
             log.error("Crawl failed: %s", e, exc_info=True)
             await self._broadcast({"status": "error", "error": str(e)})
-        finally:
-            conn.close()
 
 
 crawl_manager = CrawlManager()
