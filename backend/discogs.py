@@ -29,8 +29,8 @@ def fetch_collection_fields(token: str, username: str) -> dict:
     return {f["id"]: f["name"] for f in fields}
 
 
-def fetch_collection(token: str, username: str) -> list[dict]:
-    items = []
+def iter_collection_pages(token: str, username: str):
+    """Yield (page, total_pages, items) for each page of the user's collection."""
     page = 1
     while True:
         log.info("Fetching collection page %d for %s", page, username)
@@ -41,14 +41,13 @@ def fetch_collection(token: str, username: str) -> list[dict]:
         )
         r.raise_for_status()
         data = r.json()
-        items.extend(data["releases"])
         total_pages = data["pagination"]["pages"]
-        log.info("Page %d/%d — %d releases so far", page, total_pages, len(items))
+        items = data["releases"]
+        log.info("Page %d/%d — %d releases on this page", page, total_pages, len(items))
+        yield page, total_pages, items
         if page >= total_pages:
             break
         page += 1
-    log.info("Collection fetch complete: %d releases", len(items))
-    return items
 
 
 def parse_release(item: dict, price_field_id=None) -> dict:

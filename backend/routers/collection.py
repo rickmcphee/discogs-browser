@@ -2,7 +2,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 from config import load_config
 from db import get_connection, upsert_release
-from discogs import get_identity, fetch_collection, fetch_collection_fields, parse_release
+from discogs import get_identity, iter_collection_pages, fetch_collection_fields, parse_release
 from logging_config import get_logger
 import httpx
 
@@ -35,7 +35,6 @@ def refresh_collection(mode: Optional[str] = None):
 
     username = identity["username"]
     log.info("Authenticated as Discogs user: %s", username)
-    raw_items = fetch_collection(token, username)
 
     fields = fetch_collection_fields(token, username)
     price_field_id = next((fid for fid, name in fields.items() if name.lower() == "price"), None)
@@ -45,19 +44,22 @@ def refresh_collection(mode: Optional[str] = None):
         log.info("No 'Price' custom field found in Discogs collection fields")
 
     conn = get_connection()
+    existing = None
     if mode == "new":
         existing = {
             row[0] for row in conn.execute("SELECT discogs_id FROM releases").fetchall()
         }
-        items_to_sync = [i for i in raw_items if f"r{i['basic_information']['id']}" not in existing]
-        log.info("New-only mode: %d new of %d total from Discogs", len(items_to_sync), len(raw_items))
-    else:
-        items_to_sync = raw_items
 
     count = 0
-    for item in items_to_sync:
-        upsert_release(conn, parse_release(item, price_field_id=price_field_id))
-        count += 1
+    for page, total_pages, items in iter_collection_pages(token, username):
+        for item in items:
+            if existing is not None:
+                rid = f"r{item['basic_information']['id']}"
+                if rid in existing:
+                    continue
+            upsert_release(conn, parse_release(item, price_field_id=price_field_id))
+            count += 1
+        log.info("Synced page %d/%d (%d releases so far)", page, total_pages, count)
 
     log.info("Collection refresh complete: %d releases synced for %s", count, username)
     return {"synced": count, "username": username}
