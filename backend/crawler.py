@@ -27,6 +27,28 @@ def clean_search_text(text: str) -> str:
     return text.strip()
 
 
+_STOP_WORDS = frozenset({
+    "a", "an", "the", "of", "in", "on", "at", "to", "for",
+    "and", "or", "but", "with", "from", "by", "as", "is",
+})
+
+
+def strip_stop_words(text: str) -> str:
+    words = text.split()
+    meaningful = [w for w in words if w.lower() not in _STOP_WORDS]
+    return " ".join(meaningful) if meaningful else text
+
+
+def title_variants(title: str) -> list:
+    """Return [title] when short; otherwise [title, shortened] for a retry."""
+    words = title.split()
+    if len(words) <= 5:
+        return [title]
+    meaningful = [w for w in words if w.lower() not in _STOP_WORDS]
+    short = " ".join(meaningful[:3]) if meaningful else " ".join(words[:3])
+    return [title, short]
+
+
 def validate_crawler_code(code: str) -> bool:
     try:
         tree = ast.parse(code)

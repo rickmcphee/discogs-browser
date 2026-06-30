@@ -4,7 +4,7 @@ import urllib.parse
 import httpx
 from logging_config import get_logger
 from config import load_config
-from crawler import clean_search_text
+from crawler import clean_search_text, strip_stop_words, title_variants
 
 _FORMAT_KEYWORDS = {
     "Vinyl":    [r"\bvinyl\b", r"\blp\b", r"\brecord\b"],
@@ -94,11 +94,13 @@ class Crawler:
         barcode = release.get("barcode") or ""
         if barcode:
             query = barcode
-            log.info("[CC Music/eBay] searching by barcode: %s", barcode)
+            log.info("[CC Music/eBay] Searching by barcode: %s", barcode)
         else:
-            artist = clean_search_text(release.get("artist", ""))
-            title = clean_search_text(release.get("title", ""))
-            query = f"{artist} {title}"
+            raw_artist = clean_search_text(release.get("artist", ""))
+            artist = strip_stop_words(raw_artist) if raw_artist.lower() != "various" else ""
+            raw_title = clean_search_text(release.get("title", ""))
+            title = title_variants(raw_title)[-1]
+            query = f"{artist} {title}".strip()
             log.info("[CC Music/eBay] searching by artist/title: %s", query)
 
         try:
@@ -130,7 +132,7 @@ class Crawler:
 
         items = data.get("itemSummaries")
         if not items:
-            log.info("[CC Music/eBay] no results for: %s", query)
+            log.info("[CC Music/eBay] No results for: %s", query)
             return []
 
         item = _pick_matching_item(items, release)

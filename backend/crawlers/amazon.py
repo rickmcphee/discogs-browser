@@ -2,7 +2,7 @@ import asyncio
 import random
 import re
 from logging_config import get_logger
-from crawler import BotDetectedError, clean_search_text
+from crawler import BotDetectedError, clean_search_text, strip_stop_words, title_variants
 
 log = get_logger("crawlers.amazon")
 
@@ -44,27 +44,6 @@ async def _bot_interstitial(page) -> bool:
     return False
 
 
-_STOP_WORDS = frozenset({
-    "a", "an", "the", "of", "in", "on", "at", "to", "for",
-    "and", "or", "but", "with", "from", "by", "as", "is",
-})
-
-
-def _strip_stop_words(text: str) -> str:
-    """Remove stop words from a search token, collapsing remaining words."""
-    words = text.split()
-    meaningful = [w for w in words if w.lower() not in _STOP_WORDS]
-    return " ".join(meaningful) if meaningful else text
-
-
-def _title_variants(title: str) -> list[str]:
-    """Return [title] when short; otherwise [title, shortened] for a retry."""
-    words = title.split()
-    if len(words) <= 5:
-        return [title]
-    meaningful = [w for w in words if w.lower() not in _STOP_WORDS]
-    short = " ".join(meaningful[:3]) if meaningful else " ".join(words[:3])
-    return [title, short]
 
 
 async def extract_price(page, fmt_keywords: list[str]):
@@ -147,7 +126,7 @@ class Crawler:
         raw = clean_search_text(release.get("artist", ""))
         if not raw or raw.lower() == "various":
             return ""
-        return _strip_stop_words(raw)
+        return strip_stop_words(raw)
 
     @classmethod
     def search_url(cls, release: dict) -> str:
@@ -170,8 +149,8 @@ class Crawler:
 
         # Try the full title first; if nothing matched, retry with a shortened title.
         # Long titles (> 5 words) often return zero results on Amazon.
-        title_variants = _title_variants(title)
-        for attempt, title_attempt in enumerate(title_variants):
+        title_variants_list = title_variants(title)
+        for attempt, title_attempt in enumerate(title_variants_list):
             if attempt > 0:
                 log.debug("[Amazon] retrying with shortened title: %r", title_attempt)
             query = f"{artist}+{title_attempt}+{fmt}".strip("+").replace(" ", "+")
@@ -246,7 +225,7 @@ class Crawler:
             vinyl_price = await extract_price(page, fmt_keywords)
 
             if vinyl_price is None:
-                log.warning("[Amazon] no price found on product page: %s", vinyl_url)
+                log.warning("[Amazon] No price found on product page")
 
         except Exception as e:
             log.warning("[Amazon] product page error: %s", e)

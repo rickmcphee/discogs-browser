@@ -4,8 +4,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "crawlers"))
 
-from crawler import clean_search_text
-from amazon import _strip_stop_words, _title_variants, _amazon_format_keywords, Crawler
+from crawler import clean_search_text, strip_stop_words as _strip_stop_words, title_variants as _title_variants
+from amazon import _amazon_format_keywords, Crawler
 
 
 # ---------------------------------------------------------------------------
