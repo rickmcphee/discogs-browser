@@ -872,3 +872,20 @@ dev:
 - [x] Deleted `prepopulate_listings()` from `db.py`.
 - [x] Removed all call sites: `main.py`, `crawl_manager.py`, `routers/collection.py`.
 - [x] Removed related tests from `test_db.py` and `test_ebay_crawler.py`.
+
+---
+
+## Post-v1.45 Changes (v1.46)
+
+### Discogs barcode extraction and eBay search improvements (v1.46, branch dev-discogs-barcode)
+
+- [x] `discogs.py`: added `fetch_release_barcode(token, release_id)` — calls `GET /releases/{id}`, returns first `Barcode` identifier with all non-digit characters stripped; returns `""` if none found.
+- [x] `discogs.py`: `parse_release()` now includes `"barcode": None` in its return dict as a placeholder.
+- [x] `db.py`: added `barcode TEXT` column to `releases` schema; added `ALTER TABLE ... ADD COLUMN barcode TEXT` migration guard in `init_db()`; updated `upsert_release()` to include `barcode`.
+- [x] `routers/collection.py`: during collection refresh, calls `fetch_release_barcode()` per release and stores the result before upsert. Barcode fetch failures are logged as warnings and do not abort the sync. A 1.1 s `time.sleep()` between releases respects the Discogs 60 req/min rate limit.
+- [x] `crawlers/ebay.py`: search uses barcode as sole query when available; falls back to `"{artist} {title}"` when barcode is absent. Requests `limit=3`. See `docs/superpowers/specs/crawlers/ccmusic.md` for full search and validation spec.
+- [x] `crawlers/ebay.py`: added `_pick_matching_item(items, release)` — validates each candidate against artist word overlap (≥50%), title word overlap (≥50%), and vinyl format keyword presence before accepting. Returns first passing candidate or `None`.
+- [x] `docs/superpowers/specs/crawlers/ccmusic.md`: rewrote to reflect current eBay Browse API implementation; removed stale Playwright/Cloudflare content.
+- [x] `crawlers/ebay.py`: fixed Python 3.9 incompatibility (`str | None` → untyped module-level variable).
+- [x] `tests/test_db.py`: added `"barcode": None` to `_release()` helper.
+- [x] `tests/test_ebay_crawler.py`: added `"title"` field to `_ITEM` mock and `"barcode": None` to `_RELEASE` fixture to satisfy validation logic.

@@ -78,7 +78,7 @@ class Crawler:
 ```
 
 **Token management** (module-level):
-- `_token: str | None`, `_token_expires_at: float` (epoch seconds)
+- `_token` (untyped for Python 3.9 compatibility), `_token_expires_at: float` (epoch seconds)
 - `async def _get_token(app_id, cert_id) -> str` — POSTs to `https://api.ebay.com/identity/v1/oauth2/token` with `grant_type=client_credentials` and scope `https://api.ebay.com/oauth/api_scope`. Caches result; re-fetches if within 60 s of expiry.
 
 **`search()` logic:**
@@ -89,7 +89,7 @@ class Crawler:
    - `q=<query>`
    - `filter=sellers:{collectorschoicemusic},buyingOptions:{FIXED_PRICE}`
    - `sort=price+shippingCost`
-   - `limit=1`
+   - `limit=3` (to give result validation multiple candidates)
    - `Authorization: Bearer <token>`
 5. Parse `itemSummaries[0]`. Extract:
    - `url` → `item["itemWebUrl"]`
@@ -154,7 +154,7 @@ All use `respx` for httpx mocking. `asyncio_mode = "auto"` is set in `pyproject.
 
 7. **`test_search_url_format`** — call `Crawler.search_url({"artist": "Miles Davis", "title": "Kind of Blue", "format": "Vinyl"})`; assert URL contains `collectorschoicemusic` and URL-encoded artist+title.
 
-8. **`test_prepopulate_with_ebay_crawler`** (DB integration) — write `ebay.py` to `tmp_path/crawlers/`, register it, call `prepopulate_listings`; assert listing rows created with non-null URLs.
+8. ~~**`test_prepopulate_with_ebay_crawler`**~~ — removed; `prepopulate_listings` was deleted in v1.45.
 
 9. **`test_config_round_trip`** (settings smoke) — save config with `ebay_app_id` + `ebay_cert_id`, reload; assert values preserved.
 

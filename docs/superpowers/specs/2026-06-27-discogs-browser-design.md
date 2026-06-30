@@ -1,6 +1,6 @@
 # Discogs Browser — Design Spec
 
-_2026-06-27, updated 2026-06-28, 2026-06-28 (v1.45)_
+_2026-06-27, updated 2026-06-28, 2026-06-28 (v1.45), 2026-06-29 (v1.46)_
 
 ---
 
@@ -75,6 +75,7 @@ nginx (:8080)
 | `label` | TEXT | |
 | `format` | TEXT | e.g. "Vinyl", "CD" |
 | `discogs_price` | TEXT | User's purchase price from Discogs collection field |
+| `barcode` | TEXT | Digits-only barcode from Discogs release detail API; NULL if none found |
 | `cover_image_url` | TEXT | |
 | `discogs_url` | TEXT | |
 | `last_synced` | TIMESTAMP | |
@@ -179,8 +180,10 @@ All fields live in `DISCOGS_BROWSER_DATA/config.json`.
 | `shuffle_crawl_order` | `true` | Randomise release order before each crawl |
 | `crawl_delay_seconds` | `30` | Maximum random delay between requests (seconds) |
 | `consecutive_failure_limit` | `10` | Stop crawl after N consecutive failures (0 = disabled) |
-| `crawl_schedule` | `""` | Cron expression for scheduled crawl; blank = disabled |
+| `crawl_schedule` | `""` | Cron expression for scheduled price crawl; blank = disabled |
 | `crawl_schedule_mode` | `"missing"` | `"missing"` (skip already-priced) or `"all"` |
+| `collection_schedule` | `""` | Cron expression for scheduled collection sync; blank = disabled |
+| `collection_schedule_mode` | `"all"` | `"all"` (full re-sync) or `"new"` (new records only) |
 | `ebay_app_id` | `""` | eBay Developer App ID (client_id) for Browse API OAuth |
 | `ebay_cert_id` | `""` | eBay Developer Cert ID (client_secret) for Browse API OAuth |
 
@@ -200,13 +203,9 @@ When `HEADLESS_AUTH=1` (Docker), `POST /auth/login` returns HTTP 501 and the bro
 
 ## eBay Browse API Crawler (CC Music)
 
-`backend/crawlers/ebay.py` implements the CC Music price lookup using the eBay Browse API rather than Playwright. It presents as `site_name = "CC Music"` and filters to the `collectorschoicemusic` eBay seller.
+`backend/crawlers/ebay.py` implements the CC Music price lookup using the eBay Browse API rather than Playwright. It presents as `site_name = "CC Music"` and filters to the `collectorschoicemusic` eBay seller. Full details in [`docs/superpowers/specs/crawlers/ccmusic.md`](../specs/crawlers/ccmusic.md).
 
-**OAuth**: Client credentials flow against `https://api.ebay.com/identity/v1/oauth2/token`. Token is cached module-level with a 60-second expiry buffer; refreshed automatically on the next request after expiry. Credentials (`ebay_app_id`, `ebay_cert_id`) are read from `config.json` on each search call.
-
-**Search**: `GET /buy/browse/v1/item_summary/search` with `filter=sellers:{collectorschoicemusic},buyingOptions:{FIXED_PRICE}` and `sort=price+shippingCost`. Returns the lowest-price BIN listing.
-
-**URL fallback**: `itemWebUrl` from the API response is preferred. If absent or not an `https://www.ebay.com` URL, falls back to `https://www.ebay.com/itm/{legacyItemId}`. If both are missing, falls back to `search_url(release)`.
+**Credentials**: `ebay_app_id` and `ebay_cert_id` from `config.json`; OAuth client credentials flow, token cached module-level.
 
 **No Playwright dependency**: `async def search(self, release, page)` ignores the `page` argument and uses `httpx.AsyncClient` directly.
 
@@ -218,41 +217,17 @@ When `HEADLESS_AUTH=1` (Docker), `POST /auth/login` returns HTTP 501 and the bro
 
 ---
 
-## Amazon Crawler Search Logic
+## Amazon Crawler
 
-### Stop words
+`backend/crawlers/amazon.py` uses Playwright to search Amazon and extract the buybox price. Full details in [`docs/superpowers/specs/crawlers/amazon.md`](../specs/crawlers/amazon.md).
 
-`_STOP_WORDS` is a frozenset of common prepositions, conjunctions, and articles. `_strip_stop_words(text)` removes stop words from a string; if all words are stop words, returns the original text unchanged.
-
-### Title variants
-
-`_title_variants(title)` controls retry behaviour:
-- If the title is ≤ 5 words: returns `[title]` — one attempt.
-- If the title is > 5 words: returns `[title, first_3_meaningful_words]` — tries full title first, then a 3-word stop-word-stripped abbreviation.
-
-### Artist
-
-`Crawler._artist(release)` applies `_strip_stop_words` to the artist name and returns `""` if the artist is `"various"` or empty (so Various Artists releases search by title only).
-
-### clean_search_text
-
-Strips Discogs disambiguation suffixes `(2)`, colons, and URL-unsafe characters (`?#&=+%`). Applied to both artist and title before building search URLs.
-
-### extract_price scoping
-
-`extract_price(page, fmt_keywords)` is a standalone async function with three fallback levels, all scoped to Amazon buybox containers (`#corePrice_feature_div`, `#unifiedPrice_feature_div`, etc.) to avoid picking up carousel prices from unrelated listings.
-
-The third fallback (aria-label button) also checks `fmt_keywords` against the button's aria-label to guard against selecting a CD price when the record is vinyl.
-
-### vinyl_url
-
-After navigating from the search results page to a product page, the crawler sets `vinyl_url = page.url` to capture the post-redirect canonical URL.
+Uses the persistent Chrome profile with `playwright_stealth`. Raises `BotDetectedError` on CAPTCHA/interstitial detection; the crawl engine resets context and retries.
 
 ---
 
 ## Logging
 
-`logging_config.py` configures a rotating file handler (`app.log`, 5 MB × 2 backups) and a stdout handler. `get_logger(name)` returns a named logger. `GET /logs/stream` is a persistent SSE endpoint that tails the log file. `DELETE /logs` clears `app.log` and removes all screenshot session directories.
+`logging_config.py` configures a rotating file handler (`app.log`, 5 MB × 2 backups) and a stdout handler. `get_logger(name)` returns a named logger. `GET /logs/stream` is a persistent SSE endpoint that tails the log file. `DELETE /logs` clears `app.log` and removes all screenshot session directories. `app.log` is truncated to empty on every application startup (before the file handler is attached).
 
 ---
 
@@ -260,9 +235,16 @@ After navigating from the search results page to a product page, the crawler set
 
 ### Refresh Collection
 
-1. Frontend calls `POST /collection/refresh`.
-2. Backend fetches all pages from the Discogs API (httpx), upserts each release.
-3. Returns `{synced, username}`.
+1. Frontend calls `POST /collection/refresh?mode=[all|new]`.
+2. Backend calls `CrawlManager.start_sync(mode)`, which launches `_sync_collection()` as an asyncio background task. Returns `{started: true, running: true}` immediately (or `{started: false, running: true}` if already running, 409).
+3. `_sync_collection()` broadcasts events on the shared crawl SSE stream:
+   - `sync_started` — sync has begun
+   - `sync_progress {synced, page, total_pages}` — after each collection page
+   - `sync_complete {synced, username}` — on success
+   - `sync_error {error}` — on failure
+4. For each release, the backend fetches full release detail from `GET /releases/{id}` to extract the first `Barcode` identifier. Non-digit characters are stripped; stored as `NULL` if absent. Barcode fetch is skipped when a non-null barcode already exists. A 1.1-second delay is inserted between barcode fetches to stay within the Discogs rate limit (60 req/min). A failed fetch is logged and does not abort the sync.
+5. The 500-event SSE replay buffer means a browser reconnecting mid-sync receives the latest `sync_progress` event and the footer bar is restored.
+6. Scheduled collection syncs follow the same path: APScheduler calls `CrawlManager.start_sync(mode)` directly via `scheduler.configure_sync(cron, mode)`.
 
 ### Crawl
 
@@ -301,7 +283,10 @@ The Settings tab wrapper has `overflow-y-auto` so the panel scrolls independentl
 - **Discogs**: token + username inputs.
 - **Crawlers**: enable/disable toggle per crawler; Login button (opens auth flow) + Done button.
 - **Crawl Configuration**: shuffle toggle, delay input, consecutive failure limit.
-- **Crawl Schedule**: cron expression input + mode select ("missing" / "all").
+- **Collection Management**: cron schedule input, mode select ("all" / "new"), Refresh Now button. Refresh Now passes the current mode selection directly, bypassing the confirmation modal.
+- **Crawler Management**: cron schedule input, mode select ("missing" / "all"), Refresh Now button. Refresh Now passes the current mode selection directly.
+- **Site Sessions**: login / done / clear per crawler.
+- **Crawlers**: enable/disable toggle per crawler.
 
 ### Log Viewer
 
@@ -342,7 +327,7 @@ discogs-browser/
 │   ├── version.py              # VERSION string
 │   ├── logging_config.py       # rotating file + stdout, get_logger()
 │   ├── db.py                   # schema, all DB helpers; thread-local connection singleton (WAL, 60s timeout)
-│   ├── discogs.py              # httpx-based Discogs API client
+│   ├── discogs.py              # httpx-based Discogs API client; fetch_release_barcode() fetches /releases/{id}
 │   ├── crawler.py              # BotDetectedError, clean_search_text(), plugin loader, crawl_releases()
 │   ├── crawl_manager.py        # CrawlManager singleton: asyncio task, broadcast queues, 500-event buffer
 │   ├── scheduler.py            # AsyncIOScheduler wrapper, configure(cron, mode)
