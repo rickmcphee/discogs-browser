@@ -63,6 +63,16 @@ def init_db(conn: sqlite3.Connection):
         conn.execute("ALTER TABLE releases ADD COLUMN discogs_price TEXT")
     if "barcode" not in cols:
         conn.execute("ALTER TABLE releases ADD COLUMN barcode TEXT")
+    # Migration: rename CC Music -> CC Music/eBay crawler row and update its listings
+    row = conn.execute("SELECT id FROM crawlers WHERE site_name = 'CC Music'").fetchone()
+    if row:
+        old_id = row[0]
+        new_row = conn.execute("SELECT id FROM crawlers WHERE site_name = 'CC Music/eBay'").fetchone()
+        if new_row:
+            conn.execute("UPDATE listings SET crawler_id = ? WHERE crawler_id = ?", [new_row[0], old_id])
+            conn.execute("DELETE FROM crawlers WHERE id = ?", [old_id])
+        else:
+            conn.execute("UPDATE crawlers SET site_name = 'CC Music/eBay' WHERE id = ?", [old_id])
     conn.commit()
 
 

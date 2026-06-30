@@ -72,7 +72,7 @@ def _pick_matching_item(items: list, release: dict):
 
 
 class Crawler:
-    site_name: str = "CC Music"
+    site_name: str = "CC Music/eBay"
     base_url: str = f"https://www.ebay.com/str/{CCMUSIC_SELLER}"
     login_url: str = ""
 
