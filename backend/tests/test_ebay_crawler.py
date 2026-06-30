@@ -3,16 +3,17 @@ import respx
 import httpx
 import pytest
 import crawlers.ebay as ebay_module
-from crawlers.ebay import Crawler
+from crawlers.ebay import Crawler, _pick_matching_item
 
 _TOKEN_RESP = {"access_token": "test-token", "expires_in": 7200}
 _ITEM = {
+    "title": "Miles Davis Kind of Blue Vinyl LP",
     "itemWebUrl": "https://www.ebay.com/itm/123",
     "price": {"value": "12.99", "currency": "USD"},
     "shippingOptions": [{"shippingCost": {"value": "3.50"}}],
     "condition": "Very Good Plus (VG+)",
 }
-_RELEASE = {"artist": "Miles Davis", "title": "Kind of Blue", "format": "Vinyl"}
+_RELEASE = {"artist": "Miles Davis", "title": "Kind of Blue", "format": "Vinyl", "barcode": None}
 
 
 def _mock_token(mock):
@@ -119,6 +120,57 @@ async def test_token_refreshed_when_expired(crawler):
     token_calls = [c for c in respx.calls if str(c.request.url).startswith(_TOKEN_URL)]
     assert len(token_calls) == 1
     assert ebay_module._token == "test-token"
+
+
+# ---------------------------------------------------------------------------
+# _pick_matching_item format validation
+# ---------------------------------------------------------------------------
+
+def test_pick_matching_item_vinyl_match():
+    items = [{"title": "Miles Davis Kind of Blue Vinyl LP"}]
+    release = {"artist": "Miles Davis", "title": "Kind of Blue", "format": "Vinyl"}
+    assert _pick_matching_item(items, release) is not None
+
+
+def test_pick_matching_item_rejects_cd_for_vinyl():
+    items = [{"title": "Miles Davis Kind of Blue CD"}]
+    release = {"artist": "Miles Davis", "title": "Kind of Blue", "format": "Vinyl"}
+    assert _pick_matching_item(items, release) is None
+
+
+def test_pick_matching_item_cd_match():
+    items = [{"title": "Miles Davis Kind of Blue CD"}]
+    release = {"artist": "Miles Davis", "title": "Kind of Blue", "format": "CD"}
+    assert _pick_matching_item(items, release) is not None
+
+
+def test_pick_matching_item_rejects_vinyl_for_cd():
+    items = [{"title": "Miles Davis Kind of Blue Vinyl LP"}]
+    release = {"artist": "Miles Davis", "title": "Kind of Blue", "format": "CD"}
+    assert _pick_matching_item(items, release) is None
+
+
+def test_pick_matching_item_unknown_format_passes_through():
+    items = [{"title": "Miles Davis Kind of Blue"}]
+    release = {"artist": "Miles Davis", "title": "Kind of Blue", "format": "Box Set"}
+    assert _pick_matching_item(items, release) is not None
+
+
+def test_pick_matching_item_rejects_artist_mismatch():
+    items = [{"title": "John Coltrane Kind of Blue Vinyl LP"}]
+    release = {"artist": "Miles Davis", "title": "Kind of Blue", "format": "Vinyl"}
+    assert _pick_matching_item(items, release) is None
+
+
+def test_pick_matching_item_returns_first_passing():
+    items = [
+        {"title": "Miles Davis Kind of Blue CD"},
+        {"title": "Miles Davis Kind of Blue Vinyl LP"},
+    ]
+    release = {"artist": "Miles Davis", "title": "Kind of Blue", "format": "Vinyl"}
+    result = _pick_matching_item(items, release)
+    assert result is not None
+    assert "Vinyl" in result["title"]
 
 
 def test_search_url_format():

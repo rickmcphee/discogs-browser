@@ -1,9 +1,18 @@
+import re
 import time
 import urllib.parse
 import httpx
 from logging_config import get_logger
 from config import load_config
 from crawler import clean_search_text
+
+_FORMAT_KEYWORDS = {
+    "Vinyl":    [r"\bvinyl\b", r"\blp\b", r"\brecord\b"],
+    "CD":       [r"\bcd\b"],
+    "Cassette": [r"\bcassette\b", r"\btape\b"],
+    "DVD":      [r"\bdvd\b"],
+    "Blu-ray":  [r"\bblu.?ray\b"],
+}
 
 log = get_logger("crawlers.ebay")
 
@@ -13,7 +22,7 @@ _EBAY_SEARCH_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
 _EBAY_SCOPE = "https://api.ebay.com/oauth/api_scope"
 
 # Module-level token cache
-_token: str | None = None
+_token = None  # type: ignore[assignment]
 _token_expires_at: float = 0.0
 
 
@@ -32,6 +41,34 @@ async def _get_token(app_id: str, cert_id: str) -> str:
     _token = data["access_token"]
     _token_expires_at = time.time() + int(data.get("expires_in", 7200))
     return _token
+
+
+def _words(text: str) -> set:
+    return set(text.lower().split())
+
+
+def _pick_matching_item(items: list, release: dict):
+    artist_words = _words(clean_search_text(release.get("artist", "")))
+    title_words = _words(clean_search_text(release.get("title", "")))
+    fmt_patterns = _FORMAT_KEYWORDS.get(release.get("format", ""))
+
+    for item in items:
+        listing_title = item.get("title", "").lower()
+        listing_words = set(listing_title.split())
+
+        if artist_words:
+            if len(artist_words & listing_words) / len(artist_words) < 0.5:
+                continue
+        if title_words:
+            if len(title_words & listing_words) / len(title_words) < 0.5:
+                continue
+
+        if fmt_patterns:
+            if not any(re.search(p, listing_title) for p in fmt_patterns):
+                continue
+
+        return item
+    return None
 
 
 class Crawler:
@@ -54,10 +91,15 @@ class Crawler:
             log.warning("[CC Music/eBay] ebay_app_id or ebay_cert_id not configured")
             return []
 
-        artist = clean_search_text(release.get("artist", ""))
-        title = clean_search_text(release.get("title", ""))
-        query = f"{artist} {title}"
-        log.info("[CC Music/eBay] searching: %s", query)
+        barcode = release.get("barcode") or ""
+        if barcode:
+            query = barcode
+            log.info("[CC Music/eBay] searching by barcode: %s", barcode)
+        else:
+            artist = clean_search_text(release.get("artist", ""))
+            title = clean_search_text(release.get("title", ""))
+            query = f"{artist} {title}"
+            log.info("[CC Music/eBay] searching by artist/title: %s", query)
 
         try:
             token = await _get_token(app_id, cert_id)
@@ -74,7 +116,7 @@ class Crawler:
                         "q": query,
                         "filter": f"sellers:{{{CCMUSIC_SELLER}}},buyingOptions:{{FIXED_PRICE}}",
                         "sort": "price+shippingCost",
-                        "limit": "1",
+                        "limit": "3",
                     },
                 )
                 r.raise_for_status()
@@ -91,7 +133,11 @@ class Crawler:
             log.info("[CC Music/eBay] no results for: %s", query)
             return []
 
-        item = items[0]
+        item = _pick_matching_item(items, release)
+        if item is None:
+            log.info("[CC Music/eBay] no validated match for: %s", query)
+            return []
+
         price_val = item.get("price", {})
         shipping_options = item.get("shippingOptions", [])
         shipping = None
@@ -108,8 +154,6 @@ class Crawler:
         except (ValueError, TypeError):
             price = None
 
-        # itemWebUrl is the eBay listing page URL; fall back to constructing
-        # from legacyItemId if absent or not a browsable eBay URL
         item_url = item.get("itemWebUrl", "")
         if not item_url or not item_url.startswith("https://www.ebay.com"):
             legacy_id = item.get("legacyItemId")
