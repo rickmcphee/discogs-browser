@@ -7,6 +7,7 @@ import config
 def setup_logging():
     log_file = config.CONFIG_DIR / "app.log"
     config.CONFIG_DIR.mkdir(exist_ok=True)
+    log_file.write_text("")
 
     fmt = logging.Formatter(
         "%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
