@@ -17,6 +17,7 @@ def _release(discogs_id="r1", artist="Artist", title="Title", year=2000,
         "label": label,
         "format": fmt,
         "discogs_price": None,
+        "barcode": None,
         "cover_image_url": "",
         "discogs_url": f"https://discogs.com/release/{discogs_id}",
     }

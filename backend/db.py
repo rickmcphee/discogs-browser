@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS releases (
     label TEXT,
     format TEXT,
     discogs_price TEXT,
+    barcode TEXT,
     cover_image_url TEXT,
     discogs_url TEXT,
     last_synced TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -60,21 +61,22 @@ def init_db(conn: sqlite3.Connection):
     cols = {row[1] for row in conn.execute("PRAGMA table_info(releases)").fetchall()}
     if "discogs_price" not in cols:
         conn.execute("ALTER TABLE releases ADD COLUMN discogs_price TEXT")
-        conn.commit()
+    if "barcode" not in cols:
+        conn.execute("ALTER TABLE releases ADD COLUMN barcode TEXT")
     conn.commit()
 
 
 def upsert_release(conn: sqlite3.Connection, data: dict):
     conn.execute("""
         INSERT INTO releases (discogs_id, artist, title, year, label, format, discogs_price,
-                              cover_image_url, discogs_url, last_synced)
+                              barcode, cover_image_url, discogs_url, last_synced)
         VALUES (:discogs_id, :artist, :title, :year, :label, :format, :discogs_price,
-                :cover_image_url, :discogs_url, CURRENT_TIMESTAMP)
+                :barcode, :cover_image_url, :discogs_url, CURRENT_TIMESTAMP)
         ON CONFLICT(discogs_id) DO UPDATE SET
             artist=excluded.artist, title=excluded.title, year=excluded.year,
             label=excluded.label, format=excluded.format, discogs_price=excluded.discogs_price,
-            cover_image_url=excluded.cover_image_url, discogs_url=excluded.discogs_url,
-            last_synced=CURRENT_TIMESTAMP
+            barcode=excluded.barcode, cover_image_url=excluded.cover_image_url,
+            discogs_url=excluded.discogs_url, last_synced=CURRENT_TIMESTAMP
     """, data)
     conn.commit()
 
