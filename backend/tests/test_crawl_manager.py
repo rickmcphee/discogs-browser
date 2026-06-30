@@ -125,3 +125,70 @@ async def test_recent_events_cleared_on_start(manager):
     manager._run = _instant  # type: ignore
     await manager.start("all")
     assert manager.recent_events() == []
+
+
+# ---------------------------------------------------------------------------
+# sync task (collection sync)
+# ---------------------------------------------------------------------------
+
+async def test_sync_not_running_initially(manager):
+    assert manager.sync_running is False
+
+
+async def test_start_sync_returns_true_when_idle(manager):
+    async def _fake_sync(mode):
+        await asyncio.sleep(0)
+
+    manager._sync_collection = _fake_sync  # type: ignore
+    started = await manager.start_sync("all")
+    assert started is True
+    await asyncio.sleep(0.01)
+
+
+async def test_start_sync_returns_false_when_already_running(manager):
+    event = asyncio.Event()
+
+    async def _fake_sync(mode):
+        await event.wait()
+
+    manager._sync_collection = _fake_sync  # type: ignore
+    await manager.start_sync("all")
+    assert manager.sync_running is True
+    second = await manager.start_sync("all")
+    assert second is False
+    event.set()
+    await asyncio.sleep(0.01)
+
+
+async def test_sync_running_false_after_completion(manager):
+    async def _instant(mode):
+        pass
+
+    manager._sync_collection = _instant  # type: ignore
+    await manager.start_sync("all")
+    await asyncio.sleep(0.05)
+    assert manager.sync_running is False
+
+
+async def test_crawl_and_sync_can_run_concurrently(manager):
+    crawl_event = asyncio.Event()
+    sync_event = asyncio.Event()
+
+    async def _fake_run(mode, release_id):
+        await crawl_event.wait()
+
+    async def _fake_sync(mode):
+        await sync_event.wait()
+
+    manager._run = _fake_run  # type: ignore
+    manager._sync_collection = _fake_sync  # type: ignore
+
+    await manager.start("all")
+    await manager.start_sync("all")
+
+    assert manager.running is True
+    assert manager.sync_running is True
+
+    crawl_event.set()
+    sync_event.set()
+    await asyncio.sleep(0.05)

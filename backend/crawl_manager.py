@@ -5,10 +5,10 @@ from logging_config import get_logger
 
 log = get_logger("crawl_manager")
 
-
 class CrawlManager:
     def __init__(self):
         self._task: Optional[asyncio.Task] = None
+        self._sync_task: Optional[asyncio.Task] = None
         self._subscribers: list[asyncio.Queue] = []
         self._recent: list[dict] = []
 
@@ -109,6 +109,92 @@ class CrawlManager:
             await self._broadcast({"status": "error", "error": str(e)})
         finally:
             conn.close()
+
+
+    @property
+    def sync_running(self) -> bool:
+        return self._sync_task is not None and not self._sync_task.done()
+
+    async def start_sync(self, mode: str = "all") -> bool:
+        if self.sync_running:
+            log.warning("Collection sync already running, ignoring start request")
+            return False
+        self._sync_task = asyncio.create_task(self._sync_collection(mode))
+        return True
+
+    async def _sync_collection(self, mode: str):
+        import sqlite3
+        import time
+        import config as cfg_module
+        from config import load_config
+        from db import get_connection, upsert_release
+        from discogs import get_identity, iter_collection_pages, fetch_collection_fields, parse_release, fetch_release_barcode
+        import httpx
+
+        await self._broadcast({"status": "sync_started"})
+        log.info("Collection sync started (mode=%s)", mode)
+        try:
+            cfg = load_config()
+            token = cfg.get("discogs_token", "")
+            if not token:
+                await self._broadcast({"status": "sync_error", "error": "Discogs token not configured"})
+                return
+
+            try:
+                identity = get_identity(token)
+            except httpx.HTTPStatusError as e:
+                await self._broadcast({"status": "sync_error", "error": "Invalid Discogs token"})
+                return
+
+            username = identity["username"]
+            fields = fetch_collection_fields(token, username)
+            price_field_id = next((fid for fid, name in fields.items() if name.lower() == "price"), None)
+
+            conn = sqlite3.connect(cfg_module.DB_FILE, check_same_thread=False, timeout=60)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys = ON")
+            conn.execute("PRAGMA journal_mode = WAL")
+
+            existing = None
+            if mode == "new":
+                existing = {row[0] for row in conn.execute("SELECT discogs_id FROM releases").fetchall()}
+
+            count = 0
+            try:
+                for page, total_pages, items in iter_collection_pages(token, username):
+                    for item in items:
+                        rid = f"r{item['basic_information']['id']}"
+                        if existing is not None and rid in existing:
+                            continue
+                        release = parse_release(item, price_field_id=price_field_id)
+                        release_id_int = item["basic_information"]["id"]
+                        existing_barcode = conn.execute(
+                            "SELECT barcode FROM releases WHERE discogs_id = ?", [rid]
+                        ).fetchone()
+                        if existing_barcode is None or existing_barcode[0] is None:
+                            try:
+                                release["barcode"] = fetch_release_barcode(token, release_id_int) or None
+                            except Exception as e:
+                                log.warning("Barcode fetch failed for release %s: %s", release_id_int, e)
+                            await asyncio.sleep(1.1)
+                        else:
+                            release["barcode"] = existing_barcode[0]
+                        upsert_release(conn, release)
+                        count += 1
+                    await self._broadcast({"status": "sync_progress", "synced": count, "page": page, "total_pages": total_pages})
+                    log.info("Sync page %d/%d (%d releases)", page, total_pages, count)
+            finally:
+                conn.close()
+
+            await self._broadcast({"status": "sync_complete", "synced": count, "username": username})
+            log.info("Collection sync complete: %d releases for %s", count, username)
+
+        except asyncio.CancelledError:
+            log.info("Collection sync cancelled")
+            raise
+        except Exception as e:
+            log.error("Collection sync failed: %s", e, exc_info=True)
+            await self._broadcast({"status": "sync_error", "error": str(e)})
 
 
 crawl_manager = CrawlManager()

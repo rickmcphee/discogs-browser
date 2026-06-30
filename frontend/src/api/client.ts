@@ -20,7 +20,7 @@ export async function getCollectionStatus(): Promise<CollectionStatus> {
   return r.json()
 }
 
-export async function refreshCollection(mode?: 'all' | 'new'): Promise<{ synced: number; username: string }> {
+export async function refreshCollection(mode?: 'all' | 'new'): Promise<{ started: boolean; running: boolean }> {
   const url = mode === 'new' ? `${BASE}/collection/refresh?mode=new` : `${BASE}/collection/refresh`
   const r = await fetch(url, { method: 'POST' })
   if (!r.ok) throw new Error(await r.text())
