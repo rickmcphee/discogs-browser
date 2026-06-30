@@ -50,6 +50,21 @@ def iter_collection_pages(token: str, username: str):
         page += 1
 
 
+def fetch_release_barcode(token: str, release_id: int) -> str:
+    """Return the first Barcode identifier for a release as digits only, or empty string."""
+    r = httpx.get(
+        f"{DISCOGS_API}/releases/{release_id}",
+        headers=_headers(token),
+    )
+    r.raise_for_status()
+    identifiers = r.json().get("identifiers", [])
+    for ident in identifiers:
+        if ident.get("type") == "Barcode":
+            raw = ident.get("value", "")
+            return "".join(c for c in raw if c.isdigit())
+    return ""
+
+
 def parse_release(item: dict, price_field_id=None) -> dict:
     info = item["basic_information"]
     artist = info["artists"][0]["name"] if info.get("artists") else "Unknown"
@@ -72,4 +87,5 @@ def parse_release(item: dict, price_field_id=None) -> dict:
         "cover_image_url": info.get("cover_image", ""),
         "discogs_url": f"https://www.discogs.com/release/{release_id}",
         "discogs_price": discogs_price,
+        "barcode": None,
     }

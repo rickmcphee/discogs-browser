@@ -1,7 +1,9 @@
 import pytest
 import respx
 import httpx
-from discogs import get_identity, iter_collection_pages, parse_release
+from discogs import get_identity, iter_collection_pages, parse_release, fetch_release_barcode
+
+_RELEASE_URL = "https://api.discogs.com/releases/456"
 
 _COLLECTION_URL = "https://api.discogs.com/users/testuser/collection/folders/0/releases"
 
@@ -79,3 +81,34 @@ def test_parse_release():
     assert parsed["label"] == "Columbia"
     assert parsed["format"] == "Vinyl"
     assert parsed["discogs_url"] == "https://www.discogs.com/release/456"
+    assert parsed["barcode"] is None
+
+
+@respx.mock
+def test_fetch_release_barcode_returns_digits():
+    respx.get(_RELEASE_URL).mock(return_value=httpx.Response(200, json={
+        "identifiers": [{"type": "Barcode", "value": "0 25218 14252 6"}]
+    }))
+    assert fetch_release_barcode("token", 456) == "025218142526"
+
+
+@respx.mock
+def test_fetch_release_barcode_strips_non_digits():
+    respx.get(_RELEASE_URL).mock(return_value=httpx.Response(200, json={
+        "identifiers": [{"type": "Barcode", "value": "ABC-123 456"}]
+    }))
+    assert fetch_release_barcode("token", 456) == "123456"
+
+
+@respx.mock
+def test_fetch_release_barcode_returns_empty_when_absent():
+    respx.get(_RELEASE_URL).mock(return_value=httpx.Response(200, json={
+        "identifiers": [{"type": "Matrix / Runout", "value": "SomeMatrix"}]
+    }))
+    assert fetch_release_barcode("token", 456) == ""
+
+
+@respx.mock
+def test_fetch_release_barcode_returns_empty_when_no_identifiers():
+    respx.get(_RELEASE_URL).mock(return_value=httpx.Response(200, json={}))
+    assert fetch_release_barcode("token", 456) == ""
