@@ -46,6 +46,8 @@ export interface Settings {
   consecutive_failure_limit: number
   crawl_schedule?: string
   crawl_schedule_mode?: 'missing' | 'all'
+  collection_schedule?: string
+  collection_schedule_mode?: 'all' | 'new'
   ebay_app_id?: string
   ebay_cert_id?: string
 }
@@ -55,6 +57,7 @@ export type SortOrder = 'asc' | 'desc'
 
 export interface CrawlEvent {
   status?: 'found' | 'not_found' | 'error' | 'complete' | 'started' | 'stopped' | 'ping'
+    | 'sync_started' | 'sync_progress' | 'sync_complete' | 'sync_error'
   discogs_id?: string
   release?: string
   artist?: string
@@ -62,6 +65,10 @@ export interface CrawlEvent {
   price?: number
   error?: string
   total?: number
+  total_pages?: number
+  page?: number
+  synced?: number
+  username?: string
   screenshots?: string[]
 }
 

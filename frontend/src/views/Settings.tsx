@@ -19,16 +19,24 @@ const SETTING_ROWS: SettingRow[] = [
     placeholder: 'your token',
   },
   {
+    key: 'ebay_app_id',
+    label: 'eBay App ID',
+    description: 'eBay Client ID (App ID) for Browse API access.',
+    type: 'password',
+    placeholder: 'your App ID',
+  },
+  {
+    key: 'ebay_cert_id',
+    label: 'eBay Cert ID',
+    description: 'eBay Client Secret (Cert ID) for Browse API access.',
+    type: 'password',
+    placeholder: 'your Cert ID',
+  },
+  {
     key: 'debug_screenshot_interval',
     label: 'Screenshot interval',
     description: '0 = off · 1 = every search · N = every Nth. First search always captured when > 0.',
     type: 'number',
-  },
-  {
-    key: 'shuffle_crawl_order',
-    label: 'Shuffle crawl order',
-    description: 'Randomize the order records are crawled. Reduces bot detection patterns.',
-    type: 'boolean',
   },
   {
     key: 'crawl_delay_seconds',
@@ -43,27 +51,21 @@ const SETTING_ROWS: SettingRow[] = [
     type: 'number',
   },
   {
-    key: 'ebay_app_id',
-    label: 'eBay App ID',
-    description: 'eBay Client ID (App ID) for Browse API access.',
-    type: 'password',
-    placeholder: 'your App ID',
-  },
-  {
-    key: 'ebay_cert_id',
-    label: 'eBay Cert ID',
-    description: 'eBay Client Secret (Cert ID) for Browse API access.',
-    type: 'password',
-    placeholder: 'your Cert ID',
+    key: 'shuffle_crawl_order',
+    label: 'Shuffle crawl order',
+    description: 'Randomize the order records are crawled. Reduces bot detection patterns.',
+    type: 'boolean',
   },
 ]
 
 interface Props {
   crawlers: Crawler[]
   onCrawlersChange: (crawlers: Crawler[]) => void
+  onRefreshCollection: (mode: 'all' | 'new') => void
+  onRefreshPrices: (mode: 'missing' | 'all') => void
 }
 
-export default function Settings({ crawlers, onCrawlersChange }: Props) {
+export default function Settings({ crawlers, onCrawlersChange, onRefreshCollection, onRefreshPrices }: Props) {
   const [settings, setSettings] = useState<SettingsType>({
     discogs_token: '',
     debug_screenshot_interval: 20,
@@ -72,6 +74,8 @@ export default function Settings({ crawlers, onCrawlersChange }: Props) {
     consecutive_failure_limit: 10,
     crawl_schedule: '',
     crawl_schedule_mode: 'missing',
+    collection_schedule: '',
+    collection_schedule_mode: 'all',
     ebay_app_id: '',
     ebay_cert_id: '',
   })
@@ -199,13 +203,69 @@ export default function Settings({ crawlers, onCrawlersChange }: Props) {
         </table>
       </section>
 
-      {/* Crawl Schedule */}
+      {/* Collection Management */}
       <section>
-        <div className="flex items-center justify-between mb-1">
-          <h2 className="text-lg font-semibold text-white text-left">Crawl Schedule</h2>
-        </div>
+        <h2 className="text-lg font-semibold text-white mb-1 text-left">Collection Management</h2>
         <p className="text-sm text-gray-500 mb-4">
-          Runs the crawler automatically on a schedule. Leave blank to disable.
+          Sync your Discogs collection on a schedule. Leave blank to disable.
+          Example: <code className="text-gray-400 font-mono">0 1 * * *</code> = 1 am daily.
+        </p>
+        <table className="w-full text-sm border-collapse">
+          <tbody>
+            <tr className="border-b border-gray-800/50">
+              <td className="py-3 pr-4 text-left text-gray-300 font-medium align-top whitespace-nowrap w-40">Schedule</td>
+              <td className="py-3 pr-4 text-left align-top w-64">
+                <input
+                  type="text"
+                  value={settings.collection_schedule ?? ''}
+                  placeholder="0 1 * * *"
+                  onChange={(e) => setSettings({ ...settings, collection_schedule: e.target.value })}
+                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500 font-mono text-xs"
+                />
+              </td>
+              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                Cron expression (5 fields: min hour day month weekday). Empty = disabled.
+              </td>
+            </tr>
+            <tr className="border-b border-gray-800/50">
+              <td className="py-3 pr-4 text-left text-gray-300 font-medium align-top whitespace-nowrap">Mode</td>
+              <td className="py-3 pr-4 text-left align-top">
+                <select
+                  value={settings.collection_schedule_mode ?? 'all'}
+                  onChange={(e) => setSettings({ ...settings, collection_schedule_mode: e.target.value as 'all' | 'new' })}
+                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-indigo-500"
+                >
+                  <option value="all">All records</option>
+                  <option value="new">New records only</option>
+                </select>
+              </td>
+              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                What to sync on each scheduled run.
+              </td>
+            </tr>
+            <tr className="border-b border-gray-800/50">
+              <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
+              <td className="py-3 pr-4 text-left align-top">
+                <button
+                  onClick={() => onRefreshCollection(settings.collection_schedule_mode as 'all' | 'new' ?? 'all')}
+                  className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 rounded text-xs font-medium transition-colors"
+                >
+                  Refresh Now
+                </button>
+              </td>
+              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                Sync collection from Discogs immediately. Fetches barcodes for new records.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      {/* Crawler Management */}
+      <section>
+        <h2 className="text-lg font-semibold text-white mb-1 text-left">Crawler Management</h2>
+        <p className="text-sm text-gray-500 mb-4">
+          Run price crawlers on a schedule. Leave blank to disable.
           Example: <code className="text-gray-400 font-mono">0 2 * * *</code> = 2 am daily.
         </p>
         <table className="w-full text-sm border-collapse">
@@ -239,6 +299,20 @@ export default function Settings({ crawlers, onCrawlersChange }: Props) {
               </td>
               <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
                 What to crawl on each scheduled run.
+              </td>
+            </tr>
+            <tr className="border-b border-gray-800/50">
+              <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
+              <td className="py-3 pr-4 text-left align-top">
+                <button
+                  onClick={() => onRefreshPrices(settings.crawl_schedule_mode as 'missing' | 'all' ?? 'missing')}
+                  className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 rounded text-xs font-medium transition-colors"
+                >
+                  Refresh Now
+                </button>
+              </td>
+              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                Run price crawlers immediately.
               </td>
             </tr>
           </tbody>

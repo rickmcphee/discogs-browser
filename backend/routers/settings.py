@@ -15,6 +15,8 @@ class SettingsUpdate(BaseModel):
     consecutive_failure_limit: int = 10
     crawl_schedule: str = ""
     crawl_schedule_mode: str = "missing"
+    collection_schedule: str = ""
+    collection_schedule_mode: str = "all"
     ebay_app_id: str = ""
     ebay_cert_id: str = ""
 
@@ -34,6 +36,8 @@ def get_settings():
         "consecutive_failure_limit": int(config.get("consecutive_failure_limit", 10)),
         "crawl_schedule": config.get("crawl_schedule", ""),
         "crawl_schedule_mode": config.get("crawl_schedule_mode", "missing"),
+        "collection_schedule": config.get("collection_schedule", ""),
+        "collection_schedule_mode": config.get("collection_schedule_mode", "all"),
         "ebay_app_id": config.get("ebay_app_id", ""),
         "ebay_cert_id": config.get("ebay_cert_id", ""),
     }
@@ -49,11 +53,14 @@ def update_settings(body: SettingsUpdate):
     config["consecutive_failure_limit"] = body.consecutive_failure_limit
     config["crawl_schedule"] = body.crawl_schedule
     config["crawl_schedule_mode"] = body.crawl_schedule_mode
+    config["collection_schedule"] = body.collection_schedule
+    config["collection_schedule_mode"] = body.collection_schedule_mode
     config["ebay_app_id"] = body.ebay_app_id
     config["ebay_cert_id"] = body.ebay_cert_id
     save_config(config)
     try:
         scheduler.configure(body.crawl_schedule, body.crawl_schedule_mode)
+        scheduler.configure_sync(body.collection_schedule, body.collection_schedule_mode)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"ok": True}

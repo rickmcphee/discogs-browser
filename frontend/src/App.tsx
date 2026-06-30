@@ -9,7 +9,6 @@ type View = 'collection' | 'settings' | 'logs'
 
 export default function App() {
   const [view, setView] = useState<View>('collection')
-  const [refreshing, setRefreshing] = useState(false)
   const [crawlEvents, setCrawlEvents] = useState<CrawlEvent[]>([])
   const [crawling, setCrawling] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -22,6 +21,8 @@ export default function App() {
   const [crawlingReleaseId, setCrawlingReleaseId] = useState<string | undefined>(undefined)
   const [crawlers, setCrawlers] = useState<Crawler[]>([])
   const [serverReady, setServerReady] = useState(false)
+  const [syncMessage, setSyncMessage] = useState<string | null>(null)
+  const [syncing, setSyncing] = useState(false)
 
   // Poll /api/health until the backend is up, then load initial data.
   useEffect(() => {
@@ -53,6 +54,25 @@ export default function App() {
     function handleEvent(e: MessageEvent) {
       const event: CrawlEvent = JSON.parse(e.data)
       if (event.status === 'ping') return
+      if (event.status === 'sync_started') {
+        setSyncing(true)
+        setSyncMessage('Syncing collection…')
+        return
+      }
+      if (event.status === 'sync_progress') {
+        setSyncMessage(`Syncing collection… ${event.synced} records (page ${event.page}/${event.total_pages})`)
+        return
+      }
+      if (event.status === 'sync_complete') {
+        setSyncing(false)
+        setSyncMessage(`Synced ${event.synced} records for ${event.username}`)
+        return
+      }
+      if (event.status === 'sync_error') {
+        setSyncing(false)
+        setSyncMessage(`Sync failed: ${event.error}`)
+        return
+      }
       if (event.status === 'started') {
         setCrawlTotal(event.total ?? 0)
         setCrawling(true)
@@ -91,7 +111,11 @@ export default function App() {
     }
   }, [])
 
-  async function handleRefresh() {
+  async function handleRefresh(mode?: 'all' | 'new') {
+    if (mode) {
+      startRefresh(mode)
+      return
+    }
     try {
       const status = await getCollectionStatus()
       if (status.total > 0) {
@@ -106,26 +130,25 @@ export default function App() {
 
   async function startRefresh(mode: 'all' | 'new') {
     setCollectionStatus(null)
-    setRefreshing(true)
     try {
-      const result = await refreshCollection(mode)
-      alert(`Synced ${result.synced} records for ${result.username}`)
+      await refreshCollection(mode)
     } catch (e: any) {
-      alert(`Refresh failed: ${e.message}`)
-    } finally {
-      setRefreshing(false)
+      setSyncMessage(`Sync failed: ${e.message}`)
     }
   }
 
-  async function handleFindPrices(releaseId?: string) {
+  async function handleFindPrices(releaseId?: string, mode?: 'all' | 'missing') {
     if (releaseId) {
       startCrawl(releaseId, undefined)
+      return
+    }
+    if (mode) {
+      startCrawl(undefined, mode)
       return
     }
     try {
       const status = await getCrawlStatus()
       if (status.total > 0 && status.missing > 0 && status.missing < status.total) {
-
         setCheckpointStatus(status)
         return
       }
@@ -179,22 +202,6 @@ export default function App() {
             Logs
           </button>
         </nav>
-        <div className="flex gap-2">
-          <button
-            onClick={handleRefresh}
-            disabled={refreshing}
-            className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 rounded text-sm font-medium transition-colors"
-          >
-            {refreshing ? 'Refreshing…' : 'Refresh Collection'}
-          </button>
-          <button
-            onClick={() => handleFindPrices()}
-            disabled={crawling}
-            className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded text-sm font-medium transition-colors"
-          >
-            {crawling ? 'Refreshing…' : 'Refresh Prices'}
-          </button>
-        </div>
       </header>
 
       {/* Main */}
@@ -208,7 +215,7 @@ export default function App() {
             crawlers={crawlers}
           />
         </div>
-        <div className={view === 'settings' ? 'h-full overflow-y-auto' : 'hidden'}><Settings crawlers={crawlers} onCrawlersChange={setCrawlers} /></div>
+        <div className={view === 'settings' ? 'h-full overflow-y-auto' : 'hidden'}><Settings crawlers={crawlers} onCrawlersChange={setCrawlers} onRefreshCollection={(mode) => handleRefresh(mode)} onRefreshPrices={(mode) => handleFindPrices(undefined, mode)} /></div>
         <div className={view === 'logs' ? 'h-full' : 'hidden'}><LogViewer /></div>
       </main>
 
@@ -299,8 +306,28 @@ export default function App() {
         </div>
       )}
 
+      {/* Collection sync status bar */}
+      {syncMessage && (
+        <div className="fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-700 px-4 py-2 flex items-center gap-3">
+          <span className="text-sm font-medium text-gray-300 shrink-0">
+            {syncMessage}
+          </span>
+          {syncing && (
+            <div className="w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin shrink-0" />
+          )}
+          {!syncing && (
+            <button
+              onClick={() => setSyncMessage(null)}
+              className="ml-auto text-gray-400 hover:text-white text-sm shrink-0"
+            >
+              Dismiss
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Crawl status bar */}
-      {drawerOpen && (
+      {drawerOpen && !syncMessage && (
         <div className="fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-700 px-4 py-2 flex items-center gap-3">
           <span className="text-sm font-medium text-gray-300 shrink-0">
             {crawling ? 'Refreshing prices…' : 'Done'}
