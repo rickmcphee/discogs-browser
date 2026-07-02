@@ -72,3 +72,32 @@ def test_mutating_request_requires_header(client):
 def test_protected_allowed_after_login(client):
     _login(client)
     assert client.get("/api/releases").status_code == 200
+
+
+def test_idle_expired_session_rejected_and_deleted(client):
+    _login(client)
+    conn = db_module.get_connection()
+    th = conn.execute("SELECT token_hash FROM session").fetchone()["token_hash"]
+    conn.execute("UPDATE session SET last_seen_at = ? WHERE token_hash = ?",
+                 ["2000-01-01T00:00:00", th])
+    conn.commit()
+    assert client.get("/api/releases").status_code == 401
+    assert conn.execute("SELECT 1 FROM session WHERE token_hash = ?", [th]).fetchone() is None
+
+
+def test_absolute_expired_session_rejected(client):
+    _login(client)
+    conn = db_module.get_connection()
+    th = conn.execute("SELECT token_hash FROM session").fetchone()["token_hash"]
+    conn.execute("UPDATE session SET expires_at = ? WHERE token_hash = ?",
+                 ["2000-01-01T00:00:00", th])
+    conn.commit()
+    assert client.get("/api/releases").status_code == 401
+
+
+def test_status_unauthenticated_for_expired_session(client):
+    _login(client)
+    conn = db_module.get_connection()
+    conn.execute("UPDATE session SET last_seen_at = ?", ["2000-01-01T00:00:00"])
+    conn.commit()
+    assert client.get("/api/auth/status").json()["state"] == "unauthenticated"
