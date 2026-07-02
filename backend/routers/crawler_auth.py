@@ -21,7 +21,7 @@ _login_state: dict = {
 _REAL_CHROME_DEFAULT = Path.home() / "Library" / "Application Support" / "Google" / "Chrome" / "Default"
 
 
-@router.get("/auth/status")
+@router.get("/crawler-auth/status")
 def get_auth_status():
     mtime = None
     if BROWSER_STATE_FILE.exists():
@@ -39,7 +39,7 @@ class LoginRequest(BaseModel):
     login_url: str
 
 
-@router.post("/auth/login")
+@router.post("/crawler-auth/login")
 def start_login(body: LoginRequest):
     if HEADLESS_AUTH:
         raise HTTPException(status_code=501, detail="Browser login not available in headless mode")
@@ -53,7 +53,7 @@ def start_login(body: LoginRequest):
     return {"ok": True}
 
 
-@router.post("/auth/done")
+@router.post("/crawler-auth/done")
 def finish_login():
     if not _login_state["active"]:
         raise HTTPException(status_code=409, detail="No active login session")
@@ -98,7 +98,7 @@ def finish_login():
     return {"ok": True}
 
 
-@router.delete("/auth/state")
+@router.delete("/crawler-auth/state")
 def clear_auth_state():
     if BROWSER_STATE_FILE.exists():
         BROWSER_STATE_FILE.unlink()

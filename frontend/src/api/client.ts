@@ -129,13 +129,13 @@ export function screenshotUrl(path: string): string {
 }
 
 export async function getAuthStatus(): Promise<{ active: boolean; active_site: string | null; has_state: boolean; state_mtime: number | null }> {
-  const r = await fetch(`${BASE}/auth/status`)
+  const r = await fetch(`${BASE}/crawler-auth/status`)
   if (!r.ok) throw new Error(await r.text())
   return r.json()
 }
 
 export async function startLogin(site_name: string, login_url: string): Promise<void> {
-  const r = await fetch(`${BASE}/auth/login`, {
+  const r = await fetch(`${BASE}/crawler-auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ site_name, login_url }),
@@ -144,11 +144,11 @@ export async function startLogin(site_name: string, login_url: string): Promise<
 }
 
 export async function finishLogin(): Promise<void> {
-  const r = await fetch(`${BASE}/auth/done`, { method: 'POST' })
+  const r = await fetch(`${BASE}/crawler-auth/done`, { method: 'POST' })
   if (!r.ok) throw new Error(await r.text())
 }
 
 export async function clearAuthState(): Promise<void> {
-  const r = await fetch(`${BASE}/auth/state`, { method: 'DELETE' })
+  const r = await fetch(`${BASE}/crawler-auth/state`, { method: 'DELETE' })
   if (!r.ok) throw new Error(await r.text())
 }
