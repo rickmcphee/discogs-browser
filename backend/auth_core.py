@@ -36,7 +36,7 @@ def verify_totp(secret, code):
 
 
 def generate_recovery_codes(n=10):
-    return [secrets.token_hex(5) for _ in range(n)]
+    return [secrets.token_hex(10) for _ in range(n)]
 
 
 def new_session_token():
