@@ -32,3 +32,12 @@ def load_config() -> dict:
 
 def save_config(data: dict):
     CONFIG_FILE.write_text(json.dumps(data, indent=2))
+
+
+COOKIE_NAME = "db_session"
+BOOTSTRAP_TOKEN_FILE = CONFIG_DIR / "bootstrap_token"
+
+SESSION_IDLE_SECONDS = int(os.environ.get("SESSION_IDLE_SECONDS", 7 * 86400))
+SESSION_MAX_SECONDS = int(os.environ.get("SESSION_MAX_SECONDS", 30 * 86400))
+LOGIN_MAX_FAILURES = int(os.environ.get("LOGIN_MAX_FAILURES", 5))
+LOGIN_LOCKOUT_SECONDS = int(os.environ.get("LOGIN_LOCKOUT_SECONDS", 300))
