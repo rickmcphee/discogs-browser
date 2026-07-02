@@ -171,6 +171,8 @@ def logout(request: Request, response: Response):
 def change_password(body: ChangePasswordRequest):
     conn = db.get_connection()
     owner = db.get_owner(conn)
+    if owner is None:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
     if not auth_core.verify_password(owner["password_hash"], body.current_password) or \
             not auth_core.verify_totp(owner["totp_secret"], body.code):
         raise HTTPException(status_code=401, detail="Invalid credentials")
@@ -182,6 +184,8 @@ def change_password(body: ChangePasswordRequest):
 def reset_totp(body: FactorRequest):
     conn = db.get_connection()
     owner = db.get_owner(conn)
+    if owner is None:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
     if not auth_core.verify_password(owner["password_hash"], body.password) or \
             not auth_core.verify_totp(owner["totp_secret"], body.code):
         raise HTTPException(status_code=401, detail="Invalid credentials")
@@ -194,6 +198,8 @@ def reset_totp(body: FactorRequest):
 def regenerate_recovery_codes(body: FactorRequest):
     conn = db.get_connection()
     owner = db.get_owner(conn)
+    if owner is None:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
     if not auth_core.verify_password(owner["password_hash"], body.password) or \
             not auth_core.verify_totp(owner["totp_secret"], body.code):
         raise HTTPException(status_code=401, detail="Invalid credentials")
