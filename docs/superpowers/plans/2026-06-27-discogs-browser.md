@@ -889,3 +889,10 @@ dev:
 - [x] `crawlers/ebay.py`: fixed Python 3.9 incompatibility (`str | None` → untyped module-level variable).
 - [x] `tests/test_db.py`: added `"barcode": None` to `_release()` helper.
 - [x] `tests/test_ebay_crawler.py`: added `"title"` field to `_ITEM` mock and `"barcode": None` to `_RELEASE` fixture to satisfy validation logic.
+
+### Collection Browser tile view (branch dev-image-view)
+
+- [x] `CollectionBrowser.tsx`: added `viewMode` state (`'list' | 'tiles'`), initialized from and persisted to `localStorage` (`collectionViewMode`).
+- [x] Added list/tiles toggle icon buttons, right-justified in the search bar row via `ml-auto`.
+- [x] Added tile grid rendering path: responsive `grid-template-columns: repeat(auto-fill, minmax(140px, 1fr))`, uniform square (`aspect-square object-cover`) cover art, artist and title truncated underneath, whole tile wraps an `<a href={discogs_url}>` link.
+- [x] List view (table) unchanged; both modes share `releases`, `loading`, and pagination state.

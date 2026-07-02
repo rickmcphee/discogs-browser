@@ -272,6 +272,8 @@ Artist sidebar (independent scroll, `shrink-0` buttons) + main area with search 
 
 `crawlers` state is fetched once in `App.tsx` and passed as props to both `CollectionBrowser` and `Settings`; neither view fetches crawlers independently.
 
+**View toggle.** Two icon buttons, right-justified in the search bar row, switch `viewMode` between `list` (the table above) and `tiles`. Choice persists in `localStorage` (`collectionViewMode`), defaulting to `list`. Tile view is a responsive grid (`auto-fill, minmax(140px, 1fr)`) of uniform square covers with artist and title truncated underneath; each tile links to `discogs_url`, same as the artist link in list view. Tile view shows no price/crawler columns and no refresh button — cover art browsing only. Sidebar artist filter, search, and pagination behave identically in both modes.
+
 ### Crawl Status Bar
 
 Fixed bottom bar visible while a crawl is active (or just completed). Shows progress count, current release/site, and a Dismiss button. The bar appears automatically when a scheduled crawl starts (via the `"started"` SSE event) with no user interaction required.
