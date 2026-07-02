@@ -20,6 +20,9 @@ export default function CollectionBrowser({ onRefreshPrices, crawling, crawlingR
   const [sort, setSort] = useState<SortField>('artist')
   const [order, setOrder] = useState<SortOrder>('asc')
   const [loading, setLoading] = useState(false)
+  const [viewMode, setViewMode] = useState<'list' | 'tiles'>(
+    () => (localStorage.getItem('collectionViewMode') === 'tiles' ? 'tiles' : 'list')
+  )
   const PER_PAGE = 250
 
   const processedCount = useRef(0)
@@ -77,6 +80,7 @@ export default function CollectionBrowser({ onRefreshPrices, crawling, crawlingR
 
   useEffect(() => { load() }, [load])
   useEffect(() => { getArtists().then(setArtists) }, [])
+  useEffect(() => { localStorage.setItem('collectionViewMode', viewMode) }, [viewMode])
 
   function toggleSort(field: SortField) {
     if (sort === field) {
@@ -118,7 +122,7 @@ export default function CollectionBrowser({ onRefreshPrices, crawling, crawlingR
       {/* Main */}
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Search bar */}
-        <div className="px-4 py-3 border-b border-gray-800 bg-gray-950">
+        <div className="px-4 py-3 border-b border-gray-800 bg-gray-950 flex items-center">
           <input
             type="text"
             placeholder="Search artist or title…"
@@ -127,9 +131,72 @@ export default function CollectionBrowser({ onRefreshPrices, crawling, crawlingR
             className="w-full max-w-md bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500"
           />
           <span className="ml-3 text-xs text-gray-500">{total} records</span>
+          <div className="ml-auto flex items-center gap-1">
+            <button
+              onClick={() => setViewMode('list')}
+              title="List view"
+              className={`p-1.5 rounded ${viewMode === 'list' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white'}`}
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <line x1="2" y1="4" x2="14" y2="4" />
+                <line x1="2" y1="8" x2="14" y2="8" />
+                <line x1="2" y1="12" x2="14" y2="12" />
+              </svg>
+            </button>
+            <button
+              onClick={() => setViewMode('tiles')}
+              title="Tile view"
+              className={`p-1.5 rounded ${viewMode === 'tiles' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white'}`}
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <rect x="2" y="2" width="5" height="5" />
+                <rect x="9" y="2" width="5" height="5" />
+                <rect x="2" y="9" width="5" height="5" />
+                <rect x="9" y="9" width="5" height="5" />
+              </svg>
+            </button>
+          </div>
         </div>
 
+        {/* Tiles */}
+        {viewMode === 'tiles' && (
+          <div className="flex-1 overflow-auto" ref={tableScrollRef}>
+            {loading && <div className="text-center py-8 text-gray-500">Loading…</div>}
+            {!loading && releases.length === 0 && (
+              <div className="text-center py-8 text-gray-500">
+                No records found. Click "Refresh Collection" to sync from Discogs.
+              </div>
+            )}
+            {!loading && releases.length > 0 && (
+              <div className="grid gap-4 p-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))' }}>
+                {releases.map((r) => (
+                  <a
+                    key={r.discogs_id}
+                    href={r.discogs_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="group"
+                  >
+                    {r.cover_image_url ? (
+                      <img
+                        src={r.cover_image_url}
+                        alt={r.title}
+                        className="w-full aspect-square object-cover rounded"
+                      />
+                    ) : (
+                      <div className="w-full aspect-square bg-gray-800 rounded" />
+                    )}
+                    <div className="mt-1.5 text-sm text-gray-200 truncate group-hover:text-indigo-400">{r.artist}</div>
+                    <div className="text-xs text-gray-400 truncate">{r.title}</div>
+                  </a>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Table */}
+        {viewMode === 'list' && (
         <div className="flex-1 overflow-auto" ref={tableScrollRef}>
           <table className="w-full text-sm border-collapse">
             <thead className="sticky top-0 bg-gray-900 text-xs text-gray-400 uppercase">
@@ -262,6 +329,7 @@ export default function CollectionBrowser({ onRefreshPrices, crawling, crawlingR
             </tbody>
           </table>
         </div>
+        )}
 
         {/* Pagination */}
         {totalPages > 1 && (
