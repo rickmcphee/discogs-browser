@@ -2,8 +2,10 @@ import { useState, useEffect } from 'react'
 import CollectionBrowser from './views/CollectionBrowser'
 import Settings from './views/Settings'
 import LogViewer from './views/LogViewer'
-import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, getCrawlers, checkHealth } from './api/client'
-import type { CrawlEvent, CrawlStatus, CollectionStatus, Crawler } from './api/types'
+import LoginScreen from './views/LoginScreen'
+import SetupWizard from './views/SetupWizard'
+import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, getCrawlers, checkHealth, getAuthState, setUnauthorizedHandler } from './api/client'
+import type { CrawlEvent, CrawlStatus, CollectionStatus, Crawler, AuthState } from './api/types'
 
 type View = 'collection' | 'settings' | 'logs'
 
@@ -23,6 +25,7 @@ export default function App() {
   const [serverReady, setServerReady] = useState(false)
   const [syncMessage, setSyncMessage] = useState<string | null>(null)
   const [syncing, setSyncing] = useState(false)
+  const [authState, setAuthState] = useState<AuthState | null>(null)
 
   // Poll /api/health until the backend is up, then load initial data.
   useEffect(() => {
@@ -111,6 +114,11 @@ export default function App() {
     }
   }, [])
 
+  useEffect(() => {
+    setUnauthorizedHandler(() => setAuthState('unauthenticated'))
+    getAuthState().then(setAuthState).catch(() => setAuthState('unauthenticated'))
+  }, [])
+
   async function handleRefresh(mode?: 'all' | 'new') {
     if (mode) {
       startRefresh(mode)
@@ -164,6 +172,16 @@ export default function App() {
     postCrawlStart(mode ?? 'all', releaseId).catch((e: any) => {
       alert(`Failed to start crawl: ${e.message}`)
     })
+  }
+
+  if (authState === null) {
+    return <div className="min-h-screen flex items-center justify-center text-gray-500">Loading…</div>
+  }
+  if (authState === 'setup_required') {
+    return <SetupWizard onComplete={() => setAuthState('authenticated')} />
+  }
+  if (authState === 'unauthenticated') {
+    return <LoginScreen onAuthenticated={() => setAuthState('authenticated')} />
   }
 
   return (
