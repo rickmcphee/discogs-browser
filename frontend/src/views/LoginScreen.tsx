@@ -24,7 +24,7 @@ export default function LoginScreen({ onAuthenticated }: { onAuthenticated: () =
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-100">
       <form onSubmit={submit} className="bg-white p-8 rounded shadow w-80 space-y-4">
-        <h1 className="text-xl font-semibold">Sign in</h1>
+        <h1 className="text-xl font-semibold">Sign In</h1>
         <input
           type="password" placeholder="Password" value={password}
           onChange={e => setPassword(e.target.value)}
@@ -38,7 +38,7 @@ export default function LoginScreen({ onAuthenticated }: { onAuthenticated: () =
         {error && <p className="text-red-600 text-sm">{error}</p>}
         <button type="submit" disabled={busy}
           className="w-full bg-blue-600 text-white rounded py-2 disabled:opacity-50">
-          {busy ? 'Signing in…' : 'Sign in'}
+          {busy ? 'Signing in…' : 'Sign In'}
         </button>
       </form>
     </div>

@@ -40,7 +40,7 @@ export default function SetupWizard({ onComplete }: { onComplete: () => void }) 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-100">
       <div className="bg-white p-8 rounded shadow w-96 space-y-4">
-        <h1 className="text-xl font-semibold">First-run setup</h1>
+        <h1 className="text-xl font-semibold">Sign Up</h1>
 
         {step === 'credentials' && (
           <form onSubmit={submitCredentials} className="space-y-4">
