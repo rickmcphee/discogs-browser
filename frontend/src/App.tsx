@@ -29,6 +29,7 @@ export default function App() {
 
   // Poll /api/health until the backend is up, then load initial data.
   useEffect(() => {
+    if (authState !== 'authenticated') return
     let cancelled = false
     async function poll() {
       while (!cancelled) {
@@ -36,7 +37,7 @@ export default function App() {
         if (ok) {
           if (!cancelled) {
             setServerReady(true)
-            getCrawlers().then(setCrawlers)
+            getCrawlers().then(setCrawlers).catch(() => {})
           }
           return
         }
@@ -45,11 +46,12 @@ export default function App() {
     }
     poll()
     return () => { cancelled = true }
-  }, [])
+  }, [authState])
 
   // Persistent SSE connection — reconnects on error. Waits for server to be ready.
   // Handles both user-triggered and scheduled crawls.
   useEffect(() => {
+    if (authState !== 'authenticated') return
     let source: EventSource | null = null
     let reconnectTimer: ReturnType<typeof setTimeout>
     let destroyed = false
@@ -112,7 +114,7 @@ export default function App() {
       source?.close()
       clearTimeout(reconnectTimer)
     }
-  }, [])
+  }, [authState])
 
   useEffect(() => {
     setUnauthorizedHandler(() => setAuthState('unauthenticated'))
