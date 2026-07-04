@@ -3,11 +3,13 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from logging_config import setup_logging, get_logger
-from config import ensure_dirs, CRAWLERS_DIR, load_config
+from config import ensure_dirs, CRAWLERS_DIR, load_config, BOOTSTRAP_TOKEN_FILE
 from version import VERSION
-from db import get_connection, init_db, register_crawler
-from routers import collection, releases, settings, crawl, logs, screenshots, auth, health
+from db import get_connection, init_db, register_crawler, owner_exists
+from routers import collection, releases, settings, crawl, logs, screenshots, crawler_auth, health, session
+from auth_middleware import AuthMiddleware
 import scheduler
+import secrets
 
 setup_logging()
 log = get_logger("main")
@@ -46,9 +48,15 @@ def seed_bundled_crawlers(conn):
 
 app = FastAPI(title="Discogs Browser")
 
+# AuthMiddleware is added BEFORE CORS so CORS ends up the outermost layer
+# (Starlette wraps last-added outermost). This lets CORS answer cross-origin
+# preflight OPTIONS before the auth gate would reject them.
+app.add_middleware(AuthMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -62,6 +70,11 @@ def startup():
     conn = get_connection()
     init_db(conn)
     seed_bundled_crawlers(conn)
+    if not owner_exists(conn):
+        token = secrets.token_urlsafe(24)
+        BOOTSTRAP_TOKEN_FILE.write_text(token)
+        log.info("No owner configured. Bootstrap token: %s", token)
+        log.info("Complete first-run setup at the app URL using this token.")
     scheduler.start()
     cfg = load_config()
     schedule = cfg.get("crawl_schedule", "")
@@ -82,4 +95,5 @@ app.include_router(settings.router, prefix="/api")
 app.include_router(crawl.router, prefix="/api")
 app.include_router(logs.router, prefix="/api")
 app.include_router(screenshots.router, prefix="/api")
-app.include_router(auth.router, prefix="/api")
+app.include_router(crawler_auth.router, prefix="/api")
+app.include_router(session.router, prefix="/api")

@@ -39,6 +39,7 @@ discogs-browser/
 - **Amazon price extraction is scoped.** All selectors in `extract_price()` are scoped to buybox containers (`#corePrice_feature_div`, `#desktop_buybox`, etc.) to avoid matching carousel/recommendation prices.
 - **Playwright channel is configurable.** `PLAYWRIGHT_CHANNEL=""` uses bundled Chromium (Docker). `PLAYWRIGHT_CHANNEL="chrome"` uses the user's real Chrome (local dev default).
 - **Login flow is macOS-only.** `POST /auth/login` calls `subprocess.Popen(["open", "-a", "Google Chrome", ...])`. Set `HEADLESS_AUTH=1` (Docker) to disable it gracefully.
+- **App authentication is single-owner: password (Argon2id) + TOTP, always enforced.** `AuthMiddleware` (`backend/auth_middleware.py`) guards every `/api` request. `/api/auth/*` (`backend/routers/session.py`) is app login/session management — distinct from `/api/crawler-auth/*` (`backend/routers/crawler_auth.py`, formerly `auth.py`), which is the crawler's own browser-login flow. If password/TOTP/recovery codes are all lost, run `python -m reset_owner` (from `backend/`) to clear the owner and sessions and re-enter first-run setup.
 
 ## Data directory
 

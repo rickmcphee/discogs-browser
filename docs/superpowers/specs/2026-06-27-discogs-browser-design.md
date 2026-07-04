@@ -44,6 +44,14 @@ nginx (:8080)
 
 ---
 
+## Application Authentication
+
+The app is single-owner: every `/api` request is gated by `AuthMiddleware` requiring a valid server-side session, established by password (Argon2id) + TOTP login. Always enforced, no bypass flag. Full design in [`docs/superpowers/specs/2026-07-02-app-authentication-design.md`](2026-07-02-app-authentication-design.md).
+
+Namespace note: `/api/auth/*` (`routers/session.py`) is *app* authentication — login, setup, session and account management. It is distinct from `/api/crawler-auth/*` (`routers/crawler_auth.py`), the *crawler* browser-login flow described under [Bot Detection and Session Auth](#bot-detection-and-session-auth).
+
+---
+
 ## Environment Variables
 
 | Variable | Default | Description |
@@ -191,13 +199,15 @@ All fields live in `DISCOGS_BROWSER_DATA/config.json`.
 
 ## Bot Detection and Session Auth
 
+This section covers the *crawler's* browser-login flow (`/api/crawler-auth/*`, `routers/crawler_auth.py`) — obtaining site session cookies for Amazon/CC Music. It is unrelated to app authentication (`/api/auth/*`); see [Application Authentication](#application-authentication).
+
 `BotDetectedError` is raised by a crawler plugin when it detects a CAPTCHA or bot interstitial. `crawl_releases()` catches this and calls `_reset_context()`.
 
-On macOS (dev mode), the auth flow opens the site's login URL in the user's real Chrome via `subprocess.Popen(["open", "-a", "Google Chrome", login_url])`. After the user logs in, `POST /auth/done` copies cookies and local state from the real Chrome Default profile into `DISCOGS_BROWSER_DATA/chrome_profile/` and writes a marker `browser_state.json`.
+On macOS (dev mode), the auth flow opens the site's login URL in the user's real Chrome via `subprocess.Popen(["open", "-a", "Google Chrome", login_url])`. After the user logs in, `POST /api/crawler-auth/done` copies cookies and local state from the real Chrome Default profile into `DISCOGS_BROWSER_DATA/chrome_profile/` and writes a marker `browser_state.json`.
 
-When `HEADLESS_AUTH=1` (Docker), `POST /auth/login` returns HTTP 501 and the browser-launch step is skipped.
+When `HEADLESS_AUTH=1` (Docker), `POST /api/crawler-auth/login` returns HTTP 501 and the browser-launch step is skipped.
 
-`DELETE /auth/state` deletes `browser_state.json` to force a clean session on the next crawl.
+`DELETE /api/crawler-auth/state` deletes `browser_state.json` to force a clean session on the next crawl.
 
 ---
 
@@ -296,7 +306,7 @@ Scrollable monospace log tail over SSE. Automatically scrolls to bottom on new l
 
 ### Debug View
 
-Screenshot browser showing session directories and per-search screenshots. Only meaningful when `debug_screenshot_interval > 0`.
+Screenshot browser showing session directories and per-search screenshots. Only meaningful when `debug_screenshot_interval > 0`. Screenshots are served by `GET /api/screenshots/{path}`; the handler resolves the requested path and rejects anything that escapes the screenshots directory (`..` traversal or absolute paths) before serving, so only files under `DISCOGS_BROWSER_DATA/screenshots/` are reachable.
 
 ---
 

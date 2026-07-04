@@ -38,6 +38,22 @@ CREATE TABLE IF NOT EXISTS listings (
     last_checked TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(release_id, crawler_id)
 );
+
+CREATE TABLE IF NOT EXISTS owner (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    password_hash TEXT NOT NULL,
+    totp_secret TEXT NOT NULL,
+    recovery_codes TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    password_changed_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS session (
+    token_hash TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL
+);
 """
 
 
@@ -293,3 +309,104 @@ def get_missing_releases(conn: sqlite3.Connection) -> list[str]:
         ) < ?
     """, [enabled_count]).fetchall()
     return [row[0] for row in rows]
+
+
+import json as _json
+from datetime import datetime as _datetime
+
+
+def owner_exists(conn) -> bool:
+    return conn.execute("SELECT 1 FROM owner WHERE id = 1").fetchone() is not None
+
+
+def get_owner(conn):
+    return conn.execute("SELECT * FROM owner WHERE id = 1").fetchone()
+
+
+def create_owner(conn, password_hash, totp_secret, recovery_hashes):
+    now = _datetime.utcnow().isoformat()
+    conn.execute(
+        """INSERT INTO owner (id, password_hash, totp_secret, recovery_codes,
+                              created_at, password_changed_at)
+           VALUES (1, ?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+               password_hash=excluded.password_hash,
+               totp_secret=excluded.totp_secret,
+               recovery_codes=excluded.recovery_codes,
+               created_at=excluded.created_at,
+               password_changed_at=excluded.password_changed_at""",
+        [password_hash, totp_secret, _json.dumps(recovery_hashes), now, now],
+    )
+    conn.commit()
+
+
+def update_owner_password(conn, password_hash):
+    conn.execute(
+        "UPDATE owner SET password_hash = ?, password_changed_at = ? WHERE id = 1",
+        [password_hash, _datetime.utcnow().isoformat()],
+    )
+    conn.commit()
+
+
+def update_owner_totp(conn, totp_secret):
+    conn.execute("UPDATE owner SET totp_secret = ? WHERE id = 1", [totp_secret])
+    conn.commit()
+
+
+def set_owner_recovery_codes(conn, recovery_hashes):
+    conn.execute(
+        "UPDATE owner SET recovery_codes = ? WHERE id = 1",
+        [_json.dumps(recovery_hashes)],
+    )
+    conn.commit()
+
+
+def consume_recovery_code(conn, code_hash) -> bool:
+    row = conn.execute("SELECT recovery_codes FROM owner WHERE id = 1").fetchone()
+    if row is None:
+        return False
+    codes = _json.loads(row["recovery_codes"])
+    if code_hash not in codes:
+        return False
+    codes.remove(code_hash)
+    conn.execute("UPDATE owner SET recovery_codes = ? WHERE id = 1", [_json.dumps(codes)])
+    conn.commit()
+    return True
+
+
+def delete_owner(conn):
+    conn.execute("DELETE FROM owner WHERE id = 1")
+    conn.commit()
+
+
+def create_session(conn, token_hash, created_at, expires_at):
+    conn.execute(
+        """INSERT INTO session (token_hash, created_at, expires_at, last_seen_at)
+           VALUES (?, ?, ?, ?)""",
+        [token_hash, created_at, expires_at, created_at],
+    )
+    conn.commit()
+
+
+def get_session(conn, token_hash):
+    return conn.execute(
+        "SELECT * FROM session WHERE token_hash = ?", [token_hash]
+    ).fetchone()
+
+
+def touch_session(conn, token_hash, last_seen_at):
+    conn.execute(
+        "UPDATE session SET last_seen_at = ? WHERE token_hash = ?",
+        [last_seen_at, token_hash],
+    )
+    conn.commit()
+
+
+def delete_session(conn, token_hash):
+    conn.execute("DELETE FROM session WHERE token_hash = ?", [token_hash])
+    conn.commit()
+
+
+def purge_expired_sessions(conn, now_iso):
+    conn.execute("DELETE FROM session WHERE expires_at < ?", [now_iso])
+    conn.commit()

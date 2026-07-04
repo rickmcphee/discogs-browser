@@ -2,8 +2,10 @@ import { useState, useEffect } from 'react'
 import CollectionBrowser from './views/CollectionBrowser'
 import Settings from './views/Settings'
 import LogViewer from './views/LogViewer'
-import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, getCrawlers, checkHealth } from './api/client'
-import type { CrawlEvent, CrawlStatus, CollectionStatus, Crawler } from './api/types'
+import LoginScreen from './views/LoginScreen'
+import SetupWizard from './views/SetupWizard'
+import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, getCrawlers, checkHealth, getAuthState, setUnauthorizedHandler } from './api/client'
+import type { CrawlEvent, CrawlStatus, CollectionStatus, Crawler, AuthState } from './api/types'
 
 type View = 'collection' | 'settings' | 'logs'
 
@@ -23,9 +25,11 @@ export default function App() {
   const [serverReady, setServerReady] = useState(false)
   const [syncMessage, setSyncMessage] = useState<string | null>(null)
   const [syncing, setSyncing] = useState(false)
+  const [authState, setAuthState] = useState<AuthState | null>(null)
 
   // Poll /api/health until the backend is up, then load initial data.
   useEffect(() => {
+    if (authState !== 'authenticated') return
     let cancelled = false
     async function poll() {
       while (!cancelled) {
@@ -33,7 +37,7 @@ export default function App() {
         if (ok) {
           if (!cancelled) {
             setServerReady(true)
-            getCrawlers().then(setCrawlers)
+            getCrawlers().then(setCrawlers).catch(() => {})
           }
           return
         }
@@ -42,11 +46,12 @@ export default function App() {
     }
     poll()
     return () => { cancelled = true }
-  }, [])
+  }, [authState])
 
   // Persistent SSE connection — reconnects on error. Waits for server to be ready.
   // Handles both user-triggered and scheduled crawls.
   useEffect(() => {
+    if (authState !== 'authenticated') return
     let source: EventSource | null = null
     let reconnectTimer: ReturnType<typeof setTimeout>
     let destroyed = false
@@ -109,6 +114,11 @@ export default function App() {
       source?.close()
       clearTimeout(reconnectTimer)
     }
+  }, [authState])
+
+  useEffect(() => {
+    setUnauthorizedHandler(() => setAuthState('unauthenticated'))
+    getAuthState().then(setAuthState).catch(() => setAuthState('unauthenticated'))
   }, [])
 
   async function handleRefresh(mode?: 'all' | 'new') {
@@ -164,6 +174,16 @@ export default function App() {
     postCrawlStart(mode ?? 'all', releaseId).catch((e: any) => {
       alert(`Failed to start crawl: ${e.message}`)
     })
+  }
+
+  if (authState === null) {
+    return <div className="min-h-screen flex items-center justify-center text-gray-500">Loading…</div>
+  }
+  if (authState === 'setup_required') {
+    return <SetupWizard onComplete={() => setAuthState('authenticated')} />
+  }
+  if (authState === 'unauthenticated') {
+    return <LoginScreen onAuthenticated={() => setAuthState('authenticated')} />
   }
 
   return (

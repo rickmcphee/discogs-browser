@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { getSettings, saveSettings, setCrawlerEnabled, getAuthStatus, startLogin, finishLogin, clearAuthState } from '../api/client'
+import { getSettings, saveSettings, setCrawlerEnabled, getAuthStatus, startLogin, finishLogin, clearAuthState, changePassword, logout } from '../api/client'
 import type { Settings as SettingsType, Crawler } from '../api/types'
 
 interface SettingRow {
@@ -83,6 +83,10 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
   const [saved, setSaved] = useState(false)
   const [authStatus, setAuthStatus] = useState<{ active: boolean; active_site: string | null; has_state: boolean; state_mtime: number | null }>({ active: false, active_site: null, has_state: false, state_mtime: null })
   const [authWorking, setAuthWorking] = useState(false)
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [authCode, setAuthCode] = useState('')
+  const [passwordMessage, setPasswordMessage] = useState('')
 
   useEffect(() => {
     getSettings().then(setSettings)
@@ -129,6 +133,18 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
   async function handleToggleCrawler(crawler: Crawler) {
     await setCrawlerEnabled(crawler.id, !crawler.enabled)
     onCrawlersChange(crawlers.map((c) => c.id === crawler.id ? { ...c, enabled: !c.enabled } : c))
+  }
+
+  async function submitPasswordChange() {
+    try {
+      await changePassword(currentPassword, newPassword, authCode)
+      setPasswordMessage('Password changed.')
+      setCurrentPassword('')
+      setNewPassword('')
+      setAuthCode('')
+    } catch {
+      setPasswordMessage('Failed — check current password and code.')
+    }
   }
 
   return (
@@ -427,6 +443,79 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
             </tbody>
           </table>
         )}
+      </section>
+
+      {/* Account & Security */}
+      <section>
+        <h2 className="text-lg font-semibold text-white mb-1 text-left">Account & Security</h2>
+        <p className="text-sm text-gray-500 mb-4">
+          Change your password or log out of this session.
+        </p>
+        <table className="w-full text-sm border-collapse">
+          <tbody>
+            <tr className="border-b border-gray-800/50">
+              <td className="py-3 pr-4 text-left text-gray-300 font-medium align-top whitespace-nowrap w-40">Current password</td>
+              <td className="py-3 pr-4 text-left align-top w-64">
+                <input
+                  type="password"
+                  value={currentPassword}
+                  onChange={(e) => setCurrentPassword(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500"
+                />
+              </td>
+              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed"></td>
+            </tr>
+            <tr className="border-b border-gray-800/50">
+              <td className="py-3 pr-4 text-left text-gray-300 font-medium align-top whitespace-nowrap">New password</td>
+              <td className="py-3 pr-4 text-left align-top">
+                <input
+                  type="password"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500"
+                />
+              </td>
+              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed"></td>
+            </tr>
+            <tr className="border-b border-gray-800/50">
+              <td className="py-3 pr-4 text-left text-gray-300 font-medium align-top whitespace-nowrap">Authenticator code</td>
+              <td className="py-3 pr-4 text-left align-top">
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={authCode}
+                  onChange={(e) => setAuthCode(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500"
+                />
+              </td>
+              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                Current code from your authenticator app.
+              </td>
+            </tr>
+            <tr className="border-b border-gray-800/50">
+              <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
+              <td className="py-3 pr-4 text-left align-top">
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={submitPasswordChange}
+                    className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 rounded text-xs font-medium transition-colors"
+                  >
+                    Change password
+                  </button>
+                  <button
+                    onClick={() => logout().then(() => window.location.reload())}
+                    className="px-3 py-1 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded text-xs font-medium transition-colors"
+                  >
+                    Log out
+                  </button>
+                </div>
+              </td>
+              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                {passwordMessage}
+              </td>
+            </tr>
+          </tbody>
+        </table>
       </section>
 
     </div>

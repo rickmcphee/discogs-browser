@@ -48,6 +48,16 @@ Open http://localhost:8080. Set your Discogs token in Settings.
 
 The Docker container uses bundled Chromium (no real Chrome required) and headless mode. The login flow for session-authenticated crawlers is not available in Docker.
 
+## Authentication
+
+The app is single-owner: access is protected by a password (hashed with Argon2id) plus a TOTP second factor, always enforced on every `/api` request.
+
+**First run:** the backend generates a one-time bootstrap token, printed to the log and written to `~/.discogs-browser/bootstrap_token`. Open the app URL and use that token to complete first-run setup — set your password, enroll TOTP in an authenticator app, and save the recovery codes shown.
+
+**Recovery:** a recovery code can be used in place of the TOTP code at login (each code is single-use). If you lose your password, authenticator, and recovery codes, run `python -m reset_owner` from `backend/` to clear the owner account and all sessions and return to first-run setup with a fresh bootstrap token.
+
+**Deployment / TLS:** the session cookie is HttpOnly and SameSite=Strict, and is marked `Secure` based on the `X-Forwarded-Proto` header (or the request scheme if absent). If you run behind a TLS-terminating reverse proxy (nginx, Caddy, an ALB, etc.), it must forward `X-Forwarded-Proto`, and uvicorn should be started with `--proxy-headers --forwarded-allow-ips="*"` so that header is trusted. On a plain-HTTP LAN deployment the cookie is sent without `Secure`, which fits the LAN threat model, but TLS everywhere is the recommended posture for any production/commercial deployment.
+
 ## Deployment (Synology NAS)
 
 Designed to run on a Synology NAS via Container Manager. Persistent data (config, database, logs) is stored in `workspace/` inside the repo directory, which is mounted into the container.
@@ -90,6 +100,10 @@ docker-compose up -d
 | `DISCOGS_BROWSER_DATA` | `~/.discogs-browser` | Data directory |
 | `PLAYWRIGHT_CHANNEL` | `"chrome"` | `""` = bundled Chromium (Docker), `"chrome"` = real Chrome |
 | `HEADLESS_AUTH` | `""` | `"1"` disables the macOS browser-launch login flow |
+| `SESSION_IDLE_SECONDS` | 7 days | Session idle timeout |
+| `SESSION_MAX_SECONDS` | 30 days | Session absolute max lifetime |
+| `LOGIN_MAX_FAILURES` | `5` | Failed login attempts before lockout |
+| `LOGIN_LOCKOUT_SECONDS` | `300` | Lockout duration after `LOGIN_MAX_FAILURES` is hit |
 
 ## Running tests
 
