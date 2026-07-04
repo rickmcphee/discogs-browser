@@ -64,6 +64,16 @@ def test_setup_locked_after_completion(client):
     assert r.status_code == 409
 
 
+def test_setup_verify_rejected_after_completion(client):
+    secret, recovery = _complete_setup(client)
+    code = pyotp.TOTP(secret).now()
+    r = client.post("/api/auth/setup/verify", json={"code": code})
+    assert r.status_code == 409
+    # original recovery codes remain valid
+    login = client.post("/api/auth/login", json={"password": "pw", "code": recovery[0]})
+    assert login.status_code == 200
+
+
 def test_login_wrong_password(client):
     _complete_setup(client)
     r = client.post("/api/auth/login", json={"password": "bad", "code": "000000"})

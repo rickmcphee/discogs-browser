@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -112,6 +113,12 @@ def setup_verify(body: SetupVerifyRequest):
     owner = db.get_owner(conn)
     if owner is None:
         raise HTTPException(status_code=409, detail="Run setup first")
+    # setup/verify is unauthenticated (allowlisted) and only valid during first-run,
+    # before recovery codes are issued. Once issued, setup is complete; reuse would let
+    # anyone with a single TOTP code rotate recovery codes. Post-setup rotation goes
+    # through /auth/regenerate-recovery-codes (password + TOTP).
+    if json.loads(owner["recovery_codes"]):
+        raise HTTPException(status_code=409, detail="Already set up")
     if not auth_core.verify_totp(owner["totp_secret"], body.code):
         raise HTTPException(status_code=400, detail="Invalid code")
     codes = auth_core.generate_recovery_codes()

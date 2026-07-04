@@ -153,7 +153,10 @@ def clear_screenshots():
 
 
 def get_screenshot_path(rel_path: str) -> Optional[Path]:
-    path = SCREENSHOTS_DIR / rel_path
+    base = SCREENSHOTS_DIR.resolve()
+    path = (base / rel_path).resolve()
+    if not path.is_relative_to(base):
+        return None
     if path.exists() and path.suffix in (".png", ".jpg", ".pdf"):
         return path
     return None
