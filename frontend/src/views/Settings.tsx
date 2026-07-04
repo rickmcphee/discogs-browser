@@ -222,7 +222,7 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
       {/* Collection Management */}
       <section>
         <h2 className="text-lg font-semibold text-white mb-1 text-left">Collection Management</h2>
-        <p className="text-sm text-gray-500 mb-4">
+        <p className="text-sm text-gray-500 mb-4 text-left">
           Sync your Discogs collection on a schedule. Leave blank to disable.
           Example: <code className="text-gray-400 font-mono">0 1 * * *</code> = 1 am daily.
         </p>
@@ -280,7 +280,7 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
       {/* Crawler Management */}
       <section>
         <h2 className="text-lg font-semibold text-white mb-1 text-left">Crawler Management</h2>
-        <p className="text-sm text-gray-500 mb-4">
+        <p className="text-sm text-gray-500 mb-4 text-left">
           Run price crawlers on a schedule. Leave blank to disable.
           Example: <code className="text-gray-400 font-mono">0 2 * * *</code> = 2 am daily.
         </p>
@@ -339,7 +339,7 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
       {crawlers.some((c) => c.login_url) && (
         <section>
           <h2 className="text-lg font-semibold text-white mb-1 text-left">Site Sessions</h2>
-          <p className="text-sm text-gray-500 mb-4">
+          <p className="text-sm text-gray-500 mb-4 text-left">
             Log in to a site in a real browser window so crawls run as an authenticated user, reducing bot detection.
             All site sessions are stored in a shared browser state file.
           </p>
@@ -404,7 +404,7 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
       <section>
         <h2 className="text-lg font-semibold text-white mb-3 text-left">Crawlers</h2>
         {crawlers.length === 0 ? (
-          <p className="text-gray-500 text-sm">No crawlers configured.</p>
+          <p className="text-gray-500 text-sm text-left">No crawlers configured.</p>
         ) : (
           <table className="w-full text-sm border-collapse">
             <thead>
@@ -448,7 +448,7 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
       {/* Account & Security */}
       <section>
         <h2 className="text-lg font-semibold text-white mb-1 text-left">Account & Security</h2>
-        <p className="text-sm text-gray-500 mb-4">
+        <p className="text-sm text-gray-500 mb-4 text-left">
           Change your password or log out of this session.
         </p>
         <table className="w-full text-sm border-collapse">
