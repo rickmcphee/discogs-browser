@@ -145,6 +145,13 @@ Setup flow:
    setup complete, clears the bootstrap token.
 
 After completion the setup endpoints return `409` and the wizard is locked.
+`setup/verify` is allowlisted (reachable without a session), so it must fail closed
+once setup is done: completion is detected by the owner's `recovery_codes` being
+non-empty (they are issued only by this step), and a subsequent call returns `409`
+without touching stored state. Without this guard, anyone who observes a single valid
+TOTP code — but not the password — could re-run `setup/verify` to wipe and reissue the
+owner's recovery codes. Post-setup recovery-code rotation goes through the
+session-authenticated `regenerate-recovery-codes` (password + TOTP), never here.
 
 ---
 
@@ -265,6 +272,8 @@ All new logic is pure or DB-backed — no Playwright, fully unit-testable:
 - session create / idle expiry / absolute expiry / revoke / logout
 - rate-limit lockout after N failures and cooldown reset
 - bootstrap-token gate: setup rejected without/with wrong token; locked after completion
+- `setup/verify` re-run guard: rejected with `409` once recovery codes are issued,
+  leaving the existing codes intact
 - middleware allowlist: allowlisted paths open, everything else 401 without session;
   everything blocked when no owner exists
 - `X-Requested-With` requirement on mutating requests

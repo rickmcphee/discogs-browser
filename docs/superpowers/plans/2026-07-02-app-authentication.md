@@ -723,6 +723,7 @@ Expected: FAIL — import error for `routers.session`.
 Create `backend/routers/session.py`:
 
 ```python
+import json
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -840,6 +841,11 @@ def setup_verify(body: SetupVerifyRequest):
     owner = db.get_owner(conn)
     if owner is None:
         raise HTTPException(status_code=409, detail="Run setup first")
+    # Allowlisted (unauthenticated) endpoint: fail closed once setup is complete.
+    # Completion == recovery codes issued. Otherwise anyone with a single TOTP code
+    # (but not the password) could re-run this to wipe/reissue the owner's codes.
+    if json.loads(owner["recovery_codes"]):
+        raise HTTPException(status_code=409, detail="Already set up")
     if not auth_core.verify_totp(owner["totp_secret"], body.code):
         raise HTTPException(status_code=400, detail="Invalid code")
     codes = auth_core.generate_recovery_codes()
