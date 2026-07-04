@@ -122,6 +122,24 @@ async def test_token_refreshed_when_expired(crawler):
     assert ebay_module._token == "test-token"
 
 
+@respx.mock
+async def test_search_constrains_category_by_format(crawler):
+    _mock_token(respx)
+    _mock_search(respx, [_ITEM])
+    await crawler.search(_RELEASE, page=None)
+    search_call = next(c for c in respx.calls if str(c.request.url).startswith(_SEARCH_URL))
+    assert search_call.request.url.params["category_ids"] == "176985"
+
+
+@respx.mock
+async def test_search_omits_category_for_unmapped_format(crawler):
+    _mock_token(respx)
+    _mock_search(respx, [{**_ITEM, "title": "Miles Davis Kind of Blue Box Set"}])
+    await crawler.search({**_RELEASE, "format": "Box Set"}, page=None)
+    search_call = next(c for c in respx.calls if str(c.request.url).startswith(_SEARCH_URL))
+    assert "category_ids" not in search_call.request.url.params
+
+
 # ---------------------------------------------------------------------------
 # _pick_matching_item format validation
 # ---------------------------------------------------------------------------

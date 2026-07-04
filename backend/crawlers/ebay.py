@@ -14,6 +14,14 @@ _FORMAT_KEYWORDS = {
     "Blu-ray":  [r"\bblu.?ray\b"],
 }
 
+# eBay US Music leaf-category IDs, used to constrain the Browse API search to
+# the release's format so the price sort operates within-format rather than
+# across all formats. Verified against ebay.com/b category URLs.
+_FORMAT_CATEGORY_IDS = {
+    "Vinyl": "176985",
+    "CD":    "176984",
+}
+
 log = get_logger("crawlers.ebay")
 
 CCMUSIC_SELLER = "collectorschoicemusic"
@@ -109,17 +117,22 @@ class Crawler:
             log.error("[CC Music/eBay] token fetch failed: %s", e)
             raise
 
+        params = {
+            "q": query,
+            "filter": f"sellers:{{{CCMUSIC_SELLER}}},buyingOptions:{{FIXED_PRICE}}",
+            "sort": "price+shippingCost",
+            "limit": "3",
+        }
+        category_id = _FORMAT_CATEGORY_IDS.get(release.get("format", ""))
+        if category_id:
+            params["category_ids"] = category_id
+
         try:
             async with httpx.AsyncClient() as client:
                 r = await client.get(
                     _EBAY_SEARCH_URL,
                     headers={"Authorization": f"Bearer {token}"},
-                    params={
-                        "q": query,
-                        "filter": f"sellers:{{{CCMUSIC_SELLER}}},buyingOptions:{{FIXED_PRICE}}",
-                        "sort": "price+shippingCost",
-                        "limit": "3",
-                    },
+                    params=params,
                 )
                 r.raise_for_status()
                 data = r.json()
