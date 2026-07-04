@@ -1,9 +1,10 @@
+import sqlite3
 import pytest
 from db import (
     get_connection, upsert_release, get_releases,
     upsert_listing, get_listings_for_release, get_crawl_status,
     get_missing_releases, register_crawler,
-    get_enabled_crawlers, set_crawler_enabled,
+    get_enabled_crawlers, set_crawler_enabled, init_db,
 )
 
 
@@ -55,6 +56,45 @@ def test_upsert_release_updates_on_conflict(conn):
     upsert_release(conn, _release("r123", title="Kind of Blue (Reissue)"))
     row = conn.execute("SELECT title FROM releases WHERE discogs_id='r123'").fetchone()
     assert row[0] == "Kind of Blue (Reissue)"
+
+
+def test_new_releases_default_flags(conn):
+    upsert_release(conn, _release("r1"))
+    row = conn.execute(
+        "SELECT in_collection, in_wishlist FROM releases WHERE discogs_id='r1'"
+    ).fetchone()
+    assert row[0] == 1
+    assert row[1] == 0
+
+
+def test_migration_backfills_flags_for_legacy_rows():
+    c = sqlite3.connect(":memory:")
+    c.row_factory = sqlite3.Row
+    c.execute("PRAGMA foreign_keys = ON")
+    c.execute("""
+        CREATE TABLE releases (
+            discogs_id TEXT PRIMARY KEY,
+            artist TEXT NOT NULL,
+            title TEXT NOT NULL,
+            year INTEGER,
+            label TEXT,
+            format TEXT,
+            discogs_price TEXT,
+            barcode TEXT,
+            cover_image_url TEXT,
+            discogs_url TEXT,
+            last_synced TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    c.execute("INSERT INTO releases (discogs_id, artist, title) VALUES ('r1', 'A', 'T')")
+    c.commit()
+    init_db(c)
+    row = c.execute(
+        "SELECT in_collection, in_wishlist FROM releases WHERE discogs_id='r1'"
+    ).fetchone()
+    assert row[0] == 1
+    assert row[1] == 0
+    c.close()
 
 
 def test_get_releases_returns_all(conn):

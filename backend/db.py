@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS releases (
     barcode TEXT,
     cover_image_url TEXT,
     discogs_url TEXT,
+    in_collection INTEGER NOT NULL DEFAULT 1,
+    in_wishlist INTEGER NOT NULL DEFAULT 0,
     last_synced TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -79,6 +81,10 @@ def init_db(conn: sqlite3.Connection):
         conn.execute("ALTER TABLE releases ADD COLUMN discogs_price TEXT")
     if "barcode" not in cols:
         conn.execute("ALTER TABLE releases ADD COLUMN barcode TEXT")
+    if "in_collection" not in cols:
+        conn.execute("ALTER TABLE releases ADD COLUMN in_collection INTEGER NOT NULL DEFAULT 1")
+    if "in_wishlist" not in cols:
+        conn.execute("ALTER TABLE releases ADD COLUMN in_wishlist INTEGER NOT NULL DEFAULT 0")
     # Migration: rename CC Music -> CC Music/eBay crawler row and update its listings
     row = conn.execute("SELECT id FROM crawlers WHERE site_name = 'CC Music'").fetchone()
     if row:
