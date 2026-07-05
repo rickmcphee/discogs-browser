@@ -200,6 +200,9 @@ class CrawlManager:
                         existing_row = conn.execute(
                             "SELECT barcode FROM releases WHERE discogs_id = ?", [rid]
                         ).fetchone()
+                        # Also tells us this is a first-time insert, not just missing a
+                        # barcode — used below to undo upsert_release's in_collection=1
+                        # default, which only applies to genuinely new rows.
                         is_new_release = existing_row is None
                         if existing_row is None or existing_row[0] is None:
                             try:
