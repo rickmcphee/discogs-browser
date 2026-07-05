@@ -1,5 +1,6 @@
 """Tests for CrawlManager — background task, subscribe/broadcast, stop."""
 import asyncio
+import sqlite3
 import pytest
 from crawl_manager import CrawlManager
 
@@ -259,3 +260,41 @@ async def test_price_crawl_and_stock_sync_can_run_concurrently(manager):
     crawl_event.set()
     stock_event.set()
     await asyncio.sleep(0.05)
+
+
+async def test_sync_stock_updates_crawler_last_run(manager, tmp_config_dir, monkeypatch):
+    import config as cfg_module
+    import db as db_module
+    import crawler as crawler_module
+    from db import register_crawler
+
+    conn = sqlite3.connect(cfg_module.DB_FILE)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db_module.init_db(conn)
+    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
+    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()[0]
+
+    before = conn.execute("SELECT last_run FROM crawlers WHERE id = ?", [crawler_id]).fetchone()[0]
+    assert before is None
+
+    class _FakeCrawler:
+        _db_id = crawler_id
+        _db_site_name = "Nuclear Blast"
+
+        async def crawl_catalog(self):
+            yield {
+                "artist": "Rob Zombie",
+                "title": "The Great Satan",
+                "price": 31.99,
+                "currency": "USD",
+                "url": "https://x/1",
+            }
+
+    monkeypatch.setattr(crawler_module, "load_enabled_crawlers", lambda enabled: [_FakeCrawler()])
+
+    await manager._sync_stock()
+
+    after = conn.execute("SELECT last_run FROM crawlers WHERE id = ?", [crawler_id]).fetchone()[0]
+    assert after is not None
+    conn.close()

@@ -45,6 +45,10 @@ def test_has_tag_false_when_tags_missing():
     assert has_tag({}, "pre-order") is False
 
 
+def test_has_tag_false_when_tags_is_none():
+    assert has_tag({"tags": None}, "pre-order") is False
+
+
 def test_strip_vendor_prefix_removes_matching_prefix():
     assert strip_vendor_prefix("NAILS - Every Bridge Burning", "NAILS") == "Every Bridge Burning"
 

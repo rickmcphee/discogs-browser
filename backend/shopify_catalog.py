@@ -26,7 +26,7 @@ async def iter_products(base_url: str, collection_slug: str) -> AsyncIterator[di
 def has_tag(product: dict, tag: str) -> bool:
     """Case-insensitive membership check against a Shopify product's tags array."""
     needle = tag.strip().lower()
-    return any((t or "").strip().lower() == needle for t in product.get("tags", []))
+    return any((t or "").strip().lower() == needle for t in product.get("tags") or [])
 
 
 def strip_vendor_prefix(title: str, vendor: str) -> str:

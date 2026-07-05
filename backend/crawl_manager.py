@@ -253,7 +253,7 @@ class CrawlManager:
     async def _sync_stock(self):
         import sqlite3
         import config as cfg_module
-        from db import get_enabled_crawlers, replace_stock_items
+        from db import get_enabled_crawlers, replace_stock_items, update_crawler_last_run
         from crawler import load_enabled_crawlers
 
         await self._broadcast({"status": "stock_sync_started"})
@@ -287,6 +287,7 @@ class CrawlManager:
 
                 replace_stock_items(conn, crawler._db_id, items)
                 total_synced += len(items)
+                update_crawler_last_run(conn, crawler._db_id)
                 log.info("[%s] Stock sync found %d items", crawler._db_site_name, len(items))
                 await self._broadcast({
                     "status": "stock_sync_progress",
