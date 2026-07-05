@@ -42,6 +42,48 @@ def test_init_db_creates_tables(conn):
     assert {"releases", "crawlers", "listings"} <= tables
 
 
+def test_init_db_creates_stock_items_table(conn):
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    assert "stock_items" in tables
+
+
+def test_stock_items_table_has_expected_columns(conn):
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(stock_items)").fetchall()}
+    assert {"crawler_id", "artist", "title", "format", "price", "currency", "url", "cover_image_url", "last_seen"} <= cols
+
+
+def test_new_crawlers_default_to_release_type(conn):
+    register_crawler(conn, "Amazon", "/path/amazon.py")
+    row = conn.execute("SELECT crawler_type FROM crawlers WHERE site_name='Amazon'").fetchone()
+    assert row[0] == "release"
+
+
+def test_register_crawler_accepts_catalog_type(conn):
+    register_crawler(conn, "Nuclear Blast", "/path/nuclearblast.py", crawler_type="catalog")
+    row = conn.execute("SELECT crawler_type FROM crawlers WHERE site_name='Nuclear Blast'").fetchone()
+    assert row[0] == "catalog"
+
+
+def test_migration_backfills_crawler_type_for_legacy_rows():
+    c = sqlite3.connect(":memory:")
+    c.row_factory = sqlite3.Row
+    c.execute("PRAGMA foreign_keys = ON")
+    c.execute("""
+        CREATE TABLE crawlers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            site_name TEXT NOT NULL UNIQUE,
+            module_path TEXT NOT NULL,
+            enabled BOOLEAN NOT NULL DEFAULT 1,
+            last_run TIMESTAMP
+        )
+    """)
+    c.execute("INSERT INTO crawlers (site_name, module_path) VALUES ('Amazon', '/path/amazon.py')")
+    c.commit()
+    init_db(c)
+    row = c.execute("SELECT crawler_type FROM crawlers WHERE site_name='Amazon'").fetchone()
+    assert row[0] == "release"
+
+
 # ---------------------------------------------------------------------------
 # releases
 # ---------------------------------------------------------------------------
