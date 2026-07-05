@@ -272,8 +272,10 @@ def get_listings_for_release(conn: sqlite3.Connection, release_id: str) -> dict:
     }
 
 
-def get_enabled_crawlers(conn: sqlite3.Connection) -> list[dict]:
-    rows = conn.execute("SELECT * FROM crawlers WHERE enabled = 1").fetchall()
+def get_enabled_crawlers(conn: sqlite3.Connection, crawler_type: str = "release") -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM crawlers WHERE enabled = 1 AND crawler_type = ?", [crawler_type]
+    ).fetchall()
     return [dict(row) for row in rows]
 
 

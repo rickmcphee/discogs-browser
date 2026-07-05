@@ -414,6 +414,28 @@ def test_get_enabled_crawlers(conn):
     assert "SiteB" not in names
 
 
+def test_get_enabled_crawlers_defaults_to_release_type(conn):
+    register_crawler(conn, "Amazon", "/path/amazon.py", crawler_type="release")
+    register_crawler(conn, "Nuclear Blast", "/path/nuclearblast.py", crawler_type="catalog")
+    result = get_enabled_crawlers(conn)
+    assert [c["site_name"] for c in result] == ["Amazon"]
+
+
+def test_get_enabled_crawlers_catalog_type(conn):
+    register_crawler(conn, "Amazon", "/path/amazon.py", crawler_type="release")
+    register_crawler(conn, "Nuclear Blast", "/path/nuclearblast.py", crawler_type="catalog")
+    result = get_enabled_crawlers(conn, crawler_type="catalog")
+    assert [c["site_name"] for c in result] == ["Nuclear Blast"]
+
+
+def test_get_enabled_crawlers_excludes_disabled(conn):
+    register_crawler(conn, "Nuclear Blast", "/path/nuclearblast.py", crawler_type="catalog")
+    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name='Nuclear Blast'").fetchone()[0]
+    set_crawler_enabled(conn, crawler_id, False)
+    result = get_enabled_crawlers(conn, crawler_type="catalog")
+    assert result == []
+
+
 def test_set_crawler_enabled(conn):
     register_crawler(conn, "TestSite", "/path/test.py")
     cid = conn.execute("SELECT id FROM crawlers WHERE site_name='TestSite'").fetchone()[0]
