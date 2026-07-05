@@ -6,6 +6,7 @@ from db import (
     get_missing_releases, register_crawler,
     get_enabled_crawlers, set_crawler_enabled, init_db,
     mark_in_collection, mark_in_wishlist, clear_wishlist_flags_not_in,
+    get_distinct_artists,
 )
 
 
@@ -253,6 +254,26 @@ def test_clear_wishlist_flags_not_in_preserves_in_collection(conn):
     ).fetchone()
     assert row[0] == 1
     assert row[1] == 0
+
+
+# ---------------------------------------------------------------------------
+# get_distinct_artists
+# ---------------------------------------------------------------------------
+
+def test_get_distinct_artists_scope_wishlist(conn):
+    upsert_release(conn, _release("r1", artist="Collection Artist"))
+    upsert_release(conn, _release("r2", artist="Wishlist Artist"))
+    mark_in_wishlist(conn, "r2")
+    conn.execute("UPDATE releases SET in_collection = 0 WHERE discogs_id = 'r2'")
+    artists = get_distinct_artists(conn, scope="wishlist")
+    assert artists == ["Wishlist Artist"]
+
+
+def test_get_distinct_artists_scope_none_returns_all(conn):
+    upsert_release(conn, _release("r1", artist="A"))
+    upsert_release(conn, _release("r2", artist="B"))
+    artists = get_distinct_artists(conn)
+    assert artists == ["A", "B"]
 
 
 # ---------------------------------------------------------------------------

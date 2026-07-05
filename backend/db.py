@@ -289,8 +289,13 @@ def update_crawler_last_run(conn: sqlite3.Connection, crawler_id: int):
 
 
 
-def get_distinct_artists(conn: sqlite3.Connection) -> list[str]:
-    rows = conn.execute("SELECT DISTINCT artist FROM releases ORDER BY artist").fetchall()
+def get_distinct_artists(conn: sqlite3.Connection, scope: Optional[str] = None) -> list[str]:
+    where = ""
+    if scope == "collection":
+        where = "WHERE in_collection = 1"
+    elif scope == "wishlist":
+        where = "WHERE in_wishlist = 1"
+    rows = conn.execute(f"SELECT DISTINCT artist FROM releases {where} ORDER BY artist").fetchall()
     return [row[0] for row in rows]
 
 
