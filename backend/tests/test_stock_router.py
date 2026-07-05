@@ -58,9 +58,9 @@ def test_list_stock_artist_param(client, conn):
         {"artist": "Rob Zombie", "title": "T1", "format": "Vinyl", "price": 1.0, "currency": "USD", "url": "https://x/1"},
         {"artist": "NAILS", "title": "T2", "format": "Vinyl", "price": 2.0, "currency": "USD", "url": "https://x/2"},
     ])
-    r = client.get("/api/stock?artist=NAILS")
+    r = client.get("/api/stock?artist=Nails")
     assert r.json()["total"] == 1
-    assert r.json()["items"][0]["artist"] == "NAILS"
+    assert r.json()["items"][0]["artist"] == "Nails"
 
 
 def test_list_stock_overlapping_param(client, conn):
@@ -89,7 +89,7 @@ def test_list_stock_artists_endpoint(client, conn):
     ])
     r = client.get("/api/stock/artists")
     assert r.status_code == 200
-    assert r.json()["artists"] == ["NAILS", "Rob Zombie"]
+    assert r.json()["artists"] == ["Nails", "Rob Zombie"]
 
 
 def test_list_stock_artists_overlapping_param(client, conn):

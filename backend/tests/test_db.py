@@ -506,6 +506,17 @@ def test_replace_stock_items_inserts_rows(conn_with_catalog_crawler):
     assert rows[0]["cover_image_url"] == "https://cdn.shopify.com/rz.png"
 
 
+def test_replace_stock_items_title_cases_artist(conn_with_catalog_crawler):
+    conn, crawler_id = conn_with_catalog_crawler
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "NAILS", "title": "T1", "format": "Vinyl", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+        {"artist": "rob zombie", "title": "T2", "format": "Vinyl", "price": 2.0, "currency": "USD", "url": "https://x/2"},
+    ])
+    rows = {r["title"]: r["artist"] for r in conn.execute("SELECT title, artist FROM stock_items WHERE crawler_id = ?", [crawler_id]).fetchall()}
+    assert rows["T1"] == "Nails"
+    assert rows["T2"] == "Rob Zombie"
+
+
 def test_replace_stock_items_handles_missing_cover_image(conn_with_catalog_crawler):
     conn, crawler_id = conn_with_catalog_crawler
     replace_stock_items(conn, crawler_id, [
@@ -640,7 +651,7 @@ def test_get_distinct_stock_artists(conn_with_catalog_crawler):
         {"artist": "Rob Zombie", "title": "T1", "format": "Vinyl", "price": 1.0, "currency": "USD", "url": "https://x/1"},
         {"artist": "NAILS", "title": "T2", "format": "Vinyl", "price": 2.0, "currency": "USD", "url": "https://x/2"},
     ])
-    assert get_distinct_stock_artists(conn) == ["NAILS", "Rob Zombie"]
+    assert get_distinct_stock_artists(conn) == ["Nails", "Rob Zombie"]
 
 
 def test_get_distinct_stock_artists_empty(conn):

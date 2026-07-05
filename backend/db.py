@@ -293,7 +293,7 @@ def replace_stock_items(conn: sqlite3.Connection, crawler_id: int, items: list[d
         INSERT INTO stock_items (crawler_id, artist, title, format, price, currency, url, cover_image_url, last_seen)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
     """, [
-        (crawler_id, item["artist"], item["title"], item.get("format"), item.get("price"),
+        (crawler_id, item["artist"].title(), item["title"], item.get("format"), item.get("price"),
          item.get("currency"), item["url"], item.get("cover_image_url"))
         for item in items
     ])
