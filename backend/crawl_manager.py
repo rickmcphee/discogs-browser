@@ -126,7 +126,7 @@ class CrawlManager:
         import sqlite3
         import config as cfg_module
         from config import load_config
-        from db import upsert_release, mark_in_collection, mark_in_wishlist, mark_not_in_collection, clear_wishlist_flags_not_in
+        from db import upsert_release, mark_in_collection, mark_in_wishlist, mark_not_in_collection, clear_wishlist_flags_not_in, delete_orphaned_releases
         from discogs import (
             get_identity, iter_collection_pages, iter_wantlist_pages,
             fetch_collection_fields, parse_release, fetch_release_barcode,
@@ -219,7 +219,11 @@ class CrawlManager:
                         wishlist_count += 1
                     log.info("Wishlist sync page %d/%d (%d items)", page, total_pages, wishlist_count)
                 cleared = clear_wishlist_flags_not_in(conn, wishlist_seen)
-                log.info("Wishlist sync complete: %d items, %d stale entries cleared", wishlist_count, cleared)
+                deleted = delete_orphaned_releases(conn)
+                log.info(
+                    "Wishlist sync complete: %d items, %d stale entries cleared, %d releases deleted",
+                    wishlist_count, cleared, len(deleted),
+                )
             finally:
                 conn.close()
 
