@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import App from '../App'
+import type { Release } from '../api/types'
 
 class MockEventSource {
   static instances: MockEventSource[] = []
@@ -13,22 +14,54 @@ class MockEventSource {
   }
 }
 
+const { release } = vi.hoisted(() => ({
+  release: {
+    discogs_id: 'r1',
+    artist: 'Pink Floyd',
+    title: 'The Wall',
+    year: 1979,
+    label: 'Harvest',
+    format: 'Vinyl',
+    discogs_price: null,
+    cover_image_url: '',
+    discogs_url: '',
+    last_synced: '',
+    listings: {},
+  } as Release,
+}))
+
 vi.mock('../api/client', () => ({
+  checkHealth: vi.fn().mockResolvedValue(true),
+  getAuthState: vi.fn().mockResolvedValue('authenticated'),
+  setUnauthorizedHandler: vi.fn(),
   refreshCollection: vi.fn().mockResolvedValue({ synced: 0, username: 'test' }),
   getCollectionStatus: vi.fn().mockResolvedValue({ total: 0, last_synced: null }),
   getCrawlStatus: vi.fn().mockResolvedValue({ total: 0, missing: 0, oldest_checked: null }),
-  getReleases: vi.fn().mockResolvedValue({ total: 0, page: 1, per_page: 50, releases: [] }),
-  getArtists: vi.fn().mockResolvedValue([]),
+  postCrawlStart: vi.fn().mockResolvedValue({ started: true, running: true }),
   getCrawlers: vi.fn().mockResolvedValue([]),
-  getSettings: vi.fn().mockResolvedValue({ discogs_token: '', anthropic_api_key: '' }),
+  openCrawlStream: vi.fn(() => new MockEventSource()),
+  getReleases: vi.fn().mockResolvedValue({ total: 1, page: 1, per_page: 50, releases: [release] }),
+  getArtists: vi.fn().mockResolvedValue(['Pink Floyd']),
+  getSettings: vi.fn().mockResolvedValue({
+    discogs_token: '', debug_screenshot_interval: 20, shuffle_crawl_order: true,
+    crawl_delay_seconds: 30, consecutive_failure_limit: 10, crawl_schedule: '',
+    crawl_schedule_mode: 'missing', collection_schedule: '', collection_schedule_mode: 'all',
+    ebay_app_id: '', ebay_cert_id: '', stock_schedule: '',
+  }),
   saveSettings: vi.fn(),
   setCrawlerEnabled: vi.fn(),
-  openCrawlStream: vi.fn(() => {
-    const src = new MockEventSource()
-    return src
-  }),
-  openDiscoverStream: vi.fn(() => new MockEventSource()),
+  getAuthStatus: vi.fn().mockResolvedValue({ active: false, active_site: null, has_state: false, state_mtime: null }),
+  startLogin: vi.fn(),
+  finishLogin: vi.fn(),
+  clearAuthState: vi.fn(),
+  changePassword: vi.fn(),
+  logout: vi.fn(),
   openLogsStream: vi.fn(() => new MockEventSource()),
+  screenshotUrl: vi.fn((path: string) => `/api/screenshots/${path}`),
+  clearLogs: vi.fn(),
+  getStock: vi.fn().mockResolvedValue({ total: 0, page: 1, per_page: 250, items: [] }),
+  getStockArtists: vi.fn().mockResolvedValue([]),
+  postStockSyncStart: vi.fn().mockResolvedValue({ started: true, running: true }),
 }))
 
 function getLastCrawlSource() {
@@ -40,27 +73,28 @@ beforeEach(() => {
   vi.clearAllMocks()
 })
 
+async function clickRefreshAndGetSource() {
+  const [button] = await screen.findAllByTitle('Refresh prices for this record')
+  fireEvent.click(button)
+  await waitFor(() => expect(getLastCrawlSource()).toBeDefined())
+  return getLastCrawlSource()
+}
+
 describe('crawl status bar', () => {
-  it('shows "Refreshing prices…" after Refresh Prices is clicked', async () => {
+  it('shows "Refreshing prices…" after a per-row refresh is clicked', async () => {
     render(<App />)
-    fireEvent.click(screen.getByRole('button', { name: /Refresh Prices/i }))
+    const src = await clickRefreshAndGetSource()
+    src.emit({ status: 'started', total: 1 })
     await waitFor(() =>
       expect(screen.getByText(/Refreshing prices/i)).toBeInTheDocument()
     )
   })
 
-  async function clickAndGetSource() {
-    fireEvent.click(screen.getByRole('button', { name: /Refresh Prices/i }))
-    // Wait for the async getCrawlStatus to resolve and openCrawlStream to be called
-    await waitFor(() => expect(getLastCrawlSource()).toBeDefined())
-    return getLastCrawlSource()
-  }
-
   it('shows artist, title, and site from the current crawl event', async () => {
     render(<App />)
-    const src = await clickAndGetSource()
+    const src = await clickRefreshAndGetSource()
     src.emit({ status: 'started', total: 2 })
-    src.emit({ status: 'found', release: 'The Wall', artist: 'Pink Floyd', site: 'Amazon', price: 24.99 })
+    src.emit({ status: 'found', discogs_id: 'r1', release: 'The Wall', artist: 'Pink Floyd', site: 'Amazon', price: 24.99 })
 
     await waitFor(() => expect(screen.getByText('Pink Floyd — The Wall')).toBeInTheDocument())
     await waitFor(() => expect(screen.getByText('Amazon')).toBeInTheDocument())
@@ -68,16 +102,16 @@ describe('crawl status bar', () => {
 
   it('shows X/total progress count', async () => {
     render(<App />)
-    const src = await clickAndGetSource()
+    const src = await clickRefreshAndGetSource()
     src.emit({ status: 'started', total: 4 })
-    src.emit({ status: 'not_found', release: 'Wish You Were Here', artist: 'Pink Floyd', site: 'Amazon' })
+    src.emit({ status: 'not_found', discogs_id: 'r1', release: 'Wish You Were Here', artist: 'Pink Floyd', site: 'Amazon' })
 
     await waitFor(() => expect(screen.getByText(/1\/4/)).toBeInTheDocument())
   })
 
   it('shows Done and Dismiss when complete', async () => {
     render(<App />)
-    const src = await clickAndGetSource()
+    const src = await clickRefreshAndGetSource()
     src.emit({ status: 'started', total: 1 })
     src.emit({ status: 'complete' })
 
@@ -87,7 +121,8 @@ describe('crawl status bar', () => {
 
   it('hides the status bar after Dismiss', async () => {
     render(<App />)
-    const src = await clickAndGetSource()
+    const src = await clickRefreshAndGetSource()
+    src.emit({ status: 'started', total: 1 })
     src.emit({ status: 'complete' })
 
     await waitFor(() => screen.getByRole('button', { name: /Dismiss/i }))

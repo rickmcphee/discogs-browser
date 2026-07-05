@@ -20,6 +20,8 @@ class MockEventSource {
 
 vi.mock('../api/client', () => ({
   openLogsStream: () => new MockEventSource(),
+  screenshotUrl: (path: string) => `/api/screenshots/${path}`,
+  clearLogs: vi.fn(),
 }))
 
 function emitLine(line: string) {
