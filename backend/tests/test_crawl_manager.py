@@ -192,3 +192,70 @@ async def test_crawl_and_sync_can_run_concurrently(manager):
     crawl_event.set()
     sync_event.set()
     await asyncio.sleep(0.05)
+
+
+# ---------------------------------------------------------------------------
+# stock sync task
+# ---------------------------------------------------------------------------
+
+async def test_stock_sync_not_running_initially(manager):
+    assert manager.stock_sync_running is False
+
+
+async def test_start_stock_sync_returns_true_when_idle(manager):
+    async def _fake_sync():
+        await asyncio.sleep(0)
+
+    manager._sync_stock = _fake_sync  # type: ignore
+    started = await manager.start_stock_sync()
+    assert started is True
+    await asyncio.sleep(0.01)
+
+
+async def test_start_stock_sync_returns_false_when_already_running(manager):
+    event = asyncio.Event()
+
+    async def _fake_sync():
+        await event.wait()
+
+    manager._sync_stock = _fake_sync  # type: ignore
+    await manager.start_stock_sync()
+    assert manager.stock_sync_running is True
+    second = await manager.start_stock_sync()
+    assert second is False
+    event.set()
+    await asyncio.sleep(0.01)
+
+
+async def test_stock_sync_running_false_after_completion(manager):
+    async def _instant():
+        pass
+
+    manager._sync_stock = _instant  # type: ignore
+    await manager.start_stock_sync()
+    await asyncio.sleep(0.05)
+    assert manager.stock_sync_running is False
+
+
+async def test_price_crawl_and_stock_sync_can_run_concurrently(manager):
+    crawl_event = asyncio.Event()
+    stock_event = asyncio.Event()
+
+    async def _fake_run(mode, release_id):
+        await crawl_event.wait()
+
+    async def _fake_stock_sync():
+        await stock_event.wait()
+
+    manager._run = _fake_run  # type: ignore
+    manager._sync_stock = _fake_stock_sync  # type: ignore
+
+    await manager.start("all")
+    await manager.start_stock_sync()
+
+    assert manager.running is True
+    assert manager.stock_sync_running is True
+
+    crawl_event.set()
+    stock_event.set()
+    await asyncio.sleep(0.05)

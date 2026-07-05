@@ -9,6 +9,7 @@ class CrawlManager:
     def __init__(self):
         self._task: Optional[asyncio.Task] = None
         self._sync_task: Optional[asyncio.Task] = None
+        self._stock_task: Optional[asyncio.Task] = None
         self._subscribers: list[asyncio.Queue] = []
         self._recent: list[dict] = []
 
@@ -237,6 +238,73 @@ class CrawlManager:
         except Exception as e:
             log.error("Collection sync failed: %s", e, exc_info=True)
             await self._broadcast({"status": "sync_error", "error": str(e)})
+
+    @property
+    def stock_sync_running(self) -> bool:
+        return self._stock_task is not None and not self._stock_task.done()
+
+    async def start_stock_sync(self) -> bool:
+        if self.stock_sync_running:
+            log.warning("Stock sync already running, ignoring start request")
+            return False
+        self._stock_task = asyncio.create_task(self._sync_stock())
+        return True
+
+    async def _sync_stock(self):
+        import sqlite3
+        import config as cfg_module
+        from db import get_enabled_crawlers, replace_stock_items
+        from crawler import load_enabled_crawlers
+
+        await self._broadcast({"status": "stock_sync_started"})
+        log.info("Stock sync started")
+
+        conn = sqlite3.connect(cfg_module.DB_FILE, check_same_thread=False, timeout=60)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA journal_mode = WAL")
+        try:
+            enabled = get_enabled_crawlers(conn, crawler_type="catalog")
+            crawlers = load_enabled_crawlers(enabled)
+            if not crawlers:
+                await self._broadcast({"status": "stock_sync_error", "error": "No enabled catalog crawlers"})
+                return
+
+            total_synced = 0
+            for crawler in crawlers:
+                items = []
+                try:
+                    async for item in crawler.crawl_catalog():
+                        items.append(item)
+                except Exception as e:
+                    log.error("[%s] Stock crawl failed: %s", crawler._db_site_name, e, exc_info=True)
+                    await self._broadcast({
+                        "status": "stock_sync_error",
+                        "error": str(e),
+                        "source": crawler._db_site_name,
+                    })
+                    continue
+
+                replace_stock_items(conn, crawler._db_id, items)
+                total_synced += len(items)
+                log.info("[%s] Stock sync found %d items", crawler._db_site_name, len(items))
+                await self._broadcast({
+                    "status": "stock_sync_progress",
+                    "synced": total_synced,
+                    "source": crawler._db_site_name,
+                })
+
+            await self._broadcast({"status": "stock_sync_complete", "synced": total_synced})
+            log.info("Stock sync complete: %d items", total_synced)
+
+        except asyncio.CancelledError:
+            log.info("Stock sync cancelled")
+            raise
+        except Exception as e:
+            log.error("Stock sync failed: %s", e, exc_info=True)
+            await self._broadcast({"status": "stock_sync_error", "error": str(e)})
+        finally:
+            conn.close()
 
 
 crawl_manager = CrawlManager()
