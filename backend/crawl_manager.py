@@ -124,11 +124,13 @@ class CrawlManager:
 
     async def _sync_collection(self, mode: str):
         import sqlite3
-        import time
         import config as cfg_module
         from config import load_config
-        from db import get_connection, upsert_release
-        from discogs import get_identity, iter_collection_pages, fetch_collection_fields, parse_release, fetch_release_barcode
+        from db import upsert_release, mark_in_collection, mark_in_wishlist, clear_wishlist_flags_not_in
+        from discogs import (
+            get_identity, iter_collection_pages, iter_wantlist_pages,
+            fetch_collection_fields, parse_release, fetch_release_barcode,
+        )
         import httpx
 
         await self._broadcast({"status": "sync_started"})
@@ -157,9 +159,12 @@ class CrawlManager:
 
             existing = None
             if mode == "new":
-                existing = {row[0] for row in conn.execute("SELECT discogs_id FROM releases").fetchall()}
+                existing = {row[0] for row in conn.execute(
+                    "SELECT discogs_id FROM releases WHERE in_collection = 1"
+                ).fetchall()}
 
             count = 0
+            wishlist_count = 0
             try:
                 for page, total_pages, items in iter_collection_pages(token, username):
                     for item in items:
@@ -180,14 +185,45 @@ class CrawlManager:
                         else:
                             release["barcode"] = existing_barcode[0]
                         upsert_release(conn, release)
+                        mark_in_collection(conn, rid)
                         count += 1
                     await self._broadcast({"status": "sync_progress", "synced": count, "page": page, "total_pages": total_pages})
                     log.info("Sync page %d/%d (%d releases)", page, total_pages, count)
+
+                wishlist_seen: set = set()
+                for page, total_pages, items in iter_wantlist_pages(token, username):
+                    for item in items:
+                        rid = f"r{item['basic_information']['id']}"
+                        wishlist_seen.add(rid)
+                        release = parse_release(item, price_field_id=None)
+                        release_id_int = item["basic_information"]["id"]
+                        existing_barcode = conn.execute(
+                            "SELECT barcode FROM releases WHERE discogs_id = ?", [rid]
+                        ).fetchone()
+                        if existing_barcode is None or existing_barcode[0] is None:
+                            try:
+                                release["barcode"] = fetch_release_barcode(token, release_id_int) or None
+                            except Exception as e:
+                                log.warning("Barcode fetch failed for wishlist release %s: %s", release_id_int, e)
+                            await asyncio.sleep(1.1)
+                        else:
+                            release["barcode"] = existing_barcode[0]
+                        upsert_release(conn, release)
+                        mark_in_wishlist(conn, rid)
+                        wishlist_count += 1
+                    log.info("Wishlist sync page %d/%d (%d items)", page, total_pages, wishlist_count)
+                cleared = clear_wishlist_flags_not_in(conn, wishlist_seen)
+                log.info("Wishlist sync complete: %d items, %d stale entries cleared", wishlist_count, cleared)
             finally:
                 conn.close()
 
-            await self._broadcast({"status": "sync_complete", "synced": count, "username": username})
-            log.info("Collection sync complete: %d releases for %s", count, username)
+            await self._broadcast({
+                "status": "sync_complete",
+                "synced": count,
+                "wishlist_synced": wishlist_count,
+                "username": username,
+            })
+            log.info("Collection sync complete: %d releases, %d wishlist items for %s", count, wishlist_count, username)
 
         except asyncio.CancelledError:
             log.info("Collection sync cancelled")
