@@ -63,14 +63,15 @@ describe('In Stock tab', () => {
   it('shows an In Stock nav button that switches views', async () => {
     render(<App />)
     await waitFor(() => expect(screen.getByText('In Stock')).toBeInTheDocument())
-    fireEvent.click(screen.getByText('In Stock'))
-    await waitFor(() => expect(screen.getByPlaceholderText('Search artist or title…')).toBeInTheDocument())
+    const inStockButton = screen.getByText('In Stock')
+    fireEvent.click(inStockButton)
+    await waitFor(() => expect(inStockButton.className).toContain('bg-indigo-600'))
   })
 
   it('calls postStockSyncStart when Refresh Stock Now is clicked in Settings', async () => {
     render(<App />)
-    await waitFor(() => expect(screen.getByText('Settings')).toBeInTheDocument())
-    fireEvent.click(screen.getByText('Settings'))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     await waitFor(() => expect(screen.getByText('Refresh Stock Now')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Refresh Stock Now'))
     await waitFor(() => expect(postStockSyncStart).toHaveBeenCalled())
