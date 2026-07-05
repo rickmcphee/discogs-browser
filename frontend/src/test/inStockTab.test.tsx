@@ -60,12 +60,12 @@ beforeEach(() => {
 })
 
 describe('In Stock tab', () => {
-  it('shows an In Stock nav button that switches views', async () => {
+  it('shows a Store nav button that switches views', async () => {
     render(<App />)
-    await waitFor(() => expect(screen.getByText('In Stock')).toBeInTheDocument())
-    const inStockButton = screen.getByText('In Stock')
-    fireEvent.click(inStockButton)
-    await waitFor(() => expect(inStockButton.className).toContain('bg-indigo-600'))
+    await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
+    const storeButton = screen.getByText('Store')
+    fireEvent.click(storeButton)
+    await waitFor(() => expect(storeButton.className).toContain('bg-indigo-600'))
   })
 
   it('calls postStockSyncStart when Refresh Stock Now is clicked in Settings', async () => {

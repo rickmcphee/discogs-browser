@@ -248,7 +248,7 @@ export default function App() {
                 : 'text-gray-400 hover:text-white'
             }`}
           >
-            In Stock
+            Store
           </button>
         </nav>
         <nav className="flex gap-2 ml-auto">
