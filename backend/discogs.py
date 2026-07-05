@@ -50,6 +50,27 @@ def iter_collection_pages(token: str, username: str):
         page += 1
 
 
+def iter_wantlist_pages(token: str, username: str):
+    """Yield (page, total_pages, items) for each page of the user's wantlist."""
+    page = 1
+    while True:
+        log.info("Fetching wantlist page %d for %s", page, username)
+        r = httpx.get(
+            f"{DISCOGS_API}/users/{username}/wants",
+            headers=_headers(token),
+            params={"page": page, "per_page": 100},
+        )
+        r.raise_for_status()
+        data = r.json()
+        total_pages = data["pagination"]["pages"]
+        items = data["wants"]
+        log.info("Page %d/%d — %d wantlist items on this page", page, total_pages, len(items))
+        yield page, total_pages, items
+        if page >= total_pages:
+            break
+        page += 1
+
+
 def fetch_release_barcode(token: str, release_id: int) -> str:
     """Return the first Barcode identifier for a release as digits only, or empty string."""
     r = httpx.get(
