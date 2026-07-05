@@ -144,6 +144,7 @@ def get_releases(
     page: int = 1,
     per_page: int = 50,
     release_id: Optional[str] = None,
+    scope: Optional[str] = None,
 ) -> dict:
     order_sql = "DESC" if order.lower() == "desc" else "ASC"
 
@@ -159,6 +160,10 @@ def get_releases(
     if artist:
         conditions.append("r.artist = ?")
         params.append(artist)
+    if scope == "collection":
+        conditions.append("r.in_collection = 1")
+    elif scope == "wishlist":
+        conditions.append("r.in_wishlist = 1")
 
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     count_sql = f"SELECT COUNT(*) FROM releases r {where}"
