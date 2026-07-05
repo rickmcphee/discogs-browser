@@ -129,19 +129,22 @@ export default function LogViewer() {
           ))}
         </div>
 
-        <div className="flex items-center gap-1 flex-1 min-w-40">
+        <div className="relative flex-1 min-w-40">
           <input
             type="text"
             value={msgFilter}
             onChange={(e) => setMsgFilter(e.target.value)}
             placeholder="Filter message (regexp)…"
-            className={`flex-1 bg-gray-800 border rounded px-2 py-0.5 text-gray-200 placeholder-gray-600 outline-none focus:border-indigo-500 ${
+            className={`w-full bg-gray-800 border rounded px-2 py-0.5 pr-6 text-gray-200 placeholder-gray-600 outline-none focus:border-indigo-500 ${
               regexError ? 'border-red-500' : 'border-gray-700'
             }`}
           />
-          {msgFilter && (
-            <button onClick={() => setMsgFilter('')} className="text-gray-500 hover:text-gray-300">✕</button>
-          )}
+          <button
+            onClick={() => setMsgFilter('')}
+            className="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
+          >
+            ✕
+          </button>
         </div>
 
         <div className="flex items-center gap-2 ml-auto">

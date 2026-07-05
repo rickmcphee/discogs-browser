@@ -134,13 +134,21 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Search bar */}
         <div className="px-4 py-3 border-b border-gray-800 bg-gray-950 flex items-center">
-          <input
-            type="text"
-            placeholder="Search artist or title…"
-            value={search}
-            onChange={(e) => { setSearch(e.target.value); setPage(1) }}
-            className="w-full max-w-md bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500"
-          />
+          <div className="relative w-full max-w-md">
+            <input
+              type="text"
+              placeholder="Search artist or title…"
+              value={search}
+              onChange={(e) => { setSearch(e.target.value); setPage(1) }}
+              className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 pr-7 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500"
+            />
+            <button
+              onClick={() => { setSearch(''); setPage(1) }}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
+            >
+              ✕
+            </button>
+          </div>
           <span className="ml-3 text-xs text-gray-500">{total} records</span>
           <div className="ml-auto flex items-center gap-1">
             <button
