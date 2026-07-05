@@ -5,7 +5,7 @@ from db import (
     upsert_listing, get_listings_for_release, get_crawl_status,
     get_missing_releases, register_crawler,
     get_enabled_crawlers, set_crawler_enabled, init_db,
-    mark_in_collection, mark_in_wishlist, clear_wishlist_flags_not_in,
+    mark_in_collection, mark_in_wishlist, mark_not_in_collection, clear_wishlist_flags_not_in,
     get_distinct_artists,
 )
 
@@ -229,6 +229,23 @@ def test_mark_in_wishlist(conn):
     mark_in_wishlist(conn, "r1")
     row = conn.execute("SELECT in_wishlist FROM releases WHERE discogs_id='r1'").fetchone()
     assert row[0] == 1
+
+
+def test_mark_not_in_collection(conn):
+    upsert_release(conn, _release("r1"))
+    mark_not_in_collection(conn, "r1")
+    row = conn.execute("SELECT in_collection FROM releases WHERE discogs_id='r1'").fetchone()
+    assert row[0] == 0
+
+
+def test_wishlist_only_release_not_in_collection_scope(conn):
+    upsert_release(conn, _release("r1"))
+    mark_in_wishlist(conn, "r1")
+    mark_not_in_collection(conn, "r1")
+    collection_result = get_releases(conn, scope="collection")
+    wishlist_result = get_releases(conn, scope="wishlist")
+    assert collection_result["total"] == 0
+    assert wishlist_result["total"] == 1
 
 
 def test_clear_wishlist_flags_not_in_removes_stale(conn):

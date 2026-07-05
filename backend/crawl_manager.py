@@ -126,7 +126,7 @@ class CrawlManager:
         import sqlite3
         import config as cfg_module
         from config import load_config
-        from db import upsert_release, mark_in_collection, mark_in_wishlist, clear_wishlist_flags_not_in
+        from db import upsert_release, mark_in_collection, mark_in_wishlist, mark_not_in_collection, clear_wishlist_flags_not_in
         from discogs import (
             get_identity, iter_collection_pages, iter_wantlist_pages,
             fetch_collection_fields, parse_release, fetch_release_barcode,
@@ -197,19 +197,22 @@ class CrawlManager:
                         wishlist_seen.add(rid)
                         release = parse_release(item, price_field_id=None)
                         release_id_int = item["basic_information"]["id"]
-                        existing_barcode = conn.execute(
+                        existing_row = conn.execute(
                             "SELECT barcode FROM releases WHERE discogs_id = ?", [rid]
                         ).fetchone()
-                        if existing_barcode is None or existing_barcode[0] is None:
+                        is_new_release = existing_row is None
+                        if existing_row is None or existing_row[0] is None:
                             try:
                                 release["barcode"] = fetch_release_barcode(token, release_id_int) or None
                             except Exception as e:
                                 log.warning("Barcode fetch failed for wishlist release %s: %s", release_id_int, e)
                             await asyncio.sleep(1.1)
                         else:
-                            release["barcode"] = existing_barcode[0]
+                            release["barcode"] = existing_row[0]
                         upsert_release(conn, release)
                         mark_in_wishlist(conn, rid)
+                        if is_new_release:
+                            mark_not_in_collection(conn, rid)
                         wishlist_count += 1
                     log.info("Wishlist sync page %d/%d (%d items)", page, total_pages, wishlist_count)
                 cleared = clear_wishlist_flags_not_in(conn, wishlist_seen)

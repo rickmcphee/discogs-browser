@@ -123,6 +123,11 @@ def mark_in_wishlist(conn: sqlite3.Connection, discogs_id: str):
     conn.commit()
 
 
+def mark_not_in_collection(conn: sqlite3.Connection, discogs_id: str):
+    conn.execute("UPDATE releases SET in_collection = 0 WHERE discogs_id = ?", [discogs_id])
+    conn.commit()
+
+
 def clear_wishlist_flags_not_in(conn: sqlite3.Connection, seen_ids: set) -> int:
     """Unset in_wishlist for releases previously flagged but absent from seen_ids.
     Returns the number of releases cleared."""
