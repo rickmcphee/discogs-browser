@@ -272,6 +272,65 @@ def get_listings_for_release(conn: sqlite3.Connection, release_id: str) -> dict:
     }
 
 
+def replace_stock_items(conn: sqlite3.Connection, crawler_id: int, items: list[dict]):
+    conn.execute("DELETE FROM stock_items WHERE crawler_id = ?", [crawler_id])
+    conn.executemany("""
+        INSERT INTO stock_items (crawler_id, artist, title, format, price, currency, url, cover_image_url, last_seen)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    """, [
+        (crawler_id, item["artist"], item["title"], item.get("format"), item.get("price"),
+         item.get("currency"), item["url"], item.get("cover_image_url"))
+        for item in items
+    ])
+    conn.commit()
+
+
+def get_stock_items(
+    conn: sqlite3.Connection,
+    search: Optional[str] = None,
+    artist: Optional[str] = None,
+    sort: str = "artist",
+    order: str = "asc",
+    page: int = 1,
+    per_page: int = 50,
+) -> dict:
+    order_sql = "DESC" if order.lower() == "desc" else "ASC"
+    allowed_sort = {"artist", "title", "format", "price"}
+    if sort not in allowed_sort:
+        sort = "artist"
+
+    conditions = []
+    params: list = []
+    if search:
+        conditions.append("(s.artist LIKE ? OR s.title LIKE ?)")
+        params.extend([f"%{search}%", f"%{search}%"])
+    if artist:
+        conditions.append("s.artist = ?")
+        params.append(artist)
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
+    total = conn.execute(f"SELECT COUNT(*) FROM stock_items s {where}", params).fetchone()[0]
+
+    offset = (page - 1) * per_page
+    null_order = "ASC" if order_sql == "ASC" else "DESC"
+    order_clause = f"CASE WHEN s.{sort} IS NULL THEN 1 ELSE 0 END {null_order}, s.{sort} {order_sql}"
+    rows = conn.execute(f"""
+        SELECT s.id, s.artist, s.title, s.format, s.price, s.currency, s.url, s.cover_image_url, s.last_seen, c.site_name AS source
+        FROM stock_items s
+        JOIN crawlers c ON c.id = s.crawler_id
+        {where}
+        ORDER BY {order_clause}
+        LIMIT ? OFFSET ?
+    """, params + [per_page, offset]).fetchall()
+
+    return {"total": total, "page": page, "per_page": per_page, "items": [dict(row) for row in rows]}
+
+
+def get_distinct_stock_artists(conn: sqlite3.Connection) -> list[str]:
+    rows = conn.execute("SELECT DISTINCT artist FROM stock_items ORDER BY artist").fetchall()
+    return [row[0] for row in rows]
+
+
 def get_enabled_crawlers(conn: sqlite3.Connection, crawler_type: str = "release") -> list[dict]:
     rows = conn.execute(
         "SELECT * FROM crawlers WHERE enabled = 1 AND crawler_type = ?", [crawler_type]
