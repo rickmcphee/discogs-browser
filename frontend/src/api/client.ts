@@ -133,6 +133,7 @@ export async function getStock(params: {
   order?: SortOrder
   page?: number
   per_page?: number
+  overlapping?: boolean
 }): Promise<StockResponse> {
   const q = new URLSearchParams()
   if (params.search) q.set('search', params.search)
@@ -141,13 +142,15 @@ export async function getStock(params: {
   if (params.order) q.set('order', params.order)
   if (params.page) q.set('page', String(params.page))
   if (params.per_page) q.set('per_page', String(params.per_page))
+  if (params.overlapping) q.set('overlapping', 'true')
   const r = await apiFetch(`/stock?${q}`)
   if (!r.ok) throw new Error(await r.text())
   return r.json()
 }
 
-export async function getStockArtists(): Promise<string[]> {
-  const r = await apiFetch('/stock/artists')
+export async function getStockArtists(overlapping?: boolean): Promise<string[]> {
+  const q = overlapping ? '?overlapping=true' : ''
+  const r = await apiFetch(`/stock/artists${q}`)
   if (!r.ok) throw new Error(await r.text())
   const data = await r.json()
   return data.artists

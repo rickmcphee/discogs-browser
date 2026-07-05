@@ -450,11 +450,11 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
         )}
       </section>
 
-      {/* Catalog Crawlers */}
+      {/* Store Crawlers */}
       <section>
-        <h2 className="text-lg font-semibold text-white mb-1 text-left">Catalog Crawlers</h2>
+        <h2 className="text-lg font-semibold text-white mb-1 text-left">Store Crawlers</h2>
         <p className="text-sm text-gray-500 mb-4 text-left">
-          Scan an entire site's in-stock catalog, independent of your collection. Results appear in the In Stock tab.
+          Scan an entire site's in-stock catalog, independent of your collection. Results appear in the Store tab.
           Leave schedule blank to disable.
         </p>
         <table className="w-full text-sm border-collapse">

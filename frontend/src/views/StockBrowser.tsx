@@ -11,6 +11,9 @@ export default function StockBrowser() {
   const [artists, setArtists] = useState<string[]>([])
   const [sort, setSort] = useState<StockSortField>('artist')
   const [order, setOrder] = useState<SortOrder>('asc')
+  const [filter, setFilter] = useState<'all' | 'overlapping' | 'recommended'>(
+    () => (localStorage.getItem('stockFilter') === 'overlapping' ? 'overlapping' : 'all')
+  )
   const [loading, setLoading] = useState(false)
   const [viewMode, setViewMode] = useState<'list' | 'tiles'>(
     () => (localStorage.getItem('collectionViewMode_instock') === 'tiles' ? 'tiles' : 'list')
@@ -25,17 +28,19 @@ export default function StockBrowser() {
         search: search || undefined,
         artist: selectedArtist || undefined,
         sort, order, page, per_page: PER_PAGE,
+        overlapping: filter === 'overlapping',
       })
       setItems(result.items)
       setTotal(result.total)
     } finally {
       setLoading(false)
     }
-  }, [search, selectedArtist, sort, order, page])
+  }, [search, selectedArtist, sort, order, page, filter])
 
   useEffect(() => { load() }, [load])
-  useEffect(() => { getStockArtists().then(setArtists) }, [])
+  useEffect(() => { getStockArtists(filter === 'overlapping').then(setArtists) }, [filter])
   useEffect(() => { localStorage.setItem('collectionViewMode_instock', viewMode) }, [viewMode])
+  useEffect(() => { localStorage.setItem('stockFilter', filter) }, [filter])
   useEffect(() => { tableScrollRef.current?.scrollTo({ top: 0 }) }, [selectedArtist])
 
   function toggleSort(field: StockSortField) {
@@ -94,7 +99,16 @@ export default function StockBrowser() {
             </button>
           </div>
           <span className="ml-3 text-xs text-gray-500">{total} items</span>
-          <div className="ml-auto flex items-center gap-1">
+          <div className="ml-auto flex items-center gap-2">
+            <select
+              value={filter}
+              onChange={(e) => { setFilter(e.target.value as 'all' | 'overlapping' | 'recommended'); setPage(1) }}
+              className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-indigo-500"
+            >
+              <option value="all">All</option>
+              <option value="overlapping">Overlapping</option>
+              <option value="recommended" disabled>Recommended</option>
+            </select>
             <button
               onClick={() => setViewMode('list')}
               title="List view"

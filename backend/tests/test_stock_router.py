@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from unittest.mock import AsyncMock
 
 import db as db_module
-from db import register_crawler, replace_stock_items
+from db import register_crawler, replace_stock_items, upsert_release, mark_in_collection
 from routers import stock as stock_router
 
 
@@ -58,9 +58,26 @@ def test_list_stock_artist_param(client, conn):
         {"artist": "Rob Zombie", "title": "T1", "format": "Vinyl", "price": 1.0, "currency": "USD", "url": "https://x/1"},
         {"artist": "NAILS", "title": "T2", "format": "Vinyl", "price": 2.0, "currency": "USD", "url": "https://x/2"},
     ])
-    r = client.get("/api/stock?artist=NAILS")
+    r = client.get("/api/stock?artist=Nails")
     assert r.json()["total"] == 1
-    assert r.json()["items"][0]["artist"] == "NAILS"
+    assert r.json()["items"][0]["artist"] == "Nails"
+
+
+def test_list_stock_overlapping_param(client, conn):
+    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
+    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name='Nuclear Blast'").fetchone()[0]
+    upsert_release(conn, {
+        "discogs_id": "r1", "artist": "rob zombie", "title": "T", "year": None, "label": None,
+        "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None, "discogs_url": None,
+    })
+    mark_in_collection(conn, "r1")
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "T1", "format": "Vinyl", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+        {"artist": "NAILS", "title": "T2", "format": "Vinyl", "price": 2.0, "currency": "USD", "url": "https://x/2"},
+    ])
+    r = client.get("/api/stock?overlapping=true")
+    assert r.json()["total"] == 1
+    assert r.json()["items"][0]["artist"] == "Rob Zombie"
 
 
 def test_list_stock_artists_endpoint(client, conn):
@@ -72,7 +89,23 @@ def test_list_stock_artists_endpoint(client, conn):
     ])
     r = client.get("/api/stock/artists")
     assert r.status_code == 200
-    assert r.json()["artists"] == ["NAILS", "Rob Zombie"]
+    assert r.json()["artists"] == ["Nails", "Rob Zombie"]
+
+
+def test_list_stock_artists_overlapping_param(client, conn):
+    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
+    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name='Nuclear Blast'").fetchone()[0]
+    upsert_release(conn, {
+        "discogs_id": "r1", "artist": "rob zombie", "title": "T", "year": None, "label": None,
+        "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None, "discogs_url": None,
+    })
+    mark_in_collection(conn, "r1")
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "T1", "format": "Vinyl", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+        {"artist": "NAILS", "title": "T2", "format": "Vinyl", "price": 2.0, "currency": "USD", "url": "https://x/2"},
+    ])
+    r = client.get("/api/stock/artists?overlapping=true")
+    assert r.json()["artists"] == ["Rob Zombie"]
 
 
 def test_start_stock_sync_calls_manager(client, monkeypatch):

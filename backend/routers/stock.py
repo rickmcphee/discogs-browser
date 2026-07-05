@@ -14,15 +14,16 @@ def list_stock(
     order: str = Query("asc"),
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=500),
+    overlapping: bool = Query(False),
 ):
     conn = get_connection()
-    return get_stock_items(conn, search=search, artist=artist, sort=sort, order=order, page=page, per_page=per_page)
+    return get_stock_items(conn, search=search, artist=artist, sort=sort, order=order, page=page, per_page=per_page, overlapping=overlapping)
 
 
 @router.get("/stock/artists")
-def list_stock_artists():
+def list_stock_artists(overlapping: bool = Query(False)):
     conn = get_connection()
-    return {"artists": get_distinct_stock_artists(conn)}
+    return {"artists": get_distinct_stock_artists(conn, overlapping=overlapping)}
 
 
 @router.post("/stock/sync/start")
