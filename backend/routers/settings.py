@@ -19,6 +19,7 @@ class SettingsUpdate(BaseModel):
     collection_schedule_mode: str = "all"
     ebay_app_id: str = ""
     ebay_cert_id: str = ""
+    stock_schedule: str = ""
 
 
 class CrawlerUpdate(BaseModel):
@@ -40,6 +41,7 @@ def get_settings():
         "collection_schedule_mode": config.get("collection_schedule_mode", "all"),
         "ebay_app_id": config.get("ebay_app_id", ""),
         "ebay_cert_id": config.get("ebay_cert_id", ""),
+        "stock_schedule": config.get("stock_schedule", ""),
     }
 
 
@@ -57,10 +59,12 @@ def update_settings(body: SettingsUpdate):
     config["collection_schedule_mode"] = body.collection_schedule_mode
     config["ebay_app_id"] = body.ebay_app_id
     config["ebay_cert_id"] = body.ebay_cert_id
+    config["stock_schedule"] = body.stock_schedule
     save_config(config)
     try:
         scheduler.configure(body.crawl_schedule, body.crawl_schedule_mode)
         scheduler.configure_sync(body.collection_schedule, body.collection_schedule_mode)
+        scheduler.configure_stock(body.stock_schedule)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"ok": True}

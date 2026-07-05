@@ -51,3 +51,24 @@ def configure_sync(cron_expression: str, mode: str = "all"):
     except Exception as e:
         log.warning("Invalid sync schedule expression %r: %s", cron_expression, e)
         raise ValueError(f"Invalid cron expression: {cron_expression}") from e
+
+
+def configure_stock(cron_expression: str):
+    if _scheduler.get_job("stock_sync"):
+        _scheduler.remove_job("stock_sync")
+
+    if not cron_expression:
+        log.info("Stock sync schedule cleared")
+        return
+
+    async def _run():
+        from crawl_manager import crawl_manager
+        log.info("Scheduled stock sync starting")
+        await crawl_manager.start_stock_sync()
+
+    try:
+        _scheduler.add_job(_run, CronTrigger.from_crontab(cron_expression), id="stock_sync")
+        log.info("Stock sync scheduled: %s", cron_expression)
+    except Exception as e:
+        log.warning("Invalid stock sync schedule expression %r: %s", cron_expression, e)
+        raise ValueError(f"Invalid cron expression: {cron_expression}") from e

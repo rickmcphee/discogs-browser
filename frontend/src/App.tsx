@@ -1,13 +1,14 @@
 import { useState, useEffect } from 'react'
 import RecordBrowser from './views/RecordBrowser'
+import StockBrowser from './views/StockBrowser'
 import Settings from './views/Settings'
 import LogViewer from './views/LogViewer'
 import LoginScreen from './views/LoginScreen'
 import SetupWizard from './views/SetupWizard'
-import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, getCrawlers, checkHealth, getAuthState, setUnauthorizedHandler } from './api/client'
+import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, getCrawlers, checkHealth, getAuthState, setUnauthorizedHandler } from './api/client'
 import type { CrawlEvent, CrawlStatus, CollectionStatus, Crawler, AuthState } from './api/types'
 
-type View = 'collection' | 'wishlist' | 'settings' | 'logs'
+type View = 'collection' | 'wishlist' | 'instock' | 'settings' | 'logs'
 
 export default function App() {
   const [view, setView] = useState<View>('collection')
@@ -77,6 +78,25 @@ export default function App() {
       if (event.status === 'sync_error') {
         setSyncing(false)
         setSyncMessage(`Sync failed: ${event.error}`)
+        return
+      }
+      if (event.status === 'stock_sync_started') {
+        setSyncing(true)
+        setSyncMessage('Syncing in-stock catalog…')
+        return
+      }
+      if (event.status === 'stock_sync_progress') {
+        setSyncMessage(`Syncing in-stock catalog… ${event.synced} items (${event.source})`)
+        return
+      }
+      if (event.status === 'stock_sync_complete') {
+        setSyncing(false)
+        setSyncMessage(`In-stock sync complete: ${event.synced} items`)
+        return
+      }
+      if (event.status === 'stock_sync_error') {
+        setSyncing(false)
+        setSyncMessage(`In-stock sync failed: ${event.error}`)
         return
       }
       if (event.status === 'started') {
@@ -177,6 +197,14 @@ export default function App() {
     })
   }
 
+  async function handleRefreshStock() {
+    try {
+      await postStockSyncStart()
+    } catch (e: any) {
+      setSyncMessage(`In-stock sync failed to start: ${e.message}`)
+    }
+  }
+
   if (authState === null) {
     return <div className="min-h-screen flex items-center justify-center text-gray-500">Loading…</div>
   }
@@ -211,6 +239,16 @@ export default function App() {
             }`}
           >
             Wishlist
+          </button>
+          <button
+            onClick={() => setView('instock')}
+            className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
+              view === 'instock'
+                ? 'bg-indigo-600 text-white'
+                : 'text-gray-400 hover:text-white'
+            }`}
+          >
+            In Stock
           </button>
         </nav>
         <nav className="flex gap-2 ml-auto">
@@ -259,7 +297,10 @@ export default function App() {
             crawlers={crawlers}
           />
         </div>
-        <div className={view === 'settings' ? 'h-full overflow-y-auto' : 'hidden'}><Settings crawlers={crawlers} onCrawlersChange={setCrawlers} onRefreshCollection={(mode) => handleRefresh(mode)} onRefreshPrices={(mode) => handleFindPrices(undefined, mode)} /></div>
+        <div className={view === 'instock' ? 'h-full' : 'hidden'}>
+          <StockBrowser />
+        </div>
+        <div className={view === 'settings' ? 'h-full overflow-y-auto' : 'hidden'}><Settings crawlers={crawlers} onCrawlersChange={setCrawlers} onRefreshCollection={(mode) => handleRefresh(mode)} onRefreshPrices={(mode) => handleFindPrices(undefined, mode)} onRefreshStock={handleRefreshStock} /></div>
         <div className={view === 'logs' ? 'h-full' : 'hidden'}><LogViewer /></div>
       </main>
 

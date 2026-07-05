@@ -8,6 +8,7 @@ from db import (
     mark_in_collection, mark_in_wishlist, mark_not_in_collection, clear_wishlist_flags_not_in,
     delete_orphaned_releases,
     get_distinct_artists,
+    replace_stock_items, get_stock_items, get_distinct_stock_artists,
 )
 
 
@@ -41,6 +42,48 @@ def conn_with_crawler(conn):
 def test_init_db_creates_tables(conn):
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
     assert {"releases", "crawlers", "listings"} <= tables
+
+
+def test_init_db_creates_stock_items_table(conn):
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    assert "stock_items" in tables
+
+
+def test_stock_items_table_has_expected_columns(conn):
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(stock_items)").fetchall()}
+    assert {"crawler_id", "artist", "title", "format", "price", "currency", "url", "cover_image_url", "last_seen"} <= cols
+
+
+def test_new_crawlers_default_to_release_type(conn):
+    register_crawler(conn, "Amazon", "/path/amazon.py")
+    row = conn.execute("SELECT crawler_type FROM crawlers WHERE site_name='Amazon'").fetchone()
+    assert row[0] == "release"
+
+
+def test_register_crawler_accepts_catalog_type(conn):
+    register_crawler(conn, "Nuclear Blast", "/path/nuclearblast.py", crawler_type="catalog")
+    row = conn.execute("SELECT crawler_type FROM crawlers WHERE site_name='Nuclear Blast'").fetchone()
+    assert row[0] == "catalog"
+
+
+def test_migration_backfills_crawler_type_for_legacy_rows():
+    c = sqlite3.connect(":memory:")
+    c.row_factory = sqlite3.Row
+    c.execute("PRAGMA foreign_keys = ON")
+    c.execute("""
+        CREATE TABLE crawlers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            site_name TEXT NOT NULL UNIQUE,
+            module_path TEXT NOT NULL,
+            enabled BOOLEAN NOT NULL DEFAULT 1,
+            last_run TIMESTAMP
+        )
+    """)
+    c.execute("INSERT INTO crawlers (site_name, module_path) VALUES ('Amazon', '/path/amazon.py')")
+    c.commit()
+    init_db(c)
+    row = c.execute("SELECT crawler_type FROM crawlers WHERE site_name='Amazon'").fetchone()
+    assert row[0] == "release"
 
 
 # ---------------------------------------------------------------------------
@@ -406,10 +449,172 @@ def test_get_enabled_crawlers(conn):
     assert "SiteB" not in names
 
 
+def test_get_enabled_crawlers_defaults_to_release_type(conn):
+    register_crawler(conn, "Amazon", "/path/amazon.py", crawler_type="release")
+    register_crawler(conn, "Nuclear Blast", "/path/nuclearblast.py", crawler_type="catalog")
+    result = get_enabled_crawlers(conn)
+    assert [c["site_name"] for c in result] == ["Amazon"]
+
+
+def test_get_enabled_crawlers_catalog_type(conn):
+    register_crawler(conn, "Amazon", "/path/amazon.py", crawler_type="release")
+    register_crawler(conn, "Nuclear Blast", "/path/nuclearblast.py", crawler_type="catalog")
+    result = get_enabled_crawlers(conn, crawler_type="catalog")
+    assert [c["site_name"] for c in result] == ["Nuclear Blast"]
+
+
+def test_get_enabled_crawlers_excludes_disabled(conn):
+    register_crawler(conn, "Nuclear Blast", "/path/nuclearblast.py", crawler_type="catalog")
+    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name='Nuclear Blast'").fetchone()[0]
+    set_crawler_enabled(conn, crawler_id, False)
+    result = get_enabled_crawlers(conn, crawler_type="catalog")
+    assert result == []
+
+
 def test_set_crawler_enabled(conn):
     register_crawler(conn, "TestSite", "/path/test.py")
     cid = conn.execute("SELECT id FROM crawlers WHERE site_name='TestSite'").fetchone()[0]
     set_crawler_enabled(conn, cid, False)
     row = conn.execute("SELECT enabled FROM crawlers WHERE id=?", (cid,)).fetchone()
     assert row[0] == 0
+
+
+# ---------------------------------------------------------------------------
+# stock items
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def conn_with_catalog_crawler(conn):
+    register_crawler(conn, "Nuclear Blast", "/path/nuclearblast.py", crawler_type="catalog")
+    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name='Nuclear Blast'").fetchone()[0]
+    return conn, crawler_id
+
+
+def test_replace_stock_items_inserts_rows(conn_with_catalog_crawler):
+    conn, crawler_id = conn_with_catalog_crawler
+    items = [
+        {"artist": "Rob Zombie", "title": "The Great Satan — Ghostly Black Vinyl", "format": "Vinyl",
+         "price": 31.99, "currency": "USD", "url": "https://shop.nuclearblast.com/products/rob-zombie",
+         "cover_image_url": "https://cdn.shopify.com/rz.png"},
+    ]
+    replace_stock_items(conn, crawler_id, items)
+    rows = conn.execute("SELECT artist, title, format, price, cover_image_url FROM stock_items WHERE crawler_id = ?", [crawler_id]).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["artist"] == "Rob Zombie"
+    assert rows[0]["format"] == "Vinyl"
+    assert rows[0]["price"] == 31.99
+    assert rows[0]["cover_image_url"] == "https://cdn.shopify.com/rz.png"
+
+
+def test_replace_stock_items_handles_missing_cover_image(conn_with_catalog_crawler):
+    conn, crawler_id = conn_with_catalog_crawler
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "A", "title": "T1", "format": "Vinyl", "price": 10.0, "currency": "USD", "url": "https://x/1"},
+    ])
+    row = conn.execute("SELECT cover_image_url FROM stock_items WHERE crawler_id = ?", [crawler_id]).fetchone()
+    assert row["cover_image_url"] is None
+
+
+def test_replace_stock_items_clears_previous_rows(conn_with_catalog_crawler):
+    conn, crawler_id = conn_with_catalog_crawler
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "A", "title": "T1", "format": "Vinyl", "price": 10.0, "currency": "USD", "url": "https://x/1"},
+    ])
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "B", "title": "T2", "format": "Vinyl", "price": 20.0, "currency": "USD", "url": "https://x/2"},
+    ])
+    rows = conn.execute("SELECT artist FROM stock_items WHERE crawler_id = ?", [crawler_id]).fetchall()
+    assert [r["artist"] for r in rows] == ["B"]
+
+
+def test_replace_stock_items_only_clears_own_crawler(conn):
+    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
+    register_crawler(conn, "Other Shop", "/path/other.py", crawler_type="catalog")
+    nb_id = conn.execute("SELECT id FROM crawlers WHERE site_name='Nuclear Blast'").fetchone()[0]
+    other_id = conn.execute("SELECT id FROM crawlers WHERE site_name='Other Shop'").fetchone()[0]
+    replace_stock_items(conn, nb_id, [{"artist": "A", "title": "T1", "format": "Vinyl", "price": 1.0, "currency": "USD", "url": "https://x/1"}])
+    replace_stock_items(conn, other_id, [{"artist": "B", "title": "T2", "format": "Vinyl", "price": 2.0, "currency": "USD", "url": "https://x/2"}])
+    replace_stock_items(conn, nb_id, [{"artist": "A2", "title": "T3", "format": "Vinyl", "price": 3.0, "currency": "USD", "url": "https://x/3"}])
+    remaining = {r["artist"] for r in conn.execute("SELECT artist FROM stock_items").fetchall()}
+    assert remaining == {"A2", "B"}
+
+
+def test_get_stock_items_joins_source_name(conn_with_catalog_crawler):
+    conn, crawler_id = conn_with_catalog_crawler
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "The Great Satan — Ghostly Black Vinyl", "format": "Vinyl",
+         "price": 31.99, "currency": "USD", "url": "https://x/1", "cover_image_url": "https://x/rz.png"},
+    ])
+    result = get_stock_items(conn)
+    assert result["total"] == 1
+    assert result["items"][0]["source"] == "Nuclear Blast"
+    assert result["items"][0]["price"] == 31.99
+    assert result["items"][0]["format"] == "Vinyl"
+    assert result["items"][0]["cover_image_url"] == "https://x/rz.png"
+
+
+def test_get_stock_items_search_filters_artist_and_title(conn_with_catalog_crawler):
+    conn, crawler_id = conn_with_catalog_crawler
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "The Great Satan", "format": "Vinyl", "price": 31.99, "currency": "USD", "url": "https://x/1"},
+        {"artist": "NAILS", "title": "Every Bridge Burning", "format": "Vinyl", "price": 25.99, "currency": "USD", "url": "https://x/2"},
+    ])
+    result = get_stock_items(conn, search="zombie")
+    assert result["total"] == 1
+    assert result["items"][0]["artist"] == "Rob Zombie"
+
+
+def test_get_stock_items_sorts_by_price(conn_with_catalog_crawler):
+    conn, crawler_id = conn_with_catalog_crawler
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "A", "title": "T1", "format": "Vinyl", "price": 30.0, "currency": "USD", "url": "https://x/1"},
+        {"artist": "B", "title": "T2", "format": "Vinyl", "price": 10.0, "currency": "USD", "url": "https://x/2"},
+    ])
+    result = get_stock_items(conn, sort="price", order="asc")
+    assert [i["artist"] for i in result["items"]] == ["B", "A"]
+
+
+def test_get_stock_items_sorts_by_format(conn_with_catalog_crawler):
+    conn, crawler_id = conn_with_catalog_crawler
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "A", "title": "T1", "format": "Vinyl", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+        {"artist": "B", "title": "T2", "format": "Cassette", "price": 2.0, "currency": "USD", "url": "https://x/2"},
+    ])
+    result = get_stock_items(conn, sort="format", order="asc")
+    assert [i["artist"] for i in result["items"]] == ["B", "A"]
+
+
+def test_get_stock_items_paginates(conn_with_catalog_crawler):
+    conn, crawler_id = conn_with_catalog_crawler
+    replace_stock_items(conn, crawler_id, [
+        {"artist": f"Artist {i}", "title": f"T{i}", "format": "Vinyl", "price": float(i), "currency": "USD", "url": f"https://x/{i}"}
+        for i in range(5)
+    ])
+    result = get_stock_items(conn, page=1, per_page=2)
+    assert result["total"] == 5
+    assert len(result["items"]) == 2
+
+
+def test_get_stock_items_filters_by_artist(conn_with_catalog_crawler):
+    conn, crawler_id = conn_with_catalog_crawler
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "T1", "format": "Vinyl", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+        {"artist": "NAILS", "title": "T2", "format": "Vinyl", "price": 2.0, "currency": "USD", "url": "https://x/2"},
+    ])
+    result = get_stock_items(conn, artist="Rob Zombie")
+    assert result["total"] == 1
+    assert result["items"][0]["artist"] == "Rob Zombie"
+
+
+def test_get_distinct_stock_artists(conn_with_catalog_crawler):
+    conn, crawler_id = conn_with_catalog_crawler
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "T1", "format": "Vinyl", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+        {"artist": "NAILS", "title": "T2", "format": "Vinyl", "price": 2.0, "currency": "USD", "url": "https://x/2"},
+    ])
+    assert get_distinct_stock_artists(conn) == ["NAILS", "Rob Zombie"]
+
+
+def test_get_distinct_stock_artists_empty(conn):
+    assert get_distinct_stock_artists(conn) == []
 

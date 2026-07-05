@@ -1,5 +1,6 @@
 """Tests for CrawlManager — background task, subscribe/broadcast, stop."""
 import asyncio
+import sqlite3
 import pytest
 from crawl_manager import CrawlManager
 
@@ -192,3 +193,108 @@ async def test_crawl_and_sync_can_run_concurrently(manager):
     crawl_event.set()
     sync_event.set()
     await asyncio.sleep(0.05)
+
+
+# ---------------------------------------------------------------------------
+# stock sync task
+# ---------------------------------------------------------------------------
+
+async def test_stock_sync_not_running_initially(manager):
+    assert manager.stock_sync_running is False
+
+
+async def test_start_stock_sync_returns_true_when_idle(manager):
+    async def _fake_sync():
+        await asyncio.sleep(0)
+
+    manager._sync_stock = _fake_sync  # type: ignore
+    started = await manager.start_stock_sync()
+    assert started is True
+    await asyncio.sleep(0.01)
+
+
+async def test_start_stock_sync_returns_false_when_already_running(manager):
+    event = asyncio.Event()
+
+    async def _fake_sync():
+        await event.wait()
+
+    manager._sync_stock = _fake_sync  # type: ignore
+    await manager.start_stock_sync()
+    assert manager.stock_sync_running is True
+    second = await manager.start_stock_sync()
+    assert second is False
+    event.set()
+    await asyncio.sleep(0.01)
+
+
+async def test_stock_sync_running_false_after_completion(manager):
+    async def _instant():
+        pass
+
+    manager._sync_stock = _instant  # type: ignore
+    await manager.start_stock_sync()
+    await asyncio.sleep(0.05)
+    assert manager.stock_sync_running is False
+
+
+async def test_price_crawl_and_stock_sync_can_run_concurrently(manager):
+    crawl_event = asyncio.Event()
+    stock_event = asyncio.Event()
+
+    async def _fake_run(mode, release_id):
+        await crawl_event.wait()
+
+    async def _fake_stock_sync():
+        await stock_event.wait()
+
+    manager._run = _fake_run  # type: ignore
+    manager._sync_stock = _fake_stock_sync  # type: ignore
+
+    await manager.start("all")
+    await manager.start_stock_sync()
+
+    assert manager.running is True
+    assert manager.stock_sync_running is True
+
+    crawl_event.set()
+    stock_event.set()
+    await asyncio.sleep(0.05)
+
+
+async def test_sync_stock_updates_crawler_last_run(manager, tmp_config_dir, monkeypatch):
+    import config as cfg_module
+    import db as db_module
+    import crawler as crawler_module
+    from db import register_crawler
+
+    conn = sqlite3.connect(cfg_module.DB_FILE)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db_module.init_db(conn)
+    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
+    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()[0]
+
+    before = conn.execute("SELECT last_run FROM crawlers WHERE id = ?", [crawler_id]).fetchone()[0]
+    assert before is None
+
+    class _FakeCrawler:
+        _db_id = crawler_id
+        _db_site_name = "Nuclear Blast"
+
+        async def crawl_catalog(self):
+            yield {
+                "artist": "Rob Zombie",
+                "title": "The Great Satan",
+                "price": 31.99,
+                "currency": "USD",
+                "url": "https://x/1",
+            }
+
+    monkeypatch.setattr(crawler_module, "load_enabled_crawlers", lambda enabled: [_FakeCrawler()])
+
+    await manager._sync_stock()
+
+    after = conn.execute("SELECT last_run FROM crawlers WHERE id = ?", [crawler_id]).fetchone()[0]
+    assert after is not None
+    conn.close()

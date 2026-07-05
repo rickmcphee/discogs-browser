@@ -26,7 +26,7 @@ vi.mock('../api/client', () => ({
   getArtists: vi.fn().mockResolvedValue(['Pink Floyd']),
 }))
 
-const crawler = { id: 1, site_name: 'Amazon', module_path: '', enabled: true, last_run: null, base_url: null, login_url: null }
+const crawler = { id: 1, site_name: 'Amazon', module_path: '', crawler_type: 'release' as const, enabled: true, last_run: null, base_url: null, login_url: null }
 
 beforeEach(() => {
   vi.clearAllMocks()

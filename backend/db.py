@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS crawlers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     site_name TEXT NOT NULL UNIQUE,
     module_path TEXT NOT NULL,
+    crawler_type TEXT NOT NULL DEFAULT 'release',
     enabled BOOLEAN NOT NULL DEFAULT 1,
     last_run TIMESTAMP
 );
@@ -39,6 +40,19 @@ CREATE TABLE IF NOT EXISTS listings (
     condition TEXT,
     last_checked TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(release_id, crawler_id)
+);
+
+CREATE TABLE IF NOT EXISTS stock_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    crawler_id INTEGER NOT NULL REFERENCES crawlers(id),
+    artist TEXT NOT NULL,
+    title TEXT NOT NULL,
+    format TEXT,
+    price REAL,
+    currency TEXT,
+    url TEXT NOT NULL,
+    cover_image_url TEXT,
+    last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS owner (
@@ -85,6 +99,9 @@ def init_db(conn: sqlite3.Connection):
         conn.execute("ALTER TABLE releases ADD COLUMN in_collection INTEGER NOT NULL DEFAULT 1")
     if "in_wishlist" not in cols:
         conn.execute("ALTER TABLE releases ADD COLUMN in_wishlist INTEGER NOT NULL DEFAULT 0")
+    crawler_cols = {row[1] for row in conn.execute("PRAGMA table_info(crawlers)").fetchall()}
+    if "crawler_type" not in crawler_cols:
+        conn.execute("ALTER TABLE crawlers ADD COLUMN crawler_type TEXT NOT NULL DEFAULT 'release'")
     # Migration: rename CC Music -> CC Music/eBay crawler row and update its listings
     row = conn.execute("SELECT id FROM crawlers WHERE site_name = 'CC Music'").fetchone()
     if row:
@@ -270,8 +287,69 @@ def get_listings_for_release(conn: sqlite3.Connection, release_id: str) -> dict:
     }
 
 
-def get_enabled_crawlers(conn: sqlite3.Connection) -> list[dict]:
-    rows = conn.execute("SELECT * FROM crawlers WHERE enabled = 1").fetchall()
+def replace_stock_items(conn: sqlite3.Connection, crawler_id: int, items: list[dict]):
+    conn.execute("DELETE FROM stock_items WHERE crawler_id = ?", [crawler_id])
+    conn.executemany("""
+        INSERT INTO stock_items (crawler_id, artist, title, format, price, currency, url, cover_image_url, last_seen)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    """, [
+        (crawler_id, item["artist"], item["title"], item.get("format"), item.get("price"),
+         item.get("currency"), item["url"], item.get("cover_image_url"))
+        for item in items
+    ])
+    conn.commit()
+
+
+def get_stock_items(
+    conn: sqlite3.Connection,
+    search: Optional[str] = None,
+    artist: Optional[str] = None,
+    sort: str = "artist",
+    order: str = "asc",
+    page: int = 1,
+    per_page: int = 50,
+) -> dict:
+    order_sql = "DESC" if order.lower() == "desc" else "ASC"
+    allowed_sort = {"artist", "title", "format", "price"}
+    if sort not in allowed_sort:
+        sort = "artist"
+
+    conditions = []
+    params: list = []
+    if search:
+        conditions.append("(s.artist LIKE ? OR s.title LIKE ?)")
+        params.extend([f"%{search}%", f"%{search}%"])
+    if artist:
+        conditions.append("s.artist = ?")
+        params.append(artist)
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
+    total = conn.execute(f"SELECT COUNT(*) FROM stock_items s {where}", params).fetchone()[0]
+
+    offset = (page - 1) * per_page
+    null_order = "ASC" if order_sql == "ASC" else "DESC"
+    order_clause = f"CASE WHEN s.{sort} IS NULL THEN 1 ELSE 0 END {null_order}, s.{sort} {order_sql}"
+    rows = conn.execute(f"""
+        SELECT s.id, s.artist, s.title, s.format, s.price, s.currency, s.url, s.cover_image_url, s.last_seen, c.site_name AS source
+        FROM stock_items s
+        JOIN crawlers c ON c.id = s.crawler_id
+        {where}
+        ORDER BY {order_clause}
+        LIMIT ? OFFSET ?
+    """, params + [per_page, offset]).fetchall()
+
+    return {"total": total, "page": page, "per_page": per_page, "items": [dict(row) for row in rows]}
+
+
+def get_distinct_stock_artists(conn: sqlite3.Connection) -> list[str]:
+    rows = conn.execute("SELECT DISTINCT artist FROM stock_items ORDER BY artist").fetchall()
+    return [row[0] for row in rows]
+
+
+def get_enabled_crawlers(conn: sqlite3.Connection, crawler_type: str = "release") -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM crawlers WHERE enabled = 1 AND crawler_type = ?", [crawler_type]
+    ).fetchall()
     return [dict(row) for row in rows]
 
 
@@ -294,12 +372,12 @@ def get_all_crawlers(conn: sqlite3.Connection) -> list[dict]:
     return result
 
 
-def register_crawler(conn: sqlite3.Connection, site_name: str, module_path: str):
+def register_crawler(conn: sqlite3.Connection, site_name: str, module_path: str, crawler_type: str = "release"):
     conn.execute("""
-        INSERT INTO crawlers (site_name, module_path, enabled)
-        VALUES (?, ?, 1)
-        ON CONFLICT(site_name) DO UPDATE SET module_path=excluded.module_path
-    """, [site_name, module_path])
+        INSERT INTO crawlers (site_name, module_path, crawler_type, enabled)
+        VALUES (?, ?, ?, 1)
+        ON CONFLICT(site_name) DO UPDATE SET module_path=excluded.module_path, crawler_type=excluded.crawler_type
+    """, [site_name, module_path, crawler_type])
     conn.commit()
 
 
