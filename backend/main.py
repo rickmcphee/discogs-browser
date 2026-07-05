@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from logging_config import setup_logging, get_logger
 from config import ensure_dirs, CRAWLERS_DIR, load_config, BOOTSTRAP_TOKEN_FILE
 from version import VERSION
+from crawler import load_crawler_from_path
 from db import get_connection, init_db, register_crawler, owner_exists
 from routers import collection, releases, settings, crawl, logs, screenshots, crawler_auth, health, session, stock
 from auth_middleware import AuthMiddleware
@@ -17,28 +18,11 @@ log = get_logger("main")
 BUNDLED_CRAWLERS_DIR = Path(__file__).parent / "crawlers"
 
 
-def _read_site_name(path: Path, fallback: str) -> str:
-    import re
-    try:
-        text = path.read_text()
-        m = re.search(r'site_name(?:\s*:\s*\w+)?\s*=\s*["\']([^"\']+)["\']', text)
-        if m:
-            return m.group(1)
-    except Exception:
-        pass
-    return fallback
-
-
-def _read_crawler_type(path: Path, fallback: str = "release") -> str:
-    import re
-    try:
-        text = path.read_text()
-        m = re.search(r'crawler_type(?:\s*:\s*\w+)?\s*=\s*["\']([^"\']+)["\']', text)
-        if m:
-            return m.group(1)
-    except Exception:
-        pass
-    return fallback
+def _crawler_metadata(path: Path, fallback_site_name: str) -> tuple[str, str]:
+    crawler = load_crawler_from_path(path)
+    site_name = getattr(crawler, "site_name", fallback_site_name)
+    crawler_type = getattr(crawler, "crawler_type", "release")
+    return site_name, crawler_type
 
 
 def seed_bundled_crawlers(conn):
@@ -54,8 +38,7 @@ def seed_bundled_crawlers(conn):
         dest = CRAWLERS_DIR / src.name
         shutil.copy2(src, dest)
         log.info("Synced bundled crawler %s -> %s", src.name, dest)
-        site_name = _read_site_name(dest, src.stem.replace("_", " ").title())
-        crawler_type = _read_crawler_type(dest)
+        site_name, crawler_type = _crawler_metadata(dest, src.stem.replace("_", " ").title())
         register_crawler(conn, site_name, str(dest), crawler_type)
         log.info("Registered bundled crawler: %s", site_name)
 
