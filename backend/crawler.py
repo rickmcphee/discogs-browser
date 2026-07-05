@@ -141,7 +141,7 @@ async def _reset_context(context, pw, stealth, screenshotter):
 async def crawl_releases(releases: list[dict], crawlers: list, conn, single: bool = False) -> AsyncIterator[dict]:
     from playwright.async_api import async_playwright
     from playwright_stealth import Stealth
-    from db import upsert_listing, update_crawler_last_run
+    from db import upsert_listing, update_crawler_last_run, delete_listings_for_release
     from screenshots import CrawlScreenshotter, new_session_dir
 
     stealth = Stealth()
@@ -171,6 +171,11 @@ async def crawl_releases(releases: list[dict], crawlers: list, conn, single: boo
         for release in releases:
             label = f"{release['artist']} — {release['title']}"
             log.info("Searching all sites for: %s", label)
+            # Clear this release's existing listings before re-searching, so a
+            # crawler that no longer finds a match correctly reports "not found"
+            # instead of leaving the previous crawl's stale price in place.
+            # Applies uniformly to bulk crawls and single-item refreshes alike.
+            delete_listings_for_release(conn, release["discogs_id"])
             for crawler in crawlers:
                 await asyncio.sleep(random.uniform(bulk_delay * 0.5, bulk_delay))
                 log.info("[%s] Searching: %s", crawler._db_site_name, label)

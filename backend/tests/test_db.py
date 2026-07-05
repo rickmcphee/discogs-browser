@@ -1,7 +1,7 @@
 import pytest
 from db import (
     get_connection, upsert_release, get_releases,
-    upsert_listing, get_listings_for_release, get_crawl_status,
+    upsert_listing, get_listings_for_release, delete_listings_for_release, get_crawl_status,
     get_missing_releases, register_crawler,
     get_enabled_crawlers, set_crawler_enabled,
 )
@@ -123,6 +123,26 @@ def test_get_listings_for_release(conn_with_crawler):
     listings = get_listings_for_release(conn, "r1")
     assert "Amazon" in listings
     assert listings["Amazon"]["price"] == 24.99
+
+
+def test_delete_listings_for_release(conn_with_crawler):
+    conn, crawler_id = conn_with_crawler
+    upsert_release(conn, _release("r1"))
+    upsert_listing(conn, "r1", crawler_id, {"url": "https://amazon.com/dp/123", "price": 24.99})
+    delete_listings_for_release(conn, "r1")
+    listings = get_listings_for_release(conn, "r1")
+    assert listings == {}
+
+
+def test_delete_listings_for_release_only_affects_target(conn_with_crawler):
+    conn, crawler_id = conn_with_crawler
+    upsert_release(conn, _release("r1"))
+    upsert_release(conn, _release("r2"))
+    upsert_listing(conn, "r1", crawler_id, {"url": "https://a.com", "price": 24.99})
+    upsert_listing(conn, "r2", crawler_id, {"url": "https://b.com", "price": 9.99})
+    delete_listings_for_release(conn, "r1")
+    assert get_listings_for_release(conn, "r1") == {}
+    assert get_listings_for_release(conn, "r2") != {}
 
 
 def test_get_listings_for_release_no_match(conn_with_crawler):

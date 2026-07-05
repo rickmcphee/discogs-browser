@@ -36,13 +36,19 @@ export default function CollectionBrowser({ onRefreshPrices, crawling, crawlingR
     processedCount.current = crawlEvents.length
 
     const foundEvents = newEvents.filter(e => e.status === 'found' && e.discogs_id && e.site)
-    if (foundEvents.length === 0) return
+    // The backend clears a release's stale listings before re-searching it (both
+    // for bulk crawls and single-item refreshes), so "not found" means genuinely
+    // not found — the already-loaded client state doesn't know that until we
+    // clear it here too.
+    const notFoundEvents = newEvents.filter(e => e.status === 'not_found' && e.discogs_id && e.site)
+    if (foundEvents.length === 0 && notFoundEvents.length === 0) return
 
     setReleases(prev => prev.map(r => {
-      const events = foundEvents.filter(e => e.discogs_id === r.discogs_id)
-      if (events.length === 0) return r
+      const found = foundEvents.filter(e => e.discogs_id === r.discogs_id)
+      const notFound = notFoundEvents.filter(e => e.discogs_id === r.discogs_id)
+      if (found.length === 0 && notFound.length === 0) return r
       const updatedListings = { ...r.listings }
-      for (const e of events) {
+      for (const e of found) {
         updatedListings[e.site!] = {
           url: updatedListings[e.site!]?.url ?? '',
           price: e.price ?? null,
@@ -51,6 +57,9 @@ export default function CollectionBrowser({ onRefreshPrices, crawling, crawlingR
           condition: updatedListings[e.site!]?.condition ?? null,
           last_checked: updatedListings[e.site!]?.last_checked ?? new Date().toISOString(),
         }
+      }
+      for (const e of notFound) {
+        delete updatedListings[e.site!]
       }
       return { ...r, listings: updatedListings }
     }))
