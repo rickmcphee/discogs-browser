@@ -6,6 +6,7 @@ from db import (
     get_missing_releases, register_crawler,
     get_enabled_crawlers, set_crawler_enabled, init_db,
     mark_in_collection, mark_in_wishlist, mark_not_in_collection, clear_wishlist_flags_not_in,
+    delete_orphaned_releases,
     get_distinct_artists,
 )
 
@@ -266,6 +267,39 @@ def test_wishlist_only_release_not_in_collection_scope(conn):
     wishlist_result = get_releases(conn, scope="wishlist")
     assert collection_result["total"] == 0
     assert wishlist_result["total"] == 1
+
+
+def test_delete_orphaned_releases_deletes_release_and_listings(conn_with_crawler):
+    conn, crawler_id = conn_with_crawler
+    upsert_release(conn, _release("r1"))
+    upsert_listing(conn, "r1", crawler_id, {"url": "https://a.com", "price": 9.99})
+    mark_not_in_collection(conn, "r1")  # in_wishlist already defaults to 0
+
+    deleted = delete_orphaned_releases(conn)
+
+    assert deleted == ["r1"]
+    assert conn.execute("SELECT 1 FROM releases WHERE discogs_id = 'r1'").fetchone() is None
+    assert conn.execute("SELECT 1 FROM listings WHERE release_id = 'r1'").fetchone() is None
+
+
+def test_delete_orphaned_releases_preserves_wishlist_only(conn):
+    upsert_release(conn, _release("r1"))
+    mark_not_in_collection(conn, "r1")
+    mark_in_wishlist(conn, "r1")
+
+    deleted = delete_orphaned_releases(conn)
+
+    assert deleted == []
+    assert conn.execute("SELECT 1 FROM releases WHERE discogs_id = 'r1'").fetchone() is not None
+
+
+def test_delete_orphaned_releases_preserves_collection_only(conn):
+    upsert_release(conn, _release("r1"))  # in_collection defaults to 1
+
+    deleted = delete_orphaned_releases(conn)
+
+    assert deleted == []
+    assert conn.execute("SELECT 1 FROM releases WHERE discogs_id = 'r1'").fetchone() is not None
 
 
 def test_clear_wishlist_flags_not_in_removes_stale(conn):

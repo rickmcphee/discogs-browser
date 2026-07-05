@@ -140,6 +140,21 @@ def clear_wishlist_flags_not_in(conn: sqlite3.Connection, seen_ids: set) -> int:
     return len(stale)
 
 
+def delete_orphaned_releases(conn: sqlite3.Connection) -> list[str]:
+    """Delete releases with neither in_collection nor in_wishlist set, along
+    with their listings. Returns the deleted discogs_ids."""
+    rows = conn.execute(
+        "SELECT discogs_id FROM releases WHERE in_collection = 0 AND in_wishlist = 0"
+    ).fetchall()
+    orphaned = [row[0] for row in rows]
+    for discogs_id in orphaned:
+        conn.execute("DELETE FROM listings WHERE release_id = ?", [discogs_id])
+        conn.execute("DELETE FROM releases WHERE discogs_id = ?", [discogs_id])
+    if orphaned:
+        conn.commit()
+    return orphaned
+
+
 def get_releases(
     conn: sqlite3.Connection,
     search: Optional[str] = None,
