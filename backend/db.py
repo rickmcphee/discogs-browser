@@ -230,6 +230,11 @@ def upsert_listing(conn: sqlite3.Connection, release_id: str, crawler_id: int, d
     conn.commit()
 
 
+def delete_listings_for_release(conn: sqlite3.Connection, release_id: str):
+    conn.execute("DELETE FROM listings WHERE release_id = ?", [release_id])
+    conn.commit()
+
+
 def get_listings_for_release(conn: sqlite3.Connection, release_id: str) -> dict:
     rows = conn.execute("""
         SELECT c.site_name, l.url, l.price, l.shipping, l.currency, l.condition, l.last_checked
