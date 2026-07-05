@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS releases (
     barcode TEXT,
     cover_image_url TEXT,
     discogs_url TEXT,
+    in_collection INTEGER NOT NULL DEFAULT 1,
+    in_wishlist INTEGER NOT NULL DEFAULT 0,
     last_synced TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -79,6 +81,10 @@ def init_db(conn: sqlite3.Connection):
         conn.execute("ALTER TABLE releases ADD COLUMN discogs_price TEXT")
     if "barcode" not in cols:
         conn.execute("ALTER TABLE releases ADD COLUMN barcode TEXT")
+    if "in_collection" not in cols:
+        conn.execute("ALTER TABLE releases ADD COLUMN in_collection INTEGER NOT NULL DEFAULT 1")
+    if "in_wishlist" not in cols:
+        conn.execute("ALTER TABLE releases ADD COLUMN in_wishlist INTEGER NOT NULL DEFAULT 0")
     # Migration: rename CC Music -> CC Music/eBay crawler row and update its listings
     row = conn.execute("SELECT id FROM crawlers WHERE site_name = 'CC Music'").fetchone()
     if row:
@@ -107,6 +113,33 @@ def upsert_release(conn: sqlite3.Connection, data: dict):
     conn.commit()
 
 
+def mark_in_collection(conn: sqlite3.Connection, discogs_id: str):
+    conn.execute("UPDATE releases SET in_collection = 1 WHERE discogs_id = ?", [discogs_id])
+    conn.commit()
+
+
+def mark_in_wishlist(conn: sqlite3.Connection, discogs_id: str):
+    conn.execute("UPDATE releases SET in_wishlist = 1 WHERE discogs_id = ?", [discogs_id])
+    conn.commit()
+
+
+def mark_not_in_collection(conn: sqlite3.Connection, discogs_id: str):
+    conn.execute("UPDATE releases SET in_collection = 0 WHERE discogs_id = ?", [discogs_id])
+    conn.commit()
+
+
+def clear_wishlist_flags_not_in(conn: sqlite3.Connection, seen_ids: set) -> int:
+    """Unset in_wishlist for releases previously flagged but absent from seen_ids.
+    Returns the number of releases cleared."""
+    rows = conn.execute("SELECT discogs_id FROM releases WHERE in_wishlist = 1").fetchall()
+    stale = [row[0] for row in rows if row[0] not in seen_ids]
+    if stale:
+        placeholders = ",".join("?" for _ in stale)
+        conn.execute(f"UPDATE releases SET in_wishlist = 0 WHERE discogs_id IN ({placeholders})", stale)
+        conn.commit()
+    return len(stale)
+
+
 def get_releases(
     conn: sqlite3.Connection,
     search: Optional[str] = None,
@@ -116,6 +149,7 @@ def get_releases(
     page: int = 1,
     per_page: int = 50,
     release_id: Optional[str] = None,
+    scope: Optional[str] = None,
 ) -> dict:
     order_sql = "DESC" if order.lower() == "desc" else "ASC"
 
@@ -131,6 +165,10 @@ def get_releases(
     if artist:
         conditions.append("r.artist = ?")
         params.append(artist)
+    if scope == "collection":
+        conditions.append("r.in_collection = 1")
+    elif scope == "wishlist":
+        conditions.append("r.in_wishlist = 1")
 
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     count_sql = f"SELECT COUNT(*) FROM releases r {where}"
@@ -256,8 +294,13 @@ def update_crawler_last_run(conn: sqlite3.Connection, crawler_id: int):
 
 
 
-def get_distinct_artists(conn: sqlite3.Connection) -> list[str]:
-    rows = conn.execute("SELECT DISTINCT artist FROM releases ORDER BY artist").fetchall()
+def get_distinct_artists(conn: sqlite3.Connection, scope: Optional[str] = None) -> list[str]:
+    where = ""
+    if scope == "collection":
+        where = "WHERE in_collection = 1"
+    elif scope == "wishlist":
+        where = "WHERE in_wishlist = 1"
+    rows = conn.execute(f"SELECT DISTINCT artist FROM releases {where} ORDER BY artist").fetchall()
     return [row[0] for row in rows]
 
 

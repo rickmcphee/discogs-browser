@@ -54,6 +54,7 @@ export interface Settings {
 
 export type SortField = 'artist' | 'title' | 'year' | 'label' | 'format' | string
 export type SortOrder = 'asc' | 'desc'
+export type RecordScope = 'collection' | 'wishlist'
 
 export interface CrawlEvent {
   status?: 'found' | 'not_found' | 'error' | 'complete' | 'started' | 'stopped' | 'ping'
@@ -68,6 +69,7 @@ export interface CrawlEvent {
   total_pages?: number
   page?: number
   synced?: number
+  wishlist_synced?: number
   username?: string
   screenshots?: string[]
 }

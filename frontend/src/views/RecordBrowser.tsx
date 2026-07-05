@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { getReleases, getArtists } from '../api/client'
-import type { Release, Crawler, SortField, SortOrder, CrawlEvent } from '../api/types'
+import type { Release, Crawler, SortField, SortOrder, CrawlEvent, RecordScope } from '../api/types'
 
 interface Props {
+  scope: RecordScope
   onRefreshPrices: (releaseId: string) => void
   crawling?: boolean
   crawlingReleaseId?: string
@@ -10,7 +11,7 @@ interface Props {
   crawlers?: Crawler[]
 }
 
-export default function CollectionBrowser({ onRefreshPrices, crawling, crawlingReleaseId, crawlEvents, crawlers = [] }: Props) {
+export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawlingReleaseId, crawlEvents, crawlers = [] }: Props) {
   const [releases, setReleases] = useState<Release[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -21,7 +22,7 @@ export default function CollectionBrowser({ onRefreshPrices, crawling, crawlingR
   const [order, setOrder] = useState<SortOrder>('asc')
   const [loading, setLoading] = useState(false)
   const [viewMode, setViewMode] = useState<'list' | 'tiles'>(
-    () => (localStorage.getItem('collectionViewMode') === 'tiles' ? 'tiles' : 'list')
+    () => (localStorage.getItem(`collectionViewMode_${scope}`) === 'tiles' ? 'tiles' : 'list')
   )
   const PER_PAGE = 250
 
@@ -70,17 +71,18 @@ export default function CollectionBrowser({ onRefreshPrices, crawling, crawlingR
         order,
         page,
         per_page: PER_PAGE,
+        scope,
       })
       setReleases(result.releases)
       setTotal(result.total)
     } finally {
       setLoading(false)
     }
-  }, [search, selectedArtist, sort, order, page])
+  }, [search, selectedArtist, sort, order, page, scope])
 
   useEffect(() => { load() }, [load])
-  useEffect(() => { getArtists().then(setArtists) }, [])
-  useEffect(() => { localStorage.setItem('collectionViewMode', viewMode) }, [viewMode])
+  useEffect(() => { getArtists(scope).then(setArtists) }, [scope])
+  useEffect(() => { localStorage.setItem(`collectionViewMode_${scope}`, viewMode) }, [viewMode, scope])
 
   function toggleSort(field: SortField) {
     if (sort === field) {
@@ -164,7 +166,9 @@ export default function CollectionBrowser({ onRefreshPrices, crawling, crawlingR
             {loading && <div className="text-center py-8 text-gray-500">Loading…</div>}
             {!loading && releases.length === 0 && (
               <div className="text-center py-8 text-gray-500">
-                No records found. Click "Refresh Collection" to sync from Discogs.
+                {scope === 'wishlist'
+                  ? 'No wishlist items yet. Add records to your wantlist on Discogs, then sync.'
+                  : 'No records found. Click "Refresh Collection" to sync from Discogs.'}
               </div>
             )}
             {!loading && releases.length > 0 && (
@@ -261,7 +265,9 @@ export default function CollectionBrowser({ onRefreshPrices, crawling, crawlingR
               {!loading && releases.length === 0 && (
                 <tr>
                   <td colSpan={8 + enabledCrawlers.length} className="text-center py-8 text-gray-500">
-                    No records found. Click "Refresh Collection" to sync from Discogs.
+                    {scope === 'wishlist'
+                      ? 'No wishlist items yet. Add records to your wantlist on Discogs, then sync.'
+                      : 'No records found. Click "Refresh Collection" to sync from Discogs.'}
                   </td>
                 </tr>
               )}

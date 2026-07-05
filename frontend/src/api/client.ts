@@ -1,6 +1,6 @@
 import type {
   ReleasesResponse, Crawler, Settings, SortField, SortOrder, CrawlStatus, CollectionStatus, ScreenshotSession,
-  AuthState, SetupResponse,
+  AuthState, SetupResponse, RecordScope,
 } from './types'
 
 const BASE = '/api'
@@ -48,6 +48,7 @@ export async function getReleases(params: {
   order?: SortOrder
   page?: number
   per_page?: number
+  scope?: RecordScope
 }): Promise<ReleasesResponse> {
   const q = new URLSearchParams()
   if (params.search) q.set('search', params.search)
@@ -56,13 +57,15 @@ export async function getReleases(params: {
   if (params.order) q.set('order', params.order)
   if (params.page) q.set('page', String(params.page))
   if (params.per_page) q.set('per_page', String(params.per_page))
+  if (params.scope) q.set('scope', params.scope)
   const r = await apiFetch(`/releases?${q}`)
   if (!r.ok) throw new Error(await r.text())
   return r.json()
 }
 
-export async function getArtists(): Promise<string[]> {
-  const r = await apiFetch('/artists')
+export async function getArtists(scope?: RecordScope): Promise<string[]> {
+  const q = scope ? `?scope=${scope}` : ''
+  const r = await apiFetch(`/artists${q}`)
   if (!r.ok) throw new Error(await r.text())
   const data = await r.json()
   return data.artists

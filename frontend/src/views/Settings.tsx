@@ -270,7 +270,7 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
                 </button>
               </td>
               <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
-                Sync collection from Discogs immediately. Fetches barcodes for new records.
+                Sync collection and wishlist from Discogs immediately. Fetches barcodes for new records.
               </td>
             </tr>
           </tbody>

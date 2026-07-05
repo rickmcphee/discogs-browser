@@ -13,16 +13,17 @@ def list_releases(
     order: str = Query("asc"),
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=500),
+    scope: Optional[str] = Query(None),
 ):
     conn = get_connection()
     return get_releases(conn, search=search, artist=artist, sort=sort,
-                        order=order, page=page, per_page=per_page)
+                        order=order, page=page, per_page=per_page, scope=scope)
 
 
 @router.get("/artists")
-def list_artists():
+def list_artists(scope: Optional[str] = Query(None)):
     conn = get_connection()
-    return {"artists": get_distinct_artists(conn)}
+    return {"artists": get_distinct_artists(conn, scope=scope)}
 
 
 @router.get("/crawlers")

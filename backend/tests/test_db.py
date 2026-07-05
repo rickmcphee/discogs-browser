@@ -1,9 +1,12 @@
+import sqlite3
 import pytest
 from db import (
     get_connection, upsert_release, get_releases,
     upsert_listing, get_listings_for_release, get_crawl_status,
     get_missing_releases, register_crawler,
-    get_enabled_crawlers, set_crawler_enabled,
+    get_enabled_crawlers, set_crawler_enabled, init_db,
+    mark_in_collection, mark_in_wishlist, mark_not_in_collection, clear_wishlist_flags_not_in,
+    get_distinct_artists,
 )
 
 
@@ -57,6 +60,45 @@ def test_upsert_release_updates_on_conflict(conn):
     assert row[0] == "Kind of Blue (Reissue)"
 
 
+def test_new_releases_default_flags(conn):
+    upsert_release(conn, _release("r1"))
+    row = conn.execute(
+        "SELECT in_collection, in_wishlist FROM releases WHERE discogs_id='r1'"
+    ).fetchone()
+    assert row[0] == 1
+    assert row[1] == 0
+
+
+def test_migration_backfills_flags_for_legacy_rows():
+    c = sqlite3.connect(":memory:")
+    c.row_factory = sqlite3.Row
+    c.execute("PRAGMA foreign_keys = ON")
+    c.execute("""
+        CREATE TABLE releases (
+            discogs_id TEXT PRIMARY KEY,
+            artist TEXT NOT NULL,
+            title TEXT NOT NULL,
+            year INTEGER,
+            label TEXT,
+            format TEXT,
+            discogs_price TEXT,
+            barcode TEXT,
+            cover_image_url TEXT,
+            discogs_url TEXT,
+            last_synced TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    c.execute("INSERT INTO releases (discogs_id, artist, title) VALUES ('r1', 'A', 'T')")
+    c.commit()
+    init_db(c)
+    row = c.execute(
+        "SELECT in_collection, in_wishlist FROM releases WHERE discogs_id='r1'"
+    ).fetchone()
+    assert row[0] == 1
+    assert row[1] == 0
+    c.close()
+
+
 def test_get_releases_returns_all(conn):
     for i in range(3):
         upsert_release(conn, _release(f"r{i}", artist=f"Artist {i}", title=f"T{i}"))
@@ -85,6 +127,44 @@ def test_get_releases_by_id(conn):
     result = get_releases(conn, release_id="r99")
     assert result["total"] == 1
     assert result["releases"][0]["artist"] == "Specific"
+
+
+def test_get_releases_scope_collection(conn):
+    upsert_release(conn, _release("r1"))
+    upsert_release(conn, _release("r2"))
+    mark_in_wishlist(conn, "r2")
+    conn.execute("UPDATE releases SET in_collection = 0 WHERE discogs_id = 'r2'")
+    result = get_releases(conn, scope="collection")
+    ids = {r["discogs_id"] for r in result["releases"]}
+    assert ids == {"r1"}
+
+
+def test_get_releases_scope_wishlist(conn):
+    upsert_release(conn, _release("r1"))
+    upsert_release(conn, _release("r2"))
+    mark_in_wishlist(conn, "r2")
+    conn.execute("UPDATE releases SET in_collection = 0 WHERE discogs_id = 'r2'")
+    result = get_releases(conn, scope="wishlist")
+    ids = {r["discogs_id"] for r in result["releases"]}
+    assert ids == {"r2"}
+
+
+def test_get_releases_scope_none_returns_all(conn):
+    upsert_release(conn, _release("r1"))
+    upsert_release(conn, _release("r2"))
+    mark_in_wishlist(conn, "r2")
+    conn.execute("UPDATE releases SET in_collection = 0 WHERE discogs_id = 'r2'")
+    result = get_releases(conn)
+    assert result["total"] == 2
+
+
+def test_get_releases_scope_both_flags_appears_in_both(conn):
+    upsert_release(conn, _release("r1"))
+    mark_in_wishlist(conn, "r1")
+    collection_result = get_releases(conn, scope="collection")
+    wishlist_result = get_releases(conn, scope="wishlist")
+    assert collection_result["total"] == 1
+    assert wishlist_result["total"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +210,87 @@ def test_get_listings_for_release_no_match(conn_with_crawler):
     upsert_release(conn, _release("r1"))
     listings = get_listings_for_release(conn, "r1")
     assert listings == {}
+
+
+# ---------------------------------------------------------------------------
+# collection/wishlist flags
+# ---------------------------------------------------------------------------
+
+def test_mark_in_collection(conn):
+    upsert_release(conn, _release("r1"))
+    conn.execute("UPDATE releases SET in_collection = 0 WHERE discogs_id = 'r1'")
+    mark_in_collection(conn, "r1")
+    row = conn.execute("SELECT in_collection FROM releases WHERE discogs_id='r1'").fetchone()
+    assert row[0] == 1
+
+
+def test_mark_in_wishlist(conn):
+    upsert_release(conn, _release("r1"))
+    mark_in_wishlist(conn, "r1")
+    row = conn.execute("SELECT in_wishlist FROM releases WHERE discogs_id='r1'").fetchone()
+    assert row[0] == 1
+
+
+def test_mark_not_in_collection(conn):
+    upsert_release(conn, _release("r1"))
+    mark_not_in_collection(conn, "r1")
+    row = conn.execute("SELECT in_collection FROM releases WHERE discogs_id='r1'").fetchone()
+    assert row[0] == 0
+
+
+def test_wishlist_only_release_not_in_collection_scope(conn):
+    upsert_release(conn, _release("r1"))
+    mark_in_wishlist(conn, "r1")
+    mark_not_in_collection(conn, "r1")
+    collection_result = get_releases(conn, scope="collection")
+    wishlist_result = get_releases(conn, scope="wishlist")
+    assert collection_result["total"] == 0
+    assert wishlist_result["total"] == 1
+
+
+def test_clear_wishlist_flags_not_in_removes_stale(conn):
+    upsert_release(conn, _release("r1"))
+    upsert_release(conn, _release("r2"))
+    mark_in_wishlist(conn, "r1")
+    mark_in_wishlist(conn, "r2")
+    cleared = clear_wishlist_flags_not_in(conn, {"r1"})
+    assert cleared == 1
+    row1 = conn.execute("SELECT in_wishlist FROM releases WHERE discogs_id='r1'").fetchone()
+    row2 = conn.execute("SELECT in_wishlist FROM releases WHERE discogs_id='r2'").fetchone()
+    assert row1[0] == 1
+    assert row2[0] == 0
+
+
+def test_clear_wishlist_flags_not_in_preserves_in_collection(conn):
+    upsert_release(conn, _release("r1"))
+    mark_in_collection(conn, "r1")
+    mark_in_wishlist(conn, "r1")
+    clear_wishlist_flags_not_in(conn, set())
+    row = conn.execute(
+        "SELECT in_collection, in_wishlist FROM releases WHERE discogs_id='r1'"
+    ).fetchone()
+    assert row[0] == 1
+    assert row[1] == 0
+
+
+# ---------------------------------------------------------------------------
+# get_distinct_artists
+# ---------------------------------------------------------------------------
+
+def test_get_distinct_artists_scope_wishlist(conn):
+    upsert_release(conn, _release("r1", artist="Collection Artist"))
+    upsert_release(conn, _release("r2", artist="Wishlist Artist"))
+    mark_in_wishlist(conn, "r2")
+    conn.execute("UPDATE releases SET in_collection = 0 WHERE discogs_id = 'r2'")
+    artists = get_distinct_artists(conn, scope="wishlist")
+    assert artists == ["Wishlist Artist"]
+
+
+def test_get_distinct_artists_scope_none_returns_all(conn):
+    upsert_release(conn, _release("r1", artist="A"))
+    upsert_release(conn, _release("r2", artist="B"))
+    artists = get_distinct_artists(conn)
+    assert artists == ["A", "B"]
 
 
 # ---------------------------------------------------------------------------

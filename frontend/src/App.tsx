@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import CollectionBrowser from './views/CollectionBrowser'
+import RecordBrowser from './views/RecordBrowser'
 import Settings from './views/Settings'
 import LogViewer from './views/LogViewer'
 import LoginScreen from './views/LoginScreen'
@@ -7,7 +7,7 @@ import SetupWizard from './views/SetupWizard'
 import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, getCrawlers, checkHealth, getAuthState, setUnauthorizedHandler } from './api/client'
 import type { CrawlEvent, CrawlStatus, CollectionStatus, Crawler, AuthState } from './api/types'
 
-type View = 'collection' | 'settings' | 'logs'
+type View = 'collection' | 'wishlist' | 'settings' | 'logs'
 
 export default function App() {
   const [view, setView] = useState<View>('collection')
@@ -70,7 +70,8 @@ export default function App() {
       }
       if (event.status === 'sync_complete') {
         setSyncing(false)
-        setSyncMessage(`Synced ${event.synced} records for ${event.username}`)
+        const wishlistPart = event.wishlist_synced != null ? `, ${event.wishlist_synced} wishlist items` : ''
+        setSyncMessage(`Synced ${event.synced} records for ${event.username}${wishlistPart}`)
         return
       }
       if (event.status === 'sync_error') {
@@ -190,7 +191,7 @@ export default function App() {
     <div className="h-screen bg-gray-950 text-gray-100 flex flex-col overflow-hidden">
       {/* Header */}
       <header className="bg-gray-900 border-b border-gray-800 px-6 py-3 flex items-center gap-4">
-<nav className="flex gap-2 flex-1">
+        <nav className="flex gap-2">
           <button
             onClick={() => setView('collection')}
             className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
@@ -201,6 +202,18 @@ export default function App() {
           >
             Collection
           </button>
+          <button
+            onClick={() => setView('wishlist')}
+            className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
+              view === 'wishlist'
+                ? 'bg-indigo-600 text-white'
+                : 'text-gray-400 hover:text-white'
+            }`}
+          >
+            Wishlist
+          </button>
+        </nav>
+        <nav className="flex gap-2 ml-auto">
           <button
             onClick={() => setView('settings')}
             className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
@@ -227,7 +240,18 @@ export default function App() {
       {/* Main */}
       <main className="flex-1 overflow-hidden">
         <div className={view === 'collection' ? 'h-full' : 'hidden'}>
-          <CollectionBrowser
+          <RecordBrowser
+            scope="collection"
+            onRefreshPrices={(id) => handleFindPrices(id)}
+            crawling={crawling}
+            crawlingReleaseId={crawlingReleaseId}
+            crawlEvents={crawlEvents}
+            crawlers={crawlers}
+          />
+        </div>
+        <div className={view === 'wishlist' ? 'h-full' : 'hidden'}>
+          <RecordBrowser
+            scope="wishlist"
             onRefreshPrices={(id) => handleFindPrices(id)}
             crawling={crawling}
             crawlingReleaseId={crawlingReleaseId}
