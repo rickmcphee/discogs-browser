@@ -26,7 +26,7 @@ class Crawler:
         is_preorder = has_tag(product, _PREORDER_TAG)
 
         items = []
-        for variant in product.get("variants", []):
+        for variant in product.get("variants") or []:
             if not variant.get("available") and not is_preorder:
                 continue
             variant_title = variant.get("title", "")

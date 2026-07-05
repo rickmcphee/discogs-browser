@@ -148,6 +148,15 @@ async def test_preorder_tag_matching_is_case_insensitive(crawler):
     assert all("(Pre-Order)" in item["title"] for item in items)
 
 
+@respx.mock
+async def test_crawl_catalog_skips_product_with_null_variants(crawler):
+    product = {**_PRODUCT, "variants": None}
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(return_value=_page_response([product]))
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "2"}).mock(return_value=_page_response([]))
+    items = [item async for item in crawler.crawl_catalog()]
+    assert items == []
+
+
 def test_site_metadata():
     assert Crawler.site_name == "Nuclear Blast"
     assert Crawler.base_url == "https://shop.nuclearblast.com"
