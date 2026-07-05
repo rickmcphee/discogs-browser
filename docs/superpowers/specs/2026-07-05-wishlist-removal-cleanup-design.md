@@ -48,9 +48,10 @@ def delete_orphaned_releases(conn: sqlite3.Connection) -> list[str]:
 ```
 
 It selects `discogs_id` from `releases` where `in_collection = 0 AND
-in_wishlist = 0`, calls the existing `delete_listings_for_release` for each
-before deleting the `releases` row (no `ON DELETE CASCADE` on `listings.
-release_id`), and commits once.
+in_wishlist = 0`, deletes each one's `listings` rows directly before deleting
+the `releases` row (no `ON DELETE CASCADE` on `listings.release_id` — and
+`delete_listings_for_release` isn't reused here since it commits per call,
+which would break the single-commit atomicity below), and commits once.
 
 `crawl_manager._sync_collection` calls it immediately after the existing
 `clear_wishlist_flags_not_in(conn, wishlist_seen)` call, in the same
