@@ -32,6 +32,7 @@ export interface Crawler {
   id: number
   site_name: string
   module_path: string
+  crawler_type: 'release' | 'catalog'
   enabled: boolean
   last_run: string | null
   base_url: string | null
@@ -50,6 +51,7 @@ export interface Settings {
   collection_schedule_mode?: 'all' | 'new'
   ebay_app_id?: string
   ebay_cert_id?: string
+  stock_schedule?: string
 }
 
 export type SortField = 'artist' | 'title' | 'year' | 'label' | 'format' | string
@@ -59,6 +61,7 @@ export type RecordScope = 'collection' | 'wishlist'
 export interface CrawlEvent {
   status?: 'found' | 'not_found' | 'error' | 'complete' | 'started' | 'stopped' | 'ping'
     | 'sync_started' | 'sync_progress' | 'sync_complete' | 'sync_error'
+    | 'stock_sync_started' | 'stock_sync_progress' | 'stock_sync_complete' | 'stock_sync_error'
   discogs_id?: string
   release?: string
   artist?: string
@@ -72,6 +75,7 @@ export interface CrawlEvent {
   wishlist_synced?: number
   username?: string
   screenshots?: string[]
+  source?: string
 }
 
 export interface CollectionStatus {
@@ -102,3 +106,25 @@ export interface SetupResponse {
   secret: string
   provisioning_uri: string
 }
+
+export interface StockItem {
+  id: number
+  artist: string
+  title: string
+  format: string | null
+  price: number | null
+  currency: string | null
+  url: string
+  cover_image_url: string | null
+  source: string
+  last_seen: string
+}
+
+export interface StockResponse {
+  total: number
+  page: number
+  per_page: number
+  items: StockItem[]
+}
+
+export type StockSortField = 'artist' | 'title' | 'format' | 'price'
