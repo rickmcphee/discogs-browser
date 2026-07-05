@@ -50,6 +50,9 @@ def title_variants(title: str) -> list:
 
 
 def validate_crawler_code(code: str) -> bool:
+    # Only checks for the release-crawler interface (async search()); doesn't
+    # know about the catalog crawler_type (async crawl_catalog()). Fine while
+    # discover.py's caller is unregistered — see the note there.
     try:
         tree = ast.parse(code)
     except SyntaxError:

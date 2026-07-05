@@ -7,6 +7,11 @@ from logging_config import get_logger
 
 log = get_logger("discover")
 
+# discover.router is not registered in main.py — this flow is currently dormant.
+# It only knows the release-crawler interface (search()); it has no awareness
+# of the catalog crawler_type (crawl_catalog()) added by In Stock. If this is
+# ever reactivated, add catalog support here and in validate_crawler_code
+# before trusting it to generate a Shopify-backed catalog crawler.
 CRAWLER_INTERFACE = '''
 from playwright.async_api import Page
 
