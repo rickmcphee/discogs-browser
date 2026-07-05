@@ -77,7 +77,7 @@ describe('StockBrowser', () => {
 
   it('renders an artist sidebar with All plus each distinct artist, and filters on click', async () => {
     render(<StockBrowser />)
-    await waitFor(() => expect(screen.getByText('All')).toBeTruthy())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'All' })).toBeTruthy())
     expect(screen.getByRole('button', { name: 'NAILS' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Rob Zombie' })).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'NAILS' }))
@@ -92,6 +92,60 @@ describe('StockBrowser', () => {
       const tileLink = screen.getByText('The Great Satan — Ghostly Black Vinyl').closest('a')
       expect(tileLink?.getAttribute('href')).toBe('https://shop.nuclearblast.com/products/rob-zombie')
     })
+  })
+
+  it('defaults to All, lists options in lexicographic order, and keeps Recommended disabled', async () => {
+    render(<StockBrowser />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    const select = screen.getByRole('combobox') as HTMLSelectElement
+    expect(select.value).toBe('all')
+    expect(Array.from(select.options).map((o) => o.text)).toEqual(['All', 'Overlapping', 'Recommended'])
+    expect((screen.getByRole('option', { name: 'All' }) as HTMLOptionElement).disabled).toBe(false)
+    expect((screen.getByRole('option', { name: 'Overlapping' }) as HTMLOptionElement).disabled).toBe(false)
+    expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(true)
+  })
+
+  it('filters to overlapping artists when Overlapping is selected', async () => {
+    render(<StockBrowser />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'overlapping' } })
+    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ overlapping: true })))
+  })
+
+  it('turns the filter back off when All is selected after Overlapping', async () => {
+    render(<StockBrowser />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'overlapping' } })
+    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ overlapping: true })))
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'all' } })
+    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ overlapping: false })))
+  })
+
+  it('combines search with the active Overlapping filter rather than replacing it', async () => {
+    render(<StockBrowser />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'overlapping' } })
+    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ overlapping: true })))
+    fireEvent.change(screen.getByPlaceholderText('Search artist or title…'), { target: { value: 'nails' } })
+    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ search: 'nails', overlapping: true })))
+  })
+
+  it('refetches the artist sidebar scoped to overlapping when Overlapping is selected', async () => {
+    render(<StockBrowser />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    expect(getStockArtists).toHaveBeenLastCalledWith(false)
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'overlapping' } })
+    await waitFor(() => expect(getStockArtists).toHaveBeenLastCalledWith(true))
+  })
+
+  it('persists the filter to localStorage under stockFilter and restores it on remount', async () => {
+    const { unmount } = render(<StockBrowser />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'overlapping' } })
+    await waitFor(() => expect(localStorage.getItem('stockFilter')).toBe('overlapping'))
+    unmount()
+    render(<StockBrowser />)
+    await waitFor(() => expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('overlapping'))
   })
 
   it('persists the view mode to localStorage under collectionViewMode_instock', async () => {

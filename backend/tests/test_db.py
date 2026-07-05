@@ -606,6 +606,34 @@ def test_get_stock_items_filters_by_artist(conn_with_catalog_crawler):
     assert result["items"][0]["artist"] == "Rob Zombie"
 
 
+def test_get_stock_items_overlapping_filters_to_collection_artists(conn_with_catalog_crawler):
+    conn, crawler_id = conn_with_catalog_crawler
+    upsert_release(conn, _release(discogs_id="r1", artist="rob zombie"))
+    mark_in_collection(conn, "r1")
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "T1", "format": "Vinyl", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+        {"artist": "NAILS", "title": "T2", "format": "Vinyl", "price": 2.0, "currency": "USD", "url": "https://x/2"},
+    ])
+    result = get_stock_items(conn, overlapping=True)
+    assert result["total"] == 1
+    assert result["items"][0]["artist"] == "Rob Zombie"
+
+
+def test_get_stock_items_search_and_overlapping_combine(conn_with_catalog_crawler):
+    conn, crawler_id = conn_with_catalog_crawler
+    upsert_release(conn, _release(discogs_id="r1", artist="rob zombie"))
+    upsert_release(conn, _release(discogs_id="r2", artist="nails"))
+    mark_in_collection(conn, "r1")
+    mark_in_collection(conn, "r2")
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "The Great Satan", "format": "Vinyl", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+        {"artist": "NAILS", "title": "Every Bridge Burning", "format": "Vinyl", "price": 2.0, "currency": "USD", "url": "https://x/2"},
+    ])
+    result = get_stock_items(conn, search="zombie", overlapping=True)
+    assert result["total"] == 1
+    assert result["items"][0]["artist"] == "Rob Zombie"
+
+
 def test_get_distinct_stock_artists(conn_with_catalog_crawler):
     conn, crawler_id = conn_with_catalog_crawler
     replace_stock_items(conn, crawler_id, [
@@ -617,4 +645,15 @@ def test_get_distinct_stock_artists(conn_with_catalog_crawler):
 
 def test_get_distinct_stock_artists_empty(conn):
     assert get_distinct_stock_artists(conn) == []
+
+
+def test_get_distinct_stock_artists_overlapping_filters_to_collection_artists(conn_with_catalog_crawler):
+    conn, crawler_id = conn_with_catalog_crawler
+    upsert_release(conn, _release(discogs_id="r1", artist="rob zombie"))
+    mark_in_collection(conn, "r1")
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "T1", "format": "Vinyl", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+        {"artist": "NAILS", "title": "T2", "format": "Vinyl", "price": 2.0, "currency": "USD", "url": "https://x/2"},
+    ])
+    assert get_distinct_stock_artists(conn, overlapping=True) == ["Rob Zombie"]
 

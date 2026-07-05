@@ -308,6 +308,7 @@ def get_stock_items(
     order: str = "asc",
     page: int = 1,
     per_page: int = 50,
+    overlapping: bool = False,
 ) -> dict:
     order_sql = "DESC" if order.lower() == "desc" else "ASC"
     allowed_sort = {"artist", "title", "format", "price"}
@@ -322,6 +323,8 @@ def get_stock_items(
     if artist:
         conditions.append("s.artist = ?")
         params.append(artist)
+    if overlapping:
+        conditions.append("LOWER(s.artist) IN (SELECT LOWER(artist) FROM releases WHERE in_collection = 1)")
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
     total = conn.execute(f"SELECT COUNT(*) FROM stock_items s {where}", params).fetchone()[0]
@@ -341,8 +344,9 @@ def get_stock_items(
     return {"total": total, "page": page, "per_page": per_page, "items": [dict(row) for row in rows]}
 
 
-def get_distinct_stock_artists(conn: sqlite3.Connection) -> list[str]:
-    rows = conn.execute("SELECT DISTINCT artist FROM stock_items ORDER BY artist").fetchall()
+def get_distinct_stock_artists(conn: sqlite3.Connection, overlapping: bool = False) -> list[str]:
+    where = "WHERE LOWER(artist) IN (SELECT LOWER(artist) FROM releases WHERE in_collection = 1)" if overlapping else ""
+    rows = conn.execute(f"SELECT DISTINCT artist FROM stock_items {where} ORDER BY artist").fetchall()
     return [row[0] for row in rows]
 
 
