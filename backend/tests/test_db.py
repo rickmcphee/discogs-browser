@@ -5,6 +5,7 @@ from db import (
     upsert_listing, get_listings_for_release, get_crawl_status,
     get_missing_releases, register_crawler,
     get_enabled_crawlers, set_crawler_enabled, init_db,
+    mark_in_collection, mark_in_wishlist, clear_wishlist_flags_not_in,
 )
 
 
@@ -170,6 +171,50 @@ def test_get_listings_for_release_no_match(conn_with_crawler):
     upsert_release(conn, _release("r1"))
     listings = get_listings_for_release(conn, "r1")
     assert listings == {}
+
+
+# ---------------------------------------------------------------------------
+# collection/wishlist flags
+# ---------------------------------------------------------------------------
+
+def test_mark_in_collection(conn):
+    upsert_release(conn, _release("r1"))
+    conn.execute("UPDATE releases SET in_collection = 0 WHERE discogs_id = 'r1'")
+    mark_in_collection(conn, "r1")
+    row = conn.execute("SELECT in_collection FROM releases WHERE discogs_id='r1'").fetchone()
+    assert row[0] == 1
+
+
+def test_mark_in_wishlist(conn):
+    upsert_release(conn, _release("r1"))
+    mark_in_wishlist(conn, "r1")
+    row = conn.execute("SELECT in_wishlist FROM releases WHERE discogs_id='r1'").fetchone()
+    assert row[0] == 1
+
+
+def test_clear_wishlist_flags_not_in_removes_stale(conn):
+    upsert_release(conn, _release("r1"))
+    upsert_release(conn, _release("r2"))
+    mark_in_wishlist(conn, "r1")
+    mark_in_wishlist(conn, "r2")
+    cleared = clear_wishlist_flags_not_in(conn, {"r1"})
+    assert cleared == 1
+    row1 = conn.execute("SELECT in_wishlist FROM releases WHERE discogs_id='r1'").fetchone()
+    row2 = conn.execute("SELECT in_wishlist FROM releases WHERE discogs_id='r2'").fetchone()
+    assert row1[0] == 1
+    assert row2[0] == 0
+
+
+def test_clear_wishlist_flags_not_in_preserves_in_collection(conn):
+    upsert_release(conn, _release("r1"))
+    mark_in_collection(conn, "r1")
+    mark_in_wishlist(conn, "r1")
+    clear_wishlist_flags_not_in(conn, set())
+    row = conn.execute(
+        "SELECT in_collection, in_wishlist FROM releases WHERE discogs_id='r1'"
+    ).fetchone()
+    assert row[0] == 1
+    assert row[1] == 0
 
 
 # ---------------------------------------------------------------------------

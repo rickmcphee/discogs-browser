@@ -113,6 +113,28 @@ def upsert_release(conn: sqlite3.Connection, data: dict):
     conn.commit()
 
 
+def mark_in_collection(conn: sqlite3.Connection, discogs_id: str):
+    conn.execute("UPDATE releases SET in_collection = 1 WHERE discogs_id = ?", [discogs_id])
+    conn.commit()
+
+
+def mark_in_wishlist(conn: sqlite3.Connection, discogs_id: str):
+    conn.execute("UPDATE releases SET in_wishlist = 1 WHERE discogs_id = ?", [discogs_id])
+    conn.commit()
+
+
+def clear_wishlist_flags_not_in(conn: sqlite3.Connection, seen_ids: set) -> int:
+    """Unset in_wishlist for releases previously flagged but absent from seen_ids.
+    Returns the number of releases cleared."""
+    rows = conn.execute("SELECT discogs_id FROM releases WHERE in_wishlist = 1").fetchall()
+    stale = [row[0] for row in rows if row[0] not in seen_ids]
+    if stale:
+        placeholders = ",".join("?" for _ in stale)
+        conn.execute(f"UPDATE releases SET in_wishlist = 0 WHERE discogs_id IN ({placeholders})", stale)
+        conn.commit()
+    return len(stale)
+
+
 def get_releases(
     conn: sqlite3.Connection,
     search: Optional[str] = None,
