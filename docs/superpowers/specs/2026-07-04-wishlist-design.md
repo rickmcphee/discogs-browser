@@ -53,8 +53,8 @@ No new tables. Two new boolean columns on the existing `releases` table:
 
 | column         | type    | default | notes                                            |
 |----------------|---------|---------|---------------------------------------------------|
-| `in_collection`| INTEGER | 1       | Backfilled to 1 for all pre-existing rows on migration. |
-| `in_wishlist`  | INTEGER | 0       | Set by wantlist sync; cleared when an item drops out of the synced wantlist. |
+| `in_collection`| INTEGER | 1       | Backfilled to 1 for all pre-existing rows on migration. Set by collection sync; **never cleared** if a release drops out of the real Discogs collection — this is intentional, matching the pre-existing collection sync's always-additive, never-deleting behavior (unchanged by this feature). |
+| `in_wishlist`  | INTEGER | 0       | Set by wantlist sync; cleared when an item drops out of the synced wantlist. This is a deliberate asymmetry with `in_collection` above — wantlist removal was a decision explicitly made during brainstorming for this feature, while collection removal handling was out of scope and left as-is. |
 
 A release can have either flag, both, or (after removal from both lists) neither.
 Rows with both flags false are not deleted — they simply stop appearing in either
