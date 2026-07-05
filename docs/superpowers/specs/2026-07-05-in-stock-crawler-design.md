@@ -1,7 +1,7 @@
 # In Stock Crawler — Design
 
 **Date:** 2026-07-05
-**Status:** Ready for planning
+**Status:** Implemented
 **Branch:** `dev-instock-crawler`
 
 ---
