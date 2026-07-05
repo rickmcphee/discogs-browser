@@ -6,7 +6,7 @@ from logging_config import setup_logging, get_logger
 from config import ensure_dirs, CRAWLERS_DIR, load_config, BOOTSTRAP_TOKEN_FILE
 from version import VERSION
 from db import get_connection, init_db, register_crawler, owner_exists
-from routers import collection, releases, settings, crawl, logs, screenshots, crawler_auth, health, session
+from routers import collection, releases, settings, crawl, logs, screenshots, crawler_auth, health, session, stock
 from auth_middleware import AuthMiddleware
 import scheduler
 import secrets
@@ -29,6 +29,18 @@ def _read_site_name(path: Path, fallback: str) -> str:
     return fallback
 
 
+def _read_crawler_type(path: Path, fallback: str = "release") -> str:
+    import re
+    try:
+        text = path.read_text()
+        m = re.search(r'crawler_type(?:\s*:\s*\w+)?\s*=\s*["\']([^"\']+)["\']', text)
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
+    return fallback
+
+
 def seed_bundled_crawlers(conn):
     # Remove stale crawlers that were once bundled but no longer exist
     for stale in CRAWLERS_DIR.glob("*.py"):
@@ -43,7 +55,8 @@ def seed_bundled_crawlers(conn):
         shutil.copy2(src, dest)
         log.info("Synced bundled crawler %s -> %s", src.name, dest)
         site_name = _read_site_name(dest, src.stem.replace("_", " ").title())
-        register_crawler(conn, site_name, str(dest))
+        crawler_type = _read_crawler_type(dest)
+        register_crawler(conn, site_name, str(dest), crawler_type)
         log.info("Registered bundled crawler: %s", site_name)
 
 app = FastAPI(title="Discogs Browser")
@@ -97,3 +110,4 @@ app.include_router(logs.router, prefix="/api")
 app.include_router(screenshots.router, prefix="/api")
 app.include_router(crawler_auth.router, prefix="/api")
 app.include_router(session.router, prefix="/api")
+app.include_router(stock.router, prefix="/api")
