@@ -63,9 +63,10 @@ interface Props {
   onCrawlersChange: (crawlers: Crawler[]) => void
   onRefreshCollection: (mode: 'all' | 'new') => void
   onRefreshPrices: (mode: 'missing' | 'all') => void
+  onRefreshStock: () => void
 }
 
-export default function Settings({ crawlers, onCrawlersChange, onRefreshCollection, onRefreshPrices }: Props) {
+export default function Settings({ crawlers, onCrawlersChange, onRefreshCollection, onRefreshPrices, onRefreshStock }: Props) {
   const [settings, setSettings] = useState<SettingsType>({
     discogs_token: '',
     debug_screenshot_interval: 20,
@@ -78,6 +79,7 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
     collection_schedule_mode: 'all',
     ebay_app_id: '',
     ebay_cert_id: '',
+    stock_schedule: '',
   })
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -87,6 +89,9 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
   const [newPassword, setNewPassword] = useState('')
   const [authCode, setAuthCode] = useState('')
   const [passwordMessage, setPasswordMessage] = useState('')
+
+  const releaseCrawlers = crawlers.filter((c) => c.crawler_type !== 'catalog')
+  const catalogCrawlers = crawlers.filter((c) => c.crawler_type === 'catalog')
 
   useEffect(() => {
     getSettings().then(setSettings)
@@ -403,7 +408,7 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
       {/* Crawlers */}
       <section>
         <h2 className="text-lg font-semibold text-white mb-3 text-left">Crawlers</h2>
-        {crawlers.length === 0 ? (
+        {releaseCrawlers.length === 0 ? (
           <p className="text-gray-500 text-sm text-left">No crawlers configured.</p>
         ) : (
           <table className="w-full text-sm border-collapse">
@@ -415,7 +420,89 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
               </tr>
             </thead>
             <tbody>
-              {crawlers.map((c) => (
+              {releaseCrawlers.map((c) => (
+                <tr key={c.id} className="border-b border-gray-800/50">
+                  <td className="py-3 pr-4 text-left text-gray-200 font-medium">
+                    {c.base_url
+                      ? <a href={c.base_url} target="_blank" rel="noreferrer"
+                           className="text-indigo-400 hover:text-indigo-300 underline">{c.site_name}</a>
+                      : c.site_name}
+                  </td>
+                  <td className="py-3 pr-4 text-left text-gray-500 text-xs">
+                    {c.last_run ? new Date(c.last_run).toLocaleString() : '—'}
+                  </td>
+                  <td className="py-3 text-left">
+                    <button
+                      onClick={() => handleToggleCrawler(c)}
+                      className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
+                        c.enabled
+                          ? 'bg-green-700 hover:bg-green-600 text-white'
+                          : 'bg-gray-700 hover:bg-gray-600 text-gray-400'
+                      }`}
+                    >
+                      {c.enabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
+
+      {/* Catalog Crawlers */}
+      <section>
+        <h2 className="text-lg font-semibold text-white mb-1 text-left">Catalog Crawlers</h2>
+        <p className="text-sm text-gray-500 mb-4 text-left">
+          Scan an entire site's in-stock catalog, independent of your collection. Results appear in the In Stock tab.
+          Leave schedule blank to disable.
+        </p>
+        <table className="w-full text-sm border-collapse">
+          <tbody>
+            <tr className="border-b border-gray-800/50">
+              <td className="py-3 pr-4 text-left text-gray-300 font-medium align-top whitespace-nowrap w-40">Schedule</td>
+              <td className="py-3 pr-4 text-left align-top w-64">
+                <input
+                  type="text"
+                  value={settings.stock_schedule ?? ''}
+                  placeholder="0 3 * * *"
+                  onChange={(e) => setSettings({ ...settings, stock_schedule: e.target.value })}
+                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500 font-mono text-xs"
+                />
+              </td>
+              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                Cron expression (5 fields: min hour day month weekday). Empty = disabled.
+              </td>
+            </tr>
+            <tr className="border-b border-gray-800/50">
+              <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
+              <td className="py-3 pr-4 text-left align-top">
+                <button
+                  onClick={onRefreshStock}
+                  className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 rounded text-xs font-medium transition-colors"
+                >
+                  Refresh Stock Now
+                </button>
+              </td>
+              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                Scan all enabled catalog crawlers immediately.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        {catalogCrawlers.length === 0 ? (
+          <p className="text-gray-500 text-sm text-left mt-4">No catalog crawlers configured.</p>
+        ) : (
+          <table className="w-full text-sm border-collapse mt-4">
+            <thead>
+              <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-800">
+                <th className="text-left py-2 pr-4 w-40">Site</th>
+                <th className="text-left py-2 pr-4 w-48">Last run</th>
+                <th className="text-left py-2">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {catalogCrawlers.map((c) => (
                 <tr key={c.id} className="border-b border-gray-800/50">
                   <td className="py-3 pr-4 text-left text-gray-200 font-medium">
                     {c.base_url
