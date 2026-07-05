@@ -58,6 +58,29 @@ app.add_middleware(
 )
 
 
+def _configure_schedules(cfg: dict) -> None:
+    schedule = cfg.get("crawl_schedule", "")
+    if schedule:
+        try:
+            scheduler.configure(schedule, cfg.get("crawl_schedule_mode", "missing"))
+        except ValueError as e:
+            log.warning("Ignoring invalid saved crawl schedule: %s", e)
+
+    collection_schedule = cfg.get("collection_schedule", "")
+    if collection_schedule:
+        try:
+            scheduler.configure_sync(collection_schedule, cfg.get("collection_schedule_mode", "all"))
+        except ValueError as e:
+            log.warning("Ignoring invalid saved collection schedule: %s", e)
+
+    stock_schedule = cfg.get("stock_schedule", "")
+    if stock_schedule:
+        try:
+            scheduler.configure_stock(stock_schedule)
+        except ValueError as e:
+            log.warning("Ignoring invalid saved stock schedule: %s", e)
+
+
 @app.on_event("startup")
 def startup():
     log.info("=" * 60)
@@ -72,13 +95,7 @@ def startup():
         log.info("No owner configured. Bootstrap token: %s", token)
         log.info("Complete first-run setup at the app URL using this token.")
     scheduler.start()
-    cfg = load_config()
-    schedule = cfg.get("crawl_schedule", "")
-    if schedule:
-        try:
-            scheduler.configure(schedule, cfg.get("crawl_schedule_mode", "missing"))
-        except ValueError as e:
-            log.warning("Ignoring invalid saved crawl schedule: %s", e)
+    _configure_schedules(load_config())
 
     log.info("=" * 60)
     log.info("Discogs Browser backend v%s ready", VERSION)
