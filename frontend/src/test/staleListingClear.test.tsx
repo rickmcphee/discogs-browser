@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
-import CollectionBrowser from '../views/CollectionBrowser'
+import RecordBrowser from '../views/RecordBrowser'
 import type { CrawlEvent, Release } from '../api/types'
 
 const { release } = vi.hoisted(() => ({
@@ -40,7 +40,8 @@ describe('stale listing clearing on price refresh', () => {
   it('removes the listing on a not_found event during a manual single-item refresh', async () => {
     const notFound: CrawlEvent = { status: 'not_found', discogs_id: 'r1', site: 'Amazon' }
     const { rerender } = render(
-      <CollectionBrowser
+      <RecordBrowser
+        scope="collection"
         onRefreshPrices={() => {}}
         crawling={true}
         crawlingReleaseId="r1"
@@ -51,7 +52,8 @@ describe('stale listing clearing on price refresh', () => {
     await waitFor(() => expect(screen.getByText('$24.99')).toBeInTheDocument())
 
     rerender(
-      <CollectionBrowser
+      <RecordBrowser
+        scope="collection"
         onRefreshPrices={() => {}}
         crawling={true}
         crawlingReleaseId="r1"
@@ -67,7 +69,8 @@ describe('stale listing clearing on price refresh', () => {
   it('also removes the listing on a not_found event during a bulk crawl (no crawlingReleaseId set)', async () => {
     const notFound: CrawlEvent = { status: 'not_found', discogs_id: 'r1', site: 'Amazon' }
     const { rerender } = render(
-      <CollectionBrowser
+      <RecordBrowser
+        scope="collection"
         onRefreshPrices={() => {}}
         crawling={true}
         crawlingReleaseId={undefined}
@@ -78,7 +81,8 @@ describe('stale listing clearing on price refresh', () => {
     await waitFor(() => expect(screen.getByText('$24.99')).toBeInTheDocument())
 
     rerender(
-      <CollectionBrowser
+      <RecordBrowser
+        scope="collection"
         onRefreshPrices={() => {}}
         crawling={true}
         crawlingReleaseId={undefined}
