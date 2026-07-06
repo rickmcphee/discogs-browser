@@ -94,7 +94,7 @@ describe('StockBrowser', () => {
     })
   })
 
-  it('defaults to All, lists options in lexicographic order, and keeps Recommended disabled', async () => {
+  it('defaults to All, lists options in lexicographic order, and disables Recommended without an Anthropic key', async () => {
     render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     const select = screen.getByRole('combobox') as HTMLSelectElement
@@ -103,6 +103,46 @@ describe('StockBrowser', () => {
     expect((screen.getByRole('option', { name: 'All' }) as HTMLOptionElement).disabled).toBe(false)
     expect((screen.getByRole('option', { name: 'Overlapping' }) as HTMLOptionElement).disabled).toBe(false)
     expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(true)
+  })
+
+  it('enables Recommended when an Anthropic key is configured', async () => {
+    render(<StockBrowser hasAnthropicKey />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(false)
+  })
+
+  it('filters to recommended items when Recommended is selected', async () => {
+    render(<StockBrowser hasAnthropicKey />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'recommended' } })
+    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ recommended: true })))
+  })
+
+  it('refetches the artist sidebar scoped to recommended when Recommended is selected', async () => {
+    render(<StockBrowser hasAnthropicKey />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    expect(getStockArtists).toHaveBeenLastCalledWith(false, false)
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'recommended' } })
+    await waitFor(() => expect(getStockArtists).toHaveBeenLastCalledWith(false, true))
+  })
+
+  it('restores a previously-selected Recommended filter from localStorage', async () => {
+    localStorage.setItem('stockFilter', 'recommended')
+    render(<StockBrowser hasAnthropicKey />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('recommended')
+  })
+
+  it('shows a recommendation reason as a tooltip on the artist and title cells', async () => {
+    getStock.mockResolvedValue({
+      total: 1, page: 1, per_page: 250,
+      items: [{ ...items[0], reason: 'Similar to your hardcore collection' }],
+    })
+    render(<StockBrowser hasAnthropicKey />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    const artistCell = screen.getAllByText('Rob Zombie').map((el) => el.closest('td')).find((td) => td)
+    expect(artistCell?.getAttribute('title')).toBe('Similar to your hardcore collection')
+    expect(screen.getByText('The Great Satan — Ghostly Black Vinyl').getAttribute('title')).toBe('Similar to your hardcore collection')
   })
 
   it('filters to overlapping artists when Overlapping is selected', async () => {
@@ -133,9 +173,9 @@ describe('StockBrowser', () => {
   it('refetches the artist sidebar scoped to overlapping when Overlapping is selected', async () => {
     render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    expect(getStockArtists).toHaveBeenLastCalledWith(false)
+    expect(getStockArtists).toHaveBeenLastCalledWith(false, false)
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'overlapping' } })
-    await waitFor(() => expect(getStockArtists).toHaveBeenLastCalledWith(true))
+    await waitFor(() => expect(getStockArtists).toHaveBeenLastCalledWith(true, false))
   })
 
   it('persists the filter to localStorage under stockFilter and restores it on remount', async () => {
