@@ -52,6 +52,7 @@ export interface Settings {
   ebay_app_id?: string
   ebay_cert_id?: string
   stock_schedule?: string
+  anthropic_api_key?: string
 }
 
 export type SortField = 'artist' | 'title' | 'year' | 'label' | 'format' | string
@@ -62,6 +63,7 @@ export interface CrawlEvent {
   status?: 'found' | 'not_found' | 'error' | 'complete' | 'started' | 'stopped' | 'ping'
     | 'sync_started' | 'sync_progress' | 'sync_complete' | 'sync_error'
     | 'stock_sync_started' | 'stock_sync_progress' | 'stock_sync_complete' | 'stock_sync_error'
+    | 'stock_judgment_started' | 'stock_judgment_progress' | 'stock_judgment_complete' | 'stock_judgment_error'
   discogs_id?: string
   release?: string
   artist?: string
@@ -76,6 +78,7 @@ export interface CrawlEvent {
   username?: string
   screenshots?: string[]
   source?: string
+  judged?: number
 }
 
 export interface CollectionStatus {
@@ -118,6 +121,7 @@ export interface StockItem {
   cover_image_url: string | null
   source: string
   last_seen: string
+  reason: string | null
 }
 
 export interface StockResponse {
