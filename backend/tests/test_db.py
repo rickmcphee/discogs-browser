@@ -9,6 +9,7 @@ from db import (
     delete_orphaned_releases,
     get_distinct_artists,
     replace_stock_items, get_stock_items, get_distinct_stock_artists,
+    compute_item_key,
 )
 
 
@@ -667,4 +668,37 @@ def test_get_distinct_stock_artists_overlapping_filters_to_collection_artists(co
         {"artist": "NAILS", "title": "T2", "format": "Vinyl", "price": 2.0, "currency": "USD", "url": "https://x/2"},
     ])
     assert get_distinct_stock_artists(conn, overlapping=True) == ["Rob Zombie"]
+
+
+# ---------------------------------------------------------------------------
+# item_key and stock_item_judgments
+# ---------------------------------------------------------------------------
+
+def test_compute_item_key_stable_for_same_inputs():
+    assert compute_item_key("Rob Zombie", "The Great Satan", "https://x/1") == \
+        compute_item_key("Rob Zombie", "The Great Satan", "https://x/1")
+
+
+def test_compute_item_key_differs_when_any_field_differs():
+    base = compute_item_key("Rob Zombie", "The Great Satan", "https://x/1")
+    assert compute_item_key("NAILS", "The Great Satan", "https://x/1") != base
+    assert compute_item_key("Rob Zombie", "Other Title", "https://x/1") != base
+    assert compute_item_key("Rob Zombie", "The Great Satan", "https://x/2") != base
+
+
+def test_stock_item_judgments_table_exists(conn):
+    conn.execute(
+        "INSERT INTO stock_item_judgments (item_key, recommended, reason) VALUES ('k1', 1, 'similar genre')"
+    )
+    row = conn.execute(
+        "SELECT item_key, recommended, reason FROM stock_item_judgments WHERE item_key = 'k1'"
+    ).fetchone()
+    assert row["recommended"] == 1
+    assert row["reason"] == "similar genre"
+
+
+def test_stock_items_has_item_key_column(conn_with_catalog_crawler):
+    conn, crawler_id = conn_with_catalog_crawler
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(stock_items)").fetchall()}
+    assert "item_key" in cols
 

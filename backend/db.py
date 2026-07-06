@@ -1,5 +1,6 @@
 import sqlite3
 import threading
+import hashlib
 from typing import Optional
 import config
 
@@ -52,7 +53,15 @@ CREATE TABLE IF NOT EXISTS stock_items (
     currency TEXT,
     url TEXT NOT NULL,
     cover_image_url TEXT,
+    item_key TEXT,
     last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS stock_item_judgments (
+    item_key TEXT PRIMARY KEY,
+    recommended INTEGER NOT NULL,
+    reason TEXT,
+    judged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS owner (
@@ -102,6 +111,9 @@ def init_db(conn: sqlite3.Connection):
     crawler_cols = {row[1] for row in conn.execute("PRAGMA table_info(crawlers)").fetchall()}
     if "crawler_type" not in crawler_cols:
         conn.execute("ALTER TABLE crawlers ADD COLUMN crawler_type TEXT NOT NULL DEFAULT 'release'")
+    stock_cols = {row[1] for row in conn.execute("PRAGMA table_info(stock_items)").fetchall()}
+    if "item_key" not in stock_cols:
+        conn.execute("ALTER TABLE stock_items ADD COLUMN item_key TEXT")
     # Migration: rename CC Music -> CC Music/eBay crawler row and update its listings
     row = conn.execute("SELECT id FROM crawlers WHERE site_name = 'CC Music'").fetchone()
     if row:
@@ -285,6 +297,10 @@ def get_listings_for_release(conn: sqlite3.Connection, release_id: str) -> dict:
         }
         for row in rows
     }
+
+
+def compute_item_key(artist: str, title: str, url: str) -> str:
+    return hashlib.sha256(f"{artist}|{title}|{url}".encode()).hexdigest()
 
 
 def replace_stock_items(conn: sqlite3.Connection, crawler_id: int, items: list[dict]):
