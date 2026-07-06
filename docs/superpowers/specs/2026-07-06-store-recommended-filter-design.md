@@ -39,7 +39,7 @@ CREATE TABLE stock_item_judgments (
 
 `item_key` is derived from `artist`, `title`, and `url` — not `stock_items.id`, which is destroyed and recreated by `replace_stock_items` on every sync (delete-then-insert per crawler). As long as those three fields are unchanged between syncs, the item's prior judgment carries forward untouched and is never re-sent to Claude. If any of the three changes (price/format changes don't affect the key), the item is treated as new and gets judged again on a future sync.
 
-No column is added to `stock_items` itself. `recommended`/`reason` are joined in at query time — the "additive column or join, not a redesign" the prior design doc anticipated.
+`stock_items` also gains an `item_key` column (`ALTER TABLE stock_items ADD COLUMN item_key TEXT`), computed and stored by `replace_stock_items` at insert time — this is what makes both the sync-side "find unseen items" query and the read-side `recommended` filter plain SQL joins instead of a Python-side scan, since SQLite has no built-in SHA-256 to compute the hash inline. `stock_item_judgments` itself stays a separate table, keyed by the same hash value, so it survives `replace_stock_items`' delete-then-insert untouched — the "additive column or join, not a redesign" the prior design doc anticipated.
 
 ---
 
@@ -48,7 +48,7 @@ No column is added to `stock_items` itself. `recommended`/`reason` are joined in
 Runs once per stock sync, after all catalog crawlers have finished their per-site replace (not interleaved per-crawler), inside `crawl_manager._sync_stock()`.
 
 1. **Skip entirely if no key.** If `config.json`'s `anthropic_api_key` is empty, the judgment phase is a no-op — same sync, no error, nothing broadcast.
-2. **Find unseen items.** `SELECT s.* FROM stock_items s LEFT JOIN stock_item_judgments j ON j.item_key = <hash of s.artist,s.title,s.url> WHERE j.item_key IS NULL`. (Hashing happens in Python per row rather than in SQL — SQLite has no built-in SHA-256 — so this is really: pull all current stock items, compute each one's key in Python, then check membership against the set of existing keys.)
+2. **Find unseen items.** `SELECT s.item_key, s.artist, s.title FROM stock_items s LEFT JOIN stock_item_judgments j ON j.item_key = s.item_key WHERE j.item_key IS NULL GROUP BY s.item_key ORDER BY MIN(s.last_seen) ASC` — plain SQL now that `item_key` is a stored column.
 3. **Cap.** Take at most 300 unseen items (oldest-first by `last_seen`, i.e. whichever crawler ran first in this sync gets priority). The remainder stays unseen and is picked up by next sync's step 2 — spillover requires no extra state, since "unseen" is just "not yet in `stock_item_judgments`."
 4. **Build the taste listing once per sync.** `SELECT artist, title FROM releases WHERE in_collection = 1 OR in_wishlist = 1`, formatted as `Artist - Title` lines. Built once, reused across every batch call in this sync (not rebuilt per batch).
 5. **Batch and call Claude.** Split the capped unseen set into batches of 40. For each batch, one API call: system/user prompt containing the full taste listing plus the batch's `artist - title - item_key` triples, asking for a JSON array `[{"item_key": ..., "recommended": bool, "reason": "<one short sentence>"}]`. Model: a Haiku-class model — this is bulk binary classification over a list, not a task that benefits from a heavier model.
@@ -72,20 +72,22 @@ These reuse the same bottom status bar the existing `stock_sync_*` events alread
 
 ## Backend API & Settings
 
-- `GET /api/stock` gains `recommended: bool = False`, ANDed into the existing `WHERE` clause via a join against `stock_item_judgments` on the computed item key, alongside the existing `search`/`artist`/`overlapping` params. (The dropdown is single-select in the UI, so in practice `overlapping` and `recommended` are never both true from the frontend, but the backend doesn't need to enforce mutual exclusion — it just ANDs whatever's passed.)
+- `GET /api/stock` gains `recommended: bool = False`, ANDed into the existing `WHERE` clause via `s.item_key IN (SELECT item_key FROM stock_item_judgments WHERE recommended = 1)`, alongside the existing `search`/`artist`/`overlapping` params. (The dropdown is single-select in the UI, so in practice `overlapping` and `recommended` are never both true from the frontend, but the backend doesn't need to enforce mutual exclusion — it just ANDs whatever's passed.) The response's per-item `reason` comes from an unconditional `LEFT JOIN stock_item_judgments` — populated whenever a judgment exists, regardless of which filter is active.
 - `GET /api/stock/artists` gains the same `recommended: bool` param, mirroring `overlapping`.
-- `GET /api/settings` response gains a derived `has_anthropic_key: bool` — never returns the raw key itself. This is what the frontend uses to enable/disable the `Recommended` dropdown option.
-- `POST /settings`: `SettingsUpdate`/`update_settings` gain `anthropic_api_key: str = ""`, stored in `config.json` next to `ebay_app_id`/`ebay_cert_id`.
-- Settings UI: a new field for the Anthropic API key, placed near the existing "Store Crawlers" section (it only affects Store's Recommended filter, not the per-release crawlers).
+- `GET /api/settings` returns `anthropic_api_key` as a plain string, the same way it already returns `ebay_app_id`/`ebay_cert_id` (this endpoint already isn't secret-safe — the frontend settings form reads its own values back). No new derived field; the frontend enables the `Recommended` option by checking `settings.anthropic_api_key !== ''` client-side, exactly as it would for any other configured-or-not credential.
+- `POST /settings`: `SettingsUpdate`/`update_settings` gain `anthropic_api_key: str = ""`, stored in `config.json` next to `ebay_app_id`/`ebay_cert_id`. (This key already exists informally — the dormant, unregistered `discover.py` module reads `config.get("anthropic_api_key", "")` for an unrelated crawler-discovery feature. This spec is what actually exposes it in Settings and gives it a first real consumer.)
+- Settings UI: `anthropic_api_key` added to the main Settings table's `SETTING_ROWS`, immediately after `ebay_cert_id` — same password-input treatment, not a new section.
 
 ---
 
 ## Frontend
 
+`App.tsx`: fetches `getSettings()` once in the same health-poll effect that already fetches `getCrawlers()`, derives `hasAnthropicKey = settings.anthropic_api_key !== ''`, and passes it down to `<StockBrowser hasAnthropicKey={...} />` — same lifecycle as `crawlers` today, not refetched per Store-tab mount.
+
 `StockBrowser.tsx`:
-- The dropdown's `<option value="recommended" disabled>` becomes conditionally disabled: `disabled={!hasAnthropicKey}`, where `hasAnthropicKey` is fetched once (same lifecycle as `crawlers` today — fetched in `App.tsx`, passed down as a prop) rather than refetched per Store-tab mount.
+- The dropdown's `<option value="recommended" disabled>` becomes conditionally disabled via the new `hasAnthropicKey` prop: `disabled={!hasAnthropicKey}`.
 - `getStock`/`getStockArtists` calls thread a `recommended` boolean through alongside the existing `overlapping` one, keyed off `filter === 'recommended'`.
-- When a row's `reason` is present (only populated when the `recommended` filter is active), it's rendered as a `title` attribute on the artist/title table cells (native browser tooltip) — no new UI chrome.
+- When a row's `reason` is present, it's rendered as a `title` attribute on the artist/title table cells (native browser tooltip) — no new UI chrome.
 - `localStorage` persistence of the selected filter (`stockFilter`) already handles `'recommended'` as a stored value; no change needed there beyond removing the `disabled` gate once a key exists.
 
 ---
