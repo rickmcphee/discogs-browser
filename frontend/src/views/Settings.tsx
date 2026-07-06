@@ -33,6 +33,13 @@ const SETTING_ROWS: SettingRow[] = [
     placeholder: 'your Cert ID',
   },
   {
+    key: 'anthropic_api_key',
+    label: 'Anthropic API key',
+    description: 'Used to judge Store items against your collection for the Recommended filter. Get one at platform.claude.com.',
+    type: 'password',
+    placeholder: 'sk-ant-...',
+  },
+  {
     key: 'debug_screenshot_interval',
     label: 'Screenshot interval',
     description: '0 = off · 1 = every search · N = every Nth. First search always captured when > 0.',
@@ -80,6 +87,7 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
     ebay_app_id: '',
     ebay_cert_id: '',
     stock_schedule: '',
+    anthropic_api_key: '',
   })
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
