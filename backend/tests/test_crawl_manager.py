@@ -298,3 +298,116 @@ async def test_sync_stock_updates_crawler_last_run(manager, tmp_config_dir, monk
     after = conn.execute("SELECT last_run FROM crawlers WHERE id = ?", [crawler_id]).fetchone()[0]
     assert after is not None
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# judgment phase
+# ---------------------------------------------------------------------------
+
+async def test_sync_stock_skips_judgment_when_no_api_key(manager, tmp_config_dir, monkeypatch):
+    import config as cfg_module
+    import db as db_module
+    import crawler as crawler_module
+    from db import register_crawler
+
+    conn = sqlite3.connect(cfg_module.DB_FILE)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db_module.init_db(conn)
+    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
+    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()[0]
+
+    class _FakeCrawler:
+        _db_id = crawler_id
+        _db_site_name = "Nuclear Blast"
+
+        async def crawl_catalog(self):
+            yield {"artist": "Rob Zombie", "title": "T1", "price": 1.0, "currency": "USD", "url": "https://x/1"}
+
+    monkeypatch.setattr(crawler_module, "load_enabled_crawlers", lambda enabled: [_FakeCrawler()])
+
+    await manager._sync_stock()
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert not any(s.startswith("stock_judgment") for s in statuses)
+    conn.close()
+
+
+async def test_sync_stock_runs_judgment_phase_when_api_key_configured(manager, tmp_config_dir, monkeypatch):
+    import config as cfg_module
+    import db as db_module
+    import crawler as crawler_module
+    import recommendations
+    from db import register_crawler, compute_item_key
+
+    cfg_module.save_config({"anthropic_api_key": "sk-ant-test"})
+
+    conn = sqlite3.connect(cfg_module.DB_FILE)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db_module.init_db(conn)
+    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
+    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()[0]
+
+    class _FakeCrawler:
+        _db_id = crawler_id
+        _db_site_name = "Nuclear Blast"
+
+        async def crawl_catalog(self):
+            yield {"artist": "Rob Zombie", "title": "T1", "price": 1.0, "currency": "USD", "url": "https://x/1"}
+
+    monkeypatch.setattr(crawler_module, "load_enabled_crawlers", lambda enabled: [_FakeCrawler()])
+
+    key = compute_item_key("Rob Zombie", "T1", "https://x/1")
+    monkeypatch.setattr(
+        recommendations, "judge_batch",
+        lambda client, taste, batch: [{"item_key": key, "recommended": True, "reason": "similar genre"}],
+    )
+
+    await manager._sync_stock()
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert "stock_judgment_started" in statuses
+    assert "stock_judgment_complete" in statuses
+    row = conn.execute("SELECT recommended, reason FROM stock_item_judgments WHERE item_key = ?", [key]).fetchone()
+    assert row["recommended"] == 1
+    assert row["reason"] == "similar genre"
+    conn.close()
+
+
+async def test_sync_stock_judgment_phase_failure_broadcasts_error(manager, tmp_config_dir, monkeypatch):
+    import config as cfg_module
+    import db as db_module
+    import crawler as crawler_module
+    import recommendations
+    from db import register_crawler
+
+    cfg_module.save_config({"anthropic_api_key": "sk-ant-test"})
+
+    conn = sqlite3.connect(cfg_module.DB_FILE)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db_module.init_db(conn)
+    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
+    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()[0]
+
+    class _FakeCrawler:
+        _db_id = crawler_id
+        _db_site_name = "Nuclear Blast"
+
+        async def crawl_catalog(self):
+            yield {"artist": "Rob Zombie", "title": "T1", "price": 1.0, "currency": "USD", "url": "https://x/1"}
+
+    monkeypatch.setattr(crawler_module, "load_enabled_crawlers", lambda enabled: [_FakeCrawler()])
+
+    def _boom(client, taste, batch):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(recommendations, "judge_batch", _boom)
+
+    await manager._sync_stock()
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert "stock_judgment_error" in statuses
+    assert "stock_sync_complete" in statuses  # phase failure doesn't abort the sync
+    conn.close()

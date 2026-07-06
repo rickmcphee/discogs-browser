@@ -257,6 +257,7 @@ class CrawlManager:
     async def _sync_stock(self):
         import sqlite3
         import config as cfg_module
+        from config import load_config
         from db import get_enabled_crawlers, replace_stock_items, update_crawler_last_run
         from crawler import load_enabled_crawlers
 
@@ -299,6 +300,10 @@ class CrawlManager:
                     "source": crawler._db_site_name,
                 })
 
+            api_key = load_config().get("anthropic_api_key", "")
+            if api_key:
+                await self._run_judgment_phase(conn, api_key)
+
             await self._broadcast({"status": "stock_sync_complete", "synced": total_synced})
             log.info("Stock sync complete: %d items", total_synced)
 
@@ -310,6 +315,37 @@ class CrawlManager:
             await self._broadcast({"status": "stock_sync_error", "error": str(e)})
         finally:
             conn.close()
+
+    async def _run_judgment_phase(self, conn, api_key: str):
+        from db import get_unjudged_stock_items, get_taste_listing, upsert_stock_judgments
+        import recommendations
+        import anthropic
+
+        unjudged = get_unjudged_stock_items(conn, recommendations.SYNC_CAP)
+        if not unjudged:
+            return
+
+        await self._broadcast({"status": "stock_judgment_started"})
+        log.info("Stock judgment started: %d unjudged items", len(unjudged))
+
+        client = anthropic.Anthropic(api_key=api_key)
+        taste_listing = get_taste_listing(conn)
+
+        try:
+            judged = 0
+            for i in range(0, len(unjudged), recommendations.BATCH_SIZE):
+                batch = unjudged[i:i + recommendations.BATCH_SIZE]
+                results = recommendations.judge_batch(client, taste_listing, batch)
+                if results:
+                    upsert_stock_judgments(conn, results)
+                    judged += len(results)
+                await self._broadcast({"status": "stock_judgment_progress", "judged": judged, "total": len(unjudged)})
+
+            await self._broadcast({"status": "stock_judgment_complete", "judged": judged})
+            log.info("Stock judgment complete: %d items judged", judged)
+        except Exception as e:
+            log.error("Stock judgment phase failed: %s", e, exc_info=True)
+            await self._broadcast({"status": "stock_judgment_error", "error": str(e)})
 
 
 crawl_manager = CrawlManager()
