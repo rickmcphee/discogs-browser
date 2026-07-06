@@ -145,6 +145,21 @@ describe('StockBrowser', () => {
     expect(screen.getByText('The Great Satan — Ghostly Black Vinyl').getAttribute('title')).toBe('Similar to your hardcore collection')
   })
 
+  it('shows a recommendation reason as a tooltip on the tile-view artist and title text', async () => {
+    getStock.mockResolvedValue({
+      total: 1, page: 1, per_page: 250,
+      items: [{ ...items[0], reason: 'Similar to your hardcore collection' }],
+    })
+    render(<StockBrowser hasAnthropicKey />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByTitle('Tile view'))
+    await waitFor(() => {
+      const artistText = screen.getAllByText('Rob Zombie').map((el) => (el.tagName === 'DIV' ? el : null)).find((el) => el)
+      expect(artistText?.getAttribute('title')).toBe('Similar to your hardcore collection')
+      expect(screen.getByText('The Great Satan — Ghostly Black Vinyl').getAttribute('title')).toBe('Similar to your hardcore collection')
+    })
+  })
+
   it('filters to overlapping artists when Overlapping is selected', async () => {
     render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())

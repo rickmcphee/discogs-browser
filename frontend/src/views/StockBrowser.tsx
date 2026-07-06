@@ -169,8 +169,8 @@ export default function StockBrowser({ hasAnthropicKey = false }: Props) {
                     ) : (
                       <div className="w-full aspect-square bg-gray-800 rounded" />
                     )}
-                    <div className="mt-1.5 text-sm text-gray-200 truncate group-hover:text-indigo-400">{item.artist}</div>
-                    <div className="text-xs text-gray-400 truncate">{item.title}</div>
+                    <div className="mt-1.5 text-sm text-gray-200 truncate group-hover:text-indigo-400" title={item.reason ?? undefined}>{item.artist}</div>
+                    <div className="text-xs text-gray-400 truncate" title={item.reason ?? undefined}>{item.title}</div>
                   </a>
                 ))}
               </div>
