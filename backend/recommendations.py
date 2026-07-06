@@ -1,5 +1,4 @@
 import json
-from typing import List, Dict
 from logging_config import get_logger
 
 log = get_logger("recommendations")
@@ -21,7 +20,7 @@ SYSTEM_PROMPT = (
 )
 
 
-def build_batch_prompt(taste_listing: List[str], batch: List[Dict]) -> str:
+def build_batch_prompt(taste_listing: list[str], batch: list[dict]) -> str:
     taste_text = "\n".join(taste_listing) if taste_listing else "(empty — no collection or wishlist yet)"
     items_text = "\n".join(
         f'{{"item_key": "{item["item_key"]}", "artist": "{item["artist"]}", "title": "{item["title"]}"}}'
@@ -30,7 +29,7 @@ def build_batch_prompt(taste_listing: List[str], batch: List[Dict]) -> str:
     return f"Collector's collection and wishlist:\n{taste_text}\n\nItems to judge:\n{items_text}"
 
 
-def judge_batch(client, taste_listing: List[str], batch: List[Dict]) -> List[Dict]:
+def judge_batch(client, taste_listing: list[str], batch: list[dict]) -> list[dict]:
     """One Claude call judging a batch of items. Returns [] on any failure —
     caller leaves those items unjudged for retry on the next sync."""
     prompt = build_batch_prompt(taste_listing, batch)
