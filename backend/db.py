@@ -329,6 +329,7 @@ def get_stock_items(
     page: int = 1,
     per_page: int = 50,
     overlapping: bool = False,
+    recommended: bool = False,
 ) -> dict:
     order_sql = "DESC" if order.lower() == "desc" else "ASC"
     allowed_sort = {"artist", "title", "format", "price"}
@@ -345,6 +346,8 @@ def get_stock_items(
         params.append(artist)
     if overlapping:
         conditions.append("LOWER(s.artist) IN (SELECT LOWER(artist) FROM releases WHERE in_collection = 1)")
+    if recommended:
+        conditions.append("s.item_key IN (SELECT item_key FROM stock_item_judgments WHERE recommended = 1)")
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
     total = conn.execute(f"SELECT COUNT(*) FROM stock_items s {where}", params).fetchone()[0]
@@ -353,9 +356,11 @@ def get_stock_items(
     null_order = "ASC" if order_sql == "ASC" else "DESC"
     order_clause = f"CASE WHEN s.{sort} IS NULL THEN 1 ELSE 0 END {null_order}, s.{sort} {order_sql}"
     rows = conn.execute(f"""
-        SELECT s.id, s.artist, s.title, s.format, s.price, s.currency, s.url, s.cover_image_url, s.last_seen, c.site_name AS source
+        SELECT s.id, s.artist, s.title, s.format, s.price, s.currency, s.url, s.cover_image_url, s.last_seen,
+               c.site_name AS source, j.reason AS reason
         FROM stock_items s
         JOIN crawlers c ON c.id = s.crawler_id
+        LEFT JOIN stock_item_judgments j ON j.item_key = s.item_key
         {where}
         ORDER BY {order_clause}
         LIMIT ? OFFSET ?
@@ -364,8 +369,13 @@ def get_stock_items(
     return {"total": total, "page": page, "per_page": per_page, "items": [dict(row) for row in rows]}
 
 
-def get_distinct_stock_artists(conn: sqlite3.Connection, overlapping: bool = False) -> list[str]:
-    where = "WHERE LOWER(artist) IN (SELECT LOWER(artist) FROM releases WHERE in_collection = 1)" if overlapping else ""
+def get_distinct_stock_artists(conn: sqlite3.Connection, overlapping: bool = False, recommended: bool = False) -> list[str]:
+    conditions = []
+    if overlapping:
+        conditions.append("LOWER(artist) IN (SELECT LOWER(artist) FROM releases WHERE in_collection = 1)")
+    if recommended:
+        conditions.append("item_key IN (SELECT item_key FROM stock_item_judgments WHERE recommended = 1)")
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     rows = conn.execute(f"SELECT DISTINCT artist FROM stock_items {where} ORDER BY artist").fetchall()
     return [row[0] for row in rows]
 

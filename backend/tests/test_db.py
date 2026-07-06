@@ -711,3 +711,66 @@ def test_replace_stock_items_stores_item_key(conn_with_catalog_crawler):
     row = conn.execute("SELECT item_key FROM stock_items WHERE crawler_id = ?", [crawler_id]).fetchone()
     assert row["item_key"] == compute_item_key("Rob Zombie", "T1", "https://x/1")
 
+
+# ---------------------------------------------------------------------------
+# recommended filter and reason field
+# ---------------------------------------------------------------------------
+
+def test_get_stock_items_recommended_filters_to_judged_recommended(conn_with_catalog_crawler):
+    conn, crawler_id = conn_with_catalog_crawler
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "T1", "format": "Vinyl", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+        {"artist": "NAILS", "title": "T2", "format": "Vinyl", "price": 2.0, "currency": "USD", "url": "https://x/2"},
+    ])
+    key = compute_item_key("Rob Zombie", "T1", "https://x/1")
+    conn.execute(
+        "INSERT INTO stock_item_judgments (item_key, recommended, reason) VALUES (?, 1, 'similar genre')", [key]
+    )
+    result = get_stock_items(conn, recommended=True)
+    assert result["total"] == 1
+    assert result["items"][0]["artist"] == "Rob Zombie"
+
+
+def test_get_stock_items_excludes_judged_not_recommended(conn_with_catalog_crawler):
+    conn, crawler_id = conn_with_catalog_crawler
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "T1", "format": "Vinyl", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+    ])
+    key = compute_item_key("Rob Zombie", "T1", "https://x/1")
+    conn.execute("INSERT INTO stock_item_judgments (item_key, recommended, reason) VALUES (?, 0, NULL)", [key])
+    result = get_stock_items(conn, recommended=True)
+    assert result["total"] == 0
+
+
+def test_get_stock_items_includes_reason_when_judged(conn_with_catalog_crawler):
+    conn, crawler_id = conn_with_catalog_crawler
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "T1", "format": "Vinyl", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+    ])
+    key = compute_item_key("Rob Zombie", "T1", "https://x/1")
+    conn.execute(
+        "INSERT INTO stock_item_judgments (item_key, recommended, reason) VALUES (?, 1, 'similar genre')", [key]
+    )
+    result = get_stock_items(conn)
+    assert result["items"][0]["reason"] == "similar genre"
+
+
+def test_get_stock_items_reason_none_when_unjudged(conn_with_catalog_crawler):
+    conn, crawler_id = conn_with_catalog_crawler
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "T1", "format": "Vinyl", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+    ])
+    result = get_stock_items(conn)
+    assert result["items"][0]["reason"] is None
+
+
+def test_get_distinct_stock_artists_recommended_filters(conn_with_catalog_crawler):
+    conn, crawler_id = conn_with_catalog_crawler
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "T1", "format": "Vinyl", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+        {"artist": "NAILS", "title": "T2", "format": "Vinyl", "price": 2.0, "currency": "USD", "url": "https://x/2"},
+    ])
+    key = compute_item_key("Rob Zombie", "T1", "https://x/1")
+    conn.execute("INSERT INTO stock_item_judgments (item_key, recommended, reason) VALUES (?, 1, NULL)", [key])
+    assert get_distinct_stock_artists(conn, recommended=True) == ["Rob Zombie"]
+
