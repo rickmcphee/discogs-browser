@@ -5,7 +5,7 @@ import Settings from './views/Settings'
 import LogViewer from './views/LogViewer'
 import LoginScreen from './views/LoginScreen'
 import SetupWizard from './views/SetupWizard'
-import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, getCrawlers, checkHealth, getAuthState, setUnauthorizedHandler } from './api/client'
+import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, getCrawlers, getSettings, checkHealth, getAuthState, setUnauthorizedHandler } from './api/client'
 import type { CrawlEvent, CrawlStatus, CollectionStatus, Crawler, AuthState } from './api/types'
 
 type View = 'collection' | 'wishlist' | 'instock' | 'settings' | 'logs'
@@ -23,6 +23,7 @@ export default function App() {
   const [collectionStatus, setCollectionStatus] = useState<CollectionStatus | null>(null)
   const [crawlingReleaseId, setCrawlingReleaseId] = useState<string | undefined>(undefined)
   const [crawlers, setCrawlers] = useState<Crawler[]>([])
+  const [hasAnthropicKey, setHasAnthropicKey] = useState(false)
   const [serverReady, setServerReady] = useState(false)
   const [syncMessage, setSyncMessage] = useState<string | null>(null)
   const [syncing, setSyncing] = useState(false)
@@ -39,6 +40,7 @@ export default function App() {
           if (!cancelled) {
             setServerReady(true)
             getCrawlers().then(setCrawlers).catch(() => {})
+            getSettings().then((s) => setHasAnthropicKey(Boolean(s.anthropic_api_key))).catch(() => {})
           }
           return
         }
@@ -97,6 +99,25 @@ export default function App() {
       if (event.status === 'stock_sync_error') {
         setSyncing(false)
         setSyncMessage(`In-stock sync failed: ${event.error}`)
+        return
+      }
+      if (event.status === 'stock_judgment_started') {
+        setSyncing(true)
+        setSyncMessage('Judging in-stock catalog against your collection…')
+        return
+      }
+      if (event.status === 'stock_judgment_progress') {
+        setSyncMessage(`Judging in-stock catalog… ${event.judged}/${event.total}`)
+        return
+      }
+      if (event.status === 'stock_judgment_complete') {
+        setSyncing(false)
+        setSyncMessage(`Judged ${event.judged} new items for Recommended`)
+        return
+      }
+      if (event.status === 'stock_judgment_error') {
+        setSyncing(false)
+        setSyncMessage(`Judgment failed: ${event.error}`)
         return
       }
       if (event.status === 'started') {
@@ -298,7 +319,7 @@ export default function App() {
           />
         </div>
         <div className={view === 'instock' ? 'h-full' : 'hidden'}>
-          <StockBrowser />
+          <StockBrowser hasAnthropicKey={hasAnthropicKey} />
         </div>
         <div className={view === 'settings' ? 'h-full overflow-y-auto' : 'hidden'}><Settings crawlers={crawlers} onCrawlersChange={setCrawlers} onRefreshCollection={(mode) => handleRefresh(mode)} onRefreshPrices={(mode) => handleFindPrices(undefined, mode)} onRefreshStock={handleRefreshStock} /></div>
         <div className={view === 'logs' ? 'h-full' : 'hidden'}><LogViewer /></div>

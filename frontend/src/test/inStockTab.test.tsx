@@ -31,7 +31,7 @@ vi.mock('../api/client', () => ({
     discogs_token: '', debug_screenshot_interval: 20, shuffle_crawl_order: true,
     crawl_delay_seconds: 30, consecutive_failure_limit: 10, crawl_schedule: '',
     crawl_schedule_mode: 'missing', collection_schedule: '', collection_schedule_mode: 'all',
-    ebay_app_id: '', ebay_cert_id: '', stock_schedule: '',
+    ebay_app_id: '', ebay_cert_id: '', stock_schedule: '', anthropic_api_key: '',
   }),
   saveSettings: vi.fn(),
   setCrawlerEnabled: vi.fn(),
@@ -91,5 +91,21 @@ describe('In Stock tab', () => {
     const source = getLastCrawlSource()
     source.emit({ status: 'stock_sync_complete', synced: 12 })
     await waitFor(() => expect(screen.getByText(/In-stock sync complete: 12 items/)).toBeInTheDocument())
+  })
+
+  it('surfaces stock_judgment_progress events in the bottom status bar', async () => {
+    render(<App />)
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    const source = getLastCrawlSource()
+    source.emit({ status: 'stock_judgment_progress', judged: 5, total: 40 })
+    await waitFor(() => expect(screen.getByText(/Judging in-stock catalog… 5\/40/)).toBeInTheDocument())
+  })
+
+  it('surfaces stock_judgment_complete events in the bottom status bar', async () => {
+    render(<App />)
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    const source = getLastCrawlSource()
+    source.emit({ status: 'stock_judgment_complete', judged: 12 })
+    await waitFor(() => expect(screen.getByText(/Judged 12 new items for Recommended/)).toBeInTheDocument())
   })
 })
