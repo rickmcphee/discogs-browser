@@ -224,6 +224,71 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
         </table>
       </section>
 
+      {/* Site Sessions */}
+      {crawlers.some((c) => c.login_url) && (
+        <section>
+          <h2 className="text-lg font-semibold text-white mb-1 text-left">Site Sessions</h2>
+          <p className="text-sm text-gray-500 mb-4 text-left">
+            Log in to a site in a real browser window so crawls run as an authenticated user, reducing bot detection.
+            All site sessions are stored in a shared browser state file.
+          </p>
+          <table className="w-full text-sm border-collapse">
+            <thead>
+              <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-800">
+                <th className="text-left py-2 pr-4 w-40">Site</th>
+                <th className="text-left py-2">Login</th>
+              </tr>
+            </thead>
+            <tbody>
+              {crawlers.filter((c) => c.login_url).map((c) => {
+                const isActive = authStatus.active && authStatus.active_site === c.site_name
+                const otherActive = authStatus.active && authStatus.active_site !== c.site_name
+                return (
+                  <tr key={c.id} className="border-b border-gray-800/50">
+                    <td className="py-3 pr-4 text-left text-gray-200 font-medium align-middle">
+                      {c.base_url
+                        ? <a href={c.base_url} target="_blank" rel="noreferrer" className="text-indigo-400 hover:text-indigo-300 underline">{c.site_name}</a>
+                        : c.site_name}
+                    </td>
+                    <td className="py-3 text-left">
+                      <div className="flex items-center gap-3">
+                        {isActive ? (
+                          <button
+                            onClick={handleDone}
+                            disabled={authWorking}
+                            className="px-3 py-1 bg-green-600 hover:bg-green-500 disabled:opacity-50 rounded text-xs font-medium transition-colors"
+                          >
+                            {authWorking ? 'Saving…' : 'Done — Save Session'}
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => handleLogin(c.site_name, c.login_url!)}
+                            disabled={authWorking || otherActive}
+                            className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded text-xs font-medium transition-colors"
+                          >
+                            {authWorking && authStatus.active_site === c.site_name ? 'Opening…' : `Login to ${c.site_name}`}
+                          </button>
+                        )}
+                        {isActive ? (
+                          <span className="text-xs text-yellow-400">Browser open — log in, then click Done.</span>
+                        ) : authStatus.has_state && authStatus.state_mtime ? (
+                          <>
+                            <span className="text-xs text-green-400">Session saved {new Date(authStatus.state_mtime * 1000).toLocaleString()}</span>
+                            <button onClick={handleClearAuth} className="text-xs text-gray-600 hover:text-red-400 transition-colors">Clear</button>
+                          </>
+                        ) : (
+                          <span className="text-xs text-gray-600">No saved session</span>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </section>
+      )}
+
       {/* Collection Management */}
       <section>
         <h2 className="text-lg font-semibold text-white mb-1 text-left">Collection Management</h2>
@@ -338,80 +403,10 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
             </tr>
           </tbody>
         </table>
-      </section>
-
-      {/* Site Sessions */}
-      {crawlers.some((c) => c.login_url) && (
-        <section>
-          <h2 className="text-lg font-semibold text-white mb-1 text-left">Site Sessions</h2>
-          <p className="text-sm text-gray-500 mb-4 text-left">
-            Log in to a site in a real browser window so crawls run as an authenticated user, reducing bot detection.
-            All site sessions are stored in a shared browser state file.
-          </p>
-          <table className="w-full text-sm border-collapse">
-            <thead>
-              <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-800">
-                <th className="text-left py-2 pr-4 w-40">Site</th>
-                <th className="text-left py-2">Login</th>
-              </tr>
-            </thead>
-            <tbody>
-              {crawlers.filter((c) => c.login_url).map((c) => {
-                const isActive = authStatus.active && authStatus.active_site === c.site_name
-                const otherActive = authStatus.active && authStatus.active_site !== c.site_name
-                return (
-                  <tr key={c.id} className="border-b border-gray-800/50">
-                    <td className="py-3 pr-4 text-left text-gray-200 font-medium align-middle">
-                      {c.base_url
-                        ? <a href={c.base_url} target="_blank" rel="noreferrer" className="text-indigo-400 hover:text-indigo-300 underline">{c.site_name}</a>
-                        : c.site_name}
-                    </td>
-                    <td className="py-3 text-left">
-                      <div className="flex items-center gap-3">
-                        {isActive ? (
-                          <button
-                            onClick={handleDone}
-                            disabled={authWorking}
-                            className="px-3 py-1 bg-green-600 hover:bg-green-500 disabled:opacity-50 rounded text-xs font-medium transition-colors"
-                          >
-                            {authWorking ? 'Saving…' : 'Done — Save Session'}
-                          </button>
-                        ) : (
-                          <button
-                            onClick={() => handleLogin(c.site_name, c.login_url!)}
-                            disabled={authWorking || otherActive}
-                            className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded text-xs font-medium transition-colors"
-                          >
-                            {authWorking && authStatus.active_site === c.site_name ? 'Opening…' : `Login to ${c.site_name}`}
-                          </button>
-                        )}
-                        {isActive ? (
-                          <span className="text-xs text-yellow-400">Browser open — log in, then click Done.</span>
-                        ) : authStatus.has_state && authStatus.state_mtime ? (
-                          <>
-                            <span className="text-xs text-green-400">Session saved {new Date(authStatus.state_mtime * 1000).toLocaleString()}</span>
-                            <button onClick={handleClearAuth} className="text-xs text-gray-600 hover:text-red-400 transition-colors">Clear</button>
-                          </>
-                        ) : (
-                          <span className="text-xs text-gray-600">No saved session</span>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </section>
-      )}
-
-      {/* Crawlers */}
-      <section>
-        <h2 className="text-lg font-semibold text-white mb-3 text-left">Crawlers</h2>
         {releaseCrawlers.length === 0 ? (
-          <p className="text-gray-500 text-sm text-left">No crawlers configured.</p>
+          <p className="text-gray-500 text-sm text-left mt-4">No crawlers configured.</p>
         ) : (
-          <table className="w-full text-sm border-collapse">
+          <table className="w-full text-sm border-collapse mt-4">
             <thead>
               <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-800">
                 <th className="text-left py-2 pr-4 w-40">Site</th>
@@ -450,9 +445,9 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
         )}
       </section>
 
-      {/* Store Crawlers */}
+      {/* Store Management */}
       <section>
-        <h2 className="text-lg font-semibold text-white mb-1 text-left">Store Crawlers</h2>
+        <h2 className="text-lg font-semibold text-white mb-1 text-left">Store Management</h2>
         <p className="text-sm text-gray-500 mb-4 text-left">
           Scan an entire site's in-stock catalog, independent of your collection. Results appear in the Store tab.
           Leave schedule blank to disable.
@@ -481,7 +476,7 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
                   onClick={onRefreshStock}
                   className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 rounded text-xs font-medium transition-colors"
                 >
-                  Refresh Stock Now
+                  Refresh Now
                 </button>
               </td>
               <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
