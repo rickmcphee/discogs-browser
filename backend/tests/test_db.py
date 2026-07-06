@@ -702,3 +702,12 @@ def test_stock_items_has_item_key_column(conn_with_catalog_crawler):
     cols = {row[1] for row in conn.execute("PRAGMA table_info(stock_items)").fetchall()}
     assert "item_key" in cols
 
+
+def test_replace_stock_items_stores_item_key(conn_with_catalog_crawler):
+    conn, crawler_id = conn_with_catalog_crawler
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "T1", "format": "Vinyl", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+    ])
+    row = conn.execute("SELECT item_key FROM stock_items WHERE crawler_id = ?", [crawler_id]).fetchone()
+    assert row["item_key"] == compute_item_key("Rob Zombie", "T1", "https://x/1")
+

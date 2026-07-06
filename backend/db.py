@@ -305,14 +305,18 @@ def compute_item_key(artist: str, title: str, url: str) -> str:
 
 def replace_stock_items(conn: sqlite3.Connection, crawler_id: int, items: list[dict]):
     conn.execute("DELETE FROM stock_items WHERE crawler_id = ?", [crawler_id])
+    rows = []
+    for item in items:
+        artist = item["artist"].title()
+        rows.append((
+            crawler_id, artist, item["title"], item.get("format"), item.get("price"),
+            item.get("currency"), item["url"], item.get("cover_image_url"),
+            compute_item_key(artist, item["title"], item["url"]),
+        ))
     conn.executemany("""
-        INSERT INTO stock_items (crawler_id, artist, title, format, price, currency, url, cover_image_url, last_seen)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-    """, [
-        (crawler_id, item["artist"].title(), item["title"], item.get("format"), item.get("price"),
-         item.get("currency"), item["url"], item.get("cover_image_url"))
-        for item in items
-    ])
+        INSERT INTO stock_items (crawler_id, artist, title, format, price, currency, url, cover_image_url, item_key, last_seen)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    """, rows)
     conn.commit()
 
 
