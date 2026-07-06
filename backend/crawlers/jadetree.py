@@ -23,6 +23,8 @@ class Crawler:
 
         items = []
         for variant in product.get("variants") or []:
+            # No confirmed pre-order tag on this site (see the design spec) — unlike
+            # centurymedia.py/epitaph.py/fatwreck.py, unavailable variants are always excluded.
             if not variant.get("available"):
                 continue
             try:
