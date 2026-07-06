@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import App from '../App'
 
 class MockEventSource {
@@ -68,12 +68,13 @@ describe('In Stock tab', () => {
     await waitFor(() => expect(storeButton.className).toContain('bg-indigo-600'))
   })
 
-  it('calls postStockSyncStart when Refresh Stock Now is clicked in Settings', async () => {
+  it('calls postStockSyncStart when Refresh Now is clicked in Settings', async () => {
     render(<App />)
     await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    await waitFor(() => expect(screen.getByText('Refresh Stock Now')).toBeInTheDocument())
-    fireEvent.click(screen.getByText('Refresh Stock Now'))
+    const description = await screen.findByText('Scan all enabled catalog crawlers immediately.')
+    const row = description.closest('tr') as HTMLElement
+    fireEvent.click(within(row).getByText('Refresh Now'))
     await waitFor(() => expect(postStockSyncStart).toHaveBeenCalled())
   })
 
