@@ -380,6 +380,36 @@ def get_distinct_stock_artists(conn: sqlite3.Connection, overlapping: bool = Fal
     return [row[0] for row in rows]
 
 
+def get_unjudged_stock_items(conn: sqlite3.Connection, limit: int) -> list[dict]:
+    rows = conn.execute("""
+        SELECT s.item_key, s.artist, s.title
+        FROM stock_items s
+        LEFT JOIN stock_item_judgments j ON j.item_key = s.item_key
+        WHERE j.item_key IS NULL
+        GROUP BY s.item_key
+        ORDER BY MIN(s.last_seen) ASC
+        LIMIT ?
+    """, [limit]).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_taste_listing(conn: sqlite3.Connection) -> list[str]:
+    rows = conn.execute(
+        "SELECT DISTINCT artist, title FROM releases WHERE in_collection = 1 OR in_wishlist = 1 ORDER BY artist, title"
+    ).fetchall()
+    return [f"{row[0]} - {row[1]}" for row in rows]
+
+
+def upsert_stock_judgments(conn: sqlite3.Connection, judgments: list[dict]):
+    conn.executemany("""
+        INSERT INTO stock_item_judgments (item_key, recommended, reason, judged_at)
+        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(item_key) DO UPDATE SET
+            recommended=excluded.recommended, reason=excluded.reason, judged_at=CURRENT_TIMESTAMP
+    """, [(j["item_key"], int(j["recommended"]), j.get("reason")) for j in judgments])
+    conn.commit()
+
+
 def get_enabled_crawlers(conn: sqlite3.Connection, crawler_type: str = "release") -> list[dict]:
     rows = conn.execute(
         "SELECT * FROM crawlers WHERE enabled = 1 AND crawler_type = ?", [crawler_type]
