@@ -6,11 +6,13 @@
 
 **Amendment (2026-07-05, branch `store-tab-overlapping-filter`):** the tab is now labeled **Store** (was "In Stock"), and the Settings section is now labeled **Store Crawlers** (was "Catalog Crawlers") — cosmetic renames only, no data-model or endpoint changes. The "Owned-item cross-reference" item under Out of scope was reversed: an **Overlapping** filter now exists (see Decisions and API below). Text below is updated in place to match; see git history for the original wording.
 
+**Amendment (2026-07-05, branch `store-crawlers-fatwreck-jadetree`):** two more catalog sources added — Fat Wreck Chords (`fatwreck.com/collections/vinyl-1`) and Jade Tree Records (`jadetree.store/collections/vinyl`), both Shopify. Neither needed any change to `shopify_catalog.py`, the data model, the orchestration loop, the API, or the frontend — the "fifth catalog source" item previously listed under Out of scope is what's built here (and a sixth came along with it). See the new technical-grounding subsections below, and the two new crawler entries under "Crawler plugin interface (catalog kind)".
+
 ---
 
 ## Problem
 
-The existing crawler system answers "what does site X charge for release Y in my collection?" — a per-release search driven by Playwright. There's a different question worth answering: "what's currently for sale at site X, regardless of whether I already own it?" Four sources ship together: Nuclear Blast (`shop.nuclearblast.com/collections/vinyl`), Century Media (`centurymedia.store/collections/vinyl`), Epitaph (`epitaph.com/collections/vinyl`), and Rev HQ (`revhq.com/collections/vinyl`) — all full catalogs of in-stock vinyl, browsable independently of the user's Discogs collection/wishlist.
+The existing crawler system answers "what does site X charge for release Y in my collection?" — a per-release search driven by Playwright. There's a different question worth answering: "what's currently for sale at site X, regardless of whether I already own it?" Six sources ship: Nuclear Blast (`shop.nuclearblast.com/collections/vinyl`), Century Media (`centurymedia.store/collections/vinyl`), Epitaph (`epitaph.com/collections/vinyl`), Rev HQ (`revhq.com/collections/vinyl`), Fat Wreck Chords (`fatwreck.com/collections/vinyl-1`), and Jade Tree Records (`jadetree.store/collections/vinyl`) — all full catalogs of in-stock vinyl, browsable independently of the user's Discogs collection/wishlist.
 
 ## Goal
 
@@ -110,13 +112,64 @@ Using `vendor` as artist here, the way every other site's crawler does, would mi
 - The vinyl-detection regex needs widening for this site. Nuclear Blast's `\bvinyl\b|\blp\b` misses bare inch-size variants like `"7\""` (a 7" single) — no "vinyl"/"lp" wording appears there at all. Rev HQ's crawler uses its own wider pattern, `\bvinyl\b|\blp\b|\d+\s*"`, kept local to this crawler rather than widening Nuclear Blast's regex, since there's no evidence Nuclear Blast has the same gap.
 - **No reliable pre-order signal was found.** Tags don't carry one; a `"(PRE-ORDER)"` string turned out to live in a single product's `sku` field, not confirmed as a stable convention across the catalog. Decision: Rev HQ gets no pre-order override — it just uses the plain `available == true` filter, accepting that a legitimately-purchasable pre-order could be excluded if its variant shows `available: false`.
 
+### Fat Wreck Chords — format-mixing like Nuclear Blast, but a regex gap Rev HQ's widening still didn't cover
+
+`fatwreck.com` is Shopify. Its `/collections/vinyl-1/products.json` endpoint (288 products across 2 pages) mixes CD/Cassette variants alongside vinyl variants on the same product — the Nuclear-Blast shape, not the single-variant Century-Media/Epitaph shape — so a per-variant format filter is required.
+
+```json
+{
+  "products": [
+    {
+      "title": "12 Song Program",
+      "vendor": "Tony Sly",
+      "handle": "tslyf751bl-lp",
+      "tags": ["Fat Wreck Chords", "Music", "new"],
+      "variants": [
+        {"title": "CD", "price": "10.00", "available": true},
+        {"title": "LP", "price": "23.00", "available": false}
+      ]
+    }
+  ]
+}
+```
+
+- `vendor` = artist, and titles never carry a `"{vendor} - "` prefix (confirmed across all 288 products) — the same shape as Epitaph. `strip_vendor_prefix` is still called, as a no-op, for consistency with the other crawlers.
+- 10 products have `vendor == "Fat Wreck Chords"` — various-artist compilations (e.g. `"Fat Music Vol. II: Survival Of The Fattest"`, `"Honest Don's Greatest Shits"`). Unlike Rev HQ's vendor-is-the-label bug, this is the label correctly showing up as "artist" for genuine various-artist releases, not a systemic mislabeling — no special-casing added.
+- **Neither existing vinyl regex is wide enough.** Testing against all 47 distinct variant titles live on this site turned up formats like `"2xLP"` and `"Pink/Green/Blue Stripe 2XLP"` that neither Nuclear Blast's `\bvinyl\b|\blp\b` nor Rev HQ's `\bvinyl\b|\blp\b|\d+\s*"` matches — `\blp\b` requires a word boundary before "LP", but a digit or "x" immediately in front of it (both word characters) means no boundary exists. Fat Wreck Chords' crawler uses its own pattern, `\bvinyl\b|\b\d*x?lp\b|\d+\s*"`, kept local to this crawler (same precedent as Rev HQ's widening) — verified against all 47 titles, it matches every vinyl variant and excludes only `"CD"`, `"Cassette"`, and `"Green Cassette"`.
+- Pre-order tag is spelled `"preorder"` (matches Century Media's spelling, not Nuclear Blast/Epitaph's `"pre-order"`) — 7 products tagged; same override as the other pre-order-tagged sites (include all vinyl variants regardless of `available`, append `" (Pre-Order)"`).
+- Variant titles carry real information (color and format, e.g. `"Yellow Stripes Vinyl LP"`), so the display title appends the variant name, Nuclear-Blast-style.
+
+### Jade Tree Records — single-variant shape like Century Media/Epitaph, no format filter needed at all
+
+`jadetree.store` is Shopify. Its `/collections/vinyl` endpoint is small (37 products, 1 page) and every product has exactly one variant, literally titled `"Default Title"` — same shape as Epitaph. Unlike Fat Wreck Chords, this collection has no format-mixing at all: tags are all vinyl-format markers (`"12in Vinyl"`, `"7in Vinyl"`) or marketing (`"limited"`, `"Featured"`, `"Media Mail"`, `"J00000"`) — no CD/cassette tag appears anywhere in the catalog, so no per-variant regex filter is needed; every yielded row is `format: "Vinyl"` unconditionally.
+
+```json
+{
+  "products": [
+    {
+      "title": "Nothing Feels Good LP (Blue/White Galaxy)",
+      "vendor": "The Promise Ring",
+      "handle": "nothing-feels-good-lp-blue-white-galaxy",
+      "tags": ["12in Vinyl", "Featured", "J00000", "limited", "Media Mail"],
+      "variants": [
+        {"title": "Default Title", "price": "26.99", "available": true}
+      ]
+    }
+  ]
+}
+```
+
+- `vendor` = artist across all 17 distinct vendors sampled — no Rev-HQ-style label mislabeling. One product, `"Joan Of Arc - A Portable Model Of LP (Black 180)"` (vendor `"Joan Of Arc"`), does carry a real `"{vendor} - "` prefix, which `strip_vendor_prefix` correctly removes; every other title has no prefix and the helper no-ops.
+- **No pre-order signal found** in the current 37-product catalog — same situation as Rev HQ. No override; the crawler uses the plain `available == true` filter (3 unavailable variants observed, presumably sold out).
+- Format and color are already baked into the product title itself (e.g. `"(Blue/White Galaxy)"`), so — like Century Media and Epitaph — no variant name is appended to the display title.
+
 ---
 
 ## Decisions
 
-- **Row granularity:** one row per in-stock **vinyl variant**, not one row per product. On Nuclear Blast and Rev HQ, a product with several in-stock vinyl variants produces that many rows. On Century Media and Epitaph this is moot in practice — every product has exactly one variant — but the same one-row-per-variant model applies uniformly.
-- **Format filter is site-specific, not shared.** Nuclear Blast and Rev HQ: only variants whose title matches a vinyl-detecting regex are considered (Rev HQ's is wider, to also catch bare inch sizes like `"7\""` — see the Rev HQ technical grounding above); CD variants are ignored even though they appear in the same product JSON. Century Media and Epitaph: no per-variant filter at all — their `/collections/vinyl` endpoints never mix formats within a product, and their variant titles carry no format wording to match against anyway.
-- **Shared vs. per-site logic:** pagination, pre-order-tag detection, cover-image resolution, and vendor-prefix stripping are identical in shape across all four sites (where applicable — Rev HQ doesn't use the pre-order or vendor-prefix helpers at all, since neither concept applies there) and live in one shared module, `backend/shopify_catalog.py`. Which variants to include, how the artist is determined, and how the display title is assembled differ enough between sites that each crawler keeps its own logic for those things — forcing them into the shared module would mean the module encodes assumptions that are only true for one site (Rev HQ's vendor-is-the-label quirk is the clearest example of why).
+- **Row granularity:** one row per in-stock **vinyl variant**, not one row per product. On Nuclear Blast, Rev HQ, and Fat Wreck Chords, a product with several in-stock vinyl variants produces that many rows. On Century Media, Epitaph, and Jade Tree this is moot in practice — every product has exactly one variant — but the same one-row-per-variant model applies uniformly.
+- **Format filter is site-specific, not shared.** Nuclear Blast, Rev HQ, and Fat Wreck Chords: only variants whose title matches a vinyl-detecting regex are considered (each site's regex differs slightly — Rev HQ's adds bare inch sizes like `"7\""`, Fat Wreck Chords' also catches glued formats like `"2xLP"` that neither of the others' patterns match — see each site's technical grounding above); CD/cassette variants are ignored even though they appear in the same product JSON. Century Media, Epitaph, and Jade Tree: no per-variant filter at all — their vinyl collections never mix formats within a product, and their variant titles carry no format wording to match against anyway (Jade Tree's collection has no format-mixing at the catalog level either, so this holds true for every product, not just per-product).
+- **Shared vs. per-site logic:** pagination, pre-order-tag detection, cover-image resolution, and vendor-prefix stripping are identical in shape across all six sites (where applicable — Rev HQ and Jade Tree don't use the pre-order helper at all, since neither has a confirmed pre-order signal) and live in one shared module, `backend/shopify_catalog.py`. Which variants to include, how the artist is determined, and how the display title is assembled differ enough between sites that each crawler keeps its own logic for those things — forcing them into the shared module would mean the module encodes assumptions that are only true for one site (Rev HQ's vendor-is-the-label quirk is the clearest example of why).
 - **Placement of the shared module matters.** Crawler plugin files are copied into the user's data directory and loaded via `importlib.util.spec_from_file_location` from an arbitrary path — they are never members of a real `crawlers` Python package. A shared helper module placed *inside* `backend/crawlers/` would itself get matched by the startup bootstrap's `glob("*.py")` and mis-registered as a bogus crawler (it has no `Crawler` class). The existing crawlers already establish the right pattern: `amazon.py`/`ebay.py` import from a top-level `backend/crawler.py`, not from anything inside `backend/crawlers/`. `shopify_catalog.py` follows that same pattern, living at the top level of `backend/`, alongside `crawler.py`.
 - **Title display:** the variant name is appended to the album title in a single `title` field — `"The Great Satan — Ghostly Black Vinyl"` — rather than a separate column.
 - **Column parity with the Collection tab:** the Store tab mirrors as much of `RecordBrowser`'s layout as the data supports — a cover thumbnail and a Format column, in addition to Artist/Title/Price/Source. Year and Label aren't available from either source's data and are skipped. Format is a constant `"Vinyl"` for every row today (since non-vinyl variants are filtered out at crawl time), but storing it explicitly means a future non-vinyl catalog source doesn't require a schema change. Columns, left to right: thumbnail, Artist, Title, Format, Price (hyperlink), Source. Sortable: Artist, Title, Format, Price.
@@ -128,9 +181,9 @@ Using `vendor` as artist here, the way every other site's crawler does, would mi
 - **Settings UI:** a separate "Store Crawlers" section, visually parallel to the existing "Crawlers" section (site name, last run, enable/disable), rather than merging into the same table. Enabling/disabling a catalog crawler has no effect on the per-release price crawl and vice versa.
 - **Owned-item cross-reference (added later, branch `store-tab-overlapping-filter`):** a filter dropdown sits left of the list/tile toggle, listing its three options in lexicographic order: a selectable "All" (the default, and how the user turns the filter back off), a selectable "Overlapping", and a disabled "Recommended" placeholder. Selecting Overlapping filters `stock_items` to rows whose artist matches (case-insensitive) an artist in the collection (`releases` where `in_collection = 1`), via a `LOWER(...) IN (SELECT LOWER(artist) ...)` subquery so the filter is enforced server-side and pagination/totals stay correct. No new table or join column — a query-time filter only. The artist sidebar (`GET /api/stock/artists`) takes the same `overlapping` flag and refetches whenever the dropdown changes, so the sidebar only lists artists that actually have matching rows under the active filter. The search box ANDs with whichever filter is active (both conditions are appended to the same `WHERE` clause), so search never bypasses Overlapping back to the full catalog. The chosen filter persists to `localStorage` under `stockFilter`, following the same pattern as `collectionViewMode_instock`.
 - **Artist casing (added later, branch `store-tab-overlapping-filter`):** `replace_stock_items` applies Python's `str.title()` to `item["artist"]` before insert — the single write path for `stock_items` (called from `CrawlManager._sync_stock`), so every catalog crawler gets normalized casing for free without per-crawler changes. Known tradeoff: `.title()` mangles some real band-name stylings (all-caps names like "NAILS" become "Nails"; it also mis-cases text after apostrophes) — accepted for consistent, predictable display over exact stylization fidelity. Applies at crawl time only; existing rows keep whatever casing they had until the next sync.
-- **Pre-order handling is per-site, and one site gets none.** Nuclear Blast/Century Media/Epitaph all tag pre-order products in their `tags` array (spelled `"pre-order"`, `"preorder"`, `"pre-order"` respectively — confirmed via direct fetch), but individual variant `available` flags on a pre-order product are inconsistent — some variants show `available: true`, others `false`, even though the whole release is purchasable. For any product carrying that site's pre-order tag, all of its vinyl variants are included regardless of `available`, and the title gets a `" (Pre-Order)"` suffix. Rev HQ has no confirmed structured pre-order signal at all (see its technical grounding above), so it gets no override — just the plain `available == true` filter, with the accepted gap that a genuine Rev HQ pre-order could be excluded.
+- **Pre-order handling is per-site, and two sites get none.** Nuclear Blast/Century Media/Epitaph/Fat Wreck Chords all tag pre-order products in their `tags` array (spelled `"pre-order"`, `"preorder"`, `"pre-order"`, `"preorder"` respectively — confirmed via direct fetch), but individual variant `available` flags on a pre-order product are inconsistent — some variants show `available: true`, others `false`, even though the whole release is purchasable. For any product carrying that site's pre-order tag, all of its vinyl variants are included regardless of `available`, and the title gets a `" (Pre-Order)"` suffix. Rev HQ and Jade Tree have no confirmed structured pre-order signal at all (see their technical grounding above), so they get no override — just the plain `available == true` filter, with the accepted gap that a genuine pre-order on either site could be excluded.
 - **Future direction (not built now):** a filtered view showing only items "related to" the existing collection, inferred via a Claude API call (new API key field in Settings). The schema below doesn't need rework to support this later — it would be an additive column or join, not a redesign.
-- **Future direction (not built now): a config-driven generic Shopify crawler**, so a user could add a new Shopify-backed store from Settings — paste a URL, the app validates it's Shopify-backed (does `{url}/collections/{slug}/products.json` return a `products` array?) — without writing a new `.py` file. This is deliberately deferred rather than built now, but worth designing together later: across the four sites here we already found **three incompatible shapes** (Nuclear Blast/Rev HQ need per-variant format filtering that would break Century Media/Epitaph, whose variant titles carry no format wording to filter on at all; Rev HQ's `vendor` field is the record label, not the artist — nothing in the JSON response itself flags that it's wrong). That means "paste a URL and the app figures out the rest" can't be fully automatic — a URL-validation step can confidently prove "this is Shopify," but not "this is shaped like Nuclear Blast." The realistic version is a small structured config per store (`collection_slug`, `preorder_tag`, `artist_source`: `vendor` vs. title-regex, `variant_filter`: none vs. regex) plus a Settings preview step showing a few parsed items so a human can pick/confirm the shape before saving — turning each of today's four crawler `.py` files into a config row against one generic engine. The shared helpers in `shopify_catalog.py` are already pure functions parameterized by exactly these kinds of values (`base_url`, `collection_slug`, a `tag` string), so no rework is needed there when this gets built — the four crawlers written now are a working reference for what the config schema needs to express.
+- **Future direction (not built now): a config-driven generic Shopify crawler**, so a user could add a new Shopify-backed store from Settings — paste a URL, the app validates it's Shopify-backed (does `{url}/collections/{slug}/products.json` return a `products` array?) — without writing a new `.py` file. This is deliberately deferred rather than built now, but worth designing together later: across the six sites here we already found **incompatible shapes on multiple axes** (Nuclear Blast/Rev HQ/Fat Wreck Chords need per-variant format filtering — and each needed a slightly different regex — that would break Century Media/Epitaph/Jade Tree, whose variant titles carry no format wording to filter on at all; Rev HQ's `vendor` field is the record label, not the artist — nothing in the JSON response itself flags that it's wrong; pre-order tag spelling varies where a pre-order signal exists at all). That means "paste a URL and the app figures out the rest" can't be fully automatic — a URL-validation step can confidently prove "this is Shopify," but not "this is shaped like Nuclear Blast." The realistic version is a small structured config per store (`collection_slug`, `preorder_tag`, `artist_source`: `vendor` vs. title-regex, `variant_filter`: none vs. regex) plus a Settings preview step showing a few parsed items so a human can pick/confirm the shape before saving — turning each of today's six crawler `.py` files into a config row against one generic engine. The shared helpers in `shopify_catalog.py` are already pure functions parameterized by exactly these kinds of values (`base_url`, `collection_slug`, a `tag` string), so no rework is needed there when this gets built — the six crawlers written now are a working reference for what the config schema needs to express.
 
 ---
 
@@ -156,7 +209,7 @@ CREATE TABLE stock_items (
 
 - `crawler_id` reuses the existing `crawlers` table — "Source" in the UI is `crawlers.site_name` joined in, same pattern as `listings.crawler_id`.
 - Existing crawlers (Amazon, eBay) get `crawler_type = 'release'` via the `ALTER TABLE` default; no changes to those files.
-- Nuclear Blast, Century Media, Epitaph, and Rev HQ all register with `crawler_type = 'catalog'`.
+- Nuclear Blast, Century Media, Epitaph, Rev HQ, Fat Wreck Chords, and Jade Tree all register with `crawler_type = 'catalog'`.
 
 ---
 
@@ -213,12 +266,24 @@ Fixed ~1s delay between page requests (polite default, not configurable). No `Bo
 - For each product: parses `artist`/`album_title` from the title via `^(?P<artist>.+?)\s*"(?P<album>.+)"\s*$`, falling back to the raw `vendor` (the label) and full title if a title doesn't match — this never happened in the sampled catalog, but the fallback avoids crashing or leaving the artist blank rather than assuming perfect coverage.
 - For each variant: skip unless `available` is true (no pre-order override — see the Rev HQ technical grounding above) and the variant title matches `\bvinyl\b|\blp\b|\d+\s*"` (wider than Nuclear Blast's regex, to catch bare inch sizes). `format` is always `"Vinyl"`. `cover_image_url` via `resolve_cover_image(product, variant)`. Yields `{"artist", "title": f"{album_title} — {variant_title}", "format": "Vinyl", "price": float(variant["price"]), "currency": "USD", "url": f"{base_url}/products/{handle}", "cover_image_url"}`.
 
+### `backend/crawlers/fatwreck.py`
+
+- Uses `iter_products(base_url, "vinyl-1")` — note the non-standard collection slug (`"vinyl-1"`, not `"vinyl"`).
+- For each product: `vendor` → artist; `strip_vendor_prefix(title, vendor)` (a no-op here, called anyway for consistency — see Fat Wreck Chords technical grounding above).
+- For each variant: skip unless the variant `title` matches `\bvinyl\b|\b\d*x?lp\b|\d+\s*"` (this site's own widening — see technical grounding above for why Nuclear Blast's and Rev HQ's regexes both miss glued formats like `"2xLP"`), and (either `available` is true, or `has_tag(product, "preorder")` — Century Media's spelling, not Nuclear Blast's). Pre-order items get `" (Pre-Order)"` appended to the title. `format` is always `"Vinyl"`. `cover_image_url` via `resolve_cover_image(product, variant)`. Yields `{"artist", "title": f"{album_title} — {variant_title}[ (Pre-Order)]", "format": "Vinyl", "price": float(variant["price"]), "currency": "USD", "url": f"{base_url}/products/{handle}", "cover_image_url"}`.
+
+### `backend/crawlers/jadetree.py`
+
+- Same shape as `centurymedia.py`/`epitaph.py`: uses `iter_products(base_url, "vinyl")`, `strip_vendor_prefix`, and `resolve_cover_image` from the shared module; does **not** use `has_tag` — no pre-order signal was found on this site (see technical grounding above).
+- For each product: `vendor` → artist; `strip_vendor_prefix(title, vendor)` to get the display title (used as-is, no variant name appended — format/color are already baked into the product title).
+- For each variant: skip unless `available` is true (no pre-order override, same as Rev HQ). No format regex — the collection has no format-mixing at all. `format` is always `"Vinyl"`. `cover_image_url` via `resolve_cover_image(product, variant)`. Yields `{"artist", "title": title, "format": "Vinyl", "price": float(variant["price"]), "currency": "USD", "url": f"{base_url}/products/{handle}", "cover_image_url"}`.
+
 ---
 
 ## Backend orchestration
 
 - `CrawlManager` gains `stock_sync_running` / `start_stock_sync()` / `_sync_stock()`, modeled directly on the existing `sync_running` / `start_sync()` / `_sync_collection()` in [`backend/crawl_manager.py`](../../../backend/crawl_manager.py).
-- `_sync_stock()` loads **all enabled catalog crawlers** (all four sites, plus any future one — the loop is data-driven off the `crawlers` table, not hard-coded), and for each: calls `crawl_catalog()`, replaces that crawler's `stock_items` rows, and broadcasts progress.
+- `_sync_stock()` loads **all enabled catalog crawlers** (all six sites, plus any future one — the loop is data-driven off the `crawlers` table, not hard-coded), and for each: calls `crawl_catalog()`, replaces that crawler's `stock_items` rows, and broadcasts progress.
 - New SSE events on the existing `/api/crawl/stream` channel (no new stream): `stock_sync_started`, `stock_sync_progress` (`{synced, source}`), `stock_sync_complete` (`{synced}`), `stock_sync_error` (`{error}`).
 - `db.py` additions: `replace_stock_items(conn, crawler_id, items)` (delete-then-insert in one transaction), `get_stock_items(conn, search=None, sort="artist", order="asc", page=1, per_page=50)` — sortable by `artist`, `title`, `format`, or `price`.
 - `main.py`'s `seed_bundled_crawlers` reads `crawler_type` from the module file the same way it already reads `site_name` (regex on the class body), defaulting to `"release"` when absent — so `amazon.py`/`ebay.py` need no changes.
@@ -242,13 +307,13 @@ Fixed ~1s delay between page requests (polite default, not configurable). No `Bo
 
 - AI-based relevance filtering ("Claude, suggest what I might like from what's in stock") — noted as a likely future addition; the schema doesn't preclude it.
 - Non-vinyl formats (CD, cassette, boxset) anywhere in the pipeline.
-- A fifth catalog source beyond Nuclear Blast, Century Media, Epitaph, and Rev HQ (the orchestration loop and `shopify_catalog.py` support it structurally, but no fifth crawler is being written now).
-- A Century Media or Epitaph product with more than one variant (none exist in either live catalog today); if one appeared, both variants would render with an identical title since the color is baked into the product title rather than the variant name.
-- A pre-order override for Rev HQ (no reliable structured signal was found); a legitimately-purchasable Rev HQ pre-order could be excluded if its variant shows `available: false`.
+- A seventh catalog source beyond the six built here (the orchestration loop and `shopify_catalog.py` support it structurally, but no seventh crawler is being written now).
+- A Century Media, Epitaph, or Jade Tree product with more than one variant (none exist in any of the three live catalogs today); if one appeared, both variants would render with an identical title since the color is baked into the product title rather than the variant name.
+- A pre-order override for Rev HQ or Jade Tree (no reliable structured signal was found for either); a legitimately-purchasable pre-order on either site could be excluded if its variant shows `available: false`.
 
 ## Success criteria
 
-- "Refresh Stock Now" populates the Store tab with in-stock vinyl variants from all four sources, each priced and linked to its product page, with the correct source shown per row.
+- "Refresh Stock Now" populates the Store tab with in-stock vinyl variants from all six sources, each priced and linked to its product page, with the correct source shown per row.
 - Rev HQ rows show the actual band as Artist, not the record label from `vendor`.
 - Re-running the sync after a variant sells out removes it from the tab (per source — each crawler's rows are replaced independently).
 - Disabling any catalog crawler in Settings has no effect on the existing per-release price crawl, and vice versa; disabling one catalog crawler has no effect on another's rows.
