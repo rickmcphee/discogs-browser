@@ -10,6 +10,7 @@ class CrawlManager:
         self._task: Optional[asyncio.Task] = None
         self._sync_task: Optional[asyncio.Task] = None
         self._stock_task: Optional[asyncio.Task] = None
+        self._judgment_task: Optional[asyncio.Task] = None
         self._subscribers: list[asyncio.Queue] = []
         self._recent: list[dict] = []
 
@@ -248,8 +249,8 @@ class CrawlManager:
         return self._stock_task is not None and not self._stock_task.done()
 
     async def start_stock_sync(self) -> bool:
-        if self.stock_sync_running:
-            log.warning("Stock sync already running, ignoring start request")
+        if self.stock_sync_running or self.judgment_running:
+            log.warning("Stock sync or judgment already running, ignoring start request")
             return False
         self._stock_task = asyncio.create_task(self._sync_stock())
         return True
@@ -346,6 +347,41 @@ class CrawlManager:
         except Exception as e:
             log.error("Stock judgment phase failed: %s", e, exc_info=True)
             await self._broadcast({"status": "stock_judgment_error", "error": str(e)})
+
+    @property
+    def judgment_running(self) -> bool:
+        return self._judgment_task is not None and not self._judgment_task.done()
+
+    async def start_judgment_only(self) -> bool:
+        if self.stock_sync_running or self.judgment_running:
+            log.warning("Stock sync or judgment already running, ignoring judgment-only start request")
+            return False
+        self._judgment_task = asyncio.create_task(self._run_judgment_only())
+        return True
+
+    async def _run_judgment_only(self):
+        import sqlite3
+        import config as cfg_module
+        from config import load_config
+
+        conn = sqlite3.connect(cfg_module.DB_FILE, check_same_thread=False, timeout=60)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA journal_mode = WAL")
+        try:
+            api_key = load_config().get("anthropic_api_key", "")
+            if not api_key:
+                await self._broadcast({"status": "stock_judgment_error", "error": "Anthropic API key not configured"})
+                return
+            await self._run_judgment_phase(conn, api_key)
+        except asyncio.CancelledError:
+            log.info("Judgment-only run cancelled")
+            raise
+        except Exception as e:
+            log.error("Judgment-only run failed: %s", e, exc_info=True)
+            await self._broadcast({"status": "stock_judgment_error", "error": str(e)})
+        finally:
+            conn.close()
 
 
 crawl_manager = CrawlManager()

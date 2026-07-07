@@ -411,3 +411,112 @@ async def test_sync_stock_judgment_phase_failure_broadcasts_error(manager, tmp_c
     assert "stock_judgment_error" in statuses
     assert "stock_sync_complete" in statuses  # phase failure doesn't abort the sync
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# judgment-only task (decoupled from full stock sync)
+# ---------------------------------------------------------------------------
+
+async def test_judgment_running_false_initially(manager):
+    assert manager.judgment_running is False
+
+
+async def test_start_judgment_only_returns_true_when_idle(manager, tmp_config_dir):
+    import config as cfg_module
+    cfg_module.save_config({"anthropic_api_key": "sk-ant-test"})
+
+    async def _fake_judgment_only():
+        await asyncio.sleep(0)
+
+    manager._run_judgment_only = _fake_judgment_only  # type: ignore
+    started = await manager.start_judgment_only()
+    assert started is True
+    await asyncio.sleep(0.01)
+
+
+async def test_start_judgment_only_returns_false_when_already_running(manager):
+    event = asyncio.Event()
+
+    async def _fake_judgment_only():
+        await event.wait()
+
+    manager._run_judgment_only = _fake_judgment_only  # type: ignore
+    await manager.start_judgment_only()
+    assert manager.judgment_running is True
+    second = await manager.start_judgment_only()
+    assert second is False
+    event.set()
+    await asyncio.sleep(0.01)
+
+
+async def test_start_judgment_only_returns_false_when_stock_sync_running(manager):
+    event = asyncio.Event()
+
+    async def _fake_sync_stock():
+        await event.wait()
+
+    manager._sync_stock = _fake_sync_stock  # type: ignore
+    await manager.start_stock_sync()
+    assert manager.stock_sync_running is True
+    started = await manager.start_judgment_only()
+    assert started is False
+    event.set()
+    await asyncio.sleep(0.01)
+
+
+async def test_start_stock_sync_returns_false_when_judgment_running(manager):
+    event = asyncio.Event()
+
+    async def _fake_judgment_only():
+        await event.wait()
+
+    manager._run_judgment_only = _fake_judgment_only  # type: ignore
+    await manager.start_judgment_only()
+    assert manager.judgment_running is True
+    started = await manager.start_stock_sync()
+    assert started is False
+    event.set()
+    await asyncio.sleep(0.01)
+
+
+async def test_run_judgment_only_broadcasts_error_when_no_api_key(manager, tmp_config_dir):
+    await manager._run_judgment_only()
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert "stock_judgment_error" in statuses
+
+
+async def test_run_judgment_only_judges_unjudged_items_when_api_key_configured(manager, tmp_config_dir, monkeypatch):
+    import config as cfg_module
+    import db as db_module
+    import recommendations
+    from db import register_crawler, replace_stock_items, compute_item_key
+
+    cfg_module.save_config({"anthropic_api_key": "sk-ant-test"})
+
+    conn = sqlite3.connect(cfg_module.DB_FILE)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db_module.init_db(conn)
+    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
+    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()[0]
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "T1", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+    ])
+    conn.close()
+
+    key = compute_item_key("Rob Zombie", "T1", "https://x/1")
+    monkeypatch.setattr(
+        recommendations, "judge_batch",
+        lambda client, taste, batch: [{"item_key": key, "recommended": True, "reason": "similar genre"}],
+    )
+
+    await manager._run_judgment_only()
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert "stock_judgment_complete" in statuses
+
+    conn2 = sqlite3.connect(cfg_module.DB_FILE)
+    conn2.row_factory = sqlite3.Row
+    row = conn2.execute("SELECT recommended FROM stock_item_judgments WHERE item_key = ?", [key]).fetchone()
+    assert row["recommended"] == 1
+    conn2.close()
