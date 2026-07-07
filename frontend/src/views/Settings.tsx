@@ -71,9 +71,10 @@ interface Props {
   onRefreshCollection: (mode: 'all' | 'new') => void
   onRefreshPrices: (mode: 'missing' | 'all') => void
   onRefreshStock: () => void
+  onRefreshRecommendations: () => void
 }
 
-export default function Settings({ crawlers, onCrawlersChange, onRefreshCollection, onRefreshPrices, onRefreshStock }: Props) {
+export default function Settings({ crawlers, onCrawlersChange, onRefreshCollection, onRefreshPrices, onRefreshStock, onRefreshRecommendations }: Props) {
   const [settings, setSettings] = useState<SettingsType>({
     discogs_token: '',
     debug_screenshot_interval: 20,
@@ -489,6 +490,21 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
               </td>
               <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
                 Scan all enabled catalog crawlers immediately.
+              </td>
+            </tr>
+            <tr className="border-b border-gray-800/50">
+              <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
+              <td className="py-3 pr-4 text-left align-top">
+                <button
+                  onClick={onRefreshRecommendations}
+                  disabled={!settings.anthropic_api_key}
+                  className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 disabled:opacity-50 rounded text-xs font-medium transition-colors"
+                >
+                  Refresh Recommendations
+                </button>
+              </td>
+              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                Judge currently unjudged Store items against your collection, without a full catalog re-crawl. Requires an Anthropic API key above.
               </td>
             </tr>
           </tbody>

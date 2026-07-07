@@ -14,6 +14,8 @@ class MockEventSource {
 }
 
 const postStockSyncStart = vi.fn().mockResolvedValue({ started: true, running: true })
+const postJudgmentStart = vi.fn().mockResolvedValue({ started: true, running: true })
+const getSettings = vi.fn()
 
 vi.mock('../api/client', () => ({
   checkHealth: vi.fn().mockResolvedValue(true),
@@ -27,12 +29,7 @@ vi.mock('../api/client', () => ({
   openCrawlStream: vi.fn(() => new MockEventSource()),
   getReleases: vi.fn().mockResolvedValue({ total: 0, page: 1, per_page: 50, releases: [] }),
   getArtists: vi.fn().mockResolvedValue([]),
-  getSettings: vi.fn().mockResolvedValue({
-    discogs_token: '', debug_screenshot_interval: 20, shuffle_crawl_order: true,
-    crawl_delay_seconds: 30, consecutive_failure_limit: 10, crawl_schedule: '',
-    crawl_schedule_mode: 'missing', collection_schedule: '', collection_schedule_mode: 'all',
-    ebay_app_id: '', ebay_cert_id: '', stock_schedule: '', anthropic_api_key: '',
-  }),
+  getSettings: (...args: unknown[]) => getSettings(...args),
   saveSettings: vi.fn(),
   setCrawlerEnabled: vi.fn(),
   getAuthStatus: vi.fn().mockResolvedValue({ active: false, active_site: null, has_state: false, state_mtime: null }),
@@ -47,16 +44,26 @@ vi.mock('../api/client', () => ({
   getStock: vi.fn().mockResolvedValue({ total: 0, page: 1, per_page: 250, items: [] }),
   getStockArtists: vi.fn().mockResolvedValue([]),
   postStockSyncStart: (...args: unknown[]) => postStockSyncStart(...args),
+  postJudgmentStart: (...args: unknown[]) => postJudgmentStart(...args),
 }))
 
 function getLastCrawlSource() {
   return MockEventSource.instances[MockEventSource.instances.length - 1]
 }
 
+const defaultSettings = {
+  discogs_token: '', debug_screenshot_interval: 20, shuffle_crawl_order: true,
+  crawl_delay_seconds: 30, consecutive_failure_limit: 10, crawl_schedule: '',
+  crawl_schedule_mode: 'missing', collection_schedule: '', collection_schedule_mode: 'all',
+  ebay_app_id: '', ebay_cert_id: '', stock_schedule: '', anthropic_api_key: '',
+}
+
 beforeEach(() => {
   MockEventSource.instances = []
   vi.clearAllMocks()
   postStockSyncStart.mockResolvedValue({ started: true, running: true })
+  postJudgmentStart.mockResolvedValue({ started: true, running: true })
+  getSettings.mockResolvedValue(defaultSettings)
 })
 
 describe('In Stock tab', () => {
@@ -108,5 +115,15 @@ describe('In Stock tab', () => {
     const source = getLastCrawlSource()
     source.emit({ status: 'stock_judgment_complete', judged: 12 })
     await waitFor(() => expect(screen.getByText(/Judged 12 new items for Recommended/)).toBeInTheDocument())
+  })
+
+  it('calls postJudgmentStart when Refresh Recommendations is clicked in Settings', async () => {
+    getSettings.mockResolvedValue({ ...defaultSettings, anthropic_api_key: 'sk-ant-test' })
+    render(<App />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await waitFor(() => expect(screen.getByText('Refresh Recommendations')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Refresh Recommendations'))
+    await waitFor(() => expect(postJudgmentStart).toHaveBeenCalled())
   })
 })
