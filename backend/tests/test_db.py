@@ -820,6 +820,66 @@ def test_get_unjudged_stock_items_spillover_after_partial_judgment(conn_with_cat
     assert not ({item["item_key"] for item in first_batch} & {item["item_key"] for item in remaining})
 
 
+def test_get_unjudged_stock_items_excludes_owned_item(conn_with_catalog_crawler):
+    conn, crawler_id = conn_with_catalog_crawler
+    upsert_release(conn, _release(discogs_id="r1", artist="Rob Zombie", title="The Great Satan"))
+    mark_in_collection(conn, "r1")
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "The Great Satan — Ghostly Black Vinyl", "format": "Vinyl", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+        {"artist": "NAILS", "title": "Every Bridge Burning", "format": "Vinyl", "price": 2.0, "currency": "USD", "url": "https://x/2"},
+    ])
+    unjudged = get_unjudged_stock_items(conn, limit=10)
+    assert [u["artist"] for u in unjudged] == ["Nails"]
+
+
+def test_get_unjudged_stock_items_wishlist_match_not_excluded(conn_with_catalog_crawler):
+    conn, crawler_id = conn_with_catalog_crawler
+    upsert_release(conn, _release(discogs_id="r1", artist="Rob Zombie", title="The Great Satan"))
+    mark_in_wishlist(conn, "r1")
+    mark_not_in_collection(conn, "r1")
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "The Great Satan — Ghostly Black Vinyl", "format": "Vinyl", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+    ])
+    unjudged = get_unjudged_stock_items(conn, limit=10)
+    assert [u["artist"] for u in unjudged] == ["Rob Zombie"]
+
+
+def test_get_unjudged_stock_items_different_title_same_artist_not_excluded(conn_with_catalog_crawler):
+    conn, crawler_id = conn_with_catalog_crawler
+    upsert_release(conn, _release(discogs_id="r1", artist="NAILS", title="Abandon All Life"))
+    mark_in_collection(conn, "r1")
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "NAILS", "title": "Every Bridge Burning", "format": "Vinyl", "price": 2.0, "currency": "USD", "url": "https://x/2"},
+    ])
+    unjudged = get_unjudged_stock_items(conn, limit=10)
+    assert [u["artist"] for u in unjudged] == ["Nails"]
+
+
+def test_get_stock_items_recommended_excludes_owned_item_even_if_judged_recommended(conn_with_catalog_crawler):
+    conn, crawler_id = conn_with_catalog_crawler
+    upsert_release(conn, _release(discogs_id="r1", artist="Rob Zombie", title="The Great Satan"))
+    mark_in_collection(conn, "r1")
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "The Great Satan — Ghostly Black Vinyl", "format": "Vinyl", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+    ])
+    key = compute_item_key("Rob Zombie", "The Great Satan — Ghostly Black Vinyl", "https://x/1")
+    conn.execute("INSERT INTO stock_item_judgments (item_key, recommended, reason) VALUES (?, 1, 'similar genre')", [key])
+    result = get_stock_items(conn, recommended=True)
+    assert result["total"] == 0
+
+
+def test_get_distinct_stock_artists_recommended_excludes_owned_artist_when_only_match_is_owned(conn_with_catalog_crawler):
+    conn, crawler_id = conn_with_catalog_crawler
+    upsert_release(conn, _release(discogs_id="r1", artist="Rob Zombie", title="The Great Satan"))
+    mark_in_collection(conn, "r1")
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "The Great Satan — Ghostly Black Vinyl", "format": "Vinyl", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+    ])
+    key = compute_item_key("Rob Zombie", "The Great Satan — Ghostly Black Vinyl", "https://x/1")
+    conn.execute("INSERT INTO stock_item_judgments (item_key, recommended, reason) VALUES (?, 1, NULL)", [key])
+    assert get_distinct_stock_artists(conn, recommended=True) == []
+
+
 def test_get_taste_listing_includes_collection_and_wishlist(conn):
     upsert_release(conn, _release(discogs_id="r1", artist="Rob Zombie", title="The Great Satan"))
     mark_in_collection(conn, "r1")

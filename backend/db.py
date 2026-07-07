@@ -320,6 +320,14 @@ def replace_stock_items(conn: sqlite3.Connection, crawler_id: int, items: list[d
     conn.commit()
 
 
+_NOT_OWNED_CLAUSE = """NOT EXISTS (
+    SELECT 1 FROM releases r
+    WHERE r.in_collection = 1
+      AND LOWER(r.artist) = LOWER(s.artist)
+      AND (LOWER(s.title) = LOWER(r.title) OR LOWER(s.title) LIKE LOWER(r.title) || ' %')
+)"""
+
+
 def get_stock_items(
     conn: sqlite3.Connection,
     search: Optional[str] = None,
@@ -348,6 +356,7 @@ def get_stock_items(
         conditions.append("LOWER(s.artist) IN (SELECT LOWER(artist) FROM releases WHERE in_collection = 1)")
     if recommended:
         conditions.append("s.item_key IN (SELECT item_key FROM stock_item_judgments WHERE recommended = 1)")
+        conditions.append(_NOT_OWNED_CLAUSE)
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
     total = conn.execute(f"SELECT COUNT(*) FROM stock_items s {where}", params).fetchone()[0]
@@ -372,20 +381,22 @@ def get_stock_items(
 def get_distinct_stock_artists(conn: sqlite3.Connection, overlapping: bool = False, recommended: bool = False) -> list[str]:
     conditions = []
     if overlapping:
-        conditions.append("LOWER(artist) IN (SELECT LOWER(artist) FROM releases WHERE in_collection = 1)")
+        conditions.append("LOWER(s.artist) IN (SELECT LOWER(artist) FROM releases WHERE in_collection = 1)")
     if recommended:
-        conditions.append("item_key IN (SELECT item_key FROM stock_item_judgments WHERE recommended = 1)")
+        conditions.append("s.item_key IN (SELECT item_key FROM stock_item_judgments WHERE recommended = 1)")
+        conditions.append(_NOT_OWNED_CLAUSE)
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
-    rows = conn.execute(f"SELECT DISTINCT artist FROM stock_items {where} ORDER BY artist").fetchall()
+    rows = conn.execute(f"SELECT DISTINCT s.artist FROM stock_items s {where} ORDER BY s.artist").fetchall()
     return [row[0] for row in rows]
 
 
 def get_unjudged_stock_items(conn: sqlite3.Connection, limit: int) -> list[dict]:
-    rows = conn.execute("""
+    rows = conn.execute(f"""
         SELECT s.item_key, s.artist, s.title
         FROM stock_items s
         LEFT JOIN stock_item_judgments j ON j.item_key = s.item_key
         WHERE j.item_key IS NULL
+          AND {_NOT_OWNED_CLAUSE}
         GROUP BY s.item_key
         ORDER BY MIN(s.last_seen) ASC
         LIMIT ?
