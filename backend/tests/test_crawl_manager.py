@@ -471,6 +471,99 @@ async def test_run_judgment_phase_logs_per_batch_progress(manager, tmp_config_di
     conn.close()
 
 
+async def test_run_judgment_phase_logs_true_backlog_size_when_limit_smaller(manager, tmp_config_dir, monkeypatch, caplog):
+    import config as cfg_module
+    import db as db_module
+    import recommendations
+    from db import register_crawler, replace_stock_items
+
+    cfg_module.save_config({"recommendation_item_limit": 2})
+
+    conn = sqlite3.connect(cfg_module.DB_FILE)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db_module.init_db(conn)
+    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
+    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()[0]
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "T1", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+        {"artist": "NAILS", "title": "T2", "price": 2.0, "currency": "USD", "url": "https://x/2"},
+        {"artist": "Ghost", "title": "T3", "price": 3.0, "currency": "USD", "url": "https://x/3"},
+        {"artist": "Poison", "title": "T4", "price": 4.0, "currency": "USD", "url": "https://x/4"},
+        {"artist": "Slayer", "title": "T5", "price": 5.0, "currency": "USD", "url": "https://x/5"},
+    ])
+
+    monkeypatch.setattr(recommendations, "judge_batch", lambda client, taste, batch: [
+        {"item_key": item["item_key"], "recommended": False, "reason": None} for item in batch
+    ])
+
+    with caplog.at_level("INFO", logger="crawl_manager"):
+        await manager._run_judgment_phase(conn, "sk-ant-test")
+
+    found_logs = [r.message for r in caplog.records if r.message.startswith("Found ")]
+    assert found_logs == ["Found 2/5 items to judge for recommendation"]
+    conn.close()
+
+
+async def test_run_judgment_phase_logs_equal_counts_when_limit_unset(manager, tmp_config_dir, monkeypatch, caplog):
+    import config as cfg_module
+    import db as db_module
+    import recommendations
+    from db import register_crawler, replace_stock_items
+
+    conn = sqlite3.connect(cfg_module.DB_FILE)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db_module.init_db(conn)
+    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
+    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()[0]
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "T1", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+    ])
+
+    monkeypatch.setattr(recommendations, "judge_batch", lambda client, taste, batch: [
+        {"item_key": item["item_key"], "recommended": False, "reason": None} for item in batch
+    ])
+
+    with caplog.at_level("INFO", logger="crawl_manager"):
+        await manager._run_judgment_phase(conn, "sk-ant-test")
+
+    found_logs = [r.message for r in caplog.records if r.message.startswith("Found ")]
+    assert found_logs == ["Found 1/1 items to judge for recommendation"]
+    conn.close()
+
+
+async def test_run_judgment_phase_respects_zero_as_unlimited(manager, tmp_config_dir, monkeypatch, caplog):
+    import config as cfg_module
+    import db as db_module
+    import recommendations
+    from db import register_crawler, replace_stock_items
+
+    cfg_module.save_config({"recommendation_item_limit": 0})
+
+    conn = sqlite3.connect(cfg_module.DB_FILE)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db_module.init_db(conn)
+    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
+    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()[0]
+    replace_stock_items(conn, crawler_id, [
+        {"artist": f"Artist {i}", "title": f"T{i}", "price": 1.0, "currency": "USD", "url": f"https://x/{i}"}
+        for i in range(5)
+    ])
+
+    monkeypatch.setattr(recommendations, "judge_batch", lambda client, taste, batch: [
+        {"item_key": item["item_key"], "recommended": False, "reason": None} for item in batch
+    ])
+
+    with caplog.at_level("INFO", logger="crawl_manager"):
+        await manager._run_judgment_phase(conn, "sk-ant-test")
+
+    found_logs = [r.message for r in caplog.records if r.message.startswith("Found ")]
+    assert found_logs == ["Found 5/5 items to judge for recommendation"]
+    conn.close()
+
+
 # ---------------------------------------------------------------------------
 # judgment-only task (decoupled from full stock sync)
 # ---------------------------------------------------------------------------
