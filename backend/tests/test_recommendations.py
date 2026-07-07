@@ -16,6 +16,14 @@ def _mock_text_response(mock, model, text):
     }))
 
 
+def test_system_prompt_loads_from_recommendations_prompt_md():
+    from pathlib import Path
+    import recommendations
+    prompt_file = Path(recommendations.__file__).parent / "recommendations_prompt.md"
+    assert prompt_file.exists()
+    assert recommendations.SYSTEM_PROMPT == prompt_file.read_text().strip()
+
+
 def test_build_batch_prompt_includes_taste_listing_and_items():
     from recommendations import build_batch_prompt
     prompt = build_batch_prompt(

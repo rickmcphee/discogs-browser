@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from logging_config import get_logger
 
 log = get_logger("recommendations")
@@ -7,17 +8,7 @@ MODEL = "claude-haiku-4-5"
 BATCH_SIZE = 40
 SYNC_CAP = 300
 
-SYSTEM_PROMPT = (
-    "You are helping a vinyl record collector find new records they might like, "
-    "based on their existing collection and wishlist.\n\n"
-    "You will be given the collector's full collection/wishlist as a list of "
-    "\"Artist - Title\" lines, followed by a batch of in-stock catalog items to judge.\n\n"
-    "For each item, decide whether it's a good recommendation given the collector's "
-    "taste (same genre/scene, related artists, similar labels, adjacent style — not "
-    "just exact artist matches). Respond with a JSON array only, no other text, one "
-    "entry per item in the same order:\n\n"
-    "[{\"item_key\": \"<key>\", \"recommended\": true|false, \"reason\": \"<one short sentence>\"}]"
-)
+SYSTEM_PROMPT = (Path(__file__).parent / "recommendations_prompt.md").read_text().strip()
 
 
 def build_batch_prompt(taste_listing: list[str], batch: list[dict]) -> str:
