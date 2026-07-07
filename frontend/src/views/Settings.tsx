@@ -33,6 +33,13 @@ const SETTING_ROWS: SettingRow[] = [
     placeholder: 'your Cert ID',
   },
   {
+    key: 'anthropic_api_key',
+    label: 'Anthropic API key',
+    description: 'Used to judge Store items against your collection for the Recommended filter. Get one at platform.claude.com.',
+    type: 'password',
+    placeholder: 'sk-ant-...',
+  },
+  {
     key: 'debug_screenshot_interval',
     label: 'Screenshot interval',
     description: '0 = off · 1 = every search · N = every Nth. First search always captured when > 0.',
@@ -64,9 +71,10 @@ interface Props {
   onRefreshCollection: (mode: 'all' | 'new') => void
   onRefreshPrices: (mode: 'missing' | 'all') => void
   onRefreshStock: () => void
+  onRefreshRecommendations: () => void
 }
 
-export default function Settings({ crawlers, onCrawlersChange, onRefreshCollection, onRefreshPrices, onRefreshStock }: Props) {
+export default function Settings({ crawlers, onCrawlersChange, onRefreshCollection, onRefreshPrices, onRefreshStock, onRefreshRecommendations }: Props) {
   const [settings, setSettings] = useState<SettingsType>({
     discogs_token: '',
     debug_screenshot_interval: 20,
@@ -80,6 +88,7 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
     ebay_app_id: '',
     ebay_cert_id: '',
     stock_schedule: '',
+    anthropic_api_key: '',
   })
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -334,7 +343,7 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
               <td className="py-3 pr-4 text-left align-top">
                 <button
                   onClick={() => onRefreshCollection(settings.collection_schedule_mode as 'all' | 'new' ?? 'all')}
-                  className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 rounded text-xs font-medium transition-colors"
+                  className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 rounded text-xs font-medium transition-colors"
                 >
                   Refresh Now
                 </button>
@@ -392,7 +401,7 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
               <td className="py-3 pr-4 text-left align-top">
                 <button
                   onClick={() => onRefreshPrices(settings.crawl_schedule_mode as 'missing' | 'all' ?? 'missing')}
-                  className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 rounded text-xs font-medium transition-colors"
+                  className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 rounded text-xs font-medium transition-colors"
                 >
                   Refresh Now
                 </button>
@@ -474,13 +483,28 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
               <td className="py-3 pr-4 text-left align-top">
                 <button
                   onClick={onRefreshStock}
-                  className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 rounded text-xs font-medium transition-colors"
+                  className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 rounded text-xs font-medium transition-colors"
                 >
                   Refresh Now
                 </button>
               </td>
               <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
                 Scan all enabled catalog crawlers immediately.
+              </td>
+            </tr>
+            <tr className="border-b border-gray-800/50">
+              <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
+              <td className="py-3 pr-4 text-left align-top">
+                <button
+                  onClick={onRefreshRecommendations}
+                  disabled={!settings.anthropic_api_key}
+                  className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 disabled:opacity-50 rounded text-xs font-medium transition-colors"
+                >
+                  Refresh Recommendations
+                </button>
+              </td>
+              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                Judge currently unjudged Store items against your collection, without a full catalog re-crawl. Requires an Anthropic API key above.
               </td>
             </tr>
           </tbody>

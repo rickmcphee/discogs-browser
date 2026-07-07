@@ -1,5 +1,6 @@
 import sqlite3
 import threading
+import hashlib
 from typing import Optional
 import config
 
@@ -52,7 +53,15 @@ CREATE TABLE IF NOT EXISTS stock_items (
     currency TEXT,
     url TEXT NOT NULL,
     cover_image_url TEXT,
+    item_key TEXT,
     last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS stock_item_judgments (
+    item_key TEXT PRIMARY KEY,
+    recommended INTEGER NOT NULL,
+    reason TEXT,
+    judged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS owner (
@@ -102,6 +111,9 @@ def init_db(conn: sqlite3.Connection):
     crawler_cols = {row[1] for row in conn.execute("PRAGMA table_info(crawlers)").fetchall()}
     if "crawler_type" not in crawler_cols:
         conn.execute("ALTER TABLE crawlers ADD COLUMN crawler_type TEXT NOT NULL DEFAULT 'release'")
+    stock_cols = {row[1] for row in conn.execute("PRAGMA table_info(stock_items)").fetchall()}
+    if "item_key" not in stock_cols:
+        conn.execute("ALTER TABLE stock_items ADD COLUMN item_key TEXT")
     # Migration: rename CC Music -> CC Music/eBay crawler row and update its listings
     row = conn.execute("SELECT id FROM crawlers WHERE site_name = 'CC Music'").fetchone()
     if row:
@@ -287,17 +299,33 @@ def get_listings_for_release(conn: sqlite3.Connection, release_id: str) -> dict:
     }
 
 
+def compute_item_key(artist: str, title: str, url: str) -> str:
+    return hashlib.sha256(f"{artist}|{title}|{url}".encode()).hexdigest()
+
+
 def replace_stock_items(conn: sqlite3.Connection, crawler_id: int, items: list[dict]):
     conn.execute("DELETE FROM stock_items WHERE crawler_id = ?", [crawler_id])
+    rows = []
+    for item in items:
+        artist = item["artist"].title()
+        rows.append((
+            crawler_id, artist, item["title"], item.get("format"), item.get("price"),
+            item.get("currency"), item["url"], item.get("cover_image_url"),
+            compute_item_key(artist, item["title"], item["url"]),
+        ))
     conn.executemany("""
-        INSERT INTO stock_items (crawler_id, artist, title, format, price, currency, url, cover_image_url, last_seen)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-    """, [
-        (crawler_id, item["artist"].title(), item["title"], item.get("format"), item.get("price"),
-         item.get("currency"), item["url"], item.get("cover_image_url"))
-        for item in items
-    ])
+        INSERT INTO stock_items (crawler_id, artist, title, format, price, currency, url, cover_image_url, item_key, last_seen)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    """, rows)
     conn.commit()
+
+
+_NOT_OWNED_CLAUSE = """NOT EXISTS (
+    SELECT 1 FROM releases r
+    WHERE r.in_collection = 1
+      AND LOWER(r.artist) = LOWER(s.artist)
+      AND (LOWER(s.title) = LOWER(r.title) OR LOWER(s.title) LIKE LOWER(r.title) || ' %')
+)"""
 
 
 def get_stock_items(
@@ -309,6 +337,7 @@ def get_stock_items(
     page: int = 1,
     per_page: int = 50,
     overlapping: bool = False,
+    recommended: bool = False,
 ) -> dict:
     order_sql = "DESC" if order.lower() == "desc" else "ASC"
     allowed_sort = {"artist", "title", "format", "price"}
@@ -325,6 +354,9 @@ def get_stock_items(
         params.append(artist)
     if overlapping:
         conditions.append("LOWER(s.artist) IN (SELECT LOWER(artist) FROM releases WHERE in_collection = 1)")
+    if recommended:
+        conditions.append("s.item_key IN (SELECT item_key FROM stock_item_judgments WHERE recommended = 1)")
+        conditions.append(_NOT_OWNED_CLAUSE)
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
     total = conn.execute(f"SELECT COUNT(*) FROM stock_items s {where}", params).fetchone()[0]
@@ -333,9 +365,11 @@ def get_stock_items(
     null_order = "ASC" if order_sql == "ASC" else "DESC"
     order_clause = f"CASE WHEN s.{sort} IS NULL THEN 1 ELSE 0 END {null_order}, s.{sort} {order_sql}"
     rows = conn.execute(f"""
-        SELECT s.id, s.artist, s.title, s.format, s.price, s.currency, s.url, s.cover_image_url, s.last_seen, c.site_name AS source
+        SELECT s.id, s.artist, s.title, s.format, s.price, s.currency, s.url, s.cover_image_url, s.last_seen,
+               c.site_name AS source, j.reason AS reason
         FROM stock_items s
         JOIN crawlers c ON c.id = s.crawler_id
+        LEFT JOIN stock_item_judgments j ON j.item_key = s.item_key
         {where}
         ORDER BY {order_clause}
         LIMIT ? OFFSET ?
@@ -344,10 +378,51 @@ def get_stock_items(
     return {"total": total, "page": page, "per_page": per_page, "items": [dict(row) for row in rows]}
 
 
-def get_distinct_stock_artists(conn: sqlite3.Connection, overlapping: bool = False) -> list[str]:
-    where = "WHERE LOWER(artist) IN (SELECT LOWER(artist) FROM releases WHERE in_collection = 1)" if overlapping else ""
-    rows = conn.execute(f"SELECT DISTINCT artist FROM stock_items {where} ORDER BY artist").fetchall()
+def get_distinct_stock_artists(conn: sqlite3.Connection, overlapping: bool = False, recommended: bool = False) -> list[str]:
+    conditions = []
+    if overlapping:
+        conditions.append("LOWER(s.artist) IN (SELECT LOWER(artist) FROM releases WHERE in_collection = 1)")
+    if recommended:
+        conditions.append("s.item_key IN (SELECT item_key FROM stock_item_judgments WHERE recommended = 1)")
+        conditions.append(_NOT_OWNED_CLAUSE)
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    rows = conn.execute(f"SELECT DISTINCT s.artist FROM stock_items s {where} ORDER BY s.artist").fetchall()
     return [row[0] for row in rows]
+
+
+def get_unjudged_stock_items(conn: sqlite3.Connection, limit: int) -> list[dict]:
+    rows = conn.execute(f"""
+        SELECT s.item_key, s.artist, s.title
+        FROM stock_items s
+        LEFT JOIN stock_item_judgments j ON j.item_key = s.item_key
+        WHERE j.item_key IS NULL
+          AND {_NOT_OWNED_CLAUSE}
+        GROUP BY s.item_key
+        ORDER BY MIN(s.last_seen) ASC
+        LIMIT ?
+    """, [limit]).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_taste_listing(conn: sqlite3.Connection) -> list[str]:
+    rows = conn.execute(
+        "SELECT DISTINCT artist, title FROM releases WHERE in_collection = 1 OR in_wishlist = 1 ORDER BY artist, title"
+    ).fetchall()
+    return [f"{row[0]} - {row[1]}" for row in rows]
+
+
+def upsert_stock_judgments(conn: sqlite3.Connection, judgments: list[dict]):
+    conn.executemany("""
+        INSERT INTO stock_item_judgments (item_key, recommended, reason, judged_at)
+        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(item_key) DO UPDATE SET
+            recommended=excluded.recommended, reason=excluded.reason, judged_at=CURRENT_TIMESTAMP
+    """, [(j["item_key"], int(j["recommended"]), j.get("reason")) for j in judgments])
+    conn.commit()
+
+
+def has_any_stock_judgment(conn: sqlite3.Connection) -> bool:
+    return conn.execute("SELECT EXISTS(SELECT 1 FROM stock_item_judgments)").fetchone()[0] == 1
 
 
 def get_enabled_crawlers(conn: sqlite3.Connection, crawler_type: str = "release") -> list[dict]:

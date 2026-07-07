@@ -20,6 +20,7 @@ class SettingsUpdate(BaseModel):
     ebay_app_id: str = ""
     ebay_cert_id: str = ""
     stock_schedule: str = ""
+    anthropic_api_key: str = ""
 
 
 class CrawlerUpdate(BaseModel):
@@ -42,6 +43,7 @@ def get_settings():
         "ebay_app_id": config.get("ebay_app_id", ""),
         "ebay_cert_id": config.get("ebay_cert_id", ""),
         "stock_schedule": config.get("stock_schedule", ""),
+        "anthropic_api_key": config.get("anthropic_api_key", ""),
     }
 
 
@@ -60,6 +62,7 @@ def update_settings(body: SettingsUpdate):
     config["ebay_app_id"] = body.ebay_app_id
     config["ebay_cert_id"] = body.ebay_cert_id
     config["stock_schedule"] = body.stock_schedule
+    config["anthropic_api_key"] = body.anthropic_api_key
     save_config(config)
     try:
         scheduler.configure(body.crawl_schedule, body.crawl_schedule_mode)

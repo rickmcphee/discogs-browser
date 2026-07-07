@@ -5,7 +5,7 @@ import Settings from './views/Settings'
 import LogViewer from './views/LogViewer'
 import LoginScreen from './views/LoginScreen'
 import SetupWizard from './views/SetupWizard'
-import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, getCrawlers, checkHealth, getAuthState, setUnauthorizedHandler } from './api/client'
+import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, getCrawlers, getSettings, getJudgmentStatus, checkHealth, getAuthState, setUnauthorizedHandler } from './api/client'
 import type { CrawlEvent, CrawlStatus, CollectionStatus, Crawler, AuthState } from './api/types'
 
 type View = 'collection' | 'wishlist' | 'instock' | 'settings' | 'logs'
@@ -23,6 +23,9 @@ export default function App() {
   const [collectionStatus, setCollectionStatus] = useState<CollectionStatus | null>(null)
   const [crawlingReleaseId, setCrawlingReleaseId] = useState<string | undefined>(undefined)
   const [crawlers, setCrawlers] = useState<Crawler[]>([])
+  const [hasAnthropicKey, setHasAnthropicKey] = useState(false)
+  const [hasJudgedItems, setHasJudgedItems] = useState(false)
+  const [judgmentRunning, setJudgmentRunning] = useState(false)
   const [serverReady, setServerReady] = useState(false)
   const [syncMessage, setSyncMessage] = useState<string | null>(null)
   const [syncing, setSyncing] = useState(false)
@@ -39,6 +42,8 @@ export default function App() {
           if (!cancelled) {
             setServerReady(true)
             getCrawlers().then(setCrawlers).catch(() => {})
+            getSettings().then((s) => setHasAnthropicKey(Boolean(s.anthropic_api_key))).catch(() => {})
+            getJudgmentStatus().then((s) => setHasJudgedItems(s.any_judged)).catch(() => {})
           }
           return
         }
@@ -97,6 +102,29 @@ export default function App() {
       if (event.status === 'stock_sync_error') {
         setSyncing(false)
         setSyncMessage(`In-stock sync failed: ${event.error}`)
+        return
+      }
+      if (event.status === 'stock_judgment_started') {
+        setSyncing(true)
+        setJudgmentRunning(true)
+        setSyncMessage('Judging in-stock catalog against your collection…')
+        return
+      }
+      if (event.status === 'stock_judgment_progress') {
+        setSyncMessage(`Judging in-stock catalog… ${event.judged}/${event.total}`)
+        return
+      }
+      if (event.status === 'stock_judgment_complete') {
+        setSyncing(false)
+        setJudgmentRunning(false)
+        setHasJudgedItems(true)
+        setSyncMessage(`Judged ${event.judged} new items for Recommended`)
+        return
+      }
+      if (event.status === 'stock_judgment_error') {
+        setSyncing(false)
+        setJudgmentRunning(false)
+        setSyncMessage(`Judgment failed: ${event.error}`)
         return
       }
       if (event.status === 'started') {
@@ -205,6 +233,14 @@ export default function App() {
     }
   }
 
+  async function handleRefreshRecommendations() {
+    try {
+      await postJudgmentStart()
+    } catch (e: any) {
+      setSyncMessage(`Refresh recommendations failed to start: ${e.message}`)
+    }
+  }
+
   if (authState === null) {
     return <div className="min-h-screen flex items-center justify-center text-gray-500">Loading…</div>
   }
@@ -214,6 +250,8 @@ export default function App() {
   if (authState === 'unauthenticated') {
     return <LoginScreen onAuthenticated={() => setAuthState('authenticated')} />
   }
+
+  const recommendedAvailable = hasAnthropicKey && hasJudgedItems && !judgmentRunning
 
   return (
     <div className="h-screen bg-gray-950 text-gray-100 flex flex-col overflow-hidden">
@@ -298,9 +336,9 @@ export default function App() {
           />
         </div>
         <div className={view === 'instock' ? 'h-full' : 'hidden'}>
-          <StockBrowser />
+          <StockBrowser recommendedAvailable={recommendedAvailable} />
         </div>
-        <div className={view === 'settings' ? 'h-full overflow-y-auto' : 'hidden'}><Settings crawlers={crawlers} onCrawlersChange={setCrawlers} onRefreshCollection={(mode) => handleRefresh(mode)} onRefreshPrices={(mode) => handleFindPrices(undefined, mode)} onRefreshStock={handleRefreshStock} /></div>
+        <div className={view === 'settings' ? 'h-full overflow-y-auto' : 'hidden'}><Settings crawlers={crawlers} onCrawlersChange={setCrawlers} onRefreshCollection={(mode) => handleRefresh(mode)} onRefreshPrices={(mode) => handleFindPrices(undefined, mode)} onRefreshStock={handleRefreshStock} onRefreshRecommendations={handleRefreshRecommendations} /></div>
         <div className={view === 'logs' ? 'h-full' : 'hidden'}><LogViewer /></div>
       </main>
 

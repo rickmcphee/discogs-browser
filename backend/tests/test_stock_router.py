@@ -117,3 +117,65 @@ def test_start_stock_sync_calls_manager(client, monkeypatch):
     assert r.status_code == 200
     assert r.json() == {"started": True, "running": True}
     fake_manager.start_stock_sync.assert_awaited_once()
+
+
+def test_start_stock_judgment_calls_manager(client, monkeypatch):
+    fake_manager = AsyncMock()
+    fake_manager.start_judgment_only = AsyncMock(return_value=True)
+    fake_manager.judgment_running = True
+    monkeypatch.setattr(stock_router, "crawl_manager", fake_manager)
+    r = client.post("/api/stock/judge/start")
+    assert r.status_code == 200
+    assert r.json() == {"started": True, "running": True}
+    fake_manager.start_judgment_only.assert_awaited_once()
+
+
+def test_list_stock_recommended_param(client, conn):
+    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
+    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name='Nuclear Blast'").fetchone()[0]
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "T1", "format": "Vinyl", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+        {"artist": "NAILS", "title": "T2", "format": "Vinyl", "price": 2.0, "currency": "USD", "url": "https://x/2"},
+    ])
+    from db import compute_item_key
+    key = compute_item_key("Rob Zombie", "T1", "https://x/1")
+    conn.execute(
+        "INSERT INTO stock_item_judgments (item_key, recommended, reason) VALUES (?, 1, 'similar genre')", [key]
+    )
+    r = client.get("/api/stock?recommended=true")
+    assert r.json()["total"] == 1
+    assert r.json()["items"][0]["artist"] == "Rob Zombie"
+    assert r.json()["items"][0]["reason"] == "similar genre"
+
+
+def test_list_stock_artists_recommended_param(client, conn):
+    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
+    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name='Nuclear Blast'").fetchone()[0]
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "T1", "format": "Vinyl", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+        {"artist": "NAILS", "title": "T2", "format": "Vinyl", "price": 2.0, "currency": "USD", "url": "https://x/2"},
+    ])
+    from db import compute_item_key
+    key = compute_item_key("Rob Zombie", "T1", "https://x/1")
+    conn.execute("INSERT INTO stock_item_judgments (item_key, recommended, reason) VALUES (?, 1, NULL)", [key])
+    r = client.get("/api/stock/artists?recommended=true")
+    assert r.json()["artists"] == ["Rob Zombie"]
+
+
+def test_get_stock_judgment_status_false_when_empty(client):
+    r = client.get("/api/stock/judge/status")
+    assert r.status_code == 200
+    assert r.json() == {"any_judged": False}
+
+
+def test_get_stock_judgment_status_true_once_judged(client, conn):
+    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
+    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name='Nuclear Blast'").fetchone()[0]
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "T1", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+    ])
+    from db import compute_item_key
+    key = compute_item_key("Rob Zombie", "T1", "https://x/1")
+    conn.execute("INSERT INTO stock_item_judgments (item_key, recommended, reason) VALUES (?, 1, NULL)", [key])
+    r = client.get("/api/stock/judge/status")
+    assert r.json() == {"any_judged": True}

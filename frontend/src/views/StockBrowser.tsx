@@ -2,7 +2,11 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { getStock, getStockArtists } from '../api/client'
 import type { StockItem, StockSortField, SortOrder } from '../api/types'
 
-export default function StockBrowser() {
+interface Props {
+  recommendedAvailable?: boolean
+}
+
+export default function StockBrowser({ recommendedAvailable = false }: Props) {
   const [items, setItems] = useState<StockItem[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -11,9 +15,10 @@ export default function StockBrowser() {
   const [artists, setArtists] = useState<string[]>([])
   const [sort, setSort] = useState<StockSortField>('artist')
   const [order, setOrder] = useState<SortOrder>('asc')
-  const [filter, setFilter] = useState<'all' | 'overlapping' | 'recommended'>(
-    () => (localStorage.getItem('stockFilter') === 'overlapping' ? 'overlapping' : 'all')
-  )
+  const [filter, setFilter] = useState<'all' | 'overlapping' | 'recommended'>(() => {
+    const stored = localStorage.getItem('stockFilter')
+    return stored === 'overlapping' || stored === 'recommended' ? stored : 'all'
+  })
   const [loading, setLoading] = useState(false)
   const [viewMode, setViewMode] = useState<'list' | 'tiles'>(
     () => (localStorage.getItem('collectionViewMode_instock') === 'tiles' ? 'tiles' : 'list')
@@ -29,6 +34,7 @@ export default function StockBrowser() {
         artist: selectedArtist || undefined,
         sort, order, page, per_page: PER_PAGE,
         overlapping: filter === 'overlapping',
+        recommended: filter === 'recommended',
       })
       setItems(result.items)
       setTotal(result.total)
@@ -38,7 +44,12 @@ export default function StockBrowser() {
   }, [search, selectedArtist, sort, order, page, filter])
 
   useEffect(() => { load() }, [load])
-  useEffect(() => { getStockArtists(filter === 'overlapping').then(setArtists) }, [filter])
+  useEffect(() => {
+    if (!recommendedAvailable && filter === 'recommended') {
+      setFilter('all')
+    }
+  }, [recommendedAvailable, filter])
+  useEffect(() => { getStockArtists(filter === 'overlapping', filter === 'recommended').then(setArtists) }, [filter])
   useEffect(() => { localStorage.setItem('collectionViewMode_instock', viewMode) }, [viewMode])
   useEffect(() => { localStorage.setItem('stockFilter', filter) }, [filter])
   useEffect(() => { tableScrollRef.current?.scrollTo({ top: 0 }) }, [selectedArtist])
@@ -107,7 +118,7 @@ export default function StockBrowser() {
             >
               <option value="all">All</option>
               <option value="overlapping">Overlapping</option>
-              <option value="recommended" disabled>Recommended</option>
+              <option value="recommended" disabled={!recommendedAvailable}>Recommended</option>
             </select>
             <button
               onClick={() => setViewMode('list')}
@@ -138,7 +149,12 @@ export default function StockBrowser() {
         {/* Tiles */}
         {viewMode === 'tiles' && (
           <div className="flex-1 overflow-auto" ref={tableScrollRef}>
-            {loading && <div className="text-center py-8 text-gray-500">Loading…</div>}
+            {loading && (
+              <div className="flex items-center justify-center gap-2 py-8 text-gray-500">
+                <div className="w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+                Loading…
+              </div>
+            )}
             {!loading && items.length === 0 && (
               <div className="text-center py-8 text-gray-500">
                 No in-stock items yet. Click "Refresh Stock Now" in Settings.
@@ -163,8 +179,8 @@ export default function StockBrowser() {
                     ) : (
                       <div className="w-full aspect-square bg-gray-800 rounded" />
                     )}
-                    <div className="mt-1.5 text-sm text-gray-200 truncate group-hover:text-indigo-400">{item.artist}</div>
-                    <div className="text-xs text-gray-400 truncate">{item.title}</div>
+                    <div className="mt-1.5 text-sm text-gray-200 truncate group-hover:text-indigo-400" title={item.reason ?? undefined}>{item.artist}</div>
+                    <div className="text-xs text-gray-400 truncate" title={item.reason ?? undefined}>{item.title}</div>
                   </a>
                 ))}
               </div>
@@ -196,7 +212,12 @@ export default function StockBrowser() {
             </thead>
             <tbody>
               {loading && (
-                <tr><td colSpan={6} className="text-center py-8 text-gray-500">Loading…</td></tr>
+                <tr><td colSpan={6} className="py-8 text-gray-500">
+                  <div className="flex items-center justify-center gap-2">
+                    <div className="w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+                    Loading…
+                  </div>
+                </td></tr>
               )}
               {!loading && items.length === 0 && (
                 <tr><td colSpan={6} className="text-center py-8 text-gray-500">No in-stock items yet. Click "Refresh Stock Now" in Settings.</td></tr>
@@ -214,8 +235,8 @@ export default function StockBrowser() {
                       <div className="w-10 h-10 bg-gray-800 rounded" />
                     )}
                   </td>
-                  <td className="px-3 py-2 text-gray-200">{item.artist}</td>
-                  <td className="px-3 py-2 text-gray-300">{item.title}</td>
+                  <td className="px-3 py-2 text-gray-200" title={item.reason ?? undefined}>{item.artist}</td>
+                  <td className="px-3 py-2 text-gray-300" title={item.reason ?? undefined}>{item.title}</td>
                   <td className="px-3 py-2 text-gray-400">{item.format ?? '—'}</td>
                   <td className="px-3 py-2">
                     <a href={item.url} target="_blank" rel="noreferrer" className="text-green-400 hover:text-green-300 font-medium">
