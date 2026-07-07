@@ -40,6 +40,12 @@ const SETTING_ROWS: SettingRow[] = [
     placeholder: 'sk-ant-...',
   },
   {
+    key: 'recommendation_item_limit',
+    label: 'Recommendation item limit',
+    description: 'Maximum number of unprocessed Store items evaluated by Claude for recommendation each time. Extra items are evaluated on a later run. 0 = no limit.',
+    type: 'number',
+  },
+  {
     key: 'debug_screenshot_interval',
     label: 'Screenshot interval',
     description: '0 = off · 1 = every search · N = every Nth. First search always captured when > 0.',
@@ -89,6 +95,7 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
     ebay_cert_id: '',
     stock_schedule: '',
     anthropic_api_key: '',
+    recommendation_item_limit: 300,
   })
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -504,7 +511,7 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
                 </button>
               </td>
               <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
-                Judge currently unjudged Store items against your collection, without a full catalog re-crawl. Requires an Anthropic API key above.
+                Evaluate unprocessed Store items for recommendation, without a full catalog re-crawl. Requires an Anthropic API key above.
               </td>
             </tr>
           </tbody>

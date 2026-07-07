@@ -58,6 +58,7 @@ const defaultSettings = {
   crawl_delay_seconds: 30, consecutive_failure_limit: 10, crawl_schedule: '',
   crawl_schedule_mode: 'missing', collection_schedule: '', collection_schedule_mode: 'all',
   ebay_app_id: '', ebay_cert_id: '', stock_schedule: '', anthropic_api_key: '',
+  recommendation_item_limit: 300,
 }
 
 beforeEach(() => {

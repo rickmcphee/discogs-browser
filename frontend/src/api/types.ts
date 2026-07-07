@@ -53,6 +53,7 @@ export interface Settings {
   ebay_cert_id?: string
   stock_schedule?: string
   anthropic_api_key?: string
+  recommendation_item_limit?: number
 }
 
 export type SortField = 'artist' | 'title' | 'year' | 'label' | 'format' | string
