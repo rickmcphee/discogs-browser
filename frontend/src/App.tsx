@@ -107,24 +107,24 @@ export default function App() {
       if (event.status === 'stock_judgment_started') {
         setSyncing(true)
         setJudgmentRunning(true)
-        setSyncMessage('Judging in-stock catalog against your collection…')
+        setSyncMessage('Finding recommendations for Store items…')
         return
       }
       if (event.status === 'stock_judgment_progress') {
-        setSyncMessage(`Judging in-stock catalog… ${event.judged}/${event.total}`)
+        setSyncMessage(`Finding recommendations for Store items… ${event.judged}/${event.total}`)
         return
       }
       if (event.status === 'stock_judgment_complete') {
         setSyncing(false)
         setJudgmentRunning(false)
         setHasJudgedItems(true)
-        setSyncMessage(`Judged ${event.judged} new items for Recommended`)
+        setSyncMessage(`Finished finding recommendations — ${event.judged} items checked`)
         return
       }
       if (event.status === 'stock_judgment_error') {
         setSyncing(false)
         setJudgmentRunning(false)
-        setSyncMessage(`Judgment failed: ${event.error}`)
+        setSyncMessage(`Finding recommendations failed: ${event.error}`)
         return
       }
       if (event.status === 'started') {

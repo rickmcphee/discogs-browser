@@ -105,12 +105,20 @@ describe('In Stock tab', () => {
     await waitFor(() => expect(screen.getByText(/In-stock sync complete: 12 items/)).toBeInTheDocument())
   })
 
+  it('surfaces stock_judgment_started events in the bottom status bar', async () => {
+    render(<App />)
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    const source = getLastCrawlSource()
+    source.emit({ status: 'stock_judgment_started' })
+    await waitFor(() => expect(screen.getByText(/Finding recommendations for Store items…/)).toBeInTheDocument())
+  })
+
   it('surfaces stock_judgment_progress events in the bottom status bar', async () => {
     render(<App />)
     await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
     const source = getLastCrawlSource()
     source.emit({ status: 'stock_judgment_progress', judged: 5, total: 40 })
-    await waitFor(() => expect(screen.getByText(/Judging in-stock catalog… 5\/40/)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText(/Finding recommendations for Store items… 5\/40/)).toBeInTheDocument())
   })
 
   it('surfaces stock_judgment_complete events in the bottom status bar', async () => {
@@ -118,7 +126,15 @@ describe('In Stock tab', () => {
     await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
     const source = getLastCrawlSource()
     source.emit({ status: 'stock_judgment_complete', judged: 12 })
-    await waitFor(() => expect(screen.getByText(/Judged 12 new items for Recommended/)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText(/Finished finding recommendations — 12 items checked/)).toBeInTheDocument())
+  })
+
+  it('surfaces stock_judgment_error events in the bottom status bar', async () => {
+    render(<App />)
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    const source = getLastCrawlSource()
+    source.emit({ status: 'stock_judgment_error', error: 'boom' })
+    await waitFor(() => expect(screen.getByText(/Finding recommendations failed: boom/)).toBeInTheDocument())
   })
 
   it('calls postJudgmentStart when Refresh Recommendations is clicked in Settings', async () => {

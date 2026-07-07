@@ -323,6 +323,9 @@ class CrawlManager:
         import recommendations
         import anthropic
 
+        await self._broadcast({"status": "stock_judgment_started"})
+        log.info("Judgment run started")
+
         limit = load_config().get("recommendation_item_limit", recommendations.SYNC_CAP)
         total_unjudged = count_unjudged_stock_items(conn)
         unjudged = get_unjudged_stock_items(conn, limit)
@@ -331,7 +334,6 @@ class CrawlManager:
             log.info("Found 0/0 items to judge for recommendation, nothing to do")
             return
 
-        await self._broadcast({"status": "stock_judgment_started"})
         log.info("Found %d/%d items to judge for recommendation", len(unjudged), total_unjudged)
 
         client = anthropic.Anthropic(api_key=api_key)

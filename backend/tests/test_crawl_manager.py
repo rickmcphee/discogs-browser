@@ -425,9 +425,44 @@ async def test_run_judgment_phase_broadcasts_complete_when_nothing_unjudged(mana
     with caplog.at_level("INFO", logger="crawl_manager"):
         await manager._run_judgment_phase(conn, "sk-ant-test")
 
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert statuses == ["stock_judgment_started", "stock_judgment_complete"]
     events = [e for e in manager.recent_events() if e["status"] == "stock_judgment_complete"]
     assert events == [{"status": "stock_judgment_complete", "judged": 0}]
     assert any("nothing to do" in r.message for r in caplog.records)
+    conn.close()
+
+
+async def test_run_judgment_phase_broadcasts_started_before_querying_backlog(manager, tmp_config_dir, monkeypatch, caplog):
+    import config as cfg_module
+    import db as db_module
+    import recommendations
+    from db import register_crawler, replace_stock_items
+
+    conn = sqlite3.connect(cfg_module.DB_FILE)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db_module.init_db(conn)
+    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
+    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()[0]
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "T1", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+    ])
+
+    monkeypatch.setattr(recommendations, "judge_batch", lambda client, taste, batch: [
+        {"item_key": item["item_key"], "recommended": False, "reason": None} for item in batch
+    ])
+
+    with caplog.at_level("INFO", logger="crawl_manager"):
+        await manager._run_judgment_phase(conn, "sk-ant-test")
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert statuses.index("stock_judgment_started") < statuses.index("stock_judgment_complete")
+
+    messages = [r.message for r in caplog.records]
+    started_idx = next(i for i, m in enumerate(messages) if "Judgment run started" in m)
+    found_idx = next(i for i, m in enumerate(messages) if m.startswith("Found "))
+    assert started_idx < found_idx
     conn.close()
 
 
