@@ -31,3 +31,9 @@ def list_stock_artists(overlapping: bool = Query(False), recommended: bool = Que
 async def start_stock_sync():
     started = await crawl_manager.start_stock_sync()
     return {"started": started, "running": crawl_manager.stock_sync_running}
+
+
+@router.post("/stock/judge/start")
+async def start_stock_judgment():
+    started = await crawl_manager.start_judgment_only()
+    return {"started": started, "running": crawl_manager.judgment_running}

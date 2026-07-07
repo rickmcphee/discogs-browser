@@ -119,6 +119,17 @@ def test_start_stock_sync_calls_manager(client, monkeypatch):
     fake_manager.start_stock_sync.assert_awaited_once()
 
 
+def test_start_stock_judgment_calls_manager(client, monkeypatch):
+    fake_manager = AsyncMock()
+    fake_manager.start_judgment_only = AsyncMock(return_value=True)
+    fake_manager.judgment_running = True
+    monkeypatch.setattr(stock_router, "crawl_manager", fake_manager)
+    r = client.post("/api/stock/judge/start")
+    assert r.status_code == 200
+    assert r.json() == {"started": True, "running": True}
+    fake_manager.start_judgment_only.assert_awaited_once()
+
+
 def test_list_stock_recommended_param(client, conn):
     register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
     crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name='Nuclear Blast'").fetchone()[0]
