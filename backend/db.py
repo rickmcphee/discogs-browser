@@ -391,6 +391,8 @@ def get_distinct_stock_artists(conn: sqlite3.Connection, overlapping: bool = Fal
 
 
 def get_unjudged_stock_items(conn: sqlite3.Connection, limit: int) -> list[dict]:
+    limit_clause = "LIMIT ?" if limit > 0 else ""
+    params = [limit] if limit > 0 else []
     rows = conn.execute(f"""
         SELECT s.item_key, s.artist, s.title
         FROM stock_items s
@@ -399,9 +401,19 @@ def get_unjudged_stock_items(conn: sqlite3.Connection, limit: int) -> list[dict]
           AND {_NOT_OWNED_CLAUSE}
         GROUP BY s.item_key
         ORDER BY MIN(s.last_seen) ASC
-        LIMIT ?
-    """, [limit]).fetchall()
+        {limit_clause}
+    """, params).fetchall()
     return [dict(row) for row in rows]
+
+
+def count_unjudged_stock_items(conn: sqlite3.Connection) -> int:
+    return conn.execute(f"""
+        SELECT COUNT(DISTINCT s.item_key)
+        FROM stock_items s
+        LEFT JOIN stock_item_judgments j ON j.item_key = s.item_key
+        WHERE j.item_key IS NULL
+          AND {_NOT_OWNED_CLAUSE}
+    """).fetchone()[0]
 
 
 def get_taste_listing(conn: sqlite3.Connection) -> list[str]:

@@ -11,7 +11,7 @@ from db import (
     replace_stock_items, get_stock_items, get_distinct_stock_artists,
     compute_item_key,
     get_unjudged_stock_items, get_taste_listing, upsert_stock_judgments,
-    has_any_stock_judgment,
+    has_any_stock_judgment, count_unjudged_stock_items,
 )
 
 
@@ -801,6 +801,65 @@ def test_get_unjudged_stock_items_respects_limit(conn_with_catalog_crawler):
     ])
     unjudged = get_unjudged_stock_items(conn, limit=2)
     assert len(unjudged) == 2
+
+
+def test_get_unjudged_stock_items_limit_zero_returns_everything(conn_with_catalog_crawler):
+    conn, crawler_id = conn_with_catalog_crawler
+    items = [
+        {"artist": f"Artist {i}", "title": f"T{i}", "price": 1.0, "currency": "USD", "url": f"https://x/{i}"}
+        for i in range(305)
+    ]
+    replace_stock_items(conn, crawler_id, items)
+    unjudged = get_unjudged_stock_items(conn, limit=0)
+    assert len(unjudged) == 305
+
+
+def test_get_unjudged_stock_items_negative_limit_returns_everything(conn_with_catalog_crawler):
+    conn, crawler_id = conn_with_catalog_crawler
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "T1", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+    ])
+    unjudged = get_unjudged_stock_items(conn, limit=-1)
+    assert len(unjudged) == 1
+
+
+def test_get_unjudged_stock_items_positive_limit_still_caps(conn_with_catalog_crawler):
+    conn, crawler_id = conn_with_catalog_crawler
+    items = [
+        {"artist": f"Artist {i}", "title": f"T{i}", "price": 1.0, "currency": "USD", "url": f"https://x/{i}"}
+        for i in range(5)
+    ]
+    replace_stock_items(conn, crawler_id, items)
+    unjudged = get_unjudged_stock_items(conn, limit=2)
+    assert len(unjudged) == 2
+
+
+def test_count_unjudged_stock_items_zero_when_empty(conn):
+    assert count_unjudged_stock_items(conn) == 0
+
+
+def test_count_unjudged_stock_items_counts_all_regardless_of_any_limit(conn_with_catalog_crawler):
+    conn, crawler_id = conn_with_catalog_crawler
+    items = [
+        {"artist": f"Artist {i}", "title": f"T{i}", "price": 1.0, "currency": "USD", "url": f"https://x/{i}"}
+        for i in range(5)
+    ]
+    replace_stock_items(conn, crawler_id, items)
+    assert count_unjudged_stock_items(conn) == 5
+
+
+def test_count_unjudged_stock_items_excludes_owned_and_judged(conn_with_catalog_crawler):
+    conn, crawler_id = conn_with_catalog_crawler
+    upsert_release(conn, _release(discogs_id="r1", artist="Rob Zombie", title="The Great Satan"))
+    mark_in_collection(conn, "r1")
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "The Great Satan", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+        {"artist": "NAILS", "title": "T2", "price": 2.0, "currency": "USD", "url": "https://x/2"},
+        {"artist": "Ghost", "title": "T3", "price": 3.0, "currency": "USD", "url": "https://x/3"},
+    ])
+    key = compute_item_key("Ghost", "T3", "https://x/3")
+    upsert_stock_judgments(conn, [{"item_key": key, "recommended": False, "reason": None}])
+    assert count_unjudged_stock_items(conn) == 1
 
 
 def test_get_unjudged_stock_items_spillover_after_partial_judgment(conn_with_catalog_crawler):
