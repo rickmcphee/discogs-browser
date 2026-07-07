@@ -383,5 +383,4 @@ class CrawlManager:
         finally:
             conn.close()
 
-
 crawl_manager = CrawlManager()
