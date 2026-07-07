@@ -209,4 +209,14 @@ describe('StockBrowser', () => {
     fireEvent.click(screen.getByTitle('Tile view'))
     await waitFor(() => expect(localStorage.getItem('collectionViewMode_instock')).toBe('tiles'))
   })
+
+  it('shows a spinner alongside Loading… during the initial fetch', async () => {
+    let resolveFetch: (v: any) => void = () => {}
+    getStock.mockReturnValue(new Promise((resolve) => { resolveFetch = resolve }))
+    render(<StockBrowser />)
+    expect(screen.getByText('Loading…')).toBeTruthy()
+    expect(document.querySelector('.animate-spin')).toBeTruthy()
+    resolveFetch({ total: 0, page: 1, per_page: 250, items: [] })
+    await waitFor(() => expect(screen.queryByText('Loading…')).toBeNull())
+  })
 })

@@ -144,7 +144,12 @@ export default function StockBrowser({ hasAnthropicKey = false }: Props) {
         {/* Tiles */}
         {viewMode === 'tiles' && (
           <div className="flex-1 overflow-auto" ref={tableScrollRef}>
-            {loading && <div className="text-center py-8 text-gray-500">Loading…</div>}
+            {loading && (
+              <div className="flex items-center justify-center gap-2 py-8 text-gray-500">
+                <div className="w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+                Loading…
+              </div>
+            )}
             {!loading && items.length === 0 && (
               <div className="text-center py-8 text-gray-500">
                 No in-stock items yet. Click "Refresh Stock Now" in Settings.
@@ -202,7 +207,12 @@ export default function StockBrowser({ hasAnthropicKey = false }: Props) {
             </thead>
             <tbody>
               {loading && (
-                <tr><td colSpan={6} className="text-center py-8 text-gray-500">Loading…</td></tr>
+                <tr><td colSpan={6} className="py-8 text-gray-500">
+                  <div className="flex items-center justify-center gap-2">
+                    <div className="w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+                    Loading…
+                  </div>
+                </td></tr>
               )}
               {!loading && items.length === 0 && (
                 <tr><td colSpan={6} className="text-center py-8 text-gray-500">No in-stock items yet. Click "Refresh Stock Now" in Settings.</td></tr>
