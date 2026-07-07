@@ -343,7 +343,7 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
               <td className="py-3 pr-4 text-left align-top">
                 <button
                   onClick={() => onRefreshCollection(settings.collection_schedule_mode as 'all' | 'new' ?? 'all')}
-                  className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 rounded text-xs font-medium transition-colors"
+                  className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 rounded text-xs font-medium transition-colors"
                 >
                   Refresh Now
                 </button>
@@ -401,7 +401,7 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
               <td className="py-3 pr-4 text-left align-top">
                 <button
                   onClick={() => onRefreshPrices(settings.crawl_schedule_mode as 'missing' | 'all' ?? 'missing')}
-                  className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 rounded text-xs font-medium transition-colors"
+                  className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 rounded text-xs font-medium transition-colors"
                 >
                   Refresh Now
                 </button>
@@ -483,7 +483,7 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
               <td className="py-3 pr-4 text-left align-top">
                 <button
                   onClick={onRefreshStock}
-                  className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 rounded text-xs font-medium transition-colors"
+                  className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 rounded text-xs font-medium transition-colors"
                 >
                   Refresh Now
                 </button>
@@ -498,7 +498,7 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
                 <button
                   onClick={onRefreshRecommendations}
                   disabled={!settings.anthropic_api_key}
-                  className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 disabled:opacity-50 rounded text-xs font-medium transition-colors"
+                  className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 disabled:opacity-50 rounded text-xs font-medium transition-colors"
                 >
                   Refresh Recommendations
                 </button>
