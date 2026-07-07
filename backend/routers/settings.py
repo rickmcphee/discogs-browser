@@ -21,6 +21,7 @@ class SettingsUpdate(BaseModel):
     ebay_cert_id: str = ""
     stock_schedule: str = ""
     anthropic_api_key: str = ""
+    recommendation_item_limit: int = 300
 
 
 class CrawlerUpdate(BaseModel):
@@ -44,6 +45,7 @@ def get_settings():
         "ebay_cert_id": config.get("ebay_cert_id", ""),
         "stock_schedule": config.get("stock_schedule", ""),
         "anthropic_api_key": config.get("anthropic_api_key", ""),
+        "recommendation_item_limit": int(config.get("recommendation_item_limit", 300)),
     }
 
 
@@ -63,6 +65,7 @@ def update_settings(body: SettingsUpdate):
     config["ebay_cert_id"] = body.ebay_cert_id
     config["stock_schedule"] = body.stock_schedule
     config["anthropic_api_key"] = body.anthropic_api_key
+    config["recommendation_item_limit"] = body.recommendation_item_limit
     save_config(config)
     try:
         scheduler.configure(body.crawl_schedule, body.crawl_schedule_mode)
