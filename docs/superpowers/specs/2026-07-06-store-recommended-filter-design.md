@@ -4,6 +4,8 @@
 
 **Amendment (2026-07-07):** three refinements made after initial review/PR: (1) items already owned (exact-or-extending artist+title match against `in_collection = 1`) are excluded from judgment and from the `recommended` read filter, so Recommended never suggests something you already have; (2) the judgment prompt is rewritten to produce factual, item-focused reasons — no second-person references to "the collector," "the user," or "the collection" as a concept — and moves out of the Python source into its own file; (3) judgment gets its own trigger, decoupled from the full 13-source stock crawl. Full detail below, under [Amendment: Ownership exclusion, prompt rewrite, decoupled refresh](#amendment-2026-07-07-ownership-exclusion-prompt-rewrite-decoupled-refresh).
 
+**Amendment 2 (2026-07-07):** four UX fixes from manual testing of the above: (1) judgment runs now log per-batch progress and never silently no-op when there's nothing to judge; (2) action buttons get a visible pressed state; (3) the Store tab's first-load flash gets a spinner instead of bare text; (4) `Recommended` is gated on having *completed* at least one judgment run (not just having a key configured) and auto-falls-back to `All` if a run starts while it's selected. Full detail under [Amendment 2: UX feedback from manual testing](#amendment-2-2026-07-07-ux-feedback-from-manual-testing).
+
 ---
 
 ## Overview
@@ -207,3 +209,51 @@ Previously, the only way to get new judgments was `POST /api/stock/sync/start`, 
 - A judged item's `reason` text never contains second-person or collection-referencing phrasing (spot-checked, not mechanically enforced — this is a prompt-quality property, not a hard invariant the code can verify).
 - Clicking "Refresh Recommendations" with a configured API key judges currently-unjudged items and updates the status bar, without triggering a catalog re-crawl on any of the 13 sources.
 - Clicking "Refresh Recommendations" while a stock sync is already running (or vice versa) is a no-op that doesn't start a second, overlapping judgment run.
+
+## Amendment 2 (2026-07-07): UX feedback from manual testing
+
+Manual testing of the shipped feature (plus Amendment 1) surfaced four rough edges, none of which change the underlying data model or judgment logic — all are feedback/visibility/gating fixes on top of it.
+
+### 1. Judgment run logging
+
+Today `_run_judgment_phase` logs exactly two lines per run — "Stock judgment started: N unjudged items" and "Stock judgment complete: N items judged" — with nothing in between, and it silently returns with **zero** log output or broadcast when there's nothing unjudged. Two fixes:
+
+- When `get_unjudged_stock_items` comes back empty, broadcast `{"status": "stock_judgment_complete", "judged": 0}` and log `"Stock judgment complete: 0 unjudged items, nothing to do"` instead of returning silently. This reuses the existing `stock_judgment_complete` event — App.tsx's handler already renders it as "Judged 0 new items for Recommended," which is an honest, sufficient message. No new event type.
+- Inside the existing batch loop, log a line after each `judge_batch()` call: `"Judged batch %d/%d: %d recommended"` (items judged so far out of the total unjudged, and how many of *this batch's* results were `recommended = True`). This is the only change inside the loop — batching, `SYNC_CAP`, and `BATCH_SIZE` are untouched.
+
+### 2. Button press feedback
+
+Several Settings action buttons ("Refresh Now" for collection/prices/stock, "Refresh Recommendations") have a `hover:` style but no `active:` (pressed) style, so a click gives no immediate visual confirmation before the eventual async status-bar update arrives. Fix: add `active:bg-indigo-800` (darker than the existing `hover:bg-indigo-600`) to each. Pure CSS, no behavior change.
+
+### 3. Store tab first-load flash
+
+`StockBrowser` renders bare `"Loading…"` text (both list and tile view) during its one-time initial fetch (all five tabs mount immediately at app startup, just hidden via CSS, so this fires once per app session, not per tab click — confirmed not a re-fetch bug). Fix: pair the text with the same small spinner already used in the bottom status bar (`w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin`), for visual consistency with the rest of the app. Cosmetic only — no change to when or how often the fetch runs.
+
+### 4. `Recommended` gating
+
+`Recommended` is currently disabled only via `!hasAnthropicKey` — it becomes selectable as soon as a key is configured, even if no judgment run has ever completed, and stays selectable during a later in-progress run even though `StockBrowser` has no SSE awareness and won't reflect newly-judged items until something re-triggers its fetch (filter change, page change, remount). Confirmed via inspection: the Recommended view is not live-updating today, so leaving it selectable while data is incomplete or stale would show a misleading list.
+
+Fix: gate on three conditions — a configured key, at least one **completed** judgment run ever, and no judgment run **currently in progress**:
+
+- New `db.has_any_stock_judgment(conn) -> bool` (`SELECT EXISTS(SELECT 1 FROM stock_item_judgments)`), exposed via a new `GET /api/stock/judge/status` → `{"any_judged": bool}` endpoint, mirroring the existing `/stock/judge/start` naming.
+- `App.tsx` fetches `any_judged` once at startup (alongside the existing `getSettings()`/`getCrawlers()` calls) into `hasJudgedItems` state, and flips it to `true` immediately on a live `stock_judgment_complete` event too, so the first-ever run unlocks Recommended without a page reload.
+- `App.tsx` tracks a new, dedicated `judgmentRunning` boolean (`true` on `stock_judgment_started`, `false` on `stock_judgment_complete`/`stock_judgment_error`) — kept separate from the existing shared `syncing` flag, since `syncing` also covers unrelated collection/stock syncs and reusing it would incorrectly gray out Recommended during, say, a collection sync.
+- `App.tsx` computes `recommendedAvailable = hasAnthropicKey && hasJudgedItems && !judgmentRunning` and passes it to `StockBrowser` as a single prop, replacing the current `hasAnthropicKey` prop — `StockBrowser` only needs the final answer, not the reasons behind it.
+- `StockBrowser` adds a `useEffect`: if `recommendedAvailable` becomes `false` while `filter === 'recommended'`, reset `filter` to `'all'` — avoids a disabled-but-still-selected `<select>` option, which renders ambiguously across browsers.
+
+The existing shared, transient bottom status bar (`syncMessage`) is left as-is architecturally — no new persistent/non-dismissable indicator. Item 1's logging fix already makes it fire reliably on every judgment run, including the empty-unjudged case; that, combined with the gating in this item, was judged sufficient without adding a second UI element.
+
+### Testing additions
+
+- `has_any_stock_judgment` returns `False` on an empty `stock_item_judgments` table and `True` once any row exists.
+- Router test for `GET /api/stock/judge/status` mirroring the existing `/stock/judge/start` test style.
+- `_run_judgment_phase` broadcasts `stock_judgment_complete` with `judged: 0` (and logs accordingly) when `get_unjudged_stock_items` returns empty, instead of returning with no broadcast.
+- `_run_judgment_phase` logs a per-batch line with the correct judged-so-far and recommended-in-batch counts.
+- `StockBrowser`: `Recommended` option is disabled when `recommendedAvailable` is `false`; selecting away is forced (filter resets to `'all'`) if `recommendedAvailable` flips to `false` while it's the active filter.
+- App-level test confirming `hasJudgedItems`/`judgmentRunning` are derived correctly from the `any_judged` fetch and the `stock_judgment_*` SSE events, and that the combined `recommendedAvailable` prop reaches `StockBrowser` correctly.
+
+### Success criteria additions
+
+- Clicking "Refresh Recommendations" when there's nothing unjudged still produces a status-bar message and a Logs-tab line — never a silent no-op.
+- A judgment run in progress is visible in the Logs tab batch-by-batch, not just at start and end.
+- `Recommended` is unselectable until at least one judgment run has ever completed, and becomes unselectable again (falling back to `All`) for the duration of any later run.
