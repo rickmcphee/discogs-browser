@@ -173,6 +173,12 @@ export async function postJudgmentStart(): Promise<{ started: boolean; running: 
   return r.json()
 }
 
+export async function getJudgmentStatus(): Promise<{ any_judged: boolean }> {
+  const r = await apiFetch('/stock/judge/status')
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
+}
+
 export function openLogsStream(): EventSource {
   return new EventSource('/api/logs/stream')
 }
