@@ -413,6 +413,64 @@ async def test_sync_stock_judgment_phase_failure_broadcasts_error(manager, tmp_c
     conn.close()
 
 
+async def test_run_judgment_phase_broadcasts_complete_when_nothing_unjudged(manager, tmp_config_dir, caplog):
+    import config as cfg_module
+    import db as db_module
+
+    conn = sqlite3.connect(cfg_module.DB_FILE)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db_module.init_db(conn)
+
+    with caplog.at_level("INFO", logger="crawl_manager"):
+        await manager._run_judgment_phase(conn, "sk-ant-test")
+
+    events = [e for e in manager.recent_events() if e["status"] == "stock_judgment_complete"]
+    assert events == [{"status": "stock_judgment_complete", "judged": 0}]
+    assert any("nothing to do" in r.message for r in caplog.records)
+    conn.close()
+
+
+async def test_run_judgment_phase_logs_per_batch_progress(manager, tmp_config_dir, monkeypatch, caplog):
+    import config as cfg_module
+    import db as db_module
+    import recommendations
+    from db import register_crawler, replace_stock_items
+
+    conn = sqlite3.connect(cfg_module.DB_FILE)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db_module.init_db(conn)
+    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
+    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()[0]
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "T1", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+        {"artist": "NAILS", "title": "T2", "price": 2.0, "currency": "USD", "url": "https://x/2"},
+        {"artist": "Ghost", "title": "T3", "price": 3.0, "currency": "USD", "url": "https://x/3"},
+    ])
+
+    monkeypatch.setattr(recommendations, "BATCH_SIZE", 2)
+
+    def _fake_judge(client, taste, batch):
+        return [
+            {"item_key": item["item_key"], "recommended": item["artist"] == "Rob Zombie", "reason": None}
+            for item in batch
+        ]
+
+    monkeypatch.setattr(recommendations, "judge_batch", _fake_judge)
+
+    with caplog.at_level("INFO", logger="crawl_manager"):
+        await manager._run_judgment_phase(conn, "sk-ant-test")
+
+    batch_logs = [r.message for r in caplog.records if "Judged batch" in r.message]
+    assert len(batch_logs) == 2
+    assert batch_logs[0].startswith("Judged batch 2/3:")
+    assert batch_logs[1].startswith("Judged batch 3/3:")
+    total_recommended_logged = sum(int(m.rsplit(":", 1)[1].split()[0]) for m in batch_logs)
+    assert total_recommended_logged == 1
+    conn.close()
+
+
 # ---------------------------------------------------------------------------
 # judgment-only task (decoupled from full stock sync)
 # ---------------------------------------------------------------------------

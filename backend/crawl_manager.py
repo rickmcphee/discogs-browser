@@ -324,6 +324,8 @@ class CrawlManager:
 
         unjudged = get_unjudged_stock_items(conn, recommendations.SYNC_CAP)
         if not unjudged:
+            await self._broadcast({"status": "stock_judgment_complete", "judged": 0})
+            log.info("Stock judgment complete: 0 unjudged items, nothing to do")
             return
 
         await self._broadcast({"status": "stock_judgment_started"})
@@ -337,9 +339,12 @@ class CrawlManager:
             for i in range(0, len(unjudged), recommendations.BATCH_SIZE):
                 batch = unjudged[i:i + recommendations.BATCH_SIZE]
                 results = recommendations.judge_batch(client, taste_listing, batch)
+                recommended_in_batch = 0
                 if results:
                     upsert_stock_judgments(conn, results)
                     judged += len(results)
+                    recommended_in_batch = sum(1 for r in results if r["recommended"])
+                log.info("Judged batch %d/%d: %d recommended", judged, len(unjudged), recommended_in_batch)
                 await self._broadcast({"status": "stock_judgment_progress", "judged": judged, "total": len(unjudged)})
 
             await self._broadcast({"status": "stock_judgment_complete", "judged": judged})
