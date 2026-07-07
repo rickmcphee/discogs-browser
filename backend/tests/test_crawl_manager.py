@@ -564,6 +564,51 @@ async def test_run_judgment_phase_respects_zero_as_unlimited(manager, tmp_config
     conn.close()
 
 
+async def test_run_judgment_phase_does_not_block_event_loop(manager, tmp_config_dir, monkeypatch):
+    import time
+    import config as cfg_module
+    import db as db_module
+    import recommendations
+    from db import register_crawler, replace_stock_items
+
+    conn = sqlite3.connect(cfg_module.DB_FILE)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db_module.init_db(conn)
+    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
+    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()[0]
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "T1", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+    ])
+
+    def slow_judge_batch(client, taste, batch):
+        time.sleep(0.3)
+        return [{"item_key": item["item_key"], "recommended": False, "reason": None} for item in batch]
+
+    monkeypatch.setattr(recommendations, "judge_batch", slow_judge_batch)
+
+    heartbeat_count = 0
+
+    async def heartbeat():
+        nonlocal heartbeat_count
+        while True:
+            heartbeat_count += 1
+            await asyncio.sleep(0.02)
+
+    hb_task = asyncio.create_task(heartbeat())
+    try:
+        await manager._run_judgment_phase(conn, "sk-ant-test")
+    finally:
+        hb_task.cancel()
+
+    # A blocking (non-offloaded) judge_batch call would starve the event loop for the
+    # full 0.3s sleep, so the heartbeat (ticking every 0.02s) would get essentially no
+    # chance to run. If judge_batch is properly offloaded, the loop stays free and the
+    # heartbeat ticks throughout.
+    assert heartbeat_count >= 5
+    conn.close()
+
+
 # ---------------------------------------------------------------------------
 # judgment-only task (decoupled from full stock sync)
 # ---------------------------------------------------------------------------

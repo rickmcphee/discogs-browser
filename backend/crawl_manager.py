@@ -341,7 +341,7 @@ class CrawlManager:
             judged = 0
             for i in range(0, len(unjudged), recommendations.BATCH_SIZE):
                 batch = unjudged[i:i + recommendations.BATCH_SIZE]
-                results = recommendations.judge_batch(client, taste_listing, batch)
+                results = await asyncio.to_thread(recommendations.judge_batch, client, taste_listing, batch)
                 recommended_in_batch = 0
                 if results:
                     upsert_stock_judgments(conn, results)
