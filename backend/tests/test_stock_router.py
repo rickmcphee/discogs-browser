@@ -160,3 +160,22 @@ def test_list_stock_artists_recommended_param(client, conn):
     conn.execute("INSERT INTO stock_item_judgments (item_key, recommended, reason) VALUES (?, 1, NULL)", [key])
     r = client.get("/api/stock/artists?recommended=true")
     assert r.json()["artists"] == ["Rob Zombie"]
+
+
+def test_get_stock_judgment_status_false_when_empty(client):
+    r = client.get("/api/stock/judge/status")
+    assert r.status_code == 200
+    assert r.json() == {"any_judged": False}
+
+
+def test_get_stock_judgment_status_true_once_judged(client, conn):
+    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
+    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name='Nuclear Blast'").fetchone()[0]
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "T1", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+    ])
+    from db import compute_item_key
+    key = compute_item_key("Rob Zombie", "T1", "https://x/1")
+    conn.execute("INSERT INTO stock_item_judgments (item_key, recommended, reason) VALUES (?, 1, NULL)", [key])
+    r = client.get("/api/stock/judge/status")
+    assert r.json() == {"any_judged": True}

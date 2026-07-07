@@ -11,6 +11,7 @@ from db import (
     replace_stock_items, get_stock_items, get_distinct_stock_artists,
     compute_item_key,
     get_unjudged_stock_items, get_taste_listing, upsert_stock_judgments,
+    has_any_stock_judgment,
 )
 
 
@@ -908,4 +909,18 @@ def test_upsert_stock_judgments_updates_existing(conn):
     row = conn.execute("SELECT recommended, reason FROM stock_item_judgments WHERE item_key = 'k1'").fetchone()
     assert row["recommended"] == 0
     assert row["reason"] is None
+
+
+def test_has_any_stock_judgment_false_when_empty(conn):
+    assert has_any_stock_judgment(conn) is False
+
+
+def test_has_any_stock_judgment_true_once_a_row_exists(conn_with_catalog_crawler):
+    conn, crawler_id = conn_with_catalog_crawler
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "T1", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+    ])
+    key = compute_item_key("Rob Zombie", "T1", "https://x/1")
+    conn.execute("INSERT INTO stock_item_judgments (item_key, recommended, reason) VALUES (?, 1, NULL)", [key])
+    assert has_any_stock_judgment(conn) is True
 

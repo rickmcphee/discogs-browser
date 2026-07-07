@@ -421,6 +421,10 @@ def upsert_stock_judgments(conn: sqlite3.Connection, judgments: list[dict]):
     conn.commit()
 
 
+def has_any_stock_judgment(conn: sqlite3.Connection) -> bool:
+    return conn.execute("SELECT EXISTS(SELECT 1 FROM stock_item_judgments)").fetchone()[0] == 1
+
+
 def get_enabled_crawlers(conn: sqlite3.Connection, crawler_type: str = "release") -> list[dict]:
     rows = conn.execute(
         "SELECT * FROM crawlers WHERE enabled = 1 AND crawler_type = ?", [crawler_type]

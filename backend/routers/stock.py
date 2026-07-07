@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Query
 from typing import Optional
-from db import get_connection, get_stock_items, get_distinct_stock_artists
+from db import get_connection, get_stock_items, get_distinct_stock_artists, has_any_stock_judgment
 from crawl_manager import crawl_manager
 
 router = APIRouter()
@@ -25,6 +25,12 @@ def list_stock(
 def list_stock_artists(overlapping: bool = Query(False), recommended: bool = Query(False)):
     conn = get_connection()
     return {"artists": get_distinct_stock_artists(conn, overlapping=overlapping, recommended=recommended)}
+
+
+@router.get("/stock/judge/status")
+def get_stock_judgment_status():
+    conn = get_connection()
+    return {"any_judged": has_any_stock_judgment(conn)}
 
 
 @router.post("/stock/sync/start")
