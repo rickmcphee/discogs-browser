@@ -6,6 +6,8 @@
 
 **Amendment 2 (2026-07-07):** four UX fixes from manual testing of the above: (1) judgment runs now log per-batch progress and never silently no-op when there's nothing to judge; (2) action buttons get a visible pressed state; (3) the Store tab's first-load flash gets a spinner instead of bare text; (4) `Recommended` is gated on having *completed* at least one judgment run (not just having a key configured) and auto-falls-back to `All` if a run starts while it's selected. Full detail under [Amendment 2: UX feedback from manual testing](#amendment-2-2026-07-07-ux-feedback-from-manual-testing).
 
+**Amendment 3 (2026-07-07):** a user-configurable "Recommendation item limit" Settings field replaces the hardcoded 300-item-per-run cap, with `0` meaning no limit — following the same convention `consecutive_failure_limit` already uses elsewhere in this codebase. Judgment-run logging is reworded to show real backlog visibility ("Found X/Y items to judge for recommendation," where Y is the true total unjudged backlog, not just the configured limit). Full detail under [Amendment 3: configurable recommendation item limit](#amendment-3-2026-07-07-configurable-recommendation-item-limit).
+
 ---
 
 ## Overview
@@ -257,3 +259,50 @@ The existing shared, transient bottom status bar (`syncMessage`) is left as-is a
 - Clicking "Refresh Recommendations" when there's nothing unjudged still produces a status-bar message and a Logs-tab line — never a silent no-op.
 - A judgment run in progress is visible in the Logs tab batch-by-batch, not just at start and end.
 - `Recommended` is unselectable until at least one judgment run has ever completed, and becomes unselectable again (falling back to `All`) for the duration of any later run.
+
+## Amendment 3 (2026-07-07): configurable recommendation item limit
+
+The 300-item-per-run cap (`SYNC_CAP`) has been a fixed constant since the original design, deliberately chosen to bound cost and duration per trigger (at `BATCH_SIZE=40`, that's at most 8 Claude calls per run). This amendment makes it user-configurable, and improves the judgment-run log line to show real backlog visibility rather than just a raw item count.
+
+### 1. New setting: "Recommendation item limit"
+
+A new numeric field, `recommendation_item_limit`, added to the existing flat Settings list (alongside "Failure limit," "Crawl delay," etc.), right after "Anthropic API key" — both because it's thematically tied to that field and because it follows the exact same generic-numeric-field rendering pattern already used throughout that section, requiring no new UI layout.
+
+- **Label:** "Recommendation item limit"
+- **Description:** "Maximum number of unprocessed Store items evaluated by Claude for recommendation each time. Extra items are evaluated on a later run. 0 = no limit."
+- **Default:** `300` — preserves today's exact behavior for anyone who doesn't touch the field, matching how every other numeric setting here defaults to its pre-existing hardcoded constant.
+- **Zero convention:** `0` means no limit, following the precedent `consecutive_failure_limit` already established (`if failure_limit and consecutive_failures >= failure_limit:` in `crawler.py` — `0` short-circuits the check via Python truthiness). This is a deliberate reuse of an existing convention, not a new one.
+
+Naming note: "judgment" is developer/internal vocabulary (`_run_judgment_phase`, `stock_item_judgments`); "recommendation" is the user-facing concept. This field, and the existing "Refresh Recommendations" button's description (previously "Judge currently unjudged Store items against your collection, without a full catalog re-crawl. Requires an Anthropic API key above."), both use "recommendation" language going forward. The button's description becomes: "Evaluate unprocessed Store items for recommendation, without a full catalog re-crawl. Requires an Anthropic API key above." Internal Python/SQL identifiers (`_run_judgment_phase`, `stock_item_judgments`, `SYNC_CAP`) are unaffected — this is a user-facing wording change only, not a rename of backend internals.
+
+### 2. Backend wiring
+
+`_run_judgment_phase` reads the configured limit via `load_config().get("recommendation_item_limit", recommendations.SYNC_CAP)` instead of using `recommendations.SYNC_CAP` directly, and passes it to `get_unjudged_stock_items`. Both trigger paths — the judgment phase that follows a full stock sync, and the standalone "Refresh Recommendations" button — call this same method, so the change governs both uniformly with no separate wiring.
+
+`get_unjudged_stock_items(conn, limit)` changes so that `limit <= 0` omits the SQL `LIMIT` clause entirely, rather than passing `0` straight into `LIMIT ?` (which would return zero rows — the opposite of "no limit").
+
+### 3. Backlog visibility in logging
+
+A new `db.count_unjudged_stock_items(conn) -> int` returns the true total backlog size — same unjudged+not-owned criteria as `get_unjudged_stock_items`, but uncapped and count-only (`SELECT COUNT(DISTINCT s.item_key) ...`).
+
+The judgment-run log lines change to surface this alongside what's actually about to be processed:
+
+- `"Stock judgment started: %d unjudged items"` → `"Found %d/%d items to judge for recommendation"`, where the first `%d` is `len(unjudged)` (what this run will actually process — capped by the configured limit, or equal to the total when unlimited) and the second is `count_unjudged_stock_items(conn)` (the true total backlog, independent of any limit). When the backlog exceeds the configured limit, this visibly shows spillover (e.g. "Found 300/500 items..."); when unlimited or when the backlog is smaller than the limit, both numbers are equal.
+- `"Stock judgment complete: 0 unjudged items, nothing to do"` → `"Found 0/0 items to judge for recommendation, nothing to do"`, for consistency — this branch only fires when both counts are genuinely zero, so no discrepancy is possible.
+
+Per-batch progress logging (`"Judged batch %d/%d: %d recommended"`, from Amendment 2) is unchanged.
+
+### Testing additions
+
+- `get_unjudged_stock_items` with `limit=0` (or negative) returns every unjudged, not-owned item — seed more than 300 to prove the old hardcoded cap no longer applies.
+- `count_unjudged_stock_items` returns the correct true total, independent of any limit passed elsewhere, and respects the same ownership-exclusion and already-judged exclusions as `get_unjudged_stock_items`.
+- `_run_judgment_phase` logs `"Found X/Y items..."` with `X < Y` when a configured limit is smaller than the actual backlog (seed backlog larger than a small test limit to prove real spillover is visible, not just the limit echoed back).
+- `_run_judgment_phase` logs `"Found X/X items..."` (equal) when the limit is `0` (unlimited) or when the backlog is smaller than the configured limit.
+- Settings round-trip test for `recommendation_item_limit` (default `300` when unset, persists a custom value, persists `0`).
+- Full frontend suite run (not targeted files only) during implementation — a prior task in this same feature already found that other test files besides the obviously-related ones can have their own independent `getSettings` mock needing the new field.
+
+### Success criteria additions
+
+- Setting "Recommendation item limit" to `0` and clicking "Refresh Recommendations" with a backlog larger than 300 processes the entire backlog in one run, not just the first 300.
+- With a non-zero limit smaller than the actual backlog, the Logs tab shows the true backlog size alongside what's being processed this run (e.g. "Found 50/200 items to judge for recommendation"), making spillover visible without needing to inspect the database directly.
+- The "Refresh Recommendations" button's Settings description no longer uses "judge"/"unjudged" language.
