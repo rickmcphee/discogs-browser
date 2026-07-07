@@ -2,6 +2,8 @@
 
 **Date:** 2026-07-06
 
+**Amendment (2026-07-07):** three refinements made after initial review/PR: (1) items already owned (exact-or-extending artist+title match against `in_collection = 1`) are excluded from judgment and from the `recommended` read filter, so Recommended never suggests something you already have; (2) the judgment prompt is rewritten to produce factual, item-focused reasons — no second-person references to "the collector," "the user," or "the collection" as a concept — and moves out of the Python source into its own file; (3) judgment gets its own trigger, decoupled from the full 13-source stock crawl. Full detail below, under [Amendment: Ownership exclusion, prompt rewrite, decoupled refresh](#amendment-2026-07-07-ownership-exclusion-prompt-rewrite-decoupled-refresh).
+
 ---
 
 ## Overview
@@ -129,3 +131,79 @@ These reuse the same bottom status bar the existing `stock_sync_*` events alread
 - A single bad batch (simulated API error) doesn't stop the rest of the sync's judgment phase, and its items are retried successfully on the next sync.
 - Hovering a recommended row's artist/title shows the one-line reason as a tooltip.
 - Selecting `All` after `Recommended` returns to the unfiltered catalog; typing in the search box while `Recommended` is active narrows within the recommended set rather than replacing it (matches `Overlapping`'s existing search-interaction behavior).
+
+---
+
+## Amendment (2026-07-07): Ownership exclusion, prompt rewrite, decoupled refresh
+
+Three refinements identified after the initial implementation and PR review, before merge.
+
+### 1. Exclude already-owned items
+
+A stock item whose artist+title already exists in the collection should never appear in Recommended — recommending something the user already owns is a false positive, not a matter of LLM taste judgment. This is enforced deterministically (not left to the LLM to notice in a large taste listing) via one SQL predicate, reused in two places:
+
+```sql
+NOT EXISTS (
+    SELECT 1 FROM releases r
+    WHERE r.in_collection = 1
+      AND LOWER(r.artist) = LOWER(s.artist)
+      AND (LOWER(s.title) = LOWER(r.title) OR LOWER(s.title) LIKE LOWER(r.title) || ' %')
+)
+```
+
+Scoped to `in_collection = 1` only — not wishlist. A wishlist item being in stock somewhere is exactly the kind of thing Recommended should surface, not suppress.
+
+The `' %'` (space-then-anything) branch exists because most of the 13 store crawlers append variant info to the stored title (`"The Great Satan — Ghostly Black Vinyl"`), so a plain equality check would miss the majority of real matches. Every crawler's title-construction logic keeps the clean album title as a literal, space-terminated prefix (confirmed against all 13 crawlers' `title` field construction in [`2026-07-05-in-stock-crawler-design.md`](2026-07-05-in-stock-crawler-design.md)), so this generalizes without per-source special-casing. The match is per (artist, title-prefix), not per artist alone — owning one release by an artist never suppresses a genuinely different release by the same artist.
+
+Applied in two places:
+- **`db.get_unjudged_stock_items`** — owned items are excluded from the candidate pool before they're ever sent to Claude. This is a pure efficiency win (no wasted judgment calls) and is self-correcting: if the release is later removed from the collection, the item becomes eligible again on the next sync with no extra bookkeeping, since "unjudged" is re-evaluated from scratch each time.
+- **`db.get_stock_items(recommended=True)`** and **`db.get_distinct_stock_artists(recommended=True)`** — catches the case where an item was judged *before* the exact title was added to the collection; without this, a stale `recommended = 1` judgment would keep showing even after the user acquires the release.
+
+Because this cap-eligible pool now excludes items that would be filtered out anyway, the existing `SYNC_CAP` is spent entirely on genuine candidates — a positive side effect, not a design change.
+
+### 2. Reason-text style + externalized prompt
+
+The judgment prompt currently allows (and empirically produces) reasons phrased around the collector — "similar to bands you own," "matches your collection." The design's intent was always a factual description of the item, so the prompt is rewritten to require that explicitly:
+
+> Write the reason as a factual, one-sentence description of the item itself — its genre, style, or notable lineage. Do not write about the collector, the user, or "the collection" as a concept (avoid phrasing like "matches your collection" or "similar to bands you own"). If a specific band, label, or genre concretely explains the fit, name it directly (e.g. "Melodic hardcore with soaring dual-guitar riffs, in the vein of Defeater" — not "similar to bands in your collection").
+
+At the same time, `SYSTEM_PROMPT` moves out of `backend/recommendations.py` as a Python string constant into a new file, `backend/recommendations_prompt.md`, loaded once at import time:
+
+```python
+SYSTEM_PROMPT = (Path(__file__).parent / "recommendations_prompt.md").read_text().strip()
+```
+
+This stays developer-only — the file lives in the repo, not the data directory, with no copy-on-startup behavior and no user-facing edit surface. Changing it requires a code change and a commit, same as before, but the prompt's prose is no longer entangled with `judge_batch`'s control-flow code, making it easier to iterate on wording in isolation.
+
+**Explicitly considered and deferred:** exposing this prompt as user-editable (copied into `DISCOGS_BROWSER_DATA` at startup, like crawler plugins). That would let self-hosted users tune their own taste criteria without forking the code, but it's a real departure from this feature's existing "fixed constants, not configurable" stance on judgment internals (model, batch size, cap), and it introduces a new untrusted-input surface feeding a system prompt. Treated as a separate, future decision, not folded into this pass.
+
+### 3. Decoupled judgment-only refresh
+
+Previously, the only way to get new judgments was `POST /api/stock/sync/start`, which re-crawls all 13 catalog sources *and* runs the judgment phase afterward — there was no way to just re-run judgment against whatever's currently unjudged. This adds one:
+
+- `CrawlManager` gains `judgment_running` (property) and `start_judgment_only()`, running the existing `_run_judgment_phase` standalone against the current `stock_items`/`stock_item_judgments` state, on its own dedicated connection (same pattern as `_sync_stock`) — no catalog crawl.
+- Mutual exclusion: `start_stock_sync` and `start_judgment_only` each refuse (return `False`, matching the existing 409-style guard shape) if *either* is already running — prevents two processes judging overlapping unjudged items concurrently, which would double-spend API calls on the same items.
+- If triggered with no API key configured, broadcasts `stock_judgment_error` with `"Anthropic API key not configured"` rather than silently no-op-ing — matches the existing `_sync_collection` pattern for a missing Discogs token. (In practice the UI disables the triggering button in this case; this is the defensive path for a direct API call or a key cleared mid-session.)
+- New endpoint: `POST /api/stock/judge/start` → `{"started": bool, "running": bool}`, mirroring `POST /api/stock/sync/start`'s shape exactly.
+- Settings → Store Management gains a second button, "Refresh Recommendations," next to the existing "Refresh Stock Now," disabled when `!settings.anthropic_api_key`.
+- No new SSE event types — reuses the existing `stock_judgment_started/progress/complete/error` events, already wired into the App-level status bar.
+
+**Explicitly not built:** a way to force re-judgment of items already judged (e.g. after a large collection change). Judgments remain permanent snapshots once made, per the original design's "Out of scope" — this amendment only adds a faster path to the existing unjudged-item queue, it doesn't reopen whether judgments can be invalidated.
+
+### Testing additions
+
+- Ownership exclusion: seed a release with `in_collection = 1` and a stock item whose title extends it with a variant suffix (e.g. release `"The Great Satan"`, stock item `"The Great Satan — Ghostly Black Vinyl"`); assert `get_unjudged_stock_items` excludes it, and separately assert `get_stock_items(recommended=True)` excludes it even after a manually-seeded `recommended = 1` judgment row.
+- Ownership exclusion is scoped to `in_collection`, not `in_wishlist`: a wishlist-only release with a matching title does **not** exclude the stock item.
+- A different release by the same owned artist (different title, no prefix relationship) is **not** excluded — confirms the match is per (artist, title-prefix), not per artist.
+- `recommendations_prompt.md` loads into a non-empty `SYSTEM_PROMPT` at import time (wiring test, not a prose-content assertion).
+- `start_judgment_only`: returns `True` and runs the judgment phase when idle; returns `False` when either `judgment_running` or `stock_sync_running` is already true; broadcasts `stock_judgment_error` when no API key is configured.
+- `start_stock_sync` additionally refuses when `judgment_running` is true (the reverse of the existing guard).
+- Router test for `POST /api/stock/judge/start` mirroring the existing `POST /api/stock/sync/start` test.
+
+### Success criteria additions
+
+- A stock item whose artist+title (allowing for a trailing variant suffix) matches a release with `in_collection = 1` never appears under `Recommended`, and is never sent to Claude for judgment.
+- A stock item matching only a `in_wishlist = 1` release (not owned) is still eligible for Recommended.
+- A judged item's `reason` text never contains second-person or collection-referencing phrasing (spot-checked, not mechanically enforced — this is a prompt-quality property, not a hard invariant the code can verify).
+- Clicking "Refresh Recommendations" with a configured API key judges currently-unjudged items and updates the status bar, without triggering a catalog re-crawl on any of the 13 sources.
+- Clicking "Refresh Recommendations" while a stock sync is already running (or vice versa) is a no-op that doesn't start a second, overlapping judgment run.
