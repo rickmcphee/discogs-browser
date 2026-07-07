@@ -62,6 +62,8 @@ vi.mock('../api/client', () => ({
   getStock: vi.fn().mockResolvedValue({ total: 0, page: 1, per_page: 250, items: [] }),
   getStockArtists: vi.fn().mockResolvedValue([]),
   postStockSyncStart: vi.fn().mockResolvedValue({ started: true, running: true }),
+  postJudgmentStart: vi.fn().mockResolvedValue({ started: true, running: true }),
+  getJudgmentStatus: vi.fn().mockResolvedValue({ any_judged: false }),
 }))
 
 function getLastCrawlSource() {

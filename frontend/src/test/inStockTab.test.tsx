@@ -16,6 +16,7 @@ class MockEventSource {
 const postStockSyncStart = vi.fn().mockResolvedValue({ started: true, running: true })
 const postJudgmentStart = vi.fn().mockResolvedValue({ started: true, running: true })
 const getSettings = vi.fn()
+const getJudgmentStatus = vi.fn()
 
 vi.mock('../api/client', () => ({
   checkHealth: vi.fn().mockResolvedValue(true),
@@ -45,6 +46,7 @@ vi.mock('../api/client', () => ({
   getStockArtists: vi.fn().mockResolvedValue([]),
   postStockSyncStart: (...args: unknown[]) => postStockSyncStart(...args),
   postJudgmentStart: (...args: unknown[]) => postJudgmentStart(...args),
+  getJudgmentStatus: (...args: unknown[]) => getJudgmentStatus(...args),
 }))
 
 function getLastCrawlSource() {
@@ -64,6 +66,7 @@ beforeEach(() => {
   postStockSyncStart.mockResolvedValue({ started: true, running: true })
   postJudgmentStart.mockResolvedValue({ started: true, running: true })
   getSettings.mockResolvedValue(defaultSettings)
+  getJudgmentStatus.mockResolvedValue({ any_judged: false })
 })
 
 describe('In Stock tab', () => {
@@ -125,5 +128,30 @@ describe('In Stock tab', () => {
     await waitFor(() => expect(screen.getByText('Refresh Recommendations')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Refresh Recommendations'))
     await waitFor(() => expect(postJudgmentStart).toHaveBeenCalled())
+  })
+
+  it('enables Recommended in Store only once a key is configured and a judgment has completed', async () => {
+    getSettings.mockResolvedValue({ ...defaultSettings, anthropic_api_key: 'sk-ant-test' })
+    getJudgmentStatus.mockResolvedValue({ any_judged: true })
+    render(<App />)
+    await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Store'))
+    await waitFor(() => {
+      const option = screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement
+      expect(option.disabled).toBe(false)
+    })
+  })
+
+  it('disables Recommended in Store again while a judgment run is in progress', async () => {
+    getSettings.mockResolvedValue({ ...defaultSettings, anthropic_api_key: 'sk-ant-test' })
+    getJudgmentStatus.mockResolvedValue({ any_judged: true })
+    render(<App />)
+    await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Store'))
+    await waitFor(() => expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(false))
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    const source = getLastCrawlSource()
+    source.emit({ status: 'stock_judgment_started' })
+    await waitFor(() => expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(true))
   })
 })

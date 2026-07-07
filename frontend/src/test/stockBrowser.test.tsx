@@ -94,7 +94,7 @@ describe('StockBrowser', () => {
     })
   })
 
-  it('defaults to All, lists options in lexicographic order, and disables Recommended without an Anthropic key', async () => {
+  it('defaults to All, lists options in lexicographic order, and disables Recommended when unavailable', async () => {
     render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     const select = screen.getByRole('combobox') as HTMLSelectElement
@@ -105,21 +105,30 @@ describe('StockBrowser', () => {
     expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(true)
   })
 
-  it('enables Recommended when an Anthropic key is configured', async () => {
-    render(<StockBrowser hasAnthropicKey />)
+  it('enables Recommended when recommendedAvailable is true', async () => {
+    render(<StockBrowser recommendedAvailable />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(false)
   })
 
+  it('resets filter to All when recommendedAvailable becomes false while Recommended is selected', async () => {
+    localStorage.setItem('stockFilter', 'recommended')
+    const { rerender } = render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('recommended')
+    rerender(<StockBrowser recommendedAvailable={false} />)
+    await waitFor(() => expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('all'))
+  })
+
   it('filters to recommended items when Recommended is selected', async () => {
-    render(<StockBrowser hasAnthropicKey />)
+    render(<StockBrowser recommendedAvailable />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'recommended' } })
     await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ recommended: true })))
   })
 
   it('refetches the artist sidebar scoped to recommended when Recommended is selected', async () => {
-    render(<StockBrowser hasAnthropicKey />)
+    render(<StockBrowser recommendedAvailable />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     expect(getStockArtists).toHaveBeenLastCalledWith(false, false)
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'recommended' } })
@@ -128,7 +137,7 @@ describe('StockBrowser', () => {
 
   it('restores a previously-selected Recommended filter from localStorage', async () => {
     localStorage.setItem('stockFilter', 'recommended')
-    render(<StockBrowser hasAnthropicKey />)
+    render(<StockBrowser recommendedAvailable />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('recommended')
   })
@@ -138,7 +147,7 @@ describe('StockBrowser', () => {
       total: 1, page: 1, per_page: 250,
       items: [{ ...items[0], reason: 'Similar to your hardcore collection' }],
     })
-    render(<StockBrowser hasAnthropicKey />)
+    render(<StockBrowser recommendedAvailable />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     const artistCell = screen.getAllByText('Rob Zombie').map((el) => el.closest('td')).find((td) => td)
     expect(artistCell?.getAttribute('title')).toBe('Similar to your hardcore collection')
@@ -150,7 +159,7 @@ describe('StockBrowser', () => {
       total: 1, page: 1, per_page: 250,
       items: [{ ...items[0], reason: 'Similar to your hardcore collection' }],
     })
-    render(<StockBrowser hasAnthropicKey />)
+    render(<StockBrowser recommendedAvailable />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     fireEvent.click(screen.getByTitle('Tile view'))
     await waitFor(() => {

@@ -3,10 +3,10 @@ import { getStock, getStockArtists } from '../api/client'
 import type { StockItem, StockSortField, SortOrder } from '../api/types'
 
 interface Props {
-  hasAnthropicKey?: boolean
+  recommendedAvailable?: boolean
 }
 
-export default function StockBrowser({ hasAnthropicKey = false }: Props) {
+export default function StockBrowser({ recommendedAvailable = false }: Props) {
   const [items, setItems] = useState<StockItem[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -44,6 +44,11 @@ export default function StockBrowser({ hasAnthropicKey = false }: Props) {
   }, [search, selectedArtist, sort, order, page, filter])
 
   useEffect(() => { load() }, [load])
+  useEffect(() => {
+    if (!recommendedAvailable && filter === 'recommended') {
+      setFilter('all')
+    }
+  }, [recommendedAvailable, filter])
   useEffect(() => { getStockArtists(filter === 'overlapping', filter === 'recommended').then(setArtists) }, [filter])
   useEffect(() => { localStorage.setItem('collectionViewMode_instock', viewMode) }, [viewMode])
   useEffect(() => { localStorage.setItem('stockFilter', filter) }, [filter])
@@ -113,7 +118,7 @@ export default function StockBrowser({ hasAnthropicKey = false }: Props) {
             >
               <option value="all">All</option>
               <option value="overlapping">Overlapping</option>
-              <option value="recommended" disabled={!hasAnthropicKey}>Recommended</option>
+              <option value="recommended" disabled={!recommendedAvailable}>Recommended</option>
             </select>
             <button
               onClick={() => setViewMode('list')}
