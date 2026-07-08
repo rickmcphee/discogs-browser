@@ -532,7 +532,84 @@ git commit -m "recommendation-item-limit: add Recommendation item limit field to
 
 ## Final Verification
 
-- [ ] Run the full backend suite: `cd backend && pytest -v` — expect all green.
-- [ ] Run the full frontend suite: `cd frontend && npx vitest run` — expect all green.
-- [ ] Type-check the frontend: `cd frontend && npx tsc -b --noEmit` — expect no errors.
-- [ ] Manual smoke test: set "Recommendation item limit" to a small number (e.g. 2) with a backlog bigger than that, click "Refresh Recommendations," confirm the Logs tab shows `"Found 2/N items to judge for recommendation"` with `N` being the true backlog size, not just `2` echoed back. Set it to `0`, confirm a backlog larger than the old 300 cap gets fully processed in one run. Confirm the "Refresh Recommendations" description in Settings no longer says "judge"/"unjudged."
+- [x] Run the full backend suite: `cd backend && pytest -v` — expect all green.
+- [x] Run the full frontend suite: `cd frontend && npx vitest run` — expect all green.
+- [x] Type-check the frontend: `cd frontend && npx tsc -b --noEmit` — expect no errors.
+- [x] Manual smoke test: set "Recommendation item limit" to a small number (e.g. 2) with a backlog bigger than that, click "Refresh Recommendations," confirm the Logs tab shows `"Found 2/N items to judge for recommendation"` with `N` being the true backlog size, not just `2` echoed back. Set it to `0`, confirm a backlog larger than the old 300 cap gets fully processed in one run. Confirm the "Refresh Recommendations" description in Settings no longer says "judge"/"unjudged."
+
+---
+
+## Amendment 4 tasks: performance, prompt tightening, recommendation lifecycle actions
+
+Retrospective record — these five tasks were implemented and merged into this branch after manual testing of Tasks 1–4 surfaced the issues described in Amendment 4 of the design spec. Each is recorded here with what was actually done, not as prescriptive steps for a future agent (the work is already committed).
+
+### Task 5: Event-loop blocking fix
+
+**Files:**
+- Modified: `backend/crawl_manager.py`
+- Test: `backend/tests/test_crawl_manager.py`
+
+- [x] Diagnosed via `superpowers:systematic-debugging`: `recommendations.judge_batch()`'s synchronous Anthropic call, invoked directly inside the async `_run_judgment_phase`, froze the entire single-threaded uvicorn event loop for the call's duration.
+- [x] Wrapped the call in `await asyncio.to_thread(recommendations.judge_batch, client, taste_listing, batch)`.
+- [x] Added a regression test: a monkeypatched `judge_batch` that sleeps synchronously, run alongside a concurrent heartbeat coroutine that must keep ticking throughout — fails against the un-fixed blocking call (`0` ticks), passes once offloaded.
+- [x] Full backend suite: 371 passed.
+- [x] Commit: `e9adc83` — "offload judge_batch to a thread so it stops freezing the whole server"
+
+### Task 6: Prompt caching
+
+**Files:**
+- Modified: `backend/recommendations.py`
+- Test: `backend/tests/test_recommendations.py`
+
+- [x] Renamed `build_batch_prompt` (single string) to `build_batch_content` (list of two content blocks): a taste-listing block marked `cache_control: {"type": "ephemeral"}`, and a per-batch items block left uncached.
+- [x] Added the same `cache_control` marker to the system prompt block; `system` changed from a plain string to `[{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}]`.
+- [x] Added a test asserting the actual request body sent through the mocked HTTP layer carries `cache_control` on the system and taste-listing blocks, and not on the items block.
+- [x] Full backend suite: 373 passed.
+- [x] Commit: `7a5588b` — "cache the system prompt and taste listing across judgment batches"
+
+### Task 7: Instant run feedback + status-bar wording
+
+**Files:**
+- Modified: `backend/crawl_manager.py`, `frontend/src/App.tsx`
+- Test: `backend/tests/test_crawl_manager.py`, `frontend/src/test/inStockTab.test.tsx`
+
+- [x] Moved the `stock_judgment_started` broadcast and a new `log.info("Judgment run started")` line to the top of `_run_judgment_phase`, before `count_unjudged_stock_items`/`get_unjudged_stock_items` — so the UI updates immediately instead of after the (possibly slow) backlog queries.
+- [x] Added a test asserting `stock_judgment_started` precedes `stock_judgment_complete` in the broadcast log, and `"Judgment run started"` precedes the `"Found ..."` log line, in both the has-items and nothing-to-do branches.
+- [x] Reworded all four `stock_judgment_*` status-bar messages in `App.tsx` to drop "judge"/"judgment" wording (see Amendment 4 §3 table in the spec).
+- [x] Updated/added frontend tests for all four reworded messages.
+- [x] Full backend suite: 374 passed. Full frontend suite: 60 passed.
+- [x] Commit: `ee3329f` — "give instant feedback when a judgment run starts, drop 'judge' wording from status bar"
+
+### Task 8: Tightened judgment prompt
+
+**Files:**
+- Modified: `backend/recommendations_prompt.md`
+
+- [x] Replaced the "same genre/scene, related artists, similar labels, adjacent style" criterion with a requirement for a specific, nameable connection, a default-to-`false` instruction, and an explicit "when uncertain, do not recommend" line (full text in Amendment 4 §4 of the spec).
+- [x] No code change — `test_system_prompt_loads_from_recommendations_prompt_md` already covers wiring; prompt-quality is spot-checked, not mechanically enforced (per the original spec's testing section).
+- [x] Commit: `08890f8` — "tighten judgment prompt, add Export/Clear Recommendations actions" (bundled with Tasks 9–10 below)
+
+### Task 9: Clear Recommendations action
+
+**Files:**
+- Modified: `backend/db.py`, `backend/routers/stock.py`, `frontend/src/App.tsx`, `frontend/src/views/Settings.tsx`, `frontend/src/api/client.ts`
+- Test: `backend/tests/test_db.py`, `backend/tests/test_stock_router.py`, `frontend/src/test/inStockTab.test.tsx`
+
+- [x] Added `db.clear_stock_judgments(conn) -> int` — `DELETE FROM stock_item_judgments`, returns rows removed.
+- [x] Added `POST /api/stock/judge/clear` — refuses (`{"cleared": false, "running": true}`) while `judgment_running` or `stock_sync_running`; otherwise clears and returns `{"cleared": true, "count": N}`.
+- [x] Added `clearJudgments()` to `api/client.ts`, an `onClearRecommendations` handler in `App.tsx` gated behind `window.confirm(...)`, and a "Clear Recommendations" button in `Settings.tsx` directly below "Refresh Recommendations," disabled until `hasJudgedItems`.
+- [x] Tests: DB-level clear (removes both recommended and not-recommended, returns correct count), router-level (clears when idle, refuses while running), frontend (disabled state, confirm-cancelled path, confirm-then-clear path, running-refusal message).
+- [x] Commit: `08890f8` (see Task 8).
+
+### Task 10: Export Recommendations action
+
+**Files:**
+- Modified: `backend/db.py`, `backend/routers/stock.py`, `frontend/src/App.tsx`, `frontend/src/views/Settings.tsx`, `frontend/src/api/client.ts`
+- Test: `backend/tests/test_db.py`, `backend/tests/test_stock_router.py`, `frontend/src/test/inStockTab.test.tsx`
+
+- [x] Added `db.get_recommended_stock_items(conn) -> list[dict]` — recommended, not-owned items with `artist, title, format, price, source, url, reason`.
+- [x] Added `GET /api/stock/export` — CSV (`artist,title,format,price,source,link,reason`) with `Content-Disposition: attachment; filename=recommendations.csv`.
+- [x] Added `exportRecommendationsCsv()` to `api/client.ts` (fetches as `Blob`, since a plain `<a href>` would 403 — `AuthMiddleware` requires the `X-Requested-With` header only `apiFetch` sets), an `onExportRecommendations` handler in `App.tsx` that triggers a client-side download via a temporary `<a download>` element, and an "Export Recommendations" button in `Settings.tsx` between "Refresh Recommendations" and "Clear Recommendations," disabled until `hasJudgedItems`.
+- [x] Tests: DB-level (fields, excludes not-recommended/unjudged/owned items), router-level (CSV content-type, `Content-Disposition`, exact body), frontend (disabled state, click triggers the export call).
+- [x] Full backend suite: 383 passed. Full frontend suite: 62 passed. Typecheck: clean.
+- [x] Commit: `08890f8` (see Task 8).
