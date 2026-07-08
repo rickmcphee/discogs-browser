@@ -22,6 +22,9 @@ class SettingsUpdate(BaseModel):
     stock_schedule: str = ""
     anthropic_api_key: str = ""
     recommendation_item_limit: int = 300
+    plex_base_url: str = ""
+    plex_token: str = ""
+    plex_match_threshold: int = 90
 
 
 class CrawlerUpdate(BaseModel):
@@ -46,6 +49,9 @@ def get_settings():
         "stock_schedule": config.get("stock_schedule", ""),
         "anthropic_api_key": config.get("anthropic_api_key", ""),
         "recommendation_item_limit": int(config.get("recommendation_item_limit", 300)),
+        "plex_base_url": config.get("plex_base_url", ""),
+        "plex_token": config.get("plex_token", ""),
+        "plex_match_threshold": int(config.get("plex_match_threshold", 90)),
     }
 
 
@@ -66,6 +72,9 @@ def update_settings(body: SettingsUpdate):
     config["stock_schedule"] = body.stock_schedule
     config["anthropic_api_key"] = body.anthropic_api_key
     config["recommendation_item_limit"] = body.recommendation_item_limit
+    config["plex_base_url"] = body.plex_base_url
+    config["plex_token"] = body.plex_token
+    config["plex_match_threshold"] = body.plex_match_threshold
     save_config(config)
     try:
         scheduler.configure(body.crawl_schedule, body.crawl_schedule_mode)

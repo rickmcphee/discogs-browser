@@ -40,3 +40,26 @@ def test_post_settings_round_trips_recommendation_item_limit_zero(client):
     assert r.status_code == 200
     r2 = client.get("/api/settings")
     assert r2.json()["recommendation_item_limit"] == 0
+
+
+def test_get_settings_plex_fields_default_empty_and_threshold_90(client):
+    r = client.get("/api/settings")
+    body = r.json()
+    assert body["plex_base_url"] == ""
+    assert body["plex_token"] == ""
+    assert body["plex_match_threshold"] == 90
+
+
+def test_post_settings_round_trips_plex_fields(client):
+    r = client.post("/api/settings", json={
+        "discogs_token": "",
+        "plex_base_url": "192.168.1.50:32400",
+        "plex_token": "abc123",
+        "plex_match_threshold": 85,
+    })
+    assert r.status_code == 200
+    r2 = client.get("/api/settings")
+    body = r2.json()
+    assert body["plex_base_url"] == "192.168.1.50:32400"
+    assert body["plex_token"] == "abc123"
+    assert body["plex_match_threshold"] == 85
