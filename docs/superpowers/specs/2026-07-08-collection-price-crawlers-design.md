@@ -4,6 +4,8 @@
 **Status:** Draft
 **Branch:** `collection-price-crawlers`
 
+**Amendment (2026-07-08):** direct fetch of `discogs.com/sell/release/{id}` (plain `curl`, no browser) returns HTTP 403 with a Cloudflare "Just a moment..." interstitial — confirming the page requires a real browser (justifying the Playwright-based approach already chosen below) and that `BotDetectedError` handling is needed from the start, not added reactively as originally written. The exact post-challenge DOM structure (listing rows, price/shipping/condition selectors) could not be confirmed from outside a real browser session in this environment; the plan documents this as a manual verification step during implementation, the same posture this repo already takes for Playwright-scraped selectors generally (see CLAUDE.md: "Playwright-dependent code ... is not unit-tested; integration testing is manual").
+
 ## Problem
 
 Post-testing feedback on the Collections tab surfaced three issues, all in the "per-release price search" pipeline (not the Store tab's catalog crawlers):
@@ -29,7 +31,7 @@ Three independent fixes, scoped so each can ship on its own:
 - **Discogs marketplace crawler is Playwright-based, not API-based**, following `amazon.py`'s pattern rather than `ebay.py`'s — Discogs's public API has no endpoint returning per-listing ship-from country for a release's marketplace listings; that data only exists on the rendered `discogs.com/sell/release/{id}` page.
 - **Exact query params and DOM selectors are unverified and must be confirmed against the live site during implementation**, the same way `amazon.py`'s selectors were confirmed via `capture_fixture.py` and the Shopify crawlers' shapes were confirmed via direct fetch (see the extensive "Technical grounding" sections in `2026-07-05-in-stock-crawler-design.md` for the standard this repo holds crawler specs to). This design assumes `ships_from=United States` and a price-ascending sort are expressible as URL query params on that page (mirroring how `sell/release` pages are known to support filtering/sorting in the browser), but the literal param names/values are a first guess, not a confirmed fact.
 - **No fallback if no USA-shipping listing exists.** The crawler returns a miss (`[]`), the same as any other crawler with zero matching results — it does not fall back to the cheapest listing regardless of ship-from country.
-- **Both new crawlers ship disabled by default**, `crawler_type` defaulting to `"release"` (unset, same as `amazon.py`/`ebay.py` today) — the user opts in via the existing Settings crawler-enable toggle once ready, same as every other bundled crawler.
+- **Both new crawlers auto-enable on first registration**, `crawler_type` defaulting to `"release"` (unset, same as `amazon.py`/`ebay.py` today). This was originally scoped as "ships disabled by default," but `db.register_crawler` always inserts new rows with `enabled = 1` (confirmed in `backend/tests/test_db.py:436`, "enabled by default") — every existing crawler, including all 13 catalog crawlers, has always auto-enabled on first registration, with no precedent for a crawler-declared opt-out. Rather than add a new mechanism with no other caller, the two new crawlers follow the existing behavior: they run immediately after this ships, same as any other newly bundled crawler. The user can disable either via the existing Settings toggle if unwanted.
 - **No data model changes.** `crawler_type` already exists (added in the Store-tab work); no new tables or columns needed for any of the three fixes.
 
 ## Frontend
@@ -98,7 +100,7 @@ class Crawler:
         ...
 ```
 
-No `BotDetectedError` handling is assumed necessary yet — add it if bot interstitials are observed during implementation, same as how other crawlers' bot handling was added reactively.
+`BotDetectedError` handling is included from the start (see Amendment above) — a Cloudflare challenge page reliably shows a `title` containing `"Just a moment"`; the crawler checks for that before attempting to scrape listing rows, same shape as `amazon.py`'s `_bot_interstitial`.
 
 ## Out of scope
 
@@ -114,4 +116,4 @@ No `BotDetectedError` handling is assumed necessary yet — add it if bot inters
 - The "eBay" column returns results from sellers other than CC Music, sorted by price + shipping, Buy-It-Now only.
 - The "CC Music/eBay" column's behavior is unchanged after the `ebay_api.py` extraction — same seller scoping, same results, same config keys.
 - The "Discogs" column shows the cheapest listing that ships from the USA for a release, or no result if none ships from the USA — independent of and never overwriting the existing "Price" column.
-- Both new crawlers appear disabled in Settings after this ships; enabling them starts producing results on the next price refresh without any new config fields to fill in first.
+- Both new crawlers appear enabled in Settings after this ships (matching every other crawler's first-registration behavior) and start producing results on the next price refresh without any new config fields to fill in first; the user can disable either via the existing toggle.
