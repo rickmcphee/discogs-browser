@@ -13,6 +13,7 @@ from db import (
     get_unjudged_stock_items, get_taste_listing, upsert_stock_judgments,
     has_any_stock_judgment, count_unjudged_stock_items, clear_stock_judgments,
     get_recommended_stock_items,
+    set_plex_match, clear_plex_match, get_releases_for_plex_match,
 )
 
 
@@ -56,6 +57,34 @@ def test_init_db_creates_stock_items_table(conn):
 def test_stock_items_table_has_expected_columns(conn):
     cols = {row[1] for row in conn.execute("PRAGMA table_info(stock_items)").fetchall()}
     assert {"crawler_id", "artist", "title", "format", "price", "currency", "url", "cover_image_url", "last_seen"} <= cols
+
+
+def test_releases_table_has_plex_columns(conn):
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(releases)").fetchall()}
+    assert {"plex_url", "plex_matched_at"} <= cols
+
+
+def test_migration_backfills_plex_columns_for_legacy_rows():
+    c = sqlite3.connect(":memory:")
+    c.row_factory = sqlite3.Row
+    c.execute("PRAGMA foreign_keys = ON")
+    c.execute("""
+        CREATE TABLE releases (
+            discogs_id TEXT PRIMARY KEY,
+            artist TEXT NOT NULL,
+            title TEXT NOT NULL,
+            year INTEGER,
+            label TEXT,
+            format TEXT,
+            last_synced TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    c.execute("INSERT INTO releases (discogs_id, artist, title) VALUES ('r1', 'Artist', 'Title')")
+    c.commit()
+    init_db(c)
+    row = c.execute("SELECT plex_url, plex_matched_at FROM releases WHERE discogs_id='r1'").fetchone()
+    assert row[0] is None
+    assert row[1] is None
 
 
 def test_new_crawlers_default_to_release_type(conn):
@@ -115,6 +144,38 @@ def test_new_releases_default_flags(conn):
     ).fetchone()
     assert row[0] == 1
     assert row[1] == 0
+
+
+def test_set_plex_match_sets_url_and_timestamp(conn):
+    upsert_release(conn, _release("r1"))
+    set_plex_match(conn, "r1", "http://plex.local:32400/web/x")
+    row = conn.execute("SELECT plex_url, plex_matched_at FROM releases WHERE discogs_id='r1'").fetchone()
+    assert row[0] == "http://plex.local:32400/web/x"
+    assert row[1] is not None
+
+
+def test_clear_plex_match_nulls_both_columns(conn):
+    upsert_release(conn, _release("r1"))
+    set_plex_match(conn, "r1", "http://plex.local:32400/web/x")
+    clear_plex_match(conn, "r1")
+    row = conn.execute("SELECT plex_url, plex_matched_at FROM releases WHERE discogs_id='r1'").fetchone()
+    assert row[0] is None
+    assert row[1] is None
+
+
+def test_get_releases_for_plex_match_only_returns_in_collection(conn):
+    upsert_release(conn, _release("r1"))
+    upsert_release(conn, _release("r2"))
+    mark_not_in_collection(conn, "r2")
+    results = get_releases_for_plex_match(conn)
+    ids = {r["discogs_id"] for r in results}
+    assert ids == {"r1"}
+
+
+def test_get_releases_for_plex_match_returns_artist_and_title(conn):
+    upsert_release(conn, _release("r1", artist="Miles Davis", title="Kind of Blue"))
+    results = get_releases_for_plex_match(conn)
+    assert results == [{"discogs_id": "r1", "artist": "Miles Davis", "title": "Kind of Blue"}]
 
 
 def test_migration_backfills_flags_for_legacy_rows():

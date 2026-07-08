@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS releases (
     discogs_url TEXT,
     in_collection INTEGER NOT NULL DEFAULT 1,
     in_wishlist INTEGER NOT NULL DEFAULT 0,
+    plex_url TEXT,
+    plex_matched_at TIMESTAMP,
     last_synced TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -108,6 +110,10 @@ def init_db(conn: sqlite3.Connection):
         conn.execute("ALTER TABLE releases ADD COLUMN in_collection INTEGER NOT NULL DEFAULT 1")
     if "in_wishlist" not in cols:
         conn.execute("ALTER TABLE releases ADD COLUMN in_wishlist INTEGER NOT NULL DEFAULT 0")
+    if "plex_url" not in cols:
+        conn.execute("ALTER TABLE releases ADD COLUMN plex_url TEXT")
+    if "plex_matched_at" not in cols:
+        conn.execute("ALTER TABLE releases ADD COLUMN plex_matched_at TIMESTAMP")
     crawler_cols = {row[1] for row in conn.execute("PRAGMA table_info(crawlers)").fetchall()}
     if "crawler_type" not in crawler_cols:
         conn.execute("ALTER TABLE crawlers ADD COLUMN crawler_type TEXT NOT NULL DEFAULT 'release'")
@@ -155,6 +161,29 @@ def mark_in_wishlist(conn: sqlite3.Connection, discogs_id: str):
 def mark_not_in_collection(conn: sqlite3.Connection, discogs_id: str):
     conn.execute("UPDATE releases SET in_collection = 0 WHERE discogs_id = ?", [discogs_id])
     conn.commit()
+
+
+def set_plex_match(conn: sqlite3.Connection, discogs_id: str, url: str):
+    conn.execute(
+        "UPDATE releases SET plex_url = ?, plex_matched_at = CURRENT_TIMESTAMP WHERE discogs_id = ?",
+        [url, discogs_id],
+    )
+    conn.commit()
+
+
+def clear_plex_match(conn: sqlite3.Connection, discogs_id: str):
+    conn.execute(
+        "UPDATE releases SET plex_url = NULL, plex_matched_at = NULL WHERE discogs_id = ?",
+        [discogs_id],
+    )
+    conn.commit()
+
+
+def get_releases_for_plex_match(conn: sqlite3.Connection) -> list:
+    rows = conn.execute(
+        "SELECT discogs_id, artist, title FROM releases WHERE in_collection = 1"
+    ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def clear_wishlist_flags_not_in(conn: sqlite3.Connection, seen_ids: set) -> int:
