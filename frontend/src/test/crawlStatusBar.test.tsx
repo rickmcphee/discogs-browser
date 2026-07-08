@@ -25,6 +25,7 @@ const { release } = vi.hoisted(() => ({
     discogs_price: null,
     cover_image_url: '',
     discogs_url: '',
+    plex_url: null,
     last_synced: '',
     listings: {},
   } as Release,
