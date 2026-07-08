@@ -425,9 +425,44 @@ async def test_run_judgment_phase_broadcasts_complete_when_nothing_unjudged(mana
     with caplog.at_level("INFO", logger="crawl_manager"):
         await manager._run_judgment_phase(conn, "sk-ant-test")
 
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert statuses == ["stock_judgment_started", "stock_judgment_complete"]
     events = [e for e in manager.recent_events() if e["status"] == "stock_judgment_complete"]
     assert events == [{"status": "stock_judgment_complete", "judged": 0}]
     assert any("nothing to do" in r.message for r in caplog.records)
+    conn.close()
+
+
+async def test_run_judgment_phase_broadcasts_started_before_querying_backlog(manager, tmp_config_dir, monkeypatch, caplog):
+    import config as cfg_module
+    import db as db_module
+    import recommendations
+    from db import register_crawler, replace_stock_items
+
+    conn = sqlite3.connect(cfg_module.DB_FILE)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db_module.init_db(conn)
+    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
+    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()[0]
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "T1", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+    ])
+
+    monkeypatch.setattr(recommendations, "judge_batch", lambda client, taste, batch: [
+        {"item_key": item["item_key"], "recommended": False, "reason": None} for item in batch
+    ])
+
+    with caplog.at_level("INFO", logger="crawl_manager"):
+        await manager._run_judgment_phase(conn, "sk-ant-test")
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert statuses.index("stock_judgment_started") < statuses.index("stock_judgment_complete")
+
+    messages = [r.message for r in caplog.records]
+    started_idx = next(i for i, m in enumerate(messages) if "Judgment run started" in m)
+    found_idx = next(i for i, m in enumerate(messages) if m.startswith("Found "))
+    assert started_idx < found_idx
     conn.close()
 
 
@@ -468,6 +503,144 @@ async def test_run_judgment_phase_logs_per_batch_progress(manager, tmp_config_di
     assert batch_logs[1].startswith("Judged batch 3/3:")
     total_recommended_logged = sum(int(m.rsplit(":", 1)[1].split()[0]) for m in batch_logs)
     assert total_recommended_logged == 1
+    conn.close()
+
+
+async def test_run_judgment_phase_logs_true_backlog_size_when_limit_smaller(manager, tmp_config_dir, monkeypatch, caplog):
+    import config as cfg_module
+    import db as db_module
+    import recommendations
+    from db import register_crawler, replace_stock_items
+
+    cfg_module.save_config({"recommendation_item_limit": 2})
+
+    conn = sqlite3.connect(cfg_module.DB_FILE)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db_module.init_db(conn)
+    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
+    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()[0]
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "T1", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+        {"artist": "NAILS", "title": "T2", "price": 2.0, "currency": "USD", "url": "https://x/2"},
+        {"artist": "Ghost", "title": "T3", "price": 3.0, "currency": "USD", "url": "https://x/3"},
+        {"artist": "Poison", "title": "T4", "price": 4.0, "currency": "USD", "url": "https://x/4"},
+        {"artist": "Slayer", "title": "T5", "price": 5.0, "currency": "USD", "url": "https://x/5"},
+    ])
+
+    monkeypatch.setattr(recommendations, "judge_batch", lambda client, taste, batch: [
+        {"item_key": item["item_key"], "recommended": False, "reason": None} for item in batch
+    ])
+
+    with caplog.at_level("INFO", logger="crawl_manager"):
+        await manager._run_judgment_phase(conn, "sk-ant-test")
+
+    found_logs = [r.message for r in caplog.records if r.message.startswith("Found ")]
+    assert found_logs == ["Found 2/5 items to judge for recommendation"]
+    conn.close()
+
+
+async def test_run_judgment_phase_logs_equal_counts_when_limit_unset(manager, tmp_config_dir, monkeypatch, caplog):
+    import config as cfg_module
+    import db as db_module
+    import recommendations
+    from db import register_crawler, replace_stock_items
+
+    conn = sqlite3.connect(cfg_module.DB_FILE)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db_module.init_db(conn)
+    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
+    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()[0]
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "T1", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+    ])
+
+    monkeypatch.setattr(recommendations, "judge_batch", lambda client, taste, batch: [
+        {"item_key": item["item_key"], "recommended": False, "reason": None} for item in batch
+    ])
+
+    with caplog.at_level("INFO", logger="crawl_manager"):
+        await manager._run_judgment_phase(conn, "sk-ant-test")
+
+    found_logs = [r.message for r in caplog.records if r.message.startswith("Found ")]
+    assert found_logs == ["Found 1/1 items to judge for recommendation"]
+    conn.close()
+
+
+async def test_run_judgment_phase_respects_zero_as_unlimited(manager, tmp_config_dir, monkeypatch, caplog):
+    import config as cfg_module
+    import db as db_module
+    import recommendations
+    from db import register_crawler, replace_stock_items
+
+    cfg_module.save_config({"recommendation_item_limit": 0})
+
+    conn = sqlite3.connect(cfg_module.DB_FILE)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db_module.init_db(conn)
+    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
+    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()[0]
+    replace_stock_items(conn, crawler_id, [
+        {"artist": f"Artist {i}", "title": f"T{i}", "price": 1.0, "currency": "USD", "url": f"https://x/{i}"}
+        for i in range(5)
+    ])
+
+    monkeypatch.setattr(recommendations, "judge_batch", lambda client, taste, batch: [
+        {"item_key": item["item_key"], "recommended": False, "reason": None} for item in batch
+    ])
+
+    with caplog.at_level("INFO", logger="crawl_manager"):
+        await manager._run_judgment_phase(conn, "sk-ant-test")
+
+    found_logs = [r.message for r in caplog.records if r.message.startswith("Found ")]
+    assert found_logs == ["Found 5/5 items to judge for recommendation"]
+    conn.close()
+
+
+async def test_run_judgment_phase_does_not_block_event_loop(manager, tmp_config_dir, monkeypatch):
+    import time
+    import config as cfg_module
+    import db as db_module
+    import recommendations
+    from db import register_crawler, replace_stock_items
+
+    conn = sqlite3.connect(cfg_module.DB_FILE)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db_module.init_db(conn)
+    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
+    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()[0]
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "T1", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+    ])
+
+    def slow_judge_batch(client, taste, batch):
+        time.sleep(0.3)
+        return [{"item_key": item["item_key"], "recommended": False, "reason": None} for item in batch]
+
+    monkeypatch.setattr(recommendations, "judge_batch", slow_judge_batch)
+
+    heartbeat_count = 0
+
+    async def heartbeat():
+        nonlocal heartbeat_count
+        while True:
+            heartbeat_count += 1
+            await asyncio.sleep(0.02)
+
+    hb_task = asyncio.create_task(heartbeat())
+    try:
+        await manager._run_judgment_phase(conn, "sk-ant-test")
+    finally:
+        hb_task.cancel()
+
+    # A blocking (non-offloaded) judge_batch call would starve the event loop for the
+    # full 0.3s sleep, so the heartbeat (ticking every 0.02s) would get essentially no
+    # chance to run. If judge_batch is properly offloaded, the loop stays free and the
+    # heartbeat ticks throughout.
+    assert heartbeat_count >= 5
     conn.close()
 
 

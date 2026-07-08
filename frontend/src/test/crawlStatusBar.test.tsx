@@ -46,7 +46,7 @@ vi.mock('../api/client', () => ({
     discogs_token: '', debug_screenshot_interval: 20, shuffle_crawl_order: true,
     crawl_delay_seconds: 30, consecutive_failure_limit: 10, crawl_schedule: '',
     crawl_schedule_mode: 'missing', collection_schedule: '', collection_schedule_mode: 'all',
-    ebay_app_id: '', ebay_cert_id: '', stock_schedule: '',
+    ebay_app_id: '', ebay_cert_id: '', stock_schedule: '', recommendation_item_limit: 300,
   }),
   saveSettings: vi.fn(),
   setCrawlerEnabled: vi.fn(),

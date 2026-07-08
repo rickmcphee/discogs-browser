@@ -179,3 +179,83 @@ def test_get_stock_judgment_status_true_once_judged(client, conn):
     conn.execute("INSERT INTO stock_item_judgments (item_key, recommended, reason) VALUES (?, 1, NULL)", [key])
     r = client.get("/api/stock/judge/status")
     assert r.json() == {"any_judged": True}
+
+
+def test_clear_stock_judgment_removes_all_when_idle(client, conn):
+    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
+    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name='Nuclear Blast'").fetchone()[0]
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "T1", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+        {"artist": "NAILS", "title": "T2", "price": 2.0, "currency": "USD", "url": "https://x/2"},
+    ])
+    from db import compute_item_key
+    conn.execute("INSERT INTO stock_item_judgments (item_key, recommended, reason) VALUES (?, 1, 'a')",
+                 [compute_item_key("Rob Zombie", "T1", "https://x/1")])
+    conn.execute("INSERT INTO stock_item_judgments (item_key, recommended, reason) VALUES (?, 0, NULL)",
+                 [compute_item_key("NAILS", "T2", "https://x/2")])
+    conn.commit()
+
+    r = client.post("/api/stock/judge/clear")
+    assert r.status_code == 200
+    assert r.json() == {"cleared": True, "count": 2}
+    assert conn.execute("SELECT COUNT(*) FROM stock_item_judgments").fetchone()[0] == 0
+
+
+def test_clear_stock_judgment_refuses_while_judgment_running(client, monkeypatch, conn):
+    from db import compute_item_key
+    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
+    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name='Nuclear Blast'").fetchone()[0]
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "T1", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+    ])
+    conn.execute("INSERT INTO stock_item_judgments (item_key, recommended, reason) VALUES (?, 1, NULL)",
+                 [compute_item_key("Rob Zombie", "T1", "https://x/1")])
+    conn.commit()
+
+    fake_manager = AsyncMock()
+    fake_manager.judgment_running = True
+    fake_manager.stock_sync_running = False
+    monkeypatch.setattr(stock_router, "crawl_manager", fake_manager)
+
+    r = client.post("/api/stock/judge/clear")
+    assert r.status_code == 200
+    assert r.json() == {"cleared": False, "running": True}
+    assert conn.execute("SELECT COUNT(*) FROM stock_item_judgments").fetchone()[0] == 1
+
+
+def test_clear_stock_judgment_refuses_while_stock_sync_running(client, monkeypatch, conn):
+    fake_manager = AsyncMock()
+    fake_manager.judgment_running = False
+    fake_manager.stock_sync_running = True
+    monkeypatch.setattr(stock_router, "crawl_manager", fake_manager)
+
+    r = client.post("/api/stock/judge/clear")
+    assert r.status_code == 200
+    assert r.json() == {"cleared": False, "running": True}
+
+
+def test_export_recommended_stock_returns_csv(client, conn):
+    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
+    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name='Nuclear Blast'").fetchone()[0]
+    replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "T1", "format": "Vinyl", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+        {"artist": "NAILS", "title": "T2", "format": "Vinyl", "price": 2.0, "currency": "USD", "url": "https://x/2"},
+    ])
+    from db import compute_item_key
+    conn.execute("INSERT INTO stock_item_judgments (item_key, recommended, reason) VALUES (?, 1, 'similar genre')",
+                 [compute_item_key("Rob Zombie", "T1", "https://x/1")])
+    conn.execute("INSERT INTO stock_item_judgments (item_key, recommended, reason) VALUES (?, 0, NULL)",
+                 [compute_item_key("NAILS", "T2", "https://x/2")])
+    conn.commit()
+
+    r = client.get("/api/stock/export")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/csv")
+    assert "attachment" in r.headers["content-disposition"]
+    assert "recommendations.csv" in r.headers["content-disposition"]
+    lines = r.text.strip().splitlines()
+    assert lines[0] == "artist,title,format,price,source,link,reason"
+    assert lines == [
+        "artist,title,format,price,source,link,reason",
+        "Rob Zombie,T1,Vinyl,1.0,Nuclear Blast,https://x/1,similar genre",
+    ]

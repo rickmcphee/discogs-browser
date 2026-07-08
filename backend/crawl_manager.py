@@ -318,18 +318,23 @@ class CrawlManager:
             conn.close()
 
     async def _run_judgment_phase(self, conn, api_key: str):
-        from db import get_unjudged_stock_items, get_taste_listing, upsert_stock_judgments
+        from db import get_unjudged_stock_items, count_unjudged_stock_items, get_taste_listing, upsert_stock_judgments
+        from config import load_config
         import recommendations
         import anthropic
 
-        unjudged = get_unjudged_stock_items(conn, recommendations.SYNC_CAP)
+        await self._broadcast({"status": "stock_judgment_started"})
+        log.info("Judgment run started")
+
+        limit = load_config().get("recommendation_item_limit", recommendations.SYNC_CAP)
+        total_unjudged = count_unjudged_stock_items(conn)
+        unjudged = get_unjudged_stock_items(conn, limit)
         if not unjudged:
             await self._broadcast({"status": "stock_judgment_complete", "judged": 0})
-            log.info("Stock judgment complete: 0 unjudged items, nothing to do")
+            log.info("Found 0/0 items to judge for recommendation, nothing to do")
             return
 
-        await self._broadcast({"status": "stock_judgment_started"})
-        log.info("Stock judgment started: %d unjudged items", len(unjudged))
+        log.info("Found %d/%d items to judge for recommendation", len(unjudged), total_unjudged)
 
         client = anthropic.Anthropic(api_key=api_key)
         taste_listing = get_taste_listing(conn)
@@ -338,7 +343,7 @@ class CrawlManager:
             judged = 0
             for i in range(0, len(unjudged), recommendations.BATCH_SIZE):
                 batch = unjudged[i:i + recommendations.BATCH_SIZE]
-                results = recommendations.judge_batch(client, taste_listing, batch)
+                results = await asyncio.to_thread(recommendations.judge_batch, client, taste_listing, batch)
                 recommended_in_batch = 0
                 if results:
                     upsert_stock_judgments(conn, results)

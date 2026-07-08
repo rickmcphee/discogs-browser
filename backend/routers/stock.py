@@ -1,6 +1,11 @@
-from fastapi import APIRouter, Query
+import csv
+import io
+from fastapi import APIRouter, Query, Response
 from typing import Optional
-from db import get_connection, get_stock_items, get_distinct_stock_artists, has_any_stock_judgment
+from db import (
+    get_connection, get_stock_items, get_distinct_stock_artists, has_any_stock_judgment,
+    clear_stock_judgments, get_recommended_stock_items,
+)
 from crawl_manager import crawl_manager
 
 router = APIRouter()
@@ -43,3 +48,28 @@ async def start_stock_sync():
 async def start_stock_judgment():
     started = await crawl_manager.start_judgment_only()
     return {"started": started, "running": crawl_manager.judgment_running}
+
+
+@router.post("/stock/judge/clear")
+def clear_stock_judgment():
+    if crawl_manager.judgment_running or crawl_manager.stock_sync_running:
+        return {"cleared": False, "running": True}
+    conn = get_connection()
+    count = clear_stock_judgments(conn)
+    return {"cleared": True, "count": count}
+
+
+@router.get("/stock/export")
+def export_recommended_stock():
+    conn = get_connection()
+    items = get_recommended_stock_items(conn)
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(["artist", "title", "format", "price", "source", "link", "reason"])
+    for item in items:
+        writer.writerow([item["artist"], item["title"], item["format"], item["price"], item["source"], item["url"], item["reason"]])
+    return Response(
+        content=buffer.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=recommendations.csv"},
+    )

@@ -2,6 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import App from '../App'
 
+// jsdom doesn't implement object URLs
+window.URL.createObjectURL = vi.fn(() => 'blob:mock-url')
+window.URL.revokeObjectURL = vi.fn()
+
 class MockEventSource {
   static instances: MockEventSource[] = []
   onmessage: ((e: MessageEvent) => void) | null = null
@@ -15,6 +19,8 @@ class MockEventSource {
 
 const postStockSyncStart = vi.fn().mockResolvedValue({ started: true, running: true })
 const postJudgmentStart = vi.fn().mockResolvedValue({ started: true, running: true })
+const clearJudgments = vi.fn()
+const exportRecommendationsCsv = vi.fn()
 const getSettings = vi.fn()
 const getJudgmentStatus = vi.fn()
 
@@ -46,6 +52,8 @@ vi.mock('../api/client', () => ({
   getStockArtists: vi.fn().mockResolvedValue([]),
   postStockSyncStart: (...args: unknown[]) => postStockSyncStart(...args),
   postJudgmentStart: (...args: unknown[]) => postJudgmentStart(...args),
+  clearJudgments: (...args: unknown[]) => clearJudgments(...args),
+  exportRecommendationsCsv: (...args: unknown[]) => exportRecommendationsCsv(...args),
   getJudgmentStatus: (...args: unknown[]) => getJudgmentStatus(...args),
 }))
 
@@ -58,6 +66,7 @@ const defaultSettings = {
   crawl_delay_seconds: 30, consecutive_failure_limit: 10, crawl_schedule: '',
   crawl_schedule_mode: 'missing', collection_schedule: '', collection_schedule_mode: 'all',
   ebay_app_id: '', ebay_cert_id: '', stock_schedule: '', anthropic_api_key: '',
+  recommendation_item_limit: 300,
 }
 
 beforeEach(() => {
@@ -65,6 +74,8 @@ beforeEach(() => {
   vi.clearAllMocks()
   postStockSyncStart.mockResolvedValue({ started: true, running: true })
   postJudgmentStart.mockResolvedValue({ started: true, running: true })
+  clearJudgments.mockResolvedValue({ cleared: true, running: false, count: 7 })
+  exportRecommendationsCsv.mockResolvedValue(new Blob(['artist,title\n'], { type: 'text/csv' }))
   getSettings.mockResolvedValue(defaultSettings)
   getJudgmentStatus.mockResolvedValue({ any_judged: false })
 })
@@ -104,12 +115,20 @@ describe('In Stock tab', () => {
     await waitFor(() => expect(screen.getByText(/In-stock sync complete: 12 items/)).toBeInTheDocument())
   })
 
+  it('surfaces stock_judgment_started events in the bottom status bar', async () => {
+    render(<App />)
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    const source = getLastCrawlSource()
+    source.emit({ status: 'stock_judgment_started' })
+    await waitFor(() => expect(screen.getByText(/Finding recommendations for Store items…/)).toBeInTheDocument())
+  })
+
   it('surfaces stock_judgment_progress events in the bottom status bar', async () => {
     render(<App />)
     await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
     const source = getLastCrawlSource()
     source.emit({ status: 'stock_judgment_progress', judged: 5, total: 40 })
-    await waitFor(() => expect(screen.getByText(/Judging in-stock catalog… 5\/40/)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText(/Finding recommendations for Store items… 5\/40/)).toBeInTheDocument())
   })
 
   it('surfaces stock_judgment_complete events in the bottom status bar', async () => {
@@ -117,7 +136,15 @@ describe('In Stock tab', () => {
     await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
     const source = getLastCrawlSource()
     source.emit({ status: 'stock_judgment_complete', judged: 12 })
-    await waitFor(() => expect(screen.getByText(/Judged 12 new items for Recommended/)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText(/Finished finding recommendations — 12 items checked/)).toBeInTheDocument())
+  })
+
+  it('surfaces stock_judgment_error events in the bottom status bar', async () => {
+    render(<App />)
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    const source = getLastCrawlSource()
+    source.emit({ status: 'stock_judgment_error', error: 'boom' })
+    await waitFor(() => expect(screen.getByText(/Finding recommendations failed: boom/)).toBeInTheDocument())
   })
 
   it('calls postJudgmentStart when Refresh Recommendations is clicked in Settings', async () => {
@@ -128,6 +155,68 @@ describe('In Stock tab', () => {
     await waitFor(() => expect(screen.getByText('Refresh Recommendations')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Refresh Recommendations'))
     await waitFor(() => expect(postJudgmentStart).toHaveBeenCalled())
+  })
+
+  it('disables Export Recommendations until a judgment has completed', async () => {
+    render(<App />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await waitFor(() => expect(screen.getByText('Export Recommendations')).toBeInTheDocument())
+    expect(screen.getByText('Export Recommendations').closest('button')).toBeDisabled()
+  })
+
+  it('calls exportRecommendationsCsv when Export Recommendations is clicked', async () => {
+    getJudgmentStatus.mockResolvedValue({ any_judged: true })
+    render(<App />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await waitFor(() => expect(screen.getByText('Export Recommendations').closest('button')).not.toBeDisabled())
+    fireEvent.click(screen.getByText('Export Recommendations'))
+    await waitFor(() => expect(exportRecommendationsCsv).toHaveBeenCalled())
+  })
+
+  it('disables Clear Recommendations until a judgment has completed', async () => {
+    render(<App />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await waitFor(() => expect(screen.getByText('Clear Recommendations')).toBeInTheDocument())
+    expect(screen.getByText('Clear Recommendations').closest('button')).toBeDisabled()
+  })
+
+  it('does not call clearJudgments when the confirm dialog is cancelled', async () => {
+    getJudgmentStatus.mockResolvedValue({ any_judged: true })
+    vi.spyOn(window, 'confirm').mockReturnValue(false)
+    render(<App />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await waitFor(() => expect(screen.getByText('Clear Recommendations').closest('button')).not.toBeDisabled())
+    fireEvent.click(screen.getByText('Clear Recommendations'))
+    expect(window.confirm).toHaveBeenCalled()
+    expect(clearJudgments).not.toHaveBeenCalled()
+  })
+
+  it('calls clearJudgments and reports the count when confirmed', async () => {
+    getJudgmentStatus.mockResolvedValue({ any_judged: true })
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    render(<App />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await waitFor(() => expect(screen.getByText('Clear Recommendations').closest('button')).not.toBeDisabled())
+    fireEvent.click(screen.getByText('Clear Recommendations'))
+    await waitFor(() => expect(clearJudgments).toHaveBeenCalled())
+    await waitFor(() => expect(screen.getByText(/Cleared 7 recommendation judgments/)).toBeInTheDocument())
+  })
+
+  it('surfaces the running message when clear is refused because a run is in progress', async () => {
+    getJudgmentStatus.mockResolvedValue({ any_judged: true })
+    clearJudgments.mockResolvedValue({ cleared: false, running: true })
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    render(<App />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await waitFor(() => expect(screen.getByText('Clear Recommendations').closest('button')).not.toBeDisabled())
+    fireEvent.click(screen.getByText('Clear Recommendations'))
+    await waitFor(() => expect(screen.getByText(/Cannot clear recommendations while a sync or recommendation run is in progress/)).toBeInTheDocument())
   })
 
   it('enables Recommended in Store only once a key is configured and a judgment has completed', async () => {

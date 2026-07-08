@@ -179,6 +179,18 @@ export async function getJudgmentStatus(): Promise<{ any_judged: boolean }> {
   return r.json()
 }
 
+export async function clearJudgments(): Promise<{ cleared: boolean; running: boolean; count?: number }> {
+  const r = await apiFetch('/stock/judge/clear', { method: 'POST' })
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
+}
+
+export async function exportRecommendationsCsv(): Promise<Blob> {
+  const r = await apiFetch('/stock/export')
+  if (!r.ok) throw new Error(await r.text())
+  return r.blob()
+}
+
 export function openLogsStream(): EventSource {
   return new EventSource('/api/logs/stream')
 }

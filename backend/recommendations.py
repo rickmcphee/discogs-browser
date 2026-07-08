@@ -11,25 +11,36 @@ SYNC_CAP = 300
 SYSTEM_PROMPT = (Path(__file__).parent / "recommendations_prompt.md").read_text().strip()
 
 
-def build_batch_prompt(taste_listing: list[str], batch: list[dict]) -> str:
+def build_batch_content(taste_listing: list[str], batch: list[dict]) -> list[dict]:
+    """User-turn content split so the taste listing (identical across every batch
+    in a judgment run) is cached separately from the per-batch items list."""
     taste_text = "\n".join(taste_listing) if taste_listing else "(empty — no collection or wishlist yet)"
     items_text = "\n".join(
         f'{{"item_key": "{item["item_key"]}", "artist": "{item["artist"]}", "title": "{item["title"]}"}}'
         for item in batch
     )
-    return f"Collector's collection and wishlist:\n{taste_text}\n\nItems to judge:\n{items_text}"
+    return [
+        {
+            "type": "text",
+            "text": f"Collector's collection and wishlist:\n{taste_text}",
+            "cache_control": {"type": "ephemeral"},
+        },
+        {
+            "type": "text",
+            "text": f"\n\nItems to judge:\n{items_text}",
+        },
+    ]
 
 
 def judge_batch(client, taste_listing: list[str], batch: list[dict]) -> list[dict]:
     """One Claude call judging a batch of items. Returns [] on any failure —
     caller leaves those items unjudged for retry on the next sync."""
-    prompt = build_batch_prompt(taste_listing, batch)
     try:
         response = client.messages.create(
             model=MODEL,
             max_tokens=4096,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
+            system=[{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
+            messages=[{"role": "user", "content": build_batch_content(taste_listing, batch)}],
         )
         text = response.content[0].text.strip()
         if text.startswith("```"):

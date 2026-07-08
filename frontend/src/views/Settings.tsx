@@ -40,6 +40,12 @@ const SETTING_ROWS: SettingRow[] = [
     placeholder: 'sk-ant-...',
   },
   {
+    key: 'recommendation_item_limit',
+    label: 'Recommendation item limit',
+    description: 'Maximum number of unprocessed Store items evaluated by Claude for recommendation each time. Extra items are evaluated on a later run. 0 = no limit.',
+    type: 'number',
+  },
+  {
     key: 'debug_screenshot_interval',
     label: 'Screenshot interval',
     description: '0 = off · 1 = every search · N = every Nth. First search always captured when > 0.',
@@ -72,9 +78,12 @@ interface Props {
   onRefreshPrices: (mode: 'missing' | 'all') => void
   onRefreshStock: () => void
   onRefreshRecommendations: () => void
+  onExportRecommendations: () => void
+  onClearRecommendations: () => void
+  hasJudgedItems: boolean
 }
 
-export default function Settings({ crawlers, onCrawlersChange, onRefreshCollection, onRefreshPrices, onRefreshStock, onRefreshRecommendations }: Props) {
+export default function Settings({ crawlers, onCrawlersChange, onRefreshCollection, onRefreshPrices, onRefreshStock, onRefreshRecommendations, onExportRecommendations, onClearRecommendations, hasJudgedItems }: Props) {
   const [settings, setSettings] = useState<SettingsType>({
     discogs_token: '',
     debug_screenshot_interval: 20,
@@ -89,6 +98,7 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
     ebay_cert_id: '',
     stock_schedule: '',
     anthropic_api_key: '',
+    recommendation_item_limit: 300,
   })
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -504,7 +514,37 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
                 </button>
               </td>
               <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
-                Judge currently unjudged Store items against your collection, without a full catalog re-crawl. Requires an Anthropic API key above.
+                Evaluate unprocessed Store items for recommendation, without a full catalog re-crawl. Requires an Anthropic API key above.
+              </td>
+            </tr>
+            <tr className="border-b border-gray-800/50">
+              <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
+              <td className="py-3 pr-4 text-left align-top">
+                <button
+                  onClick={onExportRecommendations}
+                  disabled={!hasJudgedItems}
+                  className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 disabled:opacity-50 rounded text-xs font-medium transition-colors"
+                >
+                  Export Recommendations
+                </button>
+              </td>
+              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                Download recommended Store items as CSV (artist, title, format, price, source, link, reason).
+              </td>
+            </tr>
+            <tr className="border-b border-gray-800/50">
+              <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
+              <td className="py-3 pr-4 text-left align-top">
+                <button
+                  onClick={onClearRecommendations}
+                  disabled={!hasJudgedItems}
+                  className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 disabled:opacity-50 rounded text-xs font-medium transition-colors"
+                >
+                  Clear Recommendations
+                </button>
+              </td>
+              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                Remove all recommendation judgments, recommended and not-recommended, so every Store item is re-evaluated from scratch on the next run.
               </td>
             </tr>
           </tbody>
