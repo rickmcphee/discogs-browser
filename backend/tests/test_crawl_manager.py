@@ -644,6 +644,105 @@ async def test_run_judgment_phase_does_not_block_event_loop(manager, tmp_config_
     conn.close()
 
 
+async def test_run_plex_match_updates_matched_and_clears_unmatched(manager, tmp_config_dir, monkeypatch):
+    import config as cfg_module
+    import db as db_module
+    from db import upsert_release
+    import plex
+
+    conn = sqlite3.connect(cfg_module.DB_FILE)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db_module.init_db(conn)
+    upsert_release(conn, {
+        "discogs_id": "r1", "artist": "Miles Davis", "title": "Kind of Blue", "year": 1959,
+        "label": "Columbia", "format": "Vinyl", "discogs_price": None, "barcode": None,
+        "cover_image_url": "", "discogs_url": "https://discogs.com/release/1",
+    })
+    upsert_release(conn, {
+        "discogs_id": "r2", "artist": "Bill Evans", "title": "Waltz for Debby", "year": 1961,
+        "label": "Riverside", "format": "Vinyl", "discogs_price": None, "barcode": None,
+        "cover_image_url": "", "discogs_url": "https://discogs.com/release/2",
+    })
+
+    monkeypatch.setattr(plex, "get_music_section_key", lambda base_url, token: "2")
+    monkeypatch.setattr(plex, "fetch_albums", lambda base_url, token, key: [
+        {"artist": "Miles Davis", "title": "Kind of Blue", "rating_key": "500"},
+    ])
+    monkeypatch.setattr(plex, "get_machine_identifier", lambda base_url, token: "abc123")
+
+    await manager._run_plex_match(conn, "plex.local:32400", "tok", 90)
+
+    row1 = conn.execute("SELECT plex_url FROM releases WHERE discogs_id='r1'").fetchone()
+    row2 = conn.execute("SELECT plex_url FROM releases WHERE discogs_id='r2'").fetchone()
+    assert row1[0] == "http://plex.local:32400/web/index.html#!/server/abc123/details?key=/library/metadata/500"
+    assert row2[0] is None
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert statuses == ["plex_match_started", "plex_match_progress", "plex_match_complete"]
+    conn.close()
+
+
+async def test_run_plex_match_broadcasts_error_when_no_music_section_found(manager, tmp_config_dir, monkeypatch):
+    import config as cfg_module
+    import db as db_module
+    from db import upsert_release, set_plex_match
+    import plex
+
+    conn = sqlite3.connect(cfg_module.DB_FILE)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db_module.init_db(conn)
+    upsert_release(conn, {
+        "discogs_id": "r1", "artist": "Miles Davis", "title": "Kind of Blue", "year": 1959,
+        "label": "Columbia", "format": "Vinyl", "discogs_price": None, "barcode": None,
+        "cover_image_url": "", "discogs_url": "https://discogs.com/release/1",
+    })
+    set_plex_match(conn, "r1", "http://plex.local:32400/web/x")
+
+    monkeypatch.setattr(plex, "get_music_section_key", lambda base_url, token: None)
+
+    await manager._run_plex_match(conn, "plex.local:32400", "tok", 90)
+
+    row = conn.execute("SELECT plex_url FROM releases WHERE discogs_id='r1'").fetchone()
+    assert row[0] == "http://plex.local:32400/web/x"
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert statuses == ["plex_match_started", "plex_match_error"]
+    conn.close()
+
+
+async def test_run_plex_match_leaves_existing_links_untouched_on_connection_failure(manager, tmp_config_dir, monkeypatch):
+    import config as cfg_module
+    import db as db_module
+    from db import upsert_release, set_plex_match
+    import plex
+
+    conn = sqlite3.connect(cfg_module.DB_FILE)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db_module.init_db(conn)
+    upsert_release(conn, {
+        "discogs_id": "r1", "artist": "Miles Davis", "title": "Kind of Blue", "year": 1959,
+        "label": "Columbia", "format": "Vinyl", "discogs_price": None, "barcode": None,
+        "cover_image_url": "", "discogs_url": "https://discogs.com/release/1",
+    })
+    set_plex_match(conn, "r1", "http://plex.local:32400/web/x")
+
+    def _boom(base_url, token):
+        raise ConnectionError("Plex unreachable")
+    monkeypatch.setattr(plex, "get_music_section_key", _boom)
+
+    await manager._run_plex_match(conn, "plex.local:32400", "tok", 90)
+
+    row = conn.execute("SELECT plex_url FROM releases WHERE discogs_id='r1'").fetchone()
+    assert row[0] == "http://plex.local:32400/web/x"
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert statuses == ["plex_match_started", "plex_match_error"]
+    conn.close()
+
+
 # ---------------------------------------------------------------------------
 # judgment-only task (decoupled from full stock sync)
 # ---------------------------------------------------------------------------
