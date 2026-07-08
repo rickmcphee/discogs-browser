@@ -5,7 +5,7 @@ import Settings from './views/Settings'
 import LogViewer from './views/LogViewer'
 import LoginScreen from './views/LoginScreen'
 import SetupWizard from './views/SetupWizard'
-import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, getCrawlers, getSettings, getJudgmentStatus, checkHealth, getAuthState, setUnauthorizedHandler } from './api/client'
+import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, clearJudgments, exportRecommendationsCsv, getCrawlers, getSettings, getJudgmentStatus, checkHealth, getAuthState, setUnauthorizedHandler } from './api/client'
 import type { CrawlEvent, CrawlStatus, CollectionStatus, Crawler, AuthState } from './api/types'
 
 type View = 'collection' | 'wishlist' | 'instock' | 'settings' | 'logs'
@@ -241,6 +241,37 @@ export default function App() {
     }
   }
 
+  async function handleExportRecommendations() {
+    try {
+      const blob = await exportRecommendationsCsv()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = 'recommendations.csv'
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (e: any) {
+      setSyncMessage(`Export recommendations failed: ${e.message}`)
+    }
+  }
+
+  async function handleClearRecommendations() {
+    if (!window.confirm('Clear all recommendations? This removes every recommended and not-recommended judgment from the database — every Store item will need to be re-evaluated from scratch, which costs Anthropic API calls to redo.')) {
+      return
+    }
+    try {
+      const result = await clearJudgments()
+      if (!result.cleared) {
+        setSyncMessage('Cannot clear recommendations while a sync or recommendation run is in progress')
+        return
+      }
+      setHasJudgedItems(false)
+      setSyncMessage(`Cleared ${result.count} recommendation judgments`)
+    } catch (e: any) {
+      setSyncMessage(`Clear recommendations failed: ${e.message}`)
+    }
+  }
+
   if (authState === null) {
     return <div className="min-h-screen flex items-center justify-center text-gray-500">Loading…</div>
   }
@@ -338,7 +369,7 @@ export default function App() {
         <div className={view === 'instock' ? 'h-full' : 'hidden'}>
           <StockBrowser recommendedAvailable={recommendedAvailable} />
         </div>
-        <div className={view === 'settings' ? 'h-full overflow-y-auto' : 'hidden'}><Settings crawlers={crawlers} onCrawlersChange={setCrawlers} onRefreshCollection={(mode) => handleRefresh(mode)} onRefreshPrices={(mode) => handleFindPrices(undefined, mode)} onRefreshStock={handleRefreshStock} onRefreshRecommendations={handleRefreshRecommendations} /></div>
+        <div className={view === 'settings' ? 'h-full overflow-y-auto' : 'hidden'}><Settings crawlers={crawlers} onCrawlersChange={setCrawlers} onRefreshCollection={(mode) => handleRefresh(mode)} onRefreshPrices={(mode) => handleFindPrices(undefined, mode)} onRefreshStock={handleRefreshStock} onRefreshRecommendations={handleRefreshRecommendations} onExportRecommendations={handleExportRecommendations} onClearRecommendations={handleClearRecommendations} hasJudgedItems={hasJudgedItems} /></div>
         <div className={view === 'logs' ? 'h-full' : 'hidden'}><LogViewer /></div>
       </main>
 

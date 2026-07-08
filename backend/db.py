@@ -437,6 +437,25 @@ def has_any_stock_judgment(conn: sqlite3.Connection) -> bool:
     return conn.execute("SELECT EXISTS(SELECT 1 FROM stock_item_judgments)").fetchone()[0] == 1
 
 
+def clear_stock_judgments(conn: sqlite3.Connection) -> int:
+    cursor = conn.execute("DELETE FROM stock_item_judgments")
+    conn.commit()
+    return cursor.rowcount
+
+
+def get_recommended_stock_items(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute(f"""
+        SELECT s.artist, s.title, s.format, s.price, c.site_name AS source, s.url, j.reason AS reason
+        FROM stock_items s
+        JOIN crawlers c ON c.id = s.crawler_id
+        JOIN stock_item_judgments j ON j.item_key = s.item_key
+        WHERE j.recommended = 1
+          AND {_NOT_OWNED_CLAUSE}
+        ORDER BY s.artist, s.title
+    """).fetchall()
+    return [dict(row) for row in rows]
+
+
 def get_enabled_crawlers(conn: sqlite3.Connection, crawler_type: str = "release") -> list[dict]:
     rows = conn.execute(
         "SELECT * FROM crawlers WHERE enabled = 1 AND crawler_type = ?", [crawler_type]
