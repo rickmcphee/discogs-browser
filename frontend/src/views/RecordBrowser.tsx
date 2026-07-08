@@ -191,25 +191,32 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
             {!loading && releases.length > 0 && (
               <div className="grid gap-4 p-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))' }}>
                 {releases.map((r) => (
-                  <a
-                    key={r.discogs_id}
-                    href={r.discogs_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="group"
-                  >
-                    {r.cover_image_url ? (
-                      <img
-                        src={r.cover_image_url}
-                        alt={r.title}
-                        className="w-full aspect-square object-cover rounded"
-                      />
+                  <div key={r.discogs_id} className="group">
+                    <a href={r.discogs_url} target="_blank" rel="noreferrer">
+                      {r.cover_image_url ? (
+                        <img
+                          src={r.cover_image_url}
+                          alt={r.title}
+                          className="w-full aspect-square object-cover rounded"
+                        />
+                      ) : (
+                        <div className="w-full aspect-square bg-gray-800 rounded" />
+                      )}
+                      <div className="mt-1.5 text-sm text-gray-200 truncate group-hover:text-indigo-400">{r.artist}</div>
+                    </a>
+                    {r.plex_url ? (
+                      <a
+                        href={r.plex_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-xs text-gray-400 truncate hover:text-indigo-400 block"
+                      >
+                        {r.title}
+                      </a>
                     ) : (
-                      <div className="w-full aspect-square bg-gray-800 rounded" />
+                      <div className="text-xs text-gray-400 truncate">{r.title}</div>
                     )}
-                    <div className="mt-1.5 text-sm text-gray-200 truncate group-hover:text-indigo-400">{r.artist}</div>
-                    <div className="text-xs text-gray-400 truncate">{r.title}</div>
-                  </a>
+                  </div>
                 ))}
               </div>
             )}
@@ -311,7 +318,15 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
                       {r.artist}
                     </a>
                   </td>
-                  <td className="px-3 py-2 text-gray-300">{r.title}</td>
+                  <td className="px-3 py-2 text-gray-300">
+                    {r.plex_url ? (
+                      <a href={r.plex_url} target="_blank" rel="noreferrer" className="hover:text-indigo-400">
+                        {r.title}
+                      </a>
+                    ) : (
+                      r.title
+                    )}
+                  </td>
                   <td className="px-3 py-2 text-gray-400">{r.year ?? '—'}</td>
                   <td className="px-3 py-2 text-gray-400 truncate max-w-32">{r.label}</td>
                   <td className="px-3 py-2 text-gray-400">{r.format}</td>
