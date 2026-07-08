@@ -74,6 +74,14 @@ def test_build_album_url_shape():
     )
 
 
+def test_build_album_url_strips_trailing_slash_from_base():
+    url = build_album_url("plex.local:32400/", "abc123", "500")
+    assert url == (
+        "http://plex.local:32400/web/index.html#!/server/abc123"
+        "/details?key=/library/metadata/500"
+    )
+
+
 def test_find_best_match_exact_normalized_match_wins():
     albums = [
         {"artist": "Miles Davis", "title": "Kind of Blue", "rating_key": "500"},

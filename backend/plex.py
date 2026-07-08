@@ -2,14 +2,12 @@ import re
 from typing import Optional
 import httpx
 from rapidfuzz import fuzz
-from logging_config import get_logger
-
-log = get_logger("plex")
 
 _SUFFIX_RE = re.compile(r"\s*\([^)]*\)\s*$")
 
 
 def _base(base_url: str) -> str:
+    base_url = base_url.rstrip("/")
     return base_url if base_url.startswith(("http://", "https://")) else f"http://{base_url}"
 
 
