@@ -11,3 +11,5 @@ dist/
 .claude/
 .superpowers/
 workspace/
+.worktrees/
+.venv/

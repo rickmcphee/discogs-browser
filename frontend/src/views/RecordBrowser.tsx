@@ -103,7 +103,7 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
     setPage(1)
   }
 
-  const enabledCrawlers = crawlers.filter((c) => c.enabled)
+  const enabledCrawlers = crawlers.filter((c) => c.enabled && c.crawler_type === 'release')
   const totalPages = Math.ceil(total / PER_PAGE)
 
   return (
