@@ -223,6 +223,7 @@ def get_releases(
     per_page: int = 50,
     release_id: Optional[str] = None,
     scope: Optional[str] = None,
+    no_plex: bool = False,
 ) -> dict:
     order_sql = "DESC" if order.lower() == "desc" else "ASC"
 
@@ -242,6 +243,8 @@ def get_releases(
         conditions.append("r.in_collection = 1")
     elif scope == "wishlist":
         conditions.append("r.in_wishlist = 1")
+    if no_plex:
+        conditions.append("r.plex_url IS NULL")
 
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     count_sql = f"SELECT COUNT(*) FROM releases r {where}"
@@ -531,12 +534,15 @@ def update_crawler_last_run(conn: sqlite3.Connection, crawler_id: int):
 
 
 
-def get_distinct_artists(conn: sqlite3.Connection, scope: Optional[str] = None) -> list[str]:
-    where = ""
+def get_distinct_artists(conn: sqlite3.Connection, scope: Optional[str] = None, no_plex: bool = False) -> list[str]:
+    conditions = []
     if scope == "collection":
-        where = "WHERE in_collection = 1"
+        conditions.append("in_collection = 1")
     elif scope == "wishlist":
-        where = "WHERE in_wishlist = 1"
+        conditions.append("in_wishlist = 1")
+    if no_plex:
+        conditions.append("plex_url IS NULL")
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     rows = conn.execute(f"SELECT DISTINCT artist FROM releases {where} ORDER BY artist").fetchall()
     return [row[0] for row in rows]
 
