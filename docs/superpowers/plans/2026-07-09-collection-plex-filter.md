@@ -234,6 +234,8 @@ git commit -m "worktree-plex-integration: expose no_plex filter on releases/arti
 
 ## Task 3: `RecordBrowser.tsx` — filter dropdown
 
+> **Post-implementation correction (2026-07-09):** every `collectionFilter` localStorage key below (in the tests, `client.ts`, and `RecordBrowser.tsx` snippets) was shipped, then found buggy, then fixed to `` `collectionFilter_${scope}` `` before merge — see the spec's amendment for why. The steps below are left as originally written, as a record of what was actually executed step-by-step; they do not reflect the final, correct code.
+
 **Files:**
 - Modify: `frontend/src/api/client.ts:44-70` (`getReleases`, `getArtists`), `frontend/src/views/RecordBrowser.tsx`
 - Test: `frontend/src/test/collectionPlexFilter.test.tsx`

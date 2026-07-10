@@ -2,6 +2,8 @@
 
 **Date:** 2026-07-09
 
+**Amendment (2026-07-09):** a final cross-task review, done after implementation, found that the `collectionFilter` localStorage key specified below is shared — `RecordBrowser` is mounted twice simultaneously in `App.tsx` (Collection and Wishlist tabs, toggled via a CSS class, not conditional rendering), so a single flat key lets the Collection tab's filter selection leak into the Wishlist tab's `getReleases`/`getArtists` calls, with no dropdown there to reveal or undo it. Concretely, a release that is both `in_collection = 1` and `in_wishlist = 1` with a Plex match could silently disappear from the Wishlist tab. Fixed before merge by scoping the key per tab, `` `collectionFilter_${scope}` ``, matching how `viewMode`'s key (`` `collectionViewMode_${scope}` ``) already avoided this same problem. Every `collectionFilter` reference in the Frontend/Testing sections below is stale — read it as `` collectionFilter_${scope} ``. Confirmed fixed via an actual revert-and-rerun of the regression test against the pre-fix code, not just by inspection.
+
 ---
 
 ## Overview
