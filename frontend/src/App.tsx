@@ -370,6 +370,7 @@ export default function App() {
             crawlingReleaseId={crawlingReleaseId}
             crawlEvents={crawlEvents}
             crawlers={crawlers}
+            syncing={syncing}
           />
         </div>
         <div className={view === 'wishlist' ? 'h-full' : 'hidden'}>
@@ -380,6 +381,7 @@ export default function App() {
             crawlingReleaseId={crawlingReleaseId}
             crawlEvents={crawlEvents}
             crawlers={crawlers}
+            syncing={syncing}
           />
         </div>
         <div className={view === 'instock' ? 'h-full' : 'hidden'}>

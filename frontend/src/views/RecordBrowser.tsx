@@ -9,9 +9,10 @@ interface Props {
   crawlingReleaseId?: string
   crawlEvents?: CrawlEvent[]
   crawlers?: Crawler[]
+  syncing?: boolean
 }
 
-export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawlingReleaseId, crawlEvents, crawlers = [] }: Props) {
+export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawlingReleaseId, crawlEvents, crawlers = [], syncing }: Props) {
   const [releases, setReleases] = useState<Release[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -28,6 +29,7 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
 
   const processedCount = useRef(0)
   const tableScrollRef = useRef<HTMLDivElement>(null)
+  const wasSyncing = useRef(false)
 
   useEffect(() => {
     if (!crawlEvents) return
@@ -90,6 +92,10 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
   }, [search, selectedArtist, sort, order, page, scope])
 
   useEffect(() => { load() }, [load])
+  useEffect(() => {
+    if (wasSyncing.current && !syncing) load()
+    wasSyncing.current = !!syncing
+  }, [syncing, load])
   useEffect(() => { getArtists(scope).then(setArtists) }, [scope])
   useEffect(() => { localStorage.setItem(`collectionViewMode_${scope}`, viewMode) }, [viewMode, scope])
 
