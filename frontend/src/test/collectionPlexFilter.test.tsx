@@ -89,9 +89,12 @@ describe('Collection "No Plex" filter', () => {
     await waitFor(() => expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('no_plex'))
   })
 
-  it('scopes the persisted filter per tab so Wishlist is unaffected by Collection\'s selection', async () => {
-    localStorage.setItem('collectionFilter_collection', 'no_plex')
-    render(<RecordBrowser scope="wishlist" onRefreshPrices={() => {}} />)
+  it('scopes the persisted filter per tab so Wishlist is unaffected by Collection\'s (pre-fix, shared-key) selection', async () => {
+    // plexAvailable is passed here (matching how App.tsx mounts both tabs with the
+    // same prop) so the plexAvailable-unavailable reset guard can't mask the leak by
+    // resetting a leaked 'no_plex' back to 'all' on its own.
+    localStorage.setItem('collectionFilter', 'no_plex')
+    render(<RecordBrowser scope="wishlist" onRefreshPrices={() => {}} plexAvailable />)
     await waitFor(() => expect(getReleases).toHaveBeenCalled())
     expect(getReleases).toHaveBeenCalledWith(expect.objectContaining({ no_plex: false }))
   })
