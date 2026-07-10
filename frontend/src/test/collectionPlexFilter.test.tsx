@@ -72,20 +72,27 @@ describe('Collection "No Plex" filter', () => {
   })
 
   it('resets to All when plexAvailable becomes false while No Plex is selected', async () => {
-    localStorage.setItem('collectionFilter', 'no_plex')
+    localStorage.setItem('collectionFilter_collection', 'no_plex')
     const { rerender } = render(<RecordBrowser scope="collection" onRefreshPrices={() => {}} plexAvailable />)
     await waitFor(() => expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('no_plex'))
     rerender(<RecordBrowser scope="collection" onRefreshPrices={() => {}} plexAvailable={false} />)
     await waitFor(() => expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('all'))
   })
 
-  it('persists the filter to localStorage under collectionFilter and restores it on remount', async () => {
+  it('persists the filter to localStorage under collectionFilter_collection and restores it on remount', async () => {
     const { unmount } = render(<RecordBrowser scope="collection" onRefreshPrices={() => {}} plexAvailable />)
     await waitFor(() => expect(getReleases).toHaveBeenCalled())
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'no_plex' } })
-    await waitFor(() => expect(localStorage.getItem('collectionFilter')).toBe('no_plex'))
+    await waitFor(() => expect(localStorage.getItem('collectionFilter_collection')).toBe('no_plex'))
     unmount()
     render(<RecordBrowser scope="collection" onRefreshPrices={() => {}} plexAvailable />)
     await waitFor(() => expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('no_plex'))
+  })
+
+  it('scopes the persisted filter per tab so Wishlist is unaffected by Collection\'s selection', async () => {
+    localStorage.setItem('collectionFilter_collection', 'no_plex')
+    render(<RecordBrowser scope="wishlist" onRefreshPrices={() => {}} />)
+    await waitFor(() => expect(getReleases).toHaveBeenCalled())
+    expect(getReleases).toHaveBeenCalledWith(expect.objectContaining({ no_plex: false }))
   })
 })

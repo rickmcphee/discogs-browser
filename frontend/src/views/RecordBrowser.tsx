@@ -27,7 +27,7 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
     () => (localStorage.getItem(`collectionViewMode_${scope}`) === 'tiles' ? 'tiles' : 'list')
   )
   const [filter, setFilter] = useState<'all' | 'no_plex'>(
-    () => (localStorage.getItem('collectionFilter') === 'no_plex' ? 'no_plex' : 'all')
+    () => (localStorage.getItem(`collectionFilter_${scope}`) === 'no_plex' ? 'no_plex' : 'all')
   )
   const PER_PAGE = 250
 
@@ -106,7 +106,7 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
   useEffect(() => {
     if (!plexAvailable && filter === 'no_plex') setFilter('all')
   }, [plexAvailable, filter])
-  useEffect(() => { localStorage.setItem('collectionFilter', filter) }, [filter])
+  useEffect(() => { localStorage.setItem(`collectionFilter_${scope}`, filter) }, [filter, scope])
 
   function toggleSort(field: SortField) {
     if (sort === field) {
