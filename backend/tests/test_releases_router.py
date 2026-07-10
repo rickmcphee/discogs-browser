@@ -82,3 +82,22 @@ def test_artists_scope_wishlist(client, conn):
 
     r = client.get("/api/artists?scope=wishlist")
     assert r.json()["artists"] == ["Wishlist Artist"]
+
+
+def test_releases_no_plex_filter(client, conn):
+    upsert_release(conn, _release("r1"))
+    upsert_release(conn, _release("r2"))
+    conn.execute("UPDATE releases SET plex_url = 'http://plex.local:32400/web/x' WHERE discogs_id = 'r1'")
+
+    r = client.get("/api/releases?no_plex=true")
+    ids = {rel["discogs_id"] for rel in r.json()["releases"]}
+    assert ids == {"r2"}
+
+
+def test_artists_no_plex_filter(client, conn):
+    upsert_release(conn, _release("r1", artist="Matched Artist"))
+    upsert_release(conn, _release("r2", artist="Unmatched Artist"))
+    conn.execute("UPDATE releases SET plex_url = 'http://plex.local:32400/web/x' WHERE discogs_id = 'r1'")
+
+    r = client.get("/api/artists?no_plex=true")
+    assert r.json()["artists"] == ["Unmatched Artist"]

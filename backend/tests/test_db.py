@@ -276,6 +276,33 @@ def test_get_releases_scope_both_flags_appears_in_both(conn):
     assert wishlist_result["total"] == 1
 
 
+def test_get_releases_no_plex_filter(conn):
+    upsert_release(conn, _release("r1"))
+    upsert_release(conn, _release("r2"))
+    set_plex_match(conn, "r1", "http://plex.local:32400/web/x")
+    result = get_releases(conn, no_plex=True)
+    ids = {r["discogs_id"] for r in result["releases"]}
+    assert ids == {"r2"}
+
+
+def test_get_releases_no_plex_false_returns_all(conn):
+    upsert_release(conn, _release("r1"))
+    upsert_release(conn, _release("r2"))
+    set_plex_match(conn, "r1", "http://plex.local:32400/web/x")
+    result = get_releases(conn, no_plex=False)
+    assert result["total"] == 2
+
+
+def test_get_releases_no_plex_combined_with_scope(conn):
+    upsert_release(conn, _release("r1"))
+    upsert_release(conn, _release("r2"))
+    mark_in_wishlist(conn, "r2")
+    conn.execute("UPDATE releases SET in_collection = 0 WHERE discogs_id = 'r2'")
+    result = get_releases(conn, scope="collection", no_plex=True)
+    ids = {r["discogs_id"] for r in result["releases"]}
+    assert ids == {"r1"}
+
+
 # ---------------------------------------------------------------------------
 # listings
 # ---------------------------------------------------------------------------
@@ -453,6 +480,14 @@ def test_get_distinct_artists_scope_none_returns_all(conn):
     upsert_release(conn, _release("r2", artist="B"))
     artists = get_distinct_artists(conn)
     assert artists == ["A", "B"]
+
+
+def test_get_distinct_artists_no_plex_filter(conn):
+    upsert_release(conn, _release("r1", artist="Matched Artist"))
+    upsert_release(conn, _release("r2", artist="Unmatched Artist"))
+    set_plex_match(conn, "r1", "http://plex.local:32400/web/x")
+    artists = get_distinct_artists(conn, no_plex=True)
+    assert artists == ["Unmatched Artist"]
 
 
 # ---------------------------------------------------------------------------

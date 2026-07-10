@@ -24,6 +24,7 @@ export default function App() {
   const [crawlingReleaseId, setCrawlingReleaseId] = useState<string | undefined>(undefined)
   const [crawlers, setCrawlers] = useState<Crawler[]>([])
   const [hasAnthropicKey, setHasAnthropicKey] = useState(false)
+  const [hasPlexConfigured, setHasPlexConfigured] = useState(false)
   const [hasJudgedItems, setHasJudgedItems] = useState(false)
   const [judgmentRunning, setJudgmentRunning] = useState(false)
   const [serverReady, setServerReady] = useState(false)
@@ -42,7 +43,10 @@ export default function App() {
           if (!cancelled) {
             setServerReady(true)
             getCrawlers().then(setCrawlers).catch(() => {})
-            getSettings().then((s) => setHasAnthropicKey(Boolean(s.anthropic_api_key))).catch(() => {})
+            getSettings().then((s) => {
+              setHasAnthropicKey(Boolean(s.anthropic_api_key))
+              setHasPlexConfigured(Boolean(s.plex_base_url && s.plex_token))
+            }).catch(() => {})
             getJudgmentStatus().then((s) => setHasJudgedItems(s.any_judged)).catch(() => {})
           }
           return
@@ -370,6 +374,8 @@ export default function App() {
             crawlingReleaseId={crawlingReleaseId}
             crawlEvents={crawlEvents}
             crawlers={crawlers}
+            syncing={syncing}
+            plexAvailable={hasPlexConfigured}
           />
         </div>
         <div className={view === 'wishlist' ? 'h-full' : 'hidden'}>
@@ -380,6 +386,8 @@ export default function App() {
             crawlingReleaseId={crawlingReleaseId}
             crawlEvents={crawlEvents}
             crawlers={crawlers}
+            syncing={syncing}
+            plexAvailable={hasPlexConfigured}
           />
         </div>
         <div className={view === 'instock' ? 'h-full' : 'hidden'}>

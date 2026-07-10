@@ -49,6 +49,7 @@ export async function getReleases(params: {
   page?: number
   per_page?: number
   scope?: RecordScope
+  no_plex?: boolean
 }): Promise<ReleasesResponse> {
   const q = new URLSearchParams()
   if (params.search) q.set('search', params.search)
@@ -58,14 +59,18 @@ export async function getReleases(params: {
   if (params.page) q.set('page', String(params.page))
   if (params.per_page) q.set('per_page', String(params.per_page))
   if (params.scope) q.set('scope', params.scope)
+  if (params.no_plex) q.set('no_plex', 'true')
   const r = await apiFetch(`/releases?${q}`)
   if (!r.ok) throw new Error(await r.text())
   return r.json()
 }
 
-export async function getArtists(scope?: RecordScope): Promise<string[]> {
-  const q = scope ? `?scope=${scope}` : ''
-  const r = await apiFetch(`/artists${q}`)
+export async function getArtists(scope?: RecordScope, noPlex?: boolean): Promise<string[]> {
+  const q = new URLSearchParams()
+  if (scope) q.set('scope', scope)
+  if (noPlex) q.set('no_plex', 'true')
+  const qs = q.toString() ? `?${q}` : ''
+  const r = await apiFetch(`/artists${qs}`)
   if (!r.ok) throw new Error(await r.text())
   const data = await r.json()
   return data.artists

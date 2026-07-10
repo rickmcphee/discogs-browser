@@ -2,6 +2,10 @@
 
 **Date:** 2026-07-08
 
+**Amendment (2026-07-09):** manual testing found that a completed collection sync (including the Plex match phase) never updated the on-screen release list — `RecordBrowser` only refetched on search/sort/page/artist changes, so a newly-matched `plex_url` (or any other synced field) only appeared after a hard browser reload. Fixed by adding a `syncing?: boolean` prop to `RecordBrowser`, passed down from `App.tsx`'s existing `syncing` state; a `wasSyncing` ref-backed effect reloads the release list when `syncing` transitions from `true` to `false`. This is a pre-existing gap in the app (nothing about the wishlist/price-crawl sync paths refetched either), not specific to Plex — it just became visible because Plex match results were the first new-since-page-load data users noticed missing. No data-model or endpoint changes.
+
+**Amendment 2 (2026-07-09):** the `plex_base_url` Settings field initially shipped masked (`type: 'password'`), matching every other string field in the Settings table's existing (and previously universal) convention. Changed to a plain `type: 'text'` input on request, since a LAN host:port isn't a secret and masking made it hard to proofread while typing. This required adding a `'text'` variant to `SettingRow`'s `type` union (previously `'password' | 'number' | 'boolean'`) and a corresponding branch in the input-rendering logic. `plex_token` is unchanged — still masked, since it is a credential.
+
 ---
 
 ## Overview
