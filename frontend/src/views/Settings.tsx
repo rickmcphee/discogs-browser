@@ -6,7 +6,7 @@ interface SettingRow {
   key: keyof SettingsType
   label: string
   description: string
-  type: 'password' | 'number' | 'boolean'
+  type: 'password' | 'text' | 'number' | 'boolean'
   placeholder?: string
 }
 
@@ -36,7 +36,7 @@ const SETTING_ROWS: SettingRow[] = [
     key: 'plex_base_url',
     label: 'Plex server address',
     description: 'Host and port of your Plex Media Server on the LAN, e.g. 192.168.1.50:32400.',
-    type: 'password',
+    type: 'text',
     placeholder: '192.168.1.50:32400',
   },
   {
@@ -240,7 +240,7 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
                     />
                   ) : (
                     <input
-                      type="password"
+                      type={row.type === 'text' ? 'text' : 'password'}
                       value={settings[row.key] as string}
                       placeholder={row.placeholder}
                       onChange={(e) =>
