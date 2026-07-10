@@ -10,9 +10,10 @@ interface Props {
   crawlEvents?: CrawlEvent[]
   crawlers?: Crawler[]
   syncing?: boolean
+  plexAvailable?: boolean
 }
 
-export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawlingReleaseId, crawlEvents, crawlers = [], syncing }: Props) {
+export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawlingReleaseId, crawlEvents, crawlers = [], syncing, plexAvailable }: Props) {
   const [releases, setReleases] = useState<Release[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -24,6 +25,9 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
   const [loading, setLoading] = useState(false)
   const [viewMode, setViewMode] = useState<'list' | 'tiles'>(
     () => (localStorage.getItem(`collectionViewMode_${scope}`) === 'tiles' ? 'tiles' : 'list')
+  )
+  const [filter, setFilter] = useState<'all' | 'no_plex'>(
+    () => (localStorage.getItem('collectionFilter') === 'no_plex' ? 'no_plex' : 'all')
   )
   const PER_PAGE = 250
 
@@ -83,21 +87,26 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
         page,
         per_page: PER_PAGE,
         scope,
+        no_plex: filter === 'no_plex',
       })
       setReleases(result.releases)
       setTotal(result.total)
     } finally {
       setLoading(false)
     }
-  }, [search, selectedArtist, sort, order, page, scope])
+  }, [search, selectedArtist, sort, order, page, scope, filter])
 
   useEffect(() => { load() }, [load])
   useEffect(() => {
     if (wasSyncing.current && !syncing) load()
     wasSyncing.current = !!syncing
   }, [syncing, load])
-  useEffect(() => { getArtists(scope).then(setArtists) }, [scope])
+  useEffect(() => { getArtists(scope, filter === 'no_plex').then(setArtists) }, [scope, filter])
   useEffect(() => { localStorage.setItem(`collectionViewMode_${scope}`, viewMode) }, [viewMode, scope])
+  useEffect(() => {
+    if (!plexAvailable && filter === 'no_plex') setFilter('all')
+  }, [plexAvailable, filter])
+  useEffect(() => { localStorage.setItem('collectionFilter', filter) }, [filter])
 
   function toggleSort(field: SortField) {
     if (sort === field) {
@@ -157,6 +166,16 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
           </div>
           <span className="ml-3 text-xs text-gray-500">{total} records</span>
           <div className="ml-auto flex items-center gap-1">
+            {scope === 'collection' && (
+              <select
+                value={filter}
+                onChange={(e) => { setFilter(e.target.value as 'all' | 'no_plex'); setPage(1) }}
+                className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-indigo-500 mr-1"
+              >
+                <option value="all">All</option>
+                <option value="no_plex" disabled={!plexAvailable}>No Plex</option>
+              </select>
+            )}
             <button
               onClick={() => setViewMode('list')}
               title="List view"
