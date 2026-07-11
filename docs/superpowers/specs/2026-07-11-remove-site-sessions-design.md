@@ -1,6 +1,6 @@
 # Remove Site Sessions — Design Spec
 
-_2026-07-11_
+_2026-07-11, amended 2026-07-11 to match what actually shipped (`backend/Dockerfile` and the CLAUDE.md app-auth invariant reword)_
 
 ---
 
@@ -45,7 +45,7 @@ Net effect: no filesystem state for browser sessions at all. `browser_state.json
 
 - `backend/db.py` (`get_all_crawlers`) — remove the `d["login_url"] = ...` assignment in both the success and exception branches.
 - `frontend/src/api/types.ts` — remove `login_url` from the `Crawler` type.
-- `CLAUDE.md` — remove `login_url: str | None  # optional` from the documented plugin interface; remove the "Login flow is macOS-only" invariant (goes away entirely); remove `browser_state.json` and `chrome_profile/` from the data-directory tree.
+- `CLAUDE.md` — remove `login_url: str | None  # optional` from the documented plugin interface; remove the "Login flow is macOS-only" invariant (goes away entirely); reword the "App authentication is single-owner" invariant to drop its cross-reference to the now-deleted `crawler_auth.py`; remove `browser_state.json` and `chrome_profile/` from the data-directory tree.
 
 Historical specs/plans (`docs/superpowers/specs/2026-06-27-discogs-browser-design.md` and others) that describe the old feature are left as-is — they're a record of what was built at the time, and this spec supersedes those sections going forward.
 
@@ -64,6 +64,7 @@ Test fixtures with an inline `login_url: null` mock (`frontend/src/test/staleLis
 
 - `README.md` — remove the `HEADLESS_AUTH` row from the env var table.
 - `docker-compose.yml` — remove `HEADLESS_AUTH: "1"` from the backend service environment.
+- `backend/Dockerfile` — remove `ENV HEADLESS_AUTH=1` (missed in the initial pass; found and folded in during Task 1 of implementation).
 
 ## Testing
 
