@@ -12,7 +12,6 @@ SCREENSHOTS_DIR = CONFIG_DIR / "screenshots"
 # "" in env → None → bundled Chromium (Docker); unset → "chrome" → real Chrome (local dev)
 _channel_env = os.environ.get("PLAYWRIGHT_CHANNEL", "chrome")
 PLAYWRIGHT_CHANNEL = _channel_env if _channel_env else None  # None → bundled Chromium
-HEADLESS_AUTH: bool = os.environ.get("HEADLESS_AUTH", "").lower() in ("1", "true", "yes")
 
 
 def ensure_dirs():
