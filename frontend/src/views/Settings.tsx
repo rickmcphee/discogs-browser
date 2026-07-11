@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { getSettings, saveSettings, setCrawlerEnabled, getAuthStatus, startLogin, finishLogin, clearAuthState, changePassword, logout } from '../api/client'
+import { getSettings, saveSettings, setCrawlerEnabled, changePassword, logout } from '../api/client'
 import type { Settings as SettingsType, Crawler } from '../api/types'
 
 interface SettingRow {
@@ -118,8 +118,6 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
   })
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
-  const [authStatus, setAuthStatus] = useState<{ active: boolean; active_site: string | null; has_state: boolean; state_mtime: number | null }>({ active: false, active_site: null, has_state: false, state_mtime: null })
-  const [authWorking, setAuthWorking] = useState(false)
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [authCode, setAuthCode] = useState('')
@@ -130,34 +128,7 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
 
   useEffect(() => {
     getSettings().then(setSettings)
-    getAuthStatus().then(setAuthStatus)
   }, [])
-
-  async function handleLogin(site_name: string, login_url: string) {
-    setAuthWorking(true)
-    try {
-      await startLogin(site_name, login_url)
-      setAuthStatus((s) => ({ ...s, active: true, active_site: site_name }))
-    } finally {
-      setAuthWorking(false)
-    }
-  }
-
-  async function handleDone() {
-    setAuthWorking(true)
-    try {
-      await finishLogin()
-      const status = await getAuthStatus()
-      setAuthStatus(status)
-    } finally {
-      setAuthWorking(false)
-    }
-  }
-
-  async function handleClearAuth() {
-    await clearAuthState()
-    setAuthStatus((s) => ({ ...s, has_state: false, state_mtime: null }))
-  }
 
   async function handleSave() {
     setSaving(true)
@@ -258,71 +229,6 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
           </tbody>
         </table>
       </section>
-
-      {/* Site Sessions */}
-      {crawlers.some((c) => c.login_url) && (
-        <section>
-          <h2 className="text-lg font-semibold text-white mb-1 text-left">Site Sessions</h2>
-          <p className="text-sm text-gray-500 mb-4 text-left">
-            Log in to a site in a real browser window so crawls run as an authenticated user, reducing bot detection.
-            All site sessions are stored in a shared browser state file.
-          </p>
-          <table className="w-full text-sm border-collapse">
-            <thead>
-              <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-800">
-                <th className="text-left py-2 pr-4 w-40">Site</th>
-                <th className="text-left py-2">Login</th>
-              </tr>
-            </thead>
-            <tbody>
-              {crawlers.filter((c) => c.login_url).map((c) => {
-                const isActive = authStatus.active && authStatus.active_site === c.site_name
-                const otherActive = authStatus.active && authStatus.active_site !== c.site_name
-                return (
-                  <tr key={c.id} className="border-b border-gray-800/50">
-                    <td className="py-3 pr-4 text-left text-gray-200 font-medium align-middle">
-                      {c.base_url
-                        ? <a href={c.base_url} target="_blank" rel="noreferrer" className="text-indigo-400 hover:text-indigo-300 underline">{c.site_name}</a>
-                        : c.site_name}
-                    </td>
-                    <td className="py-3 text-left">
-                      <div className="flex items-center gap-3">
-                        {isActive ? (
-                          <button
-                            onClick={handleDone}
-                            disabled={authWorking}
-                            className="px-3 py-1 bg-green-600 hover:bg-green-500 disabled:opacity-50 rounded text-xs font-medium transition-colors"
-                          >
-                            {authWorking ? 'Saving…' : 'Done — Save Session'}
-                          </button>
-                        ) : (
-                          <button
-                            onClick={() => handleLogin(c.site_name, c.login_url!)}
-                            disabled={authWorking || otherActive}
-                            className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded text-xs font-medium transition-colors"
-                          >
-                            {authWorking && authStatus.active_site === c.site_name ? 'Opening…' : `Login to ${c.site_name}`}
-                          </button>
-                        )}
-                        {isActive ? (
-                          <span className="text-xs text-yellow-400">Browser open — log in, then click Done.</span>
-                        ) : authStatus.has_state && authStatus.state_mtime ? (
-                          <>
-                            <span className="text-xs text-green-400">Session saved {new Date(authStatus.state_mtime * 1000).toLocaleString()}</span>
-                            <button onClick={handleClearAuth} className="text-xs text-gray-600 hover:text-red-400 transition-colors">Clear</button>
-                          </>
-                        ) : (
-                          <span className="text-xs text-gray-600">No saved session</span>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </section>
-      )}
 
       {/* Collection Management */}
       <section>

@@ -12,8 +12,8 @@ vi.mock('../api/client', () => ({
 }))
 
 const CRAWLERS: Crawler[] = [
-  { id: 1, site_name: 'Amazon', module_path: '', crawler_type: 'release', enabled: true, last_run: null, base_url: null, login_url: null },
-  { id: 2, site_name: 'Epitaph', module_path: '', crawler_type: 'catalog', enabled: true, last_run: null, base_url: null, login_url: null },
+  { id: 1, site_name: 'Amazon', module_path: '', crawler_type: 'release', enabled: true, last_run: null, base_url: null },
+  { id: 2, site_name: 'Epitaph', module_path: '', crawler_type: 'catalog', enabled: true, last_run: null, base_url: null },
 ]
 
 beforeEach(() => {

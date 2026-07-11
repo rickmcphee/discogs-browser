@@ -37,7 +37,6 @@ export interface Crawler {
   enabled: boolean
   last_run: string | null
   base_url: string | null
-  login_url: string | null
 }
 
 export interface Settings {
