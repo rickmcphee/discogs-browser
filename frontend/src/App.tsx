@@ -10,11 +10,19 @@ import type { CrawlEvent, CrawlStatus, CollectionStatus, Crawler, AuthState } fr
 
 type View = 'collection' | 'wishlist' | 'instock' | 'settings' | 'logs'
 
+// SSE reconnects (including on browser refresh) replay every buffered event from
+// crawl_manager._recent, so a banner's dismissal has to survive across that replay.
+// Each broadcast event carries a monotonic `id`; we persist the id of the last-dismissed
+// event and only show a banner when the current event's id is newer than that.
+const DISMISSED_SYNC_KEY = 'discogs-browser.dismissedSyncEventId'
+const DISMISSED_CRAWL_KEY = 'discogs-browser.dismissedCrawlEventId'
+
 export default function App() {
   const [view, setView] = useState<View>('collection')
   const [crawlEvents, setCrawlEvents] = useState<CrawlEvent[]>([])
   const [crawling, setCrawling] = useState(false)
-  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [crawlBannerId, setCrawlBannerId] = useState(0)
+  const [dismissedCrawlId, setDismissedCrawlId] = useState(() => Number(localStorage.getItem(DISMISSED_CRAWL_KEY) ?? 0))
   const [crawlCurrent, setCrawlCurrent] = useState<CrawlEvent | null>(null)
   const [crawlCount, setCrawlCount] = useState(0)
   const [crawlTotal, setCrawlTotal] = useState(0)
@@ -29,8 +37,17 @@ export default function App() {
   const [judgmentRunning, setJudgmentRunning] = useState(false)
   const [serverReady, setServerReady] = useState(false)
   const [syncMessage, setSyncMessage] = useState<string | null>(null)
+  const [syncMessageId, setSyncMessageId] = useState<number | null>(null)
+  const [dismissedSyncId, setDismissedSyncId] = useState(() => Number(localStorage.getItem(DISMISSED_SYNC_KEY) ?? 0))
   const [syncing, setSyncing] = useState(false)
   const [authState, setAuthState] = useState<AuthState | null>(null)
+
+  // eventId is null for locally-generated messages (button-click failures) that never
+  // survive a refresh and so never need replay suppression; those always show.
+  function setSyncStatus(message: string, eventId: number | null = null) {
+    setSyncMessage(message)
+    setSyncMessageId(eventId)
+  }
 
   // Poll /api/health until the backend is up, then load initial data.
   useEffect(() => {
@@ -71,86 +88,86 @@ export default function App() {
       if (event.status === 'ping') return
       if (event.status === 'sync_started') {
         setSyncing(true)
-        setSyncMessage('Syncing collection…')
+        setSyncStatus('Syncing collection…', event.id ?? null)
         return
       }
       if (event.status === 'sync_progress') {
-        setSyncMessage(`Syncing collection… ${event.synced} records (page ${event.page}/${event.total_pages})`)
+        setSyncStatus(`Syncing collection… ${event.synced} records (page ${event.page}/${event.total_pages})`, event.id ?? null)
         return
       }
       if (event.status === 'sync_complete') {
         setSyncing(false)
         const wishlistPart = event.wishlist_synced != null ? `, ${event.wishlist_synced} wishlist items` : ''
-        setSyncMessage(`Synced ${event.synced} records for ${event.username}${wishlistPart}`)
+        setSyncStatus(`Synced ${event.synced} records for ${event.username}${wishlistPart}`, event.id ?? null)
         return
       }
       if (event.status === 'sync_error') {
         setSyncing(false)
-        setSyncMessage(`Sync failed: ${event.error}`)
+        setSyncStatus(`Sync failed: ${event.error}`, event.id ?? null)
         return
       }
       if (event.status === 'plex_match_started') {
-        setSyncMessage('Matching collection against Plex…')
+        setSyncStatus('Matching collection against Plex…', event.id ?? null)
         return
       }
       if (event.status === 'plex_match_progress') {
-        setSyncMessage(`Matching collection against Plex… ${event.matched}/${event.total}`)
+        setSyncStatus(`Matching collection against Plex… ${event.matched}/${event.total}`, event.id ?? null)
         return
       }
       if (event.status === 'plex_match_complete') {
-        setSyncMessage(`Plex match complete — ${event.matched} matched`)
+        setSyncStatus(`Plex match complete — ${event.matched} matched`, event.id ?? null)
         return
       }
       if (event.status === 'plex_match_error') {
-        setSyncMessage(`Plex match failed: ${event.error}`)
+        setSyncStatus(`Plex match failed: ${event.error}`, event.id ?? null)
         return
       }
       if (event.status === 'stock_sync_started') {
         setSyncing(true)
-        setSyncMessage('Syncing in-stock catalog…')
+        setSyncStatus('Syncing in-stock catalog…', event.id ?? null)
         return
       }
       if (event.status === 'stock_sync_progress') {
-        setSyncMessage(`Syncing in-stock catalog… ${event.synced} items (${event.source})`)
+        setSyncStatus(`Syncing in-stock catalog… ${event.synced} items (${event.source})`, event.id ?? null)
         return
       }
       if (event.status === 'stock_sync_complete') {
         setSyncing(false)
-        setSyncMessage(`In-stock sync complete: ${event.synced} items`)
+        setSyncStatus(`In-stock sync complete: ${event.synced} items`, event.id ?? null)
         return
       }
       if (event.status === 'stock_sync_error') {
         setSyncing(false)
-        setSyncMessage(`In-stock sync failed: ${event.error}`)
+        setSyncStatus(`In-stock sync failed: ${event.error}`, event.id ?? null)
         return
       }
       if (event.status === 'stock_judgment_started') {
         setSyncing(true)
         setJudgmentRunning(true)
-        setSyncMessage('Finding recommendations for Store items…')
+        setSyncStatus('Finding recommendations for Store items…', event.id ?? null)
         return
       }
       if (event.status === 'stock_judgment_progress') {
-        setSyncMessage(`Finding recommendations for Store items… ${event.judged}/${event.total}`)
+        setSyncStatus(`Finding recommendations for Store items… ${event.judged}/${event.total}`, event.id ?? null)
         return
       }
       if (event.status === 'stock_judgment_complete') {
         setSyncing(false)
         setJudgmentRunning(false)
         setHasJudgedItems(true)
-        setSyncMessage(`Finished finding recommendations — ${event.judged} items checked`)
+        setSyncStatus(`Finished finding recommendations — ${event.judged} items checked`, event.id ?? null)
         return
       }
       if (event.status === 'stock_judgment_error') {
         setSyncing(false)
         setJudgmentRunning(false)
-        setSyncMessage(`Finding recommendations failed: ${event.error}`)
+        setSyncStatus(`Finding recommendations failed: ${event.error}`, event.id ?? null)
         return
       }
       if (event.status === 'started') {
         setCrawlTotal(event.total ?? 0)
         setCrawling(true)
-        setDrawerOpen(true)
+        setCrawlBannerId(event.id ?? 0)
         setCrawlEvents([])
         setCrawlCount(0)
         setCrawlCurrent(null)
@@ -212,7 +229,7 @@ export default function App() {
     try {
       await refreshCollection(mode)
     } catch (e: any) {
-      setSyncMessage(`Sync failed: ${e.message}`)
+      setSyncStatus(`Sync failed: ${e.message}`)
     }
   }
 
@@ -249,7 +266,7 @@ export default function App() {
     try {
       await postStockSyncStart()
     } catch (e: any) {
-      setSyncMessage(`In-stock sync failed to start: ${e.message}`)
+      setSyncStatus(`In-stock sync failed to start: ${e.message}`)
     }
   }
 
@@ -257,7 +274,7 @@ export default function App() {
     try {
       await postJudgmentStart()
     } catch (e: any) {
-      setSyncMessage(`Refresh recommendations failed to start: ${e.message}`)
+      setSyncStatus(`Refresh recommendations failed to start: ${e.message}`)
     }
   }
 
@@ -271,7 +288,7 @@ export default function App() {
       a.click()
       URL.revokeObjectURL(url)
     } catch (e: any) {
-      setSyncMessage(`Export recommendations failed: ${e.message}`)
+      setSyncStatus(`Export recommendations failed: ${e.message}`)
     }
   }
 
@@ -282,13 +299,13 @@ export default function App() {
     try {
       const result = await clearJudgments()
       if (!result.cleared) {
-        setSyncMessage('Cannot clear recommendations while a sync or recommendation run is in progress')
+        setSyncStatus('Cannot clear recommendations while a sync or recommendation run is in progress')
         return
       }
       setHasJudgedItems(false)
-      setSyncMessage(`Cleared ${result.count} recommendation judgments`)
+      setSyncStatus(`Cleared ${result.count} recommendation judgments`)
     } catch (e: any) {
-      setSyncMessage(`Clear recommendations failed: ${e.message}`)
+      setSyncStatus(`Clear recommendations failed: ${e.message}`)
     }
   }
 
@@ -303,6 +320,21 @@ export default function App() {
   }
 
   const recommendedAvailable = hasAnthropicKey && hasJudgedItems && !judgmentRunning
+  const syncBannerVisible = syncMessage !== null && (syncMessageId === null || syncMessageId > dismissedSyncId)
+  const crawlBannerVisible = crawlBannerId > dismissedCrawlId
+
+  function dismissSyncMessage() {
+    if (syncMessageId !== null) {
+      localStorage.setItem(DISMISSED_SYNC_KEY, String(syncMessageId))
+      setDismissedSyncId(syncMessageId)
+    }
+    setSyncMessage(null)
+  }
+
+  function dismissCrawlBanner() {
+    localStorage.setItem(DISMISSED_CRAWL_KEY, String(crawlBannerId))
+    setDismissedCrawlId(crawlBannerId)
+  }
 
   return (
     <div className="h-screen bg-gray-950 text-gray-100 flex flex-col overflow-hidden">
@@ -484,7 +516,7 @@ export default function App() {
       )}
 
       {/* Collection sync status bar */}
-      {syncMessage && (
+      {syncBannerVisible && (
         <div className="fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-700 px-4 py-2 flex items-center gap-3">
           <span className="text-sm font-medium text-gray-300 shrink-0">
             {syncMessage}
@@ -494,7 +526,7 @@ export default function App() {
           )}
           {!syncing && (
             <button
-              onClick={() => setSyncMessage(null)}
+              onClick={dismissSyncMessage}
               className="ml-auto text-gray-400 hover:text-white text-sm shrink-0"
             >
               Dismiss
@@ -504,7 +536,7 @@ export default function App() {
       )}
 
       {/* Crawl status bar */}
-      {drawerOpen && !syncMessage && (
+      {crawlBannerVisible && !syncBannerVisible && (
         <div className="fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-700 px-4 py-2 flex items-center gap-3">
           <span className="text-sm font-medium text-gray-300 shrink-0">
             {crawling ? 'Refreshing prices…' : 'Done'}
@@ -519,7 +551,7 @@ export default function App() {
           )}
           {!crawling && (
             <button
-              onClick={() => setDrawerOpen(false)}
+              onClick={dismissCrawlBanner}
               className="ml-auto text-gray-400 hover:text-white text-sm shrink-0"
             >
               Dismiss
