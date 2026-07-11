@@ -13,6 +13,7 @@ class CrawlManager:
         self._judgment_task: Optional[asyncio.Task] = None
         self._subscribers: list[asyncio.Queue] = []
         self._recent: list[dict] = []
+        self._seq = 0
 
     @property
     def running(self) -> bool:
@@ -50,6 +51,8 @@ class CrawlManager:
         await self._broadcast({"status": "stopped"})
 
     async def _broadcast(self, event: dict):
+        self._seq += 1
+        event["id"] = self._seq
         self._recent.append(event)
         if len(self._recent) > 500:
             self._recent = self._recent[-500:]

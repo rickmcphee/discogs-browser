@@ -18,7 +18,7 @@ async def test_subscribe_receives_broadcast(manager):
     q = manager.subscribe()
     await manager._broadcast({"status": "test"})
     event = q.get_nowait()
-    assert event == {"status": "test"}
+    assert event == {"status": "test", "id": 1}
 
 
 async def test_unsubscribe_stops_delivery(manager):
@@ -32,8 +32,8 @@ async def test_multiple_subscribers_all_receive(manager):
     q1 = manager.subscribe()
     q2 = manager.subscribe()
     await manager._broadcast({"status": "ping"})
-    assert q1.get_nowait() == {"status": "ping"}
-    assert q2.get_nowait() == {"status": "ping"}
+    assert q1.get_nowait() == {"status": "ping", "id": 1}
+    assert q2.get_nowait() == {"status": "ping", "id": 1}
 
 
 async def test_recent_events_buffer(manager):
@@ -41,7 +41,7 @@ async def test_recent_events_buffer(manager):
         await manager._broadcast({"n": i})
     events = manager.recent_events()
     assert len(events) == 3
-    assert events[-1] == {"n": 2}
+    assert events[-1] == {"n": 2, "id": 3}
 
 
 async def test_recent_events_capped_at_500(manager):
@@ -428,7 +428,7 @@ async def test_run_judgment_phase_broadcasts_complete_when_nothing_unjudged(mana
     statuses = [e["status"] for e in manager.recent_events()]
     assert statuses == ["stock_judgment_started", "stock_judgment_complete"]
     events = [e for e in manager.recent_events() if e["status"] == "stock_judgment_complete"]
-    assert events == [{"status": "stock_judgment_complete", "judged": 0}]
+    assert events == [{"status": "stock_judgment_complete", "judged": 0, "id": 2}]
     assert any("nothing to do" in r.message for r in caplog.records)
     conn.close()
 

@@ -70,6 +70,7 @@ function getLastCrawlSource() {
 beforeEach(() => {
   MockEventSource.instances = []
   vi.clearAllMocks()
+  localStorage.clear()
 })
 
 async function clickRefreshAndGetSource() {
@@ -83,7 +84,7 @@ describe('crawl status bar', () => {
   it('shows "Refreshing prices…" after a per-row refresh is clicked', async () => {
     render(<App />)
     const src = await clickRefreshAndGetSource()
-    src.emit({ status: 'started', total: 1 })
+    src.emit({ status: 'started', total: 1, id: 1 })
     await waitFor(() =>
       expect(screen.getByText(/Refreshing prices/i)).toBeInTheDocument()
     )
@@ -92,7 +93,7 @@ describe('crawl status bar', () => {
   it('shows artist, title, and site from the current crawl event', async () => {
     render(<App />)
     const src = await clickRefreshAndGetSource()
-    src.emit({ status: 'started', total: 2 })
+    src.emit({ status: 'started', total: 2, id: 1 })
     src.emit({ status: 'found', discogs_id: 'r1', release: 'The Wall', artist: 'Pink Floyd', site: 'Amazon', price: 24.99 })
 
     await waitFor(() => expect(screen.getByText('Pink Floyd — The Wall')).toBeInTheDocument())
@@ -102,7 +103,7 @@ describe('crawl status bar', () => {
   it('shows X/total progress count', async () => {
     render(<App />)
     const src = await clickRefreshAndGetSource()
-    src.emit({ status: 'started', total: 4 })
+    src.emit({ status: 'started', total: 4, id: 1 })
     src.emit({ status: 'not_found', discogs_id: 'r1', release: 'Wish You Were Here', artist: 'Pink Floyd', site: 'Amazon' })
 
     await waitFor(() => expect(screen.getByText(/1\/4/)).toBeInTheDocument())
@@ -111,8 +112,8 @@ describe('crawl status bar', () => {
   it('shows Done and Dismiss when complete', async () => {
     render(<App />)
     const src = await clickRefreshAndGetSource()
-    src.emit({ status: 'started', total: 1 })
-    src.emit({ status: 'complete' })
+    src.emit({ status: 'started', total: 1, id: 1 })
+    src.emit({ status: 'complete', id: 2 })
 
     await waitFor(() => expect(screen.getByText('Done')).toBeInTheDocument())
     expect(screen.getByRole('button', { name: /Dismiss/i })).toBeInTheDocument()
@@ -121,12 +122,34 @@ describe('crawl status bar', () => {
   it('hides the status bar after Dismiss', async () => {
     render(<App />)
     const src = await clickRefreshAndGetSource()
-    src.emit({ status: 'started', total: 1 })
-    src.emit({ status: 'complete' })
+    src.emit({ status: 'started', total: 1, id: 1 })
+    src.emit({ status: 'complete', id: 2 })
 
     await waitFor(() => screen.getByRole('button', { name: /Dismiss/i }))
     fireEvent.click(screen.getByRole('button', { name: /Dismiss/i }))
 
+    expect(screen.queryByText('Done')).not.toBeInTheDocument()
+  })
+
+  it('does not resurrect a dismissed banner when a refresh replays the same buffered events', async () => {
+    const { unmount } = render(<App />)
+    const src = await clickRefreshAndGetSource()
+    src.emit({ status: 'started', total: 1, id: 1 })
+    src.emit({ status: 'complete', id: 2 })
+
+    await waitFor(() => screen.getByRole('button', { name: /Dismiss/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Dismiss/i }))
+    unmount()
+
+    // A browser refresh remounts the app and opens a fresh SSE connection, which
+    // replays every buffered event — including the one just dismissed.
+    render(<App />)
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    const replaySrc = MockEventSource.instances[MockEventSource.instances.length - 1]
+    replaySrc.emit({ status: 'started', total: 1, id: 1 })
+    replaySrc.emit({ status: 'complete', id: 2 })
+
+    await waitFor(() => expect(screen.getByText('Collection')).toBeInTheDocument())
     expect(screen.queryByText('Done')).not.toBeInTheDocument()
   })
 })

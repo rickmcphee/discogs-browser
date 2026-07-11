@@ -64,6 +64,7 @@ export type SortOrder = 'asc' | 'desc'
 export type RecordScope = 'collection' | 'wishlist'
 
 export interface CrawlEvent {
+  id?: number
   status?: 'found' | 'not_found' | 'error' | 'complete' | 'started' | 'stopped' | 'ping'
     | 'sync_started' | 'sync_progress' | 'sync_complete' | 'sync_error'
     | 'stock_sync_started' | 'stock_sync_progress' | 'stock_sync_complete' | 'stock_sync_error'

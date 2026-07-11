@@ -68,6 +68,7 @@ const defaultSettings = {
 beforeEach(() => {
   MockEventSource.instances = []
   vi.clearAllMocks()
+  localStorage.clear()
   postStockSyncStart.mockResolvedValue({ started: true, running: true })
   postJudgmentStart.mockResolvedValue({ started: true, running: true })
   clearJudgments.mockResolvedValue({ cleared: true, running: false, count: 7 })
@@ -99,7 +100,7 @@ describe('In Stock tab', () => {
     render(<App />)
     await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
     const source = getLastCrawlSource()
-    source.emit({ status: 'stock_sync_progress', synced: 3, source: 'Nuclear Blast' })
+    source.emit({ status: 'stock_sync_progress', synced: 3, source: 'Nuclear Blast', id: 1 })
     await waitFor(() => expect(screen.getByText(/Syncing in-stock catalog… 3 items \(Nuclear Blast\)/)).toBeInTheDocument())
   })
 
@@ -107,8 +108,28 @@ describe('In Stock tab', () => {
     render(<App />)
     await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
     const source = getLastCrawlSource()
-    source.emit({ status: 'stock_sync_complete', synced: 12 })
+    source.emit({ status: 'stock_sync_complete', synced: 12, id: 1 })
     await waitFor(() => expect(screen.getByText(/In-stock sync complete: 12 items/)).toBeInTheDocument())
+  })
+
+  it('does not resurrect a dismissed in-stock sync message when a refresh replays the same buffered event', async () => {
+    const { unmount } = render(<App />)
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    getLastCrawlSource().emit({ status: 'stock_sync_complete', synced: 12, id: 1 })
+    await waitFor(() => expect(screen.getByText(/In-stock sync complete: 12 items/)).toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole('button', { name: /Dismiss/i }))
+    expect(screen.queryByText(/In-stock sync complete: 12 items/)).not.toBeInTheDocument()
+    unmount()
+
+    // A browser refresh remounts the app and opens a fresh SSE connection, which
+    // replays every buffered event — including the one just dismissed.
+    render(<App />)
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    getLastCrawlSource().emit({ status: 'stock_sync_complete', synced: 12, id: 1 })
+
+    await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
+    expect(screen.queryByText(/In-stock sync complete: 12 items/)).not.toBeInTheDocument()
   })
 
   it('surfaces stock_judgment_started events in the bottom status bar', async () => {
@@ -123,7 +144,7 @@ describe('In Stock tab', () => {
     render(<App />)
     await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
     const source = getLastCrawlSource()
-    source.emit({ status: 'stock_judgment_progress', judged: 5, total: 40 })
+    source.emit({ status: 'stock_judgment_progress', judged: 5, total: 40, id: 1 })
     await waitFor(() => expect(screen.getByText(/Finding recommendations for Store items… 5\/40/)).toBeInTheDocument())
   })
 
@@ -131,7 +152,7 @@ describe('In Stock tab', () => {
     render(<App />)
     await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
     const source = getLastCrawlSource()
-    source.emit({ status: 'stock_judgment_complete', judged: 12 })
+    source.emit({ status: 'stock_judgment_complete', judged: 12, id: 1 })
     await waitFor(() => expect(screen.getByText(/Finished finding recommendations — 12 items checked/)).toBeInTheDocument())
   })
 
@@ -139,7 +160,7 @@ describe('In Stock tab', () => {
     render(<App />)
     await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
     const source = getLastCrawlSource()
-    source.emit({ status: 'stock_judgment_error', error: 'boom' })
+    source.emit({ status: 'stock_judgment_error', error: 'boom', id: 1 })
     await waitFor(() => expect(screen.getByText(/Finding recommendations failed: boom/)).toBeInTheDocument())
   })
 
