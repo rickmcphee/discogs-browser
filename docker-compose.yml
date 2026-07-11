@@ -6,7 +6,6 @@ services:
     environment:
       DISCOGS_BROWSER_DATA: /data
       PLAYWRIGHT_CHANNEL: ""
-      HEADLESS_AUTH: "1"
     restart: unless-stopped
 
   frontend:
