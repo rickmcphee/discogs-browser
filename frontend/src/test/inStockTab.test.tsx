@@ -86,13 +86,13 @@ describe('In Stock tab', () => {
     await waitFor(() => expect(storeButton.className).toContain('bg-indigo-600'))
   })
 
-  it('calls postStockSyncStart when Refresh Now is clicked in Settings', async () => {
+  it('calls postStockSyncStart when Refresh is clicked in Settings', async () => {
     render(<App />)
     await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     const description = await screen.findByText('Scan all enabled catalog crawlers immediately.')
     const row = description.closest('tr') as HTMLElement
-    fireEvent.click(within(row).getByText('Refresh Now'))
+    fireEvent.click(within(row).getByText('Refresh'))
     await waitFor(() => expect(postStockSyncStart).toHaveBeenCalled())
   })
 
@@ -164,40 +164,42 @@ describe('In Stock tab', () => {
     await waitFor(() => expect(screen.getByText(/Finding recommendations failed: boom/)).toBeInTheDocument())
   })
 
-  it('calls postJudgmentStart when Refresh Recommendations is clicked in Settings', async () => {
+  it('calls postJudgmentStart when Refresh is clicked in the Store Recommendations section', async () => {
     getSettings.mockResolvedValue({ ...defaultSettings, anthropic_api_key: 'sk-ant-test' })
     render(<App />)
     await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    await waitFor(() => expect(screen.getByText('Refresh Recommendations')).toBeInTheDocument())
-    fireEvent.click(screen.getByText('Refresh Recommendations'))
+    const description = await screen.findByText('Evaluate unprocessed Store items for recommendation, without a full catalog re-crawl.')
+    const row = description.closest('tr') as HTMLElement
+    fireEvent.click(within(row).getByText('Refresh'))
     await waitFor(() => expect(postJudgmentStart).toHaveBeenCalled())
   })
 
-  it('disables Export Recommendations until a judgment has completed', async () => {
+  it('disables Export until a judgment has completed', async () => {
     render(<App />)
     await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    await waitFor(() => expect(screen.getByText('Export Recommendations')).toBeInTheDocument())
-    expect(screen.getByText('Export Recommendations').closest('button')).toBeDisabled()
+    await waitFor(() => expect(screen.getByText('Export')).toBeInTheDocument())
+    expect(screen.getByText('Export').closest('button')).toBeDisabled()
   })
 
-  it('calls exportRecommendationsCsv when Export Recommendations is clicked', async () => {
+  it('calls exportRecommendationsCsv when Export is clicked', async () => {
     getJudgmentStatus.mockResolvedValue({ any_judged: true })
     render(<App />)
     await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    await waitFor(() => expect(screen.getByText('Export Recommendations').closest('button')).not.toBeDisabled())
-    fireEvent.click(screen.getByText('Export Recommendations'))
+    await waitFor(() => expect(screen.getByText('Export').closest('button')).not.toBeDisabled())
+    fireEvent.click(screen.getByText('Export'))
     await waitFor(() => expect(exportRecommendationsCsv).toHaveBeenCalled())
   })
 
-  it('disables Clear Recommendations until a judgment has completed', async () => {
+  it('disables Clear until a judgment has completed', async () => {
     render(<App />)
     await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    await waitFor(() => expect(screen.getByText('Clear Recommendations')).toBeInTheDocument())
-    expect(screen.getByText('Clear Recommendations').closest('button')).toBeDisabled()
+    const description = await screen.findByText('Remove all recommendation judgments, recommended and not-recommended, so every Store item is re-evaluated from scratch on the next run.')
+    const row = description.closest('tr') as HTMLElement
+    expect(within(row).getByText('Clear').closest('button')).toBeDisabled()
   })
 
   it('does not call clearJudgments when the confirm dialog is cancelled', async () => {
@@ -206,8 +208,10 @@ describe('In Stock tab', () => {
     render(<App />)
     await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    await waitFor(() => expect(screen.getByText('Clear Recommendations').closest('button')).not.toBeDisabled())
-    fireEvent.click(screen.getByText('Clear Recommendations'))
+    const description = await screen.findByText('Remove all recommendation judgments, recommended and not-recommended, so every Store item is re-evaluated from scratch on the next run.')
+    const row = description.closest('tr') as HTMLElement
+    await waitFor(() => expect(within(row).getByText('Clear').closest('button')).not.toBeDisabled())
+    fireEvent.click(within(row).getByText('Clear'))
     expect(window.confirm).toHaveBeenCalled()
     expect(clearJudgments).not.toHaveBeenCalled()
   })
@@ -218,8 +222,10 @@ describe('In Stock tab', () => {
     render(<App />)
     await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    await waitFor(() => expect(screen.getByText('Clear Recommendations').closest('button')).not.toBeDisabled())
-    fireEvent.click(screen.getByText('Clear Recommendations'))
+    const description = await screen.findByText('Remove all recommendation judgments, recommended and not-recommended, so every Store item is re-evaluated from scratch on the next run.')
+    const row = description.closest('tr') as HTMLElement
+    await waitFor(() => expect(within(row).getByText('Clear').closest('button')).not.toBeDisabled())
+    fireEvent.click(within(row).getByText('Clear'))
     await waitFor(() => expect(clearJudgments).toHaveBeenCalled())
     await waitFor(() => expect(screen.getByText(/Cleared 7 recommendation judgments/)).toBeInTheDocument())
   })
@@ -231,8 +237,10 @@ describe('In Stock tab', () => {
     render(<App />)
     await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    await waitFor(() => expect(screen.getByText('Clear Recommendations').closest('button')).not.toBeDisabled())
-    fireEvent.click(screen.getByText('Clear Recommendations'))
+    const description = await screen.findByText('Remove all recommendation judgments, recommended and not-recommended, so every Store item is re-evaluated from scratch on the next run.')
+    const row = description.closest('tr') as HTMLElement
+    await waitFor(() => expect(within(row).getByText('Clear').closest('button')).not.toBeDisabled())
+    fireEvent.click(within(row).getByText('Clear'))
     await waitFor(() => expect(screen.getByText(/Cannot clear recommendations while a sync or recommendation run is in progress/)).toBeInTheDocument())
   })
 
