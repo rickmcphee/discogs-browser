@@ -97,6 +97,8 @@ When making significant changes:
 
 For small iterative fixes, updating the spec after the fact is acceptable.
 
+Before opening a PR, re-check the spec and plan against what actually shipped — implementation often turns up details (a stray env var, a doc cross-reference) that get fixed in code and folded into the plan but never backported to the spec. Amend the spec if it's drifted; small amendments after the fact are normal here, not a sign something went wrong.
+
 ## Tests
 
 - `pytest-asyncio` with `asyncio_mode = "auto"` (all async tests run automatically)
