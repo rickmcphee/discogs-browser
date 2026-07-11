@@ -10,27 +10,13 @@ interface SettingRow {
   placeholder?: string
 }
 
-const SETTING_ROWS: SettingRow[] = [
+const COLLECTION_SETTING_ROWS: SettingRow[] = [
   {
     key: 'discogs_token',
     label: 'Discogs token',
     description: 'Personal access token from discogs.com/settings/developers',
     type: 'password',
     placeholder: 'your token',
-  },
-  {
-    key: 'ebay_app_id',
-    label: 'eBay App ID',
-    description: 'eBay Client ID (App ID) for Browse API access.',
-    type: 'password',
-    placeholder: 'your App ID',
-  },
-  {
-    key: 'ebay_cert_id',
-    label: 'eBay Cert ID',
-    description: 'eBay Client Secret (Cert ID) for Browse API access.',
-    type: 'password',
-    placeholder: 'your Cert ID',
   },
   {
     key: 'plex_base_url',
@@ -46,6 +32,50 @@ const SETTING_ROWS: SettingRow[] = [
     type: 'password',
     placeholder: 'your Plex token',
   },
+]
+
+const CRAWLER_SETTING_ROWS: SettingRow[] = [
+  {
+    key: 'ebay_app_id',
+    label: 'eBay Client ID',
+    description: 'eBay Client ID (App ID) for Browse API access.',
+    type: 'password',
+    placeholder: 'your App ID',
+  },
+  {
+    key: 'ebay_cert_id',
+    label: 'eBay Cert ID',
+    description: 'eBay Client Secret (Cert ID) for Browse API access.',
+    type: 'password',
+    placeholder: 'your Cert ID',
+  },
+  {
+    key: 'debug_screenshot_interval',
+    label: 'Screenshot interval',
+    description: '0 = off · 1 = every search · N = every Nth. First search always captured when > 0.',
+    type: 'number',
+  },
+  {
+    key: 'crawl_delay_seconds',
+    label: 'Crawl delay',
+    description: 'Max seconds to wait between requests during bulk crawl. Actual wait is 50–100% of this value. Single-item refreshes always use a short delay.',
+    type: 'number',
+  },
+  {
+    key: 'consecutive_failure_limit',
+    label: 'Failure limit',
+    description: 'Stop bulk crawl after this many consecutive failures (not_found or error). Only active when shuffle is on. 0 = disabled.',
+    type: 'number',
+  },
+  {
+    key: 'shuffle_crawl_order',
+    label: 'Shuffle',
+    description: 'Randomize the order records are crawled. Reduces bot detection patterns.',
+    type: 'boolean',
+  },
+]
+
+const RECOMMENDATION_SETTING_ROWS: SettingRow[] = [
   {
     key: 'anthropic_api_key',
     label: 'Anthropic API key',
@@ -58,30 +88,6 @@ const SETTING_ROWS: SettingRow[] = [
     label: 'Recommendation item limit',
     description: 'Maximum number of unprocessed Store items evaluated by Claude for recommendation each time. Extra items are evaluated on a later run. 0 = no limit.',
     type: 'number',
-  },
-  {
-    key: 'debug_screenshot_interval',
-    label: 'Screenshot interval',
-    description: '0 = off · 1 = every search · N = every Nth. First search always captured when > 0.',
-    type: 'number',
-  },
-  {
-    key: 'crawl_delay_seconds',
-    label: 'Crawl delay (s)',
-    description: 'Max seconds to wait between requests during bulk crawl. Actual wait is 50–100% of this value. Single-item refreshes always use a short delay.',
-    type: 'number',
-  },
-  {
-    key: 'consecutive_failure_limit',
-    label: 'Failure limit',
-    description: 'Stop bulk crawl after this many consecutive failures (not_found or error). Only active when shuffle is on. 0 = disabled.',
-    type: 'number',
-  },
-  {
-    key: 'shuffle_crawl_order',
-    label: 'Shuffle crawl order',
-    description: 'Randomize the order records are crawled. Reduces bot detection patterns.',
-    type: 'boolean',
   },
 ]
 
@@ -126,6 +132,53 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
   const releaseCrawlers = crawlers.filter((c) => c.crawler_type !== 'catalog')
   const catalogCrawlers = crawlers.filter((c) => c.crawler_type === 'catalog')
 
+  function renderSettingRow(row: SettingRow, first: boolean) {
+    return (
+      <tr key={row.key} className="border-b border-gray-800/50">
+        <td className={`py-3 pr-4 text-left text-gray-300 font-medium align-top whitespace-nowrap${first ? ' w-40' : ''}`}>
+          {row.label}
+        </td>
+        <td className={`py-3 pr-4 text-left align-top${first ? ' w-64' : ''}`}>
+          {row.type === 'boolean' ? (
+            <button
+              onClick={() => setSettings({ ...settings, [row.key]: !settings[row.key] })}
+              className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
+                settings[row.key]
+                  ? 'bg-green-700 hover:bg-green-600 text-white'
+                  : 'bg-gray-700 hover:bg-gray-600 text-gray-400'
+              }`}
+            >
+              {settings[row.key] ? 'On' : 'Off'}
+            </button>
+          ) : row.type === 'number' ? (
+            <input
+              type="number"
+              min={0}
+              value={settings[row.key] as number}
+              onChange={(e) =>
+                setSettings({ ...settings, [row.key]: parseInt(e.target.value) || 0 })
+              }
+              className="w-24 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-indigo-500"
+            />
+          ) : (
+            <input
+              type={row.type === 'text' ? 'text' : 'password'}
+              value={settings[row.key] as string}
+              placeholder={row.placeholder}
+              onChange={(e) =>
+                setSettings({ ...settings, [row.key]: e.target.value })
+              }
+              className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500"
+            />
+          )}
+        </td>
+        <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+          {row.description}
+        </td>
+      </tr>
+    )
+  }
+
   useEffect(() => {
     getSettings().then(setSettings)
   }, [])
@@ -161,74 +214,16 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
   return (
     <div className="max-w-3xl mx-auto p-6 space-y-10">
 
-      {/* Settings table */}
-      <section>
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-lg font-semibold text-white">Settings</h2>
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded text-sm font-medium transition-colors"
-          >
-            {saved ? '✓ Saved' : saving ? 'Saving…' : 'Save'}
-          </button>
-        </div>
-        <table className="w-full text-sm border-collapse">
-          <thead>
-            <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-800">
-              <th className="text-left py-2 pr-4 w-40 align-top">Setting</th>
-              <th className="text-left py-2 pr-4 w-64 align-top">Value</th>
-              <th className="text-left py-2 align-top">Description</th>
-            </tr>
-          </thead>
-          <tbody>
-            {SETTING_ROWS.map((row) => (
-              <tr key={row.key} className="border-b border-gray-800/50">
-                <td className="py-3 pr-4 text-left text-gray-300 font-medium align-top whitespace-nowrap">
-                  {row.label}
-                </td>
-                <td className="py-3 pr-4 text-left align-top">
-                  {row.type === 'boolean' ? (
-                    <button
-                      onClick={() => setSettings({ ...settings, [row.key]: !settings[row.key] })}
-                      className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
-                        settings[row.key]
-                          ? 'bg-green-700 hover:bg-green-600 text-white'
-                          : 'bg-gray-700 hover:bg-gray-600 text-gray-400'
-                      }`}
-                    >
-                      {settings[row.key] ? 'On' : 'Off'}
-                    </button>
-                  ) : row.type === 'number' ? (
-                    <input
-                      type="number"
-                      min={0}
-                      value={settings[row.key] as number}
-                      onChange={(e) =>
-                        setSettings({ ...settings, [row.key]: parseInt(e.target.value) || 0 })
-                      }
-                      className="w-24 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-indigo-500"
-                    />
-                  ) : (
-                    <input
-                      type={row.type === 'text' ? 'text' : 'password'}
-                      value={settings[row.key] as string}
-                      placeholder={row.placeholder}
-                      onChange={(e) =>
-                        setSettings({ ...settings, [row.key]: e.target.value })
-                      }
-                      className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500"
-                    />
-                  )}
-                </td>
-                <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
-                  {row.description}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </section>
+      <div className="flex items-center justify-between">
+        <h1 className="text-lg font-semibold text-white">Settings</h1>
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded text-sm font-medium transition-colors"
+        >
+          {saved ? '✓ Saved' : saving ? 'Saving…' : 'Save'}
+        </button>
+      </div>
 
       {/* Collection Management */}
       <section>
@@ -237,6 +232,11 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
           Sync your Discogs collection on a schedule. Leave blank to disable.
           Example: <code className="text-gray-400 font-mono">0 1 * * *</code> = 1 am daily.
         </p>
+        <table className="w-full text-sm border-collapse mb-4">
+          <tbody>
+            {COLLECTION_SETTING_ROWS.map((row, i) => renderSettingRow(row, i === 0))}
+          </tbody>
+        </table>
         <table className="w-full text-sm border-collapse">
           <tbody>
             <tr className="border-b border-gray-800/50">
@@ -295,6 +295,11 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
           Run price crawlers on a schedule. Leave blank to disable.
           Example: <code className="text-gray-400 font-mono">0 2 * * *</code> = 2 am daily.
         </p>
+        <table className="w-full text-sm border-collapse mb-4">
+          <tbody>
+            {CRAWLER_SETTING_ROWS.map((row, i) => renderSettingRow(row, i === 0))}
+          </tbody>
+        </table>
         <table className="w-full text-sm border-collapse">
           <tbody>
             <tr className="border-b border-gray-800/50">
@@ -468,13 +473,18 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
         )}
       </section>
 
-      {/* Store Recommendations */}
+      {/* Recommendations Management */}
       <section>
-        <h2 className="text-lg font-semibold text-white mb-1 text-left">Store Recommendations</h2>
+        <h2 className="text-lg font-semibold text-white mb-1 text-left">Recommendations Management</h2>
         <p className="text-sm text-gray-500 mb-4 text-left">
           Judge unprocessed Store items against your collection using Claude, then export or clear the results.
           Requires an Anthropic API key above.
         </p>
+        <table className="w-full text-sm border-collapse mb-4">
+          <tbody>
+            {RECOMMENDATION_SETTING_ROWS.map((row, i) => renderSettingRow(row, i === 0))}
+          </tbody>
+        </table>
         <table className="w-full text-sm border-collapse">
           <tbody>
             <tr className="border-b border-gray-800/50">
