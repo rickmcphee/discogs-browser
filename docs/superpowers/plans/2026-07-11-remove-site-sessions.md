@@ -727,6 +727,7 @@ git commit -m "remove-site-sessions: delete Site Sessions UI, API client calls, 
 **Files:**
 - Modify: `README.md:102`
 - Modify: `docker-compose.yml:9`
+- Modify: `backend/Dockerfile:19`
 - Modify: `CLAUDE.md`
 
 - [ ] **Step 1: Remove the `HEADLESS_AUTH` row from `README.md`**
@@ -753,7 +754,23 @@ Change to:
       PLAYWRIGHT_CHANNEL: ""
 ```
 
-- [ ] **Step 3: Update `CLAUDE.md`**
+- [ ] **Step 3: Remove `HEADLESS_AUTH` from `backend/Dockerfile`**
+
+Current (lines 17-20):
+```dockerfile
+ENV PYTHONUNBUFFERED=1
+ENV PLAYWRIGHT_CHANNEL=""
+ENV HEADLESS_AUTH=1
+ENV DISCOGS_BROWSER_DATA=/data
+```
+Change to:
+```dockerfile
+ENV PYTHONUNBUFFERED=1
+ENV PLAYWRIGHT_CHANNEL=""
+ENV DISCOGS_BROWSER_DATA=/data
+```
+
+- [ ] **Step 4: Update `CLAUDE.md`**
 
 Remove the macOS-login invariant. Current (in "Key invariants"):
 ```
@@ -811,10 +828,10 @@ class Crawler:
     def search_url(cls, release: dict) -> str: ...
 ```
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add README.md docker-compose.yml CLAUDE.md
+git add README.md docker-compose.yml backend/Dockerfile CLAUDE.md
 git commit -m "remove-site-sessions: update docs and Docker env vars"
 ```
 
