@@ -480,7 +480,6 @@ export default function App() {
       {!serverReady && (
         <div className="fixed inset-0 bg-gray-950/90 flex flex-col items-center justify-center z-50 gap-4">
           <div className="w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
-          <p className="text-gray-300 text-sm">Server is starting up…</p>
         </div>
       )}
 
