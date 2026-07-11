@@ -277,7 +277,7 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
                   onClick={() => onRefreshCollection(settings.collection_schedule_mode as 'all' | 'new' ?? 'all')}
                   className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 rounded text-xs font-medium transition-colors"
                 >
-                  Refresh Now
+                  Refresh
                 </button>
               </td>
               <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
@@ -335,7 +335,7 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
                   onClick={() => onRefreshPrices(settings.crawl_schedule_mode as 'missing' | 'all' ?? 'missing')}
                   className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 rounded text-xs font-medium transition-colors"
                 >
-                  Refresh Now
+                  Refresh
                 </button>
               </td>
               <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
@@ -417,56 +417,11 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
                   onClick={onRefreshStock}
                   className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 rounded text-xs font-medium transition-colors"
                 >
-                  Refresh Now
+                  Refresh
                 </button>
               </td>
               <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
                 Scan all enabled catalog crawlers immediately.
-              </td>
-            </tr>
-            <tr className="border-b border-gray-800/50">
-              <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
-              <td className="py-3 pr-4 text-left align-top">
-                <button
-                  onClick={onRefreshRecommendations}
-                  disabled={!settings.anthropic_api_key}
-                  className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 disabled:opacity-50 rounded text-xs font-medium transition-colors"
-                >
-                  Refresh Recommendations
-                </button>
-              </td>
-              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
-                Evaluate unprocessed Store items for recommendation, without a full catalog re-crawl. Requires an Anthropic API key above.
-              </td>
-            </tr>
-            <tr className="border-b border-gray-800/50">
-              <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
-              <td className="py-3 pr-4 text-left align-top">
-                <button
-                  onClick={onExportRecommendations}
-                  disabled={!hasJudgedItems}
-                  className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 disabled:opacity-50 rounded text-xs font-medium transition-colors"
-                >
-                  Export Recommendations
-                </button>
-              </td>
-              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
-                Download recommended Store items as CSV (artist, title, format, price, source, link, reason).
-              </td>
-            </tr>
-            <tr className="border-b border-gray-800/50">
-              <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
-              <td className="py-3 pr-4 text-left align-top">
-                <button
-                  onClick={onClearRecommendations}
-                  disabled={!hasJudgedItems}
-                  className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 disabled:opacity-50 rounded text-xs font-medium transition-colors"
-                >
-                  Clear Recommendations
-                </button>
-              </td>
-              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
-                Remove all recommendation judgments, recommended and not-recommended, so every Store item is re-evaluated from scratch on the next run.
               </td>
             </tr>
           </tbody>
@@ -511,6 +466,64 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
             </tbody>
           </table>
         )}
+      </section>
+
+      {/* Store Recommendations */}
+      <section>
+        <h2 className="text-lg font-semibold text-white mb-1 text-left">Store Recommendations</h2>
+        <p className="text-sm text-gray-500 mb-4 text-left">
+          Judge unprocessed Store items against your collection using Claude, then export or clear the results.
+          Requires an Anthropic API key above.
+        </p>
+        <table className="w-full text-sm border-collapse">
+          <tbody>
+            <tr className="border-b border-gray-800/50">
+              <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
+              <td className="py-3 pr-4 text-left align-top">
+                <button
+                  onClick={onRefreshRecommendations}
+                  disabled={!settings.anthropic_api_key}
+                  className="w-20 text-center px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 disabled:opacity-50 rounded text-xs font-medium transition-colors"
+                >
+                  Refresh
+                </button>
+              </td>
+              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                Evaluate unprocessed Store items for recommendation, without a full catalog re-crawl.
+              </td>
+            </tr>
+            <tr className="border-b border-gray-800/50">
+              <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
+              <td className="py-3 pr-4 text-left align-top">
+                <button
+                  onClick={onExportRecommendations}
+                  disabled={!hasJudgedItems}
+                  className="w-20 text-center px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 disabled:opacity-50 rounded text-xs font-medium transition-colors"
+                >
+                  Export
+                </button>
+              </td>
+              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                Download recommended Store items as CSV (artist, title, format, price, source, link, reason).
+              </td>
+            </tr>
+            <tr className="border-b border-gray-800/50">
+              <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
+              <td className="py-3 pr-4 text-left align-top">
+                <button
+                  onClick={onClearRecommendations}
+                  disabled={!hasJudgedItems}
+                  className="w-20 text-center px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 disabled:opacity-50 rounded text-xs font-medium transition-colors"
+                >
+                  Clear
+                </button>
+              </td>
+              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                Remove all recommendation judgments, recommended and not-recommended, so every Store item is re-evaluated from scratch on the next run.
+              </td>
+            </tr>
+          </tbody>
+        </table>
       </section>
 
       {/* Account & Security */}
