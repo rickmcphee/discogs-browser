@@ -10,6 +10,8 @@
 
 **Amendment 4 (2026-07-07):** performance and lifecycle work from running Amendment 3's "0 = no limit" option under real load: an event-loop-blocking fix, prompt caching on the repeated system/taste-listing content, instant status-bar feedback on run start, a tightened judgment prompt (the original criteria recommended ~39% of a 9000-item test catalog), and two new recommendation-lifecycle actions — Export and Clear. Full detail under [Amendment 4: performance, prompt tightening, and recommendation lifecycle actions](#amendment-4-2026-07-07-performance-prompt-tightening-and-recommendation-lifecycle-actions).
 
+**Amendment 5 (2026-07-11):** unrelated later work (the `settings-reorg` branch) moved `anthropic_api_key` and `recommendation_item_limit` out of the flat Settings table this spec originally placed them in — they now sit at the top of the "Recommendations Management" section (itself a rename of "Store Recommendations", split out from "Store Management" by a separate, undocumented change). The Settings-UI location notes below (under "Backend" and under "1. New setting: 'Recommendation item limit'") describe placement as it was at the time this spec was written; they are no longer accurate and are not being rewritten here — see `frontend/src/views/Settings.tsx` for current placement.
+
 ---
 
 ## Overview

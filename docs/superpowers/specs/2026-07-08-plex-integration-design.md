@@ -6,6 +6,8 @@
 
 **Amendment 2 (2026-07-09):** the `plex_base_url` Settings field initially shipped masked (`type: 'password'`), matching every other string field in the Settings table's existing (and previously universal) convention. Changed to a plain `type: 'text'` input on request, since a LAN host:port isn't a secret and masking made it hard to proofread while typing. This required adding a `'text'` variant to `SettingRow`'s `type` union (previously `'password' | 'number' | 'boolean'`) and a corresponding branch in the input-rendering logic. `plex_token` is unchanged — still masked, since it is a credential.
 
+**Amendment 3 (2026-07-11):** unrelated later work (the `settings-reorg` branch) moved `plex_base_url`/`plex_token` out of the single flat Settings table this spec describes below — they now sit at the top of the "Collection Management" section, no longer alongside `ebay_app_id`/`ebay_cert_id` (which moved to the top of "Crawler Management" instead). The placement note under "Error handling" — "No new settings-page component; `plex_base_url`/`plex_token` slot into the existing Settings table the same way `ebay_app_id`/`ebay_cert_id` do" — describes placement as it was at the time this spec was written; it is no longer accurate and is not being rewritten here. See `frontend/src/views/Settings.tsx` for current placement. The `'text'`-vs-`'password'` type convention from Amendment 2 above is unaffected — it moved with the field, not lost.
+
 ---
 
 ## Overview
