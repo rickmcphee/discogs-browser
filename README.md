@@ -99,7 +99,6 @@ docker-compose up -d
 |---|---|---|
 | `DISCOGS_BROWSER_DATA` | `~/.discogs-browser` | Data directory |
 | `PLAYWRIGHT_CHANNEL` | `"chrome"` | `""` = bundled Chromium (Docker), `"chrome"` = real Chrome |
-| `HEADLESS_AUTH` | `""` | `"1"` disables the macOS browser-launch login flow |
 | `SESSION_IDLE_SECONDS` | 7 days | Session idle timeout |
 | `SESSION_MAX_SECONDS` | 30 days | Session absolute max lifetime |
 | `LOGIN_MAX_FAILURES` | `5` | Failed login attempts before lockout |

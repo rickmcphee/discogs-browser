@@ -6,10 +6,7 @@ import re
 from pathlib import Path
 from typing import AsyncIterator
 
-from config import CRAWLERS_DIR, CONFIG_DIR, load_config, PLAYWRIGHT_CHANNEL
-
-BROWSER_STATE_FILE = CONFIG_DIR / "browser_state.json"
-CHROME_PROFILE_DIR = CONFIG_DIR / "chrome_profile"
+from config import CRAWLERS_DIR, load_config, PLAYWRIGHT_CHANNEL
 from logging_config import get_logger
 
 log = get_logger("crawler")
@@ -90,15 +87,8 @@ def load_enabled_crawlers(enabled_crawlers: list[dict]) -> list:
     return loaded
 
 
-async def _new_context(pw, stealth):
-    import json
-    CHROME_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-    log.debug("Launching Chrome with persistent profile: %s", CHROME_PROFILE_DIR)
-    context = await pw.chromium.launch_persistent_context(
-        str(CHROME_PROFILE_DIR),
-        headless=True,
-        channel=PLAYWRIGHT_CHANNEL,
-        args=["--disable-blink-features=AutomationControlled"],
+async def _new_context(browser, stealth):
+    context = await browser.new_context(
         user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                    "AppleWebKit/537.36 (KHTML, like Gecko) "
                    "Chrome/124.0.0.0 Safari/537.36",
@@ -112,28 +102,16 @@ async def _new_context(pw, stealth):
             "sec-ch-ua-platform": '"macOS"',
         },
     )
-    # Merge in any saved login session cookies
-    if BROWSER_STATE_FILE.exists():
-        try:
-            state = json.loads(BROWSER_STATE_FILE.read_text())
-            if state.get("cookies"):
-                await context.add_cookies(state["cookies"])
-                log.info("Loaded %d cookies from browser state", len(state["cookies"]))
-        except Exception as e:
-            log.warning("Could not load browser state cookies: %s", e)
     page = await context.new_page()
     await stealth.apply_stealth_async(page)
     return context, page
 
 
-async def _reset_context(context, pw, stealth, screenshotter):
-    log.warning("Bot detected — resetting browser context and clearing session state")
-    if BROWSER_STATE_FILE.exists():
-        BROWSER_STATE_FILE.unlink()
-        log.info("Cleared browser state: %s", BROWSER_STATE_FILE)
+async def _reset_context(context, browser, stealth, screenshotter):
+    log.warning("Bot detected — resetting browser context")
     await context.close()
     await asyncio.sleep(random.uniform(3.0, 6.0))
-    context, page = await _new_context(pw, stealth)
+    context, page = await _new_context(browser, stealth)
     if screenshotter:
         screenshotter.detach()
         screenshotter._page = page
@@ -164,7 +142,12 @@ async def crawl_releases(releases: list[dict], crawlers: list, conn, single: boo
         log.debug("Screenshots enabled: interval=%d, session=%s", screenshot_interval, session_dir.name)
 
     async with async_playwright() as pw:
-        context, page = await _new_context(pw, stealth)
+        browser = await pw.chromium.launch(
+            headless=True,
+            channel=PLAYWRIGHT_CHANNEL,
+            args=["--disable-blink-features=AutomationControlled"],
+        )
+        context, page = await _new_context(browser, stealth)
 
         screenshotter = None
         if screenshot_interval > 0:
@@ -238,7 +221,7 @@ async def crawl_releases(releases: list[dict], crawlers: list, conn, single: boo
                                 "screenshots": [],
                             }
                             break
-                        context, page = await _reset_context(context, pw, stealth, screenshotter)
+                        context, page = await _reset_context(context, browser, stealth, screenshotter)
                         crawl_release = {**release, "_screenshotter": screenshotter}
                         retried = True
                         if screenshotter:
@@ -277,8 +260,6 @@ async def crawl_releases(releases: list[dict], crawlers: list, conn, single: boo
             screenshotter.detach()
             screenshotter.save_manifest()
 
-        await context.storage_state(path=str(BROWSER_STATE_FILE))
-        log.info("Browser state saved to %s", BROWSER_STATE_FILE)
-
         await context.close()
+        await browser.close()
         log.info("Crawl complete")

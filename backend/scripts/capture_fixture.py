@@ -5,9 +5,9 @@ Usage (from backend/):
     python scripts/capture_fixture.py amazon https://www.amazon.com/dp/... "artist - title"
     python scripts/capture_fixture.py ccmusic https://... "artist - title"
 
-The page is opened using the same Playwright context as the crawler (persistent
-Chrome profile, stealth, real cookies) so the captured DOM matches what the
-scraper actually sees.  Output goes to tests/fixtures/crawlers/<crawler>/<slug>.html
+The page is opened using the same Playwright context setup as the crawler
+(fresh context, stealth) so the captured DOM matches what the scraper
+actually sees.  Output goes to tests/fixtures/crawlers/<crawler>/<slug>.html
 """
 
 import asyncio
@@ -18,7 +18,6 @@ from pathlib import Path
 # Make backend modules importable when run from backend/
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from crawler import CHROME_PROFILE_DIR, BROWSER_STATE_FILE
 from config import PLAYWRIGHT_CHANNEL
 from logging_config import setup_logging
 
@@ -34,7 +33,6 @@ def _slug(label: str) -> str:
 async def capture(crawler_name: str, url: str, label: str):
     from playwright.async_api import async_playwright
     from playwright_stealth import Stealth
-    import json
 
     out_dir = Path(__file__).parent.parent / "tests" / "fixtures" / "crawlers" / crawler_name
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -43,12 +41,12 @@ async def capture(crawler_name: str, url: str, label: str):
     stealth = Stealth()
 
     async with async_playwright() as pw:
-        CHROME_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-        context = await pw.chromium.launch_persistent_context(
-            str(CHROME_PROFILE_DIR),
+        browser = await pw.chromium.launch(
             headless=True,
             channel=PLAYWRIGHT_CHANNEL,
             args=["--disable-blink-features=AutomationControlled"],
+        )
+        context = await browser.new_context(
             user_agent=(
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -64,12 +62,6 @@ async def capture(crawler_name: str, url: str, label: str):
                 "sec-ch-ua-platform": '"macOS"',
             },
         )
-
-        if BROWSER_STATE_FILE.exists():
-            state = json.loads(BROWSER_STATE_FILE.read_text())
-            if state.get("cookies"):
-                await context.add_cookies(state["cookies"])
-                print(f"Loaded {len(state['cookies'])} cookies from browser state")
 
         page = await context.new_page()
         await stealth.apply_stealth_async(page)
@@ -90,6 +82,7 @@ async def capture(crawler_name: str, url: str, label: str):
         print(f"Saved {len(html):,} chars → {out_file}")
 
         await context.close()
+        await browser.close()
 
 
 if __name__ == "__main__":

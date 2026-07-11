@@ -9,7 +9,6 @@ CCMUSIC_SELLER = "collectorschoicemusic"
 class Crawler:
     site_name: str = "CC Music/eBay"
     base_url: str = f"https://www.ebay.com/str/{CCMUSIC_SELLER}"
-    login_url: str = ""
 
     @classmethod
     def search_url(cls, release: dict) -> str:

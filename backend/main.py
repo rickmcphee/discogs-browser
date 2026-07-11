@@ -7,7 +7,7 @@ from config import ensure_dirs, CRAWLERS_DIR, load_config, BOOTSTRAP_TOKEN_FILE
 from version import VERSION
 from crawler import load_crawler_from_path
 from db import get_connection, init_db, register_crawler, owner_exists
-from routers import collection, releases, settings, crawl, logs, screenshots, crawler_auth, health, session, stock
+from routers import collection, releases, settings, crawl, logs, screenshots, health, session, stock
 from auth_middleware import AuthMiddleware
 import scheduler
 import secrets
@@ -108,6 +108,5 @@ app.include_router(settings.router, prefix="/api")
 app.include_router(crawl.router, prefix="/api")
 app.include_router(logs.router, prefix="/api")
 app.include_router(screenshots.router, prefix="/api")
-app.include_router(crawler_auth.router, prefix="/api")
 app.include_router(session.router, prefix="/api")
 app.include_router(stock.router, prefix="/api")

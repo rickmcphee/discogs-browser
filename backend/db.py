@@ -506,10 +506,8 @@ def get_all_crawlers(conn: sqlite3.Connection) -> list[dict]:
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
             d["base_url"] = getattr(mod.Crawler, "base_url", None)
-            d["login_url"] = getattr(mod.Crawler, "login_url", None)
         except Exception:
             d["base_url"] = None
-            d["login_url"] = None
         result.append(d)
     return result
 
