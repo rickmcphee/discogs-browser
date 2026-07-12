@@ -161,7 +161,7 @@ NOT EXISTS (
 
 Scoped to `in_collection = 1` only — not wishlist. A wishlist item being in stock somewhere is exactly the kind of thing Recommended should surface, not suppress.
 
-The `' %'` (space-then-anything) branch exists because most of the 13 store crawlers append variant info to the stored title (`"The Great Satan — Ghostly Black Vinyl"`), so a plain equality check would miss the majority of real matches. Every crawler's title-construction logic keeps the clean album title as a literal, space-terminated prefix (confirmed against all 13 crawlers' `title` field construction in [`2026-07-05-in-stock-crawler-design.md`](2026-07-05-in-stock-crawler-design.md)), so this generalizes without per-source special-casing. The match is per (artist, title-prefix), not per artist alone — owning one release by an artist never suppresses a genuinely different release by the same artist.
+The `' %'` (space-then-anything) branch exists because most of the store crawlers (18 as of this writing) append variant info to the stored title (`"The Great Satan — Ghostly Black Vinyl"`), so a plain equality check would miss the majority of real matches. Every crawler's title-construction logic keeps the clean album title as a literal, space-terminated prefix (confirmed against all 18 crawlers' `title` field construction in [`2026-07-05-in-stock-crawler-design.md`](2026-07-05-in-stock-crawler-design.md), including the five added after this spec was written — none of them break the prefix invariant), so this generalizes without per-source special-casing. The match is per (artist, title-prefix), not per artist alone — owning one release by an artist never suppresses a genuinely different release by the same artist.
 
 Applied in two places:
 - **`db.get_unjudged_stock_items`** — owned items are excluded from the candidate pool before they're ever sent to Claude. This is a pure efficiency win (no wasted judgment calls) and is self-correcting: if the release is later removed from the collection, the item becomes eligible again on the next sync with no extra bookkeeping, since "unjudged" is re-evaluated from scratch each time.
@@ -187,7 +187,7 @@ This stays developer-only — the file lives in the repo, not the data directory
 
 ### 3. Decoupled judgment-only refresh
 
-Previously, the only way to get new judgments was `POST /api/stock/sync/start`, which re-crawls all 13 catalog sources *and* runs the judgment phase afterward — there was no way to just re-run judgment against whatever's currently unjudged. This adds one:
+Previously, the only way to get new judgments was `POST /api/stock/sync/start`, which re-crawls all catalog sources (18 as of this writing) *and* runs the judgment phase afterward — there was no way to just re-run judgment against whatever's currently unjudged. This adds one:
 
 - `CrawlManager` gains `judgment_running` (property) and `start_judgment_only()`, running the existing `_run_judgment_phase` standalone against the current `stock_items`/`stock_item_judgments` state, on its own dedicated connection (same pattern as `_sync_stock`) — no catalog crawl.
 - Mutual exclusion: `start_stock_sync` and `start_judgment_only` each refuse (return `False`, matching the existing 409-style guard shape) if *either* is already running — prevents two processes judging overlapping unjudged items concurrently, which would double-spend API calls on the same items.
