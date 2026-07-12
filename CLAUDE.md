@@ -116,6 +116,23 @@ Plans (`docs/superpowers/plans/`) are historical per-feature task logs, not livi
 - To capture a new fixture: `python backend/scripts/capture_fixture.py amazon <url> "Artist - Title"`
 - Playwright-dependent code (live crawl, browser launch) is not unit-tested; integration testing is manual
 
+## Commits — AI attribution trailers (required, every commit)
+
+Every commit made by an AI agent on this repo must carry AI-attribution git trailers, even a plain `git commit -m` one-liner. This exists because `pr-review-prep`'s content-attribution table classifies a commit as `Human-attributed` whenever the `ai-generated: true` trailer is absent — a commit with no trailers silently misattributes AI work as human work, no error, no warning. (Found and fixed the hard way: seven commits landed on `metal-catalog-crawlers` with no trailers at all before this rule existed, requiring a `git filter-branch` rewrite + force-push to correct after the fact.)
+
+Required trailer block, appended as the last paragraph of the commit message (blank line before it):
+
+```
+Note: This commit message was created by AI
+ai-generated: true
+ai-model: <actual model identifier for this session>
+ai-tool: <actual tool — see upside-sdlc:commit's known-value table; introduce a new value rather than mislabeling as an existing one if none fits>
+ai-surface: <actual surface, same rule>
+ai-executor: local-agent | remote-agent — local-agent only when the agent process is verified to run alongside the developer's own machine; when in doubt (e.g. a generic sandboxed path like `/home/agent/...` rather than the developer's real home directory), use remote-agent rather than assuming local
+```
+
+Create the commit via `git commit -F <message-file>`, not `git commit -m` — trailers are easy to drop with `-m` due to shell quoting, and `-F` makes them mechanically part of the message. The `upside-sdlc:commit` skill's packaged helper (`commit-with-cleanup.sh`) does exactly this and should be preferred when available.
+
 ## Style notes
 
 - No comments unless the WHY is non-obvious

@@ -135,7 +135,7 @@ These reuse the same bottom status bar the existing `stock_sync_*` events alread
 - With no Anthropic API key configured, `Recommended` is visibly disabled in the dropdown, and the stock sync's judgment phase is skipped entirely (no calls, no errors).
 - After configuring a key and running a stock sync, `Recommended` becomes selectable and returns a non-empty subset of `stock_items` for a non-trivial collection.
 - Re-running the sync without any change to the underlying catalog issues no new Claude API calls (all items already judged) and the `Recommended` results stay stable.
-- A newly-appearing stock item (new product from any of the 13 sources) gets judged on the sync after it first appears, without disturbing previously-judged items' verdicts.
+- A newly-appearing stock item (new product from any of the 31 sources) gets judged on the sync after it first appears, without disturbing previously-judged items' verdicts.
 - A single bad batch (simulated API error) doesn't stop the rest of the sync's judgment phase, and its items are retried successfully on the next sync.
 - Hovering a recommended row's artist/title shows the one-line reason as a tooltip.
 - Selecting `All` after `Recommended` returns to the unfiltered catalog; typing in the search box while `Recommended` is active narrows within the recommended set rather than replacing it (matches `Overlapping`'s existing search-interaction behavior).
@@ -161,7 +161,7 @@ NOT EXISTS (
 
 Scoped to `in_collection = 1` only — not wishlist. A wishlist item being in stock somewhere is exactly the kind of thing Recommended should surface, not suppress.
 
-The `' %'` (space-then-anything) branch exists because most of the store crawlers (18 as of this writing) append variant info to the stored title (`"The Great Satan — Ghostly Black Vinyl"`), so a plain equality check would miss the majority of real matches. Every crawler's title-construction logic keeps the clean album title as a literal, space-terminated prefix (confirmed against all 18 crawlers' `title` field construction in [`2026-07-05-in-stock-crawler-design.md`](2026-07-05-in-stock-crawler-design.md), including the five added after this spec was written — none of them break the prefix invariant), so this generalizes without per-source special-casing. The match is per (artist, title-prefix), not per artist alone — owning one release by an artist never suppresses a genuinely different release by the same artist.
+The `' %'` (space-then-anything) branch exists because most of the store crawlers (31 as of this writing) append variant info to the stored title (`"The Great Satan — Ghostly Black Vinyl"`), so a plain equality check would miss the majority of real matches. Every crawler's title-construction logic keeps the clean album title as a literal, space-terminated prefix (confirmed against all 31 crawlers' `title` field construction in [`2026-07-05-in-stock-crawler-design.md`](2026-07-05-in-stock-crawler-design.md), including every batch added after this spec was written — none of them break the prefix invariant), so this generalizes without per-source special-casing. The match is per (artist, title-prefix), not per artist alone — owning one release by an artist never suppresses a genuinely different release by the same artist.
 
 Applied in two places:
 - **`db.get_unjudged_stock_items`** — owned items are excluded from the candidate pool before they're ever sent to Claude. This is a pure efficiency win (no wasted judgment calls) and is self-correcting: if the release is later removed from the collection, the item becomes eligible again on the next sync with no extra bookkeeping, since "unjudged" is re-evaluated from scratch each time.
@@ -187,7 +187,7 @@ This stays developer-only — the file lives in the repo, not the data directory
 
 ### 3. Decoupled judgment-only refresh
 
-Previously, the only way to get new judgments was `POST /api/stock/sync/start`, which re-crawls all catalog sources (18 as of this writing) *and* runs the judgment phase afterward — there was no way to just re-run judgment against whatever's currently unjudged. This adds one:
+Previously, the only way to get new judgments was `POST /api/stock/sync/start`, which re-crawls all catalog sources (31 as of this writing) *and* runs the judgment phase afterward — there was no way to just re-run judgment against whatever's currently unjudged. This adds one:
 
 - `CrawlManager` gains `judgment_running` (property) and `start_judgment_only()`, running the existing `_run_judgment_phase` standalone against the current `stock_items`/`stock_item_judgments` state, on its own dedicated connection (same pattern as `_sync_stock`) — no catalog crawl.
 - Mutual exclusion: `start_stock_sync` and `start_judgment_only` each refuse (return `False`, matching the existing 409-style guard shape) if *either* is already running — prevents two processes judging overlapping unjudged items concurrently, which would double-spend API calls on the same items.
@@ -213,7 +213,7 @@ Previously, the only way to get new judgments was `POST /api/stock/sync/start`, 
 - A stock item whose artist+title (allowing for a trailing variant suffix) matches a release with `in_collection = 1` never appears under `Recommended`, and is never sent to Claude for judgment.
 - A stock item matching only a `in_wishlist = 1` release (not owned) is still eligible for Recommended.
 - A judged item's `reason` text never contains second-person or collection-referencing phrasing (spot-checked, not mechanically enforced — this is a prompt-quality property, not a hard invariant the code can verify).
-- Clicking "Refresh Recommendations" with a configured API key judges currently-unjudged items and updates the status bar, without triggering a catalog re-crawl on any of the 13 sources.
+- Clicking "Refresh Recommendations" with a configured API key judges currently-unjudged items and updates the status bar, without triggering a catalog re-crawl on any of the 31 sources.
 - Clicking "Refresh Recommendations" while a stock sync is already running (or vice versa) is a no-op that doesn't start a second, overlapping judgment run.
 
 ## Amendment 2 (2026-07-07): UX feedback from manual testing
