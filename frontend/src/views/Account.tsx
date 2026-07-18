@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useRef, useState, memo } from 'react'
 import Avatar from '../components/Avatar'
 import { changePassword, deleteAvatar, logout, uploadAvatar } from '../api/client'
 
@@ -7,7 +7,7 @@ interface Props {
   onAvatarChange: (version: number) => void
 }
 
-export default function Account({ avatarVersion, onAvatarChange }: Props) {
+function Account({ avatarVersion, onAvatarChange }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [avatarError, setAvatarError] = useState('')
   const [avatarBusy, setAvatarBusy] = useState(false)
@@ -187,3 +187,5 @@ export default function Account({ avatarVersion, onAvatarChange }: Props) {
     </div>
   )
 }
+
+export default memo(Account)

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useMemo } from 'react'
+import { useEffect, useRef, useState, useMemo, memo } from 'react'
 import { openLogsStream, screenshotUrl, clearLogs } from '../api/client'
 
 type Level = 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR' | 'OTHER'
@@ -62,7 +62,7 @@ const LEVEL_BG: Record<Level, string> = {
 const ALL_LEVELS: Level[] = ['DEBUG', 'INFO', 'WARNING', 'ERROR']
 
 
-export default function LogViewer() {
+function LogViewer() {
   const [entries, setEntries] = useState<LogEntry[]>([])
   const [paused, setPaused] = useState(false)
   const [levelFilter, setLevelFilter] = useState<Set<Level>>(new Set(['INFO', 'WARNING', 'ERROR']))
@@ -208,3 +208,5 @@ export default function LogViewer() {
     </div>
   )
 }
+
+export default memo(LogViewer)

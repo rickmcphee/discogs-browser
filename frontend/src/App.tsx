@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import RecordBrowser from './views/RecordBrowser'
 import StockBrowser from './views/StockBrowser'
 import Settings from './views/Settings'
@@ -47,10 +47,10 @@ export default function App() {
 
   // eventId is null for locally-generated messages (button-click failures) that never
   // survive a refresh and so never need replay suppression; those always show.
-  function setSyncStatus(message: string, eventId: number | null = null) {
+  const setSyncStatus = useCallback((message: string, eventId: number | null = null) => {
     setSyncMessage(message)
     setSyncMessageId(eventId)
-  }
+  }, [])
 
   // Poll /api/health until the backend is up, then load initial data.
   useEffect(() => {
@@ -204,14 +204,23 @@ export default function App() {
       source?.close()
       clearTimeout(reconnectTimer)
     }
-  }, [authState])
+  }, [authState, setSyncStatus])
 
   useEffect(() => {
     setUnauthorizedHandler(() => setAuthState('unauthenticated'))
     getAuthState().then(setAuthState).catch(() => setAuthState('unauthenticated'))
   }, [])
 
-  async function handleRefresh(mode?: 'all' | 'new') {
+  const startRefresh = useCallback(async (mode: 'all' | 'new') => {
+    setCollectionStatus(null)
+    try {
+      await refreshCollection(mode)
+    } catch (e: any) {
+      setSyncStatus(`Sync failed: ${e.message}`)
+    }
+  }, [setSyncStatus])
+
+  const handleRefresh = useCallback(async (mode?: 'all' | 'new') => {
     if (mode) {
       startRefresh(mode)
       return
@@ -226,18 +235,17 @@ export default function App() {
       // fall through to full refresh
     }
     startRefresh('all')
-  }
+  }, [startRefresh])
 
-  async function startRefresh(mode: 'all' | 'new') {
-    setCollectionStatus(null)
-    try {
-      await refreshCollection(mode)
-    } catch (e: any) {
-      setSyncStatus(`Sync failed: ${e.message}`)
-    }
-  }
+  const startCrawl = useCallback((releaseId?: string, mode?: 'all' | 'missing') => {
+    setCheckpointStatus(null)
+    setCrawlingReleaseId(releaseId)
+    postCrawlStart(mode ?? 'all', releaseId).catch((e: any) => {
+      alert(`Failed to start crawl: ${e.message}`)
+    })
+  }, [])
 
-  async function handleFindPrices(releaseId?: string, mode?: 'all' | 'missing') {
+  const handleFindPrices = useCallback(async (releaseId?: string, mode?: 'all' | 'missing') => {
     if (releaseId) {
       startCrawl(releaseId, undefined)
       return
@@ -256,33 +264,29 @@ export default function App() {
       // If status check fails, just run all
     }
     startCrawl(undefined, 'all')
-  }
+  }, [startCrawl])
 
-  function startCrawl(releaseId?: string, mode?: 'all' | 'missing') {
-    setCheckpointStatus(null)
-    setCrawlingReleaseId(releaseId)
-    postCrawlStart(mode ?? 'all', releaseId).catch((e: any) => {
-      alert(`Failed to start crawl: ${e.message}`)
-    })
-  }
+  const handleRefreshPricesFromSettings = useCallback((mode: 'missing' | 'all') => {
+    handleFindPrices(undefined, mode)
+  }, [handleFindPrices])
 
-  async function handleRefreshStock() {
+  const handleRefreshStock = useCallback(async () => {
     try {
       await postStockSyncStart()
     } catch (e: any) {
       setSyncStatus(`In-stock sync failed to start: ${e.message}`)
     }
-  }
+  }, [setSyncStatus])
 
-  async function handleRefreshRecommendations() {
+  const handleRefreshRecommendations = useCallback(async () => {
     try {
       await postJudgmentStart()
     } catch (e: any) {
       setSyncStatus(`Refresh recommendations failed to start: ${e.message}`)
     }
-  }
+  }, [setSyncStatus])
 
-  async function handleExportRecommendations() {
+  const handleExportRecommendations = useCallback(async () => {
     try {
       const blob = await exportRecommendationsCsv()
       const url = URL.createObjectURL(blob)
@@ -294,9 +298,9 @@ export default function App() {
     } catch (e: any) {
       setSyncStatus(`Export recommendations failed: ${e.message}`)
     }
-  }
+  }, [setSyncStatus])
 
-  async function handleClearRecommendations() {
+  const handleClearRecommendations = useCallback(async () => {
     if (!window.confirm('Clear all recommendations? This removes every recommended and not-recommended judgment from the database — every Store item will need to be re-evaluated from scratch, which costs Anthropic API calls to redo.')) {
       return
     }
@@ -311,7 +315,7 @@ export default function App() {
     } catch (e: any) {
       setSyncStatus(`Clear recommendations failed: ${e.message}`)
     }
-  }
+  }, [setSyncStatus])
 
   if (authState === null) {
     return <div className="min-h-screen flex items-center justify-center text-gray-500">Loading…</div>
@@ -438,7 +442,7 @@ export default function App() {
         <div className={view === 'instock' ? 'h-full' : 'hidden'}>
           <StockBrowser recommendedAvailable={recommendedAvailable} />
         </div>
-        <div className={view === 'settings' ? 'h-full overflow-y-auto' : 'hidden'}><Settings crawlers={crawlers} onCrawlersChange={setCrawlers} onRefreshCollection={(mode) => handleRefresh(mode)} onRefreshPrices={(mode) => handleFindPrices(undefined, mode)} onRefreshStock={handleRefreshStock} onRefreshRecommendations={handleRefreshRecommendations} onExportRecommendations={handleExportRecommendations} onClearRecommendations={handleClearRecommendations} hasJudgedItems={hasJudgedItems} /></div>
+        <div className={view === 'settings' ? 'h-full overflow-y-auto' : 'hidden'}><Settings crawlers={crawlers} onCrawlersChange={setCrawlers} onRefreshCollection={handleRefresh} onRefreshPrices={handleRefreshPricesFromSettings} onRefreshStock={handleRefreshStock} onRefreshRecommendations={handleRefreshRecommendations} onExportRecommendations={handleExportRecommendations} onClearRecommendations={handleClearRecommendations} hasJudgedItems={hasJudgedItems} /></div>
         <div className={view === 'account' ? 'h-full overflow-y-auto' : 'hidden'}><Account avatarVersion={avatarVersion} onAvatarChange={setAvatarVersion} /></div>
         <div className={view === 'logs' ? 'h-full' : 'hidden'}><LogViewer /></div>
       </main>

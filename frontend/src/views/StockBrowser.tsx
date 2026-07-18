@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, memo } from 'react'
 import { getStock, getStockArtists } from '../api/client'
 import type { StockItem, StockSortField, SortOrder } from '../api/types'
 
@@ -6,7 +6,7 @@ interface Props {
   recommendedAvailable?: boolean
 }
 
-export default function StockBrowser({ recommendedAvailable = false }: Props) {
+function StockBrowser({ recommendedAvailable = false }: Props) {
   const [items, setItems] = useState<StockItem[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -263,3 +263,5 @@ export default function StockBrowser({ recommendedAvailable = false }: Props) {
     </div>
   )
 }
+
+export default memo(StockBrowser)
