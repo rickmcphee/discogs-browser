@@ -18,6 +18,8 @@
 
 **Amendment (2026-07-12, branch `indie-alt-crawlers-1`):** five more catalog sources added, the fourth and final planned batch in a broader genre expansion built as independent parallel batches — Numero Group (`numerogroup.com/collections/vinyl`), Sub Pop Mega Mart (`megamart.subpop.com/collections/vinyl`), Fat Possum (`fatpossum.com/collections/vinyl`), Father/Daughter Records (`fatherdaughterrecords.com/collections/vinyl`), and Temporary Residence Ltd (`temporaryresidence.com/collections/shop`) — bringing the total to thirty-one (twenty-six after the prior batches + 5 here). This batch was developed independently in parallel with the others, so its own spec text (written before any of the four merged) originally computed its total against the pre-all-batches baseline of 13; the count here is corrected to reflect merge order. This is the last of the four planned genre-grouped batches. No changes to `shopify_catalog.py`, the data model, the orchestration loop, the API, or the frontend. Two new wrinkles: Sub Pop Mega Mart's cleanest available endpoint (`/collections/vinyl`, apparel-free) confirmed-live silently excludes pre-order titles entirely — a deliberate scope decision to accept that gap rather than merge it with the pre-order-carrying but apparel-contaminated root feed; Father/Daughter Records' bundle/grab-bag products are reliably identifiable by an empty `product_type` string and collapse to one uninformative `"Default Title"` variant, so they're excluded entirely via a product-level check rather than guessed at by variant title. See the new technical-grounding subsections below.
 
+**Amendment (2026-07-18, branch `fix/stock-crawl-delay-failure-limit`):** `iter_products()`'s inter-page delay and HTTP-failure handling no longer use a fixed ~1s delay with an immediate raise on the first failure. They now reuse the `crawl_delay_seconds` / `consecutive_failure_limit` settings and retry logic that `crawl_releases()` applies to release search requests: a random delay in `[delay/2, delay]` before every request, and on failure a retry (after another delay) that counts consecutive failures until `consecutive_failure_limit` is reached, at which point the error propagates. No other catalog crawler or data-model change. Text below is updated in place to match; see git history for the original wording.
+
 ---
 
 ## Problem
@@ -795,14 +797,15 @@ CREATE TABLE stock_items (
 ```python
 async def iter_products(base_url: str, collection_slug: str) -> AsyncIterator[dict]:
     ...  # paginates GET {base_url}/collections/{collection_slug}/products.json?limit=250&page=N
-         # until an empty "products" array; raises on non-2xx; ~1s delay between pages
+         # until an empty "products" array; retries non-2xx up to consecutive_failure_limit
+         # times before raising; delay before each request from crawl_delay_seconds
 
 def has_tag(product: dict, tag: str) -> bool: ...       # case-insensitive tags membership
 def strip_vendor_prefix(title: str, vendor: str) -> str: ...  # strips "{vendor} - " if present, else unchanged
 def resolve_cover_image(product: dict, variant: dict) -> Optional[str]: ...  # variant.featured_image.src, else product.images[0].src, else None
 ```
 
-Fixed ~1s delay between page requests (polite default, not configurable). No `BotDetectedError` — a non-2xx response is just a raised `httpx.HTTPError`, caught by the sync loop and reported as `stock_sync_error`, matching how `_sync_collection` handles an invalid Discogs token.
+Delay between page requests and consecutive-failure handling reuse the `crawl_delay_seconds` / `consecutive_failure_limit` settings and retry logic `crawl_releases()` applies to release searches: a random delay in `[crawl_delay_seconds / 2, crawl_delay_seconds]` before each request, and on failure a retry after another delay, counting consecutive failures until `consecutive_failure_limit` is reached. No `BotDetectedError` — a non-2xx response is a raised `httpx.HTTPError`; once the failure limit is hit it propagates and is caught by the sync loop and reported as `stock_sync_error`, matching how `_sync_collection` handles an invalid Discogs token.
 
 ### `backend/crawlers/nuclearblast.py`
 

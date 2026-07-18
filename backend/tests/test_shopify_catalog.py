@@ -1,6 +1,7 @@
 import httpx
 import respx
 import pytest
+from config import save_config
 from shopify_catalog import iter_products, has_tag, strip_vendor_prefix, resolve_cover_image
 
 _PRODUCTS_URL = "https://example.myshopify.test/collections/vinyl/products.json"
@@ -11,7 +12,8 @@ def _page_response(products):
 
 
 @respx.mock
-async def test_iter_products_yields_each_product_across_pages():
+async def test_iter_products_yields_each_product_across_pages(tmp_config_dir):
+    save_config({"crawl_delay_seconds": 0})
     respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(return_value=_page_response([{"id": 1}, {"id": 2}]))
     respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "2"}).mock(return_value=_page_response([{"id": 3}]))
     respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "3"}).mock(return_value=_page_response([]))
@@ -20,17 +22,46 @@ async def test_iter_products_yields_each_product_across_pages():
 
 
 @respx.mock
-async def test_iter_products_stops_on_first_empty_page():
+async def test_iter_products_stops_on_first_empty_page(tmp_config_dir):
+    save_config({"crawl_delay_seconds": 0})
     respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(return_value=_page_response([]))
     products = [p async for p in iter_products("https://example.myshopify.test", "vinyl")]
     assert products == []
 
 
 @respx.mock
-async def test_iter_products_raises_on_http_error():
-    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(return_value=httpx.Response(503))
+async def test_iter_products_uses_configured_crawl_delay_seconds(tmp_config_dir, monkeypatch):
+    save_config({"crawl_delay_seconds": 40, "consecutive_failure_limit": 10})
+    sleep_calls = []
+
+    async def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+
+    monkeypatch.setattr("shopify_catalog.asyncio.sleep", fake_sleep)
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(return_value=_page_response([]))
+    [p async for p in iter_products("https://example.myshopify.test", "vinyl")]
+    assert sleep_calls
+    assert all(20 <= s <= 40 for s in sleep_calls)
+
+
+@respx.mock
+async def test_iter_products_retries_after_transient_failure(tmp_config_dir):
+    save_config({"crawl_delay_seconds": 0, "consecutive_failure_limit": 3})
+    route = respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"})
+    route.side_effect = [httpx.Response(503), _page_response([{"id": 1}])]
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "2"}).mock(return_value=_page_response([]))
+    products = [p async for p in iter_products("https://example.myshopify.test", "vinyl")]
+    assert [p["id"] for p in products] == [1]
+    assert route.call_count == 2
+
+
+@respx.mock
+async def test_iter_products_raises_after_consecutive_failure_limit_reached(tmp_config_dir):
+    save_config({"crawl_delay_seconds": 0, "consecutive_failure_limit": 2})
+    route = respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(return_value=httpx.Response(503))
     with pytest.raises(httpx.HTTPStatusError):
         [p async for p in iter_products("https://example.myshopify.test", "vinyl")]
+    assert route.call_count == 2
 
 
 def test_has_tag_matches_case_insensitively():
