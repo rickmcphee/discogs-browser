@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, memo } from 'react'
 import { getSettings, saveSettings, setCrawlerEnabled } from '../api/client'
 import type { Settings as SettingsType, Crawler } from '../api/types'
 
@@ -103,7 +103,7 @@ interface Props {
   hasJudgedItems: boolean
 }
 
-export default function Settings({ crawlers, onCrawlersChange, onRefreshCollection, onRefreshPrices, onRefreshStock, onRefreshRecommendations, onExportRecommendations, onClearRecommendations, hasJudgedItems }: Props) {
+function Settings({ crawlers, onCrawlersChange, onRefreshCollection, onRefreshPrices, onRefreshStock, onRefreshRecommendations, onExportRecommendations, onClearRecommendations, hasJudgedItems }: Props) {
   const [settings, setSettings] = useState<SettingsType>({
     discogs_token: '',
     debug_screenshot_interval: 20,
@@ -523,3 +523,5 @@ export default function Settings({ crawlers, onCrawlersChange, onRefreshCollecti
     </div>
   )
 }
+
+export default memo(Settings)
