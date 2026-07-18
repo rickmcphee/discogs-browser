@@ -237,7 +237,7 @@ Uses the persistent Chrome profile with `playwright_stealth`. Raises `BotDetecte
 
 ## Logging
 
-`logging_config.py` configures a rotating file handler (`app.log`, 5 MB × 2 backups) and a stdout handler. `get_logger(name)` returns a named logger. `GET /logs/stream` is a persistent SSE endpoint that tails the log file. `DELETE /logs` clears `app.log` and removes all screenshot session directories. `app.log` is truncated to empty on every application startup (before the file handler is attached).
+`logging_config.py` configures a rotating file handler (`app.log`, 5 MB × 2 backups) and a stdout handler. The root logger is set to `DEBUG` so every level is written to `app.log`; chatty third-party libraries (`httpcore`, `httpx`, `hpack`, `playwright`, `asyncio`, `apscheduler`, `anthropic`) are pinned above DEBUG to keep the stream readable. `get_logger(name)` returns a named logger. `GET /api/logs/stream` is a persistent SSE endpoint that tails the log file. `DELETE /api/logs` clears `app.log` and removes all screenshot session directories. `app.log` is truncated to empty on every application startup (before the file handler is attached).
 
 ---
 
@@ -302,7 +302,7 @@ The Settings tab wrapper has `overflow-y-auto` so the panel scrolls independentl
 
 ### Log Viewer
 
-Scrollable monospace log tail over SSE. Automatically scrolls to bottom on new lines.
+Scrollable monospace log tail over SSE. Automatically scrolls to bottom on new lines. Level toggle buttons (DEBUG/INFO/WARNING/ERROR) and a regex message field filter the view client-side; filtering is display-only over the received stream (DEBUG is off by default), and the backend logs every level (see [Logging](#logging)).
 
 ### Debug View
 
