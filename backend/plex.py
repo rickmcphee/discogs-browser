@@ -5,6 +5,10 @@ from rapidfuzz import fuzz
 
 _SUFFIX_RE = re.compile(r"\s*\([^)]*\)\s*$")
 
+# httpx's default timeout is 5s; fetching a whole library's metadata over LAN
+# routinely takes longer than that.
+_TIMEOUT = 60.0
+
 
 def _base(base_url: str) -> str:
     base_url = base_url.rstrip("/")
@@ -28,7 +32,7 @@ def normalize(value: str) -> str:
 
 
 def get_music_section_key(base_url: str, token: str) -> Optional[str]:
-    r = httpx.get(f"{_base(base_url)}/library/sections", headers=_headers(token))
+    r = httpx.get(f"{_base(base_url)}/library/sections", headers=_headers(token), timeout=_TIMEOUT)
     r.raise_for_status()
     for section in r.json()["MediaContainer"].get("Directory", []):
         if section.get("type") == "artist":
@@ -41,6 +45,7 @@ def fetch_albums(base_url: str, token: str, section_key: str) -> list:
         f"{_base(base_url)}/library/sections/{section_key}/all",
         params={"type": 9},
         headers=_headers(token),
+        timeout=_TIMEOUT,
     )
     r.raise_for_status()
     return [
@@ -54,7 +59,7 @@ def fetch_albums(base_url: str, token: str, section_key: str) -> list:
 
 
 def get_machine_identifier(base_url: str, token: str) -> str:
-    r = httpx.get(f"{_base(base_url)}/", headers=_headers(token))
+    r = httpx.get(f"{_base(base_url)}/", headers=_headers(token), timeout=_TIMEOUT)
     r.raise_for_status()
     return r.json()["MediaContainer"]["machineIdentifier"]
 
