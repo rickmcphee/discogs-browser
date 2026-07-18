@@ -2,6 +2,8 @@
 
 _2026-07-02_
 
+**Amendment (2026-07-18):** the `profile-account-section` branch moved the "Account / Security" section (change password, reset TOTP-equivalent flow, log out) out of `Settings.tsx` entirely, into a dedicated `Account` view reached via a new avatar button in the header — it was never split out into its own component, it just lived inline in the flat Settings page until now. The "Settings gains an **Account / Security** section" line under "## Frontend" below describes placement as it was at the time this spec was written; it is no longer accurate and is not being rewritten here. See `frontend/src/views/Account.tsx` for current placement, and [2026-07-18-profile-account-section-design.md](2026-07-18-profile-account-section-design.md) for the design that moved it. The underlying `/api/auth/change-password` and `/api/auth/logout` endpoints and their password+TOTP re-verification semantics are unchanged.
+
 ---
 
 ## Overview
