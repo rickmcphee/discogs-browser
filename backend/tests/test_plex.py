@@ -46,6 +46,15 @@ def test_get_music_section_key_returns_none_when_no_music_library():
 
 
 @respx.mock
+def test_get_music_section_key_uses_timeout_above_httpx_default():
+    route = respx.get("http://plex.local:32400/library/sections").mock(
+        return_value=httpx.Response(200, json={"MediaContainer": {"Directory": []}})
+    )
+    get_music_section_key("plex.local:32400", "tok")
+    assert route.calls.last.request.extensions["timeout"]["read"] > 5.0
+
+
+@respx.mock
 def test_fetch_albums_parses_artist_title_and_rating_key():
     respx.get("http://plex.local:32400/library/sections/2/all").mock(
         return_value=httpx.Response(200, json={
@@ -59,11 +68,29 @@ def test_fetch_albums_parses_artist_title_and_rating_key():
 
 
 @respx.mock
+def test_fetch_albums_uses_timeout_above_httpx_default():
+    route = respx.get("http://plex.local:32400/library/sections/2/all").mock(
+        return_value=httpx.Response(200, json={"MediaContainer": {"Metadata": []}})
+    )
+    fetch_albums("plex.local:32400", "tok", "2")
+    assert route.calls.last.request.extensions["timeout"]["read"] > 5.0
+
+
+@respx.mock
 def test_get_machine_identifier():
     respx.get("http://plex.local:32400/").mock(
         return_value=httpx.Response(200, json={"MediaContainer": {"machineIdentifier": "abc123"}})
     )
     assert get_machine_identifier("plex.local:32400", "tok") == "abc123"
+
+
+@respx.mock
+def test_get_machine_identifier_uses_timeout_above_httpx_default():
+    route = respx.get("http://plex.local:32400/").mock(
+        return_value=httpx.Response(200, json={"MediaContainer": {"machineIdentifier": "abc123"}})
+    )
+    get_machine_identifier("plex.local:32400", "tok")
+    assert route.calls.last.request.extensions["timeout"]["read"] > 5.0
 
 
 def test_build_album_url_shape():

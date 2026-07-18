@@ -8,6 +8,8 @@
 
 **Amendment 3 (2026-07-11):** unrelated later work (the `settings-reorg` branch) moved `plex_base_url`/`plex_token` out of the single flat Settings table this spec describes below — they now sit at the top of the "Collection Management" section, no longer alongside `ebay_app_id`/`ebay_cert_id` (which moved to the top of "Crawler Management" instead). The placement note under "Error handling" — "No new settings-page component; `plex_base_url`/`plex_token` slot into the existing Settings table the same way `ebay_app_id`/`ebay_cert_id` do" — describes placement as it was at the time this spec was written; it is no longer accurate and is not being rewritten here. See `frontend/src/views/Settings.tsx` for current placement. The `'text'`-vs-`'password'` type convention from Amendment 2 above is unaffected — it moved with the field, not lost.
 
+**Amendment 4 (2026-07-18):** the `GET /library/sections/{key}/all?type=9` call was described below as "confirmed cheap for a personal-scale library," with no timeout discussed. Against the real Plex server, this call took long enough to exceed httpx's un-overridden 5-second default, so the Plex match phase failed with `"timed out"` on every collection sync — logged and skipped per the "Plex unreachable" handling below, but every time, not just on a transient outage. Fixed by adding an explicit 60s `timeout` to all three `httpx.get()` calls in `plex.py` (`get_music_section_key`, `fetch_albums`, `get_machine_identifier`). "Cheap" below describes payload size, which was and remains accurate; it never made a latency claim, and this amendment isn't disputing that — it's adding the timeout consideration that was simply absent.
+
 ---
 
 ## Overview
