@@ -56,3 +56,27 @@ def test_delete_avatar_removes_file(avatar_file):
 def test_delete_avatar_is_noop_when_missing(avatar_file):
     avatar.delete_avatar()
     assert not avatar_file.exists()
+
+
+def _sideways_png_bytes():
+    # A landscape image (100x50) that is actually a portrait photo (50x100)
+    # stored rotated, with an EXIF orientation tag telling a viewer to rotate
+    # it back — the way real phone-camera photos are commonly stored.
+    upright = Image.new("RGB", (100, 50), color=(255, 0, 0))
+    for x in range(100):
+        for y in range(25, 50):
+            upright.putpixel((x, y), (0, 0, 255))
+    raw = upright.transpose(Image.Transpose.ROTATE_90)
+    exif = raw.getexif()
+    exif[0x0112] = 6  # Orientation: rotate 90 CW to display correctly
+    buf = io.BytesIO()
+    raw.save(buf, format="PNG", exif=exif)
+    return buf.getvalue()
+
+
+def test_save_avatar_applies_exif_orientation(avatar_file):
+    avatar.save_avatar(_sideways_png_bytes())
+    with Image.open(avatar_file) as img:
+        rgb = img.convert("RGB")
+        assert rgb.getpixel((256, 20)) == (255, 0, 0)
+        assert rgb.getpixel((256, 490)) == (0, 0, 255)
