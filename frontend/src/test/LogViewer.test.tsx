@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, act } from '@testing-library/react'
+import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import LogViewer from '../views/LogViewer'
+import { openLogsStream } from '../api/client'
 
 // Mock the EventSource used by openLogsStream
 class MockEventSource {
@@ -19,7 +20,7 @@ class MockEventSource {
 }
 
 vi.mock('../api/client', () => ({
-  openLogsStream: () => new MockEventSource(),
+  openLogsStream: vi.fn(() => new MockEventSource()),
   screenshotUrl: (path: string) => `/api/screenshots/${path}`,
   clearLogs: vi.fn(),
 }))
@@ -28,7 +29,10 @@ function emitLine(line: string) {
   act(() => { MockEventSource.instance?.emit({ line }) })
 }
 
-beforeEach(() => { MockEventSource.instance = null })
+beforeEach(() => {
+  MockEventSource.instance = null
+  ;(openLogsStream as any).mockClear()
+})
 afterEach(() => { vi.restoreAllMocks() })
 
 describe('LogViewer', () => {
@@ -108,12 +112,29 @@ describe('LogViewer', () => {
 
   it('shows DEBUG lines only when DEBUG toggle is enabled', () => {
     render(<LogViewer />)
+    // DEBUG is off by default: a debug line pushed now is filtered out
     emitLine('2026-06-27 10:00:00  DEBUG     main  debug detail')
-
-    // DEBUG is off by default
     expect(screen.queryByText('debug detail')).not.toBeInTheDocument()
 
+    // Enabling DEBUG reconnects the stream (with DEBUG); the reseeded stream
+    // then delivers debug lines, which are displayed
     fireEvent.click(screen.getByRole('button', { name: 'DEBUG' }))
-    expect(screen.getByText('debug detail')).toBeInTheDocument()
+    emitLine('2026-06-27 10:00:01  DEBUG     main  debug after enable')
+    expect(screen.getByText('debug after enable')).toBeInTheDocument()
+  })
+
+  it('opens the stream with the default visible levels (DEBUG excluded)', () => {
+    render(<LogViewer />)
+    const levels = (openLogsStream as any).mock.calls.at(-1)[0]
+    expect(new Set(levels)).toEqual(new Set(['INFO', 'WARNING', 'ERROR']))
+  })
+
+  it('reconnects with the updated levels when a toggle changes', async () => {
+    render(<LogViewer />)
+    fireEvent.click(screen.getByRole('button', { name: 'DEBUG' }))
+    await waitFor(() => {
+      const levels = (openLogsStream as any).mock.calls.at(-1)[0]
+      expect(new Set(levels)).toEqual(new Set(['DEBUG', 'INFO', 'WARNING', 'ERROR']))
+    })
   })
 })

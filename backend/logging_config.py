@@ -4,19 +4,17 @@ from pathlib import Path
 import config
 
 
-# Third-party loggers whose DEBUG output would flood the log viewer. The root
-# logger runs at DEBUG so the app's own debug() calls are captured and can be
-# filtered client-side; these libraries are pinned higher to keep the stream
-# useful. Their INFO/WARNING lines still come through.
-NOISY_LOGGERS = {
-    "httpcore": logging.WARNING,
-    "httpx": logging.INFO,
-    "hpack": logging.WARNING,
-    "playwright": logging.WARNING,
-    "asyncio": logging.INFO,
-    "apscheduler": logging.INFO,
-    "anthropic": logging.INFO,
-}
+# Names of loggers created by this application (via get_logger). Only records
+# from these loggers are written to app.log / console, so the log viewer shows
+# this application's output only and is not drowned by dependency logging.
+_APP_LOGGERS: set = set()
+
+
+class _AppOnlyFilter(logging.Filter):
+    """Pass only records emitted by this application's own loggers."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.name in _APP_LOGGERS
 
 
 def setup_logging():
@@ -28,25 +26,26 @@ def setup_logging():
         "%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+    app_only = _AppOnlyFilter()
 
     file_handler = logging.handlers.RotatingFileHandler(
         log_file, maxBytes=5 * 1024 * 1024, backupCount=2, encoding="utf-8"
     )
     file_handler.setFormatter(fmt)
+    file_handler.addFilter(app_only)
 
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(fmt)
+    console_handler.addFilter(app_only)
 
+    # Root stays at DEBUG so the app's own loggers emit every level; the
+    # app-only filter on the handlers drops all dependency/third-party records.
     root = logging.getLogger()
     root.setLevel(logging.DEBUG)
-    # Avoid duplicating uvicorn's own access log noise
-    logging.getLogger("uvicorn.access").propagate = False
-    # Keep chatty third-party libraries from drowning the log viewer at DEBUG
-    for name, level in NOISY_LOGGERS.items():
-        logging.getLogger(name).setLevel(level)
     root.addHandler(file_handler)
     root.addHandler(console_handler)
 
 
 def get_logger(name: str) -> logging.Logger:
+    _APP_LOGGERS.add(name)
     return logging.getLogger(name)
