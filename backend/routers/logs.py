@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+from collections import deque
 from typing import Optional
 from fastapi import APIRouter, Query
 from sse_starlette.sse import EventSourceResponse
@@ -10,6 +11,8 @@ from screenshots import clear_screenshots
 router = APIRouter()
 
 LOG_FILE = config.CONFIG_DIR / "app.log"
+
+_SUPPORTED_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR"}
 
 # Matches the leading timestamp + level of a formatted log line. Lines without
 # a recognised level (tracebacks, continuations) are treated as always visible.
@@ -21,11 +24,13 @@ _HISTORY_LINES = 100
 def _parse_levels(levels: Optional[str]) -> Optional[set]:
     """Parse a comma-separated levels query param into an uppercase set.
 
-    Returns None when no levels are requested (meaning: show every level).
+    Unknown values are ignored. Returns None when no usable level is requested
+    (meaning: show every level) rather than an empty, everything-filtered set.
     """
     if not levels:
         return None
     wanted = {part.strip().upper() for part in levels.split(",") if part.strip()}
+    wanted &= _SUPPORTED_LEVELS
     return wanted or None
 
 
@@ -59,9 +64,13 @@ async def logs_stream(levels: Optional[str] = Query(None)):
 
         with open(log_path, "r") as f:
             # Seed history with the last N matching lines (not the last N lines
-            # overall) so a burst of one level cannot crowd out the others.
-            history = [line for line in f.readlines() if _line_visible(line, wanted)]
-            for line in history[-_HISTORY_LINES:]:
+            # overall) so a burst of one level cannot crowd out the others. A
+            # rolling window keeps memory bounded regardless of file size.
+            history = deque(
+                (line for line in f if _line_visible(line, wanted)),
+                maxlen=_HISTORY_LINES,
+            )
+            for line in history:
                 yield {"data": json.dumps({"line": line.rstrip()})}
 
             # Tail new lines

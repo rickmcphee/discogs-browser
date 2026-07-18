@@ -27,3 +27,10 @@ def test_parse_levels_normalizes_and_ignores_blanks():
     assert _parse_levels("info, debug ,,") == {"INFO", "DEBUG"}
     assert _parse_levels(None) is None
     assert _parse_levels("") is None
+
+
+def test_parse_levels_ignores_unknown_values():
+    # Unknown tokens are dropped; a mix keeps only supported levels
+    assert _parse_levels("info,foo") == {"INFO"}
+    # Only-unknown means no usable filter -> None (show all) rather than empty
+    assert _parse_levels("foo,bar") is None
