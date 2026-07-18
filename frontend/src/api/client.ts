@@ -262,3 +262,24 @@ export async function changePassword(currentPassword: string, newPassword: strin
   })
   if (!r.ok) throw new Error(await r.text())
 }
+
+export async function hasAvatar(): Promise<boolean> {
+  const r = await apiFetch('/auth/avatar')
+  return r.ok
+}
+
+export async function uploadAvatar(file: File): Promise<void> {
+  const body = new FormData()
+  body.append('file', file)
+  const r = await apiFetch('/auth/avatar', { method: 'POST', body })
+  if (!r.ok) throw new Error(await r.text())
+}
+
+export async function deleteAvatar(): Promise<void> {
+  const r = await apiFetch('/auth/avatar', { method: 'DELETE' })
+  if (!r.ok) throw new Error(await r.text())
+}
+
+export function avatarUrl(version: number): string {
+  return `${BASE}/auth/avatar?v=${version}`
+}
