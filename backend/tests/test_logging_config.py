@@ -7,12 +7,19 @@ from logging_config import setup_logging, NOISY_LOGGERS
 def restore_logging():
     """Snapshot and restore global logging state around setup_logging()."""
     root = logging.getLogger()
+    uvicorn_access = logging.getLogger("uvicorn.access")
     saved_level = root.level
     saved_handlers = root.handlers[:]
+    saved_propagate = uvicorn_access.propagate
     saved_noisy = {name: logging.getLogger(name).level for name in NOISY_LOGGERS}
     yield
+    # Close handlers setup_logging() added so their file descriptors don't leak
+    for handler in root.handlers:
+        if handler not in saved_handlers:
+            handler.close()
     root.setLevel(saved_level)
     root.handlers[:] = saved_handlers
+    uvicorn_access.propagate = saved_propagate
     for name, level in saved_noisy.items():
         logging.getLogger(name).setLevel(level)
 
