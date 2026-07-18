@@ -37,12 +37,21 @@ async def crawl_stop():
     return {"ok": True}
 
 
+def _events_to_replay() -> list[dict]:
+    """Buffered events are only useful to a client reconnecting mid-crawl.
+    The buffer isn't cleared when a crawl finishes (only when the next one
+    starts), so once a crawl is done, replaying it on every later page load
+    would flood the client with its entire stale history for no benefit.
+    """
+    return crawl_manager.recent_events() if crawl_manager.running else []
+
+
 @router.get("/crawl/stream")
 async def crawl_stream():
     async def generate():
         q = crawl_manager.subscribe()
         try:
-            for event in crawl_manager.recent_events():
+            for event in _events_to_replay():
                 yield {"data": json.dumps(event)}
             while True:
                 try:
