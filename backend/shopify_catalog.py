@@ -10,8 +10,10 @@ _PAGE_LIMIT = 250
 async def iter_products(base_url: str, collection_slug: str) -> AsyncIterator[dict]:
     """Paginate a Shopify collection's public products.json endpoint until exhausted.
 
-    Applies the same crawl_delay_seconds / consecutive_failure_limit settings and
-    retry logic that crawl_releases() uses for release search requests.
+    Reuses the crawl_delay_seconds / consecutive_failure_limit settings crawl_releases()
+    applies to release search requests, extended here with retry-on-failure: unlike
+    crawl_releases(), which just moves on to the next release/crawler pair, pagination
+    has no next item to fall through to, so a failed page is retried instead.
     """
     cfg = load_config()
     delay = float(cfg.get("crawl_delay_seconds", 30))
@@ -28,7 +30,10 @@ async def iter_products(base_url: str, collection_slug: str) -> AsyncIterator[di
                 r.raise_for_status()
             except httpx.HTTPError:
                 consecutive_failures += 1
-                if failure_limit and consecutive_failures >= failure_limit:
+                # A limit of 0 means "disabled" elsewhere, but disabled must mean
+                # fail fast here, not unlimited retries — this loop has no next
+                # item to move on to like crawl_releases() does.
+                if failure_limit <= 0 or consecutive_failures >= failure_limit:
                     raise
                 continue
             consecutive_failures = 0

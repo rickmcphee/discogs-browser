@@ -1,3 +1,4 @@
+import asyncio
 import httpx
 import respx
 import pytest
@@ -62,6 +63,22 @@ async def test_iter_products_raises_after_consecutive_failure_limit_reached(tmp_
     with pytest.raises(httpx.HTTPStatusError):
         [p async for p in iter_products("https://example.myshopify.test", "vinyl")]
     assert route.call_count == 2
+
+
+@respx.mock
+async def test_iter_products_fails_fast_when_failure_limit_is_zero(tmp_config_dir):
+    # consecutive_failure_limit=0 means "disabled" elsewhere in this codebase, but a
+    # disabled limit must not mean unlimited retries here — unlike crawl_releases,
+    # this loop has no next item to fall through to, so it would retry forever.
+    save_config({"crawl_delay_seconds": 0, "consecutive_failure_limit": 0})
+    route = respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(return_value=httpx.Response(503))
+
+    async def _collect():
+        return [p async for p in iter_products("https://example.myshopify.test", "vinyl")]
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await asyncio.wait_for(_collect(), timeout=1.0)
+    assert route.call_count == 1
 
 
 def test_has_tag_matches_case_insensitively():
