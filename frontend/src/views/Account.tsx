@@ -64,7 +64,7 @@ export default function Account({ avatarVersion, onAvatarChange }: Props) {
       {/* Avatar */}
       <section>
         <div className="flex items-center gap-4">
-          <button onClick={() => fileInputRef.current?.click()} disabled={avatarBusy} className="group relative rounded-full">
+          <button onClick={() => fileInputRef.current?.click()} disabled={avatarBusy} aria-label="Change photo" className="group relative rounded-full">
             <Avatar version={avatarVersion} size="lg" />
             <span className="absolute inset-0 rounded-full flex items-center justify-center bg-black/0 group-hover:bg-black/40 transition-colors">
               <svg viewBox="0 0 24 24" fill="none" className="w-6 h-6 text-white opacity-0 group-hover:opacity-100">

@@ -1,6 +1,6 @@
 import io
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 import config
 
@@ -22,6 +22,7 @@ def save_avatar(data: bytes) -> None:
     except Exception as e:
         raise InvalidAvatarError("Not a valid image") from e
 
+    image = ImageOps.exif_transpose(image)
     image = image.convert("RGB")
     side = min(image.width, image.height)
     left = (image.width - side) // 2

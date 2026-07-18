@@ -265,7 +265,9 @@ export async function changePassword(currentPassword: string, newPassword: strin
 
 export async function hasAvatar(): Promise<boolean> {
   const r = await apiFetch('/auth/avatar')
-  return r.ok
+  if (r.status === 404) return false
+  if (!r.ok) throw new Error(await r.text())
+  return true
 }
 
 export async function uploadAvatar(file: File): Promise<void> {
