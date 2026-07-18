@@ -50,6 +50,7 @@ All persistent state lives under `DISCOGS_BROWSER_DATA` (default `~/.discogs-bro
 ├── config.json          # settings
 ├── db.sqlite            # releases, crawlers, listings
 ├── app.log              # rotating application log
+├── avatar.png           # optional profile photo (512x512 PNG)
 ├── crawlers/            # crawler plugins (bundled + user-added)
 └── screenshots/         # debug screenshots, YYYYMMDD_HHMMSS/
 ```
