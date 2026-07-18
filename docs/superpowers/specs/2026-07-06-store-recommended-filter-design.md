@@ -32,7 +32,7 @@ The Store tab's filter dropdown already has a disabled `Recommended` placeholder
 - Structured genre/style/label-affinity heuristics. Not built — the taste signal is entirely the LLM's read of the raw collection/wishlist listing.
 - Re-judging an item because the collection changed since it was judged. A judgment is a snapshot; no invalidation/staleness policy is built.
 - Any UI for viewing, overriding, or manually re-triggering a specific item's judgment.
-- Configurable batch size, per-sync cap, or model choice — fixed constants in code, matching the precedent set by `shopify_catalog.py`'s hardcoded ~1s inter-page delay ("polite default, not configurable").
+- Configurable batch size, per-sync cap, or model choice — fixed constants in code. (Note, 2026-07-18: the precedent this originally cited — `shopify_catalog.py`'s hardcoded ~1s inter-page delay — no longer holds; that delay now reuses the `crawl_delay_seconds` / `consecutive_failure_limit` settings, see the in-stock-crawler spec's 2026-07-18 amendment. This feature's own constants remain fixed regardless.)
 
 ---
 

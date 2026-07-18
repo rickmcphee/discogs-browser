@@ -1,26 +1,48 @@
 import asyncio
+import random
 from typing import AsyncIterator, Optional
 import httpx
+from config import load_config
 
 _PAGE_LIMIT = 250
-_PAGE_DELAY_SECONDS = 1.0
 
 
 async def iter_products(base_url: str, collection_slug: str) -> AsyncIterator[dict]:
-    """Paginate a Shopify collection's public products.json endpoint until exhausted."""
+    """Paginate a Shopify collection's public products.json endpoint until exhausted.
+
+    Reuses the crawl_delay_seconds / consecutive_failure_limit settings crawl_releases()
+    applies to release search requests, extended here with retry-on-failure: unlike
+    crawl_releases(), which just moves on to the next release/crawler pair, pagination
+    has no next item to fall through to, so a failed page is retried instead.
+    """
+    cfg = load_config()
+    delay = float(cfg.get("crawl_delay_seconds", 30))
+    failure_limit = int(cfg.get("consecutive_failure_limit", 10))
+    consecutive_failures = 0
+
     page = 1
     async with httpx.AsyncClient() as client:
         while True:
             url = f"{base_url}/collections/{collection_slug}/products.json"
-            r = await client.get(url, params={"limit": _PAGE_LIMIT, "page": page})
-            r.raise_for_status()
+            await asyncio.sleep(random.uniform(delay * 0.5, delay))
+            try:
+                r = await client.get(url, params={"limit": _PAGE_LIMIT, "page": page})
+                r.raise_for_status()
+            except httpx.HTTPError:
+                consecutive_failures += 1
+                # A limit of 0 means "disabled" elsewhere, but disabled must mean
+                # fail fast here, not unlimited retries — this loop has no next
+                # item to move on to like crawl_releases() does.
+                if failure_limit <= 0 or consecutive_failures >= failure_limit:
+                    raise
+                continue
+            consecutive_failures = 0
             products = r.json().get("products", [])
             if not products:
                 break
             for product in products:
                 yield product
             page += 1
-            await asyncio.sleep(_PAGE_DELAY_SECONDS)
 
 
 def has_tag(product: dict, tag: str) -> bool:
