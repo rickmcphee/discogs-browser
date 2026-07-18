@@ -1,10 +1,12 @@
 import json
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 import auth_core
+import avatar as avatar_storage
 import config
 import db
 from logging_config import get_logger
@@ -213,3 +215,26 @@ def regenerate_recovery_codes(body: FactorRequest):
     codes = auth_core.generate_recovery_codes()
     db.set_owner_recovery_codes(conn, [auth_core.hash_token(c) for c in codes])
     return {"recovery_codes": codes}
+
+
+@router.post("/auth/avatar")
+async def upload_avatar(file: UploadFile = File(...)):
+    data = await file.read(avatar_storage.MAX_UPLOAD_BYTES + 1)
+    try:
+        avatar_storage.save_avatar(data)
+    except avatar_storage.InvalidAvatarError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True}
+
+
+@router.get("/auth/avatar")
+def get_avatar():
+    if not avatar_storage.AVATAR_FILE.exists():
+        raise HTTPException(status_code=404)
+    return FileResponse(str(avatar_storage.AVATAR_FILE))
+
+
+@router.delete("/auth/avatar")
+def remove_avatar():
+    avatar_storage.delete_avatar()
+    return {"ok": True}
