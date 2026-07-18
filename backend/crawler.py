@@ -137,7 +137,7 @@ async def crawl_releases(releases: list[dict], crawlers: list, conn, single: boo
 
     session_dir = new_session_dir() if screenshot_interval > 0 else None
 
-    log.info("Starting crawl: %d releases × %d crawlers", len(releases), len(crawlers))
+    log.debug("Starting crawl: %d releases × %d crawlers", len(releases), len(crawlers))
     if screenshot_interval > 0:
         log.debug("Screenshots enabled: interval=%d, session=%s", screenshot_interval, session_dir.name)
 
@@ -164,7 +164,7 @@ async def crawl_releases(releases: list[dict], crawlers: list, conn, single: boo
             delete_listings_for_release(conn, release["discogs_id"])
             for crawler in crawlers:
                 await asyncio.sleep(random.uniform(bulk_delay * 0.5, bulk_delay))
-                log.info("[%s] Searching: %s", crawler._db_site_name, label)
+                log.debug("[%s] Searching: %s", crawler._db_site_name, label)
 
                 if screenshotter:
                     screenshotter.start_search(
@@ -195,7 +195,7 @@ async def crawl_releases(releases: list[dict], crawlers: list, conn, single: boo
                                 "screenshots": screenshots,
                             }
                         else:
-                            log.info("[%s] Not found: %s", crawler._db_site_name, label)
+                            log.debug("[%s] Not found: %s", crawler._db_site_name, label)
                             consecutive_failures += 1
                             yield {
                                 "discogs_id": release["discogs_id"],

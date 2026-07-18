@@ -78,7 +78,7 @@ export function avatarUrl(version: number): string {
 **`frontend/src/App.tsx`**:
 - Add `'account'` to the `View` union: `type View = 'collection' | 'wishlist' | 'instock' | 'settings' | 'logs' | 'account'`.
 - Add `avatarVersion` state (`number`, `0` = no photo). On mount (once `authState === 'authenticated'`), `HEAD` (or `GET`, discarding the body) `/api/auth/avatar`; set `avatarVersion` to `Date.now()` if 200, leave `0` if 404. Pass `avatarVersion` and a setter down to both the header button and `Account`.
-- In the `ml-auto` header nav group, add a round profile button before the Settings button:
+- In the `ml-auto` header nav group, add a round profile button after the Settings and Logs buttons (rightmost in the header):
   ```tsx
   <button
     onClick={() => setView('account')}

@@ -71,7 +71,12 @@ export default function LogViewer() {
   const idRef = useRef(0)
 
   useEffect(() => {
-    const source = openLogsStream()
+    // Reconnect with the active levels so the server-side stream (history seed
+    // + live tail) only carries the levels being viewed; a DEBUG burst can no
+    // longer crowd INFO/WARNING/ERROR out of the buffer.
+    setEntries([])
+    idRef.current = 0
+    const source = openLogsStream(Array.from(levelFilter))
     source.onmessage = (e) => {
       const { line } = JSON.parse(e.data)
       if (!line) return
@@ -83,7 +88,7 @@ export default function LogViewer() {
     }
     source.onerror = () => source.close()
     return () => source.close()
-  }, [])
+  }, [levelFilter])
 
   const filtered = useMemo(() => {
     let re: RegExp | null = null

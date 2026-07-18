@@ -237,7 +237,7 @@ Uses the persistent Chrome profile with `playwright_stealth`. Raises `BotDetecte
 
 ## Logging
 
-`logging_config.py` configures a rotating file handler (`app.log`, 5 MB × 2 backups) and a stdout handler. The root logger is set to `DEBUG` so every level is written to `app.log`; chatty third-party libraries (`httpcore`, `httpx`, `hpack`, `playwright`, `asyncio`, `apscheduler`, `anthropic`) are pinned above DEBUG to keep the stream readable. `get_logger(name)` returns a named logger. `GET /api/logs/stream` is a persistent SSE endpoint that tails the log file. `DELETE /api/logs` clears `app.log` and removes all screenshot session directories. `app.log` is truncated to empty on every application startup (before the file handler is attached).
+`logging_config.py` configures a rotating file handler (`app.log`, 5 MB × 2 backups) and a stdout handler. The root logger is set to `DEBUG` so the application's own loggers emit every level, and both handlers carry an application-only filter: only records from loggers created via `get_logger(name)` are written, so dependency/third-party logging is excluded and does not drown the log viewer. `GET /api/logs/stream` is a persistent SSE endpoint that tails the log file; it accepts a `levels` query param (comma-separated) and filters both the history seed (the last 100 *matching* lines) and the live tail server-side, so a high-volume level cannot crowd the others out of the stream. Lines with no recognisable level (e.g. tracebacks) always pass through. `DELETE /api/logs` clears `app.log` and removes all screenshot session directories. `app.log` is truncated to empty on every application startup (before the file handler is attached).
 
 ---
 
@@ -302,7 +302,7 @@ The Settings tab wrapper has `overflow-y-auto` so the panel scrolls independentl
 
 ### Log Viewer
 
-Scrollable monospace log tail over SSE. Automatically scrolls to bottom on new lines. Level toggle buttons (DEBUG/INFO/WARNING/ERROR) and a regex message field filter the view client-side; filtering is display-only over the received stream (DEBUG is off by default), and the backend logs every level (see [Logging](#logging)).
+Scrollable monospace log tail over SSE. Automatically scrolls to bottom on new lines. Level toggle buttons (DEBUG/INFO/WARNING/ERROR; DEBUG off by default) drive the `levels` query param — changing a toggle reconnects the stream so the server re-seeds and tails only the selected levels (see [Logging](#logging)). A regex message field additionally filters the view client-side.
 
 ### Debug View
 

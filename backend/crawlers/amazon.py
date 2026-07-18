@@ -223,9 +223,6 @@ class Crawler:
 
             vinyl_price = await extract_price(page, fmt_keywords)
 
-            if vinyl_price is None:
-                log.warning("[Amazon] No price found on product page")
-
         except Exception as e:
             log.warning("[Amazon] product page error: %s", e)
 

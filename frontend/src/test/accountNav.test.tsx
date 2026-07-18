@@ -56,4 +56,14 @@ describe('header profile navigation', () => {
     await waitFor(() => expect(button.className).toContain('ring-2 ring-indigo-500'))
     expect(screen.getByRole('heading', { name: 'Account' })).toBeInTheDocument()
   })
+
+  it('places the profile avatar as the rightmost header control', async () => {
+    render(<App />)
+    const profile = await screen.findByRole('button', { name: /profile/i })
+    const logs = screen.getByRole('button', { name: 'Logs' })
+    // Profile must come after Logs in DOM order (rightmost in the header)
+    expect(
+      logs.compareDocumentPosition(profile) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy()
+  })
 })

@@ -196,8 +196,11 @@ export async function exportRecommendationsCsv(): Promise<Blob> {
   return r.blob()
 }
 
-export function openLogsStream(): EventSource {
-  return new EventSource('/api/logs/stream')
+export function openLogsStream(levels?: string[]): EventSource {
+  const qs = levels && levels.length
+    ? `?levels=${encodeURIComponent(levels.join(','))}`
+    : ''
+  return new EventSource(`/api/logs/stream${qs}`)
 }
 
 export async function clearLogs(): Promise<void> {
