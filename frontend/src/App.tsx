@@ -378,15 +378,6 @@ export default function App() {
         </nav>
         <nav className="flex items-center gap-2 ml-auto">
           <button
-            onClick={() => setView('account')}
-            aria-label="Profile"
-            className={`w-8 h-8 rounded-full overflow-hidden flex items-center justify-center transition-colors ${
-              view === 'account' ? 'ring-2 ring-indigo-500' : 'hover:ring-2 hover:ring-gray-600'
-            }`}
-          >
-            <Avatar version={avatarVersion} size="sm" />
-          </button>
-          <button
             onClick={() => setView('settings')}
             className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
               view === 'settings'
@@ -405,6 +396,15 @@ export default function App() {
             }`}
           >
             Logs
+          </button>
+          <button
+            onClick={() => setView('account')}
+            aria-label="Profile"
+            className={`w-8 h-8 rounded-full overflow-hidden flex items-center justify-center transition-colors ${
+              view === 'account' ? 'ring-2 ring-indigo-500' : 'hover:ring-2 hover:ring-gray-600'
+            }`}
+          >
+            <Avatar version={avatarVersion} size="sm" />
           </button>
         </nav>
       </header>
