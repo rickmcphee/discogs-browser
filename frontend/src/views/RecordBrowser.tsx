@@ -327,7 +327,7 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
                       <img
                         src={r.cover_image_url}
                         alt={r.title}
-                        className="w-10 h-10 object-cover rounded"
+                        className="w-10 h-10 min-w-10 object-cover rounded"
                       />
                     ) : (
                       <div className="w-10 h-10 bg-gray-800 rounded" />

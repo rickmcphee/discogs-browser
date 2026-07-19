@@ -19,6 +19,12 @@ class CrawlManager:
     def running(self) -> bool:
         return self._task is not None and not self._task.done()
 
+    @property
+    def any_job_running(self) -> bool:
+        """True while any background job that broadcasts SSE events is active:
+        crawl, collection sync (incl. Plex match), stock sync, or judgment."""
+        return self.running or self.sync_running or self.stock_sync_running or self.judgment_running
+
     def subscribe(self) -> asyncio.Queue:
         q: asyncio.Queue = asyncio.Queue()
         self._subscribers.append(q)

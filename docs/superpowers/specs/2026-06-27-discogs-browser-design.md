@@ -161,7 +161,7 @@ Playwright uses `launch_persistent_context` with `DISCOGS_BROWSER_DATA/chrome_pr
 - `CrawlManager.unsubscribe(q)` — removes the queue.
 - `CrawlManager.recent_events()` → up to 500 most recent events (replay buffer for late-joining clients).
 
-`GET /crawl/stream` is a persistent SSE endpoint. On connect it replays the buffer, then streams live events as they arrive, and sends `{"status":"ping"}` every 15 s when idle. It never closes unless the client disconnects. Multiple tabs can connect simultaneously; each gets its own subscriber queue.
+`GET /crawl/stream` is a persistent SSE endpoint and carries events for all four background job types (crawl, collection sync, stock sync, judgment). On connect it replays the buffer only if any of those jobs is currently active (`CrawlManager.any_job_running`); otherwise it skips straight to streaming live events. The buffer isn't cleared when a job finishes — only when the next crawl starts — so an unconditional replay would flood every later page load with the previous job's entire stale event history, while gating on the crawl task alone would drop a reconnecting client's in-progress sync/stock/judgment `*_started` event. It sends `{"status":"ping"}` every 15 s when idle and never closes unless the client disconnects. Multiple tabs can connect simultaneously; each gets its own subscriber queue.
 
 ---
 

@@ -37,12 +37,26 @@ async def crawl_stop():
     return {"ok": True}
 
 
+def _events_to_replay() -> list[dict]:
+    """Buffered events are only useful to a client reconnecting mid-job. The
+    buffer isn't cleared when a job finishes (only when the next crawl
+    starts), so once every job is done, replaying it on every later page load
+    would flood the client with stale history for no benefit. The buffer is
+    shared by crawl, collection sync, stock sync, and judgment events, so
+    replay must be gated on any of them being active — gating on the crawl
+    task alone would drop a reconnecting client's in-progress sync/stock/
+    judgment `*_started` event, leaving its progress UI blank until the next
+    live event arrives.
+    """
+    return crawl_manager.recent_events() if crawl_manager.any_job_running else []
+
+
 @router.get("/crawl/stream")
 async def crawl_stream():
     async def generate():
         q = crawl_manager.subscribe()
         try:
-            for event in crawl_manager.recent_events():
+            for event in _events_to_replay():
                 yield {"data": json.dumps(event)}
             while True:
                 try:
