@@ -9,6 +9,18 @@ DB_FILE = CONFIG_DIR / "db.sqlite"
 CRAWLERS_DIR = CONFIG_DIR / "crawlers"
 SCREENSHOTS_DIR = CONFIG_DIR / "screenshots"
 
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/discogs_browser")
+IDENTITY_DATABASE_URL = os.environ.get(
+    "IDENTITY_DATABASE_URL",
+    DATABASE_URL.replace("postgres:postgres@", f"app_identity:{os.environ.get('IDENTITY_DB_PASSWORD', '')}@"),
+)
+APP_DATABASE_URL = os.environ.get(
+    "APP_DATABASE_URL",
+    DATABASE_URL.replace("postgres:postgres@", f"app_user:{os.environ.get('APP_DB_PASSWORD', '')}@"),
+)
+IDENTITY_DB_PASSWORD = os.environ.get("IDENTITY_DB_PASSWORD", "")
+APP_DB_PASSWORD = os.environ.get("APP_DB_PASSWORD", "")
+
 # "" in env → None → bundled Chromium (Docker); unset → "chrome" → real Chrome (local dev)
 _channel_env = os.environ.get("PLAYWRIGHT_CHANNEL", "chrome")
 PLAYWRIGHT_CHANNEL = _channel_env if _channel_env else None  # None → bundled Chromium
