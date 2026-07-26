@@ -13,9 +13,11 @@ def _test_database_url(monkeypatch):
     db._identity_pool = None
     db._app_pool = None
     yield
-    for pool in (db._admin_pool, db._identity_pool, db._app_pool):
+    for attr in ("_admin_pool", "_identity_pool", "_app_pool"):
+        pool = getattr(db, attr)
         if pool is not None:
             pool.close()
+        setattr(db, attr, None)
 
 
 def test_admin_pool_connects_and_runs_a_query():
