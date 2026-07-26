@@ -39,6 +39,22 @@ def sqlite_source(tmp_path):
     conn.execute(
         "INSERT INTO listings VALUES (1, 'd1', 1, 'http://x/1', 9.99, 2.0, 'USD', 'Mint', '2026-01-01')"
     )
+    conn.execute(
+        "CREATE TABLE stock_items (id INTEGER PRIMARY KEY, crawler_id INTEGER, artist TEXT, "
+        "title TEXT, format TEXT, price REAL, currency TEXT, url TEXT, cover_image_url TEXT, "
+        "item_key TEXT, last_seen TIMESTAMP)"
+    )
+    conn.execute(
+        "INSERT INTO stock_items VALUES (1, 1, 'B', 'Stock Item', 'LP', 19.99, 'USD', "
+        "'http://x/stock/1', 'http://x/stock1.jpg', 'stock-key-1', '2026-01-01')"
+    )
+    conn.execute(
+        "CREATE TABLE stock_item_judgments (item_key TEXT PRIMARY KEY, recommended INTEGER, "
+        "reason TEXT, judged_at TIMESTAMP)"
+    )
+    conn.execute(
+        "INSERT INTO stock_item_judgments VALUES ('stock-key-1', 1, 'good pressing', '2026-01-01')"
+    )
     conn.commit()
     conn.close()
     return path
@@ -69,5 +85,20 @@ def test_migrate_creates_user_catalog_library_item_and_listing(pg_test_db, sqlit
         listing = conn.execute("SELECT * FROM listings WHERE release_id = 'd1'").fetchone()
         assert listing["price"] == 9.99
 
-        conn.execute("TRUNCATE users, catalog, library_items, listings, crawlers CASCADE")
+        stock_item = conn.execute(
+            "SELECT * FROM stock_items WHERE item_key = 'stock-key-1'"
+        ).fetchone()
+        assert stock_item["title"] == "Stock Item"
+        assert stock_item["price"] == 19.99
+
+        judgment = conn.execute(
+            "SELECT * FROM stock_item_judgments WHERE item_key = 'stock-key-1'"
+        ).fetchone()
+        assert judgment["recommended"] is True
+        assert judgment["reason"] == "good pressing"
+
+        conn.execute(
+            "TRUNCATE users, catalog, library_items, listings, crawlers, "
+            "stock_items, stock_item_judgments CASCADE"
+        )
         conn.commit()

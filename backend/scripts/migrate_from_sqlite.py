@@ -24,6 +24,10 @@ def resolve_discogs_user_id(username: str) -> int:
     return r.json()["id"]
 
 
+# plex_url/plex_matched_at are intentionally not migrated: Plex matches are
+# fully recomputed on every sync, not sticky (see docs/superpowers/specs/
+# 2026-07-08-plex-integration-design.md), so losing the cached value on this
+# one-time migration is harmless rather than a data-loss bug.
 def migrate(
     sqlite_path: Path,
     discogs_username: Optional[str] = None,
@@ -78,6 +82,33 @@ def migrate(
             db.upsert_listing(
                 pconn, l["release_id"], crawler_id_map[l["crawler_id"]], l["url"],
                 l["price"], l["shipping"], l["currency"], l["condition"],
+            )
+
+        # stock_items has no natural unique constraint beyond its own serial id,
+        # so re-running this script against an already-migrated target would
+        # duplicate rows. Acceptable for a one-time, hand-run script — not
+        # guarded against, since guarding would need a schema change out of
+        # this task's scope.
+        for si in sconn.execute("SELECT * FROM stock_items").fetchall():
+            pconn.execute(
+                """
+                INSERT INTO stock_items (crawler_id, artist, title, format, price, currency,
+                                          url, cover_image_url, item_key, last_seen)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                [crawler_id_map[si["crawler_id"]], si["artist"], si["title"], si["format"],
+                 si["price"], si["currency"], si["url"], si["cover_image_url"],
+                 si["item_key"], si["last_seen"]],
+            )
+
+        for sj in sconn.execute("SELECT * FROM stock_item_judgments").fetchall():
+            pconn.execute(
+                """
+                INSERT INTO stock_item_judgments (item_key, recommended, reason, judged_at)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (item_key) DO NOTHING
+                """,
+                [sj["item_key"], bool(sj["recommended"]), sj["reason"], sj["judged_at"]],
             )
 
         pconn.commit()
