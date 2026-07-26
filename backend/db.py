@@ -167,6 +167,10 @@ DROP POLICY IF EXISTS users_isolation ON users;
 CREATE POLICY users_isolation ON users
     USING (id = current_setting('app.user_id', true)::int);
 
+-- Defense-in-depth only: the only role granted anything on sessions
+-- (app_identity) has BYPASSRLS, so this policy has no operational effect
+-- today. What actually protects sessions right now is that app_user has
+-- no grant on this table at all.
 DROP POLICY IF EXISTS sessions_isolation ON sessions;
 CREATE POLICY sessions_isolation ON sessions
     USING (user_id = current_setting('app.user_id', true)::int);
@@ -183,18 +187,25 @@ def _ensure_role(conn, role_name: str, password: str, bypass_rls: bool):
     ).fetchone()
     if not exists:
         conn.execute(
-            sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(
-                sql.Identifier(role_name), sql.Literal(password)
-            )
+            sql.SQL("CREATE ROLE {} LOGIN").format(sql.Identifier(role_name))
         )
+    # Unconditional so re-running init_tenant_schema() after a password
+    # rotation (IDENTITY_DB_PASSWORD/APP_DB_PASSWORD changed in the env)
+    # actually updates the role in Postgres, not just its BYPASSRLS bit.
     conn.execute(
-        sql.SQL("ALTER ROLE {} {}").format(
+        sql.SQL("ALTER ROLE {} PASSWORD {} {}").format(
             sql.Identifier(role_name),
+            sql.Literal(password),
             sql.SQL("BYPASSRLS" if bypass_rls else "NOBYPASSRLS"),
         )
     )
 
 
+# Granting BYPASSRLS to a role requires the executing role to be a Postgres
+# superuser or to already have BYPASSRLS itself (see CREATE/ALTER ROLE docs).
+# The admin/DATABASE_URL role must satisfy that — true for the dev-default
+# Docker `postgres` superuser, but not guaranteed for a managed-Postgres
+# admin role in a real deployment, where this ALTER ROLE call would fail.
 def init_tenant_schema():
     with get_admin_pool().connection() as conn:
         conn.execute(TENANT_SCHEMA)
