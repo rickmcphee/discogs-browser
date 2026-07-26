@@ -222,3 +222,48 @@ def init_tenant_schema():
         )
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON library_items TO app_user")
         conn.commit()
+
+
+def upsert_catalog_release(conn, data: dict):
+    conn.execute(
+        """
+        INSERT INTO catalog (discogs_id, artist, title, year, label, format, discogs_price,
+                              barcode, cover_image_url, discogs_url, last_synced)
+        VALUES (%(discogs_id)s, %(artist)s, %(title)s, %(year)s, %(label)s, %(format)s,
+                %(discogs_price)s, %(barcode)s, %(cover_image_url)s, %(discogs_url)s, CURRENT_TIMESTAMP)
+        ON CONFLICT (discogs_id) DO UPDATE SET
+            artist = EXCLUDED.artist, title = EXCLUDED.title, year = EXCLUDED.year,
+            label = EXCLUDED.label, format = EXCLUDED.format, discogs_price = EXCLUDED.discogs_price,
+            barcode = EXCLUDED.barcode, cover_image_url = EXCLUDED.cover_image_url,
+            discogs_url = EXCLUDED.discogs_url, last_synced = CURRENT_TIMESTAMP
+        """,
+        data,
+    )
+
+
+def get_catalog_release(conn, discogs_id: str) -> Optional[dict]:
+    return conn.execute(
+        "SELECT * FROM catalog WHERE discogs_id = %s", [discogs_id]
+    ).fetchone()
+
+
+def upsert_listing(
+    conn,
+    release_id: str,
+    crawler_id: int,
+    url: str,
+    price: Optional[float],
+    shipping: Optional[float],
+    currency: Optional[str],
+    condition: Optional[str],
+):
+    conn.execute(
+        """
+        INSERT INTO listings (release_id, crawler_id, url, price, shipping, currency, condition, last_checked)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+        ON CONFLICT (release_id, crawler_id) DO UPDATE SET
+            url = EXCLUDED.url, price = EXCLUDED.price, shipping = EXCLUDED.shipping,
+            currency = EXCLUDED.currency, condition = EXCLUDED.condition, last_checked = CURRENT_TIMESTAMP
+        """,
+        [release_id, crawler_id, url, price, shipping, currency, condition],
+    )
