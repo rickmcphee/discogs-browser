@@ -20,13 +20,15 @@ def _with_userinfo(url: str, username: str, password: str) -> str:
 
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/discogs_browser")
+IDENTITY_DB_PASSWORD = os.environ.get("IDENTITY_DB_PASSWORD", "")
+APP_DB_PASSWORD = os.environ.get("APP_DB_PASSWORD", "")
 IDENTITY_DATABASE_URL = os.environ.get(
     "IDENTITY_DATABASE_URL",
-    _with_userinfo(DATABASE_URL, "app_identity", os.environ.get("IDENTITY_DB_PASSWORD", "")),
+    _with_userinfo(DATABASE_URL, "app_identity", IDENTITY_DB_PASSWORD),
 )
 APP_DATABASE_URL = os.environ.get(
     "APP_DATABASE_URL",
-    _with_userinfo(DATABASE_URL, "app_user", os.environ.get("APP_DB_PASSWORD", "")),
+    _with_userinfo(DATABASE_URL, "app_user", APP_DB_PASSWORD),
 )
 
 # "" in env → None → bundled Chromium (Docker); unset → "chrome" → real Chrome (local dev)

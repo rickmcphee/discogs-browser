@@ -1,6 +1,7 @@
 from contextlib import contextmanager
 from typing import Optional
 
+from psycopg import sql
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
@@ -111,4 +112,102 @@ CREATE TABLE IF NOT EXISTS stock_item_judgments (
 def init_global_schema():
     with get_admin_pool().connection() as conn:
         conn.execute(GLOBAL_SCHEMA)
+        conn.commit()
+
+
+TENANT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    discogs_user_id INTEGER UNIQUE NOT NULL,
+    discogs_username TEXT NOT NULL,
+    discogs_oauth_token_encrypted BYTEA,
+    discogs_oauth_secret_encrypted BYTEA,
+    plex_base_url TEXT,
+    plex_token TEXT,
+    plex_match_threshold INTEGER NOT NULL DEFAULT 90,
+    invited_by INTEGER REFERENCES users(id),
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP NOT NULL,
+    last_seen_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS library_items (
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    discogs_id TEXT NOT NULL REFERENCES catalog(discogs_id),
+    in_collection BOOLEAN NOT NULL DEFAULT FALSE,
+    in_wishlist BOOLEAN NOT NULL DEFAULT FALSE,
+    plex_url TEXT,
+    plex_matched_at TIMESTAMP,
+    last_synced TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, discogs_id)
+);
+
+CREATE TABLE IF NOT EXISTS invites (
+    code TEXT PRIMARY KEY,
+    created_by INTEGER REFERENCES users(id),
+    redeemed_by INTEGER REFERENCES users(id),
+    redeemed_at TIMESTAMP,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE users FORCE ROW LEVEL SECURITY;
+ALTER TABLE sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sessions FORCE ROW LEVEL SECURITY;
+ALTER TABLE library_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE library_items FORCE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS users_isolation ON users;
+CREATE POLICY users_isolation ON users
+    USING (id = current_setting('app.user_id', true)::int);
+
+DROP POLICY IF EXISTS sessions_isolation ON sessions;
+CREATE POLICY sessions_isolation ON sessions
+    USING (user_id = current_setting('app.user_id', true)::int);
+
+DROP POLICY IF EXISTS library_items_isolation ON library_items;
+CREATE POLICY library_items_isolation ON library_items
+    USING (user_id = current_setting('app.user_id', true)::int);
+"""
+
+
+def _ensure_role(conn, role_name: str, password: str, bypass_rls: bool):
+    exists = conn.execute(
+        "SELECT 1 FROM pg_roles WHERE rolname = %s", [role_name]
+    ).fetchone()
+    if not exists:
+        conn.execute(
+            sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(
+                sql.Identifier(role_name), sql.Literal(password)
+            )
+        )
+    conn.execute(
+        sql.SQL("ALTER ROLE {} {}").format(
+            sql.Identifier(role_name),
+            sql.SQL("BYPASSRLS" if bypass_rls else "NOBYPASSRLS"),
+        )
+    )
+
+
+def init_tenant_schema():
+    with get_admin_pool().connection() as conn:
+        conn.execute(TENANT_SCHEMA)
+        _ensure_role(conn, "app_identity", config.IDENTITY_DB_PASSWORD, bypass_rls=True)
+        _ensure_role(conn, "app_user", config.APP_DB_PASSWORD, bypass_rls=False)
+
+        conn.execute("GRANT SELECT, INSERT, UPDATE ON users TO app_identity")
+        conn.execute("GRANT SELECT, UPDATE ON invites TO app_identity")
+        conn.execute("GRANT SELECT, INSERT, DELETE ON sessions TO app_identity")
+        conn.execute("GRANT USAGE, SELECT ON SEQUENCE users_id_seq TO app_identity")
+
+        conn.execute(
+            "GRANT SELECT ON catalog, listings, crawlers, stock_items, stock_item_judgments TO app_user"
+        )
+        conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON library_items TO app_user")
         conn.commit()
