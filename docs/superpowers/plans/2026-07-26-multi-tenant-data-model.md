@@ -568,12 +568,14 @@ def two_users_one_shared_release(pg_test_db, monkeypatch):
     db.init_global_schema()
     db.init_tenant_schema()
     # Point the app-role pool at the real app_user role for this test only —
-    # earlier tasks' fixtures use the admin DSN for all three pools.
+    # earlier tasks' fixtures use the admin DSN for all three pools. Uses
+    # config._with_userinfo (Task 1) rather than a literal .replace(), so this
+    # works regardless of TEST_DATABASE_URL's actual admin userinfo.
     monkeypatch.setattr(
         db.config,
         "APP_DATABASE_URL",
-        os.environ["TEST_DATABASE_URL"].replace(
-            "postgres:postgres@", f"app_user:{os.environ['APP_DB_PASSWORD']}@"
+        db.config._with_userinfo(
+            os.environ["TEST_DATABASE_URL"], "app_user", os.environ["APP_DB_PASSWORD"]
         ),
     )
     db._app_pool = None
