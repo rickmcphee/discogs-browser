@@ -1,4 +1,5 @@
 import os
+from datetime import datetime
 
 import psycopg
 import pytest
@@ -79,3 +80,45 @@ def test_app_user_cannot_query_sessions(admin_conn):
     with _connect_as("app_user", os.environ["APP_DB_PASSWORD"]) as conn:
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
             conn.execute("SELECT * FROM sessions")
+
+
+def test_app_identity_can_update_session_last_seen_at(admin_conn):
+    admin_conn.execute(
+        "INSERT INTO users (discogs_user_id, discogs_username) VALUES (%s, %s)",
+        [909090, "sessionupdatetestuser"],
+    )
+    user_id = admin_conn.execute(
+        "SELECT id FROM users WHERE discogs_user_id = %s", [909090]
+    ).fetchone()["id"]
+    admin_conn.execute(
+        "INSERT INTO sessions (token_hash, user_id, expires_at) "
+        "VALUES (%s, %s, NOW() + INTERVAL '1 day')",
+        ["sessionupdatetesttoken", user_id],
+    )
+    admin_conn.commit()
+
+    new_last_seen_at = datetime(2030, 1, 1)
+    with _connect_as("app_identity", os.environ["IDENTITY_DB_PASSWORD"]) as conn:
+        conn.execute(
+            "UPDATE sessions SET last_seen_at = %s WHERE token_hash = %s",
+            [new_last_seen_at, "sessionupdatetesttoken"],
+        )
+        conn.commit()
+
+    row = admin_conn.execute(
+        "SELECT last_seen_at FROM sessions WHERE token_hash = %s",
+        ["sessionupdatetesttoken"],
+    ).fetchone()
+    assert row["last_seen_at"] == new_last_seen_at
+
+
+def test_init_tenant_schema_raises_when_identity_password_blank(pg_test_db, monkeypatch):
+    monkeypatch.setattr(config, "IDENTITY_DB_PASSWORD", "")
+    with pytest.raises(RuntimeError):
+        db.init_tenant_schema()
+
+
+def test_init_tenant_schema_raises_when_app_password_blank(pg_test_db, monkeypatch):
+    monkeypatch.setattr(config, "APP_DB_PASSWORD", "")
+    with pytest.raises(RuntimeError):
+        db.init_tenant_schema()

@@ -518,7 +518,7 @@ def init_tenant_schema():
 
         conn.execute("GRANT SELECT, INSERT, UPDATE ON users TO app_identity")
         conn.execute("GRANT SELECT, UPDATE ON invites TO app_identity")
-        conn.execute("GRANT SELECT, INSERT, DELETE ON sessions TO app_identity")
+        conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON sessions TO app_identity")
         conn.execute("GRANT USAGE, SELECT ON SEQUENCE users_id_seq TO app_identity")
 
         conn.execute(
@@ -527,6 +527,8 @@ def init_tenant_schema():
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON library_items TO app_user")
         conn.commit()
 ```
+
+(An earlier draft of this grant omitted `UPDATE` on `sessions`. `sessions.last_seen_at` exists specifically to support idle-expiry — a sliding window updated on every authenticated request, matching the old single-owner app's `db.touch_session()` — and no role could perform that update without it, which would surface as `psycopg.errors.InsufficientPrivilege` the moment a later session-handling plan tried to wire it up. Caught in this branch's final whole-branch review; fixed here rather than left for that later plan to rediscover.)
 
 Why two roles instead of one RLS-scoped role for everything: `users`/`sessions` must be queried *before* a `user_id` is known — that's what login and account creation are for (looking up a session by its token, or a user by their `discogs_user_id`, to find out who's asking). RLS-by-`user_id` can't gate a query that doesn't know the `user_id` yet without also making legitimate login lookups return nothing. `app_identity` exists to make exactly those pre-context lookups, narrowly (it can't touch `library_items` at all — no grant exists for it there, so bypassing RLS on `users`/`sessions` doesn't expose anyone's collection). `invites` deliberately has no RLS policy at all (see the architecture spec's Data model section) since redemption is also a pre-context operation.
 

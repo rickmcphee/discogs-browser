@@ -163,6 +163,10 @@ ALTER TABLE sessions FORCE ROW LEVEL SECURITY;
 ALTER TABLE library_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE library_items FORCE ROW LEVEL SECURITY;
 
+-- Defense-in-depth only: the only role granted anything on users
+-- (app_identity) has BYPASSRLS, so this policy has no operational effect
+-- today. What actually protects users right now is that app_user has
+-- no grant on this table at all.
 DROP POLICY IF EXISTS users_isolation ON users;
 CREATE POLICY users_isolation ON users
     USING (id = current_setting('app.user_id', true)::int);
@@ -207,6 +211,11 @@ def _ensure_role(conn, role_name: str, password: str, bypass_rls: bool):
 # Docker `postgres` superuser, but not guaranteed for a managed-Postgres
 # admin role in a real deployment, where this ALTER ROLE call would fail.
 def init_tenant_schema():
+    if not config.IDENTITY_DB_PASSWORD or not config.APP_DB_PASSWORD:
+        raise RuntimeError(
+            "IDENTITY_DB_PASSWORD and APP_DB_PASSWORD must both be set (non-empty) "
+            "before creating app_identity/app_user roles"
+        )
     with get_admin_pool().connection() as conn:
         conn.execute(TENANT_SCHEMA)
         _ensure_role(conn, "app_identity", config.IDENTITY_DB_PASSWORD, bypass_rls=True)
@@ -214,7 +223,7 @@ def init_tenant_schema():
 
         conn.execute("GRANT SELECT, INSERT, UPDATE ON users TO app_identity")
         conn.execute("GRANT SELECT, UPDATE ON invites TO app_identity")
-        conn.execute("GRANT SELECT, INSERT, DELETE ON sessions TO app_identity")
+        conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON sessions TO app_identity")
         conn.execute("GRANT USAGE, SELECT ON SEQUENCE users_id_seq TO app_identity")
 
         conn.execute(
