@@ -942,6 +942,8 @@ git commit -m "feat: add users and library_items CRUD helpers"
 
 This script is run once, by hand, to move the maintainer's existing single-owner SQLite data into the new schema. It is not a general import feature.
 
+**Scope note (corrects earlier drift against the architecture spec's Migration path section):** the spec's Migration path lists four steps, the last being "`crawlers`, `stock_items`, `stock_item_judgments` copy as-is." An earlier draft of this task's code covered `crawlers` and `listings` only. `stock_items`/`stock_item_judgments` are added below to match the spec — they're genuinely cheap to include (no per-user split, no RLS, no not-yet-built CRUD helper needed, just a verbatim table copy) and the maintainer's real SQLite file has this data. `plex_url`/`plex_matched_at` (also named in the spec's step 2) are deliberately NOT migrated, unlike stock_items — see the note above Step 3's `migrate()` function for why, and the corresponding correction made to the architecture spec itself.
+
 **Open verification item:** the script resolves a Discogs username to its numeric `id` via `GET https://api.discogs.com/users/{username}`, assumed to be a public, unauthenticated endpoint based on Discogs' general REST API shape — this was not independently confirmed against Discogs' current developer docs during planning. Verify this before running the script for real; a `--discogs-user-id` flag is provided as a fallback that skips the lookup entirely if the endpoint doesn't behave as expected.
 
 - [ ] **Step 1: Write the failing test**
@@ -989,6 +991,22 @@ def sqlite_source(tmp_path):
     conn.execute(
         "INSERT INTO listings VALUES (1, 'd1', 1, 'http://x/1', 9.99, 2.0, 'USD', 'Mint', '2026-01-01')"
     )
+    conn.execute(
+        "CREATE TABLE stock_items (id INTEGER PRIMARY KEY, crawler_id INTEGER, artist TEXT, "
+        "title TEXT, format TEXT, price REAL, currency TEXT, url TEXT, cover_image_url TEXT, "
+        "item_key TEXT, last_seen TIMESTAMP)"
+    )
+    conn.execute(
+        "INSERT INTO stock_items VALUES (1, 1, 'B', 'Stock Item', 'LP', 19.99, 'USD', "
+        "'http://x/stock/1', 'http://x/stock1.jpg', 'stock-key-1', '2026-01-01')"
+    )
+    conn.execute(
+        "CREATE TABLE stock_item_judgments (item_key TEXT PRIMARY KEY, recommended INTEGER, "
+        "reason TEXT, judged_at TIMESTAMP)"
+    )
+    conn.execute(
+        "INSERT INTO stock_item_judgments VALUES ('stock-key-1', 1, 'good pressing', '2026-01-01')"
+    )
     conn.commit()
     conn.close()
     return path
@@ -1019,7 +1037,22 @@ def test_migrate_creates_user_catalog_library_item_and_listing(pg_test_db, sqlit
         listing = conn.execute("SELECT * FROM listings WHERE release_id = 'd1'").fetchone()
         assert listing["price"] == 9.99
 
-        conn.execute("TRUNCATE users, catalog, library_items, listings, crawlers CASCADE")
+        stock_item = conn.execute(
+            "SELECT * FROM stock_items WHERE item_key = 'stock-key-1'"
+        ).fetchone()
+        assert stock_item["title"] == "Stock Item"
+        assert stock_item["price"] == 19.99
+
+        judgment = conn.execute(
+            "SELECT * FROM stock_item_judgments WHERE item_key = 'stock-key-1'"
+        ).fetchone()
+        assert judgment["recommended"] is True
+        assert judgment["reason"] == "good pressing"
+
+        conn.execute(
+            "TRUNCATE users, catalog, library_items, listings, crawlers, "
+            "stock_items, stock_item_judgments CASCADE"
+        )
         conn.commit()
 ```
 
@@ -1049,6 +1082,12 @@ def resolve_discogs_user_id(username: str) -> int:
 
 
 def migrate(sqlite_path: Path, discogs_username: Optional[str] = None, discogs_user_id: Optional[int] = None) -> int:
+    # plex_url/plex_matched_at from the old releases table are intentionally
+    # dropped here, not carried into library_items: Plex matches are already
+    # documented (2026-07-08-plex-integration-design.md) as recomputed fully on
+    # every collection sync, not sticky — so losing this cached value just means
+    # the next sync's Plex-match phase redoes work it would anyway be safe to
+    # redo, rather than something migrated data would be wrong without.
     if discogs_user_id is None:
         if discogs_username is None:
             raise ValueError("must provide discogs_username or discogs_user_id")
@@ -1102,6 +1141,33 @@ def migrate(sqlite_path: Path, discogs_username: Optional[str] = None, discogs_u
             db.upsert_listing(
                 pconn, l["release_id"], crawler_id_map[l["crawler_id"]], l["url"],
                 l["price"], l["shipping"], l["currency"], l["condition"],
+            )
+
+        # stock_items has no natural unique constraint beyond its own serial id,
+        # so re-running this script against an already-migrated target would
+        # duplicate rows. Acceptable for a one-time, hand-run script — not
+        # guarded against, since guarding would need a schema change out of
+        # this task's scope.
+        for si in sconn.execute("SELECT * FROM stock_items").fetchall():
+            pconn.execute(
+                """
+                INSERT INTO stock_items (crawler_id, artist, title, format, price, currency,
+                                          url, cover_image_url, item_key, last_seen)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                [crawler_id_map[si["crawler_id"]], si["artist"], si["title"], si["format"],
+                 si["price"], si["currency"], si["url"], si["cover_image_url"],
+                 si["item_key"], si["last_seen"]],
+            )
+
+        for sj in sconn.execute("SELECT * FROM stock_item_judgments").fetchall():
+            pconn.execute(
+                """
+                INSERT INTO stock_item_judgments (item_key, recommended, reason, judged_at)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (item_key) DO NOTHING
+                """,
+                [sj["item_key"], bool(sj["recommended"]), sj["reason"], sj["judged_at"]],
             )
 
         pconn.commit()

@@ -366,10 +366,22 @@ other self-hosted deployments being carried forward. One-time migration script:
 1. Export the existing single-owner SQLite `releases` table.
 2. Split each row: global fields (`artist, title, year, label, format,
    discogs_price, barcode, cover_image_url, discogs_url`) → `catalog`; `in_collection,
-   in_wishlist, plex_url, plex_matched_at` → one `library_items` row under the
-   maintainer's new `user_id`, minted via their own first Discogs OAuth login.
+   in_wishlist` → one `library_items` row under the maintainer's new `user_id`, minted via
+   their own first Discogs OAuth login.
 3. Copy `listings` as-is — already global-shaped, no transformation needed.
 4. `crawlers`, `stock_items`, `stock_item_judgments` copy as-is.
+
+**Amendment (2026-07-26, during implementation):** `plex_url`/`plex_matched_at` are
+**not** carried over by the migration script, unlike every other column named above —
+step 2 originally listed them alongside `in_collection`/`in_wishlist`, but the
+implementation plan's migration script drops them. This isn't an oversight: per
+`docs/superpowers/specs/2026-07-08-plex-integration-design.md`'s own "Recomputed fully
+on every sync, not sticky" decision, a Plex match is never treated as durable cached
+state anywhere else in the app either — it's fully rederived on the next collection
+sync's Plex-match phase regardless. Losing the cached value across this one-time
+migration is therefore the same kind of "harmless, gets recomputed" gap as a single
+missed sync, not a data-loss bug. The maintainer's first post-migration sync simply
+re-does the Plex-match phase once, exactly as if a sync had been skipped.
 
 This is a one-time script, not a general "import your SQLite instance" feature.
 
