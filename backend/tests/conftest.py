@@ -1,6 +1,27 @@
+import os
 import sqlite3
 import pytest
 from unittest.mock import patch
+
+
+@pytest.fixture
+def pg_test_db(monkeypatch):
+    import db as db_module
+
+    monkeypatch.setattr(db_module.config, "DATABASE_URL", os.environ["TEST_DATABASE_URL"])
+    monkeypatch.setattr(
+        db_module.config, "IDENTITY_DATABASE_URL", os.environ["TEST_DATABASE_URL"]
+    )
+    monkeypatch.setattr(
+        db_module.config, "APP_DATABASE_URL", os.environ["TEST_DATABASE_URL"]
+    )
+    db_module._admin_pool = None
+    db_module._identity_pool = None
+    db_module._app_pool = None
+    yield
+    for pool in (db_module._admin_pool, db_module._identity_pool, db_module._app_pool):
+        if pool is not None:
+            pool.close()
 
 
 @pytest.fixture
