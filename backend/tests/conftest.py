@@ -19,9 +19,11 @@ def pg_test_db(monkeypatch):
     db_module._identity_pool = None
     db_module._app_pool = None
     yield
-    for pool in (db_module._admin_pool, db_module._identity_pool, db_module._app_pool):
+    for attr in ("_admin_pool", "_identity_pool", "_app_pool"):
+        pool = getattr(db_module, attr)
         if pool is not None:
             pool.close()
+        setattr(db_module, attr, None)
 
 
 @pytest.fixture

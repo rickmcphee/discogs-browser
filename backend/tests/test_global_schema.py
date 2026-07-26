@@ -1,3 +1,4 @@
+import psycopg.errors
 import pytest
 
 import db
@@ -39,9 +40,93 @@ def test_listings_unique_on_release_and_crawler(admin_conn):
         "INSERT INTO listings (release_id, crawler_id, url) VALUES ('d1', %s, 'http://x')",
         [crawler_id],
     )
-    with pytest.raises(Exception):
+    with pytest.raises(psycopg.errors.UniqueViolation):
         admin_conn.execute(
             "INSERT INTO listings (release_id, crawler_id, url) VALUES ('d1', %s, 'http://y')",
             [crawler_id],
         )
     admin_conn.rollback()
+
+
+def test_catalog_primary_key_enforced(admin_conn):
+    admin_conn.execute(
+        "INSERT INTO catalog (discogs_id, artist, title) VALUES ('d1', 'A', 'T')"
+    )
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        admin_conn.execute(
+            "INSERT INTO catalog (discogs_id, artist, title) VALUES ('d1', 'B', 'U')"
+        )
+    admin_conn.rollback()
+
+
+def test_crawlers_site_name_unique(admin_conn):
+    admin_conn.execute(
+        "INSERT INTO crawlers (site_name, module_path) VALUES ('Test Site', 'crawlers.test')"
+    )
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        admin_conn.execute(
+            "INSERT INTO crawlers (site_name, module_path) VALUES ('Test Site', 'crawlers.other')"
+        )
+    admin_conn.rollback()
+
+
+def test_listings_rejects_release_id_not_in_catalog(admin_conn):
+    admin_conn.execute(
+        "INSERT INTO crawlers (site_name, module_path) VALUES ('Test Site', 'crawlers.test')"
+    )
+    crawler_id = admin_conn.execute(
+        "SELECT id FROM crawlers WHERE site_name = 'Test Site'"
+    ).fetchone()["id"]
+    with pytest.raises(psycopg.errors.ForeignKeyViolation):
+        admin_conn.execute(
+            "INSERT INTO listings (release_id, crawler_id, url) VALUES ('missing', %s, 'http://x')",
+            [crawler_id],
+        )
+    admin_conn.rollback()
+
+
+def test_listings_rejects_crawler_id_not_in_crawlers(admin_conn):
+    admin_conn.execute(
+        "INSERT INTO catalog (discogs_id, artist, title) VALUES ('d1', 'A', 'T')"
+    )
+    with pytest.raises(psycopg.errors.ForeignKeyViolation):
+        admin_conn.execute(
+            "INSERT INTO listings (release_id, crawler_id, url) VALUES ('d1', 999999, 'http://x')"
+        )
+    admin_conn.rollback()
+
+
+def test_stock_items_insert_and_select(admin_conn):
+    admin_conn.execute(
+        "INSERT INTO crawlers (site_name, module_path) VALUES ('Test Site', 'crawlers.test')"
+    )
+    crawler_id = admin_conn.execute(
+        "SELECT id FROM crawlers WHERE site_name = 'Test Site'"
+    ).fetchone()["id"]
+    admin_conn.execute(
+        """
+        INSERT INTO stock_items (crawler_id, artist, title, format, price, currency, url, item_key)
+        VALUES (%s, 'A', 'T', 'LP', 19.99, 'USD', 'http://x', 'key1')
+        """,
+        [crawler_id],
+    )
+    row = admin_conn.execute(
+        "SELECT artist, title, price, item_key FROM stock_items WHERE item_key = 'key1'"
+    ).fetchone()
+    assert row["artist"] == "A"
+    assert row["title"] == "T"
+    assert row["price"] == 19.99
+    assert row["item_key"] == "key1"
+
+
+def test_stock_item_judgments_insert_and_select(admin_conn):
+    admin_conn.execute(
+        "INSERT INTO stock_item_judgments (item_key, recommended, reason) "
+        "VALUES ('key1', TRUE, 'good price')"
+    )
+    row = admin_conn.execute(
+        "SELECT item_key, recommended, reason FROM stock_item_judgments WHERE item_key = 'key1'"
+    ).fetchone()
+    assert row["item_key"] == "key1"
+    assert row["recommended"] is True
+    assert row["reason"] == "good price"
