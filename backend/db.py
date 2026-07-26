@@ -267,3 +267,55 @@ def upsert_listing(
         """,
         [release_id, crawler_id, url, price, shipping, currency, condition],
     )
+
+
+def create_user(conn, discogs_user_id: int, discogs_username: str, invited_by: Optional[int] = None) -> dict:
+    return conn.execute(
+        """
+        INSERT INTO users (discogs_user_id, discogs_username, invited_by, created_at)
+        VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
+        RETURNING *
+        """,
+        [discogs_user_id, discogs_username, invited_by],
+    ).fetchone()
+
+
+def get_user_by_discogs_id(conn, discogs_user_id: int) -> Optional[dict]:
+    return conn.execute(
+        "SELECT * FROM users WHERE discogs_user_id = %s", [discogs_user_id]
+    ).fetchone()
+
+
+def upsert_library_item(
+    conn,
+    user_id: int,
+    discogs_id: str,
+    in_collection: Optional[bool] = None,
+    in_wishlist: Optional[bool] = None,
+):
+    existing = conn.execute(
+        "SELECT in_collection, in_wishlist FROM library_items WHERE user_id = %s AND discogs_id = %s",
+        [user_id, discogs_id],
+    ).fetchone()
+    resolved_collection = in_collection if in_collection is not None else (
+        existing["in_collection"] if existing else False
+    )
+    resolved_wishlist = in_wishlist if in_wishlist is not None else (
+        existing["in_wishlist"] if existing else False
+    )
+    conn.execute(
+        """
+        INSERT INTO library_items (user_id, discogs_id, in_collection, in_wishlist, last_synced)
+        VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+        ON CONFLICT (user_id, discogs_id) DO UPDATE SET
+            in_collection = EXCLUDED.in_collection, in_wishlist = EXCLUDED.in_wishlist,
+            last_synced = CURRENT_TIMESTAMP
+        """,
+        [user_id, discogs_id, resolved_collection, resolved_wishlist],
+    )
+
+
+def get_library_items_for_user(conn, user_id: int) -> list[dict]:
+    return conn.execute(
+        "SELECT * FROM library_items WHERE user_id = %s", [user_id]
+    ).fetchall()
