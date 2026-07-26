@@ -26,6 +26,15 @@ def test_get_user_by_discogs_id_returns_none_when_missing(admin_conn):
     assert db.get_user_by_discogs_id(admin_conn, 999) is None
 
 
+def test_create_user_twice_with_same_discogs_id_raises(admin_conn):
+    db.create_user(admin_conn, discogs_user_id=42, discogs_username="alice")
+    admin_conn.commit()
+
+    with pytest.raises(Exception):
+        db.create_user(admin_conn, discogs_user_id=42, discogs_username="alice-again")
+    admin_conn.rollback()
+
+
 def test_upsert_library_item_and_get_for_user(admin_conn):
     user = db.create_user(admin_conn, discogs_user_id=42, discogs_username="alice")
     db.upsert_catalog_release(admin_conn, {

@@ -280,6 +280,9 @@ def create_user(conn, discogs_user_id: int, discogs_username: str, invited_by: O
     ).fetchone()
 
 
+# Includes discogs_oauth_token_encrypted, discogs_oauth_secret_encrypted, and
+# plaintext plex_token — never serialize this return value directly into an
+# API response; allow-list fields explicitly at the call site.
 def get_user_by_discogs_id(conn, discogs_user_id: int) -> Optional[dict]:
     return conn.execute(
         "SELECT * FROM users WHERE discogs_user_id = %s", [discogs_user_id]
@@ -293,25 +296,26 @@ def upsert_library_item(
     in_collection: Optional[bool] = None,
     in_wishlist: Optional[bool] = None,
 ):
-    existing = conn.execute(
-        "SELECT in_collection, in_wishlist FROM library_items WHERE user_id = %s AND discogs_id = %s",
-        [user_id, discogs_id],
-    ).fetchone()
-    resolved_collection = in_collection if in_collection is not None else (
-        existing["in_collection"] if existing else False
-    )
-    resolved_wishlist = in_wishlist if in_wishlist is not None else (
-        existing["in_wishlist"] if existing else False
-    )
+    # COALESCE resolves "unspecified" (None) to the existing row's own column
+    # on update, or FALSE on first insert — in one atomic statement, so two
+    # concurrent partial updates (e.g. collection-sync setting in_collection,
+    # wishlist-sync setting in_wishlist) can't race on a separate read.
     conn.execute(
         """
         INSERT INTO library_items (user_id, discogs_id, in_collection, in_wishlist, last_synced)
-        VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+        VALUES (%(user_id)s, %(discogs_id)s, COALESCE(%(in_collection)s, FALSE),
+                COALESCE(%(in_wishlist)s, FALSE), CURRENT_TIMESTAMP)
         ON CONFLICT (user_id, discogs_id) DO UPDATE SET
-            in_collection = EXCLUDED.in_collection, in_wishlist = EXCLUDED.in_wishlist,
+            in_collection = COALESCE(%(in_collection)s, library_items.in_collection),
+            in_wishlist = COALESCE(%(in_wishlist)s, library_items.in_wishlist),
             last_synced = CURRENT_TIMESTAMP
         """,
-        [user_id, discogs_id, resolved_collection, resolved_wishlist],
+        {
+            "user_id": user_id,
+            "discogs_id": discogs_id,
+            "in_collection": in_collection,
+            "in_wishlist": in_wishlist,
+        },
     )
 
 
