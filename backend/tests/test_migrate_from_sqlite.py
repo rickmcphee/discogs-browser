@@ -82,14 +82,24 @@ def test_migrate_creates_user_catalog_library_item_and_listing(pg_test_db, sqlit
         ).fetchone()
         assert library_item["in_collection"] is True
 
+        # Look up the migrated crawler's actual (new, Postgres-assigned) id rather
+        # than assuming it equals the source SQLite id of 1 — that assumption
+        # would silently pass even if the migration forgot to remap crawler_id,
+        # since a fresh schema's first SERIAL id also happens to be 1.
+        new_crawler_id = conn.execute(
+            "SELECT id FROM crawlers WHERE site_name = 'Test Site'"
+        ).fetchone()["id"]
+
         listing = conn.execute("SELECT * FROM listings WHERE release_id = 'd1'").fetchone()
         assert listing["price"] == 9.99
+        assert listing["crawler_id"] == new_crawler_id
 
         stock_item = conn.execute(
             "SELECT * FROM stock_items WHERE item_key = 'stock-key-1'"
         ).fetchone()
         assert stock_item["title"] == "Stock Item"
         assert stock_item["price"] == 19.99
+        assert stock_item["crawler_id"] == new_crawler_id
 
         judgment = conn.execute(
             "SELECT * FROM stock_item_judgments WHERE item_key = 'stock-key-1'"

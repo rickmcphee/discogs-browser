@@ -44,6 +44,11 @@ def migrate(
     db.init_global_schema()
     db.init_tenant_schema()
 
+    # Everything below runs against a single pconn inside one implicit
+    # transaction: psycopg_pool's ConnectionPool.connection() commits on clean
+    # exit and rolls back on any exception, so nothing is actually persisted
+    # until pconn.commit() below succeeds — a failure partway through this
+    # block leaves Postgres untouched rather than partially migrated.
     with db.get_admin_pool().connection() as pconn:
         existing = db.get_user_by_discogs_id(pconn, discogs_user_id)
         if existing:
