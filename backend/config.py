@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 _data_env = os.environ.get("DISCOGS_BROWSER_DATA", "")
 CONFIG_DIR = Path(_data_env) if _data_env else Path.home() / ".discogs-browser"
@@ -9,17 +10,24 @@ DB_FILE = CONFIG_DIR / "db.sqlite"
 CRAWLERS_DIR = CONFIG_DIR / "crawlers"
 SCREENSHOTS_DIR = CONFIG_DIR / "screenshots"
 
+
+def _with_userinfo(url: str, username: str, password: str) -> str:
+    """Swap the userinfo (user:pass) on a DSN without touching host/port/path,
+    so this works for any real DATABASE_URL, not just the dev-default one."""
+    parts = urlsplit(url)
+    host = parts.netloc.rpartition("@")[2]
+    return urlunsplit((parts.scheme, f"{username}:{password}@{host}", parts.path, parts.query, parts.fragment))
+
+
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/discogs_browser")
 IDENTITY_DATABASE_URL = os.environ.get(
     "IDENTITY_DATABASE_URL",
-    DATABASE_URL.replace("postgres:postgres@", f"app_identity:{os.environ.get('IDENTITY_DB_PASSWORD', '')}@"),
+    _with_userinfo(DATABASE_URL, "app_identity", os.environ.get("IDENTITY_DB_PASSWORD", "")),
 )
 APP_DATABASE_URL = os.environ.get(
     "APP_DATABASE_URL",
-    DATABASE_URL.replace("postgres:postgres@", f"app_user:{os.environ.get('APP_DB_PASSWORD', '')}@"),
+    _with_userinfo(DATABASE_URL, "app_user", os.environ.get("APP_DB_PASSWORD", "")),
 )
-IDENTITY_DB_PASSWORD = os.environ.get("IDENTITY_DB_PASSWORD", "")
-APP_DB_PASSWORD = os.environ.get("APP_DB_PASSWORD", "")
 
 # "" in env → None → bundled Chromium (Docker); unset → "chrome" → real Chrome (local dev)
 _channel_env = os.environ.get("PLAYWRIGHT_CHANNEL", "chrome")

@@ -1,4 +1,3 @@
-# backend/db.py
 from contextlib import contextmanager
 from typing import Optional
 
