@@ -38,20 +38,19 @@ discogs-browser/
 - **Listings table dual role.** `price IS NULL` = pre-populated search URL (user can click "View"). `price IS NOT NULL` = real crawl result. Pre-population runs on startup and after every collection refresh.
 - **Amazon price extraction is scoped.** All selectors in `extract_price()` are scoped to buybox containers (`#corePrice_feature_div`, `#desktop_buybox`, etc.) to avoid matching carousel/recommendation prices.
 - **Playwright channel is configurable.** `PLAYWRIGHT_CHANNEL=""` uses bundled Chromium (Docker). `PLAYWRIGHT_CHANNEL="chrome"` uses the user's real Chrome (local dev default).
-- **App authentication is single-owner: password (Argon2id) + TOTP, always enforced.** `AuthMiddleware` (`backend/auth_middleware.py`) guards every `/api` request via `backend/routers/session.py`. If password/TOTP/recovery codes are all lost, run `python -m reset_owner` (from `backend/`) to clear the owner and sessions and re-enter first-run setup.
+- **App authentication is Discogs OAuth 1.0a, gated by invite code for new accounts, always enforced.** `AuthMiddleware` (`backend/auth_middleware.py`) guards every `/api` request via `backend/routers/session.py`. The app is multi-tenant, not single-owner — see [`docs/superpowers/specs/2026-07-26-multi-tenant-architecture-design.md`](docs/superpowers/specs/2026-07-26-multi-tenant-architecture-design.md) and [`docs/superpowers/specs/2026-07-26-discogs-oauth-auth-design.md`](docs/superpowers/specs/2026-07-26-discogs-oauth-auth-design.md). There is no password/TOTP/recovery-code concept to lose access to; losing access to your Discogs account is outside this app's control.
 - **Wishlist removal is destructive; collection removal is not.** A release dropped from the Discogs wantlist, and never in the collection, is hard-deleted (row + listings) on the next sync — see `db.delete_orphaned_releases`, called from `crawl_manager._sync_collection`. `in_collection` never auto-clears once set, by design — a release removed from the real Discogs collection is left untouched locally.
 
 ## Data directory
 
-All persistent state lives under `DISCOGS_BROWSER_DATA` (default `~/.discogs-browser/`):
+Catalog, listings, and per-user data (collections, sessions, invites) live in Postgres (see `DATABASE_URL` below), not on disk. Local filesystem state under `DISCOGS_BROWSER_DATA` (default `~/.discogs-browser/`) is now limited to:
 
 ```
 ~/.discogs-browser/
 ├── config.json          # settings
-├── db.sqlite            # releases, crawlers, listings
 ├── app.log              # rotating application log
-├── avatar.png           # optional profile photo (512x512 PNG)
-├── crawlers/            # crawler plugins (bundled + user-added)
+├── avatar.png           # optional profile photo (512x512 PNG) — not yet re-scoped per-user; see multi-tenant spec's decomposition
+├── crawlers/            # bundled crawler plugins only — no runtime plugin loading from user-writable paths in the hosted deployment
 └── screenshots/         # debug screenshots, YYYYMMDD_HHMMSS/
 ```
 
