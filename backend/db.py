@@ -419,13 +419,16 @@ def get_and_delete_pending_signup(conn, signup_token: str, max_age_minutes: int 
     return row
 
 
-def create_session(conn, token_hash: str, user_id: int, expires_at: datetime):
+def create_session(
+    conn, token_hash: str, user_id: int, expires_at: datetime, now: Optional[datetime] = None
+):
+    now = now or datetime.utcnow()
     conn.execute(
         """
         INSERT INTO sessions (token_hash, user_id, created_at, expires_at, last_seen_at)
-        VALUES (%s, %s, CURRENT_TIMESTAMP, %s, CURRENT_TIMESTAMP)
+        VALUES (%s, %s, %s, %s, %s)
         """,
-        [token_hash, user_id, expires_at],
+        [token_hash, user_id, now, expires_at, now],
     )
 
 
@@ -435,10 +438,11 @@ def get_session_by_token_hash(conn, token_hash: str) -> Optional[dict]:
     ).fetchone()
 
 
-def touch_session(conn, token_hash: str):
+def touch_session(conn, token_hash: str, now: Optional[datetime] = None):
+    now = now or datetime.utcnow()
     conn.execute(
-        "UPDATE sessions SET last_seen_at = CURRENT_TIMESTAMP WHERE token_hash = %s",
-        [token_hash],
+        "UPDATE sessions SET last_seen_at = %s WHERE token_hash = %s",
+        [now, token_hash],
     )
 
 

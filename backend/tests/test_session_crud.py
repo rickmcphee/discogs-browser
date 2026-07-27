@@ -34,14 +34,20 @@ def test_get_session_by_token_hash_returns_none_when_missing(admin_conn):
 def test_touch_session_updates_last_seen_at(admin_conn):
     user = db.create_user(admin_conn, discogs_user_id=42, discogs_username="alice")
     admin_conn.commit()
-    db.create_session(admin_conn, "hash-abc", user["id"], datetime.utcnow() + timedelta(days=30))
+    original_time = datetime.utcnow() - timedelta(minutes=5)
+    db.create_session(
+        admin_conn, "hash-abc", user["id"], datetime.utcnow() + timedelta(days=30), now=original_time
+    )
     admin_conn.commit()
     original = db.get_session_by_token_hash(admin_conn, "hash-abc")["last_seen_at"]
+    assert original == original_time
 
-    db.touch_session(admin_conn, "hash-abc")
+    touched_time = datetime.utcnow()
+    db.touch_session(admin_conn, "hash-abc", now=touched_time)
     admin_conn.commit()
     updated = db.get_session_by_token_hash(admin_conn, "hash-abc")["last_seen_at"]
-    assert updated >= original
+    assert updated == touched_time
+    assert updated > original
 
 
 def test_delete_session_removes_it(admin_conn):
