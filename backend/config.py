@@ -31,6 +31,16 @@ APP_DATABASE_URL = os.environ.get(
     _with_userinfo(DATABASE_URL, "app_user", APP_DB_PASSWORD),
 )
 
+DISCOGS_CONSUMER_KEY = os.environ.get("DISCOGS_CONSUMER_KEY", "")
+DISCOGS_CONSUMER_SECRET = os.environ.get("DISCOGS_CONSUMER_SECRET", "")
+# TOKEN_ENCRYPTION_KEY was added in an earlier task; leave it where it is.
+
+# Empty in production (SPA served same-origin, so a relative redirect from
+# a backend-issued Location header lands on the SPA correctly). Set to
+# http://localhost:5173 for local dev, where the backend (:8000) and the
+# Vite dev server (:5173) are different origins.
+FRONTEND_BASE_URL = os.environ.get("FRONTEND_BASE_URL", "")
+
 # "" in env → None → bundled Chromium (Docker); unset → "chrome" → real Chrome (local dev)
 _channel_env = os.environ.get("PLAYWRIGHT_CHANNEL", "chrome")
 PLAYWRIGHT_CHANNEL = _channel_env if _channel_env else None  # None → bundled Chromium
@@ -58,7 +68,6 @@ def save_config(data: dict):
 
 
 COOKIE_NAME = "db_session"
-BOOTSTRAP_TOKEN_FILE = CONFIG_DIR / "bootstrap_token"
 
 SESSION_IDLE_SECONDS = int(os.environ.get("SESSION_IDLE_SECONDS", 7 * 86400))
 SESSION_MAX_SECONDS = int(os.environ.get("SESSION_MAX_SECONDS", 30 * 86400))
