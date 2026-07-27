@@ -5,6 +5,7 @@ per-row WHERE clause of its own."""
 
 import os
 
+import psycopg
 import pytest
 
 import db
@@ -83,6 +84,20 @@ def test_other_user_sees_only_their_own_row_not_the_first_users(two_users_one_sh
     assert rows[0]["user_id"] == bob_id
     assert rows[0]["in_wishlist"] is True
     assert rows[0]["user_id"] != alice_id
+
+
+def test_insert_with_mismatched_user_id_is_rejected(two_users_one_shared_release):
+    """WITH CHECK on library_items_isolation (backend/db.py) must reject an
+    INSERT for a user_id other than the scoped app.user_id -- proving the
+    isolation guarantee holds for writes, not just the reads covered above."""
+    alice_id, bob_id = two_users_one_shared_release
+    with db.user_scope(alice_id) as conn:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            conn.execute(
+                "INSERT INTO library_items (user_id, discogs_id, in_wishlist) "
+                "VALUES (%s, 'd1', TRUE)",
+                [bob_id],
+            )
 
 
 def test_aggregate_query_also_respects_isolation(two_users_one_shared_release):

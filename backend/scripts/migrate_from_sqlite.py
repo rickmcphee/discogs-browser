@@ -12,6 +12,11 @@ import httpx
 
 import db
 
+# Matches backend/discogs.py's _headers(): Discogs' API policy expects a
+# descriptive User-Agent on every request, and unauthenticated calls (this
+# lookup takes no token) still need one to avoid being rejected/rate-limited.
+_USER_AGENT = "DiscogsCollectionBrowser/1.0 +https://github.com/local/discogs-browser"
+
 
 def resolve_discogs_user_id(username: str) -> int:
     # Open verification item: assumed to be a public, unauthenticated endpoint
@@ -19,7 +24,10 @@ def resolve_discogs_user_id(username: str) -> int:
     # against Discogs' current developer docs during planning — verify before
     # running this for real. If it doesn't behave as expected, use
     # --discogs-user-id to skip this lookup entirely.
-    r = httpx.get(f"https://api.discogs.com/users/{username}")
+    r = httpx.get(
+        f"https://api.discogs.com/users/{username}",
+        headers={"User-Agent": _USER_AGENT},
+    )
     r.raise_for_status()
     return r.json()["id"]
 

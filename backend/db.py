@@ -163,13 +163,24 @@ ALTER TABLE sessions FORCE ROW LEVEL SECURITY;
 ALTER TABLE library_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE library_items FORCE ROW LEVEL SECURITY;
 
+-- WITH CHECK is given explicitly (identical to USING) on all three policies
+-- below rather than left implicit. Postgres already defaults an omitted
+-- WITH CHECK to the USING expression for a FOR-ALL policy like these --
+-- verified directly against this project's Postgres 16 (an unscoped INSERT
+-- is rejected with "new row violates row-level security policy" even
+-- without this clause) -- but that default is easy to get wrong when
+-- reasoning about the policy later (e.g. if it's ever split into separate
+-- FOR SELECT/FOR INSERT policies, where the default no longer applies), so
+-- it's spelled out for auditability rather than relied on implicitly.
+
 -- Defense-in-depth only: the only role granted anything on users
 -- (app_identity) has BYPASSRLS, so this policy has no operational effect
 -- today. What actually protects users right now is that app_user has
 -- no grant on this table at all.
 DROP POLICY IF EXISTS users_isolation ON users;
 CREATE POLICY users_isolation ON users
-    USING (id = current_setting('app.user_id', true)::int);
+    USING (id = current_setting('app.user_id', true)::int)
+    WITH CHECK (id = current_setting('app.user_id', true)::int);
 
 -- Defense-in-depth only: the only role granted anything on sessions
 -- (app_identity) has BYPASSRLS, so this policy has no operational effect
@@ -177,11 +188,13 @@ CREATE POLICY users_isolation ON users
 -- no grant on this table at all.
 DROP POLICY IF EXISTS sessions_isolation ON sessions;
 CREATE POLICY sessions_isolation ON sessions
-    USING (user_id = current_setting('app.user_id', true)::int);
+    USING (user_id = current_setting('app.user_id', true)::int)
+    WITH CHECK (user_id = current_setting('app.user_id', true)::int);
 
 DROP POLICY IF EXISTS library_items_isolation ON library_items;
 CREATE POLICY library_items_isolation ON library_items
-    USING (user_id = current_setting('app.user_id', true)::int);
+    USING (user_id = current_setting('app.user_id', true)::int)
+    WITH CHECK (user_id = current_setting('app.user_id', true)::int);
 """
 
 

@@ -1,7 +1,7 @@
 import json
 import os
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 _data_env = os.environ.get("DISCOGS_BROWSER_DATA", "")
 CONFIG_DIR = Path(_data_env) if _data_env else Path.home() / ".discogs-browser"
@@ -13,10 +13,14 @@ SCREENSHOTS_DIR = CONFIG_DIR / "screenshots"
 
 def _with_userinfo(url: str, username: str, password: str) -> str:
     """Swap the userinfo (user:pass) on a DSN without touching host/port/path,
-    so this works for any real DATABASE_URL, not just the dev-default one."""
+    so this works for any real DATABASE_URL, not just the dev-default one.
+    username/password are percent-encoded (safe="") since a role name or
+    generated password containing '@', ':', '/', etc. would otherwise be
+    parsed as part of the host or path rather than the userinfo."""
     parts = urlsplit(url)
     host = parts.netloc.rpartition("@")[2]
-    return urlunsplit((parts.scheme, f"{username}:{password}@{host}", parts.path, parts.query, parts.fragment))
+    userinfo = f"{quote(username, safe='')}:{quote(password, safe='')}"
+    return urlunsplit((parts.scheme, f"{userinfo}@{host}", parts.path, parts.query, parts.fragment))
 
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/discogs_browser")
