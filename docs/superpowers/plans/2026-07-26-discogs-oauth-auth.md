@@ -957,7 +957,15 @@ def test_callback_redirects_gracefully_when_discogs_access_token_call_fails(clie
 
 @respx.mock
 def test_discogs_callback_locks_out_after_repeated_failures(client, monkeypatch):
-    monkeypatch.setattr(config, "LOGIN_MAX_FAILURES", 2)
+    # RateLimiter copies max_failures into an instance attribute at
+    # construction time, so patching config.LOGIN_MAX_FAILURES afterward
+    # never reaches the already-built module-level discogs_oauth_limiter —
+    # swap the instance itself instead.
+    from rate_limit import RateLimiter
+    import routers.session as session_router
+    monkeypatch.setattr(
+        session_router, "discogs_oauth_limiter", RateLimiter(2, config.LOGIN_LOCKOUT_SECONDS)
+    )
     respx.post("https://api.discogs.com/oauth/access_token").mock(
         return_value=httpx.Response(401, text="invalid or expired verifier")
     )
