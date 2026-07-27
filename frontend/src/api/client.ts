@@ -12,7 +12,7 @@ async function apiFetch(path: string, init: RequestInit = {}): Promise<Response>
   const headers = new Headers(init.headers)
   headers.set('X-Requested-With', 'fetch')
   const r = await fetch(`${BASE}${path}`, { ...init, headers })
-  if (r.status === 401 && path !== '/auth/status' && path !== '/auth/login') {
+  if (r.status === 401) {
     onUnauthorized?.()
   }
   return r
