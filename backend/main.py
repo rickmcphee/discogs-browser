@@ -3,14 +3,13 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from logging_config import setup_logging, get_logger
-from config import ensure_dirs, CRAWLERS_DIR, load_config, BOOTSTRAP_TOKEN_FILE
+from config import ensure_dirs, CRAWLERS_DIR, load_config
 from version import VERSION
 from crawler import load_crawler_from_path
-from db import get_connection, init_db, register_crawler, owner_exists
+from db import get_connection, init_db, register_crawler
 from routers import collection, releases, settings, crawl, logs, screenshots, health, session, stock
 from auth_middleware import AuthMiddleware
 import scheduler
-import secrets
 
 setup_logging()
 log = get_logger("main")
@@ -89,11 +88,6 @@ def startup():
     conn = get_connection()
     init_db(conn)
     seed_bundled_crawlers(conn)
-    if not owner_exists(conn):
-        token = secrets.token_urlsafe(24)
-        BOOTSTRAP_TOKEN_FILE.write_text(token)
-        log.info("No owner configured. Bootstrap token: %s", token)
-        log.info("Complete first-run setup at the app URL using this token.")
     scheduler.start()
     _configure_schedules(load_config())
 
