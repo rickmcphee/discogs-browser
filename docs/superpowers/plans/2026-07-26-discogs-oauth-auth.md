@@ -573,8 +573,24 @@ git commit -m "feat: add Discogs OAuth and frontend-redirect config, remove boot
 
 **Files:**
 - Modify: `backend/pyproject.toml`
+- Modify: `backend/config.py` (one new line — see Step 0)
 - Create: `backend/oauth_discogs.py`
 - Test: `backend/tests/test_oauth_discogs.py`
+
+**Amendment, caught during this task's own code-quality review:** the original version of this step never set `oauth_callback` on the `POST /oauth/request_token` call. OAuth 1.0a (the "a" specifically closes a session-fixation hole in plain OAuth 1.0 by making the callback parameter mandatory, per RFC 5849 §2.1) requires it — omitting it risks Discogs rejecting the request outright, or silently falling back to out-of-band mode (a manually-copied verifier code instead of an automatic browser redirect), which would break the redirect-based flow Task 7 is built around. Fixed below by adding `BACKEND_BASE_URL` config and passing `redirect_uri` to every `OAuth1Client` construction. Also: the fail-fast credential check (`_require_consumer_credentials()`) is now called from all three functions, not just `start_handshake()` — `oauth_request_state` (Task 3) exists specifically so the handshake can span separate requests, plausibly separate process lifetimes if the app restarts in between, so "only `start_handshake()` checked, so the others don't need to" was never actually a safe assumption.
+
+- [ ] **Step 0: Add the backend's own callback base URL to config**
+
+In `backend/config.py`, near `FRONTEND_BASE_URL`, add:
+
+```python
+# The backend's own publicly-reachable base URL, used to build the OAuth
+# callback Discogs redirects back to. Defaults to the local dev backend
+# port; must be set to the real public URL in any non-local deployment.
+BACKEND_BASE_URL = os.environ.get("BACKEND_BASE_URL", "http://localhost:8000")
+```
+
+Unlike `FRONTEND_BASE_URL` (empty-by-default, since production serves the SPA same-origin), this one defaults to a real value — there's no "same origin, so a relative URL works" escape hatch for a callback URL Discogs itself constructs and redirects to; it always needs to be a fully-qualified URL, so the default has to be *something* usable, and a local dev backend on port 8000 is the least-surprising default for this codebase.
 
 - [ ] **Step 1: Add the `authlib` dependency**
 
@@ -601,17 +617,23 @@ Confirm: the constructor accepts `client_id`/`client_secret` (and optionally `to
 ```python
 # backend/tests/test_oauth_discogs.py
 import httpx
+import pytest
 import respx
 
 import config
 import oauth_discogs
 
 
-@respx.mock
-def test_start_handshake_returns_token_secret_and_authorize_url(monkeypatch):
+@pytest.fixture(autouse=True)
+def _consumer_credentials(monkeypatch):
     monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "consumer-key")
     monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "consumer-secret")
-    respx.post("https://api.discogs.com/oauth/request_token").mock(
+    monkeypatch.setattr(config, "BACKEND_BASE_URL", "http://localhost:8000")
+
+
+@respx.mock
+def test_start_handshake_returns_token_secret_and_authorize_url():
+    route = respx.post("https://api.discogs.com/oauth/request_token").mock(
         return_value=httpx.Response(
             200,
             text="oauth_token=req-token-123&oauth_token_secret=req-secret-456",
@@ -626,11 +648,33 @@ def test_start_handshake_returns_token_secret_and_authorize_url(monkeypatch):
     assert "req-token-123" in result["authorize_url"]
     assert result["authorize_url"].startswith("https://www.discogs.com/oauth/authorize")
 
+    # the whole point of this task's amendment: confirm oauth_callback was
+    # actually sent, not just that the call succeeded against a mock that
+    # doesn't care what parameters it received
+    sent_request = route.calls.last.request
+    auth_header = sent_request.headers["authorization"]
+    assert "oauth_callback=" in auth_header
+    assert "localhost%3A8000" in auth_header or "localhost:8000" in auth_header
+
 
 @respx.mock
-def test_fetch_access_token_returns_token_and_secret(monkeypatch):
-    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "consumer-key")
-    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "consumer-secret")
+def test_start_handshake_raises_clearly_on_discogs_error_response():
+    respx.post("https://api.discogs.com/oauth/request_token").mock(
+        return_value=httpx.Response(401, text="invalid consumer key")
+    )
+    with pytest.raises(Exception):
+        oauth_discogs.start_handshake()
+
+
+def test_start_handshake_raises_clearly_when_consumer_credentials_unset(monkeypatch):
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "")
+    with pytest.raises(RuntimeError, match="DISCOGS_CONSUMER_KEY"):
+        oauth_discogs.start_handshake()
+
+
+@respx.mock
+def test_fetch_access_token_returns_token_and_secret():
     respx.post("https://api.discogs.com/oauth/access_token").mock(
         return_value=httpx.Response(
             200,
@@ -645,10 +689,15 @@ def test_fetch_access_token_returns_token_and_secret(monkeypatch):
     assert result["oauth_token_secret"] == "access-secret-012"
 
 
+def test_fetch_access_token_raises_clearly_when_consumer_credentials_unset(monkeypatch):
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "")
+    with pytest.raises(RuntimeError, match="DISCOGS_CONSUMER_KEY"):
+        oauth_discogs.fetch_access_token("req-token-123", "req-secret-456", "verifier-code")
+
+
 @respx.mock
-def test_fetch_identity_returns_discogs_user_id_and_username(monkeypatch):
-    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "consumer-key")
-    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "consumer-secret")
+def test_fetch_identity_returns_discogs_user_id_and_username():
     respx.get("https://api.discogs.com/oauth/identity").mock(
         return_value=httpx.Response(200, json={"id": 777, "username": "alice"})
     )
@@ -657,7 +706,16 @@ def test_fetch_identity_returns_discogs_user_id_and_username(monkeypatch):
 
     assert result["id"] == 777
     assert result["username"] == "alice"
+
+
+def test_fetch_identity_raises_clearly_when_consumer_credentials_unset(monkeypatch):
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "")
+    with pytest.raises(RuntimeError, match="DISCOGS_CONSUMER_KEY"):
+        oauth_discogs.fetch_identity("access-token-789", "access-secret-012")
 ```
+
+The `oauth_callback` assertion in the first test inspects the request's signed `Authorization` header rather than the URL/body, since HMAC-SHA1 OAuth1 puts `oauth_*` parameters there by default for this kind of request — if your actual signed request puts it somewhere else (check what `respx`'s captured request actually looks like when you run this), adjust the assertion to check wherever it really ended up, but don't drop the assertion itself; the point is proving the parameter was sent, not matching this exact header-vs-body guess.
 
 - [ ] **Step 4: Run test to verify it fails**
 
@@ -678,10 +736,21 @@ ACCESS_TOKEN_URL = "https://api.discogs.com/oauth/access_token"
 IDENTITY_URL = "https://api.discogs.com/oauth/identity"
 
 
+def _require_consumer_credentials():
+    if not config.DISCOGS_CONSUMER_KEY or not config.DISCOGS_CONSUMER_SECRET:
+        raise RuntimeError(
+            "DISCOGS_CONSUMER_KEY and DISCOGS_CONSUMER_SECRET must both be set (non-empty) "
+            "before using the Discogs OAuth client"
+        )
+
+
 def start_handshake() -> dict:
+    _require_consumer_credentials()
+    callback_url = f"{config.BACKEND_BASE_URL}/api/auth/discogs/callback"
     with OAuth1Client(
         client_id=config.DISCOGS_CONSUMER_KEY,
         client_secret=config.DISCOGS_CONSUMER_SECRET,
+        redirect_uri=callback_url,
     ) as client:
         request_token = client.fetch_request_token(REQUEST_TOKEN_URL)
         authorize_url = client.create_authorization_url(
@@ -695,6 +764,7 @@ def start_handshake() -> dict:
 
 
 def fetch_access_token(request_token: str, request_token_secret: str, verifier: str) -> dict:
+    _require_consumer_credentials()
     with OAuth1Client(
         client_id=config.DISCOGS_CONSUMER_KEY,
         client_secret=config.DISCOGS_CONSUMER_SECRET,
@@ -705,6 +775,7 @@ def fetch_access_token(request_token: str, request_token_secret: str, verifier: 
 
 
 def fetch_identity(oauth_token: str, oauth_token_secret: str) -> dict:
+    _require_consumer_credentials()
     with OAuth1Client(
         client_id=config.DISCOGS_CONSUMER_KEY,
         client_secret=config.DISCOGS_CONSUMER_SECRET,
@@ -716,6 +787,8 @@ def fetch_identity(oauth_token: str, oauth_token_secret: str) -> dict:
         return r.json()
 ```
 
+`redirect_uri` is only passed on `start_handshake()`'s `OAuth1Client` — it's the `oauth_callback` parameter's source for the Temporary Credentials Request (RFC 5849 §2.1), which is the only one of the three calls that needs it; `fetch_access_token`/`fetch_identity` sign different request types where a callback parameter isn't part of the spec.
+
 - [ ] **Step 6: Run test to verify it passes**
 
 Run: `cd backend && pytest tests/test_oauth_discogs.py -v`
@@ -724,7 +797,7 @@ Expected: PASS. If it fails because the installed `authlib` API differs from Ste
 - [ ] **Step 7: Commit**
 
 ```bash
-cd backend && git add pyproject.toml oauth_discogs.py tests/test_oauth_discogs.py
+cd backend && git add pyproject.toml config.py oauth_discogs.py tests/test_oauth_discogs.py
 git commit -m "feat: add Discogs OAuth1.0a client wrapper"
 ```
 
