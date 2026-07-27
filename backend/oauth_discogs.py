@@ -12,15 +12,17 @@ def _require_consumer_credentials():
     if not config.DISCOGS_CONSUMER_KEY or not config.DISCOGS_CONSUMER_SECRET:
         raise RuntimeError(
             "DISCOGS_CONSUMER_KEY and DISCOGS_CONSUMER_SECRET must both be set (non-empty) "
-            "before starting the Discogs OAuth handshake"
+            "before using the Discogs OAuth client"
         )
 
 
 def start_handshake() -> dict:
     _require_consumer_credentials()
+    callback_url = f"{config.BACKEND_BASE_URL}/api/auth/discogs/callback"
     with OAuth1Client(
         client_id=config.DISCOGS_CONSUMER_KEY,
         client_secret=config.DISCOGS_CONSUMER_SECRET,
+        redirect_uri=callback_url,
     ) as client:
         request_token = client.fetch_request_token(REQUEST_TOKEN_URL)
         authorize_url = client.create_authorization_url(
@@ -34,6 +36,7 @@ def start_handshake() -> dict:
 
 
 def fetch_access_token(request_token: str, request_token_secret: str, verifier: str) -> dict:
+    _require_consumer_credentials()
     with OAuth1Client(
         client_id=config.DISCOGS_CONSUMER_KEY,
         client_secret=config.DISCOGS_CONSUMER_SECRET,
@@ -44,6 +47,7 @@ def fetch_access_token(request_token: str, request_token_secret: str, verifier: 
 
 
 def fetch_identity(oauth_token: str, oauth_token_secret: str) -> dict:
+    _require_consumer_credentials()
     with OAuth1Client(
         client_id=config.DISCOGS_CONSUMER_KEY,
         client_secret=config.DISCOGS_CONSUMER_SECRET,

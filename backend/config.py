@@ -37,6 +37,11 @@ APP_DATABASE_URL = os.environ.get(
 # Vite dev server (:5173) are different origins.
 FRONTEND_BASE_URL = os.environ.get("FRONTEND_BASE_URL", "")
 
+# The backend's own publicly-reachable base URL, used to build the OAuth
+# callback Discogs redirects back to. Defaults to the local dev backend
+# port; must be set to the real public URL in any non-local deployment.
+BACKEND_BASE_URL = os.environ.get("BACKEND_BASE_URL", "http://localhost:8000")
+
 # "" in env → None → bundled Chromium (Docker); unset → "chrome" → real Chrome (local dev)
 _channel_env = os.environ.get("PLAYWRIGHT_CHANNEL", "chrome")
 PLAYWRIGHT_CHANNEL = _channel_env if _channel_env else None  # None → bundled Chromium
