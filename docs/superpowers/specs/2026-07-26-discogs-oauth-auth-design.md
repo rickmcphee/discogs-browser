@@ -240,9 +240,15 @@ helpers already built in the data-model plan.
   "Continue with Discogs" link to `/api/auth/discogs/start` (a real
   navigation, not a `fetch` call).
 - New component for the invite-code step, shown when `App.tsx` detects
-  `?signup_pending=<token>` in the URL on load — a single input + submit,
+  `?signup_pending=<token>` in the URL on load **and** the resolved auth
+  status is not already `authenticated` — a single input + submit,
   `POST`ing to `/api/auth/redeem-invite`, then clearing the URL param and
-  re-checking `/api/auth/status` on success.
+  re-checking `/api/auth/status` on success. The `authenticated` guard
+  exists so a returning user who revisits a stale bookmarked or
+  back-buttoned signup link (whose `pending_signups` row is long since
+  consumed or expired) falls straight through to the app instead of
+  getting stuck on a form that can only fail — found during
+  implementation, not part of the original design.
 - `App.tsx`'s three-way bootstrap branch (`setup_required`/`unauthenticated`/
   `authenticated`) collapses to two, plus the URL-param check for the invite
   step.
