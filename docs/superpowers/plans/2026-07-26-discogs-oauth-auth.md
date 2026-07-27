@@ -935,6 +935,49 @@ def test_callback_for_new_user_creates_pending_signup_and_redirects_with_token(c
     assert config.COOKIE_NAME not in r.cookies
 
 
+@respx.mock
+def test_callback_redirects_gracefully_when_discogs_access_token_call_fails(client):
+    with db.get_admin_pool().connection() as conn:
+        db.create_oauth_request_state(conn, "req-token-3", "req-secret-3")
+        conn.commit()
+
+    respx.post("https://api.discogs.com/oauth/access_token").mock(
+        return_value=httpx.Response(401, text="invalid or expired verifier")
+    )
+
+    r = client.get(
+        "/api/auth/discogs/callback",
+        params={"oauth_token": "req-token-3", "oauth_verifier": "bad-verifier"},
+        follow_redirects=False,
+    )
+    assert r.status_code in (302, 307)
+    assert "auth_error=discogs_failed" in r.headers["location"]
+    assert config.COOKIE_NAME not in r.cookies
+
+
+@respx.mock
+def test_discogs_callback_locks_out_after_repeated_failures(client, monkeypatch):
+    monkeypatch.setattr(config, "LOGIN_MAX_FAILURES", 2)
+    respx.post("https://api.discogs.com/oauth/access_token").mock(
+        return_value=httpx.Response(401, text="invalid or expired verifier")
+    )
+    for _ in range(2):
+        with db.get_admin_pool().connection() as conn:
+            db.create_oauth_request_state(conn, "req-token-lockout", "req-secret-lockout")
+            conn.commit()
+        client.get(
+            "/api/auth/discogs/callback",
+            params={"oauth_token": "req-token-lockout", "oauth_verifier": "bad"},
+            follow_redirects=False,
+        )
+
+    r = client.get(
+        "/api/auth/discogs/callback",
+        params={"oauth_token": "req-token-lockout", "oauth_verifier": "bad"},
+    )
+    assert r.status_code == 429
+
+
 def test_redeem_invite_creates_user_and_session(client):
     with db.get_admin_pool().connection() as conn:
         admin_user = db.create_user(conn, discogs_user_id=1, discogs_username="admin")
@@ -1080,6 +1123,7 @@ router = APIRouter()
 log = get_logger("session")
 
 redeem_limiter = RateLimiter(config.LOGIN_MAX_FAILURES, config.LOGIN_LOCKOUT_SECONDS)
+discogs_oauth_limiter = RateLimiter(config.LOGIN_MAX_FAILURES, config.LOGIN_LOCKOUT_SECONDS)
 
 
 class RedeemInviteRequest(BaseModel):
@@ -1140,7 +1184,14 @@ def auth_status(request: Request):
 
 
 @router.get("/auth/discogs/start")
-def discogs_start():
+def discogs_start(request: Request):
+    key = _client_key(request)
+    if discogs_oauth_limiter.is_locked(key):
+        raise HTTPException(status_code=429, detail="Too many attempts, try later")
+    discogs_oauth_limiter.register_failure(key)  # counts every call, not just failures —
+    # this limiter caps raw handshake volume (each call is a real outbound request to
+    # Discogs under this app's shared consumer key), not repeated wrong-guess attempts
+
     handshake = oauth_discogs.start_handshake()
     with db.get_identity_pool().connection() as conn:
         db.create_oauth_request_state(
@@ -1151,17 +1202,28 @@ def discogs_start():
 
 
 @router.get("/auth/discogs/callback")
-def discogs_callback(oauth_token: str, oauth_verifier: str, request: Request, response: Response):
+def discogs_callback(oauth_token: str, oauth_verifier: str, request: Request):
+    key = _client_key(request)
+    if discogs_oauth_limiter.is_locked(key):
+        raise HTTPException(status_code=429, detail="Too many attempts, try later")
+
     with db.get_identity_pool().connection() as conn:
         state = db.get_and_delete_oauth_request_state(conn, oauth_token)
         conn.commit()
     if state is None:
+        discogs_oauth_limiter.register_failure(key)
         return RedirectResponse(f"{config.FRONTEND_BASE_URL}/?auth_error=expired")
 
-    access = oauth_discogs.fetch_access_token(
-        oauth_token, state["request_token_secret"], oauth_verifier
-    )
-    identity = oauth_discogs.fetch_identity(access["oauth_token"], access["oauth_token_secret"])
+    try:
+        access = oauth_discogs.fetch_access_token(
+            oauth_token, state["request_token_secret"], oauth_verifier
+        )
+        identity = oauth_discogs.fetch_identity(access["oauth_token"], access["oauth_token_secret"])
+    except Exception:
+        log.warning("Discogs OAuth exchange failed for oauth_token=%s", oauth_token)
+        discogs_oauth_limiter.register_failure(key)
+        return RedirectResponse(f"{config.FRONTEND_BASE_URL}/?auth_error=discogs_failed")
+
     discogs_user_id = identity["id"]
     discogs_username = identity["username"]
 
@@ -1239,6 +1301,13 @@ def logout(request: Request, response: Response):
 ```
 
 Note the `_create_session_for_user(conn, ...)` signature: it takes the caller's own connection and does not commit — both call sites (`discogs_callback`'s existing-user branch, `redeem_invite`) pass their own already-open `conn` and commit once, at the true end of their own transaction. Avatar endpoints (`upload_avatar`/`get_avatar`/`remove_avatar`) from the old file are unrelated to auth and are **not** shown removed above because they should be preserved — copy them back in from the pre-rewrite version of this file if your editor's rewrite dropped them; they don't belong in this plan's scope to touch.
+
+**Amendment, caught during this task's own code-quality review:** three fixes folded into the code above (not shown as a separate diff, since this task hadn't been reviewed against a shipped commit yet when this was caught):
+1. **`discogs_oauth_limiter` added**, guarding both `/auth/discogs/start` (volume-capped — every call counts, not just failures, since each one is a real outbound request to Discogs under this app's single shared consumer key) and `/auth/discogs/callback` (failure-capped — an expired/missing `oauth_request_state` or a raised exception from the Discogs API calls counts as a failure). This directly fixes a contradiction with the architecture spec's own stated intent ("the existing in-memory `RateLimiter` is carried over as-is — still useful against invite-redemption/callback abuse") that an earlier draft of this router only half-implemented (rate limiting `redeem-invite` but not `callback`/`start` at all).
+2. **`fetch_access_token`/`fetch_identity` wrapped in `try/except`** inside `discogs_callback`. An earlier draft let any exception from these calls (a bad/expired verifier, the user declining consent on Discogs's page, a Discogs-side outage) propagate unhandled to Starlette's default error page — stranding the user mid-navigation with no way back into the app, and inconsistent with this same function's own `state is None` branch three lines above, which already redirects gracefully instead of raising. Now redirects to `?auth_error=discogs_failed`, matching the existing `?auth_error=expired` convention.
+3. **Removed the unused `response: Response` parameter from `discogs_callback`'s signature.** Neither branch used it — each constructs and returns its own `RedirectResponse` instead, so the injected parameter was silently dead code that could mislead a future editor into thinking `response.set_cookie(...)` on it would do something.
+
+**Known, deliberately deferred concern, not fixed here:** `_is_secure`'s trust in the client-suppliable `X-Forwarded-Proto` header (carried over unchanged from the old single-owner design) has no reverse-proxy contract established anywhere in this project — `docker-compose.yml` runs the backend with nothing in front of it to strip or overwrite that header. This is a real gap in a publicly-hosted, multi-tenant context, but fixing it means deciding on a deployment/reverse-proxy topology, which is out of this task's scope (and the architecture spec's own stated non-goal of leaving hosting/infra decisions for later). Flagged here so it isn't silently lost track of before that decision gets made.
 
 - [ ] **Step 4: Run test to verify it passes**
 
