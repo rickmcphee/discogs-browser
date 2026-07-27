@@ -64,7 +64,7 @@ def test_create_and_consume_pending_signup(admin_conn):
 
 def test_expired_pending_signup_is_rejected_and_still_deleted(admin_conn):
     admin_conn.execute(
-        "INSERT INTO pending_signups (token, discogs_user_id, discogs_username, "
+        "INSERT INTO pending_signups (signup_token, discogs_user_id, discogs_username, "
         "oauth_token_encrypted, oauth_secret_encrypted, created_at) "
         "VALUES (%s, %s, %s, %s, %s, %s)",
         ["old-signup", 1, "bob", b"x", b"y", datetime.utcnow() - timedelta(minutes=16)],
@@ -73,6 +73,6 @@ def test_expired_pending_signup_is_rejected_and_still_deleted(admin_conn):
 
     assert db.get_and_delete_pending_signup(admin_conn, "old-signup", max_age_minutes=15) is None
     remaining = admin_conn.execute(
-        "SELECT 1 FROM pending_signups WHERE token = 'old-signup'"
+        "SELECT 1 FROM pending_signups WHERE signup_token = 'old-signup'"
     ).fetchone()
     assert remaining is None

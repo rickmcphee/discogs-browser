@@ -1,5 +1,4 @@
 from contextlib import contextmanager
-from datetime import datetime, timedelta
 from typing import Optional
 
 from psycopg import sql
@@ -157,6 +156,11 @@ CREATE TABLE IF NOT EXISTS invites (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Neither oauth_request_state nor pending_signups gets an RLS policy: both
+-- are pre-session state with no per-user row-ownership column to scope a
+-- policy on in the first place (unlike users/sessions, where the row IS
+-- owned by a user and the omission is about grants doing the real work —
+-- here a policy would have nothing meaningful to compare against).
 CREATE TABLE IF NOT EXISTS oauth_request_state (
     request_token TEXT PRIMARY KEY,
     request_token_secret TEXT NOT NULL,
@@ -164,7 +168,7 @@ CREATE TABLE IF NOT EXISTS oauth_request_state (
 );
 
 CREATE TABLE IF NOT EXISTS pending_signups (
-    token TEXT PRIMARY KEY,
+    signup_token TEXT PRIMARY KEY,
     discogs_user_id INTEGER NOT NULL,
     discogs_username TEXT NOT NULL,
     oauth_token_encrypted BYTEA NOT NULL,
@@ -360,21 +364,29 @@ def create_oauth_request_state(conn, request_token: str, request_token_secret: s
 
 
 def get_and_delete_oauth_request_state(conn, request_token: str, max_age_minutes: int = 10) -> Optional[dict]:
+    # Validity is computed in the RETURNING clause itself (created_at vs
+    # Postgres's own NOW()), not compared against Python's clock afterward —
+    # created_at is a server-computed, zoneless TIMESTAMP, and comparing it to
+    # datetime.utcnow() would silently assume the Postgres session TimeZone
+    # GUC is UTC, which nothing here pins.
     row = conn.execute(
-        "DELETE FROM oauth_request_state WHERE request_token = %s "
-        "RETURNING request_token_secret, created_at",
-        [request_token],
+        """
+        DELETE FROM oauth_request_state WHERE request_token = %(request_token)s
+        RETURNING request_token_secret,
+                  created_at > NOW() - (%(max_age_minutes)s || ' minutes')::interval AS is_valid
+        """,
+        {"request_token": request_token, "max_age_minutes": max_age_minutes},
     ).fetchone()
-    if row is None:
-        return None
-    if row["created_at"] < datetime.utcnow() - timedelta(minutes=max_age_minutes):
+    if row is None or not row["is_valid"]:
         return None
     return row
 
 
+# Callers must Fernet-encrypt oauth_token_encrypted/oauth_secret_encrypted
+# before calling — this function does not enforce or perform encryption.
 def create_pending_signup(
     conn,
-    token: str,
+    signup_token: str,
     discogs_user_id: int,
     discogs_username: str,
     oauth_token_encrypted: bytes,
@@ -383,21 +395,24 @@ def create_pending_signup(
     conn.execute(
         """
         INSERT INTO pending_signups
-            (token, discogs_user_id, discogs_username, oauth_token_encrypted, oauth_secret_encrypted)
+            (signup_token, discogs_user_id, discogs_username, oauth_token_encrypted, oauth_secret_encrypted)
         VALUES (%s, %s, %s, %s, %s)
         """,
-        [token, discogs_user_id, discogs_username, oauth_token_encrypted, oauth_secret_encrypted],
+        [signup_token, discogs_user_id, discogs_username, oauth_token_encrypted, oauth_secret_encrypted],
     )
 
 
-def get_and_delete_pending_signup(conn, token: str, max_age_minutes: int = 15) -> Optional[dict]:
+def get_and_delete_pending_signup(conn, signup_token: str, max_age_minutes: int = 15) -> Optional[dict]:
+    # See get_and_delete_oauth_request_state: validity is computed inside
+    # Postgres's own RETURNING clause, not against Python's clock.
     row = conn.execute(
-        "DELETE FROM pending_signups WHERE token = %s "
-        "RETURNING discogs_user_id, discogs_username, oauth_token_encrypted, oauth_secret_encrypted, created_at",
-        [token],
+        """
+        DELETE FROM pending_signups WHERE signup_token = %(signup_token)s
+        RETURNING discogs_user_id, discogs_username, oauth_token_encrypted, oauth_secret_encrypted,
+                  created_at > NOW() - (%(max_age_minutes)s || ' minutes')::interval AS is_valid
+        """,
+        {"signup_token": signup_token, "max_age_minutes": max_age_minutes},
     ).fetchone()
-    if row is None:
-        return None
-    if row["created_at"] < datetime.utcnow() - timedelta(minutes=max_age_minutes):
+    if row is None or not row["is_valid"]:
         return None
     return row
