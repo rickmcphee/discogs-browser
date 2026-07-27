@@ -1680,12 +1680,12 @@ export async function redeemInvite(signupToken: string, inviteCode: string): Pro
 
 `logout` stays exactly as it is — its shape didn't change.
 
-- [ ] **Step 2: Run the frontend test suite for regressions**
+- [ ] **Step 3: Run the frontend test suite for regressions**
 
 Run: `cd frontend && npm test`
 Expected: failures in any test file that references the now-removed functions/types (`AuthState`, `login`, `setupOwner`, `verifySetup`, `changePassword`) — this is expected mid-task breakage; Tasks 11-13 fix the files that cause it. Note which files fail here so you're not surprised later.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 cd frontend && git add src/api/types.ts src/api/client.ts
