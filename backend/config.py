@@ -31,10 +31,6 @@ APP_DATABASE_URL = os.environ.get(
     _with_userinfo(DATABASE_URL, "app_user", APP_DB_PASSWORD),
 )
 
-DISCOGS_CONSUMER_KEY = os.environ.get("DISCOGS_CONSUMER_KEY", "")
-DISCOGS_CONSUMER_SECRET = os.environ.get("DISCOGS_CONSUMER_SECRET", "")
-# TOKEN_ENCRYPTION_KEY was added in an earlier task; leave it where it is.
-
 # Empty in production (SPA served same-origin, so a relative redirect from
 # a backend-issued Location header lands on the SPA correctly). Set to
 # http://localhost:5173 for local dev, where the backend (:8000) and the
@@ -46,6 +42,8 @@ _channel_env = os.environ.get("PLAYWRIGHT_CHANNEL", "chrome")
 PLAYWRIGHT_CHANNEL = _channel_env if _channel_env else None  # None → bundled Chromium
 
 TOKEN_ENCRYPTION_KEY = os.environ.get("TOKEN_ENCRYPTION_KEY", "")
+DISCOGS_CONSUMER_KEY = os.environ.get("DISCOGS_CONSUMER_KEY", "")
+DISCOGS_CONSUMER_SECRET = os.environ.get("DISCOGS_CONSUMER_SECRET", "")
 
 
 def ensure_dirs():
