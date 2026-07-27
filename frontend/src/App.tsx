@@ -5,10 +5,10 @@ import Settings from './views/Settings'
 import Account from './views/Account'
 import LogViewer from './views/LogViewer'
 import LoginScreen from './views/LoginScreen'
-import SetupWizard from './views/SetupWizard'
+import InviteCodeScreen from './views/InviteCodeScreen'
 import Avatar from './components/Avatar'
-import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, clearJudgments, exportRecommendationsCsv, getCrawlers, getSettings, getJudgmentStatus, checkHealth, getAuthState, setUnauthorizedHandler, hasAvatar } from './api/client'
-import type { CrawlEvent, CrawlStatus, CollectionStatus, Crawler, AuthState } from './api/types'
+import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, clearJudgments, exportRecommendationsCsv, getCrawlers, getSettings, getJudgmentStatus, checkHealth, getAuthStatus, setUnauthorizedHandler, hasAvatar } from './api/client'
+import type { CrawlEvent, CrawlStatus, CollectionStatus, Crawler, AuthStatus } from './api/types'
 
 type View = 'collection' | 'wishlist' | 'instock' | 'settings' | 'logs' | 'account'
 
@@ -43,7 +43,11 @@ export default function App() {
   const [syncMessageId, setSyncMessageId] = useState<number | null>(null)
   const [dismissedSyncId, setDismissedSyncId] = useState(() => Number(localStorage.getItem(DISMISSED_SYNC_KEY) ?? 0))
   const [syncing, setSyncing] = useState(false)
-  const [authState, setAuthState] = useState<AuthState | null>(null)
+  const [authState, setAuthState] = useState<AuthStatus | null>(null)
+  const [signupToken, setSignupToken] = useState<string | null>(() => {
+    const params = new URLSearchParams(window.location.search)
+    return params.get('signup_pending')
+  })
 
   // eventId is null for locally-generated messages (button-click failures) that never
   // survive a refresh and so never need replay suppression; those always show.
@@ -54,7 +58,7 @@ export default function App() {
 
   // Poll /api/health until the backend is up, then load initial data.
   useEffect(() => {
-    if (authState !== 'authenticated') return
+    if (authState?.state !== 'authenticated') return
     let cancelled = false
     async function poll() {
       while (!cancelled) {
@@ -82,7 +86,7 @@ export default function App() {
   // Persistent SSE connection — reconnects on error. Waits for server to be ready.
   // Handles both user-triggered and scheduled crawls.
   useEffect(() => {
-    if (authState !== 'authenticated') return
+    if (authState?.state !== 'authenticated') return
     let source: EventSource | null = null
     let reconnectTimer: ReturnType<typeof setTimeout>
     let destroyed = false
@@ -207,8 +211,8 @@ export default function App() {
   }, [authState, setSyncStatus])
 
   useEffect(() => {
-    setUnauthorizedHandler(() => setAuthState('unauthenticated'))
-    getAuthState().then(setAuthState).catch(() => setAuthState('unauthenticated'))
+    setUnauthorizedHandler(() => setAuthState({ state: 'unauthenticated' }))
+    getAuthStatus().then(setAuthState).catch(() => setAuthState({ state: 'unauthenticated' }))
   }, [])
 
   const startRefresh = useCallback(async (mode: 'all' | 'new') => {
@@ -320,11 +324,20 @@ export default function App() {
   if (authState === null) {
     return <div className="min-h-screen flex items-center justify-center text-gray-500">Loading…</div>
   }
-  if (authState === 'setup_required') {
-    return <SetupWizard onComplete={() => setAuthState('authenticated')} />
+  if (signupToken) {
+    return (
+      <InviteCodeScreen
+        signupToken={signupToken}
+        onRedeemed={() => {
+          setSignupToken(null)
+          window.history.replaceState({}, '', window.location.pathname)
+          getAuthStatus().then(setAuthState)
+        }}
+      />
+    )
   }
-  if (authState === 'unauthenticated') {
-    return <LoginScreen onAuthenticated={() => setAuthState('authenticated')} />
+  if (authState.state === 'unauthenticated') {
+    return <LoginScreen />
   }
 
   const recommendedAvailable = hasAnthropicKey && hasJudgedItems && !judgmentRunning
