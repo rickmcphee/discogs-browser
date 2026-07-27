@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+from datetime import datetime, timedelta
 from typing import Optional
 
 from psycopg import sql
@@ -156,6 +157,21 @@ CREATE TABLE IF NOT EXISTS invites (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS oauth_request_state (
+    request_token TEXT PRIMARY KEY,
+    request_token_secret TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS pending_signups (
+    token TEXT PRIMARY KEY,
+    discogs_user_id INTEGER NOT NULL,
+    discogs_username TEXT NOT NULL,
+    oauth_token_encrypted BYTEA NOT NULL,
+    oauth_secret_encrypted BYTEA NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE users FORCE ROW LEVEL SECURITY;
 ALTER TABLE sessions ENABLE ROW LEVEL SECURITY;
@@ -225,6 +241,8 @@ def init_tenant_schema():
         conn.execute("GRANT SELECT, UPDATE ON invites TO app_identity")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON sessions TO app_identity")
         conn.execute("GRANT USAGE, SELECT ON SEQUENCE users_id_seq TO app_identity")
+        conn.execute("GRANT SELECT, INSERT, DELETE ON oauth_request_state TO app_identity")
+        conn.execute("GRANT SELECT, INSERT, DELETE ON pending_signups TO app_identity")
 
         conn.execute(
             "GRANT SELECT ON catalog, listings, crawlers, stock_items, stock_item_judgments TO app_user"
@@ -332,3 +350,54 @@ def get_library_items_for_user(conn, user_id: int) -> list[dict]:
     return conn.execute(
         "SELECT * FROM library_items WHERE user_id = %s", [user_id]
     ).fetchall()
+
+
+def create_oauth_request_state(conn, request_token: str, request_token_secret: str):
+    conn.execute(
+        "INSERT INTO oauth_request_state (request_token, request_token_secret) VALUES (%s, %s)",
+        [request_token, request_token_secret],
+    )
+
+
+def get_and_delete_oauth_request_state(conn, request_token: str, max_age_minutes: int = 10) -> Optional[dict]:
+    row = conn.execute(
+        "DELETE FROM oauth_request_state WHERE request_token = %s "
+        "RETURNING request_token_secret, created_at",
+        [request_token],
+    ).fetchone()
+    if row is None:
+        return None
+    if row["created_at"] < datetime.utcnow() - timedelta(minutes=max_age_minutes):
+        return None
+    return row
+
+
+def create_pending_signup(
+    conn,
+    token: str,
+    discogs_user_id: int,
+    discogs_username: str,
+    oauth_token_encrypted: bytes,
+    oauth_secret_encrypted: bytes,
+):
+    conn.execute(
+        """
+        INSERT INTO pending_signups
+            (token, discogs_user_id, discogs_username, oauth_token_encrypted, oauth_secret_encrypted)
+        VALUES (%s, %s, %s, %s, %s)
+        """,
+        [token, discogs_user_id, discogs_username, oauth_token_encrypted, oauth_secret_encrypted],
+    )
+
+
+def get_and_delete_pending_signup(conn, token: str, max_age_minutes: int = 15) -> Optional[dict]:
+    row = conn.execute(
+        "DELETE FROM pending_signups WHERE token = %s "
+        "RETURNING discogs_user_id, discogs_username, oauth_token_encrypted, oauth_secret_encrypted, created_at",
+        [token],
+    ).fetchone()
+    if row is None:
+        return None
+    if row["created_at"] < datetime.utcnow() - timedelta(minutes=max_age_minutes):
+        return None
+    return row
