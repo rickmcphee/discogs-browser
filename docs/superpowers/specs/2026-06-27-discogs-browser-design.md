@@ -46,6 +46,8 @@ nginx (:8080)
 
 ## Application Authentication
 
+**Amendment (2026-07-26):** the single-owner, password+TOTP model described below is retired. The app now uses Discogs OAuth 1.0a login, gated by invite code for new accounts, as part of a broader multi-tenant pivot. See [`docs/superpowers/specs/2026-07-26-multi-tenant-architecture-design.md`](2026-07-26-multi-tenant-architecture-design.md) and [`docs/superpowers/specs/2026-07-26-discogs-oauth-auth-design.md`](2026-07-26-discogs-oauth-auth-design.md) for the current design. The paragraph below is left as historical record, not current behavior.
+
 The app is single-owner: every `/api` request is gated by `AuthMiddleware` requiring a valid server-side session, established by password (Argon2id) + TOTP login. Always enforced, no bypass flag. Full design in [`docs/superpowers/specs/2026-07-02-app-authentication-design.md`](2026-07-02-app-authentication-design.md).
 
 Namespace note: `/api/auth/*` (`routers/session.py`) is *app* authentication — login, setup, session and account management. It is distinct from `/api/crawler-auth/*` (`routers/crawler_auth.py`), the *crawler* browser-login flow described under [Bot Detection and Session Auth](#bot-detection-and-session-auth).
