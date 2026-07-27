@@ -27,17 +27,18 @@ export default function InviteCodeScreen({
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-100">
-      <form onSubmit={submit} className="bg-white p-8 rounded shadow w-80 space-y-4">
-        <h1 className="text-xl font-semibold">Enter your invite code</h1>
+    <div className="min-h-screen flex items-center justify-center bg-gray-950">
+      <form onSubmit={submit} className="bg-gray-900 border border-gray-700 rounded-lg shadow-xl p-8 w-80 space-y-4">
+        <h1 className="text-lg font-semibold text-white">Enter your invite code</h1>
         <input
           type="text" placeholder="Invite code" value={code}
           onChange={e => setCode(e.target.value)}
-          className="w-full border rounded px-3 py-2" autoFocus
+          className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500"
+          autoFocus
         />
-        {error && <p className="text-red-600 text-sm">{error}</p>}
+        {error && <p className="text-red-400 text-sm">{error}</p>}
         <button type="submit" disabled={busy}
-          className="w-full bg-blue-600 text-white rounded py-2 disabled:opacity-50">
+          className="w-full bg-indigo-600 hover:bg-indigo-500 text-white rounded py-2 text-sm font-medium transition-colors disabled:opacity-50">
           {busy ? 'Checking…' : 'Continue'}
         </button>
       </form>

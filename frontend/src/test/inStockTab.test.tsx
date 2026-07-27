@@ -39,7 +39,6 @@ vi.mock('../api/client', () => ({
   getSettings: (...args: unknown[]) => getSettings(...args),
   saveSettings: vi.fn(),
   setCrawlerEnabled: vi.fn(),
-  changePassword: vi.fn(),
   logout: vi.fn(),
   hasAvatar: vi.fn().mockResolvedValue(false),
   uploadAvatar: vi.fn(),
