@@ -324,7 +324,7 @@ export default function App() {
   if (authState === null) {
     return <div className="min-h-screen flex items-center justify-center text-gray-500">Loading…</div>
   }
-  if (signupToken) {
+  if (authState.state !== 'authenticated' && signupToken) {
     return (
       <InviteCodeScreen
         signupToken={signupToken}
