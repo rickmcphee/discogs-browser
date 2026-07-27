@@ -272,7 +272,7 @@ def test_create_and_consume_pending_signup(admin_conn):
 
 def test_expired_pending_signup_is_rejected_and_still_deleted(admin_conn):
     admin_conn.execute(
-        "INSERT INTO pending_signups (token, discogs_user_id, discogs_username, "
+        "INSERT INTO pending_signups (signup_token, discogs_user_id, discogs_username, "
         "oauth_token_encrypted, oauth_secret_encrypted, created_at) "
         "VALUES (%s, %s, %s, %s, %s, %s)",
         ["old-signup", 1, "bob", b"x", b"y", datetime.utcnow() - timedelta(minutes=16)],
@@ -281,10 +281,12 @@ def test_expired_pending_signup_is_rejected_and_still_deleted(admin_conn):
 
     assert db.get_and_delete_pending_signup(admin_conn, "old-signup", max_age_minutes=15) is None
     remaining = admin_conn.execute(
-        "SELECT 1 FROM pending_signups WHERE token = 'old-signup'"
+        "SELECT 1 FROM pending_signups WHERE signup_token = 'old-signup'"
     ).fetchone()
     assert remaining is None
 ```
+
+(This step's `token` column name was renamed to `signup_token` during this task's own code-quality review, commit `a5bd070` — updated here to match, since this plan text was never backported when the rename happened. Task 7's plan text below had the same staleness, caught and fixed when that task was actually implemented.)
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -296,6 +298,11 @@ Expected: FAIL with `psycopg.errors.UndefinedTable: relation "oauth_request_stat
 Find the closing `"""` of the existing `TENANT_SCHEMA` string in `db.py` (right before the `ALTER TABLE users ENABLE ROW LEVEL SECURITY;` block) and insert these two tables above it:
 
 ```sql
+-- Neither table gets ENABLE ROW LEVEL SECURITY: both are pre-session state
+-- with no per-user row-ownership column to scope a policy on in the first
+-- place (unlike users/sessions, where the omission is about grants doing
+-- the real work — here a policy would be actively meaningless, not just
+-- redundant).
 CREATE TABLE IF NOT EXISTS oauth_request_state (
     request_token TEXT PRIMARY KEY,
     request_token_secret TEXT NOT NULL,
@@ -303,7 +310,7 @@ CREATE TABLE IF NOT EXISTS oauth_request_state (
 );
 
 CREATE TABLE IF NOT EXISTS pending_signups (
-    token TEXT PRIMARY KEY,
+    signup_token TEXT PRIMARY KEY,
     discogs_user_id INTEGER NOT NULL,
     discogs_username TEXT NOT NULL,
     oauth_token_encrypted BYTEA NOT NULL,
@@ -311,8 +318,6 @@ CREATE TABLE IF NOT EXISTS pending_signups (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 ```
-
-Neither table gets `ENABLE ROW LEVEL SECURITY` — same reasoning as `invites`: this is pre-session state with no `user_id` to scope by yet.
 
 In `init_tenant_schema()`, alongside the existing `app_identity` grants (`GRANT SELECT, INSERT, UPDATE ON users`, etc.), add:
 
@@ -325,9 +330,6 @@ Then append the CRUD functions to `db.py`:
 
 ```python
 # backend/db.py (append)
-from datetime import datetime, timedelta
-
-
 def create_oauth_request_state(conn, request_token: str, request_token_secret: str):
     conn.execute(
         "INSERT INTO oauth_request_state (request_token, request_token_secret) VALUES (%s, %s)",
@@ -337,20 +339,23 @@ def create_oauth_request_state(conn, request_token: str, request_token_secret: s
 
 def get_and_delete_oauth_request_state(conn, request_token: str, max_age_minutes: int = 10) -> Optional[dict]:
     row = conn.execute(
-        "DELETE FROM oauth_request_state WHERE request_token = %s "
-        "RETURNING request_token_secret, created_at",
-        [request_token],
+        """
+        DELETE FROM oauth_request_state WHERE request_token = %(request_token)s
+        RETURNING request_token_secret,
+                  created_at > NOW() - (%(max_age_minutes)s || ' minutes')::interval AS is_valid
+        """,
+        {"request_token": request_token, "max_age_minutes": max_age_minutes},
     ).fetchone()
-    if row is None:
-        return None
-    if row["created_at"] < datetime.utcnow() - timedelta(minutes=max_age_minutes):
+    if row is None or not row["is_valid"]:
         return None
     return row
 
 
+# Callers must Fernet-encrypt oauth_token_encrypted/oauth_secret_encrypted
+# before calling — this function does not enforce it.
 def create_pending_signup(
     conn,
-    token: str,
+    signup_token: str,
     discogs_user_id: int,
     discogs_username: str,
     oauth_token_encrypted: bytes,
@@ -359,27 +364,28 @@ def create_pending_signup(
     conn.execute(
         """
         INSERT INTO pending_signups
-            (token, discogs_user_id, discogs_username, oauth_token_encrypted, oauth_secret_encrypted)
+            (signup_token, discogs_user_id, discogs_username, oauth_token_encrypted, oauth_secret_encrypted)
         VALUES (%s, %s, %s, %s, %s)
         """,
-        [token, discogs_user_id, discogs_username, oauth_token_encrypted, oauth_secret_encrypted],
+        [signup_token, discogs_user_id, discogs_username, oauth_token_encrypted, oauth_secret_encrypted],
     )
 
 
-def get_and_delete_pending_signup(conn, token: str, max_age_minutes: int = 15) -> Optional[dict]:
+def get_and_delete_pending_signup(conn, signup_token: str, max_age_minutes: int = 15) -> Optional[dict]:
     row = conn.execute(
-        "DELETE FROM pending_signups WHERE token = %s "
-        "RETURNING discogs_user_id, discogs_username, oauth_token_encrypted, oauth_secret_encrypted, created_at",
-        [token],
+        """
+        DELETE FROM pending_signups WHERE signup_token = %(signup_token)s
+        RETURNING discogs_user_id, discogs_username, oauth_token_encrypted, oauth_secret_encrypted,
+                  created_at > NOW() - (%(max_age_minutes)s || ' minutes')::interval AS is_valid
+        """,
+        {"signup_token": signup_token, "max_age_minutes": max_age_minutes},
     ).fetchone()
-    if row is None:
-        return None
-    if row["created_at"] < datetime.utcnow() - timedelta(minutes=max_age_minutes):
+    if row is None or not row["is_valid"]:
         return None
     return row
 ```
 
-Both consume functions use `DELETE ... RETURNING` — a single atomic statement, not a separate `SELECT` followed by a `DELETE`. This is deliberate: the data-model plan's own code review caught exactly this kind of TOCTOU gap in an earlier task (`upsert_library_item`'s original read-then-write pattern), so this plan applies that lesson proactively rather than reintroducing the same class of bug. An expired row is still deleted by the same statement — "reject it" and "consume it" happen together, matching the architecture spec's explicit requirement that expiry be enforced at read time, not dependent on a cleanup job.
+Both consume functions use `DELETE ... RETURNING` as a single atomic statement, not a separate `SELECT` followed by a `DELETE` — closing a TOCTOU class of bug an earlier plan's review caught elsewhere in this codebase. The expiry check itself is computed inside the `RETURNING` clause via `NOW() - INTERVAL ...`, entirely within Postgres's own frame of reference, rather than comparing the returned `created_at` against Python's `datetime.utcnow()` — the latter would silently depend on the Postgres session's `TimeZone` GUC matching Python's UTC assumption. (This whole block reflects the corrected version from this task's own code-quality review, commit `a5bd070` — an earlier draft compared `created_at` in Python and used `token` instead of `signup_token` as the column name; both are fixed here, not just in the code that actually shipped.)
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -983,7 +989,7 @@ def test_redeem_invite_rejects_already_redeemed_code(client):
     # rejection must not have burned the pending signup — it should still be redeemable
     with db.get_admin_pool().connection() as conn:
         row = conn.execute(
-            "SELECT 1 FROM pending_signups WHERE token = 'signup-token-2'"
+            "SELECT 1 FROM pending_signups WHERE signup_token = 'signup-token-2'"
         ).fetchone()
     assert row is not None
 
@@ -996,7 +1002,7 @@ def test_redeem_invite_rejects_expired_pending_signup(client):
             ["VALID999", admin_user["id"]],
         )
         conn.execute(
-            "INSERT INTO pending_signups (token, discogs_user_id, discogs_username, "
+            "INSERT INTO pending_signups (signup_token, discogs_user_id, discogs_username, "
             "oauth_token_encrypted, oauth_secret_encrypted, created_at) "
             "VALUES (%s, %s, %s, %s, %s, %s)",
             ["old-signup", 5, "dave", b"x", b"y", datetime.utcnow() - timedelta(minutes=20)],
