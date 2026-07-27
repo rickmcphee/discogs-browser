@@ -110,12 +110,9 @@ export interface ScreenshotSession {
   entries: ScreenshotEntry[]
 }
 
-export type AuthState = 'setup_required' | 'unauthenticated' | 'authenticated'
-
-export interface SetupResponse {
-  secret: string
-  provisioning_uri: string
-}
+export type AuthStatus =
+  | { state: 'unauthenticated' }
+  | { state: 'authenticated'; user: { discogs_username: string } }
 
 export interface StockItem {
   id: number

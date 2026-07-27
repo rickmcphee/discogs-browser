@@ -1,6 +1,6 @@
 import type {
   ReleasesResponse, Crawler, Settings, SortField, SortOrder, CrawlStatus, CollectionStatus, ScreenshotSession,
-  AuthState, SetupResponse, RecordScope, StockResponse, StockSortField,
+  AuthStatus, RecordScope, StockResponse, StockSortField,
 } from './types'
 
 const BASE = '/api'
@@ -218,52 +218,27 @@ export function screenshotUrl(path: string): string {
   return `${BASE}/screenshots/${path}`
 }
 
-export async function getAuthState(): Promise<AuthState> {
+export async function getAuthStatus(): Promise<AuthStatus> {
   const r = await apiFetch('/auth/status')
-  if (!r.ok) throw new Error(await r.text())
-  return (await r.json()).state
-}
-
-export async function setupOwner(bootstrapToken: string, password: string): Promise<SetupResponse> {
-  const r = await apiFetch('/auth/setup', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ bootstrap_token: bootstrapToken, password }),
-  })
   if (!r.ok) throw new Error(await r.text())
   return r.json()
 }
 
-export async function verifySetup(code: string): Promise<string[]> {
-  const r = await apiFetch('/auth/setup/verify', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code }),
-  })
-  if (!r.ok) throw new Error(await r.text())
-  return (await r.json()).recovery_codes
+export function discogsLoginUrl(): string {
+  return `${BASE}/auth/discogs/start`
 }
 
-export async function login(password: string, code: string): Promise<void> {
-  const r = await apiFetch('/auth/login', {
+export async function redeemInvite(signupToken: string, inviteCode: string): Promise<void> {
+  const r = await apiFetch('/auth/redeem-invite', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ password, code }),
+    body: JSON.stringify({ signup_token: signupToken, invite_code: inviteCode }),
   })
   if (!r.ok) throw new Error(await r.text())
 }
 
 export async function logout(): Promise<void> {
   await apiFetch('/auth/logout', { method: 'POST' })
-}
-
-export async function changePassword(currentPassword: string, newPassword: string, code: string): Promise<void> {
-  const r = await apiFetch('/auth/change-password', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword, code }),
-  })
-  if (!r.ok) throw new Error(await r.text())
 }
 
 export async function hasAvatar(): Promise<boolean> {
