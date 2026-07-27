@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+from datetime import datetime
 from typing import Optional
 
 from psycopg import sql
@@ -416,3 +417,30 @@ def get_and_delete_pending_signup(conn, signup_token: str, max_age_minutes: int 
     if row is None or not row["is_valid"]:
         return None
     return row
+
+
+def create_session(conn, token_hash: str, user_id: int, expires_at: datetime):
+    conn.execute(
+        """
+        INSERT INTO sessions (token_hash, user_id, created_at, expires_at, last_seen_at)
+        VALUES (%s, %s, CURRENT_TIMESTAMP, %s, CURRENT_TIMESTAMP)
+        """,
+        [token_hash, user_id, expires_at],
+    )
+
+
+def get_session_by_token_hash(conn, token_hash: str) -> Optional[dict]:
+    return conn.execute(
+        "SELECT * FROM sessions WHERE token_hash = %s", [token_hash]
+    ).fetchone()
+
+
+def touch_session(conn, token_hash: str):
+    conn.execute(
+        "UPDATE sessions SET last_seen_at = CURRENT_TIMESTAMP WHERE token_hash = %s",
+        [token_hash],
+    )
+
+
+def delete_session(conn, token_hash: str):
+    conn.execute("DELETE FROM sessions WHERE token_hash = %s", [token_hash])
