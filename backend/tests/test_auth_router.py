@@ -60,6 +60,24 @@ def test_discogs_start_redirects_to_discogs_and_stores_request_state(client):
 
 
 @respx.mock
+def test_discogs_start_redirects_gracefully_when_discogs_request_token_call_fails(client):
+    respx.post("https://api.discogs.com/oauth/request_token").mock(
+        return_value=httpx.Response(401, text="invalid consumer key")
+    )
+    r = client.get("/api/auth/discogs/start", follow_redirects=False)
+    assert r.status_code in (302, 307)
+    assert "auth_error=discogs_failed" in r.headers["location"]
+
+
+def test_discogs_start_redirects_gracefully_when_consumer_credentials_unset(client, monkeypatch):
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "")
+    r = client.get("/api/auth/discogs/start", follow_redirects=False)
+    assert r.status_code in (302, 307)
+    assert "auth_error=discogs_failed" in r.headers["location"]
+
+
+@respx.mock
 def test_callback_for_existing_user_creates_session_and_redirects(client):
     with db.get_admin_pool().connection() as conn:
         user = db.create_user(conn, discogs_user_id=777, discogs_username="alice")

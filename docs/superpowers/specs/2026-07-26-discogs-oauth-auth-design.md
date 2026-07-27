@@ -123,7 +123,11 @@ stores the resulting request token + secret in `oauth_request_state`, then
 issues a `307` redirect to
 `https://www.discogs.com/oauth/authorize?oauth_token=...`. A real page
 navigation, not a `fetch` call — this is what the frontend's "Continue with
-Discogs" button links to directly.
+Discogs" button links to directly. A failure at this step (a Discogs outage,
+or unset consumer credentials) redirects to `?auth_error=discogs_failed`
+rather than raising — the same graceful-failure convention the callback
+below uses for its own Discogs-call failures, added during implementation
+after an initial gap left this endpoint's failures as a raw 500.
 
 **`GET /api/auth/discogs/callback`** — Discogs lands the browser here with
 `oauth_token`+`oauth_verifier` query params.

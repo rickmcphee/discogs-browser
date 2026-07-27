@@ -875,6 +875,24 @@ def test_discogs_start_redirects_to_discogs_and_stores_request_state(client):
 
 
 @respx.mock
+def test_discogs_start_redirects_gracefully_when_discogs_request_token_call_fails(client):
+    respx.post("https://api.discogs.com/oauth/request_token").mock(
+        return_value=httpx.Response(401, text="invalid consumer key")
+    )
+    r = client.get("/api/auth/discogs/start", follow_redirects=False)
+    assert r.status_code in (302, 307)
+    assert "auth_error=discogs_failed" in r.headers["location"]
+
+
+def test_discogs_start_redirects_gracefully_when_consumer_credentials_unset(client, monkeypatch):
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "")
+    r = client.get("/api/auth/discogs/start", follow_redirects=False)
+    assert r.status_code in (302, 307)
+    assert "auth_error=discogs_failed" in r.headers["location"]
+
+
+@respx.mock
 def test_callback_for_existing_user_creates_session_and_redirects(client):
     with db.get_admin_pool().connection() as conn:
         user = db.create_user(conn, discogs_user_id=777, discogs_username="alice")
@@ -1200,7 +1218,19 @@ def discogs_start(request: Request):
     # this limiter caps raw handshake volume (each call is a real outbound request to
     # Discogs under this app's shared consumer key), not repeated wrong-guess attempts
 
-    handshake = oauth_discogs.start_handshake()
+    # Amendment, caught during the final whole-branch review: an earlier
+    # version called start_handshake() unwrapped. Since this endpoint is a
+    # real <a href> browser navigation (not fetch), any failure here — a
+    # Discogs outage, or _require_consumer_credentials()'s RuntimeError on a
+    # misconfigured deployment — surfaced as a raw 500 instead of the
+    # graceful ?auth_error=discogs_failed redirect discogs_callback already
+    # had for its own Discogs-call failures.
+    try:
+        handshake = oauth_discogs.start_handshake()
+    except Exception:
+        log.warning("Discogs OAuth handshake start failed")
+        return RedirectResponse(f"{config.FRONTEND_BASE_URL}/?auth_error=discogs_failed")
+
     with db.get_identity_pool().connection() as conn:
         db.create_oauth_request_state(
             conn, handshake["oauth_token"], handshake["oauth_token_secret"]

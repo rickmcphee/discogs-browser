@@ -87,7 +87,12 @@ def discogs_start(request: Request):
     # this limiter caps raw handshake volume (each call is a real outbound request to
     # Discogs under this app's shared consumer key), not repeated wrong-guess attempts
 
-    handshake = oauth_discogs.start_handshake()
+    try:
+        handshake = oauth_discogs.start_handshake()
+    except Exception:
+        log.warning("Discogs OAuth handshake start failed")
+        return RedirectResponse(f"{config.FRONTEND_BASE_URL}/?auth_error=discogs_failed")
+
     with db.get_identity_pool().connection() as conn:
         db.create_oauth_request_state(
             conn, handshake["oauth_token"], handshake["oauth_token_secret"]
