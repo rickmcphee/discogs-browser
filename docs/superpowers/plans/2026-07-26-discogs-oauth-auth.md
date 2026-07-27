@@ -1927,7 +1927,7 @@ and the render branch:
   if (authState === null) {
     return null // or existing loading indicator, unchanged
   }
-  if (signupToken) {
+  if (authState.state !== 'authenticated' && signupToken) {
     return (
       <InviteCodeScreen
         signupToken={signupToken}
@@ -1943,6 +1943,8 @@ and the render branch:
     return <LoginScreen />
   }
 ```
+
+**Amendment, caught during this task's own spec-compliance review:** the original version of this branch showed the invite screen whenever `signupToken` was truthy, with no check against `authState.state`. That's a real UX gap, not just a hypothetical: an already-authenticated returning user who revisits a stale bookmarked or back-buttoned `?signup_pending=...` URL would get stuck on the invite-code form with no escape hatch back into the app — submitting it just fails (the `pending_signups` row is long since consumed or expired), and there was no link back to the main app from that screen. Fixed above by gating the invite-screen branch on `authState.state !== 'authenticated'` — an already-authenticated user with a stale token now falls straight through to the main app instead. This doesn't affect the normal signup flow at all: by the time `onRedeemed`'s `getAuthStatus().then(setAuthState)` resolves to `'authenticated'`, `signupToken` has already been cleared by the earlier synchronous `setSignupToken(null)` call in the same handler, so the two conditions are never simultaneously true during a real signup.
 
 Update the `authState` type declaration from `useState<AuthState | null>(null)` to `useState<AuthStatus | null>(null)`, and update the import line to bring in `AuthStatus`/`getAuthStatus`/`InviteCodeScreen` and drop `AuthState`/`getAuthState`/`SetupWizard`. Any later code in `App.tsx` that reads `authState === 'authenticated'` needs to become `authState.state === 'authenticated'` (grep for `authState ===` and `authState !==` to find every call site — there is at least one more, in the effects gating crawl-stream setup, per the earlier `if (authState !== 'authenticated') return` lines found during planning).
 
