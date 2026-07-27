@@ -10,6 +10,7 @@ import config
 import db
 import session_tokens
 from auth_middleware import AuthMiddleware
+from rate_limit import RateLimiter
 from routers import session as session_router
 
 app = FastAPI()
@@ -117,6 +118,54 @@ def test_callback_for_new_user_creates_pending_signup_and_redirects_with_token(c
     assert r.status_code in (302, 307)
     assert "signup_pending=" in r.headers["location"]
     assert config.COOKIE_NAME not in r.cookies
+
+
+@respx.mock
+def test_callback_redirects_gracefully_when_discogs_access_token_call_fails(client):
+    with db.get_admin_pool().connection() as conn:
+        db.create_oauth_request_state(conn, "req-token-3", "req-secret-3")
+        conn.commit()
+
+    respx.post("https://api.discogs.com/oauth/access_token").mock(
+        return_value=httpx.Response(401, text="invalid or expired verifier")
+    )
+
+    r = client.get(
+        "/api/auth/discogs/callback",
+        params={"oauth_token": "req-token-3", "oauth_verifier": "bad-verifier"},
+        follow_redirects=False,
+    )
+    assert r.status_code in (302, 307)
+    assert "auth_error=discogs_failed" in r.headers["location"]
+    assert config.COOKIE_NAME not in r.cookies
+
+
+@respx.mock
+def test_discogs_callback_locks_out_after_repeated_failures(client, monkeypatch):
+    # discogs_oauth_limiter is a module-level singleton constructed once at import
+    # time with config.LOGIN_MAX_FAILURES already baked in, so patching the config
+    # value here wouldn't reach it — swap in a fresh, isolated instance instead.
+    monkeypatch.setattr(
+        session_router, "discogs_oauth_limiter", RateLimiter(2, config.LOGIN_LOCKOUT_SECONDS)
+    )
+    respx.post("https://api.discogs.com/oauth/access_token").mock(
+        return_value=httpx.Response(401, text="invalid or expired verifier")
+    )
+    for _ in range(2):
+        with db.get_admin_pool().connection() as conn:
+            db.create_oauth_request_state(conn, "req-token-lockout", "req-secret-lockout")
+            conn.commit()
+        client.get(
+            "/api/auth/discogs/callback",
+            params={"oauth_token": "req-token-lockout", "oauth_verifier": "bad"},
+            follow_redirects=False,
+        )
+
+    r = client.get(
+        "/api/auth/discogs/callback",
+        params={"oauth_token": "req-token-lockout", "oauth_verifier": "bad"},
+    )
+    assert r.status_code == 429
 
 
 def test_redeem_invite_creates_user_and_session(client):

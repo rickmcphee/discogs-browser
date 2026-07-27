@@ -18,6 +18,7 @@ router = APIRouter()
 log = get_logger("session")
 
 redeem_limiter = RateLimiter(config.LOGIN_MAX_FAILURES, config.LOGIN_LOCKOUT_SECONDS)
+discogs_oauth_limiter = RateLimiter(config.LOGIN_MAX_FAILURES, config.LOGIN_LOCKOUT_SECONDS)
 
 
 class RedeemInviteRequest(BaseModel):
@@ -78,7 +79,14 @@ def auth_status(request: Request):
 
 
 @router.get("/auth/discogs/start")
-def discogs_start():
+def discogs_start(request: Request):
+    key = _client_key(request)
+    if discogs_oauth_limiter.is_locked(key):
+        raise HTTPException(status_code=429, detail="Too many attempts, try later")
+    discogs_oauth_limiter.register_failure(key)  # counts every call, not just failures —
+    # this limiter caps raw handshake volume (each call is a real outbound request to
+    # Discogs under this app's shared consumer key), not repeated wrong-guess attempts
+
     handshake = oauth_discogs.start_handshake()
     with db.get_identity_pool().connection() as conn:
         db.create_oauth_request_state(
@@ -89,17 +97,28 @@ def discogs_start():
 
 
 @router.get("/auth/discogs/callback")
-def discogs_callback(oauth_token: str, oauth_verifier: str, request: Request, response: Response):
+def discogs_callback(oauth_token: str, oauth_verifier: str, request: Request):
+    key = _client_key(request)
+    if discogs_oauth_limiter.is_locked(key):
+        raise HTTPException(status_code=429, detail="Too many attempts, try later")
+
     with db.get_identity_pool().connection() as conn:
         state = db.get_and_delete_oauth_request_state(conn, oauth_token)
         conn.commit()
     if state is None:
+        discogs_oauth_limiter.register_failure(key)
         return RedirectResponse(f"{config.FRONTEND_BASE_URL}/?auth_error=expired")
 
-    access = oauth_discogs.fetch_access_token(
-        oauth_token, state["request_token_secret"], oauth_verifier
-    )
-    identity = oauth_discogs.fetch_identity(access["oauth_token"], access["oauth_token_secret"])
+    try:
+        access = oauth_discogs.fetch_access_token(
+            oauth_token, state["request_token_secret"], oauth_verifier
+        )
+        identity = oauth_discogs.fetch_identity(access["oauth_token"], access["oauth_token_secret"])
+    except Exception:
+        log.warning("Discogs OAuth exchange failed for oauth_token=%s", oauth_token)
+        discogs_oauth_limiter.register_failure(key)
+        return RedirectResponse(f"{config.FRONTEND_BASE_URL}/?auth_error=discogs_failed")
+
     discogs_user_id = identity["id"]
     discogs_username = identity["username"]
 
