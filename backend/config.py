@@ -35,6 +35,8 @@ APP_DATABASE_URL = os.environ.get(
 _channel_env = os.environ.get("PLAYWRIGHT_CHANNEL", "chrome")
 PLAYWRIGHT_CHANNEL = _channel_env if _channel_env else None  # None → bundled Chromium
 
+TOKEN_ENCRYPTION_KEY = os.environ.get("TOKEN_ENCRYPTION_KEY", "")
+
 
 def ensure_dirs():
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
