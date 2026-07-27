@@ -1476,6 +1476,7 @@ Expected: FAIL — current `auth_middleware.py` imports `auth_core` (now deleted
 # backend/auth_middleware.py
 from datetime import datetime, timedelta
 
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
@@ -1492,6 +1493,32 @@ ALLOWLIST = {
 }
 
 MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def _resolve_session(token: str):
+    """Blocking Postgres I/O — run this via run_in_threadpool from the async
+    dispatch method, never awaited directly on the event loop. Returns
+    user_id on success, "expired" if the session existed but lapsed, or
+    None if no session matched at all."""
+    with db.get_identity_pool().connection() as conn:
+        row = db.get_session_by_token_hash(conn, session_tokens.hash_token(token))
+        if row is None:
+            return None
+
+        # now is reused for both this comparison and the touch_session write
+        # below — safe only because last_seen_at is Python-origin end to end
+        # (an earlier task's amendment), never a Postgres-side clock read, so
+        # both sides of every comparison stay Python-to-Python.
+        now = datetime.utcnow()
+        if now > row["expires_at"] or \
+                (now - row["last_seen_at"]) > timedelta(seconds=config.SESSION_IDLE_SECONDS):
+            db.delete_session(conn, row["token_hash"])
+            conn.commit()
+            return "expired"
+
+        db.touch_session(conn, row["token_hash"], now=now)
+        conn.commit()
+    return row["user_id"]
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -1512,28 +1539,19 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if not token:
             return JSONResponse({"detail": "Not authenticated"}, status_code=401)
 
-        with db.get_identity_pool().connection() as conn:
-            row = db.get_session_by_token_hash(conn, session_tokens.hash_token(token))
-            if row is None:
-                return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+        result = await run_in_threadpool(_resolve_session, token)
+        if result is None:
+            return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+        if result == "expired":
+            return JSONResponse({"detail": "Session expired"}, status_code=401)
 
-            now = datetime.utcnow()
-            if now > row["expires_at"] or \
-                    (now - row["last_seen_at"]) > timedelta(seconds=config.SESSION_IDLE_SECONDS):
-                db.delete_session(conn, row["token_hash"])
-                conn.commit()
-                return JSONResponse({"detail": "Session expired"}, status_code=401)
-
-            db.touch_session(conn, row["token_hash"], now=now)
-            conn.commit()
-
-        request.state.user_id = row["user_id"]
+        request.state.user_id = result
         return await call_next(request)
 ```
 
 Note the removal of the old `if not db.owner_exists(conn): return 401 "Setup required"` branch entirely — there's no "owner" concept anymore, and every path that needs gating (new-account creation) is already handled by the invite-redemption check in the router itself, not by the middleware.
 
-Note also that `now = datetime.utcnow()` (computed once above) is reused for both the idle-expiry comparison and the `touch_session` write — deliberately the same Python `now` value for both, not two separate clock reads a few lines apart. This works safely at all only because Task 4 made `last_seen_at` Python-origin (see that task's amendment note) — `row["last_seen_at"]` read back here was itself written by an earlier request's `datetime.utcnow()`, so comparing it against this request's `datetime.utcnow()` is Python-to-Python throughout, with no Postgres clock function anywhere in the chain.
+**Amendment, caught during this task's own code-quality review:** the original version of this step called `db.get_identity_pool()` directly inside `dispatch`, an `async def` method. Starlette's `BaseHTTPMiddleware.dispatch` is not automatically run in a threadpool the way FastAPI wraps synchronous route handlers — it executes directly on the event loop. `db.get_identity_pool()` is a synchronous `psycopg_pool.ConnectionPool`, so every blocking network round trip to Postgres inside the original `dispatch` body (session lookup, then an UPDATE-or-DELETE, then a COMMIT) stalled the *entire worker's event loop* for its duration on every single authenticated request — including any concurrently-running async SSE generators (`crawl_stream()`, `discover_stream()`) on that same worker. Fixed above by extracting the blocking logic into a plain synchronous `_resolve_session()` function and running it via `starlette.concurrency.run_in_threadpool`, so it executes off the event loop. This matters more than a typical micro-optimization given the architecture spec's own stated trajectory toward a "large/public" multi-tenant service — the same "sync DB call from async code" mistake would only get more expensive if copied into future routers built against `db.get_app_pool()`/`user_scope()`, so it's worth fixing at the root here rather than deferring.
 
 - [ ] **Step 4: Run test to verify it passes**
 
