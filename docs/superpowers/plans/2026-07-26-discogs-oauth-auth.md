@@ -441,14 +441,20 @@ def test_get_session_by_token_hash_returns_none_when_missing(admin_conn):
 def test_touch_session_updates_last_seen_at(admin_conn):
     user = db.create_user(admin_conn, discogs_user_id=42, discogs_username="alice")
     admin_conn.commit()
-    db.create_session(admin_conn, "hash-abc", user["id"], datetime.utcnow() + timedelta(days=30))
+    original_time = datetime.utcnow() - timedelta(minutes=5)
+    db.create_session(
+        admin_conn, "hash-abc", user["id"], datetime.utcnow() + timedelta(days=30), now=original_time
+    )
     admin_conn.commit()
     original = db.get_session_by_token_hash(admin_conn, "hash-abc")["last_seen_at"]
+    assert original == original_time
 
-    db.touch_session(admin_conn, "hash-abc")
+    touched_time = datetime.utcnow()
+    db.touch_session(admin_conn, "hash-abc", now=touched_time)
     admin_conn.commit()
     updated = db.get_session_by_token_hash(admin_conn, "hash-abc")["last_seen_at"]
-    assert updated >= original
+    assert updated == touched_time
+    assert updated > original
 
 
 def test_delete_session_removes_it(admin_conn):
@@ -471,13 +477,16 @@ Expected: FAIL with `AttributeError: module 'db' has no attribute 'create_sessio
 
 ```python
 # backend/db.py (append)
-def create_session(conn, token_hash: str, user_id: int, expires_at: datetime):
+def create_session(
+    conn, token_hash: str, user_id: int, expires_at: datetime, now: Optional[datetime] = None
+):
+    now = now or datetime.utcnow()
     conn.execute(
         """
         INSERT INTO sessions (token_hash, user_id, created_at, expires_at, last_seen_at)
-        VALUES (%s, %s, CURRENT_TIMESTAMP, %s, CURRENT_TIMESTAMP)
+        VALUES (%s, %s, %s, %s, %s)
         """,
-        [token_hash, user_id, expires_at],
+        [token_hash, user_id, now, expires_at, now],
     )
 
 
@@ -487,16 +496,19 @@ def get_session_by_token_hash(conn, token_hash: str) -> Optional[dict]:
     ).fetchone()
 
 
-def touch_session(conn, token_hash: str):
+def touch_session(conn, token_hash: str, now: Optional[datetime] = None):
+    now = now or datetime.utcnow()
     conn.execute(
-        "UPDATE sessions SET last_seen_at = CURRENT_TIMESTAMP WHERE token_hash = %s",
-        [token_hash],
+        "UPDATE sessions SET last_seen_at = %s WHERE token_hash = %s",
+        [now, token_hash],
     )
 
 
 def delete_session(conn, token_hash: str):
     conn.execute("DELETE FROM sessions WHERE token_hash = %s", [token_hash])
 ```
+
+(Earlier draft of this step wrote `last_seen_at`/`created_at` via server-side `CURRENT_TIMESTAMP`. That reintroduces the exact class of bug Task 3's code review caught and fixed for `oauth_request_state`/`pending_signups`: a value written by Postgres's clock, later compared against Python's `datetime.utcnow()` in `AuthMiddleware`'s idle-expiry check (Task 8), silently depends on the Postgres session's `TimeZone` GUC matching Python's UTC assumption. `expires_at` was always safe — it's computed by the caller in Python and passed in directly, never touching a Postgres clock function — but `last_seen_at` wasn't. Fixed here by making `last_seen_at`/`created_at` Python-computed too, via an optional `now` parameter that defaults to `datetime.utcnow()`: every timestamp `AuthMiddleware` will ever compare against another Python-computed value now originates from Python on both sides, so the comparison is self-consistent regardless of Postgres's session timezone. The `now` parameter's real purpose is exactly this consistency guarantee, not test convenience — though it also happens to make the touch/create timestamps deterministically testable. Caught during Task 4's code-quality review, before Task 8 could reintroduce the bug it was written to prevent.)
 
 These are written to run over `get_identity_pool()` connections in real usage (`AuthMiddleware`, the auth router) — like `create_user`/`get_user_by_discogs_id` before them, this task exercises them directly over the admin connection since RLS isn't relevant here (`sessions`' RLS policy is documented in `db.py` as defense-in-depth only; the actual protection is grant absence on `app_user`, already proven in the data-model plan).
 
@@ -1356,7 +1368,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 conn.commit()
                 return JSONResponse({"detail": "Session expired"}, status_code=401)
 
-            db.touch_session(conn, row["token_hash"])
+            db.touch_session(conn, row["token_hash"], now=now)
             conn.commit()
 
         request.state.user_id = row["user_id"]
@@ -1364,6 +1376,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
 ```
 
 Note the removal of the old `if not db.owner_exists(conn): return 401 "Setup required"` branch entirely — there's no "owner" concept anymore, and every path that needs gating (new-account creation) is already handled by the invite-redemption check in the router itself, not by the middleware.
+
+Note also that `now = datetime.utcnow()` (computed once above) is reused for both the idle-expiry comparison and the `touch_session` write — deliberately the same Python `now` value for both, not two separate clock reads a few lines apart. This works safely at all only because Task 4 made `last_seen_at` Python-origin (see that task's amendment note) — `row["last_seen_at"]` read back here was itself written by an earlier request's `datetime.utcnow()`, so comparing it against this request's `datetime.utcnow()` is Python-to-Python throughout, with no Postgres clock function anywhere in the chain.
 
 - [ ] **Step 4: Run test to verify it passes**
 
