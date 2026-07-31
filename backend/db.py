@@ -891,6 +891,12 @@ def get_crawl_status_for_user(conn, user_id: int) -> dict:
     return {"total": total, "missing": total - complete, "oldest_checked": oldest}
 
 
+# Callers must call this before delete_orphaned_releases in the same sync
+# pass. delete_orphaned_releases only removes rows with both in_collection
+# and in_wishlist FALSE; a release just dropped from the wantlist still has
+# in_wishlist = TRUE until this runs, so calling delete first would leave it
+# stranded (undeleted) for a full extra sync cycle instead of being cleaned
+# up in this one.
 def clear_wishlist_flags_not_in(conn, user_id: int, seen_ids: set) -> int:
     cursor = conn.execute(
         "UPDATE library_items SET in_wishlist = FALSE WHERE user_id = %s AND in_wishlist = TRUE AND discogs_id != ALL(%s)",
@@ -899,6 +905,8 @@ def clear_wishlist_flags_not_in(conn, user_id: int, seen_ids: set) -> int:
     return cursor.rowcount
 
 
+# Must run after clear_wishlist_flags_not_in in the same sync pass -- see its
+# docstring comment for why the order matters.
 def delete_orphaned_releases(conn, user_id: int) -> list[str]:
     rows = conn.execute(
         """
