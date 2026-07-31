@@ -555,6 +555,53 @@ def update_crawler_last_run(conn, crawler_id: int):
     conn.execute("UPDATE crawlers SET last_run = CURRENT_TIMESTAMP WHERE id = %s", [crawler_id])
 
 
+def enqueue_crawl_queue(conn, discogs_id: str, crawler_id: int):
+    conn.execute(
+        """
+        INSERT INTO crawl_queue (discogs_id, crawler_id)
+        VALUES (%s, %s)
+        ON CONFLICT (discogs_id, crawler_id) DO NOTHING
+        """,
+        [discogs_id, crawler_id],
+    )
+
+
+# The row lock taken by the inner SELECT ... FOR UPDATE SKIP LOCKED is held
+# until the caller commits or rolls back the current transaction -- callers
+# must mark_crawl_queue_done() on these rows before/without another worker's
+# claim call being able to grab them.
+def claim_crawl_queue_batch(conn, worker_id: str, limit: int) -> list[dict]:
+    return conn.execute(
+        """
+        UPDATE crawl_queue SET status = 'in_progress', claimed_by = %(worker_id)s, claimed_at = CURRENT_TIMESTAMP
+        WHERE id IN (
+            SELECT id FROM crawl_queue
+            WHERE status = 'pending'
+            ORDER BY requested_at
+            LIMIT %(limit)s
+            FOR UPDATE SKIP LOCKED
+        )
+        RETURNING id, discogs_id, crawler_id
+        """,
+        {"worker_id": worker_id, "limit": limit},
+    ).fetchall()
+
+
+def mark_crawl_queue_done(conn, queue_id: int):
+    conn.execute("UPDATE crawl_queue SET status = 'done' WHERE id = %s", [queue_id])
+
+
+def count_pending_crawl_queue_for_user(conn, user_id: int) -> int:
+    return conn.execute(
+        """
+        SELECT COUNT(*) FROM crawl_queue cq
+        JOIN library_items li ON li.discogs_id = cq.discogs_id
+        WHERE li.user_id = %s AND cq.status != 'done'
+        """,
+        [user_id],
+    ).fetchone()["count"]
+
+
 def create_oauth_request_state(conn, request_token: str, request_token_secret: str):
     conn.execute(
         "INSERT INTO oauth_request_state (request_token, request_token_secret) VALUES (%s, %s)",
