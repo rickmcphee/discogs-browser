@@ -1,3 +1,4 @@
+import hashlib
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Optional
@@ -620,6 +621,119 @@ def count_pending_crawl_queue_for_user(conn, user_id: int) -> int:
         """,
         [user_id],
     ).fetchone()["count"]
+
+
+def compute_item_key(artist: str, title: str, url: str) -> str:
+    return hashlib.sha256(f"{artist}|{title}|{url}".encode()).hexdigest()
+
+
+def replace_stock_items(conn, crawler_id: int, items: list[dict]):
+    conn.execute("DELETE FROM stock_items WHERE crawler_id = %s", [crawler_id])
+    if not items:
+        return
+    rows = []
+    for item in items:
+        artist = item["artist"].title()
+        rows.append((
+            crawler_id, artist, item["title"], item.get("format"), item.get("price"),
+            item.get("currency"), item["url"], item.get("cover_image_url"),
+            compute_item_key(artist, item["title"], item["url"]),
+        ))
+    with conn.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO stock_items
+                (crawler_id, artist, title, format, price, currency, url, cover_image_url, item_key, last_seen)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+            """,
+            rows,
+        )
+
+
+def _not_owned_clause(user_id_param: str) -> str:
+    return f"""NOT EXISTS (
+        SELECT 1 FROM library_items li
+        JOIN catalog c ON c.discogs_id = li.discogs_id
+        WHERE li.user_id = {user_id_param}
+          AND li.in_collection = TRUE
+          AND LOWER(c.artist) = LOWER(s.artist)
+          AND (LOWER(s.title) = LOWER(c.title) OR LOWER(s.title) LIKE LOWER(c.title) || ' %%')
+    )"""
+
+
+_STOCK_ALLOWED_SORT = {"artist", "title", "format", "price"}
+
+
+def get_stock_items(
+    conn,
+    user_id: int,
+    search: Optional[str] = None,
+    artist: Optional[str] = None,
+    sort: str = "artist",
+    order: str = "asc",
+    page: int = 1,
+    per_page: int = 50,
+    overlapping: bool = False,
+    recommended: bool = False,
+) -> dict:
+    order_sql = "DESC" if order.lower() == "desc" else "ASC"
+    sort_col = sort if sort in _STOCK_ALLOWED_SORT else "artist"
+
+    conditions = []
+    params: dict = {"user_id": user_id}
+    if search:
+        conditions.append("(s.artist ILIKE %(search)s OR s.title ILIKE %(search)s)")
+        params["search"] = f"%{search}%"
+    if artist:
+        conditions.append("s.artist = %(artist)s")
+        params["artist"] = artist
+    if overlapping:
+        conditions.append(_not_owned_clause("%(user_id)s").replace("NOT EXISTS", "EXISTS"))
+    if recommended:
+        conditions.append(
+            "s.item_key IN (SELECT item_key FROM stock_item_judgments "
+            "WHERE user_id = %(user_id)s AND recommended = TRUE)"
+        )
+        conditions.append(_not_owned_clause("%(user_id)s"))
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
+    total = conn.execute(f"SELECT COUNT(*) FROM stock_items s {where}", params).fetchone()["count"]
+
+    offset = (page - 1) * per_page
+    params["limit"] = per_page
+    params["offset"] = offset
+    null_order = "ASC" if order_sql == "ASC" else "DESC"
+    rows = conn.execute(
+        f"""
+        SELECT s.id, s.artist, s.title, s.format, s.price, s.currency, s.url, s.cover_image_url, s.last_seen,
+               cr.site_name AS source, j.reason AS reason
+        FROM stock_items s
+        JOIN crawlers cr ON cr.id = s.crawler_id
+        LEFT JOIN stock_item_judgments j ON j.item_key = s.item_key AND j.user_id = %(user_id)s
+        {where}
+        ORDER BY CASE WHEN s.{sort_col} IS NULL THEN 1 ELSE 0 END {null_order}, s.{sort_col} {order_sql}
+        LIMIT %(limit)s OFFSET %(offset)s
+        """,
+        params,
+    ).fetchall()
+
+    return {"total": total, "page": page, "per_page": per_page, "items": rows}
+
+
+def get_distinct_stock_artists(conn, user_id: int, overlapping: bool = False, recommended: bool = False) -> list[str]:
+    conditions = []
+    params: dict = {"user_id": user_id}
+    if overlapping:
+        conditions.append(_not_owned_clause("%(user_id)s").replace("NOT EXISTS", "EXISTS"))
+    if recommended:
+        conditions.append(
+            "s.item_key IN (SELECT item_key FROM stock_item_judgments "
+            "WHERE user_id = %(user_id)s AND recommended = TRUE)"
+        )
+        conditions.append(_not_owned_clause("%(user_id)s"))
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    rows = conn.execute(f"SELECT DISTINCT s.artist FROM stock_items s {where} ORDER BY s.artist", params).fetchall()
+    return [row["artist"] for row in rows]
 
 
 def create_oauth_request_state(conn, request_token: str, request_token_secret: str):
