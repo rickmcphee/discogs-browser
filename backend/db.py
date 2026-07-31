@@ -512,6 +512,49 @@ def get_listings_for_release(conn, release_id: str) -> dict:
     }
 
 
+def get_enabled_crawlers(conn, crawler_type: str = "release") -> list[dict]:
+    return conn.execute(
+        "SELECT * FROM crawlers WHERE enabled = TRUE AND crawler_type = %s", [crawler_type]
+    ).fetchall()
+
+
+def get_all_crawlers(conn) -> list[dict]:
+    rows = conn.execute("SELECT * FROM crawlers ORDER BY site_name").fetchall()
+    result = []
+    for row in rows:
+        d = dict(row)
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("_tmp", d["module_path"])
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            d["base_url"] = getattr(mod.Crawler, "base_url", None)
+        except Exception:
+            d["base_url"] = None
+        result.append(d)
+    return result
+
+
+def register_crawler(conn, site_name: str, module_path: str, crawler_type: str = "release"):
+    conn.execute(
+        """
+        INSERT INTO crawlers (site_name, module_path, crawler_type, enabled)
+        VALUES (%s, %s, %s, TRUE)
+        ON CONFLICT (site_name) DO UPDATE SET
+            module_path = EXCLUDED.module_path, crawler_type = EXCLUDED.crawler_type
+        """,
+        [site_name, module_path, crawler_type],
+    )
+
+
+def set_crawler_enabled(conn, crawler_id: int, enabled: bool):
+    conn.execute("UPDATE crawlers SET enabled = %s WHERE id = %s", [enabled, crawler_id])
+
+
+def update_crawler_last_run(conn, crawler_id: int):
+    conn.execute("UPDATE crawlers SET last_run = CURRENT_TIMESTAMP WHERE id = %s", [crawler_id])
+
+
 def create_oauth_request_state(conn, request_token: str, request_token_secret: str):
     conn.execute(
         "INSERT INTO oauth_request_state (request_token, request_token_secret) VALUES (%s, %s)",
