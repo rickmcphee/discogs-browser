@@ -490,6 +490,96 @@ async def test_judgment_phase_uses_calling_users_own_key_and_taste(pg_schema, mo
     assert batch_arg[0]["artist"] == "Artist A"
 
 
+async def test_judgment_phase_does_not_touch_another_users_key_taste_or_judgments(pg_schema):
+    # The headline claim of this rewrite is "per-user key/taste" -- this is the
+    # one property that actually proves it: running alice's judgment must use
+    # only alice's Anthropic key and taste listing, and must create zero rows
+    # scoped to bob, even though bob also has an API key, a taste listing, and
+    # (via the shared, global stock_items table) visibility into the same item.
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=20, discogs_username="alice20")
+        bob = db.create_user(conn, discogs_user_id=21, discogs_username="bob21")
+        conn.execute("UPDATE users SET anthropic_api_key = 'sk-alice' WHERE id = %s", [alice["id"]])
+        conn.execute("UPDATE users SET anthropic_api_key = 'sk-bob' WHERE id = %s", [bob["id"]])
+
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r-alice", "artist": "Alice Fave", "title": "Album X", "year": None,
+            "label": None, "format": None, "discogs_price": None, "barcode": None,
+            "cover_image_url": None, "discogs_url": None,
+        })
+        db.upsert_library_item(conn, alice["id"], "r-alice", in_collection=True)
+
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r-bob", "artist": "Bob Fave", "title": "Album Y", "year": None,
+            "label": None, "format": None, "discogs_price": None, "barcode": None,
+            "cover_image_url": None, "discogs_url": None,
+        })
+        db.upsert_library_item(conn, bob["id"], "r-bob", in_collection=True)
+
+        db.register_crawler(conn, "Stock Site", "/x.py", crawler_type="catalog")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Stock Site'").fetchone()["id"]
+        db.replace_stock_items(conn, crawler_id, [
+            {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+        ])
+        conn.commit()
+
+    with patch("recommendations.judge_batch", return_value=[
+        {"item_key": db.compute_item_key("Artist A", "Album A", "https://x/1"), "recommended": True, "reason": "matches alice"}
+    ]) as mock_judge:
+        manager = CrawlManager()
+        await manager._run_judgment_phase(alice["id"])
+
+    client_arg, taste_arg, _ = mock_judge.call_args[0]
+    assert client_arg.api_key == "sk-alice"
+    assert taste_arg == ["Alice Fave - Album X"]
+
+    with db.get_admin_pool().connection() as conn:
+        judgments = conn.execute("SELECT user_id, reason FROM stock_item_judgments").fetchall()
+    assert [(j["user_id"], j["reason"]) for j in judgments] == [(alice["id"], "matches alice")]
+    assert all(j["user_id"] != bob["id"] for j in judgments)
+
+
+async def test_judgment_phase_first_batchs_judgments_survive_a_later_batchs_failure(pg_schema):
+    # Mirrors test_worker_row_commit_is_isolated_from_a_later_rows_failure's
+    # proof for the worker pool: _run_judgment_phase commits each batch through
+    # its own fresh user_scope() connection, so a later batch blowing up must
+    # not roll back an earlier batch's already-committed judgments.
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=22, discogs_username="alice22")
+        conn.execute("UPDATE users SET anthropic_api_key = 'sk-alice' WHERE id = %s", [alice["id"]])
+        db.register_crawler(conn, "Stock Site", "/x.py", crawler_type="catalog")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Stock Site'").fetchone()["id"]
+        item_count = recommendations.BATCH_SIZE + 5  # spans exactly two batches
+        db.replace_stock_items(conn, crawler_id, [
+            {"artist": f"Artist {i}", "title": f"T{i}", "price": 1.0, "currency": "USD", "url": f"https://x/{i}"}
+            for i in range(item_count)
+        ])
+        conn.commit()
+
+    call_count = {"n": 0}
+
+    def _judge_side_effect(client, taste, batch):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return [{"item_key": item["item_key"], "recommended": False, "reason": "first batch ok"} for item in batch]
+        raise RuntimeError("second batch boom")
+
+    manager = CrawlManager()
+    with patch("recommendations.judge_batch", side_effect=_judge_side_effect):
+        await manager._run_judgment_phase(alice["id"])
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert "stock_judgment_error" in statuses
+    assert "stock_judgment_complete" not in statuses
+
+    with db.get_admin_pool().connection() as conn:
+        judgments = conn.execute(
+            "SELECT reason FROM stock_item_judgments WHERE user_id = %s", [alice["id"]]
+        ).fetchall()
+    assert len(judgments) == recommendations.BATCH_SIZE
+    assert all(j["reason"] == "first batch ok" for j in judgments)
+
+
 async def test_run_judgment_phase_broadcasts_error_when_no_api_key(pg_schema):
     with db.get_admin_pool().connection() as conn:
         alice = db.create_user(conn, discogs_user_id=2, discogs_username="alice2")

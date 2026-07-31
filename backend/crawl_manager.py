@@ -414,6 +414,9 @@ class CrawlManager:
                 user = conn.execute(
                     "SELECT anthropic_api_key, recommendation_item_limit FROM users WHERE id = %s", [user_id]
                 ).fetchone()
+            if user is None:
+                await self._broadcast({"status": "stock_judgment_error", "error": "User not found"})
+                return
             api_key = user["anthropic_api_key"]
             if not api_key:
                 await self._broadcast({"status": "stock_judgment_error", "error": "Anthropic API key not configured"})
