@@ -736,6 +736,89 @@ def get_distinct_stock_artists(conn, user_id: int, overlapping: bool = False, re
     return [row["artist"] for row in rows]
 
 
+def get_unjudged_stock_items(conn, user_id: int, limit: int) -> list[dict]:
+    limit_clause = "LIMIT %(limit)s" if limit > 0 else ""
+    rows = conn.execute(
+        f"""
+        SELECT s.item_key, s.artist, s.title
+        FROM stock_items s
+        LEFT JOIN stock_item_judgments j ON j.item_key = s.item_key AND j.user_id = %(user_id)s
+        WHERE j.item_key IS NULL
+          AND {_not_owned_clause('%(user_id)s')}
+        GROUP BY s.item_key, s.artist, s.title
+        ORDER BY MIN(s.last_seen) ASC
+        {limit_clause}
+        """,
+        {"user_id": user_id, "limit": limit},
+    ).fetchall()
+    return rows
+
+
+def count_unjudged_stock_items(conn, user_id: int) -> int:
+    return conn.execute(
+        f"""
+        SELECT COUNT(DISTINCT s.item_key) FROM stock_items s
+        LEFT JOIN stock_item_judgments j ON j.item_key = s.item_key AND j.user_id = %(user_id)s
+        WHERE j.item_key IS NULL
+          AND {_not_owned_clause('%(user_id)s')}
+        """,
+        {"user_id": user_id},
+    ).fetchone()["count"]
+
+
+def get_taste_listing(conn, user_id: int) -> list[str]:
+    rows = conn.execute(
+        """
+        SELECT DISTINCT c.artist, c.title
+        FROM library_items li
+        JOIN catalog c ON c.discogs_id = li.discogs_id
+        WHERE li.user_id = %s AND (li.in_collection = TRUE OR li.in_wishlist = TRUE)
+        ORDER BY c.artist, c.title
+        """,
+        [user_id],
+    ).fetchall()
+    return [f"{row['artist']} - {row['title']}" for row in rows]
+
+
+def upsert_stock_judgments(conn, user_id: int, judgments: list[dict]):
+    with conn.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO stock_item_judgments (user_id, item_key, recommended, reason, judged_at)
+            VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (user_id, item_key) DO UPDATE SET
+                recommended = EXCLUDED.recommended, reason = EXCLUDED.reason, judged_at = CURRENT_TIMESTAMP
+            """,
+            [(user_id, j["item_key"], j["recommended"], j.get("reason")) for j in judgments],
+        )
+
+
+def has_any_stock_judgment(conn, user_id: int) -> bool:
+    return conn.execute(
+        "SELECT EXISTS(SELECT 1 FROM stock_item_judgments WHERE user_id = %s)", [user_id]
+    ).fetchone()["exists"]
+
+
+def clear_stock_judgments(conn, user_id: int) -> int:
+    cursor = conn.execute("DELETE FROM stock_item_judgments WHERE user_id = %s", [user_id])
+    return cursor.rowcount
+
+
+def get_recommended_stock_items(conn, user_id: int) -> list[dict]:
+    return conn.execute(
+        f"""
+        SELECT s.artist, s.title, s.format, s.price, cr.site_name AS source, s.url, j.reason AS reason
+        FROM stock_items s
+        JOIN crawlers cr ON cr.id = s.crawler_id
+        JOIN stock_item_judgments j ON j.item_key = s.item_key AND j.user_id = %(user_id)s
+        WHERE j.recommended = TRUE
+          AND {_not_owned_clause('%(user_id)s')}
+        ORDER BY s.artist, s.title
+        """,
+        {"user_id": user_id},
+    ).fetchall()
+
+
 def create_oauth_request_state(conn, request_token: str, request_token_secret: str):
     conn.execute(
         "INSERT INTO oauth_request_state (request_token, request_token_secret) VALUES (%s, %s)",
