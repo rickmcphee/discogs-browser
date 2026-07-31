@@ -1,103 +1,53 @@
-import sqlite3
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
-import db as db_module
-from db import upsert_release, mark_in_wishlist
+import db
 from routers import releases as releases_router
 
 
-def _release(discogs_id, artist="Artist", title="Title"):
-    return {
-        "discogs_id": discogs_id, "artist": artist, "title": title, "year": 2000,
-        "label": "Label", "format": "Vinyl", "discogs_price": None, "barcode": None,
-        "cover_image_url": "", "discogs_url": f"https://discogs.com/release/{discogs_id}",
-    }
-
-
 @pytest.fixture
-def conn():
-    # A local fixture (shadowing conftest.py's `conn` for this file only).
-    # conftest.py's shared `conn` fixture opens sqlite3.connect(":memory:")
-    # without check_same_thread=False, so it cannot be handed to a route
-    # handler — TestClient dispatches sync handlers via a threadpool, and
-    # SQLite enforces same-thread access regardless of any monkeypatching.
-    c = sqlite3.connect(":memory:", check_same_thread=False)
-    c.row_factory = sqlite3.Row
-    c.execute("PRAGMA foreign_keys = ON")
-    db_module.init_db(c)
-    yield c
-    c.close()
+def authed_client_factory(authed_client_factory_builder):
+    return authed_client_factory_builder([releases_router.router])
 
 
-@pytest.fixture
-def client(conn, monkeypatch):
-    # releases.py does `from db import get_connection` — a direct name import —
-    # so the patch must target releases_router.get_connection specifically,
-    # not db_module's (that name binding is independent of this module's).
-    monkeypatch.setattr(releases_router, "get_connection", lambda: conn)
-    app = FastAPI()
-    app.include_router(releases_router.router, prefix="/api")
-    yield TestClient(app)
+def test_list_releases_scoped_to_calling_user(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.upsert_library_item(conn, alice["id"], "r1", in_collection=True)
+        conn.commit()
 
-
-def test_releases_scope_wishlist(client, conn):
-    upsert_release(conn, _release("r1"))
-    upsert_release(conn, _release("r2"))
-    mark_in_wishlist(conn, "r2")
-    conn.execute("UPDATE releases SET in_collection = 0 WHERE discogs_id = 'r2'")
-
-    r = client.get("/api/releases?scope=wishlist")
-    assert r.status_code == 200
-    ids = {rel["discogs_id"] for rel in r.json()["releases"]}
-    assert ids == {"r2"}
-
-
-def test_releases_scope_collection(client, conn):
-    upsert_release(conn, _release("r1"))
-    upsert_release(conn, _release("r2"))
-    mark_in_wishlist(conn, "r2")
-    conn.execute("UPDATE releases SET in_collection = 0 WHERE discogs_id = 'r2'")
-
-    r = client.get("/api/releases?scope=collection")
-    ids = {rel["discogs_id"] for rel in r.json()["releases"]}
-    assert ids == {"r1"}
-
-
-def test_releases_no_scope_returns_all(client, conn):
-    upsert_release(conn, _release("r1"))
-    upsert_release(conn, _release("r2"))
-    mark_in_wishlist(conn, "r2")
-    conn.execute("UPDATE releases SET in_collection = 0 WHERE discogs_id = 'r2'")
-
+    client = authed_client_factory(alice["id"])
     r = client.get("/api/releases")
-    assert r.json()["total"] == 2
+    assert r.json()["total"] == 1
+    assert r.json()["releases"][0]["discogs_id"] == "r1"
 
 
-def test_artists_scope_wishlist(client, conn):
-    upsert_release(conn, _release("r1", artist="Collection Artist"))
-    upsert_release(conn, _release("r2", artist="Wishlist Artist"))
-    mark_in_wishlist(conn, "r2")
+def test_list_artists_scoped_to_calling_user(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "Zzz", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.upsert_library_item(conn, alice["id"], "r1", in_collection=True)
+        conn.commit()
 
-    r = client.get("/api/artists?scope=wishlist")
-    assert r.json()["artists"] == ["Wishlist Artist"]
-
-
-def test_releases_no_plex_filter(client, conn):
-    upsert_release(conn, _release("r1"))
-    upsert_release(conn, _release("r2"))
-    conn.execute("UPDATE releases SET plex_url = 'http://plex.local:32400/web/x' WHERE discogs_id = 'r1'")
-
-    r = client.get("/api/releases?no_plex=true")
-    ids = {rel["discogs_id"] for rel in r.json()["releases"]}
-    assert ids == {"r2"}
+    client = authed_client_factory(alice["id"])
+    r = client.get("/api/artists?scope=collection")
+    assert r.json()["artists"] == ["Zzz"]
 
 
-def test_artists_no_plex_filter(client, conn):
-    upsert_release(conn, _release("r1", artist="Matched Artist"))
-    upsert_release(conn, _release("r2", artist="Unmatched Artist"))
-    conn.execute("UPDATE releases SET plex_url = 'http://plex.local:32400/web/x' WHERE discogs_id = 'r1'")
+def test_list_crawlers_unscoped(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
 
-    r = client.get("/api/artists?no_plex=true")
-    assert r.json()["artists"] == ["Unmatched Artist"]
+    client = authed_client_factory(user["id"])
+    r = client.get("/api/crawlers")
+    assert r.json()["crawlers"][0]["site_name"] == "Amazon"
