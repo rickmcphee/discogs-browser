@@ -6,9 +6,13 @@ import db
 @pytest.fixture
 def admin_conn(pg_test_db):
     db.init_global_schema()
+    db.init_tenant_schema()
     with db.get_admin_pool().connection() as conn:
         yield conn
-        conn.execute("TRUNCATE catalog, listings, crawlers CASCADE")
+        # TRUNCATE ... CASCADE on these three root tables also clears every
+        # dependent table (listings, library_items, crawl_queue, sessions,
+        # invites) via their FKs -- no need to name them individually.
+        conn.execute("TRUNCATE catalog, users, crawlers CASCADE")
         conn.commit()
 
 
@@ -108,3 +112,64 @@ def test_upsert_listing_inserts_then_updates(admin_conn):
     ).fetchone()
     assert row["price"] == 7.50
     assert row["condition"] == "Near Mint"
+
+
+def test_get_library_releases_returns_only_calling_users_rows(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    bob = db.create_user(admin_conn, discogs_user_id=2, discogs_username="bob")
+    for rid, artist in [("r1", "AAA"), ("r2", "BBB")]:
+        db.upsert_catalog_release(admin_conn, {
+            "discogs_id": rid, "artist": artist, "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+    db.upsert_library_item(admin_conn, alice["id"], "r1", in_collection=True)
+    db.upsert_library_item(admin_conn, bob["id"], "r2", in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"])
+    assert result["total"] == 1
+    assert result["releases"][0]["discogs_id"] == "r1"
+
+
+def test_get_library_releases_search_and_scope_filters(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r1", "artist": "Zzz Top", "title": "T", "year": None, "label": None,
+        "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+        "discogs_url": None,
+    })
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r2", "artist": "Other", "title": "T", "year": None, "label": None,
+        "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+        "discogs_url": None,
+    })
+    db.upsert_library_item(admin_conn, alice["id"], "r1", in_collection=True, in_wishlist=False)
+    db.upsert_library_item(admin_conn, alice["id"], "r2", in_collection=False, in_wishlist=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], search="Zzz")
+        assert result["total"] == 1 and result["releases"][0]["discogs_id"] == "r1"
+
+        result = db.get_library_releases(conn, alice["id"], scope="wishlist")
+        assert result["total"] == 1 and result["releases"][0]["discogs_id"] == "r2"
+
+
+def test_get_listings_for_release_joins_crawler_site_name(admin_conn):
+    admin_conn.execute("INSERT INTO crawlers (site_name, module_path) VALUES ('Amazon', '/x.py')")
+    crawler_id = admin_conn.execute(
+        "SELECT id FROM crawlers WHERE site_name = 'Amazon'"
+    ).fetchone()["id"]
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+        "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+        "discogs_url": None,
+    })
+    db.upsert_listing(admin_conn, "r1", crawler_id, "https://x", 9.99, 2.0, "USD", "VG+")
+    admin_conn.commit()
+
+    listings = db.get_listings_for_release(admin_conn, "r1")
+    assert listings["Amazon"]["price"] == 9.99
+    assert listings["Amazon"]["condition"] == "VG+"

@@ -403,6 +403,115 @@ def get_library_items_for_user(conn, user_id: int) -> list[dict]:
     ).fetchall()
 
 
+_RELEASE_ALLOWED_SORT = {"artist", "title", "year", "label", "format", "discogs_price"}
+
+
+def get_library_releases(
+    conn,
+    user_id: int,
+    search: Optional[str] = None,
+    artist: Optional[str] = None,
+    sort: str = "artist",
+    order: str = "asc",
+    page: int = 1,
+    per_page: int = 50,
+    release_id: Optional[str] = None,
+    scope: Optional[str] = None,
+) -> dict:
+    order_sql = "DESC" if order.lower() == "desc" else "ASC"
+    null_order = "ASC" if order_sql == "ASC" else "DESC"
+
+    conditions = ["li.user_id = %(user_id)s"]
+    params: dict = {"user_id": user_id}
+
+    if release_id:
+        conditions.append("c.discogs_id = %(release_id)s")
+        params["release_id"] = release_id
+    if search:
+        conditions.append("(c.artist ILIKE %(search)s OR c.title ILIKE %(search)s)")
+        params["search"] = f"%{search}%"
+    if artist:
+        conditions.append("c.artist = %(artist)s")
+        params["artist"] = artist
+    if scope == "collection":
+        conditions.append("li.in_collection = TRUE")
+    elif scope == "wishlist":
+        conditions.append("li.in_wishlist = TRUE")
+
+    where = "WHERE " + " AND ".join(conditions)
+    base_from = "FROM library_items li JOIN catalog c ON c.discogs_id = li.discogs_id"
+
+    total = conn.execute(f"SELECT COUNT(*) {base_from} {where}", params).fetchone()["count"]
+
+    offset = (page - 1) * per_page
+    params["limit"] = per_page
+    params["offset"] = offset
+
+    if sort.startswith("price_"):
+        site_name = sort[len("price_"):]
+        crawler_row = conn.execute(
+            "SELECT id FROM crawlers WHERE site_name = %s", [site_name]
+        ).fetchone()
+        if crawler_row:
+            params["crawler_id"] = crawler_row["id"]
+            rows = conn.execute(
+                f"""
+                SELECT c.* {base_from}
+                LEFT JOIN listings ls ON ls.release_id = c.discogs_id AND ls.crawler_id = %(crawler_id)s
+                {where}
+                ORDER BY CASE WHEN ls.price IS NULL THEN 1 ELSE 0 END {null_order}, ls.price {order_sql}
+                LIMIT %(limit)s OFFSET %(offset)s
+                """,
+                params,
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                f"SELECT c.* {base_from} {where} ORDER BY c.artist ASC LIMIT %(limit)s OFFSET %(offset)s",
+                params,
+            ).fetchall()
+    else:
+        sort_col = sort if sort in _RELEASE_ALLOWED_SORT else "artist"
+        rows = conn.execute(
+            f"""
+            SELECT c.* {base_from} {where}
+            ORDER BY CASE WHEN c.{sort_col} IS NULL THEN 1 ELSE 0 END {null_order}, c.{sort_col} {order_sql}
+            LIMIT %(limit)s OFFSET %(offset)s
+            """,
+            params,
+        ).fetchall()
+
+    releases = []
+    for row in rows:
+        r = dict(row)
+        r["listings"] = get_listings_for_release(conn, r["discogs_id"])
+        releases.append(r)
+
+    return {"total": total, "page": page, "per_page": per_page, "releases": releases}
+
+
+def get_listings_for_release(conn, release_id: str) -> dict:
+    rows = conn.execute(
+        """
+        SELECT cr.site_name, l.url, l.price, l.shipping, l.currency, l.condition, l.last_checked
+        FROM listings l
+        JOIN crawlers cr ON l.crawler_id = cr.id
+        WHERE l.release_id = %s
+        """,
+        [release_id],
+    ).fetchall()
+    return {
+        row["site_name"]: {
+            "url": row["url"],
+            "price": row["price"],
+            "shipping": row["shipping"],
+            "currency": row["currency"],
+            "condition": row["condition"],
+            "last_checked": row["last_checked"],
+        }
+        for row in rows
+    }
+
+
 def create_oauth_request_state(conn, request_token: str, request_token_secret: str):
     conn.execute(
         "INSERT INTO oauth_request_state (request_token, request_token_secret) VALUES (%s, %s)",
