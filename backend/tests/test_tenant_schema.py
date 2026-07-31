@@ -122,3 +122,55 @@ def test_init_tenant_schema_raises_when_app_password_blank(pg_test_db, monkeypat
     monkeypatch.setattr(config, "APP_DB_PASSWORD", "")
     with pytest.raises(RuntimeError):
         db.init_tenant_schema()
+
+
+def test_users_table_has_admin_and_recommendation_columns(pg_test_db):
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=901, discogs_username="admincolstestuser")
+        row = conn.execute(
+            "SELECT is_admin, anthropic_api_key, recommendation_item_limit FROM users WHERE id = %s",
+            [user["id"]],
+        ).fetchone()
+        conn.execute("DELETE FROM users WHERE id = %s", [user["id"]])
+        conn.commit()
+    assert row["is_admin"] is False
+    assert row["anthropic_api_key"] is None
+    assert row["recommendation_item_limit"] == 300
+
+
+def test_stock_item_judgments_is_rls_isolated_per_user(pg_test_db, monkeypatch):
+    # Point the app-role pool at the real app_user role, not the admin/superuser
+    # DSN pg_test_db defaults it to -- a superuser connection always bypasses
+    # RLS (regardless of FORCE ROW LEVEL SECURITY), so db.user_scope() below
+    # would prove nothing without this. Same pattern as
+    # test_rls_isolation.py's two_users_one_shared_release fixture.
+    monkeypatch.setattr(
+        config,
+        "APP_DATABASE_URL",
+        config._with_userinfo(
+            os.environ["TEST_DATABASE_URL"], "app_user", os.environ["APP_DB_PASSWORD"]
+        ),
+    )
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=902, discogs_username="rlsjudgetestalice")
+        bob = db.create_user(conn, discogs_user_id=903, discogs_username="rlsjudgetestbob")
+        conn.execute(
+            "INSERT INTO stock_item_judgments (user_id, item_key, recommended) VALUES (%s, %s, %s)",
+            [alice["id"], "key-1", True],
+        )
+        conn.commit()
+
+    try:
+        with db.user_scope(bob["id"]) as conn:
+            rows = conn.execute("SELECT * FROM stock_item_judgments").fetchall()
+        assert rows == []
+
+        with db.user_scope(alice["id"]) as conn:
+            rows = conn.execute("SELECT * FROM stock_item_judgments").fetchall()
+        assert len(rows) == 1
+        assert rows[0]["item_key"] == "key-1"
+    finally:
+        with db.get_admin_pool().connection() as conn:
+            conn.execute("DELETE FROM stock_item_judgments WHERE user_id IN (%s, %s)", [alice["id"], bob["id"]])
+            conn.execute("DELETE FROM users WHERE id IN (%s, %s)", [alice["id"], bob["id"]])
+            conn.commit()

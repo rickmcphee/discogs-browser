@@ -9,7 +9,7 @@ def admin_conn(pg_test_db):
     db.init_global_schema()
     with db.get_admin_pool().connection() as conn:
         yield conn
-        conn.execute("TRUNCATE catalog, listings, crawlers, stock_items, stock_item_judgments CASCADE")
+        conn.execute("TRUNCATE catalog, listings, crawlers, stock_items, crawl_queue CASCADE")
         conn.commit()
 
 
@@ -119,14 +119,22 @@ def test_stock_items_insert_and_select(admin_conn):
     assert row["item_key"] == "key1"
 
 
-def test_stock_item_judgments_insert_and_select(admin_conn):
+def test_crawl_queue_table_exists_with_unique_constraint(admin_conn):
     admin_conn.execute(
-        "INSERT INTO stock_item_judgments (item_key, recommended, reason) "
-        "VALUES ('key1', TRUE, 'good price')"
+        "INSERT INTO crawlers (site_name, module_path) VALUES ('Test Site', '/x.py') RETURNING id"
     )
-    row = admin_conn.execute(
-        "SELECT item_key, recommended, reason FROM stock_item_judgments WHERE item_key = 'key1'"
-    ).fetchone()
-    assert row["item_key"] == "key1"
-    assert row["recommended"] is True
-    assert row["reason"] == "good price"
+    crawler_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Test Site'").fetchone()["id"]
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+        "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+        "discogs_url": None,
+    })
+    admin_conn.execute(
+        "INSERT INTO crawl_queue (discogs_id, crawler_id) VALUES ('r1', %s)", [crawler_id]
+    )
+    admin_conn.commit()
+    with pytest.raises(Exception):
+        admin_conn.execute(
+            "INSERT INTO crawl_queue (discogs_id, crawler_id) VALUES ('r1', %s)", [crawler_id]
+        )
+    admin_conn.rollback()

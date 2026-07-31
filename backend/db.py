@@ -101,11 +101,15 @@ CREATE TABLE IF NOT EXISTS stock_items (
     last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS stock_item_judgments (
-    item_key TEXT PRIMARY KEY,
-    recommended BOOLEAN NOT NULL,
-    reason TEXT,
-    judged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+CREATE TABLE IF NOT EXISTS crawl_queue (
+    id SERIAL PRIMARY KEY,
+    discogs_id TEXT NOT NULL REFERENCES catalog(discogs_id),
+    crawler_id INTEGER NOT NULL REFERENCES crawlers(id),
+    requested_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    status TEXT NOT NULL DEFAULT 'pending',
+    claimed_by TEXT,
+    claimed_at TIMESTAMP,
+    UNIQUE(discogs_id, crawler_id)
 );
 """
 
@@ -126,6 +130,9 @@ CREATE TABLE IF NOT EXISTS users (
     plex_base_url TEXT,
     plex_token TEXT,
     plex_match_threshold INTEGER NOT NULL DEFAULT 90,
+    is_admin BOOLEAN NOT NULL DEFAULT FALSE,
+    anthropic_api_key TEXT,
+    recommendation_item_limit INTEGER NOT NULL DEFAULT 300,
     invited_by INTEGER REFERENCES users(id),
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -147,6 +154,15 @@ CREATE TABLE IF NOT EXISTS library_items (
     plex_matched_at TIMESTAMP,
     last_synced TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (user_id, discogs_id)
+);
+
+CREATE TABLE IF NOT EXISTS stock_item_judgments (
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    item_key TEXT NOT NULL,
+    recommended BOOLEAN NOT NULL,
+    reason TEXT,
+    judged_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, item_key)
 );
 
 CREATE TABLE IF NOT EXISTS invites (
@@ -183,8 +199,10 @@ ALTER TABLE sessions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sessions FORCE ROW LEVEL SECURITY;
 ALTER TABLE library_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE library_items FORCE ROW LEVEL SECURITY;
+ALTER TABLE stock_item_judgments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE stock_item_judgments FORCE ROW LEVEL SECURITY;
 
--- WITH CHECK is given explicitly (identical to USING) on all three policies
+-- WITH CHECK is given explicitly (identical to USING) on all four policies
 -- below rather than left implicit. Postgres already defaults an omitted
 -- WITH CHECK to the USING expression for a FOR-ALL policy like these --
 -- verified directly against this project's Postgres 16 (an unscoped INSERT
@@ -214,6 +232,11 @@ CREATE POLICY sessions_isolation ON sessions
 
 DROP POLICY IF EXISTS library_items_isolation ON library_items;
 CREATE POLICY library_items_isolation ON library_items
+    USING (user_id = current_setting('app.user_id', true)::int)
+    WITH CHECK (user_id = current_setting('app.user_id', true)::int);
+
+DROP POLICY IF EXISTS stock_item_judgments_isolation ON stock_item_judgments;
+CREATE POLICY stock_item_judgments_isolation ON stock_item_judgments
     USING (user_id = current_setting('app.user_id', true)::int)
     WITH CHECK (user_id = current_setting('app.user_id', true)::int);
 """
@@ -262,10 +285,12 @@ def init_tenant_schema():
         conn.execute("GRANT SELECT, INSERT, DELETE ON oauth_request_state TO app_identity")
         conn.execute("GRANT SELECT, INSERT, DELETE ON pending_signups TO app_identity")
 
-        conn.execute(
-            "GRANT SELECT ON catalog, listings, crawlers, stock_items, stock_item_judgments TO app_user"
-        )
+        conn.execute("GRANT SELECT ON crawlers TO app_user")
+        conn.execute("GRANT SELECT, INSERT, UPDATE ON catalog, listings, stock_items TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON library_items TO app_user")
+        conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON stock_item_judgments TO app_user")
+        conn.execute("GRANT SELECT, INSERT, UPDATE ON crawl_queue TO app_user")
+        conn.execute("GRANT USAGE, SELECT ON SEQUENCE crawl_queue_id_seq TO app_user")
         conn.commit()
 
 
