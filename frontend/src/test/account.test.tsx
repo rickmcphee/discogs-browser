@@ -2,16 +2,20 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import Account from '../views/Account'
 
-const { uploadAvatar, deleteAvatar, logout } = vi.hoisted(() => ({
+const { uploadAvatar, deleteAvatar, logout, getUserSettings, saveUserSettings } = vi.hoisted(() => ({
   uploadAvatar: vi.fn().mockResolvedValue(undefined),
   deleteAvatar: vi.fn().mockResolvedValue(undefined),
   logout: vi.fn().mockResolvedValue(undefined),
+  getUserSettings: vi.fn().mockResolvedValue({ anthropic_api_key: '', recommendation_item_limit: 300 }),
+  saveUserSettings: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('../api/client', () => ({
   uploadAvatar,
   deleteAvatar,
   logout,
+  getUserSettings,
+  saveUserSettings,
   avatarUrl: (v: number) => `/api/auth/avatar?v=${v}`,
 }))
 

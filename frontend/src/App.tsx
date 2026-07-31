@@ -7,7 +7,7 @@ import LogViewer from './views/LogViewer'
 import LoginScreen from './views/LoginScreen'
 import InviteCodeScreen from './views/InviteCodeScreen'
 import Avatar from './components/Avatar'
-import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, clearJudgments, exportRecommendationsCsv, getCrawlers, getSettings, getJudgmentStatus, checkHealth, getAuthStatus, setUnauthorizedHandler, hasAvatar } from './api/client'
+import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, clearJudgments, exportRecommendationsCsv, getCrawlers, getUserSettings, getJudgmentStatus, checkHealth, getAuthStatus, setUnauthorizedHandler, hasAvatar } from './api/client'
 import type { CrawlEvent, CrawlStatus, CollectionStatus, Crawler, AuthStatus } from './api/types'
 
 type View = 'collection' | 'wishlist' | 'instock' | 'settings' | 'logs' | 'account'
@@ -35,7 +35,6 @@ export default function App() {
   const [crawlers, setCrawlers] = useState<Crawler[]>([])
   const [avatarVersion, setAvatarVersion] = useState(0)
   const [hasAnthropicKey, setHasAnthropicKey] = useState(false)
-  const [hasPlexConfigured, setHasPlexConfigured] = useState(false)
   const [hasJudgedItems, setHasJudgedItems] = useState(false)
   const [judgmentRunning, setJudgmentRunning] = useState(false)
   const [serverReady, setServerReady] = useState(false)
@@ -67,9 +66,8 @@ export default function App() {
           if (!cancelled) {
             setServerReady(true)
             getCrawlers().then(setCrawlers).catch(() => {})
-            getSettings().then((s) => {
+            getUserSettings().then((s) => {
               setHasAnthropicKey(Boolean(s.anthropic_api_key))
-              setHasPlexConfigured(Boolean(s.plex_base_url && s.plex_token))
             }).catch(() => {})
             getJudgmentStatus().then((s) => setHasJudgedItems(s.any_judged)).catch(() => {})
             hasAvatar().then((exists) => setAvatarVersion(exists ? Date.now() : 0)).catch(() => {})
@@ -112,22 +110,6 @@ export default function App() {
       if (event.status === 'sync_error') {
         setSyncing(false)
         setSyncStatus(`Sync failed: ${event.error}`, event.id ?? null)
-        return
-      }
-      if (event.status === 'plex_match_started') {
-        setSyncStatus('Matching collection against Plex…', event.id ?? null)
-        return
-      }
-      if (event.status === 'plex_match_progress') {
-        setSyncStatus(`Matching collection against Plex… ${event.matched}/${event.total}`, event.id ?? null)
-        return
-      }
-      if (event.status === 'plex_match_complete') {
-        setSyncStatus(`Plex match complete — ${event.matched} matched`, event.id ?? null)
-        return
-      }
-      if (event.status === 'plex_match_error') {
-        setSyncStatus(`Plex match failed: ${event.error}`, event.id ?? null)
         return
       }
       if (event.status === 'stock_sync_started') {
@@ -394,16 +376,18 @@ export default function App() {
           </button>
         </nav>
         <nav className="flex items-center gap-2 ml-auto">
-          <button
-            onClick={() => setView('settings')}
-            className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
-              view === 'settings'
-                ? 'bg-indigo-600 text-white'
-                : 'text-gray-400 hover:text-white'
-            }`}
-          >
-            Settings
-          </button>
+          {authState.state === 'authenticated' && authState.user.is_admin && (
+            <button
+              onClick={() => setView('settings')}
+              className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
+                view === 'settings'
+                  ? 'bg-indigo-600 text-white'
+                  : 'text-gray-400 hover:text-white'
+              }`}
+            >
+              Settings
+            </button>
+          )}
           <button
             onClick={() => setView('logs')}
             className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
@@ -437,7 +421,6 @@ export default function App() {
             crawlEvents={crawlEvents}
             crawlers={crawlers}
             syncing={syncing}
-            plexAvailable={hasPlexConfigured}
           />
         </div>
         <div className={view === 'wishlist' ? 'h-full' : 'hidden'}>
@@ -449,7 +432,6 @@ export default function App() {
             crawlEvents={crawlEvents}
             crawlers={crawlers}
             syncing={syncing}
-            plexAvailable={hasPlexConfigured}
           />
         </div>
         <div className={view === 'instock' ? 'h-full' : 'hidden'}>

@@ -1,6 +1,6 @@
-import { useRef, useState, memo } from 'react'
+import { useEffect, useRef, useState, memo } from 'react'
 import Avatar from '../components/Avatar'
-import { deleteAvatar, logout, uploadAvatar } from '../api/client'
+import { deleteAvatar, getUserSettings, logout, saveUserSettings, uploadAvatar } from '../api/client'
 
 interface Props {
   avatarVersion: number
@@ -11,6 +11,31 @@ function Account({ avatarVersion, onAvatarChange }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [avatarError, setAvatarError] = useState('')
   const [avatarBusy, setAvatarBusy] = useState(false)
+  const [anthropicApiKey, setAnthropicApiKey] = useState('')
+  const [recommendationItemLimit, setRecommendationItemLimit] = useState(300)
+  const [userSettingsSaving, setUserSettingsSaving] = useState(false)
+  const [userSettingsSaved, setUserSettingsSaved] = useState(false)
+
+  useEffect(() => {
+    getUserSettings().then((s) => {
+      setAnthropicApiKey(s.anthropic_api_key)
+      setRecommendationItemLimit(s.recommendation_item_limit)
+    }).catch(() => {})
+  }, [])
+
+  async function handleSaveUserSettings() {
+    setUserSettingsSaving(true)
+    try {
+      await saveUserSettings({
+        anthropic_api_key: anthropicApiKey,
+        recommendation_item_limit: recommendationItemLimit,
+      })
+      setUserSettingsSaved(true)
+      setTimeout(() => setUserSettingsSaved(false), 2000)
+    } finally {
+      setUserSettingsSaving(false)
+    }
+  }
 
   async function handleFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -85,6 +110,61 @@ function Account({ avatarVersion, onAvatarChange }: Props) {
             {avatarError && <p className="text-xs text-red-400 mt-1">{avatarError}</p>}
           </div>
         </div>
+      </section>
+
+      {/* Recommendations */}
+      <section>
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="text-lg font-semibold text-white text-left">Recommendations</h2>
+          <button
+            onClick={handleSaveUserSettings}
+            disabled={userSettingsSaving}
+            className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded text-sm font-medium transition-colors"
+          >
+            {userSettingsSaved ? '✓ Saved' : userSettingsSaving ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+        <p className="text-sm text-gray-500 mb-4 text-left">
+          Used to judge Store items against your collection for the Recommended filter.
+        </p>
+        <table className="w-full text-sm border-collapse">
+          <tbody>
+            <tr className="border-b border-gray-800/50">
+              <td className="py-3 pr-4 text-left text-gray-300 font-medium align-top whitespace-nowrap w-40">
+                Anthropic API key
+              </td>
+              <td className="py-3 pr-4 text-left align-top w-64">
+                <input
+                  type="password"
+                  value={anthropicApiKey}
+                  placeholder="sk-ant-..."
+                  onChange={(e) => setAnthropicApiKey(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500"
+                />
+              </td>
+              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                Get one at platform.claude.com.
+              </td>
+            </tr>
+            <tr className="border-b border-gray-800/50">
+              <td className="py-3 pr-4 text-left text-gray-300 font-medium align-top whitespace-nowrap">
+                Recommendation item limit
+              </td>
+              <td className="py-3 pr-4 text-left align-top">
+                <input
+                  type="number"
+                  min={0}
+                  value={recommendationItemLimit}
+                  onChange={(e) => setRecommendationItemLimit(parseInt(e.target.value) || 0)}
+                  className="w-24 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-indigo-500"
+                />
+              </td>
+              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                Maximum number of unprocessed Store items evaluated by Claude for recommendation each time. Extra items are evaluated on a later run. 0 = no limit.
+              </td>
+            </tr>
+          </tbody>
+        </table>
       </section>
 
       {/* Account & Security */}

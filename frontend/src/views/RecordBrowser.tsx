@@ -10,10 +10,9 @@ interface Props {
   crawlEvents?: CrawlEvent[]
   crawlers?: Crawler[]
   syncing?: boolean
-  plexAvailable?: boolean
 }
 
-export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawlingReleaseId, crawlEvents, crawlers = [], syncing, plexAvailable }: Props) {
+export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawlingReleaseId, crawlEvents, crawlers = [], syncing }: Props) {
   const [releases, setReleases] = useState<Release[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -25,9 +24,6 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
   const [loading, setLoading] = useState(false)
   const [viewMode, setViewMode] = useState<'list' | 'tiles'>(
     () => (localStorage.getItem(`collectionViewMode_${scope}`) === 'tiles' ? 'tiles' : 'list')
-  )
-  const [filter, setFilter] = useState<'all' | 'no_plex'>(
-    () => (localStorage.getItem(`collectionFilter_${scope}`) === 'no_plex' ? 'no_plex' : 'all')
   )
   const PER_PAGE = 250
 
@@ -87,26 +83,21 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
         page,
         per_page: PER_PAGE,
         scope,
-        no_plex: filter === 'no_plex',
       })
       setReleases(result.releases)
       setTotal(result.total)
     } finally {
       setLoading(false)
     }
-  }, [search, selectedArtist, sort, order, page, scope, filter])
+  }, [search, selectedArtist, sort, order, page, scope])
 
   useEffect(() => { load() }, [load])
   useEffect(() => {
     if (wasSyncing.current && !syncing) load()
     wasSyncing.current = !!syncing
   }, [syncing, load])
-  useEffect(() => { getArtists(scope, filter === 'no_plex').then(setArtists) }, [scope, filter])
+  useEffect(() => { getArtists(scope).then(setArtists) }, [scope])
   useEffect(() => { localStorage.setItem(`collectionViewMode_${scope}`, viewMode) }, [viewMode, scope])
-  useEffect(() => {
-    if (!plexAvailable && filter === 'no_plex') setFilter('all')
-  }, [plexAvailable, filter])
-  useEffect(() => { localStorage.setItem(`collectionFilter_${scope}`, filter) }, [filter, scope])
 
   function toggleSort(field: SortField) {
     if (sort === field) {
@@ -166,16 +157,6 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
           </div>
           <span className="ml-3 text-xs text-gray-500">{total} records</span>
           <div className="ml-auto flex items-center gap-1">
-            {scope === 'collection' && (
-              <select
-                value={filter}
-                onChange={(e) => { setFilter(e.target.value as 'all' | 'no_plex'); setPage(1) }}
-                className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-indigo-500 mr-1"
-              >
-                <option value="all">All</option>
-                <option value="no_plex" disabled={!plexAvailable}>No Plex</option>
-              </select>
-            )}
             <button
               onClick={() => setViewMode('list')}
               title="List view"
@@ -229,18 +210,7 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
                       )}
                       <div className="mt-1.5 text-sm text-gray-200 truncate group-hover:text-indigo-400">{r.artist}</div>
                     </a>
-                    {r.plex_url ? (
-                      <a
-                        href={r.plex_url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-xs text-gray-400 truncate hover:text-indigo-400 block"
-                      >
-                        {r.title}
-                      </a>
-                    ) : (
-                      <div className="text-xs text-gray-400 truncate">{r.title}</div>
-                    )}
+                    <div className="text-xs text-gray-400 truncate">{r.title}</div>
                   </div>
                 ))}
               </div>
@@ -344,13 +314,7 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
                     </a>
                   </td>
                   <td className="px-3 py-2 text-gray-300">
-                    {r.plex_url ? (
-                      <a href={r.plex_url} target="_blank" rel="noreferrer" className="hover:text-indigo-400">
-                        {r.title}
-                      </a>
-                    ) : (
-                      r.title
-                    )}
+                    {r.title}
                   </td>
                   <td className="px-3 py-2 text-gray-400">{r.year ?? '—'}</td>
                   <td className="px-3 py-2 text-gray-400 truncate max-w-32">{r.label}</td>

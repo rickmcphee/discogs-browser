@@ -65,7 +65,6 @@ export interface CrawlEvent {
     | 'sync_started' | 'sync_progress' | 'sync_complete' | 'sync_error'
     | 'stock_sync_started' | 'stock_sync_progress' | 'stock_sync_complete' | 'stock_sync_error'
     | 'stock_judgment_started' | 'stock_judgment_progress' | 'stock_judgment_complete' | 'stock_judgment_error'
-    | 'plex_match_started' | 'plex_match_progress' | 'plex_match_complete' | 'plex_match_error'
   discogs_id?: string
   release?: string
   artist?: string
@@ -109,7 +108,7 @@ export interface ScreenshotSession {
 
 export type AuthStatus =
   | { state: 'unauthenticated' }
-  | { state: 'authenticated'; user: { discogs_username: string } }
+  | { state: 'authenticated'; user: { discogs_username: string; is_admin: boolean } }
 
 export interface StockItem {
   id: number

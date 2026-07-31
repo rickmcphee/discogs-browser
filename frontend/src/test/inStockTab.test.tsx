@@ -22,11 +22,12 @@ const postJudgmentStart = vi.fn().mockResolvedValue({ started: true, running: tr
 const clearJudgments = vi.fn()
 const exportRecommendationsCsv = vi.fn()
 const getSettings = vi.fn()
+const getUserSettings = vi.fn()
 const getJudgmentStatus = vi.fn()
 
 vi.mock('../api/client', () => ({
   checkHealth: vi.fn().mockResolvedValue(true),
-  getAuthStatus: vi.fn().mockResolvedValue({ state: 'authenticated', user: { discogs_username: 'test' } }),
+  getAuthStatus: vi.fn().mockResolvedValue({ state: 'authenticated', user: { discogs_username: 'test', is_admin: true } }),
   setUnauthorizedHandler: vi.fn(),
   refreshCollection: vi.fn().mockResolvedValue({ synced: 0, username: 'test' }),
   getCollectionStatus: vi.fn().mockResolvedValue({ total: 0, last_synced: null }),
@@ -37,7 +38,9 @@ vi.mock('../api/client', () => ({
   getReleases: vi.fn().mockResolvedValue({ total: 0, page: 1, per_page: 50, releases: [] }),
   getArtists: vi.fn().mockResolvedValue([]),
   getSettings: (...args: unknown[]) => getSettings(...args),
+  getUserSettings: (...args: unknown[]) => getUserSettings(...args),
   saveSettings: vi.fn(),
+  saveUserSettings: vi.fn(),
   setCrawlerEnabled: vi.fn(),
   logout: vi.fn(),
   hasAvatar: vi.fn().mockResolvedValue(false),
@@ -61,12 +64,13 @@ function getLastCrawlSource() {
 }
 
 const defaultSettings = {
-  discogs_token: '', debug_screenshot_interval: 20, shuffle_crawl_order: true,
+  debug_screenshot_interval: 20, shuffle_crawl_order: true,
   crawl_delay_seconds: 30, consecutive_failure_limit: 10, crawl_schedule: '',
-  crawl_schedule_mode: 'missing', collection_schedule: '', collection_schedule_mode: 'all',
-  ebay_app_id: '', ebay_cert_id: '', stock_schedule: '', anthropic_api_key: '',
-  recommendation_item_limit: 300,
+  crawl_schedule_mode: 'missing',
+  ebay_app_id: '', ebay_cert_id: '', stock_schedule: '',
 }
+
+const defaultUserSettings = { anthropic_api_key: '', recommendation_item_limit: 300 }
 
 beforeEach(() => {
   MockEventSource.instances = []
@@ -77,6 +81,7 @@ beforeEach(() => {
   clearJudgments.mockResolvedValue({ cleared: true, running: false, count: 7 })
   exportRecommendationsCsv.mockResolvedValue(new Blob(['artist,title\n'], { type: 'text/csv' }))
   getSettings.mockResolvedValue(defaultSettings)
+  getUserSettings.mockResolvedValue(defaultUserSettings)
   getJudgmentStatus.mockResolvedValue({ any_judged: false })
 })
 
@@ -168,7 +173,7 @@ describe('In Stock tab', () => {
   })
 
   it('calls postJudgmentStart when Refresh is clicked in the Store Recommendations section', async () => {
-    getSettings.mockResolvedValue({ ...defaultSettings, anthropic_api_key: 'sk-ant-test' })
+    getUserSettings.mockResolvedValue({ ...defaultUserSettings, anthropic_api_key: 'sk-ant-test' })
     render(<App />)
     await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
@@ -248,7 +253,7 @@ describe('In Stock tab', () => {
   })
 
   it('enables Recommended in Store only once a key is configured and a judgment has completed', async () => {
-    getSettings.mockResolvedValue({ ...defaultSettings, anthropic_api_key: 'sk-ant-test' })
+    getUserSettings.mockResolvedValue({ ...defaultUserSettings, anthropic_api_key: 'sk-ant-test' })
     getJudgmentStatus.mockResolvedValue({ any_judged: true })
     render(<App />)
     await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
@@ -260,7 +265,7 @@ describe('In Stock tab', () => {
   })
 
   it('disables Recommended in Store again while a judgment run is in progress', async () => {
-    getSettings.mockResolvedValue({ ...defaultSettings, anthropic_api_key: 'sk-ant-test' })
+    getUserSettings.mockResolvedValue({ ...defaultUserSettings, anthropic_api_key: 'sk-ant-test' })
     getJudgmentStatus.mockResolvedValue({ any_judged: true })
     render(<App />)
     await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())

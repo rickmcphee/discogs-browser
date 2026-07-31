@@ -10,7 +10,7 @@ class MockEventSource {
 
 vi.mock('../api/client', () => ({
   checkHealth: vi.fn().mockResolvedValue(true),
-  getAuthStatus: vi.fn().mockResolvedValue({ state: 'authenticated', user: { discogs_username: 'test' } }),
+  getAuthStatus: vi.fn().mockResolvedValue({ state: 'authenticated', user: { discogs_username: 'test', is_admin: true } }),
   setUnauthorizedHandler: vi.fn(),
   refreshCollection: vi.fn().mockResolvedValue({ synced: 0, username: 'test' }),
   getCollectionStatus: vi.fn().mockResolvedValue({ total: 0, last_synced: null }),
@@ -21,11 +21,13 @@ vi.mock('../api/client', () => ({
   getReleases: vi.fn().mockResolvedValue({ total: 0, page: 1, per_page: 50, releases: [] }),
   getArtists: vi.fn().mockResolvedValue([]),
   getSettings: vi.fn().mockResolvedValue({
-    discogs_token: '', debug_screenshot_interval: 20, shuffle_crawl_order: true,
+    debug_screenshot_interval: 20, shuffle_crawl_order: true,
     crawl_delay_seconds: 30, consecutive_failure_limit: 10, crawl_schedule: '',
-    crawl_schedule_mode: 'missing', collection_schedule: '', collection_schedule_mode: 'all',
-    ebay_app_id: '', ebay_cert_id: '', stock_schedule: '', recommendation_item_limit: 300,
+    crawl_schedule_mode: 'missing',
+    ebay_app_id: '', ebay_cert_id: '', stock_schedule: '',
   }),
+  getUserSettings: vi.fn().mockResolvedValue({ anthropic_api_key: '', recommendation_item_limit: 300 }),
+  saveUserSettings: vi.fn(),
   saveSettings: vi.fn(),
   setCrawlerEnabled: vi.fn(),
   logout: vi.fn(),

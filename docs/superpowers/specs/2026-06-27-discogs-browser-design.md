@@ -183,17 +183,16 @@ Scheduled crawls trigger `CrawlManager.start(mode)` exactly like a manual crawl.
 
 All fields live in `DISCOGS_BROWSER_DATA/config.json`.
 
+**Amendment (2026-07-31, crawl-queue-refactor Task 21):** this table describes the single-owner app. Under the multi-tenant refactor ([`2026-07-26-multi-tenant-architecture-design.md`](2026-07-26-multi-tenant-architecture-design.md), [`2026-07-27-crawl-queue-refactor-design.md`](2026-07-27-crawl-queue-refactor-design.md)'s "Settings split"), `discogs_token` is deleted (replaced entirely by per-user Discogs OAuth token pairs) and `collection_schedule`/`collection_schedule_mode` are removed (collection sync is manual-trigger-only per user, a non-goal of that plan). `GET`/`POST /settings` is now admin-only and covers only the remaining global fields below.
+
 | Field | Default | Description |
 |---|---|---|
-| `discogs_token` | `""` | Discogs personal access token |
 | `debug_screenshot_interval` | `20` | Screenshot interval: 0 = off, 1 = every search, N = every Nth search |
 | `shuffle_crawl_order` | `true` | Randomise release order before each crawl |
 | `crawl_delay_seconds` | `30` | Maximum random delay between requests (seconds) |
 | `consecutive_failure_limit` | `10` | Stop crawl after N consecutive failures (0 = disabled) |
 | `crawl_schedule` | `""` | Cron expression for scheduled price crawl; blank = disabled |
 | `crawl_schedule_mode` | `"missing"` | `"missing"` (skip already-priced) or `"all"` |
-| `collection_schedule` | `""` | Cron expression for scheduled collection sync; blank = disabled |
-| `collection_schedule_mode` | `"all"` | `"all"` (full re-sync) or `"new"` (new records only) |
 | `ebay_app_id` | `""` | eBay Developer App ID (client_id) for Browse API OAuth |
 | `ebay_cert_id` | `""` | eBay Developer Cert ID (client_secret) for Browse API OAuth |
 

@@ -10,30 +10,6 @@ interface SettingRow {
   placeholder?: string
 }
 
-const COLLECTION_SETTING_ROWS: SettingRow[] = [
-  {
-    key: 'discogs_token',
-    label: 'Discogs token',
-    description: 'Personal access token from discogs.com/settings/developers',
-    type: 'password',
-    placeholder: 'your token',
-  },
-  {
-    key: 'plex_base_url',
-    label: 'Plex server address',
-    description: 'Host and port of your Plex Media Server on the LAN, e.g. 192.168.1.50:32400.',
-    type: 'text',
-    placeholder: '192.168.1.50:32400',
-  },
-  {
-    key: 'plex_token',
-    label: 'Plex token',
-    description: 'X-Plex-Token for your server. Find it via a browser request while logged into Plex Web (see Plex support docs).',
-    type: 'password',
-    placeholder: 'your Plex token',
-  },
-]
-
 const CRAWLER_SETTING_ROWS: SettingRow[] = [
   {
     key: 'ebay_app_id',
@@ -75,22 +51,6 @@ const CRAWLER_SETTING_ROWS: SettingRow[] = [
   },
 ]
 
-const RECOMMENDATION_SETTING_ROWS: SettingRow[] = [
-  {
-    key: 'anthropic_api_key',
-    label: 'Anthropic API key',
-    description: 'Used to judge Store items against your collection for the Recommended filter. Get one at platform.claude.com.',
-    type: 'password',
-    placeholder: 'sk-ant-...',
-  },
-  {
-    key: 'recommendation_item_limit',
-    label: 'Recommendation item limit',
-    description: 'Maximum number of unprocessed Store items evaluated by Claude for recommendation each time. Extra items are evaluated on a later run. 0 = no limit.',
-    type: 'number',
-  },
-]
-
 interface Props {
   crawlers: Crawler[]
   onCrawlersChange: (crawlers: Crawler[]) => void
@@ -105,22 +65,15 @@ interface Props {
 
 function Settings({ crawlers, onCrawlersChange, onRefreshCollection, onRefreshPrices, onRefreshStock, onRefreshRecommendations, onExportRecommendations, onClearRecommendations, hasJudgedItems }: Props) {
   const [settings, setSettings] = useState<SettingsType>({
-    discogs_token: '',
     debug_screenshot_interval: 20,
     shuffle_crawl_order: true,
     crawl_delay_seconds: 30,
     consecutive_failure_limit: 10,
     crawl_schedule: '',
     crawl_schedule_mode: 'missing',
-    collection_schedule: '',
-    collection_schedule_mode: 'all',
     ebay_app_id: '',
     ebay_cert_id: '',
-    plex_base_url: '',
-    plex_token: '',
     stock_schedule: '',
-    anthropic_api_key: '',
-    recommendation_item_limit: 300,
   })
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -213,52 +166,15 @@ function Settings({ crawlers, onCrawlersChange, onRefreshCollection, onRefreshPr
       <section>
         <h2 className="text-lg font-semibold text-white mb-1 text-left">Collection Management</h2>
         <p className="text-sm text-gray-500 mb-4 text-left">
-          Sync your Discogs collection on a schedule. Leave blank to disable.
-          Example: <code className="text-gray-400 font-mono">0 1 * * *</code> = 1 am daily.
+          Sync your Discogs collection immediately.
         </p>
-        <table className="w-full text-sm border-collapse mb-4">
-          <tbody>
-            {COLLECTION_SETTING_ROWS.map((row, i) => renderSettingRow(row, i === 0))}
-          </tbody>
-        </table>
         <table className="w-full text-sm border-collapse">
           <tbody>
-            <tr className="border-b border-gray-800/50">
-              <td className="py-3 pr-4 text-left text-gray-300 font-medium align-top whitespace-nowrap w-40">Schedule</td>
-              <td className="py-3 pr-4 text-left align-top w-64">
-                <input
-                  type="text"
-                  value={settings.collection_schedule ?? ''}
-                  placeholder="0 1 * * *"
-                  onChange={(e) => setSettings({ ...settings, collection_schedule: e.target.value })}
-                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500 font-mono text-xs"
-                />
-              </td>
-              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
-                Cron expression (5 fields: min hour day month weekday). Empty = disabled.
-              </td>
-            </tr>
-            <tr className="border-b border-gray-800/50">
-              <td className="py-3 pr-4 text-left text-gray-300 font-medium align-top whitespace-nowrap">Mode</td>
-              <td className="py-3 pr-4 text-left align-top">
-                <select
-                  value={settings.collection_schedule_mode ?? 'all'}
-                  onChange={(e) => setSettings({ ...settings, collection_schedule_mode: e.target.value as 'all' | 'new' })}
-                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-indigo-500"
-                >
-                  <option value="all">All records</option>
-                  <option value="new">New records only</option>
-                </select>
-              </td>
-              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
-                What to sync on each scheduled run.
-              </td>
-            </tr>
             <tr className="border-b border-gray-800/50">
               <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
               <td className="py-3 pr-4 text-left align-top">
                 <button
-                  onClick={() => onRefreshCollection(settings.collection_schedule_mode as 'all' | 'new' ?? 'all')}
+                  onClick={() => onRefreshCollection('all')}
                   className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 rounded text-xs font-medium transition-colors"
                 >
                   Refresh
@@ -462,13 +378,8 @@ function Settings({ crawlers, onCrawlersChange, onRefreshCollection, onRefreshPr
         <h2 className="text-lg font-semibold text-white mb-1 text-left">Recommendations Management</h2>
         <p className="text-sm text-gray-500 mb-4 text-left">
           Judge unprocessed Store items against your collection using Claude, then export or clear the results.
-          Requires an Anthropic API key above.
+          Requires each user to configure an Anthropic API key in their Account settings.
         </p>
-        <table className="w-full text-sm border-collapse mb-4">
-          <tbody>
-            {RECOMMENDATION_SETTING_ROWS.map((row, i) => renderSettingRow(row, i === 0))}
-          </tbody>
-        </table>
         <table className="w-full text-sm border-collapse">
           <tbody>
             <tr className="border-b border-gray-800/50">
@@ -476,7 +387,6 @@ function Settings({ crawlers, onCrawlersChange, onRefreshCollection, onRefreshPr
               <td className="py-3 pr-4 text-left align-top">
                 <button
                   onClick={onRefreshRecommendations}
-                  disabled={!settings.anthropic_api_key}
                   className="w-20 text-center px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 disabled:opacity-50 rounded text-xs font-medium transition-colors"
                 >
                   Refresh
