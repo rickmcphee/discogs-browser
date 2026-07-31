@@ -95,6 +95,7 @@ async def startup():
 @app.on_event("shutdown")
 async def shutdown():
     await crawl_manager.stop_worker_pool()
+    scheduler.shutdown()
 
 
 app.include_router(health.router, prefix="/api")

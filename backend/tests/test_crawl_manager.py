@@ -138,10 +138,10 @@ async def test_sync_running_false_after_completion(manager):
 
 async def test_start_sync_for_one_user_does_not_block_another_users_sync(manager):
     """Collection sync has no shared-resource reason to serialize different
-    users against each other (unlike stock sync / judgment, which share one
-    catalog) -- each user has their own OAuth token and own library_items.
-    A per-user _sync_tasks dict, not a single global task, is what makes
-    this true."""
+    users against each other (unlike stock sync, which writes one shared
+    stock_items catalog) -- each user has their own OAuth token and own
+    library_items. A per-user _sync_tasks dict, not a single global task, is
+    what makes this true."""
     event = asyncio.Event()
 
     async def _fake_sync(user_id, mode):
@@ -837,7 +837,7 @@ async def test_run_judgment_phase_does_not_block_event_loop(pg_schema, monkeypat
 # ---------------------------------------------------------------------------
 
 async def test_judgment_running_false_initially(manager):
-    assert manager.judgment_running is False
+    assert manager.judgment_running(1) is False
 
 
 async def test_start_judgment_only_returns_true_when_idle(manager):
@@ -858,9 +858,39 @@ async def test_start_judgment_only_returns_false_when_already_running(manager):
 
     manager._run_judgment_phase = _fake_judgment_phase  # type: ignore
     await manager.start_judgment_only(1)
-    assert manager.judgment_running is True
+    assert manager.judgment_running(1) is True
     second = await manager.start_judgment_only(1)
     assert second is False
+    event.set()
+    await asyncio.sleep(0.01)
+
+
+async def test_judgment_running_for_one_user_does_not_block_another_users_judgment(manager):
+    """_run_judgment_phase is per-user (own taste listing, own Anthropic key,
+    own stock_item_judgments rows) with no shared-mutable-resource reason to
+    serialize different users against each other, unlike stock sync (which
+    writes one shared stock_items catalog and legitimately stays a single
+    global slot). A per-user _judgment_tasks dict, not a single global task,
+    is what makes this true -- this is the same bug class Task 16 fixed for
+    collection sync's sync_running/_sync_task."""
+    event = asyncio.Event()
+
+    async def _fake_judgment_phase(user_id):
+        await event.wait()
+
+    manager._run_judgment_phase = _fake_judgment_phase  # type: ignore
+    alice_started = await manager.start_judgment_only(1)
+    assert alice_started is True
+    assert manager.judgment_running(1) is True
+
+    bob_started = await manager.start_judgment_only(2)
+    assert bob_started is True
+    assert manager.judgment_running(2) is True
+
+    # Alice's own second concurrent call is still refused.
+    alice_second = await manager.start_judgment_only(1)
+    assert alice_second is False
+
     event.set()
     await asyncio.sleep(0.01)
 
@@ -886,7 +916,7 @@ async def test_start_stock_sync_and_start_judgment_only_run_independently(manage
     started = await manager.start_judgment_only(1)
     assert started is True
     assert manager.stock_sync_running is True
-    assert manager.judgment_running is True
+    assert manager.judgment_running(1) is True
 
     stock_event.set()
     judgment_event.set()

@@ -1,11 +1,8 @@
 import csv
 import io
-from fastapi import APIRouter, Query, Response
+from fastapi import APIRouter, Query, Request, Response
 from typing import Optional
-from db import (
-    get_connection, get_stock_items, get_distinct_stock_artists, has_any_stock_judgment,
-    clear_stock_judgments, get_recommended_stock_items,
-)
+import db
 from crawl_manager import crawl_manager
 
 router = APIRouter()
@@ -13,6 +10,7 @@ router = APIRouter()
 
 @router.get("/stock")
 def list_stock(
+    request: Request,
     search: Optional[str] = Query(None),
     artist: Optional[str] = Query(None),
     sort: str = Query("artist"),
@@ -22,20 +20,26 @@ def list_stock(
     overlapping: bool = Query(False),
     recommended: bool = Query(False),
 ):
-    conn = get_connection()
-    return get_stock_items(conn, search=search, artist=artist, sort=sort, order=order, page=page, per_page=per_page, overlapping=overlapping, recommended=recommended)
+    user_id = request.state.user_id
+    with db.user_scope(user_id) as conn:
+        return db.get_stock_items(
+            conn, user_id, search=search, artist=artist, sort=sort, order=order,
+            page=page, per_page=per_page, overlapping=overlapping, recommended=recommended,
+        )
 
 
 @router.get("/stock/artists")
-def list_stock_artists(overlapping: bool = Query(False), recommended: bool = Query(False)):
-    conn = get_connection()
-    return {"artists": get_distinct_stock_artists(conn, overlapping=overlapping, recommended=recommended)}
+def list_stock_artists(request: Request, overlapping: bool = Query(False), recommended: bool = Query(False)):
+    user_id = request.state.user_id
+    with db.user_scope(user_id) as conn:
+        return {"artists": db.get_distinct_stock_artists(conn, user_id, overlapping=overlapping, recommended=recommended)}
 
 
 @router.get("/stock/judge/status")
-def get_stock_judgment_status():
-    conn = get_connection()
-    return {"any_judged": has_any_stock_judgment(conn)}
+def get_stock_judgment_status(request: Request):
+    user_id = request.state.user_id
+    with db.user_scope(user_id) as conn:
+        return {"any_judged": db.has_any_stock_judgment(conn, user_id)}
 
 
 @router.post("/stock/sync/start")
@@ -45,24 +49,28 @@ async def start_stock_sync():
 
 
 @router.post("/stock/judge/start")
-async def start_stock_judgment():
-    started = await crawl_manager.start_judgment_only()
-    return {"started": started, "running": crawl_manager.judgment_running}
+async def start_stock_judgment(request: Request):
+    user_id = request.state.user_id
+    started = await crawl_manager.start_judgment_only(user_id)
+    return {"started": started, "running": crawl_manager.judgment_running(user_id)}
 
 
 @router.post("/stock/judge/clear")
-def clear_stock_judgment():
-    if crawl_manager.judgment_running or crawl_manager.stock_sync_running:
+def clear_stock_judgment(request: Request):
+    user_id = request.state.user_id
+    if crawl_manager.judgment_running(user_id) or crawl_manager.stock_sync_running:
         return {"cleared": False, "running": True}
-    conn = get_connection()
-    count = clear_stock_judgments(conn)
+    with db.user_scope(user_id) as conn:
+        count = db.clear_stock_judgments(conn, user_id)
+        conn.commit()
     return {"cleared": True, "count": count}
 
 
 @router.get("/stock/export")
-def export_recommended_stock():
-    conn = get_connection()
-    items = get_recommended_stock_items(conn)
+def export_recommended_stock(request: Request):
+    user_id = request.state.user_id
+    with db.user_scope(user_id) as conn:
+        items = db.get_recommended_stock_items(conn, user_id)
     buffer = io.StringIO()
     writer = csv.writer(buffer)
     writer.writerow(["artist", "title", "format", "price", "source", "link", "reason"])

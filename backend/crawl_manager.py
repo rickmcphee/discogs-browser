@@ -8,7 +8,7 @@ class CrawlManager:
     def __init__(self):
         self._sync_tasks: dict[int, asyncio.Task] = {}
         self._stock_task: Optional[asyncio.Task] = None
-        self._judgment_task: Optional[asyncio.Task] = None
+        self._judgment_tasks: dict[int, asyncio.Task] = {}
         self._worker_tasks: list[asyncio.Task] = []
         self._pool_running = False
         self._playwright = None
@@ -21,9 +21,10 @@ class CrawlManager:
     @property
     def any_job_running(self) -> bool:
         """True while any background job that broadcasts SSE events is active:
-        collection sync (for any user), stock sync, or judgment."""
+        collection sync (for any user), stock sync, or judgment (for any user)."""
         any_sync_running = any(not t.done() for t in self._sync_tasks.values())
-        return any_sync_running or self.stock_sync_running or self.judgment_running
+        any_judgment_running = any(not t.done() for t in self._judgment_tasks.values())
+        return any_sync_running or self.stock_sync_running or any_judgment_running
 
     def subscribe(self) -> asyncio.Queue:
         q: asyncio.Queue = asyncio.Queue()
@@ -417,15 +418,15 @@ class CrawlManager:
             log.error("Stock sync failed: %s", e, exc_info=True)
             await self._broadcast({"status": "stock_sync_error", "error": str(e)})
 
-    @property
-    def judgment_running(self) -> bool:
-        return self._judgment_task is not None and not self._judgment_task.done()
+    def judgment_running(self, user_id: int) -> bool:
+        task = self._judgment_tasks.get(user_id)
+        return task is not None and not task.done()
 
     async def start_judgment_only(self, user_id: int) -> bool:
-        if self.judgment_running:
-            log.warning("Judgment already running, ignoring start request")
+        if self.judgment_running(user_id):
+            log.warning("Judgment already running for user %d, ignoring start request", user_id)
             return False
-        self._judgment_task = asyncio.create_task(self._run_judgment_phase(user_id))
+        self._judgment_tasks[user_id] = asyncio.create_task(self._run_judgment_phase(user_id))
         return True
 
     async def _run_judgment_phase(self, user_id: int):
