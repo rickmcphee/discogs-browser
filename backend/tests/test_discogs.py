@@ -2,6 +2,7 @@ import pytest
 import respx
 import httpx
 import config
+from authlib.oauth1.rfc5849 import client_auth as oauth1_client_auth
 from discogs import (
     get_identity,
     fetch_collection_fields,
@@ -49,8 +50,24 @@ def test_get_identity_signs_with_users_own_oauth_token():
     assert 'oauth_token="user-token"' in auth_header
 
 
+def _signature(auth_header):
+    marker = 'oauth_signature="'
+    start = auth_header.index(marker) + len(marker)
+    end = auth_header.index('"', start)
+    return auth_header[start:end]
+
+
 @respx.mock
 def test_get_identity_signature_changes_with_token_secret(monkeypatch):
+    # OAuth1 signatures normally vary request-to-request purely from the
+    # nonce/timestamp entropy authlib mixes in, independent of token_secret.
+    # Pin both to fixed values (authlib.oauth1.rfc5849.client_auth.sign()
+    # calls these as bare module globals, so patching the module attributes
+    # here is picked up by ClientAuth.sign for every request) so token_secret
+    # is the only thing left that can change the signature.
+    monkeypatch.setattr(oauth1_client_auth, "generate_nonce", lambda: "fixed-nonce")
+    monkeypatch.setattr(oauth1_client_auth, "generate_timestamp", lambda: "1700000000")
+
     route = respx.get("https://api.discogs.com/oauth/identity").mock(
         return_value=httpx.Response(200, json={"id": 1, "username": "alice"})
     )
@@ -59,12 +76,6 @@ def test_get_identity_signature_changes_with_token_secret(monkeypatch):
 
     get_identity("user-token", "secret-two")
     header_two = route.calls[-1].request.headers["authorization"]
-
-    def _signature(auth_header):
-        marker = 'oauth_signature="'
-        start = auth_header.index(marker) + len(marker)
-        end = auth_header.index('"', start)
-        return auth_header[start:end]
 
     assert _signature(header_one) != _signature(header_two)
 
