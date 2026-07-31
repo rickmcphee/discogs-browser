@@ -335,6 +335,34 @@ class CrawlManager:
             log.error("Collection sync failed: %s", e, exc_info=True)
             await self._broadcast({"status": "sync_error", "error": str(e)})
 
+    async def sweep_enqueue(self, mode: str = "missing"):
+        from db import get_identity_pool, get_app_pool, get_enabled_crawlers, enqueue_crawl_queue, get_missing_releases, user_scope
+
+        with get_app_pool().connection() as conn:
+            enabled_crawlers = get_enabled_crawlers(conn)
+        # Enumerated via get_identity_pool(), not get_app_pool(): app_user has
+        # no grant at all on users (db.py's init_tenant_schema — isolation for
+        # that table comes from the grant boundary itself, not RLS), so a
+        # get_app_pool() connection can't read it. get_identity_pool()'s
+        # app_identity role is the one _sync_collection already uses to read
+        # a single user row for the same reason.
+        with get_identity_pool().connection() as conn:
+            user_ids = [row["id"] for row in conn.execute("SELECT id FROM users").fetchall()]
+
+        for user_id in user_ids:
+            with user_scope(user_id) as conn:
+                if mode == "missing":
+                    target_ids = get_missing_releases(conn, user_id)
+                else:
+                    target_ids = [row["discogs_id"] for row in conn.execute(
+                        "SELECT discogs_id FROM library_items WHERE user_id = %s", [user_id]
+                    ).fetchall()]
+                for discogs_id in target_ids:
+                    for crawler in enabled_crawlers:
+                        enqueue_crawl_queue(conn, discogs_id, crawler["id"])
+                conn.commit()
+        log.info("Sweep-enqueue complete (mode=%s) across %d users", mode, len(user_ids))
+
     @property
     def stock_sync_running(self) -> bool:
         return self._stock_task is not None and not self._stock_task.done()

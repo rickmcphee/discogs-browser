@@ -456,6 +456,71 @@ async def test_sync_stock_broadcasts_error_and_continues_when_a_crawler_fails(pg
 
 
 # ---------------------------------------------------------------------------
+# sweep_enqueue (admin-scheduled, all-users crawl_schedule sweep)
+#
+# Enumerates users via db.get_identity_pool() rather than db.get_app_pool():
+# app_user (the role pg_schema repoints the app pool to) has no grant at all
+# on users -- only app_identity does (init_tenant_schema) -- so a get_app_pool()
+# connection can't read it, matching how _sync_collection already reads the
+# single calling user's row.
+# ---------------------------------------------------------------------------
+
+async def test_sweep_enqueue_missing_mode_enqueues_for_every_user(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        bob = db.create_user(conn, discogs_user_id=2, discogs_username="bob")
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        for rid, owner in [("r1", alice), ("r2", bob)]:
+            db.upsert_catalog_release(conn, {
+                "discogs_id": rid, "artist": "A", "title": "T", "year": None, "label": None,
+                "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+                "discogs_url": None,
+            })
+            db.upsert_library_item(conn, owner["id"], rid, in_collection=True)
+        conn.commit()
+
+    manager = CrawlManager()
+    await manager.sweep_enqueue("missing")
+
+    with db.get_admin_pool().connection() as conn:
+        queued = {row["discogs_id"] for row in conn.execute("SELECT discogs_id FROM crawl_queue").fetchall()}
+    assert queued == {"r1", "r2"}
+
+
+async def test_sweep_enqueue_all_mode_enqueues_every_library_item_regardless_of_listing_state(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=8, discogs_username="alice8")
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.upsert_library_item(conn, alice["id"], "r1", in_collection=True)
+        # Already fully crawled -- "missing" mode would skip this, "all" must not.
+        db.upsert_listing(conn, "r1", crawler_id, "https://x", 9.99, None, "USD", None)
+        conn.commit()
+
+    manager = CrawlManager()
+    await manager.sweep_enqueue("all")
+
+    with db.get_admin_pool().connection() as conn:
+        queued = {row["discogs_id"] for row in conn.execute("SELECT discogs_id FROM crawl_queue").fetchall()}
+    assert queued == {"r1"}
+
+
+async def test_sweep_enqueue_no_users_is_a_noop(pg_schema):
+    manager = CrawlManager()
+    await manager.sweep_enqueue("missing")
+
+    with db.get_admin_pool().connection() as conn:
+        queued = conn.execute("SELECT discogs_id FROM crawl_queue").fetchall()
+    assert queued == []
+
+
+# ---------------------------------------------------------------------------
 # judgment phase (per-user key/taste, Postgres-backed)
 # ---------------------------------------------------------------------------
 
