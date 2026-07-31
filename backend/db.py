@@ -299,8 +299,16 @@ def init_tenant_schema():
         # here despite there being no RLS to gate it; isolation for per-user data
         # instead comes entirely from library_items/stock_item_judgments' RLS
         # policies below and from library_items' own FK into catalog.
-        conn.execute("GRANT SELECT ON crawlers TO app_user")
-        conn.execute("GRANT SELECT, INSERT, UPDATE ON catalog, listings, stock_items TO app_user")
+        # UPDATE (not just SELECT) is needed here too: update_crawler_last_run(),
+        # also run through get_app_pool() from _sync_stock, updates crawlers.last_run
+        # after each catalog crawl.
+        conn.execute("GRANT SELECT, UPDATE ON crawlers TO app_user")
+        # stock_items additionally needs DELETE (not just INSERT/UPDATE, unlike
+        # catalog/listings): replace_stock_items(), run through get_app_pool()
+        # from _sync_stock, deletes a crawler's whole prior batch before
+        # reinserting the fresh one.
+        conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON stock_items TO app_user")
+        conn.execute("GRANT SELECT, INSERT, UPDATE ON catalog, listings TO app_user")
         conn.execute("GRANT USAGE, SELECT ON SEQUENCE listings_id_seq, stock_items_id_seq TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON library_items TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON stock_item_judgments TO app_user")

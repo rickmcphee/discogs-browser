@@ -340,28 +340,21 @@ class CrawlManager:
         return self._stock_task is not None and not self._stock_task.done()
 
     async def start_stock_sync(self) -> bool:
-        if self.stock_sync_running or self.judgment_running:
-            log.warning("Stock sync or judgment already running, ignoring start request")
+        if self.stock_sync_running:
+            log.warning("Stock sync already running, ignoring start request")
             return False
         self._stock_task = asyncio.create_task(self._sync_stock())
         return True
 
     async def _sync_stock(self):
-        import sqlite3
-        import config as cfg_module
-        from config import load_config
-        from db import get_enabled_crawlers, replace_stock_items, update_crawler_last_run
+        from db import get_app_pool, get_enabled_crawlers, replace_stock_items, update_crawler_last_run
         from crawler import load_enabled_crawlers
 
         await self._broadcast({"status": "stock_sync_started"})
         log.info("Stock sync started")
-
-        conn = sqlite3.connect(cfg_module.DB_FILE, check_same_thread=False, timeout=60)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA journal_mode = WAL")
         try:
-            enabled = get_enabled_crawlers(conn, crawler_type="catalog")
+            with get_app_pool().connection() as conn:
+                enabled = get_enabled_crawlers(conn, crawler_type="catalog")
             crawlers = load_enabled_crawlers(enabled)
             if not crawlers:
                 await self._broadcast({"status": "stock_sync_error", "error": "No enabled catalog crawlers"})
@@ -375,113 +368,95 @@ class CrawlManager:
                         items.append(item)
                 except Exception as e:
                     log.error("[%s] Stock crawl failed: %s", crawler._db_site_name, e, exc_info=True)
-                    await self._broadcast({
-                        "status": "stock_sync_error",
-                        "error": str(e),
-                        "source": crawler._db_site_name,
-                    })
+                    await self._broadcast({"status": "stock_sync_error", "error": str(e), "source": crawler._db_site_name})
                     continue
 
-                replace_stock_items(conn, crawler._db_id, items)
+                with get_app_pool().connection() as conn:
+                    replace_stock_items(conn, crawler._db_id, items)
+                    update_crawler_last_run(conn, crawler._db_id)
+                    conn.commit()
                 total_synced += len(items)
-                update_crawler_last_run(conn, crawler._db_id)
                 log.info("[%s] Stock sync found %d items", crawler._db_site_name, len(items))
-                await self._broadcast({
-                    "status": "stock_sync_progress",
-                    "synced": total_synced,
-                    "source": crawler._db_site_name,
-                })
-
-            api_key = load_config().get("anthropic_api_key", "")
-            if api_key:
-                await self._run_judgment_phase(conn, api_key)
+                await self._broadcast({"status": "stock_sync_progress", "synced": total_synced, "source": crawler._db_site_name})
 
             await self._broadcast({"status": "stock_sync_complete", "synced": total_synced})
             log.info("Stock sync complete: %d items", total_synced)
-
         except asyncio.CancelledError:
             log.info("Stock sync cancelled")
             raise
         except Exception as e:
             log.error("Stock sync failed: %s", e, exc_info=True)
             await self._broadcast({"status": "stock_sync_error", "error": str(e)})
-        finally:
-            conn.close()
 
-    async def _run_judgment_phase(self, conn, api_key: str):
-        from db import get_unjudged_stock_items, count_unjudged_stock_items, get_taste_listing, upsert_stock_judgments
-        from config import load_config
+    @property
+    def judgment_running(self) -> bool:
+        return self._judgment_task is not None and not self._judgment_task.done()
+
+    async def start_judgment_only(self, user_id: int) -> bool:
+        if self.judgment_running:
+            log.warning("Judgment already running, ignoring start request")
+            return False
+        self._judgment_task = asyncio.create_task(self._run_judgment_phase(user_id))
+        return True
+
+    async def _run_judgment_phase(self, user_id: int):
+        from db import (
+            get_identity_pool, user_scope, get_unjudged_stock_items, count_unjudged_stock_items,
+            get_taste_listing, upsert_stock_judgments,
+        )
         import recommendations
         import anthropic
 
         await self._broadcast({"status": "stock_judgment_started"})
-        log.info("Judgment run started")
-
-        limit = load_config().get("recommendation_item_limit", recommendations.SYNC_CAP)
-        total_unjudged = count_unjudged_stock_items(conn)
-        unjudged = get_unjudged_stock_items(conn, limit)
-        if not unjudged:
-            await self._broadcast({"status": "stock_judgment_complete", "judged": 0})
-            log.info("Found 0/0 items to judge for recommendation, nothing to do")
-            return
-
-        log.info("Found %d/%d items to judge for recommendation", len(unjudged), total_unjudged)
-
-        client = anthropic.Anthropic(api_key=api_key)
-        taste_listing = get_taste_listing(conn)
-
+        log.info("Judgment run started for user %d", user_id)
         try:
+            with get_identity_pool().connection() as conn:
+                user = conn.execute(
+                    "SELECT anthropic_api_key, recommendation_item_limit FROM users WHERE id = %s", [user_id]
+                ).fetchone()
+            api_key = user["anthropic_api_key"]
+            if not api_key:
+                await self._broadcast({"status": "stock_judgment_error", "error": "Anthropic API key not configured"})
+                return
+            # recommendation_item_limit is NOT NULL DEFAULT 300, and 0 is a
+            # deliberate "unlimited" sentinel consumed by get_unjudged_stock_items's
+            # `limit > 0` check -- `or recommendations.SYNC_CAP` here would silently
+            # turn a real 0 into 300 (0 is falsy), breaking that contract.
+            limit = user["recommendation_item_limit"]
+
+            with user_scope(user_id) as conn:
+                total_unjudged = count_unjudged_stock_items(conn, user_id)
+                unjudged = get_unjudged_stock_items(conn, user_id, limit)
+                taste_listing = get_taste_listing(conn, user_id)
+
+            if not unjudged:
+                await self._broadcast({"status": "stock_judgment_complete", "judged": 0})
+                log.info("Found 0/0 items to judge for user %d, nothing to do", user_id)
+                return
+            log.info("Found %d/%d items to judge for user %d", len(unjudged), total_unjudged, user_id)
+
+            client = anthropic.Anthropic(api_key=api_key)
             judged = 0
             for i in range(0, len(unjudged), recommendations.BATCH_SIZE):
                 batch = unjudged[i:i + recommendations.BATCH_SIZE]
                 results = await asyncio.to_thread(recommendations.judge_batch, client, taste_listing, batch)
                 recommended_in_batch = 0
                 if results:
-                    upsert_stock_judgments(conn, results)
+                    with user_scope(user_id) as conn:
+                        upsert_stock_judgments(conn, user_id, results)
+                        conn.commit()
                     judged += len(results)
                     recommended_in_batch = sum(1 for r in results if r["recommended"])
-                log.info("Judged batch %d/%d: %d recommended", judged, len(unjudged), recommended_in_batch)
+                log.info("Judged batch %d/%d for user %d: %d recommended", judged, len(unjudged), user_id, recommended_in_batch)
                 await self._broadcast({"status": "stock_judgment_progress", "judged": judged, "total": len(unjudged)})
 
             await self._broadcast({"status": "stock_judgment_complete", "judged": judged})
-            log.info("Stock judgment complete: %d items judged", judged)
-        except Exception as e:
-            log.error("Stock judgment phase failed: %s", e, exc_info=True)
-            await self._broadcast({"status": "stock_judgment_error", "error": str(e)})
-
-    @property
-    def judgment_running(self) -> bool:
-        return self._judgment_task is not None and not self._judgment_task.done()
-
-    async def start_judgment_only(self) -> bool:
-        if self.stock_sync_running or self.judgment_running:
-            log.warning("Stock sync or judgment already running, ignoring judgment-only start request")
-            return False
-        self._judgment_task = asyncio.create_task(self._run_judgment_only())
-        return True
-
-    async def _run_judgment_only(self):
-        import sqlite3
-        import config as cfg_module
-        from config import load_config
-
-        conn = sqlite3.connect(cfg_module.DB_FILE, check_same_thread=False, timeout=60)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA journal_mode = WAL")
-        try:
-            api_key = load_config().get("anthropic_api_key", "")
-            if not api_key:
-                await self._broadcast({"status": "stock_judgment_error", "error": "Anthropic API key not configured"})
-                return
-            await self._run_judgment_phase(conn, api_key)
+            log.info("Stock judgment complete for user %d: %d items judged", user_id, judged)
         except asyncio.CancelledError:
-            log.info("Judgment-only run cancelled")
+            log.info("Judgment run cancelled")
             raise
         except Exception as e:
-            log.error("Judgment-only run failed: %s", e, exc_info=True)
+            log.error("Judgment phase failed for user %d: %s", user_id, e, exc_info=True)
             await self._broadcast({"status": "stock_judgment_error", "error": str(e)})
-        finally:
-            conn.close()
 
 crawl_manager = CrawlManager()
