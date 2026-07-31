@@ -1,6 +1,7 @@
 from authlib.integrations.httpx_client import OAuth1Client
 from logging_config import get_logger
 import config
+from oauth_discogs import _require_consumer_credentials
 
 log = get_logger("discogs")
 DISCOGS_API = "https://api.discogs.com"
@@ -8,6 +9,7 @@ _USER_AGENT = "DiscogsCollectionBrowser/1.0 +https://github.com/local/discogs-br
 
 
 def _client(oauth_token: str, oauth_token_secret: str) -> OAuth1Client:
+    _require_consumer_credentials()
     return OAuth1Client(
         client_id=config.DISCOGS_CONSUMER_KEY,
         client_secret=config.DISCOGS_CONSUMER_SECRET,

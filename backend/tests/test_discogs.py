@@ -50,6 +50,34 @@ def test_get_identity_signs_with_users_own_oauth_token():
 
 
 @respx.mock
+def test_get_identity_signature_changes_with_token_secret(monkeypatch):
+    route = respx.get("https://api.discogs.com/oauth/identity").mock(
+        return_value=httpx.Response(200, json={"id": 1, "username": "alice"})
+    )
+    get_identity("user-token", "secret-one")
+    header_one = route.calls[-1].request.headers["authorization"]
+
+    get_identity("user-token", "secret-two")
+    header_two = route.calls[-1].request.headers["authorization"]
+
+    def _signature(auth_header):
+        marker = 'oauth_signature="'
+        start = auth_header.index(marker) + len(marker)
+        end = auth_header.index('"', start)
+        return auth_header[start:end]
+
+    assert _signature(header_one) != _signature(header_two)
+
+
+@respx.mock
+def test_get_identity_raises_runtime_error_when_consumer_credentials_missing(monkeypatch):
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "")
+    with pytest.raises(RuntimeError):
+        get_identity("user-token", "user-token-secret")
+
+
+@respx.mock
 def test_get_identity_raises_on_bad_token():
     respx.get("https://api.discogs.com/oauth/identity").mock(
         return_value=httpx.Response(401, json={"message": "Invalid token."})
