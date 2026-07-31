@@ -72,12 +72,12 @@ FastAPI (shared, multi-tenant)
           ├── catalog           (global, shared)
           ├── listings          (global, shared — unchanged shape from today)
           ├── crawlers          (global, admin-curated)
-          ├── stock_items /
-          │   stock_item_judgments (global, unchanged)
+          ├── stock_items       (global, unchanged)
           ├── crawl_queue       (global, shared dedup queue)
           ├── users             (per-user, RLS)
           ├── sessions          (per-user, RLS)
           ├── library_items     (per-user, RLS)
+          ├── stock_item_judgments (per-user, RLS — see 2026-07-27 amendment below)
           └── invites           (redemption is pre-session; see Data model)
 ```
 
@@ -199,9 +199,10 @@ url, price, shipping, currency, condition, last_checked`, unique on
 `(release_id, crawler_id)`). Already global in everything but name; this is the
 biggest existing pattern carried forward as-is.
 
-**`crawlers`**, **`stock_items`**, **`stock_item_judgments`** — unchanged. Already
-global; `crawlers.enabled` toggling becomes an admin-only action (see Admin crawler
-curation).
+**`crawlers`**, **`stock_items`** — unchanged. Already global; `crawlers.enabled`
+toggling becomes an admin-only action (see Admin crawler curation).
+`stock_item_judgments` is **not** unchanged — see the 2026-07-27 amendment in
+Migration path below; it moved to per-user/RLS.
 
 **`crawl_queue`** — new; see Crawl scheduling.
 
@@ -369,7 +370,8 @@ other self-hosted deployments being carried forward. One-time migration script:
    in_wishlist` → one `library_items` row under the maintainer's new `user_id`, minted via
    their own first Discogs OAuth login.
 3. Copy `listings` as-is — already global-shaped, no transformation needed.
-4. `crawlers`, `stock_items`, `stock_item_judgments` copy as-is.
+4. `crawlers`, `stock_items` copy as-is. `stock_item_judgments` is **not**
+   copied — see the 2026-07-27 amendment below.
 
 **Amendment (2026-07-26, during implementation):** `plex_url`/`plex_matched_at` are
 **not** carried over by the migration script, unlike every other column named above —
@@ -382,6 +384,15 @@ sync's Plex-match phase regardless. Losing the cached value across this one-time
 migration is therefore the same kind of "harmless, gets recomputed" gap as a single
 missed sync, not a data-loss bug. The maintainer's first post-migration sync simply
 re-does the Plex-match phase once, exactly as if a sync had been skipped.
+
+**Amendment (2026-07-27, during the crawl-queue-refactor plan):**
+`stock_item_judgments` moved from global to per-user/RLS (see
+[`docs/superpowers/specs/2026-07-27-crawl-queue-refactor-design.md`](2026-07-27-crawl-queue-refactor-design.md)) —
+each user now judges the shared stock catalog against their own collection
+using their own Anthropic key, so a judgment row has no meaning without a
+`user_id` to attach it to. The old global judgment set has no such owner and
+is not migrated; the maintainer's first post-migration judgment run simply
+re-judges the stock backlog from scratch, exactly as any new user would.
 
 This is a one-time script, not a general "import your SQLite instance" feature.
 

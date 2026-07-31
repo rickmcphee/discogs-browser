@@ -101,11 +101,33 @@ def test_migrate_creates_user_catalog_library_item_and_listing(pg_test_db, sqlit
         assert stock_item["price"] == 19.99
         assert stock_item["crawler_id"] == new_crawler_id
 
-        judgment = conn.execute(
-            "SELECT * FROM stock_item_judgments WHERE item_key = 'stock-key-1'"
-        ).fetchone()
-        assert judgment["recommended"] is True
-        assert judgment["reason"] == "good pressing"
+        conn.execute(
+            "TRUNCATE users, catalog, library_items, listings, crawlers, "
+            "stock_items, stock_item_judgments CASCADE"
+        )
+        conn.commit()
+
+
+@respx.mock
+def test_migrate_does_not_copy_stock_item_judgments(pg_test_db, sqlite_source):
+    # stock_item_judgments moved from a global table to per-user/RLS (see
+    # docs/superpowers/specs/2026-07-26-multi-tenant-architecture-design.md's
+    # migration-path amendment) -- old global judgment rows have no user_id
+    # to attach to, so they must not be copied. sqlite_source already seeds
+    # one such row ('stock-key-1').
+    db.init_global_schema()
+    db.init_tenant_schema()
+    respx.get("https://api.discogs.com/users/alice").mock(
+        return_value=httpx.Response(200, json={"id": 777})
+    )
+
+    migrate(sqlite_source, discogs_username="alice")
+
+    with db.get_admin_pool().connection() as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) AS count FROM stock_item_judgments"
+        ).fetchone()["count"]
+        assert count == 0
 
         conn.execute(
             "TRUNCATE users, catalog, library_items, listings, crawlers, "

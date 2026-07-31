@@ -11,6 +11,9 @@ from typing import Optional
 import httpx
 
 import db
+from logging_config import get_logger
+
+log = get_logger("migrate_from_sqlite")
 
 # Matches backend/discogs.py's _headers(): Discogs' API policy expects a
 # descriptive User-Agent on every request, and unauthenticated calls (this
@@ -114,15 +117,10 @@ def migrate(
                  si["item_key"], si["last_seen"]],
             )
 
-        for sj in sconn.execute("SELECT * FROM stock_item_judgments").fetchall():
-            pconn.execute(
-                """
-                INSERT INTO stock_item_judgments (item_key, recommended, reason, judged_at)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT (item_key) DO NOTHING
-                """,
-                [sj["item_key"], bool(sj["recommended"]), sj["reason"], sj["judged_at"]],
-            )
+        log.info(
+            "Skipping stock_item_judgments: relocated to per-user schema, "
+            "no user_id to attach old rows to"
+        )
 
         pconn.commit()
 
