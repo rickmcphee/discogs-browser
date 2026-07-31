@@ -301,6 +301,7 @@ def init_tenant_schema():
         # policies below and from library_items' own FK into catalog.
         conn.execute("GRANT SELECT ON crawlers TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE ON catalog, listings, stock_items TO app_user")
+        conn.execute("GRANT USAGE, SELECT ON SEQUENCE listings_id_seq, stock_items_id_seq TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON library_items TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON stock_item_judgments TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE ON crawl_queue TO app_user")

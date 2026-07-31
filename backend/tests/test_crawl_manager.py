@@ -5,6 +5,7 @@ import sqlite3
 import pytest
 import respx
 import httpx
+from unittest.mock import AsyncMock, MagicMock, patch
 import db
 import token_encryption
 from crawl_manager import CrawlManager
@@ -91,84 +92,6 @@ async def test_recent_events_capped_at_500(manager):
 
 
 # ---------------------------------------------------------------------------
-# running state
-# ---------------------------------------------------------------------------
-
-async def test_not_running_initially(manager):
-    assert manager.running is False
-
-
-async def test_start_returns_true_when_idle(manager):
-    async def _fake_run(mode, release_id):
-        await asyncio.sleep(0)
-
-    manager._run = _fake_run  # type: ignore
-    started = await manager.start("all")
-    assert started is True
-    assert manager.running is True
-    # wait for task to complete
-    await asyncio.sleep(0.01)
-
-
-async def test_start_returns_false_when_already_running(manager):
-    event = asyncio.Event()
-
-    async def _fake_run(mode, release_id):
-        await event.wait()  # block until we signal
-
-    manager._run = _fake_run  # type: ignore
-    await manager.start("all")
-    second = await manager.start("all")
-    assert second is False
-    event.set()
-    await asyncio.sleep(0.01)
-
-
-# ---------------------------------------------------------------------------
-# stop
-# ---------------------------------------------------------------------------
-
-async def test_stop_broadcasts_stopped(manager):
-    q = manager.subscribe()
-    await manager.stop()
-    event = q.get_nowait()
-    assert event["status"] == "stopped"
-
-
-async def test_stop_cancels_running_task(manager):
-    event = asyncio.Event()
-
-    async def _fake_run(mode, release_id):
-        try:
-            await event.wait()
-        except asyncio.CancelledError:
-            raise
-
-    manager._run = _fake_run  # type: ignore
-    await manager.start("all")
-    assert manager.running is True
-    await manager.stop()
-    await asyncio.sleep(0.05)
-    assert manager.running is False
-
-
-# ---------------------------------------------------------------------------
-# recent_events cleared on new start
-# ---------------------------------------------------------------------------
-
-async def test_recent_events_cleared_on_start(manager):
-    await manager._broadcast({"status": "old"})
-    assert len(manager.recent_events()) == 1
-
-    async def _instant(mode, release_id):
-        pass
-
-    manager._run = _instant  # type: ignore
-    await manager.start("all")
-    assert manager.recent_events() == []
-
-
-# ---------------------------------------------------------------------------
 # sync task (collection sync)
 # ---------------------------------------------------------------------------
 
@@ -209,30 +132,6 @@ async def test_sync_running_false_after_completion(manager):
     await manager.start_sync(1, "all")
     await asyncio.sleep(0.05)
     assert manager.sync_running is False
-
-
-async def test_crawl_and_sync_can_run_concurrently(manager):
-    crawl_event = asyncio.Event()
-    sync_event = asyncio.Event()
-
-    async def _fake_run(mode, release_id):
-        await crawl_event.wait()
-
-    async def _fake_sync(user_id, mode):
-        await sync_event.wait()
-
-    manager._run = _fake_run  # type: ignore
-    manager._sync_collection = _fake_sync  # type: ignore
-
-    await manager.start("all")
-    await manager.start_sync(1, "all")
-
-    assert manager.running is True
-    assert manager.sync_running is True
-
-    crawl_event.set()
-    sync_event.set()
-    await asyncio.sleep(0.05)
 
 
 # ---------------------------------------------------------------------------
@@ -307,6 +206,84 @@ async def test_sync_collection_enqueues_crawl_queue_for_missing_listings(pg_sche
 
 
 # ---------------------------------------------------------------------------
+# worker pool (_drain_one_batch: claim / crawl / bot-recovery / mark done)
+#
+# Uses db.get_admin_pool() for setup and assertions, same as
+# test_sync_collection_enqueues_crawl_queue_for_missing_listings above --
+# but _drain_one_batch itself runs through get_app_pool() (the pg_schema
+# fixture repoints APP_DATABASE_URL at the real app_user role), since the
+# worker pool has no per-request user context and never uses user_scope().
+# catalog/listings/crawlers/crawl_queue carry no RLS policy, so app_user's
+# plain GRANTs (init_tenant_schema) are all that's needed for it to read and
+# write them.
+# ---------------------------------------------------------------------------
+
+async def test_worker_claims_and_completes_one_queue_row(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1", crawler_id)
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(return_value=[{"url": "https://x", "price": 9.99, "shipping": None, "currency": "USD", "condition": None}])
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        claimed = await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    assert claimed == 1
+    with db.get_admin_pool().connection() as conn:
+        listing = conn.execute("SELECT price FROM listings WHERE release_id = 'r1'").fetchone()
+        queue_row = conn.execute("SELECT status FROM crawl_queue WHERE discogs_id = 'r1'").fetchone()
+    assert listing["price"] == 9.99
+    assert queue_row["status"] == "done"
+
+
+async def test_worker_retries_once_on_bot_detection_then_succeeds(pg_schema):
+    from crawler import BotDetectedError
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1", crawler_id)
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(side_effect=[
+        BotDetectedError(),
+        [{"url": "https://x", "price": 5.0, "shipping": None, "currency": "USD", "condition": None}],
+    ])
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("crawler._reset_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        claimed = await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    assert claimed == 1
+    with db.get_admin_pool().connection() as conn:
+        listing = conn.execute("SELECT price FROM listings WHERE release_id = 'r1'").fetchone()
+    assert listing["price"] == 5.0
+
+
+# ---------------------------------------------------------------------------
 # stock sync task
 # ---------------------------------------------------------------------------
 
@@ -347,30 +324,6 @@ async def test_stock_sync_running_false_after_completion(manager):
     await manager.start_stock_sync()
     await asyncio.sleep(0.05)
     assert manager.stock_sync_running is False
-
-
-async def test_price_crawl_and_stock_sync_can_run_concurrently(manager):
-    crawl_event = asyncio.Event()
-    stock_event = asyncio.Event()
-
-    async def _fake_run(mode, release_id):
-        await crawl_event.wait()
-
-    async def _fake_stock_sync():
-        await stock_event.wait()
-
-    manager._run = _fake_run  # type: ignore
-    manager._sync_stock = _fake_stock_sync  # type: ignore
-
-    await manager.start("all")
-    await manager.start_stock_sync()
-
-    assert manager.running is True
-    assert manager.stock_sync_running is True
-
-    crawl_event.set()
-    stock_event.set()
-    await asyncio.sleep(0.05)
 
 
 async def test_sync_stock_updates_crawler_last_run(manager, tmp_config_dir, monkeypatch):

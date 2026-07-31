@@ -1,5 +1,4 @@
 import asyncio
-import random
 from typing import Optional
 from logging_config import get_logger
 
@@ -7,23 +6,23 @@ log = get_logger("crawl_manager")
 
 class CrawlManager:
     def __init__(self):
-        self._task: Optional[asyncio.Task] = None
         self._sync_task: Optional[asyncio.Task] = None
         self._stock_task: Optional[asyncio.Task] = None
         self._judgment_task: Optional[asyncio.Task] = None
+        self._worker_tasks: list[asyncio.Task] = []
+        self._pool_running = False
+        self._playwright = None
+        self._browser = None
+        self._stealth = None
         self._subscribers: list[asyncio.Queue] = []
         self._recent: list[dict] = []
         self._seq = 0
 
     @property
-    def running(self) -> bool:
-        return self._task is not None and not self._task.done()
-
-    @property
     def any_job_running(self) -> bool:
         """True while any background job that broadcasts SSE events is active:
-        crawl, collection sync, stock sync, or judgment."""
-        return self.running or self.sync_running or self.stock_sync_running or self.judgment_running
+        collection sync, stock sync, or judgment."""
+        return self.sync_running or self.stock_sync_running or self.judgment_running
 
     def subscribe(self) -> asyncio.Queue:
         q: asyncio.Queue = asyncio.Queue()
@@ -39,23 +38,6 @@ class CrawlManager:
     def recent_events(self) -> list[dict]:
         return list(self._recent)
 
-    async def start(self, mode: str = "all", release_id: Optional[str] = None) -> bool:
-        if self.running:
-            log.warning("Crawl already running, ignoring start request")
-            return False
-        self._recent.clear()
-        self._task = asyncio.create_task(self._run(mode, release_id))
-        return True
-
-    async def stop(self):
-        if self._task and not self._task.done():
-            self._task.cancel()
-            try:
-                await asyncio.wait_for(asyncio.shield(self._task), timeout=5.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                pass
-        await self._broadcast({"status": "stopped"})
-
     async def _broadcast(self, event: dict):
         self._seq += 1
         event["id"] = self._seq
@@ -65,62 +47,120 @@ class CrawlManager:
         for q in list(self._subscribers):
             await q.put(event)
 
-    async def _run(self, mode: str, release_id: Optional[str]):
-        import sqlite3
-        import config as cfg_module
-        from db import get_releases, get_enabled_crawlers, get_missing_releases
-        from crawler import load_enabled_crawlers, crawl_releases
-        from config import load_config
+    @property
+    def pool_running(self) -> bool:
+        return self._pool_running
 
-        # Dedicated connection for the crawl task — avoids contention with the
-        # thread-local singleton used by request handlers on the same event loop.
-        conn = sqlite3.connect(cfg_module.DB_FILE, check_same_thread=False, timeout=60)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA journal_mode = WAL")
-        try:
+    async def start_worker_pool(self, worker_count: int = 2):
+        from playwright.async_api import async_playwright
+        from playwright_stealth import Stealth
+        from crawler import load_enabled_crawlers
+        from config import PLAYWRIGHT_CHANNEL
+        from db import get_app_pool, get_enabled_crawlers
+
+        with get_app_pool().connection() as conn:
             enabled = get_enabled_crawlers(conn)
-            crawlers = load_enabled_crawlers(enabled)
-            if not crawlers:
-                await self._broadcast({"status": "error", "error": "No enabled crawlers"})
-                return
+        plugins = load_enabled_crawlers(enabled)
+        plugins_by_crawler_id = {p._db_id: p for p in plugins}
 
-            if release_id:
-                result = get_releases(conn, release_id=release_id, per_page=10000)
-                releases = result["releases"]
-            elif mode == "missing":
-                missing_ids = set(get_missing_releases(conn))
-                result = get_releases(conn, per_page=10000)
-                releases = [r for r in result["releases"] if r["discogs_id"] in missing_ids]
-            else:
-                result = get_releases(conn, per_page=10000)
-                releases = result["releases"]
+        self._stealth = Stealth()
+        self._playwright = await async_playwright().start()
+        self._browser = await self._playwright.chromium.launch(
+            headless=True,
+            channel=PLAYWRIGHT_CHANNEL,
+            args=["--disable-blink-features=AutomationControlled"],
+        )
+        self._pool_running = True
+        for i in range(worker_count):
+            self._worker_tasks.append(asyncio.create_task(self._worker_loop(f"worker-{i}", plugins_by_crawler_id)))
+        log.info("Crawl worker pool started: %d workers, %d crawler plugins", worker_count, len(plugins))
 
-            cfg = load_config()
-            if cfg.get("shuffle_crawl_order", True) and not release_id:
-                random.shuffle(releases)
+    async def stop_worker_pool(self):
+        self._pool_running = False
+        for task in self._worker_tasks:
+            task.cancel()
+        for task in self._worker_tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        self._worker_tasks = []
+        if self._browser:
+            await self._browser.close()
+        if self._playwright:
+            await self._playwright.stop()
 
-            total = len(releases) * len(crawlers)
-            await self._broadcast({"status": "started", "total": total})
-            log.info("Crawl started: %d releases × %d crawlers (mode=%s)", len(releases), len(crawlers), mode)
-
-            async for event in crawl_releases(releases, crawlers, conn, single=bool(release_id)):
-                await self._broadcast(event)
-                if event.get("status") == "error" and not event.get("release"):
-                    return
-
-            await self._broadcast({"status": "complete"})
-            log.info("Crawl complete")
-
-        except asyncio.CancelledError:
-            log.info("Crawl cancelled")
-            raise
-        except Exception as e:
-            log.error("Crawl failed: %s", e, exc_info=True)
-            await self._broadcast({"status": "error", "error": str(e)})
+    async def _worker_loop(self, worker_id: str, plugins_by_crawler_id: dict):
+        pages: dict = {}
+        try:
+            while self._pool_running:
+                try:
+                    claimed = await self._drain_one_batch(worker_id, plugins_by_crawler_id, pages)
+                    if claimed == 0:
+                        await asyncio.sleep(5.0)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    log.error("[%s] Worker loop error: %s", worker_id, e, exc_info=True)
+                    await asyncio.sleep(5.0)
         finally:
-            conn.close()
+            for context, _page in pages.values():
+                await context.close()
 
+    async def _drain_one_batch(self, worker_id: str, plugins_by_crawler_id: dict, pages: dict, batch_size: int = 5) -> int:
+        from crawler import _new_context, _reset_context, BotDetectedError
+        from db import get_app_pool, claim_crawl_queue_batch, mark_crawl_queue_done, upsert_listing, get_catalog_release
+
+        with get_app_pool().connection() as conn:
+            rows = claim_crawl_queue_batch(conn, worker_id, limit=batch_size)
+            conn.commit()
+            if not rows:
+                return 0
+            for row in rows:
+                plugin = plugins_by_crawler_id.get(row["crawler_id"])
+                release = get_catalog_release(conn, row["discogs_id"])
+                if plugin is None or release is None:
+                    mark_crawl_queue_done(conn, row["id"])
+                    continue
+
+                if row["crawler_id"] not in pages:
+                    pages[row["crawler_id"]] = await _new_context(self._browser, self._stealth)
+                context, page = pages[row["crawler_id"]]
+
+                try:
+                    matches = await plugin.search(release, page)
+                except BotDetectedError:
+                    context, page = await _reset_context(context, self._browser, self._stealth, None)
+                    pages[row["crawler_id"]] = (context, page)
+                    try:
+                        matches = await plugin.search(release, page)
+                    except Exception as e:
+                        log.error("[%s] Crawl failed after bot-detection retry for %s: %s", plugin._db_site_name, row["discogs_id"], e)
+                        mark_crawl_queue_done(conn, row["id"])
+                        continue
+                except Exception as e:
+                    log.error("[%s] Crawl failed for %s: %s", plugin._db_site_name, row["discogs_id"], e)
+                    mark_crawl_queue_done(conn, row["id"])
+                    continue
+
+                if matches:
+                    best = matches[0]
+                    upsert_listing(
+                        conn, row["discogs_id"], row["crawler_id"], best["url"],
+                        best.get("price"), best.get("shipping"), best.get("currency"), best.get("condition"),
+                    )
+                    await self._broadcast_listing_changed(row["discogs_id"], row["crawler_id"], "found")
+                else:
+                    await self._broadcast_listing_changed(row["discogs_id"], row["crawler_id"], "not_found")
+                mark_crawl_queue_done(conn, row["id"])
+            conn.commit()
+            return len(rows)
+
+    async def _broadcast_listing_changed(self, discogs_id: str, crawler_id: int, status: str):
+        self._seq += 1
+        event = {"id": self._seq, "type": "listing_changed", "discogs_id": discogs_id, "crawler_id": crawler_id, "status": status}
+        for q in list(self._subscribers):
+            await q.put(event)
 
     @property
     def sync_running(self) -> bool:
