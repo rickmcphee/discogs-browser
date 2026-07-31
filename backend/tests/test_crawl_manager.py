@@ -283,6 +283,62 @@ async def test_worker_retries_once_on_bot_detection_then_succeeds(pg_schema):
     assert listing["price"] == 5.0
 
 
+async def test_worker_row_commit_is_isolated_from_a_later_rows_failure(pg_schema):
+    # Proves per-row connection/commit scoping: row 1 finishing successfully
+    # must not be rolled back by row 2 blowing up afterward. Before the fix,
+    # both rows shared one connection/transaction committed once at the very
+    # end of the batch loop, so anything that escaped mid-batch (a crash, a
+    # worker cancellation) would have taken row 1's already-finished work
+    # down with it.
+    #
+    # asyncio.CancelledError specifically (not a plain Exception subclass,
+    # e.g. RuntimeError) is what actually distinguishes old vs. new behavior
+    # here: CancelledError is a BaseException, not an Exception, so it isn't
+    # caught by _drain_one_batch's own `except Exception` around
+    # plugin.search() either before or after this fix -- it always propagates
+    # out uncaught, matching stop_worker_pool's task.cancel() for real. A
+    # plain Exception from plugin.search() was already fully absorbed by that
+    # existing per-row except-and-continue, in both the old and new code, so
+    # it wouldn't actually exercise the batch-wide-rollback bug this fixes.
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r2", "artist": "B", "title": "T2", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1", crawler_id)
+        db.enqueue_crawl_queue(conn, "r2", crawler_id)
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(side_effect=[
+        [{"url": "https://x/1", "price": 9.99, "shipping": None, "currency": "USD", "condition": None}],
+        asyncio.CancelledError(),
+    ])
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        with pytest.raises(asyncio.CancelledError):
+            await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    with db.get_admin_pool().connection() as conn:
+        listing = conn.execute("SELECT price FROM listings WHERE release_id = 'r1'").fetchone()
+        queue_row1 = conn.execute("SELECT status FROM crawl_queue WHERE discogs_id = 'r1'").fetchone()
+    assert listing["price"] == 9.99
+    assert queue_row1["status"] == "done"
+
+
 # ---------------------------------------------------------------------------
 # stock sync task
 # ---------------------------------------------------------------------------

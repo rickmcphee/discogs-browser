@@ -114,47 +114,69 @@ class CrawlManager:
         with get_app_pool().connection() as conn:
             rows = claim_crawl_queue_batch(conn, worker_id, limit=batch_size)
             conn.commit()
-            if not rows:
-                return 0
-            for row in rows:
-                plugin = plugins_by_crawler_id.get(row["crawler_id"])
+        if not rows:
+            return 0
+
+        # Each row gets its own connection/commit, entered and exited around
+        # the Playwright calls rather than spanning them, for two reasons:
+        # a held pool connection across several sequential page loads starves
+        # the pool the same way e557f31 already fixed for _sync_collection,
+        # and a single shared transaction across the whole batch means one
+        # row's crash/cancellation rolls back every earlier row's already-
+        # finished, committed-in-spirit work along with it -- turning a
+        # one-row stranding (the accepted gap noted on claim_crawl_queue_batch)
+        # into a whole-batch one.
+        for row in rows:
+            plugin = plugins_by_crawler_id.get(row["crawler_id"])
+            with get_app_pool().connection() as conn:
                 release = get_catalog_release(conn, row["discogs_id"])
-                if plugin is None or release is None:
+
+            if plugin is None or release is None:
+                with get_app_pool().connection() as conn:
                     mark_crawl_queue_done(conn, row["id"])
-                    continue
+                    conn.commit()
+                continue
 
-                if row["crawler_id"] not in pages:
-                    pages[row["crawler_id"]] = await _new_context(self._browser, self._stealth)
-                context, page = pages[row["crawler_id"]]
+            if row["crawler_id"] not in pages:
+                pages[row["crawler_id"]] = await _new_context(self._browser, self._stealth)
+            context, page = pages[row["crawler_id"]]
 
+            try:
+                matches = await plugin.search(release, page)
+            except BotDetectedError:
+                context, page = await _reset_context(context, self._browser, self._stealth, None)
+                pages[row["crawler_id"]] = (context, page)
                 try:
                     matches = await plugin.search(release, page)
-                except BotDetectedError:
-                    context, page = await _reset_context(context, self._browser, self._stealth, None)
-                    pages[row["crawler_id"]] = (context, page)
-                    try:
-                        matches = await plugin.search(release, page)
-                    except Exception as e:
-                        log.error("[%s] Crawl failed after bot-detection retry for %s: %s", plugin._db_site_name, row["discogs_id"], e)
-                        mark_crawl_queue_done(conn, row["id"])
-                        continue
                 except Exception as e:
-                    log.error("[%s] Crawl failed for %s: %s", plugin._db_site_name, row["discogs_id"], e)
-                    mark_crawl_queue_done(conn, row["id"])
+                    log.error("[%s] Crawl failed after bot-detection retry for %s: %s", plugin._db_site_name, row["discogs_id"], e)
+                    with get_app_pool().connection() as conn:
+                        mark_crawl_queue_done(conn, row["id"])
+                        conn.commit()
                     continue
+            except Exception as e:
+                log.error("[%s] Crawl failed for %s: %s", plugin._db_site_name, row["discogs_id"], e)
+                with get_app_pool().connection() as conn:
+                    mark_crawl_queue_done(conn, row["id"])
+                    conn.commit()
+                continue
 
+            with get_app_pool().connection() as conn:
                 if matches:
                     best = matches[0]
                     upsert_listing(
                         conn, row["discogs_id"], row["crawler_id"], best["url"],
                         best.get("price"), best.get("shipping"), best.get("currency"), best.get("condition"),
                     )
-                    await self._broadcast_listing_changed(row["discogs_id"], row["crawler_id"], "found")
-                else:
-                    await self._broadcast_listing_changed(row["discogs_id"], row["crawler_id"], "not_found")
                 mark_crawl_queue_done(conn, row["id"])
-            conn.commit()
-            return len(rows)
+                conn.commit()
+
+            if matches:
+                await self._broadcast_listing_changed(row["discogs_id"], row["crawler_id"], "found")
+            else:
+                await self._broadcast_listing_changed(row["discogs_id"], row["crawler_id"], "not_found")
+
+        return len(rows)
 
     async def _broadcast_listing_changed(self, discogs_id: str, crawler_id: int, status: str):
         self._seq += 1
