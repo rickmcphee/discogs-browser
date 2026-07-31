@@ -2,12 +2,30 @@
 import asyncio
 import sqlite3
 import pytest
+import respx
+import httpx
+import db
+import token_encryption
 from crawl_manager import CrawlManager
 
 
 @pytest.fixture
 def manager():
     return CrawlManager()
+
+
+# Mirrors test_judgment_crud.py's _clean_tables convention (schema init +
+# TRUNCATE teardown) but scoped to just the sync test below via an explicit
+# fixture param, rather than autouse -- the rest of this file's tests are
+# still SQLite-era (owned by tasks 11/12) and don't touch Postgres at all.
+@pytest.fixture
+def pg_schema(pg_test_db):
+    db.init_global_schema()
+    db.init_tenant_schema()
+    yield
+    with db.get_admin_pool().connection() as conn:
+        conn.execute("TRUNCATE catalog, users, crawlers CASCADE")
+        conn.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -137,11 +155,11 @@ async def test_sync_not_running_initially(manager):
 
 
 async def test_start_sync_returns_true_when_idle(manager):
-    async def _fake_sync(mode):
+    async def _fake_sync(user_id, mode):
         await asyncio.sleep(0)
 
     manager._sync_collection = _fake_sync  # type: ignore
-    started = await manager.start_sync("all")
+    started = await manager.start_sync(1, "all")
     assert started is True
     await asyncio.sleep(0.01)
 
@@ -149,24 +167,24 @@ async def test_start_sync_returns_true_when_idle(manager):
 async def test_start_sync_returns_false_when_already_running(manager):
     event = asyncio.Event()
 
-    async def _fake_sync(mode):
+    async def _fake_sync(user_id, mode):
         await event.wait()
 
     manager._sync_collection = _fake_sync  # type: ignore
-    await manager.start_sync("all")
+    await manager.start_sync(1, "all")
     assert manager.sync_running is True
-    second = await manager.start_sync("all")
+    second = await manager.start_sync(1, "all")
     assert second is False
     event.set()
     await asyncio.sleep(0.01)
 
 
 async def test_sync_running_false_after_completion(manager):
-    async def _instant(mode):
+    async def _instant(user_id, mode):
         pass
 
     manager._sync_collection = _instant  # type: ignore
-    await manager.start_sync("all")
+    await manager.start_sync(1, "all")
     await asyncio.sleep(0.05)
     assert manager.sync_running is False
 
@@ -178,14 +196,14 @@ async def test_crawl_and_sync_can_run_concurrently(manager):
     async def _fake_run(mode, release_id):
         await crawl_event.wait()
 
-    async def _fake_sync(mode):
+    async def _fake_sync(user_id, mode):
         await sync_event.wait()
 
     manager._run = _fake_run  # type: ignore
     manager._sync_collection = _fake_sync  # type: ignore
 
     await manager.start("all")
-    await manager.start_sync("all")
+    await manager.start_sync(1, "all")
 
     assert manager.running is True
     assert manager.sync_running is True
@@ -193,6 +211,62 @@ async def test_crawl_and_sync_can_run_concurrently(manager):
     crawl_event.set()
     sync_event.set()
     await asyncio.sleep(0.05)
+
+
+# ---------------------------------------------------------------------------
+# _sync_collection (per-user, Postgres-backed, enqueues crawl_queue)
+# ---------------------------------------------------------------------------
+
+@respx.mock
+async def test_sync_collection_enqueues_crawl_queue_for_missing_listings(pg_schema, monkeypatch):
+    import config
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        db.register_crawler(conn, "Amazon", "/x.py")
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        return_value=httpx.Response(200, json={
+            "pagination": {"pages": 1},
+            "releases": [{
+                "basic_information": {
+                    "id": 111, "title": "Album", "year": 2020,
+                    "artists": [{"name": "Artist"}], "labels": [], "formats": [],
+                    "cover_image": "",
+                },
+            }],
+        })
+    )
+    respx.get("https://api.discogs.com/releases/111").mock(
+        return_value=httpx.Response(200, json={"identifiers": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    manager = CrawlManager()
+    await manager._sync_collection(user["id"], "all")
+
+    with db.user_scope(user["id"]) as conn:
+        item = conn.execute(
+            "SELECT in_collection FROM library_items WHERE user_id = %s AND discogs_id = 'r111'", [user["id"]]
+        ).fetchone()
+        assert item["in_collection"] is True
+
+    with db.get_admin_pool().connection() as conn:
+        queued = conn.execute("SELECT * FROM crawl_queue WHERE discogs_id = 'r111'").fetchall()
+    assert len(queued) == 1
 
 
 # ---------------------------------------------------------------------------

@@ -126,123 +126,120 @@ class CrawlManager:
     def sync_running(self) -> bool:
         return self._sync_task is not None and not self._sync_task.done()
 
-    async def start_sync(self, mode: str = "all") -> bool:
+    async def start_sync(self, user_id: int, mode: str = "all") -> bool:
         if self.sync_running:
             log.warning("Collection sync already running, ignoring start request")
             return False
-        self._sync_task = asyncio.create_task(self._sync_collection(mode))
+        self._sync_task = asyncio.create_task(self._sync_collection(user_id, mode))
         return True
 
-    async def _sync_collection(self, mode: str):
-        import sqlite3
-        import config as cfg_module
-        from config import load_config
-        from db import upsert_release, mark_in_collection, mark_in_wishlist, mark_not_in_collection, clear_wishlist_flags_not_in, delete_orphaned_releases
-        from discogs import (
-            get_identity, iter_collection_pages, iter_wantlist_pages,
-            fetch_collection_fields, parse_release, fetch_release_barcode,
+    async def _sync_collection(self, user_id: int, mode: str):
+        import token_encryption
+        import discogs
+        from db import (
+            get_identity_pool, get_app_pool, user_scope, upsert_catalog_release, upsert_library_item,
+            clear_wishlist_flags_not_in, delete_orphaned_releases, get_enabled_crawlers, enqueue_crawl_queue,
         )
         import httpx
 
         await self._broadcast({"status": "sync_started"})
-        log.info("Collection sync started (mode=%s)", mode)
+        log.info("Collection sync started for user %d (mode=%s)", user_id, mode)
         try:
-            cfg = load_config()
-            token = cfg.get("discogs_token", "")
-            if not token:
-                await self._broadcast({"status": "sync_error", "error": "Discogs token not configured"})
+            with get_identity_pool().connection() as conn:
+                user = conn.execute("SELECT * FROM users WHERE id = %s", [user_id]).fetchone()
+            if not user["discogs_oauth_token_encrypted"]:
+                await self._broadcast({"status": "sync_error", "error": "Discogs account not connected"})
                 return
+            oauth_token = token_encryption.decrypt(user["discogs_oauth_token_encrypted"])
+            oauth_secret = token_encryption.decrypt(user["discogs_oauth_secret_encrypted"])
+            username = user["discogs_username"]
 
             try:
-                identity = get_identity(token)
-            except httpx.HTTPStatusError as e:
-                await self._broadcast({"status": "sync_error", "error": "Invalid Discogs token"})
+                fields = discogs.fetch_collection_fields(oauth_token, oauth_secret, username)
+            except httpx.HTTPStatusError:
+                await self._broadcast({"status": "sync_error", "error": "Discogs request failed"})
                 return
-
-            username = identity["username"]
-            fields = fetch_collection_fields(token, username)
             price_field_id = next((fid for fid, name in fields.items() if name.lower() == "price"), None)
 
-            conn = sqlite3.connect(cfg_module.DB_FILE, check_same_thread=False, timeout=60)
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA foreign_keys = ON")
-            conn.execute("PRAGMA journal_mode = WAL")
-
-            existing = None
-            if mode == "new":
-                existing = {row[0] for row in conn.execute(
-                    "SELECT discogs_id FROM releases WHERE in_collection = 1"
-                ).fetchall()}
+            with get_app_pool().connection() as conn:
+                enabled_crawlers = get_enabled_crawlers(conn)
 
             count = 0
             wishlist_count = 0
-            try:
-                for page, total_pages, items in iter_collection_pages(token, username):
+            wishlist_seen: set = set()
+            with user_scope(user_id) as conn:
+                existing = None
+                if mode == "new":
+                    existing = {row["discogs_id"] for row in conn.execute(
+                        "SELECT discogs_id FROM library_items WHERE user_id = %s AND in_collection = TRUE", [user_id]
+                    ).fetchall()}
+
+                for page, total_pages, items in discogs.iter_collection_pages(oauth_token, oauth_secret, username):
                     for item in items:
                         rid = f"r{item['basic_information']['id']}"
                         if existing is not None and rid in existing:
                             continue
-                        release = parse_release(item, price_field_id=price_field_id)
-                        release_id_int = item["basic_information"]["id"]
-                        existing_barcode = conn.execute(
-                            "SELECT barcode FROM releases WHERE discogs_id = ?", [rid]
+                        release = discogs.parse_release(item, price_field_id=price_field_id)
+                        existing_row = conn.execute(
+                            "SELECT barcode FROM catalog WHERE discogs_id = %s", [rid]
                         ).fetchone()
-                        if existing_barcode is None or existing_barcode[0] is None:
+                        if existing_row is None or existing_row["barcode"] is None:
                             try:
-                                release["barcode"] = fetch_release_barcode(token, release_id_int) or None
+                                release["barcode"] = discogs.fetch_release_barcode(
+                                    oauth_token, oauth_secret, item["basic_information"]["id"]
+                                ) or None
                             except Exception as e:
-                                log.warning("Barcode fetch failed for release %s: %s", release_id_int, e)
+                                log.warning("Barcode fetch failed for release %s: %s", rid, e)
                             await asyncio.sleep(1.1)
                         else:
-                            release["barcode"] = existing_barcode[0]
-                        upsert_release(conn, release)
-                        mark_in_collection(conn, rid)
+                            release["barcode"] = existing_row["barcode"]
+                        upsert_catalog_release(conn, release)
+                        upsert_library_item(conn, user_id, rid, in_collection=True)
+                        for crawler in enabled_crawlers:
+                            enqueue_crawl_queue(conn, rid, crawler["id"])
                         count += 1
                     await self._broadcast({"status": "sync_progress", "synced": count, "page": page, "total_pages": total_pages})
-                    log.info("Sync page %d/%d (%d releases)", page, total_pages, count)
+                    log.info("Sync page %d/%d (%d releases) for user %d", page, total_pages, count, user_id)
 
-                wishlist_seen: set = set()
-                for page, total_pages, items in iter_wantlist_pages(token, username):
+                for page, total_pages, items in discogs.iter_wantlist_pages(oauth_token, oauth_secret, username):
                     for item in items:
                         rid = f"r{item['basic_information']['id']}"
                         wishlist_seen.add(rid)
-                        release = parse_release(item, price_field_id=None)
-                        release_id_int = item["basic_information"]["id"]
+                        release = discogs.parse_release(item, price_field_id=None)
                         existing_row = conn.execute(
-                            "SELECT barcode FROM releases WHERE discogs_id = ?", [rid]
+                            "SELECT barcode FROM catalog WHERE discogs_id = %s", [rid]
                         ).fetchone()
                         # Also tells us this is a first-time insert, not just missing a
-                        # barcode — used below to undo upsert_release's in_collection=1
+                        # barcode — used below to undo upsert_library_item's in_collection
                         # default, which only applies to genuinely new rows.
                         is_new_release = existing_row is None
-                        if existing_row is None or existing_row[0] is None:
+                        if existing_row is None or existing_row["barcode"] is None:
                             try:
-                                release["barcode"] = fetch_release_barcode(token, release_id_int) or None
+                                release["barcode"] = discogs.fetch_release_barcode(
+                                    oauth_token, oauth_secret, item["basic_information"]["id"]
+                                ) or None
                             except Exception as e:
-                                log.warning("Barcode fetch failed for wishlist release %s: %s", release_id_int, e)
+                                log.warning("Barcode fetch failed for wishlist release %s: %s", rid, e)
                             await asyncio.sleep(1.1)
                         else:
-                            release["barcode"] = existing_row[0]
-                        upsert_release(conn, release)
-                        mark_in_wishlist(conn, rid)
-                        if is_new_release:
-                            mark_not_in_collection(conn, rid)
+                            release["barcode"] = existing_row["barcode"]
+                        upsert_catalog_release(conn, release)
+                        upsert_library_item(
+                            conn, user_id, rid, in_wishlist=True,
+                            in_collection=False if is_new_release else None,
+                        )
+                        for crawler in enabled_crawlers:
+                            enqueue_crawl_queue(conn, rid, crawler["id"])
                         wishlist_count += 1
-                    log.info("Wishlist sync page %d/%d (%d items)", page, total_pages, wishlist_count)
-                cleared = clear_wishlist_flags_not_in(conn, wishlist_seen)
-                deleted = delete_orphaned_releases(conn)
-                log.info(
-                    "Wishlist sync complete: %d items, %d stale entries cleared, %d releases deleted",
-                    wishlist_count, cleared, len(deleted),
-                )
+                    log.info("Wishlist sync page %d/%d (%d items) for user %d", page, total_pages, wishlist_count, user_id)
 
-                plex_base_url = cfg.get("plex_base_url", "")
-                plex_token = cfg.get("plex_token", "")
-                if plex_base_url and plex_token:
-                    plex_threshold = int(cfg.get("plex_match_threshold", 90))
-                    await self._run_plex_match(conn, plex_base_url, plex_token, plex_threshold)
-            finally:
-                conn.close()
+                cleared = clear_wishlist_flags_not_in(conn, user_id, wishlist_seen)
+                deleted = delete_orphaned_releases(conn, user_id)
+                conn.commit()
+                log.info(
+                    "Wishlist sync complete for user %d: %d items, %d stale entries cleared, %d releases deleted",
+                    user_id, wishlist_count, cleared, len(deleted),
+                )
 
             await self._broadcast({
                 "status": "sync_complete",
