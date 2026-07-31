@@ -1,7 +1,16 @@
 import os
 import sqlite3
+from datetime import datetime, timedelta
+
 import pytest
 from unittest.mock import patch
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+import config
+import db
+import session_tokens
+from auth_middleware import AuthMiddleware
 
 
 @pytest.fixture
@@ -38,6 +47,49 @@ def conn(tmp_config_dir):
     yield c
     db_module._local.conn = None
     c.close()
+
+
+@pytest.fixture
+def authed_client_factory_builder(pg_test_db):
+    """Generic base for router test files that need a real TestClient wired
+    with AuthMiddleware against Postgres, pre-authenticated as a given user.
+
+    Router selection is deliberately left as a parameter here rather than
+    baked in: each test file defines its own `authed_client_factory` fixture
+    that calls `authed_client_factory_builder([the router(s) it's testing])`,
+    so test bodies can just call `authed_client_factory(user_id)`.
+    """
+    db.init_global_schema()
+    db.init_tenant_schema()
+
+    def _build(routers):
+        app = FastAPI()
+        app.add_middleware(AuthMiddleware)
+        for router in routers:
+            app.include_router(router, prefix="/api")
+
+        def _factory(user_id):
+            token = session_tokens.new_session_token()
+            with db.get_admin_pool().connection() as conn:
+                db.create_session(
+                    conn, session_tokens.hash_token(token), user_id,
+                    datetime.utcnow() + timedelta(days=1),
+                )
+                conn.commit()
+            client = TestClient(app)
+            client.cookies.set(config.COOKIE_NAME, token)
+            return client
+        return _factory
+
+    yield _build
+
+    # CASCADE also clears every table with a (possibly indirect) FK back to
+    # catalog/users/crawlers -- library_items, listings, crawl_queue,
+    # sessions, invites, etc. -- so each test file starts from a clean slate
+    # regardless of which of those it happened to touch.
+    with db.get_admin_pool().connection() as conn:
+        conn.execute("TRUNCATE catalog, users, crawlers CASCADE")
+        conn.commit()
 
 
 @pytest.fixture
