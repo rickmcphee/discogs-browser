@@ -22,7 +22,7 @@ class CrawlManager:
     @property
     def any_job_running(self) -> bool:
         """True while any background job that broadcasts SSE events is active:
-        crawl, collection sync (incl. Plex match), stock sync, or judgment."""
+        crawl, collection sync, stock sync, or judgment."""
         return self.running or self.sync_running or self.stock_sync_running or self.judgment_running
 
     def subscribe(self) -> asyncio.Queue:
@@ -147,6 +147,9 @@ class CrawlManager:
         try:
             with get_identity_pool().connection() as conn:
                 user = conn.execute("SELECT * FROM users WHERE id = %s", [user_id]).fetchone()
+            if user is None:
+                await self._broadcast({"status": "sync_error", "error": "User not found"})
+                return
             if not user["discogs_oauth_token_encrypted"]:
                 await self._broadcast({"status": "sync_error", "error": "Discogs account not connected"})
                 return
@@ -198,6 +201,15 @@ class CrawlManager:
                         for crawler in enabled_crawlers:
                             enqueue_crawl_queue(conn, rid, crawler["id"])
                         count += 1
+                    conn.commit()
+                    # user_scope()'s set_config(..., true) is transaction-local and
+                    # was just reverted by the commit above -- to Postgres's empty-
+                    # string placeholder for a never-set custom GUC, not to NULL, so
+                    # the RLS policy's ::int cast raises InvalidTextRepresentation on
+                    # the very next library_items write, not a quiet no-match. Re-
+                    # issue it so the next page's writes are still RLS-scoped to
+                    # this user.
+                    conn.execute("SELECT set_config('app.user_id', %s, true)", [str(user_id)])
                     await self._broadcast({"status": "sync_progress", "synced": count, "page": page, "total_pages": total_pages})
                     log.info("Sync page %d/%d (%d releases) for user %d", page, total_pages, count, user_id)
 
@@ -231,6 +243,11 @@ class CrawlManager:
                         for crawler in enabled_crawlers:
                             enqueue_crawl_queue(conn, rid, crawler["id"])
                         wishlist_count += 1
+                    conn.commit()
+                    # Same reasoning as the collection-loop commit above: re-scope
+                    # app.user_id for this connection's next transaction, since the
+                    # commit just ended (and reset) the one that had it set.
+                    conn.execute("SELECT set_config('app.user_id', %s, true)", [str(user_id)])
                     log.info("Wishlist sync page %d/%d (%d items) for user %d", page, total_pages, wishlist_count, user_id)
 
                 cleared = clear_wishlist_flags_not_in(conn, user_id, wishlist_seen)
@@ -369,42 +386,6 @@ class CrawlManager:
         except Exception as e:
             log.error("Stock judgment phase failed: %s", e, exc_info=True)
             await self._broadcast({"status": "stock_judgment_error", "error": str(e)})
-
-    async def _run_plex_match(self, conn, base_url: str, token: str, threshold: int):
-        import plex
-        from db import get_releases_for_plex_match, set_plex_match, clear_plex_match
-
-        await self._broadcast({"status": "plex_match_started"})
-        log.info("Plex match started")
-
-        try:
-            section_key = plex.get_music_section_key(base_url, token)
-            if section_key is None:
-                log.warning("Plex match skipped: no music library section found on %s", base_url)
-                await self._broadcast({"status": "plex_match_error", "error": "No music library found on Plex server"})
-                return
-
-            albums = plex.fetch_albums(base_url, token, section_key)
-            machine_id = plex.get_machine_identifier(base_url, token)
-
-            releases = get_releases_for_plex_match(conn)
-            matched = 0
-            for i, release in enumerate(releases, start=1):
-                best = plex.find_best_match(release["artist"], release["title"], albums, threshold)
-                if best:
-                    url = plex.build_album_url(base_url, machine_id, best["rating_key"])
-                    set_plex_match(conn, release["discogs_id"], url)
-                    matched += 1
-                else:
-                    clear_plex_match(conn, release["discogs_id"])
-                if i % 25 == 0 or i == len(releases):
-                    await self._broadcast({"status": "plex_match_progress", "matched": matched, "total": len(releases)})
-
-            await self._broadcast({"status": "plex_match_complete", "matched": matched})
-            log.info("Plex match complete: %d/%d releases matched", matched, len(releases))
-        except Exception as e:
-            log.warning("Plex match phase failed, skipping: %s", e)
-            await self._broadcast({"status": "plex_match_error", "error": str(e)})
 
     @property
     def judgment_running(self) -> bool:

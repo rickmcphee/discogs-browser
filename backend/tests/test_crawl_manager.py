@@ -1,5 +1,6 @@
 """Tests for CrawlManager — background task, subscribe/broadcast, stop."""
 import asyncio
+import os
 import sqlite3
 import pytest
 import respx
@@ -18,10 +19,31 @@ def manager():
 # TRUNCATE teardown) but scoped to just the sync test below via an explicit
 # fixture param, rather than autouse -- the rest of this file's tests are
 # still SQLite-era (owned by tasks 11/12) and don't touch Postgres at all.
+#
+# Also repoints APP_DATABASE_URL at the real app_user role, same as
+# test_rls_isolation.py's two_users_one_shared_release fixture -- pg_test_db's
+# default points every pool (including the app pool) at the admin/superuser
+# DSN, which BYPASSES RLS entirely (Postgres superusers ignore FORCE ROW
+# LEVEL SECURITY). Without this repoint, _sync_collection's user_scope()
+# connection would silently have superuser privileges and the mid-sync
+# commit/re-scoping test below would pass even if the re-scoping code were
+# deleted -- proven by hand: this was verified against a build with the
+# re-`set_config` calls removed, which passed the test until this repoint
+# was added, and failed with a real psycopg.errors.InsufficientPrivilege
+# once it was.
 @pytest.fixture
-def pg_schema(pg_test_db):
+def pg_schema(pg_test_db, monkeypatch):
     db.init_global_schema()
     db.init_tenant_schema()
+    monkeypatch.setattr(
+        db.config,
+        "APP_DATABASE_URL",
+        db.config._with_userinfo(
+            os.environ["TEST_DATABASE_URL"], "app_user", os.environ["APP_DB_PASSWORD"]
+        ),
+    )
+    # No db._app_pool = None here: pg_test_db already reset it to None before
+    # this fixture body runs, and nothing in between touches it.
     yield
     with db.get_admin_pool().connection() as conn:
         conn.execute("TRUNCATE catalog, users, crawlers CASCADE")
@@ -217,6 +239,19 @@ async def test_crawl_and_sync_can_run_concurrently(manager):
 # _sync_collection (per-user, Postgres-backed, enqueues crawl_queue)
 # ---------------------------------------------------------------------------
 
+def _collection_page(release_id: int, total_pages: int) -> httpx.Response:
+    return httpx.Response(200, json={
+        "pagination": {"pages": total_pages},
+        "releases": [{
+            "basic_information": {
+                "id": release_id, "title": "Album", "year": 2020,
+                "artists": [{"name": "Artist"}], "labels": [], "formats": [],
+                "cover_image": "",
+            },
+        }],
+    })
+
+
 @respx.mock
 async def test_sync_collection_enqueues_crawl_queue_for_missing_listings(pg_schema, monkeypatch):
     import config
@@ -236,19 +271,17 @@ async def test_sync_collection_enqueues_crawl_queue_for_missing_listings(pg_sche
     respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
         return_value=httpx.Response(200, json={"fields": []})
     )
+    # Two pages, two distinct releases -- forces _sync_collection's mid-loop
+    # conn.commit() to actually fire between page 1 and page 2. If the
+    # subsequent re-set_config("app.user_id", ...) were missing or wrong, the
+    # page-2 upsert_library_item call below would raise a row-level-security
+    # violation (app.user_id resets to unset on every commit, since
+    # user_scope()'s set_config call is transaction-local) and the whole sync
+    # would end in sync_error with only page 1's release ever persisted.
     respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
-        return_value=httpx.Response(200, json={
-            "pagination": {"pages": 1},
-            "releases": [{
-                "basic_information": {
-                    "id": 111, "title": "Album", "year": 2020,
-                    "artists": [{"name": "Artist"}], "labels": [], "formats": [],
-                    "cover_image": "",
-                },
-            }],
-        })
+        side_effect=[_collection_page(111, total_pages=2), _collection_page(222, total_pages=2)]
     )
-    respx.get("https://api.discogs.com/releases/111").mock(
+    respx.get(url__regex=r"https://api\.discogs\.com/releases/\d+").mock(
         return_value=httpx.Response(200, json={"identifiers": []})
     )
     respx.get("https://api.discogs.com/users/alice/wants").mock(
@@ -258,15 +291,19 @@ async def test_sync_collection_enqueues_crawl_queue_for_missing_listings(pg_sche
     manager = CrawlManager()
     await manager._sync_collection(user["id"], "all")
 
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert "sync_complete" in statuses
+    assert "sync_error" not in statuses
+
     with db.user_scope(user["id"]) as conn:
-        item = conn.execute(
-            "SELECT in_collection FROM library_items WHERE user_id = %s AND discogs_id = 'r111'", [user["id"]]
-        ).fetchone()
-        assert item["in_collection"] is True
+        items = conn.execute(
+            "SELECT discogs_id, in_collection FROM library_items WHERE user_id = %s ORDER BY discogs_id", [user["id"]]
+        ).fetchall()
+    assert [(i["discogs_id"], i["in_collection"]) for i in items] == [("r111", True), ("r222", True)]
 
     with db.get_admin_pool().connection() as conn:
-        queued = conn.execute("SELECT * FROM crawl_queue WHERE discogs_id = 'r111'").fetchall()
-    assert len(queued) == 1
+        queued = conn.execute("SELECT discogs_id, status FROM crawl_queue ORDER BY discogs_id").fetchall()
+    assert [(q["discogs_id"], q["status"]) for q in queued] == [("r111", "pending"), ("r222", "pending")]
 
 
 # ---------------------------------------------------------------------------
@@ -715,105 +752,6 @@ async def test_run_judgment_phase_does_not_block_event_loop(manager, tmp_config_
     # chance to run. If judge_batch is properly offloaded, the loop stays free and the
     # heartbeat ticks throughout.
     assert heartbeat_count >= 5
-    conn.close()
-
-
-async def test_run_plex_match_updates_matched_and_clears_unmatched(manager, tmp_config_dir, monkeypatch):
-    import config as cfg_module
-    import db as db_module
-    from db import upsert_release
-    import plex
-
-    conn = sqlite3.connect(cfg_module.DB_FILE)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    db_module.init_db(conn)
-    upsert_release(conn, {
-        "discogs_id": "r1", "artist": "Miles Davis", "title": "Kind of Blue", "year": 1959,
-        "label": "Columbia", "format": "Vinyl", "discogs_price": None, "barcode": None,
-        "cover_image_url": "", "discogs_url": "https://discogs.com/release/1",
-    })
-    upsert_release(conn, {
-        "discogs_id": "r2", "artist": "Bill Evans", "title": "Waltz for Debby", "year": 1961,
-        "label": "Riverside", "format": "Vinyl", "discogs_price": None, "barcode": None,
-        "cover_image_url": "", "discogs_url": "https://discogs.com/release/2",
-    })
-
-    monkeypatch.setattr(plex, "get_music_section_key", lambda base_url, token: "2")
-    monkeypatch.setattr(plex, "fetch_albums", lambda base_url, token, key: [
-        {"artist": "Miles Davis", "title": "Kind of Blue", "rating_key": "500"},
-    ])
-    monkeypatch.setattr(plex, "get_machine_identifier", lambda base_url, token: "abc123")
-
-    await manager._run_plex_match(conn, "plex.local:32400", "tok", 90)
-
-    row1 = conn.execute("SELECT plex_url FROM releases WHERE discogs_id='r1'").fetchone()
-    row2 = conn.execute("SELECT plex_url FROM releases WHERE discogs_id='r2'").fetchone()
-    assert row1[0] == "http://plex.local:32400/web/index.html#!/server/abc123/details?key=/library/metadata/500"
-    assert row2[0] is None
-
-    statuses = [e["status"] for e in manager.recent_events()]
-    assert statuses == ["plex_match_started", "plex_match_progress", "plex_match_complete"]
-    conn.close()
-
-
-async def test_run_plex_match_broadcasts_error_when_no_music_section_found(manager, tmp_config_dir, monkeypatch):
-    import config as cfg_module
-    import db as db_module
-    from db import upsert_release, set_plex_match
-    import plex
-
-    conn = sqlite3.connect(cfg_module.DB_FILE)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    db_module.init_db(conn)
-    upsert_release(conn, {
-        "discogs_id": "r1", "artist": "Miles Davis", "title": "Kind of Blue", "year": 1959,
-        "label": "Columbia", "format": "Vinyl", "discogs_price": None, "barcode": None,
-        "cover_image_url": "", "discogs_url": "https://discogs.com/release/1",
-    })
-    set_plex_match(conn, "r1", "http://plex.local:32400/web/x")
-
-    monkeypatch.setattr(plex, "get_music_section_key", lambda base_url, token: None)
-
-    await manager._run_plex_match(conn, "plex.local:32400", "tok", 90)
-
-    row = conn.execute("SELECT plex_url FROM releases WHERE discogs_id='r1'").fetchone()
-    assert row[0] == "http://plex.local:32400/web/x"
-
-    statuses = [e["status"] for e in manager.recent_events()]
-    assert statuses == ["plex_match_started", "plex_match_error"]
-    conn.close()
-
-
-async def test_run_plex_match_leaves_existing_links_untouched_on_connection_failure(manager, tmp_config_dir, monkeypatch):
-    import config as cfg_module
-    import db as db_module
-    from db import upsert_release, set_plex_match
-    import plex
-
-    conn = sqlite3.connect(cfg_module.DB_FILE)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    db_module.init_db(conn)
-    upsert_release(conn, {
-        "discogs_id": "r1", "artist": "Miles Davis", "title": "Kind of Blue", "year": 1959,
-        "label": "Columbia", "format": "Vinyl", "discogs_price": None, "barcode": None,
-        "cover_image_url": "", "discogs_url": "https://discogs.com/release/1",
-    })
-    set_plex_match(conn, "r1", "http://plex.local:32400/web/x")
-
-    def _boom(base_url, token):
-        raise ConnectionError("Plex unreachable")
-    monkeypatch.setattr(plex, "get_music_section_key", _boom)
-
-    await manager._run_plex_match(conn, "plex.local:32400", "tok", 90)
-
-    row = conn.execute("SELECT plex_url FROM releases WHERE discogs_id='r1'").fetchone()
-    assert row[0] == "http://plex.local:32400/web/x"
-
-    statuses = [e["status"] for e in manager.recent_events()]
-    assert statuses == ["plex_match_started", "plex_match_error"]
     conn.close()
 
 
