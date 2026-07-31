@@ -833,6 +833,102 @@ def get_recommended_stock_items(conn, user_id: int) -> list[dict]:
     ).fetchall()
 
 
+def get_missing_releases(conn, user_id: int) -> list[str]:
+    enabled_count = conn.execute(
+        "SELECT COUNT(*) FROM crawlers WHERE enabled = TRUE"
+    ).fetchone()["count"]
+    if enabled_count == 0:
+        return []
+    rows = conn.execute(
+        """
+        SELECT li.discogs_id FROM library_items li
+        WHERE li.user_id = %(user_id)s AND (
+            SELECT COUNT(DISTINCT l.crawler_id) FROM listings l
+            JOIN crawlers c ON c.id = l.crawler_id AND c.enabled = TRUE
+            WHERE l.release_id = li.discogs_id AND l.price IS NOT NULL
+        ) < %(enabled_count)s
+        """,
+        {"user_id": user_id, "enabled_count": enabled_count},
+    ).fetchall()
+    return [row["discogs_id"] for row in rows]
+
+
+def get_crawl_status_for_user(conn, user_id: int) -> dict:
+    total = conn.execute(
+        "SELECT COUNT(*) FROM library_items WHERE user_id = %s", [user_id]
+    ).fetchone()["count"]
+    enabled_count = conn.execute(
+        "SELECT COUNT(*) FROM crawlers WHERE enabled = TRUE"
+    ).fetchone()["count"]
+
+    if enabled_count == 0 or total == 0:
+        return {"total": total, "missing": total, "oldest_checked": None}
+
+    complete = conn.execute(
+        """
+        SELECT COUNT(*) FROM (
+            SELECT li.discogs_id
+            FROM library_items li
+            JOIN listings l ON l.release_id = li.discogs_id
+            JOIN crawlers c ON c.id = l.crawler_id AND c.enabled = TRUE
+            WHERE li.user_id = %(user_id)s AND l.price IS NOT NULL
+            GROUP BY li.discogs_id
+            HAVING COUNT(DISTINCT l.crawler_id) = %(enabled_count)s
+        ) complete_releases
+        """,
+        {"user_id": user_id, "enabled_count": enabled_count},
+    ).fetchone()["count"]
+
+    oldest = conn.execute(
+        """
+        SELECT MIN(l.last_checked) FROM listings l
+        JOIN library_items li ON li.discogs_id = l.release_id
+        WHERE li.user_id = %s
+        """,
+        [user_id],
+    ).fetchone()["min"]
+
+    return {"total": total, "missing": total - complete, "oldest_checked": oldest}
+
+
+def clear_wishlist_flags_not_in(conn, user_id: int, seen_ids: set) -> int:
+    cursor = conn.execute(
+        "UPDATE library_items SET in_wishlist = FALSE WHERE user_id = %s AND in_wishlist = TRUE AND discogs_id != ALL(%s)",
+        [user_id, list(seen_ids)],
+    )
+    return cursor.rowcount
+
+
+def delete_orphaned_releases(conn, user_id: int) -> list[str]:
+    rows = conn.execute(
+        """
+        DELETE FROM library_items
+        WHERE user_id = %s AND in_collection = FALSE AND in_wishlist = FALSE
+        RETURNING discogs_id
+        """,
+        [user_id],
+    ).fetchall()
+    return [row["discogs_id"] for row in rows]
+
+
+def get_distinct_artists(conn, user_id: int, scope: Optional[str] = None) -> list[str]:
+    conditions = ["li.user_id = %(user_id)s"]
+    if scope == "collection":
+        conditions.append("li.in_collection = TRUE")
+    elif scope == "wishlist":
+        conditions.append("li.in_wishlist = TRUE")
+    where = "WHERE " + " AND ".join(conditions)
+    rows = conn.execute(
+        f"""
+        SELECT DISTINCT c.artist FROM library_items li
+        JOIN catalog c ON c.discogs_id = li.discogs_id
+        {where} ORDER BY c.artist
+        """,
+        {"user_id": user_id},
+    ).fetchall()
+    return [row["artist"] for row in rows]
+
+
 def create_oauth_request_state(conn, request_token: str, request_token_secret: str):
     conn.execute(
         "INSERT INTO oauth_request_state (request_token, request_token_secret) VALUES (%s, %s)",
