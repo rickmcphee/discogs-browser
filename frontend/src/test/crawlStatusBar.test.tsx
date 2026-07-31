@@ -33,7 +33,7 @@ const { release } = vi.hoisted(() => ({
 
 vi.mock('../api/client', () => ({
   checkHealth: vi.fn().mockResolvedValue(true),
-  getAuthState: vi.fn().mockResolvedValue('authenticated'),
+  getAuthStatus: vi.fn().mockResolvedValue({ state: 'authenticated', user: { discogs_username: 'test' } }),
   setUnauthorizedHandler: vi.fn(),
   refreshCollection: vi.fn().mockResolvedValue({ synced: 0, username: 'test' }),
   getCollectionStatus: vi.fn().mockResolvedValue({ total: 0, last_synced: null }),
@@ -51,7 +51,6 @@ vi.mock('../api/client', () => ({
   }),
   saveSettings: vi.fn(),
   setCrawlerEnabled: vi.fn(),
-  changePassword: vi.fn(),
   logout: vi.fn(),
   hasAvatar: vi.fn().mockResolvedValue(false),
   uploadAvatar: vi.fn(),

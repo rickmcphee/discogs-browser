@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import App from '../App'
 
 class MockEventSource {
@@ -45,24 +45,13 @@ vi.mock('../api/client', () => ({
 
 beforeEach(() => {
   vi.clearAllMocks()
+  window.history.pushState({}, '', '/?signup_pending=stale-token')
 })
 
-describe('header profile navigation', () => {
-  it('switches to the Account view when the avatar button is clicked', async () => {
+describe('stale signup_pending link', () => {
+  it('renders the main app, not the invite-code screen, for an already-authenticated user', async () => {
     render(<App />)
-    const button = await screen.findByRole('button', { name: /profile/i })
-    fireEvent.click(button)
-    await waitFor(() => expect(button.className).toContain('ring-2 ring-indigo-500'))
-    expect(screen.getByRole('heading', { name: 'Account' })).toBeInTheDocument()
-  })
-
-  it('places the profile avatar as the rightmost header control', async () => {
-    render(<App />)
-    const profile = await screen.findByRole('button', { name: /profile/i })
-    const logs = screen.getByRole('button', { name: 'Logs' })
-    // Profile must come after Logs in DOM order (rightmost in the header)
-    expect(
-      logs.compareDocumentPosition(profile) & Node.DOCUMENT_POSITION_FOLLOWING
-    ).toBeTruthy()
+    expect(await screen.findByRole('button', { name: 'Collection' })).toBeInTheDocument()
+    expect(screen.queryByText(/enter your invite code/i)).not.toBeInTheDocument()
   })
 })

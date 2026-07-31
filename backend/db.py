@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+from datetime import datetime
 from typing import Optional
 
 from psycopg import sql
@@ -156,6 +157,26 @@ CREATE TABLE IF NOT EXISTS invites (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Neither oauth_request_state nor pending_signups gets an RLS policy: both
+-- are pre-session state with no per-user row-ownership column to scope a
+-- policy on in the first place (unlike users/sessions, where the row IS
+-- owned by a user and the omission is about grants doing the real work —
+-- here a policy would have nothing meaningful to compare against).
+CREATE TABLE IF NOT EXISTS oauth_request_state (
+    request_token TEXT PRIMARY KEY,
+    request_token_secret TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS pending_signups (
+    signup_token TEXT PRIMARY KEY,
+    discogs_user_id INTEGER NOT NULL,
+    discogs_username TEXT NOT NULL,
+    oauth_token_encrypted BYTEA NOT NULL,
+    oauth_secret_encrypted BYTEA NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE users FORCE ROW LEVEL SECURITY;
 ALTER TABLE sessions ENABLE ROW LEVEL SECURITY;
@@ -238,6 +259,8 @@ def init_tenant_schema():
         conn.execute("GRANT SELECT, UPDATE ON invites TO app_identity")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON sessions TO app_identity")
         conn.execute("GRANT USAGE, SELECT ON SEQUENCE users_id_seq TO app_identity")
+        conn.execute("GRANT SELECT, INSERT, DELETE ON oauth_request_state TO app_identity")
+        conn.execute("GRANT SELECT, INSERT, DELETE ON pending_signups TO app_identity")
 
         conn.execute(
             "GRANT SELECT ON catalog, listings, crawlers, stock_items, stock_item_judgments TO app_user"
@@ -345,3 +368,96 @@ def get_library_items_for_user(conn, user_id: int) -> list[dict]:
     return conn.execute(
         "SELECT * FROM library_items WHERE user_id = %s", [user_id]
     ).fetchall()
+
+
+def create_oauth_request_state(conn, request_token: str, request_token_secret: str):
+    conn.execute(
+        "INSERT INTO oauth_request_state (request_token, request_token_secret) VALUES (%s, %s)",
+        [request_token, request_token_secret],
+    )
+
+
+def get_and_delete_oauth_request_state(conn, request_token: str, max_age_minutes: int = 10) -> Optional[dict]:
+    # Validity is computed in the RETURNING clause itself (created_at vs
+    # Postgres's own NOW()), not compared against Python's clock afterward —
+    # created_at is a server-computed, zoneless TIMESTAMP, and comparing it to
+    # datetime.utcnow() would silently assume the Postgres session TimeZone
+    # GUC is UTC, which nothing here pins.
+    row = conn.execute(
+        """
+        DELETE FROM oauth_request_state WHERE request_token = %(request_token)s
+        RETURNING request_token_secret,
+                  created_at > NOW() - (%(max_age_minutes)s || ' minutes')::interval AS is_valid
+        """,
+        {"request_token": request_token, "max_age_minutes": max_age_minutes},
+    ).fetchone()
+    if row is None or not row["is_valid"]:
+        return None
+    return row
+
+
+# Callers must Fernet-encrypt oauth_token_encrypted/oauth_secret_encrypted
+# before calling — this function does not enforce or perform encryption.
+def create_pending_signup(
+    conn,
+    signup_token: str,
+    discogs_user_id: int,
+    discogs_username: str,
+    oauth_token_encrypted: bytes,
+    oauth_secret_encrypted: bytes,
+):
+    conn.execute(
+        """
+        INSERT INTO pending_signups
+            (signup_token, discogs_user_id, discogs_username, oauth_token_encrypted, oauth_secret_encrypted)
+        VALUES (%s, %s, %s, %s, %s)
+        """,
+        [signup_token, discogs_user_id, discogs_username, oauth_token_encrypted, oauth_secret_encrypted],
+    )
+
+
+def get_and_delete_pending_signup(conn, signup_token: str, max_age_minutes: int = 15) -> Optional[dict]:
+    # See get_and_delete_oauth_request_state: validity is computed inside
+    # Postgres's own RETURNING clause, not against Python's clock.
+    row = conn.execute(
+        """
+        DELETE FROM pending_signups WHERE signup_token = %(signup_token)s
+        RETURNING discogs_user_id, discogs_username, oauth_token_encrypted, oauth_secret_encrypted,
+                  created_at > NOW() - (%(max_age_minutes)s || ' minutes')::interval AS is_valid
+        """,
+        {"signup_token": signup_token, "max_age_minutes": max_age_minutes},
+    ).fetchone()
+    if row is None or not row["is_valid"]:
+        return None
+    return row
+
+
+def create_session(
+    conn, token_hash: str, user_id: int, expires_at: datetime, now: Optional[datetime] = None
+):
+    now = now or datetime.utcnow()
+    conn.execute(
+        """
+        INSERT INTO sessions (token_hash, user_id, created_at, expires_at, last_seen_at)
+        VALUES (%s, %s, %s, %s, %s)
+        """,
+        [token_hash, user_id, now, expires_at, now],
+    )
+
+
+def get_session_by_token_hash(conn, token_hash: str) -> Optional[dict]:
+    return conn.execute(
+        "SELECT * FROM sessions WHERE token_hash = %s", [token_hash]
+    ).fetchone()
+
+
+def touch_session(conn, token_hash: str, now: Optional[datetime] = None):
+    now = now or datetime.utcnow()
+    conn.execute(
+        "UPDATE sessions SET last_seen_at = %s WHERE token_hash = %s",
+        [now, token_hash],
+    )
+
+
+def delete_session(conn, token_hash: str):
+    conn.execute("DELETE FROM sessions WHERE token_hash = %s", [token_hash])

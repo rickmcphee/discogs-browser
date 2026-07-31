@@ -50,15 +50,15 @@ The Docker container uses bundled Chromium (no real Chrome required) and headles
 
 ## Authentication
 
-The app is single-owner: access is protected by a password (hashed with Argon2id) plus a TOTP second factor, always enforced on every `/api` request.
+Access is via Discogs OAuth — click "Continue with Discogs" on the login screen and approve on discogs.com. There is no password or second factor to manage.
 
-**First run:** the backend generates a one-time bootstrap token, printed to the log and written to `~/.discogs-browser/bootstrap_token`. Open the app URL and use that token to complete first-run setup — set your password, enroll TOTP in an authenticator app, and save the recovery codes shown.
-
-**Recovery:** a recovery code can be used in place of the TOTP code at login (each code is single-use). If you lose your password, authenticator, and recovery codes, run `python -m reset_owner` from `backend/` to clear the owner account and all sessions and return to first-run setup with a fresh bootstrap token.
+New accounts require a valid, unredeemed invite code, entered once right after your first successful Discogs login; returning users are logged straight in. Invite codes are minted by hand (no self-serve generation yet). This app is no longer single-owner — see [`docs/superpowers/specs/2026-07-26-multi-tenant-architecture-design.md`](docs/superpowers/specs/2026-07-26-multi-tenant-architecture-design.md) for the full multi-tenant design.
 
 **Deployment / TLS:** the session cookie is HttpOnly and SameSite=Strict, and is marked `Secure` based on the `X-Forwarded-Proto` header (or the request scheme if absent). If you run behind a TLS-terminating reverse proxy (nginx, Caddy, an ALB, etc.), it must forward `X-Forwarded-Proto`, and uvicorn should be started with `--proxy-headers --forwarded-allow-ips="*"` so that header is trusted. On a plain-HTTP LAN deployment the cookie is sent without `Secure`, which fits the LAN threat model, but TLS everywhere is the recommended posture for any production/commercial deployment.
 
-## Deployment (Synology NAS)
+## Deployment (Synology NAS) — describes the retired single-owner mode
+
+The instructions below describe the single-owner, SQLite-backed deployment mode that predates the multi-tenant pivot. That mode is retired, not maintained alongside the new one — the last commit in that shape is tagged `last-self-hosted-single-owner`. These NAS instructions will be replaced once the hosted multi-tenant deployment story (Postgres, hosting provider, etc. — deliberately not yet decided, per the architecture spec's own non-goals) is worked out in a later plan. Kept here for now rather than deleted, since it's still the accurate way to run the last single-owner release.
 
 Designed to run on a Synology NAS via Container Manager. Persistent data (config, database, logs) is stored in `workspace/` inside the repo directory, which is mounted into the container.
 
@@ -99,9 +99,15 @@ docker-compose up -d
 |---|---|---|
 | `DISCOGS_BROWSER_DATA` | `~/.discogs-browser` | Data directory |
 | `PLAYWRIGHT_CHANNEL` | `"chrome"` | `""` = bundled Chromium (Docker), `"chrome"` = real Chrome |
+| `DATABASE_URL` | `postgresql://postgres:postgres@localhost:5432/discogs_browser` | Postgres admin connection string |
+| `IDENTITY_DB_PASSWORD` / `APP_DB_PASSWORD` | _(none, required)_ | Passwords for the `app_identity`/`app_user` Postgres roles |
+| `TOKEN_ENCRYPTION_KEY` | _(none, required)_ | Fernet key encrypting stored Discogs OAuth tokens at rest |
+| `DISCOGS_CONSUMER_KEY` / `DISCOGS_CONSUMER_SECRET` | _(none, required)_ | This app's own registered Discogs OAuth consumer credentials |
+| `BACKEND_BASE_URL` | `http://localhost:8000` | This backend's own publicly-reachable base URL, used to build the Discogs OAuth callback |
+| `FRONTEND_BASE_URL` | `""` (relative, same-origin) | Where the backend redirects the browser after login; set for local dev where frontend/backend are different origins |
 | `SESSION_IDLE_SECONDS` | 7 days | Session idle timeout |
 | `SESSION_MAX_SECONDS` | 30 days | Session absolute max lifetime |
-| `LOGIN_MAX_FAILURES` | `5` | Failed login attempts before lockout |
+| `LOGIN_MAX_FAILURES` | `5` | Failure threshold shared by the invite-redemption and Discogs-OAuth rate limiters before a temporary lockout |
 | `LOGIN_LOCKOUT_SECONDS` | `300` | Lockout duration after `LOGIN_MAX_FAILURES` is hit |
 
 ## Running tests

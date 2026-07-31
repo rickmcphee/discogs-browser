@@ -2,17 +2,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import Account from '../views/Account'
 
-const { uploadAvatar, deleteAvatar, changePassword, logout } = vi.hoisted(() => ({
+const { uploadAvatar, deleteAvatar, logout } = vi.hoisted(() => ({
   uploadAvatar: vi.fn().mockResolvedValue(undefined),
   deleteAvatar: vi.fn().mockResolvedValue(undefined),
-  changePassword: vi.fn().mockResolvedValue(undefined),
   logout: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('../api/client', () => ({
   uploadAvatar,
   deleteAvatar,
-  changePassword,
   logout,
   avatarUrl: (v: number) => `/api/auth/avatar?v=${v}`,
 }))
@@ -53,15 +51,6 @@ describe('Account', () => {
     const input = screen.getByTestId('avatar-file-input') as HTMLInputElement
     fireEvent.change(input, { target: { files: [file] } })
     await waitFor(() => expect(screen.getByText('File too large')).toBeInTheDocument())
-  })
-
-  it('submits a password change with the entered fields', async () => {
-    render(<Account avatarVersion={0} onAvatarChange={() => {}} />)
-    fireEvent.change(screen.getByLabelText(/current password/i), { target: { value: 'old' } })
-    fireEvent.change(screen.getByLabelText(/new password/i), { target: { value: 'new' } })
-    fireEvent.change(screen.getByLabelText(/authenticator code/i), { target: { value: '123456' } })
-    fireEvent.click(screen.getByText('Change password'))
-    await waitFor(() => expect(changePassword).toHaveBeenCalledWith('old', 'new', '123456'))
   })
 
   it('logs out when "Log out" is clicked', async () => {

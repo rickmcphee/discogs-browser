@@ -1,7 +1,6 @@
 import io
-import sqlite3
+from datetime import datetime, timedelta
 
-import pyotp
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -9,7 +8,8 @@ from PIL import Image
 
 import avatar
 import config
-import db as db_module
+import db
+import session_tokens
 from auth_middleware import AuthMiddleware
 from routers import session as session_router
 
@@ -17,28 +17,33 @@ HDR = {"X-Requested-With": "fetch"}
 
 
 @pytest.fixture
-def client(tmp_config_dir, monkeypatch, tmp_path):
-    monkeypatch.setattr(config, "BOOTSTRAP_TOKEN_FILE", tmp_config_dir / "bootstrap_token")
+def client(pg_test_db, monkeypatch, tmp_path):
     monkeypatch.setattr(avatar, "AVATAR_FILE", tmp_path / "avatar.png")
-    c = sqlite3.connect(":memory:", check_same_thread=False)
-    c.row_factory = sqlite3.Row
-    c.execute("PRAGMA foreign_keys = ON")
-    db_module.init_db(c)
-    monkeypatch.setattr(db_module, "get_connection", lambda: c)
-    session_router.login_limiter.clear("testclient")
+    db.init_global_schema()
+    db.init_tenant_schema()
 
     app = FastAPI()
     app.add_middleware(AuthMiddleware)
     app.include_router(session_router.router, prefix="/api")
-    return TestClient(app)
+    yield TestClient(app)
+
+    with db.get_admin_pool().connection() as conn:
+        conn.execute("TRUNCATE users, sessions CASCADE")
+        conn.commit()
 
 
 def _login(client):
-    config.BOOTSTRAP_TOKEN_FILE.write_text("boot")
-    r = client.post("/api/auth/setup", json={"bootstrap_token": "boot", "password": "pw"}, headers=HDR)
-    secret = r.json()["secret"]
-    client.post("/api/auth/setup/verify", json={"code": pyotp.TOTP(secret).now()}, headers=HDR)
-    client.post("/api/auth/login", json={"password": "pw", "code": pyotp.TOTP(secret).now()}, headers=HDR)
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=42, discogs_username="alice")
+        token = session_tokens.new_session_token()
+        db.create_session(
+            conn,
+            session_tokens.hash_token(token),
+            user["id"],
+            datetime.utcnow() + timedelta(days=1),
+        )
+        conn.commit()
+    client.cookies.set(config.COOKIE_NAME, token)
 
 
 def _png_bytes():
