@@ -129,7 +129,7 @@ function Settings({ crawlers, onCrawlersChange, onRefreshCollection, onRefreshPr
   }
 
   useEffect(() => {
-    getSettings().then(setSettings)
+    getSettings().then(setSettings).catch(() => {})
   }, [])
 
   async function handleSave() {

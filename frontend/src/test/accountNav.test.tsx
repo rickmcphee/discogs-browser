@@ -8,9 +8,13 @@ class MockEventSource {
   close = vi.fn()
 }
 
+const { getAuthStatus } = vi.hoisted(() => ({
+  getAuthStatus: vi.fn().mockResolvedValue({ state: 'authenticated', user: { discogs_username: 'test', is_admin: true } }),
+}))
+
 vi.mock('../api/client', () => ({
   checkHealth: vi.fn().mockResolvedValue(true),
-  getAuthStatus: vi.fn().mockResolvedValue({ state: 'authenticated', user: { discogs_username: 'test', is_admin: true } }),
+  getAuthStatus,
   setUnauthorizedHandler: vi.fn(),
   refreshCollection: vi.fn().mockResolvedValue({ synced: 0, username: 'test' }),
   getCollectionStatus: vi.fn().mockResolvedValue({ total: 0, last_synced: null }),
@@ -66,5 +70,12 @@ describe('header profile navigation', () => {
     expect(
       logs.compareDocumentPosition(profile) & Node.DOCUMENT_POSITION_FOLLOWING
     ).toBeTruthy()
+  })
+
+  it('hides the Settings nav button for a non-admin user', async () => {
+    getAuthStatus.mockResolvedValueOnce({ state: 'authenticated', user: { discogs_username: 'test', is_admin: false } })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Logs' })
+    expect(screen.queryByRole('button', { name: 'Settings' })).not.toBeInTheDocument()
   })
 })

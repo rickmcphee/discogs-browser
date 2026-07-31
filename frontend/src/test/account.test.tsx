@@ -62,4 +62,17 @@ describe('Account', () => {
     fireEvent.click(screen.getByText('Log out'))
     await waitFor(() => expect(logout).toHaveBeenCalled())
   })
+
+  it('renders anthropic API key field and saves it', async () => {
+    render(<Account avatarVersion={0} onAvatarChange={() => {}} />)
+    await waitFor(() => expect(getUserSettings).toHaveBeenCalled())
+    const input = screen.getByLabelText('Anthropic API key')
+    fireEvent.change(input, { target: { value: 'sk-ant-new-key' } })
+    fireEvent.click(screen.getByRole('button', { name: /Save/i }))
+    await waitFor(() =>
+      expect(saveUserSettings).toHaveBeenCalledWith(
+        expect.objectContaining({ anthropic_api_key: 'sk-ant-new-key' })
+      )
+    )
+  })
 })

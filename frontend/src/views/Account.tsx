@@ -136,6 +136,7 @@ function Account({ avatarVersion, onAvatarChange }: Props) {
               <td className="py-3 pr-4 text-left align-top w-64">
                 <input
                   type="password"
+                  aria-label="Anthropic API key"
                   value={anthropicApiKey}
                   placeholder="sk-ant-..."
                   onChange={(e) => setAnthropicApiKey(e.target.value)}
@@ -154,8 +155,9 @@ function Account({ avatarVersion, onAvatarChange }: Props) {
                 <input
                   type="number"
                   min={0}
+                  aria-label="Recommendation item limit"
                   value={recommendationItemLimit}
-                  onChange={(e) => setRecommendationItemLimit(parseInt(e.target.value) || 0)}
+                  onChange={(e) => setRecommendationItemLimit(Math.max(0, parseInt(e.target.value) || 0))}
                   className="w-24 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-indigo-500"
                 />
               </td>
