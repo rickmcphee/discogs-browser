@@ -6,7 +6,8 @@ from logging_config import setup_logging, get_logger
 from config import ensure_dirs, CRAWLERS_DIR, load_config
 from version import VERSION
 from crawler import load_crawler_from_path
-from db import get_connection, init_db, register_crawler
+from crawl_manager import crawl_manager
+from db import get_admin_pool, init_global_schema, init_tenant_schema, register_crawler
 from routers import collection, releases, settings, crawl, logs, screenshots, health, session, stock
 from auth_middleware import AuthMiddleware
 import scheduler
@@ -24,22 +25,24 @@ def _crawler_metadata(path: Path, fallback_site_name: str) -> tuple[str, str]:
     return site_name, crawler_type
 
 
-def seed_bundled_crawlers(conn):
-    # Remove stale crawlers that were once bundled but no longer exist
-    for stale in CRAWLERS_DIR.glob("*.py"):
-        if stale.name == "__init__.py":
-            continue
-        if not (BUNDLED_CRAWLERS_DIR / stale.name).exists():
-            stale.unlink(missing_ok=True)
-            log.info("Removed stale crawler %s from data dir", stale.name)
+def seed_bundled_crawlers():
+    with get_admin_pool().connection() as conn:
+        # Remove stale crawlers that were once bundled but no longer exist
+        for stale in CRAWLERS_DIR.glob("*.py"):
+            if stale.name == "__init__.py":
+                continue
+            if not (BUNDLED_CRAWLERS_DIR / stale.name).exists():
+                stale.unlink(missing_ok=True)
+                log.info("Removed stale crawler %s from data dir", stale.name)
 
-    for src in BUNDLED_CRAWLERS_DIR.glob("*.py"):
-        dest = CRAWLERS_DIR / src.name
-        shutil.copy2(src, dest)
-        log.info("Synced bundled crawler %s -> %s", src.name, dest)
-        site_name, crawler_type = _crawler_metadata(dest, src.stem.replace("_", " ").title())
-        register_crawler(conn, site_name, str(dest), crawler_type)
-        log.info("Registered bundled crawler: %s", site_name)
+        for src in BUNDLED_CRAWLERS_DIR.glob("*.py"):
+            dest = CRAWLERS_DIR / src.name
+            shutil.copy2(src, dest)
+            log.info("Synced bundled crawler %s -> %s", src.name, dest)
+            site_name, crawler_type = _crawler_metadata(dest, src.stem.replace("_", " ").title())
+            register_crawler(conn, site_name, str(dest), crawler_type)
+            log.info("Registered bundled crawler: %s", site_name)
+        conn.commit()
 
 app = FastAPI(title="Discogs Browser")
 
@@ -65,13 +68,6 @@ def _configure_schedules(cfg: dict) -> None:
         except ValueError as e:
             log.warning("Ignoring invalid saved crawl schedule: %s", e)
 
-    collection_schedule = cfg.get("collection_schedule", "")
-    if collection_schedule:
-        try:
-            scheduler.configure_sync(collection_schedule, cfg.get("collection_schedule_mode", "all"))
-        except ValueError as e:
-            log.warning("Ignoring invalid saved collection schedule: %s", e)
-
     stock_schedule = cfg.get("stock_schedule", "")
     if stock_schedule:
         try:
@@ -81,18 +77,24 @@ def _configure_schedules(cfg: dict) -> None:
 
 
 @app.on_event("startup")
-def startup():
+async def startup():
     log.info("=" * 60)
     log.info("Discogs Browser backend v%s starting", VERSION)
     ensure_dirs()
-    conn = get_connection()
-    init_db(conn)
-    seed_bundled_crawlers(conn)
+    init_global_schema()
+    init_tenant_schema()
+    seed_bundled_crawlers()
+    await crawl_manager.start_worker_pool(worker_count=int(load_config().get("crawl_worker_count", 2)))
     scheduler.start()
     _configure_schedules(load_config())
 
     log.info("=" * 60)
     log.info("Discogs Browser backend v%s ready", VERSION)
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    await crawl_manager.stop_worker_pool()
 
 
 app.include_router(health.router, prefix="/api")

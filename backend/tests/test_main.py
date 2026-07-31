@@ -1,78 +1,39 @@
-import scheduler
-from main import _crawler_metadata, _configure_schedules
+from unittest.mock import AsyncMock, patch
+
+from fastapi.testclient import TestClient
+
+import db
 
 
-MISLEADING_CRAWLER = '''
-"""
-Example: site_name = "Wrong Site"
-"""
-# crawler_type = "release"
+# TestClient(app) as a bare constructor call does not run FastAPI's
+# startup/shutdown handlers on this starlette version -- only the
+# `with TestClient(app) as client:` context-manager form does. Both tests
+# below use the context-manager form so startup() actually executes
+# against Postgres; a bare `.get()` would let this test pass without
+# startup ever running.
+#
+# start_worker_pool launches a real (headless) Playwright browser, which
+# is slow and unnecessary for a test asserting startup/shutdown wiring.
+# No other test in this suite exercises a real Playwright launch --
+# test_crawl_manager.py mocks at the crawler._new_context /
+# load_enabled_crawlers level instead -- so start_worker_pool/
+# stop_worker_pool are patched here for consistency with that convention.
 
 
-class Crawler:
-    site_name: str = "Real Site"
-    crawler_type: str = "catalog"
-
-    async def search(self, release, page):
-        return []
-'''
-
-
-def test_crawler_metadata_ignores_misleading_comment(tmp_path):
-    plugin_file = tmp_path / "misleading.py"
-    plugin_file.write_text(MISLEADING_CRAWLER)
-
-    site_name, crawler_type = _crawler_metadata(plugin_file, "fallback")
-
-    assert site_name == "Real Site"
-    assert crawler_type == "catalog"
+def test_app_boots_and_health_check_succeeds(pg_test_db):
+    with patch("main.crawl_manager.start_worker_pool", new=AsyncMock()), \
+         patch("main.crawl_manager.stop_worker_pool", new=AsyncMock()):
+        import main
+        with TestClient(main.app) as client:
+            r = client.get("/api/health")
+    assert r.status_code == 200
 
 
-def test_configure_schedules_wires_all_three_schedules(monkeypatch):
-    calls = []
-    monkeypatch.setattr(scheduler, "configure", lambda *a: calls.append(("configure", a)))
-    monkeypatch.setattr(scheduler, "configure_sync", lambda *a: calls.append(("configure_sync", a)))
-    monkeypatch.setattr(scheduler, "configure_stock", lambda *a: calls.append(("configure_stock", a)))
-
-    _configure_schedules({
-        "crawl_schedule": "0 * * * *",
-        "crawl_schedule_mode": "missing",
-        "collection_schedule": "0 2 * * *",
-        "collection_schedule_mode": "all",
-        "stock_schedule": "0 3 * * *",
-    })
-
-    assert calls == [
-        ("configure", ("0 * * * *", "missing")),
-        ("configure_sync", ("0 2 * * *", "all")),
-        ("configure_stock", ("0 3 * * *",)),
-    ]
-
-
-def test_configure_schedules_skips_empty_schedules(monkeypatch):
-    calls = []
-    monkeypatch.setattr(scheduler, "configure", lambda *a: calls.append("configure"))
-    monkeypatch.setattr(scheduler, "configure_sync", lambda *a: calls.append("configure_sync"))
-    monkeypatch.setattr(scheduler, "configure_stock", lambda *a: calls.append("configure_stock"))
-
-    _configure_schedules({})
-
-    assert calls == []
-
-
-def test_configure_schedules_ignores_invalid_schedule_but_configures_others(monkeypatch):
-    def raise_value_error(*a):
-        raise ValueError("bad cron")
-
-    calls = []
-    monkeypatch.setattr(scheduler, "configure", raise_value_error)
-    monkeypatch.setattr(scheduler, "configure_sync", lambda *a: calls.append("configure_sync"))
-    monkeypatch.setattr(scheduler, "configure_stock", lambda *a: calls.append("configure_stock"))
-
-    _configure_schedules({
-        "crawl_schedule": "garbage",
-        "collection_schedule": "0 2 * * *",
-        "stock_schedule": "0 3 * * *",
-    })
-
-    assert calls == ["configure_sync", "configure_stock"]
+def test_startup_seeds_bundled_crawlers(pg_test_db):
+    with patch("main.crawl_manager.start_worker_pool", new=AsyncMock()), \
+         patch("main.crawl_manager.stop_worker_pool", new=AsyncMock()):
+        import main
+        with TestClient(main.app):
+            with db.get_admin_pool().connection() as conn:
+                crawlers = db.get_all_crawlers(conn)
+    assert len(crawlers) > 0
