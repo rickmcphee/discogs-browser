@@ -651,6 +651,10 @@ def replace_stock_items(conn, crawler_id: int, items: list[dict]):
 
 
 def _not_owned_clause(user_id_param: str) -> str:
+    # Exact-or-prefix-with-space title match, not exact-only: stock listings
+    # often append edition/format qualifiers the catalog title doesn't have
+    # (e.g. catalog "Kid A" vs. stock listing "Kid A (Deluxe Reissue)"), so a
+    # strict equality would treat an already-owned release as still unowned.
     return f"""NOT EXISTS (
         SELECT 1 FROM library_items li
         JOIN catalog c ON c.discogs_id = li.discogs_id
@@ -805,15 +809,25 @@ def clear_stock_judgments(conn, user_id: int) -> int:
 
 
 def get_recommended_stock_items(conn, user_id: int) -> list[dict]:
+    # DISTINCT ON (s.item_key) is load-bearing, not decorative: item_key is
+    # not unique in stock_items (the same artist/title/url can be seen by more
+    # than one crawler, or duplicated within one replace_stock_items() call,
+    # which has no ON CONFLICT on item_key), so a plain join here would
+    # surface the same recommendation more than once for one judgment row.
     return conn.execute(
         f"""
-        SELECT s.artist, s.title, s.format, s.price, cr.site_name AS source, s.url, j.reason AS reason
-        FROM stock_items s
-        JOIN crawlers cr ON cr.id = s.crawler_id
-        JOIN stock_item_judgments j ON j.item_key = s.item_key AND j.user_id = %(user_id)s
-        WHERE j.recommended = TRUE
-          AND {_not_owned_clause('%(user_id)s')}
-        ORDER BY s.artist, s.title
+        SELECT artist, title, format, price, source, url, reason FROM (
+            SELECT DISTINCT ON (s.item_key)
+                s.item_key, s.artist, s.title, s.format, s.price, cr.site_name AS source, s.url,
+                j.reason AS reason
+            FROM stock_items s
+            JOIN crawlers cr ON cr.id = s.crawler_id
+            JOIN stock_item_judgments j ON j.item_key = s.item_key AND j.user_id = %(user_id)s
+            WHERE j.recommended = TRUE
+              AND {_not_owned_clause('%(user_id)s')}
+            ORDER BY s.item_key, s.last_seen DESC
+        ) deduped
+        ORDER BY artist, title
         """,
         {"user_id": user_id},
     ).fetchall()

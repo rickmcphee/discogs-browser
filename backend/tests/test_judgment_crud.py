@@ -89,3 +89,51 @@ def test_get_recommended_stock_items_for_user(pg_test_db):
         items = db.get_recommended_stock_items(conn, alice["id"])
     assert len(items) == 1
     assert items[0]["reason"] == "great fit"
+
+
+def test_get_recommended_stock_items_dedupes_item_seen_by_multiple_crawlers(pg_test_db):
+    # Regression test: item_key is not unique in stock_items (replace_stock_items
+    # has no ON CONFLICT on it, and two different crawlers can independently see
+    # the same artist/title/url). A single judgment on that item_key must still
+    # surface exactly one recommendation, not one per stock_items row.
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        db.register_crawler(conn, "Amazon", "/x.py", crawler_type="catalog")
+        db.register_crawler(conn, "Discogs Marketplace", "/y.py", crawler_type="catalog")
+        amazon_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        marketplace_id = conn.execute(
+            "SELECT id FROM crawlers WHERE site_name = 'Discogs Marketplace'"
+        ).fetchone()["id"]
+        db.replace_stock_items(conn, amazon_id, [
+            {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+        ])
+        db.replace_stock_items(conn, marketplace_id, [
+            {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 12.0, "currency": "USD"},
+        ])
+        conn.commit()
+    item_key = db.compute_item_key("Artist A", "Album A", "https://x/1")
+
+    with db.user_scope(alice["id"]) as conn:
+        db.upsert_stock_judgments(conn, alice["id"], [{"item_key": item_key, "recommended": True, "reason": "x"}])
+        items = db.get_recommended_stock_items(conn, alice["id"])
+    assert len(items) == 1
+
+
+def test_upsert_stock_judgments_overwrites_existing_judgment(pg_test_db):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        item_key = _seed_stock_item(conn)
+        conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        db.upsert_stock_judgments(conn, alice["id"], [{"item_key": item_key, "recommended": True, "reason": "first"}])
+        db.upsert_stock_judgments(
+            conn, alice["id"], [{"item_key": item_key, "recommended": False, "reason": "changed mind"}]
+        )
+        assert db.get_recommended_stock_items(conn, alice["id"]) == []
+        row = conn.execute(
+            "SELECT recommended, reason FROM stock_item_judgments WHERE user_id = %s AND item_key = %s",
+            [alice["id"], item_key],
+        ).fetchone()
+    assert row["recommended"] is False
+    assert row["reason"] == "changed mind"

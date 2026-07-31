@@ -80,3 +80,69 @@ def test_get_stock_items_overlapping_excludes_items_matching_users_collection(ad
         }])
         result = db.get_stock_items(conn, alice["id"], recommended=True)
         assert result["total"] == 0  # already owned, excluded from recommended view
+
+
+def test_get_stock_items_overlapping_true_returns_only_items_matching_users_collection(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+        {"artist": "Artist B", "title": "Album B", "url": "https://x/2", "price": 15.0, "currency": "USD"},
+    ])
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r1", "artist": "Artist A", "title": "Album A", "year": None, "label": None,
+        "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+        "discogs_url": None,
+    })
+    db.upsert_library_item(admin_conn, alice["id"], "r1", in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], overlapping=False)
+        assert result["total"] == 2  # plain browse shows both
+
+        result = db.get_stock_items(conn, alice["id"], overlapping=True)
+        assert result["total"] == 1
+        assert result["items"][0]["artist"] == "Artist A"
+
+
+def test_get_distinct_stock_artists_plain_browse(admin_conn):
+    db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "Artist B", "title": "Album B", "url": "https://x/2", "price": 15.0, "currency": "USD"},
+        {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+        {"artist": "Artist A", "title": "Album A2", "url": "https://x/3", "price": 11.0, "currency": "USD"},
+    ])
+    admin_conn.commit()
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        artists = db.get_distinct_stock_artists(conn, alice["id"])
+    assert artists == ["Artist A", "Artist B"]  # distinct and sorted
+
+
+def test_get_distinct_stock_artists_overlapping_filters_to_owned_artists(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+        {"artist": "Artist B", "title": "Album B", "url": "https://x/2", "price": 15.0, "currency": "USD"},
+    ])
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r1", "artist": "Artist A", "title": "Album A", "year": None, "label": None,
+        "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+        "discogs_url": None,
+    })
+    db.upsert_library_item(admin_conn, alice["id"], "r1", in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        artists = db.get_distinct_stock_artists(conn, alice["id"], overlapping=True)
+    assert artists == ["Artist A"]
