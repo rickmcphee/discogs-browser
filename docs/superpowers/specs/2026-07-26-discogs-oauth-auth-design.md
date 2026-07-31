@@ -117,6 +117,13 @@ invite-gated path):
 {state: "unauthenticated"} | {state: "authenticated", user: {discogs_username: str}}
 ```
 
+**Amendment (2026-07-31, crawl-queue-refactor Task 21):** the `user` object
+also carries `is_admin: bool`, sourced from the same `users` row this
+endpoint already fetches — the frontend uses it to gate the Settings nav
+item/view for non-admin users, per
+[`2026-07-27-crawl-queue-refactor-design.md`](2026-07-27-crawl-queue-refactor-design.md)'s
+admin concept.
+
 **`GET /api/auth/discogs/start`** — begins the handshake. Calls Discogs'
 `POST /oauth/request_token` (signed with `DISCOGS_CONSUMER_KEY`/`SECRET`),
 stores the resulting request token + secret in `oauth_request_state`, then

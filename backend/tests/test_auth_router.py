@@ -39,6 +39,20 @@ def test_status_unauthenticated_with_no_cookie(client):
     assert r.json() == {"state": "unauthenticated"}
 
 
+def test_status_authenticated_includes_is_admin(client):
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute("UPDATE users SET is_admin = TRUE WHERE id = %s", [user["id"]])
+        conn.commit()
+    token = session_tokens.new_session_token()
+    with db.get_admin_pool().connection() as conn:
+        db.create_session(conn, session_tokens.hash_token(token), user["id"], datetime.utcnow() + timedelta(days=1))
+        conn.commit()
+    client.cookies.set(config.COOKIE_NAME, token)
+    r = client.get("/api/auth/status")
+    assert r.json()["user"]["is_admin"] is True
+
+
 @respx.mock
 def test_discogs_start_redirects_to_discogs_and_stores_request_state(client):
     respx.post("https://api.discogs.com/oauth/request_token").mock(

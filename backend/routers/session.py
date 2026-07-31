@@ -73,9 +73,12 @@ def auth_status(request: Request):
         if row is None:
             return {"state": "unauthenticated"}
         user = conn.execute(
-            "SELECT discogs_username FROM users WHERE id = %s", [row["user_id"]]
+            "SELECT discogs_username, is_admin FROM users WHERE id = %s", [row["user_id"]]
         ).fetchone()
-    return {"state": "authenticated", "user": {"discogs_username": user["discogs_username"]}}
+    return {
+        "state": "authenticated",
+        "user": {"discogs_username": user["discogs_username"], "is_admin": user["is_admin"]},
+    }
 
 
 @router.get("/auth/discogs/start")
