@@ -67,6 +67,42 @@ def test_mark_crawl_queue_done(admin_conn):
     assert status["status"] == "done"
 
 
+def test_enqueue_crawl_queue_resets_done_row_to_pending(admin_conn):
+    crawler_id = _make_catalog_and_crawler(admin_conn)
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1", crawler_id)
+    admin_conn.commit()
+    [row] = db.claim_crawl_queue_batch(admin_conn, "worker-1", limit=10)
+    db.mark_crawl_queue_done(admin_conn, row["id"])
+    admin_conn.commit()
+
+    db.enqueue_crawl_queue(admin_conn, "r1", crawler_id)
+    admin_conn.commit()
+    rows = admin_conn.execute("SELECT * FROM crawl_queue WHERE discogs_id = 'r1'").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["id"] == row["id"]
+    assert rows[0]["status"] == "pending"
+    assert rows[0]["claimed_by"] is None
+    assert rows[0]["claimed_at"] is None
+
+
+def test_enqueue_crawl_queue_leaves_in_progress_row_untouched(admin_conn):
+    crawler_id = _make_catalog_and_crawler(admin_conn)
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1", crawler_id)
+    admin_conn.commit()
+    [row] = db.claim_crawl_queue_batch(admin_conn, "worker-1", limit=10)
+    admin_conn.commit()
+
+    db.enqueue_crawl_queue(admin_conn, "r1", crawler_id)
+    admin_conn.commit()
+    rows = admin_conn.execute("SELECT * FROM crawl_queue WHERE discogs_id = 'r1'").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["id"] == row["id"]
+    assert rows[0]["status"] == "in_progress"
+    assert rows[0]["claimed_by"] == "worker-1"
+
+
 def test_count_pending_crawl_queue_for_user_only_counts_their_library(admin_conn):
     alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
     bob = db.create_user(admin_conn, discogs_user_id=2, discogs_username="bob")

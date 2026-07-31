@@ -111,6 +111,12 @@ CREATE TABLE IF NOT EXISTS crawl_queue (
     claimed_at TIMESTAMP,
     UNIQUE(discogs_id, crawler_id)
 );
+
+-- Matches claim_crawl_queue_batch's WHERE status = 'pending' ORDER BY
+-- requested_at scan; partial so the index stays small as rows accumulate
+-- 'done' history instead of growing with the whole table.
+CREATE INDEX IF NOT EXISTS crawl_queue_pending_idx ON crawl_queue (requested_at)
+    WHERE status = 'pending';
 """
 
 
@@ -555,12 +561,20 @@ def update_crawler_last_run(conn, crawler_id: int):
     conn.execute("UPDATE crawlers SET last_run = CURRENT_TIMESTAMP WHERE id = %s", [crawler_id])
 
 
+# The WHERE on the DO UPDATE is load-bearing, not decorative: re-enqueuing a
+# pair whose row is already 'pending'/'in_progress' must be a no-op (the
+# DO UPDATE runs but its WHERE filters the row out, so it's left untouched --
+# no accidental restart/duplicate of in-flight work), while re-enqueuing a
+# 'done' pair must reset it to 'pending' so periodic re-crawling of stale
+# listings actually happens -- a plain ON CONFLICT DO NOTHING would let a
+# pair be crawled exactly once, ever, for the app's entire lifetime.
 def enqueue_crawl_queue(conn, discogs_id: str, crawler_id: int):
     conn.execute(
         """
-        INSERT INTO crawl_queue (discogs_id, crawler_id)
-        VALUES (%s, %s)
-        ON CONFLICT (discogs_id, crawler_id) DO NOTHING
+        INSERT INTO crawl_queue (discogs_id, crawler_id) VALUES (%s, %s)
+        ON CONFLICT (discogs_id, crawler_id) DO UPDATE SET
+            status = 'pending', requested_at = CURRENT_TIMESTAMP, claimed_by = NULL, claimed_at = NULL
+        WHERE crawl_queue.status = 'done'
         """,
         [discogs_id, crawler_id],
     )
@@ -570,6 +584,12 @@ def enqueue_crawl_queue(conn, discogs_id: str, crawler_id: int):
 # until the caller commits or rolls back the current transaction -- callers
 # must mark_crawl_queue_done() on these rows before/without another worker's
 # claim call being able to grab them.
+#
+# Known gap, not an oversight: there is no reclaim/timeout path for a row
+# stuck 'in_progress' because its claiming worker hung (as opposed to
+# crashed -- a crash rolls back the open transaction and self-heals). A
+# hung worker holding the transaction open leaves that row unclaimable by
+# anyone else indefinitely.
 def claim_crawl_queue_batch(conn, worker_id: str, limit: int) -> list[dict]:
     return conn.execute(
         """
@@ -596,7 +616,7 @@ def count_pending_crawl_queue_for_user(conn, user_id: int) -> int:
         """
         SELECT COUNT(*) FROM crawl_queue cq
         JOIN library_items li ON li.discogs_id = cq.discogs_id
-        WHERE li.user_id = %s AND cq.status != 'done'
+        WHERE li.user_id = %s AND cq.status IN ('pending', 'in_progress')
         """,
         [user_id],
     ).fetchone()["count"]

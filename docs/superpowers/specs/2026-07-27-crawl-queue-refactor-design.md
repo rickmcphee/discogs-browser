@@ -220,6 +220,20 @@ Missing or stale → `INSERT INTO crawl_queue ... ON CONFLICT DO NOTHING`.
 Idempotent — many users owning the same record all attempt the same insert;
 only the first succeeds, and it doesn't matter which.
 
+**Amendment (2026-07-31, during implementation):** plain `ON CONFLICT DO
+NOTHING` is wrong once a row can reach `status = 'done'`. "Only the first
+succeeds" was true per sync cycle but was wrongly read as true forever — the
+UNIQUE constraint on `(discogs_id, crawler_id)` means every subsequent
+re-enqueue of an already-`done` pair silently no-ops, so that pair can only
+ever be crawled once in the app's entire lifetime, defeating periodic
+re-crawling of stale listings. The enqueue must instead be
+`ON CONFLICT (discogs_id, crawler_id) DO UPDATE SET status = 'pending',
+requested_at = CURRENT_TIMESTAMP, claimed_by = NULL, claimed_at = NULL WHERE
+crawl_queue.status = 'done'` — the `WHERE` on the `DO UPDATE` keeps a
+`pending`/`in_progress` row untouched (still a safe no-op for in-flight
+work) while resetting a `done` row back to `pending` so it re-enters the
+queue. See `db.enqueue_crawl_queue`.
+
 **Drain**: N in-process asyncio worker tasks (count configurable, default
 matching today's implicit single-loop concurrency plus headroom — 2–3),
 started at app startup alongside the existing scheduler. Each worker owns one
