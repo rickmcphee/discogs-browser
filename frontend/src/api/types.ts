@@ -17,7 +17,6 @@ export interface Release {
   discogs_price: string | null
   cover_image_url: string
   discogs_url: string
-  plex_url: string | null
   last_synced: string
   listings: Record<string, Listing | null>
 }
@@ -40,23 +39,20 @@ export interface Crawler {
 }
 
 export interface Settings {
-  discogs_token: string
   debug_screenshot_interval: number
   shuffle_crawl_order: boolean
   crawl_delay_seconds: number
   consecutive_failure_limit: number
   crawl_schedule?: string
   crawl_schedule_mode?: 'missing' | 'all'
-  collection_schedule?: string
-  collection_schedule_mode?: 'all' | 'new'
   ebay_app_id?: string
   ebay_cert_id?: string
   stock_schedule?: string
-  anthropic_api_key?: string
-  recommendation_item_limit?: number
-  plex_base_url?: string
-  plex_token?: string
-  plex_match_threshold?: number
+}
+
+export interface UserSettings {
+  anthropic_api_key: string
+  recommendation_item_limit: number
 }
 
 export type SortField = 'artist' | 'title' | 'year' | 'label' | 'format' | string
@@ -97,7 +93,8 @@ export interface CrawlStatus {
   total: number
   missing: number
   oldest_checked: string | null
-  running?: boolean
+  pending: number
+  pool_running: boolean
 }
 
 export interface ScreenshotEntry {

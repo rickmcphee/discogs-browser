@@ -1,5 +1,5 @@
 import type {
-  ReleasesResponse, Crawler, Settings, SortField, SortOrder, CrawlStatus, CollectionStatus, ScreenshotSession,
+  ReleasesResponse, Crawler, Settings, UserSettings, SortField, SortOrder, CrawlStatus, CollectionStatus, ScreenshotSession,
   AuthStatus, RecordScope, StockResponse, StockSortField,
 } from './types'
 
@@ -49,7 +49,6 @@ export async function getReleases(params: {
   page?: number
   per_page?: number
   scope?: RecordScope
-  no_plex?: boolean
 }): Promise<ReleasesResponse> {
   const q = new URLSearchParams()
   if (params.search) q.set('search', params.search)
@@ -59,16 +58,14 @@ export async function getReleases(params: {
   if (params.page) q.set('page', String(params.page))
   if (params.per_page) q.set('per_page', String(params.per_page))
   if (params.scope) q.set('scope', params.scope)
-  if (params.no_plex) q.set('no_plex', 'true')
   const r = await apiFetch(`/releases?${q}`)
   if (!r.ok) throw new Error(await r.text())
   return r.json()
 }
 
-export async function getArtists(scope?: RecordScope, noPlex?: boolean): Promise<string[]> {
+export async function getArtists(scope?: RecordScope): Promise<string[]> {
   const q = new URLSearchParams()
   if (scope) q.set('scope', scope)
-  if (noPlex) q.set('no_plex', 'true')
   const qs = q.toString() ? `?${q}` : ''
   const r = await apiFetch(`/artists${qs}`)
   if (!r.ok) throw new Error(await r.text())
@@ -98,6 +95,21 @@ export async function saveSettings(settings: Settings): Promise<void> {
   if (!r.ok) throw new Error(await r.text())
 }
 
+export async function getUserSettings(): Promise<UserSettings> {
+  const r = await apiFetch('/user-settings')
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
+}
+
+export async function saveUserSettings(settings: UserSettings): Promise<void> {
+  const r = await apiFetch('/user-settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings),
+  })
+  if (!r.ok) throw new Error(await r.text())
+}
+
 export async function setCrawlerEnabled(id: number, enabled: boolean): Promise<void> {
   const r = await apiFetch(`/crawlers/${id}`, {
     method: 'PATCH',
@@ -117,7 +129,7 @@ export function openCrawlStream(): EventSource {
   return new EventSource('/api/crawl/stream')
 }
 
-export async function postCrawlStart(mode: 'all' | 'missing' = 'all', releaseId?: string): Promise<{ started: boolean; running: boolean }> {
+export async function postCrawlStart(mode: 'all' | 'missing' = 'all', releaseId?: string): Promise<{ enqueued: number }> {
   const r = await apiFetch('/crawl/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -125,10 +137,6 @@ export async function postCrawlStart(mode: 'all' | 'missing' = 'all', releaseId?
   })
   if (!r.ok) throw new Error(await r.text())
   return r.json()
-}
-
-export async function postCrawlStop(): Promise<void> {
-  await apiFetch('/crawl/stop', { method: 'POST' })
 }
 
 export async function getStock(params: {
