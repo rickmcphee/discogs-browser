@@ -34,7 +34,15 @@ def crawl_start(body: CrawlStartRequest, request: Request):
     with db.user_scope(user_id) as conn:
         enabled_crawlers = db.get_enabled_crawlers(conn)
         if body.release_id:
-            target_ids = [body.release_id]
+            # A release_id the caller doesn't actually own in their own
+            # library_items must not be enqueueable -- library_items is the
+            # per-user ownership boundary here, catalog is global and any
+            # discogs_id in it would otherwise be forceable by any user.
+            owned = conn.execute(
+                "SELECT 1 FROM library_items WHERE user_id = %s AND discogs_id = %s",
+                [user_id, body.release_id],
+            ).fetchone()
+            target_ids = [body.release_id] if owned else []
         elif body.mode == "missing":
             target_ids = db.get_missing_releases(conn, user_id)
         else:

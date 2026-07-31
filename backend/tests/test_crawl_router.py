@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 import db
@@ -88,6 +90,42 @@ def test_crawl_start_does_not_enqueue_for_other_users_releases(pg_test_db, authe
     assert row is None
 
 
+def test_crawl_start_release_id_rejects_a_release_the_caller_does_not_own(pg_test_db, authed_client_factory):
+    alice, _bob, crawler_id = _setup_two_users_each_with_a_different_release()
+
+    client = authed_client_factory(alice["id"])
+    r = client.post(
+        "/api/crawl/start", json={"mode": "all", "release_id": "r2"},
+        headers={"X-Requested-With": "fetch"},
+    )
+    assert r.status_code == 200
+    assert r.json()["enqueued"] == 0
+
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT status FROM crawl_queue WHERE discogs_id = 'r2' AND crawler_id = %s", [crawler_id]
+        ).fetchone()
+    assert row is None
+
+
+def test_crawl_start_release_id_enqueues_a_release_the_caller_owns(pg_test_db, authed_client_factory):
+    alice, _bob, crawler_id = _setup_two_users_each_with_a_different_release()
+
+    client = authed_client_factory(alice["id"])
+    r = client.post(
+        "/api/crawl/start", json={"mode": "all", "release_id": "r1"},
+        headers={"X-Requested-With": "fetch"},
+    )
+    assert r.status_code == 200
+    assert r.json()["enqueued"] == 1
+
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT status FROM crawl_queue WHERE discogs_id = 'r1' AND crawler_id = %s", [crawler_id]
+        ).fetchone()
+    assert row is not None
+
+
 def test_crawl_stop_endpoint_removed(pg_test_db, authed_client_factory):
     with db.get_admin_pool().connection() as conn:
         user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
@@ -173,3 +211,31 @@ def test_crawl_stream_replay_only_includes_events_relevant_to_calling_user(pg_te
     assert "r1" in discogs_ids
     assert "r2" not in discogs_ids
     assert any(e.get("status") == "sync_started" for e in events)
+
+
+def _pending_future():
+    """A Future that's simply never resolved — represents a running background
+    job without needing a real Task to be scheduled, awaited, or cancelled on
+    an event loop tick (avoids "Task was destroyed but it is pending")."""
+    return asyncio.get_event_loop().create_future()
+
+
+@pytest.mark.parametrize("task_attr", ["_sync_task", "_stock_task", "_judgment_task"])
+async def test_events_to_replay_gate_opens_for_a_running_global_job_even_with_no_pending_queue_rows(
+    pg_test_db, authed_client_factory, task_attr
+):
+    """_events_to_replay's `any_active` gate has two independent ways to open:
+    the calling user having their own pending crawl_queue rows (covered by
+    test_crawl_stream_replay_only_includes_events_relevant_to_calling_user),
+    or a global sync/stock/judgment job being active regardless of whether
+    this particular user has anything queued. Both paths need their own
+    test, or deleting either half of the `or` silently regresses with
+    nothing failing.
+    """
+    alice, _bob, _crawler_id = _setup_two_users_each_with_a_different_release()
+    crawl_manager._recent = [{"id": 1, "status": "sync_started"}]
+    setattr(crawl_manager, task_attr, _pending_future())
+
+    events = crawl_router._events_to_replay(_FakeRequest(alice["id"]))
+
+    assert events == [{"id": 1, "status": "sync_started"}]
