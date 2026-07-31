@@ -374,6 +374,11 @@ def get_user_by_discogs_id(conn, discogs_user_id: int) -> Optional[dict]:
     ).fetchone()
 
 
+def is_user_admin(conn, user_id: int) -> bool:
+    row = conn.execute("SELECT is_admin FROM users WHERE id = %s", [user_id]).fetchone()
+    return bool(row and row["is_admin"])
+
+
 def upsert_library_item(
     conn,
     user_id: int,
