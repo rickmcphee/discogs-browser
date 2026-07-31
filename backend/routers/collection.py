@@ -2,9 +2,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Request
 from crawl_manager import crawl_manager
 import db
-from logging_config import get_logger
 
-log = get_logger("routers.collection")
 router = APIRouter()
 
 
@@ -21,7 +19,8 @@ def collection_status(request: Request):
 
 @router.post("/collection/refresh")
 async def refresh_collection(request: Request, mode: Optional[str] = None):
-    if crawl_manager.sync_running:
+    user_id = request.state.user_id
+    started = await crawl_manager.start_sync(user_id, mode or "all")
+    if not started:
         raise HTTPException(status_code=409, detail="Collection sync already running")
-    started = await crawl_manager.start_sync(request.state.user_id, mode or "all")
-    return {"started": started, "running": crawl_manager.sync_running}
+    return {"started": started, "running": crawl_manager.sync_running(user_id)}

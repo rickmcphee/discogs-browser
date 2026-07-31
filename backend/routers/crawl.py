@@ -69,7 +69,7 @@ def _events_to_replay(request: Request) -> list[dict]:
     user_id = request.state.user_id
     with db.user_scope(user_id) as conn:
         pending = db.count_pending_crawl_queue_for_user(conn, user_id)
-    any_active = pending > 0 or crawl_manager.sync_running or crawl_manager.stock_sync_running or crawl_manager.judgment_running
+    any_active = pending > 0 or crawl_manager.sync_running(user_id) or crawl_manager.stock_sync_running or crawl_manager.judgment_running
     if not any_active:
         return []
     return [

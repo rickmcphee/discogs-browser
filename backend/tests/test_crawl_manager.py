@@ -98,7 +98,7 @@ async def test_recent_events_capped_at_500(manager):
 # ---------------------------------------------------------------------------
 
 async def test_sync_not_running_initially(manager):
-    assert manager.sync_running is False
+    assert manager.sync_running(1) is False
 
 
 async def test_start_sync_returns_true_when_idle(manager):
@@ -119,7 +119,7 @@ async def test_start_sync_returns_false_when_already_running(manager):
 
     manager._sync_collection = _fake_sync  # type: ignore
     await manager.start_sync(1, "all")
-    assert manager.sync_running is True
+    assert manager.sync_running(1) is True
     second = await manager.start_sync(1, "all")
     assert second is False
     event.set()
@@ -133,7 +133,35 @@ async def test_sync_running_false_after_completion(manager):
     manager._sync_collection = _instant  # type: ignore
     await manager.start_sync(1, "all")
     await asyncio.sleep(0.05)
-    assert manager.sync_running is False
+    assert manager.sync_running(1) is False
+
+
+async def test_start_sync_for_one_user_does_not_block_another_users_sync(manager):
+    """Collection sync has no shared-resource reason to serialize different
+    users against each other (unlike stock sync / judgment, which share one
+    catalog) -- each user has their own OAuth token and own library_items.
+    A per-user _sync_tasks dict, not a single global task, is what makes
+    this true."""
+    event = asyncio.Event()
+
+    async def _fake_sync(user_id, mode):
+        await event.wait()
+
+    manager._sync_collection = _fake_sync  # type: ignore
+    alice_started = await manager.start_sync(1, "all")
+    assert alice_started is True
+    assert manager.sync_running(1) is True
+
+    bob_started = await manager.start_sync(2, "all")
+    assert bob_started is True
+    assert manager.sync_running(2) is True
+
+    # Alice's own second concurrent call is still refused.
+    alice_second = await manager.start_sync(1, "all")
+    assert alice_second is False
+
+    event.set()
+    await asyncio.sleep(0.01)
 
 
 # ---------------------------------------------------------------------------

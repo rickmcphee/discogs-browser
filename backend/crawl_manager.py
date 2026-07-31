@@ -6,7 +6,7 @@ log = get_logger("crawl_manager")
 
 class CrawlManager:
     def __init__(self):
-        self._sync_task: Optional[asyncio.Task] = None
+        self._sync_tasks: dict[int, asyncio.Task] = {}
         self._stock_task: Optional[asyncio.Task] = None
         self._judgment_task: Optional[asyncio.Task] = None
         self._worker_tasks: list[asyncio.Task] = []
@@ -21,8 +21,9 @@ class CrawlManager:
     @property
     def any_job_running(self) -> bool:
         """True while any background job that broadcasts SSE events is active:
-        collection sync, stock sync, or judgment."""
-        return self.sync_running or self.stock_sync_running or self.judgment_running
+        collection sync (for any user), stock sync, or judgment."""
+        any_sync_running = any(not t.done() for t in self._sync_tasks.values())
+        return any_sync_running or self.stock_sync_running or self.judgment_running
 
     def subscribe(self) -> asyncio.Queue:
         q: asyncio.Queue = asyncio.Queue()
@@ -184,15 +185,15 @@ class CrawlManager:
         for q in list(self._subscribers):
             await q.put(event)
 
-    @property
-    def sync_running(self) -> bool:
-        return self._sync_task is not None and not self._sync_task.done()
+    def sync_running(self, user_id: int) -> bool:
+        task = self._sync_tasks.get(user_id)
+        return task is not None and not task.done()
 
     async def start_sync(self, user_id: int, mode: str = "all") -> bool:
-        if self.sync_running:
-            log.warning("Collection sync already running, ignoring start request")
+        if self.sync_running(user_id):
+            log.warning("Collection sync already running for user %d, ignoring start request", user_id)
             return False
-        self._sync_task = asyncio.create_task(self._sync_collection(user_id, mode))
+        self._sync_tasks[user_id] = asyncio.create_task(self._sync_collection(user_id, mode))
         return True
 
     async def _sync_collection(self, user_id: int, mode: str):

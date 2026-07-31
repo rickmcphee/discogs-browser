@@ -16,10 +16,15 @@ def authed_client_factory(authed_client_factory_builder):
 def reset_crawl_manager():
     crawl_manager._recent = []
     crawl_manager._seq = 0
-    for attr in ("_sync_task", "_stock_task", "_judgment_task"):
+    crawl_manager._sync_tasks = {}
+    for attr in ("_stock_task", "_judgment_task"):
         setattr(crawl_manager, attr, None)
     yield
-    for attr in ("_sync_task", "_stock_task", "_judgment_task"):
+    for task in crawl_manager._sync_tasks.values():
+        if task and not task.done():
+            task.cancel()
+    crawl_manager._sync_tasks = {}
+    for attr in ("_stock_task", "_judgment_task"):
         task = getattr(crawl_manager, attr)
         if task and not task.done():
             task.cancel()
@@ -221,20 +226,24 @@ def _pending_future():
 
 
 @pytest.mark.parametrize("task_attr", ["_sync_task", "_stock_task", "_judgment_task"])
-async def test_events_to_replay_gate_opens_for_a_running_global_job_even_with_no_pending_queue_rows(
+async def test_events_to_replay_gate_opens_for_a_running_job_even_with_no_pending_queue_rows(
     pg_test_db, authed_client_factory, task_attr
 ):
     """_events_to_replay's `any_active` gate has two independent ways to open:
     the calling user having their own pending crawl_queue rows (covered by
     test_crawl_stream_replay_only_includes_events_relevant_to_calling_user),
-    or a global sync/stock/judgment job being active regardless of whether
-    this particular user has anything queued. Both paths need their own
-    test, or deleting either half of the `or` silently regresses with
-    nothing failing.
+    or a sync/stock/judgment job being active regardless of whether this
+    particular user has anything queued (collection sync gates open only for
+    the calling user's own sync; stock/judgment are process-global). Both
+    paths need their own test, or deleting either half of the `or` silently
+    regresses with nothing failing.
     """
     alice, _bob, _crawler_id = _setup_two_users_each_with_a_different_release()
     crawl_manager._recent = [{"id": 1, "status": "sync_started"}]
-    setattr(crawl_manager, task_attr, _pending_future())
+    if task_attr == "_sync_task":
+        crawl_manager._sync_tasks[alice["id"]] = _pending_future()
+    else:
+        setattr(crawl_manager, task_attr, _pending_future())
 
     events = crawl_router._events_to_replay(_FakeRequest(alice["id"]))
 
