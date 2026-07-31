@@ -285,6 +285,13 @@ def init_tenant_schema():
         conn.execute("GRANT SELECT, INSERT, DELETE ON oauth_request_state TO app_identity")
         conn.execute("GRANT SELECT, INSERT, DELETE ON pending_signups TO app_identity")
 
+        # catalog/listings/stock_items/crawl_queue have no per-user owner column
+        # to write an RLS policy against -- they're shared across every tenant
+        # (the catalog is one global Discogs mirror, crawl_queue one shared work
+        # list) -- so app_user's per-request connections need real INSERT/UPDATE
+        # here despite there being no RLS to gate it; isolation for per-user data
+        # instead comes entirely from library_items/stock_item_judgments' RLS
+        # policies below and from library_items' own FK into catalog.
         conn.execute("GRANT SELECT ON crawlers TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE ON catalog, listings, stock_items TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON library_items TO app_user")
@@ -350,9 +357,10 @@ def create_user(conn, discogs_user_id: int, discogs_username: str, invited_by: O
     ).fetchone()
 
 
-# Includes discogs_oauth_token_encrypted, discogs_oauth_secret_encrypted, and
-# plaintext plex_token — never serialize this return value directly into an
-# API response; allow-list fields explicitly at the call site.
+# Includes discogs_oauth_token_encrypted, discogs_oauth_secret_encrypted,
+# plaintext plex_token, and plaintext anthropic_api_key — never serialize
+# this return value directly into an API response; allow-list fields
+# explicitly at the call site.
 def get_user_by_discogs_id(conn, discogs_user_id: int) -> Optional[dict]:
     return conn.execute(
         "SELECT * FROM users WHERE discogs_user_id = %s", [discogs_user_id]

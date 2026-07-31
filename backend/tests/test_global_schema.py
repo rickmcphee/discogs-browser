@@ -120,10 +120,9 @@ def test_stock_items_insert_and_select(admin_conn):
 
 
 def test_crawl_queue_table_exists_with_unique_constraint(admin_conn):
-    admin_conn.execute(
+    crawler_id = admin_conn.execute(
         "INSERT INTO crawlers (site_name, module_path) VALUES ('Test Site', '/x.py') RETURNING id"
-    )
-    crawler_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Test Site'").fetchone()["id"]
+    ).fetchone()["id"]
     db.upsert_catalog_release(admin_conn, {
         "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
         "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
@@ -133,7 +132,7 @@ def test_crawl_queue_table_exists_with_unique_constraint(admin_conn):
         "INSERT INTO crawl_queue (discogs_id, crawler_id) VALUES ('r1', %s)", [crawler_id]
     )
     admin_conn.commit()
-    with pytest.raises(Exception):
+    with pytest.raises(psycopg.errors.UniqueViolation):
         admin_conn.execute(
             "INSERT INTO crawl_queue (discogs_id, crawler_id) VALUES ('r1', %s)", [crawler_id]
         )
