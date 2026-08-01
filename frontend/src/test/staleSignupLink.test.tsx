@@ -21,7 +21,6 @@ vi.mock('../api/client', () => ({
   getReleases: vi.fn().mockResolvedValue({ total: 0, page: 1, per_page: 50, releases: [] }),
   getArtists: vi.fn().mockResolvedValue([]),
   getSettings: vi.fn().mockResolvedValue({
-    debug_screenshot_interval: 20, shuffle_crawl_order: true,
     crawl_delay_seconds: 30, consecutive_failure_limit: 10, crawl_schedule: '',
     crawl_schedule_mode: 'missing',
     ebay_app_id: '', ebay_cert_id: '', stock_schedule: '',
