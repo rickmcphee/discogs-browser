@@ -9,8 +9,6 @@ router = APIRouter()
 
 
 class SettingsUpdate(BaseModel):
-    debug_screenshot_interval: int = 20
-    shuffle_crawl_order: bool = True
     crawl_delay_seconds: int = 30
     consecutive_failure_limit: int = 10
     crawl_schedule: str = ""
@@ -33,8 +31,6 @@ class UserSettingsUpdate(BaseModel):
 def get_settings():
     config = load_config()
     return {
-        "debug_screenshot_interval": int(config.get("debug_screenshot_interval", 20)),
-        "shuffle_crawl_order": bool(config.get("shuffle_crawl_order", True)),
         "crawl_delay_seconds": int(config.get("crawl_delay_seconds", 30)),
         "consecutive_failure_limit": int(config.get("consecutive_failure_limit", 10)),
         "crawl_schedule": config.get("crawl_schedule", ""),
@@ -48,8 +44,6 @@ def get_settings():
 @router.post("/settings", dependencies=[Depends(require_admin)])
 def update_settings(body: SettingsUpdate):
     config = load_config()
-    config["debug_screenshot_interval"] = body.debug_screenshot_interval
-    config["shuffle_crawl_order"] = body.shuffle_crawl_order
     config["crawl_delay_seconds"] = body.crawl_delay_seconds
     config["consecutive_failure_limit"] = body.consecutive_failure_limit
     config["crawl_schedule"] = body.crawl_schedule
