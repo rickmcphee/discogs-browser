@@ -39,6 +39,30 @@ def test_register_crawler_is_idempotent_on_site_name(admin_conn):
     assert rows[0]["module_path"] == "/new/path.py"
 
 
+def test_register_crawler_preserves_enabled_flag(admin_conn):
+    # main.py's seed_bundled_crawlers() calls register_crawler unconditionally
+    # on every startup, so its ON CONFLICT clause must leave `enabled` alone --
+    # otherwise an admin disabling a crawler would silently have that undone by
+    # the next app restart.
+    db.register_crawler(admin_conn, "Amazon", "/old/path.py")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute(
+        "SELECT id FROM crawlers WHERE site_name = 'Amazon'"
+    ).fetchone()["id"]
+
+    db.set_crawler_enabled(admin_conn, crawler_id, False)
+    admin_conn.commit()
+
+    db.register_crawler(admin_conn, "Amazon", "/new/path.py")
+    admin_conn.commit()
+
+    row = admin_conn.execute(
+        "SELECT enabled, module_path FROM crawlers WHERE id = %s", [crawler_id]
+    ).fetchone()
+    assert row["enabled"] is False
+    assert row["module_path"] == "/new/path.py"
+
+
 def test_set_crawler_enabled_and_update_last_run(admin_conn):
     db.register_crawler(admin_conn, "Amazon", "/path.py")
     admin_conn.commit()

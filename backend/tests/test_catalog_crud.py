@@ -157,6 +157,52 @@ def test_get_library_releases_search_and_scope_filters(admin_conn):
         assert result["total"] == 1 and result["releases"][0]["discogs_id"] == "r2"
 
 
+def _seed_three_releases_for_price_sort(admin_conn):
+    """r1/r2 have Amazon listings (cheap/expensive), r3 has none, so the
+    NULL-price ordering arm of the price_<site> sort is exercised too."""
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.execute("INSERT INTO crawlers (site_name, module_path) VALUES ('Amazon', '/x.py')")
+    crawler_id = admin_conn.execute(
+        "SELECT id FROM crawlers WHERE site_name = 'Amazon'"
+    ).fetchone()["id"]
+    for rid, artist in [("r1", "Bbb"), ("r2", "Aaa"), ("r3", "Ccc")]:
+        db.upsert_catalog_release(admin_conn, {
+            "discogs_id": rid, "artist": artist, "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.upsert_library_item(admin_conn, alice["id"], rid, in_collection=True)
+    db.upsert_listing(admin_conn, "r1", crawler_id, "http://x/1", 5.00, None, "USD", None)
+    db.upsert_listing(admin_conn, "r2", crawler_id, "http://x/2", 25.00, None, "USD", None)
+    admin_conn.commit()
+    return alice
+
+
+def test_get_library_releases_sorts_by_price_for_named_site(admin_conn):
+    alice = _seed_three_releases_for_price_sort(admin_conn)
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], sort="price_Amazon", order="asc")
+    # Cheapest first, then dearer, then the release with no Amazon listing at all.
+    assert [r["discogs_id"] for r in result["releases"]] == ["r1", "r2", "r3"]
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], sort="price_Amazon", order="desc")
+    assert result["releases"][0]["discogs_id"] == "r3"
+    assert [r["discogs_id"] for r in result["releases"][1:]] == ["r2", "r1"]
+
+
+def test_get_library_releases_price_sort_for_unknown_site_falls_back_to_artist_asc(admin_conn):
+    # Documents current behaviour rather than endorsing it: an unrecognised
+    # site name silently degrades to artist ASC and ignores `order` entirely,
+    # with no signal to the caller. See the note in the Task 22 review.
+    alice = _seed_three_releases_for_price_sort(admin_conn)
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], sort="price_NoSuchSite", order="desc")
+    assert [r["discogs_id"] for r in result["releases"]] == ["r2", "r1", "r3"]
+
+
 def test_get_listings_for_release_joins_crawler_site_name(admin_conn):
     admin_conn.execute("INSERT INTO crawlers (site_name, module_path) VALUES ('Amazon', '/x.py')")
     crawler_id = admin_conn.execute(
