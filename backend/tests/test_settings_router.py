@@ -129,6 +129,28 @@ def test_post_user_settings_rejects_unsafe_plex_address(pg_test_db, authed_clien
     assert r.json()["plex_base_url"] == ""
 
 
+def test_post_user_settings_rejects_unsafe_address_without_partial_write(pg_test_db, authed_client_factory, monkeypatch):
+    with db.get_identity_pool().connection() as conn:
+        conn.execute("SELECT 1")
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute("UPDATE users SET anthropic_api_key = %s WHERE id = %s", ["sk-old", user["id"]])
+        conn.commit()
+    monkeypatch.setattr(
+        socket, "getaddrinfo",
+        lambda host, port, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", port))],
+    )
+    client = authed_client_factory(user["id"])
+    r = client.post("/api/user-settings", json={
+        "anthropic_api_key": "sk-new", "recommendation_item_limit": 300,
+        "plex_base_url": "10.0.0.5:32400", "plex_token": "ptok", "plex_match_threshold": 90,
+    }, headers={"X-Requested-With": "fetch"})
+    assert r.status_code == 400
+
+    r = client.get("/api/user-settings")
+    assert r.json()["anthropic_api_key"] == "sk-old"
+
+
 def test_post_user_settings_with_empty_plex_base_url_skips_validation(pg_test_db, authed_client_factory):
     with db.get_admin_pool().connection() as conn:
         user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
