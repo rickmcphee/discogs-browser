@@ -8,6 +8,9 @@ from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
 import config
+from logging_config import get_logger
+
+log = get_logger("db")
 
 _admin_pool: Optional[ConnectionPool] = None
 _identity_pool: Optional[ConnectionPool] = None
@@ -550,7 +553,12 @@ def get_all_crawlers(conn) -> list[dict]:
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
             d["base_url"] = getattr(mod.Crawler, "base_url", None)
-        except Exception:
+        except Exception as e:
+            # base_url is cosmetic here (it only feeds the admin crawler list),
+            # so a broken plugin must not fail the whole listing -- but stay
+            # consistent with crawler.py's loader and leave a trace rather than
+            # silently reporting base_url=None for a plugin that won't import.
+            log.warning("Could not load crawler plugin %s for base_url: %s", d["module_path"], e)
             d["base_url"] = None
         result.append(d)
     return result
