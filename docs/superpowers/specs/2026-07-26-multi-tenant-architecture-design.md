@@ -270,6 +270,8 @@ reference it.
 
 ## Crawl scheduling (shared queue)
 
+**Amendment (2026-07-31, branch `crawl-queue-refactor`):** three details below differ from what shipped. (1) There is **no TTL-based staleness check** — enqueue targets are missing-only (`db.get_missing_releases`: fewer than N distinct enabled crawlers with a non-null price) or the user's whole `library_items` set for `mode="all"`. `listings.last_checked` is written but never read for freshness, so "or stale" is aspirational and periodic re-crawl of a priced-but-old listing is not implemented. (2) The enqueue is `ON CONFLICT (discogs_id, crawler_id) DO UPDATE SET status = 'pending', … WHERE crawl_queue.status = 'done'`, not `DO NOTHING` — "only the first succeeds" holds per sync cycle but not forever; see [`2026-07-27-crawl-queue-refactor-design.md`](2026-07-27-crawl-queue-refactor-design.md)'s enqueue amendment. (3) The drain is N **in-process asyncio tasks** sharing one Playwright browser (`crawl_manager.start_worker_pool`/`_worker_loop`/`_drain_one_batch`), not worker processes — a separate worker process/container is explicitly out of scope in that spec. `crawl_manager._run` and `crawler.crawl_releases`, named both here and at the "`Page` model unchanged" line further up, are deleted; the one-`Page`-per-crawler-plugin model survives as a per-worker `pages` dict keyed by `crawler_id`.
+
 **`crawl_queue`**: `discogs_id, crawler_id, requested_at, status
 ('pending'|'in_progress'|'done'), claimed_by, claimed_at`, unique on
 `(discogs_id, crawler_id)`.
@@ -299,6 +301,8 @@ rather than resolved in this spec.
 ---
 
 ## Plex reachability
+
+**Amendment (2026-07-31, branch `crawl-queue-refactor`):** the per-user Plex design below is still unbuilt, and is now further behind than "not started yet." Task 21 removed the *existing* single-owner Plex frontend — `RecordBrowser.tsx`'s `plex_url` links and `no_plex` filter, `App.tsx`'s `plex_match_*` SSE handling, `Settings.tsx`'s `plex_base_url`/`plex_token` fields, and the `plexLink`/`collectionPlexFilter` tests — so "everything else carries over unchanged in shape, just re-scoped to per-user" no longer describes a shipped surface to re-scope; whoever picks up decomposition item 4 rebuilds that UI rather than adapting it. `users.plex_base_url`/`plex_token`/`plex_match_threshold` and `library_items.plex_url`/`plex_matched_at` exist in the schema but are read and written by nothing; `backend/plex.py` remains, imported only by its own test. The SSRF mitigation below, its tests, and the corresponding success criterion are all still unimplemented and still required before any Plex code path is wired back up. See [`2026-07-08-plex-integration-design.md`](2026-07-08-plex-integration-design.md)'s amendment.
 
 The backend cannot reach a user's home Plex server directly from a shared cloud
 host. Resolution: the user supplies their own reachable URL (Plex Remote Access, or

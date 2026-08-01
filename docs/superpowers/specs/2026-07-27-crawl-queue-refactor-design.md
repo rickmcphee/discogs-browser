@@ -2,6 +2,8 @@
 
 _2026-07-27_
 
+**Amendment (2026-07-31, during implementation):** three design details below did not ship as written, found in the whole-branch review after Task 21. (1) **No TTL freshness check** — the enqueue in `_sync_collection`, `POST /crawl/start` and `sweep_enqueue` is missing-only (`db.get_missing_releases`) or all-of-`library_items`; `listings.last_checked` is never consulted, so "Missing **or stale**" under Enqueue is aspirational and stale-listing re-crawl is unimplemented. (2) **No periodic queue-level SSE summary** — `GET /api/crawl/stream` forwards per-user-filtered `listing_changed` events and a bare `{"status": "ping"}` on 15 s idle; the per-user pending count (`db.count_pending_crawl_queue_for_user`) is reachable only by polling `GET /api/crawl/status`, which is what the frontend does. (3) Per-user settings **did** get their own endpoint after all — `GET`/`POST /api/user-settings` in `routers/settings.py`, with its own `UserSettingsUpdate` model, rather than being folded into `routers/session.py`'s account surface as "no separate endpoint" says below. Keeping both settings surfaces (admin-global and per-user) in one router read better than splitting settings across two routers to save an endpoint; no change to the fields, storage, or authorization model. Separately, deleting `crawl_releases()` silently dropped the release crawl's inter-request delay, consecutive-failure circuit breaker, order shuffling, and debug screenshots — the "everything else stays global in `config.json`" list under Settings split preserved those four fields' *surface* but nothing re-implemented their *behavior* in the worker pool. Open work, not a decision.
+
 ---
 
 ## Overview

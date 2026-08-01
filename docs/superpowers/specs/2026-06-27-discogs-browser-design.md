@@ -155,6 +155,8 @@ Playwright uses `launch_persistent_context` with `DISCOGS_BROWSER_DATA/chrome_pr
 
 ## CrawlManager
 
+**Amendment (2026-07-31, branch `crawl-queue-refactor`):** the single foreground crawl this section describes no longer exists, and this note governs the API list, the SSE paragraph, the Key Flows below, and the file-layout tree. `crawl_releases()` is deleted from `crawler.py` (only the plugin loader, `clean_search_text()`, `BotDetectedError`, `_new_context`/`_reset_context` remain), and `CrawlManager.start`/`stop`/`_run` are replaced by an always-on in-process worker pool: `start_worker_pool(worker_count)` → N `_worker_loop` tasks → `_drain_one_batch`, each claiming rows off a shared `crawl_queue` table with `SELECT … FOR UPDATE SKIP LOCKED`. See [`2026-07-27-crawl-queue-refactor-design.md`](2026-07-27-crawl-queue-refactor-design.md). Consequences: **`POST /crawl/stop` is removed** (there is no single job to stop, and the frontend's Stop button went with it), so the `routers/crawl.py` entry in the file tree is stale; `POST /crawl/start` is a per-user enqueue returning `{"enqueued": N}`, not a job launch, and validates `release_id` against the caller's own `library_items`; `GET /crawl/status` returns the caller's pending queue count plus `pool_running`; the `started`/`complete`/`stopped` events no longer exist, replaced by per-write `{"type": "listing_changed", …}` events filtered per user in `routers/crawl.py`; `any_job_running` still exists but has no callers — replay is gated on `pending > 0 or sync_running(user_id) or stock_sync_running or judgment_running(user_id)`. `scheduler.configure(cron, mode)` now runs `crawl_manager.sweep_enqueue(mode)` across all users, and `scheduler.configure_sync` is deleted (automatic per-user collection sync is an explicit non-goal); `start_sync` is now `start_sync(user_id, mode)` with per-user `_sync_tasks`. `main.py`'s startup is `init_global_schema()`/`init_tenant_schema()`/`seed_bundled_crawlers()`/`start_worker_pool()`/`scheduler.start()` — no `init_db`, no listings pre-population. Text below is left as historical record, not current behavior.
+
 `crawl_manager.py` is a singleton that decouples the crawl from the SSE connection.
 
 - `CrawlManager.start(mode, release_id)` — launches an asyncio background task running `crawl_releases()`. Returns `False` if already running.
@@ -184,6 +186,8 @@ Scheduled crawls trigger `CrawlManager.start(mode)` exactly like a manual crawl.
 All fields live in `DISCOGS_BROWSER_DATA/config.json`.
 
 **Amendment (2026-07-31, crawl-queue-refactor Task 21):** this table describes the single-owner app. Under the multi-tenant refactor ([`2026-07-26-multi-tenant-architecture-design.md`](2026-07-26-multi-tenant-architecture-design.md), [`2026-07-27-crawl-queue-refactor-design.md`](2026-07-27-crawl-queue-refactor-design.md)'s "Settings split"), `discogs_token` is deleted (replaced entirely by per-user Discogs OAuth token pairs) and `collection_schedule`/`collection_schedule_mode` are removed (collection sync is manual-trigger-only per user, a non-goal of that plan). `GET`/`POST /settings` is now admin-only and covers only the remaining global fields below.
+
+**Amendment (2026-07-31, branch `crawl-queue-refactor`):** four fields in the table below are still saved and still rendered in the admin Settings UI, but **nothing in the release-crawl path reads them any more** — the worker pool that replaced `crawl_releases()` implements no inter-request delay, no consecutive-failure circuit breaker, no order shuffling, and passes `None` as the screenshotter. `debug_screenshot_interval` and `shuffle_crawl_order` now have no reader at all; `crawl_delay_seconds` and `consecutive_failure_limit` are read only by `shopify_catalog.py` for the catalog/stock crawl (see [`2026-07-05-in-stock-crawler-design.md`](2026-07-05-in-stock-crawler-design.md)'s 2026-07-18 amendment). This was an unintended consequence of deleting `crawl_releases()` rather than a decision — the descriptions below therefore overstate what these fields do today, and restoring politeness/failure-limit behavior on the shared queue is open work.
 
 | Field | Default | Description |
 |---|---|---|
@@ -245,6 +249,8 @@ Uses the persistent Chrome profile with `playwright_stealth`. Raises `BotDetecte
 ## Key Flows
 
 ### Refresh Collection
+
+**Amendment (2026-07-31, branch `crawl-queue-refactor`):** step 2's `CrawlManager.start_sync(mode)` is now `start_sync(user_id, mode)`, called with the calling user's id from `routers/collection.py`, and the "already running" guard is per-user (`_sync_tasks: dict[int, asyncio.Task]`) rather than one global slot. Step 6 no longer applies at all — `scheduler.configure_sync` is deleted and there are no scheduled collection syncs; collection sync is manual-trigger-only, per user. The sync now finishes by enqueuing `crawl_queue` rows for the user's releases instead of leaving pre-populated `price IS NULL` listings rows. The SSE event shapes in steps 3–5 are unchanged.
 
 1. Frontend calls `POST /collection/refresh?mode=[all|new]`.
 2. Backend calls `CrawlManager.start_sync(mode)`, which launches `_sync_collection()` as an asyncio background task. Returns `{started: true, running: true}` immediately (or `{started: false, running: true}` if already running, 409).
