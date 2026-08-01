@@ -2,6 +2,57 @@
 
 _2026-08-01_
 
+**Amendment (2026-08-01, whole-plan final review):** everything below shipped,
+but five details differ from how they're written, and one design decision below
+did not ship on the first pass and was fixed in this review.
+
+1. **Pacing lives in its own method, not inline.** The Design section reads as
+   though the lock/delay wraps `plugin.search()` inline "in `_drain_one_batch`";
+   it shipped as a separate `CrawlManager._paced_search(crawler_id, plugin,
+   release, pages)`, which `_drain_one_batch` calls once per claimed row. The
+   circuit-breaker bookkeeping is likewise two small helpers,
+   `_cooling_down_crawler_ids()` and `_record_site_result(crawler_id,
+   succeeded)`, rather than open-coded in the drain loop.
+2. **The backoff timestamp is recorded in a `finally`, not after a successful
+   search.** Step 4 below reads as a post-success assignment; as written that
+   would let a request whose *first attempt and bot-detection retry both* failed
+   leave `_site_next_allowed_at` untouched, so the next request to that same
+   site would fire with zero backoff — the worst possible moment to stop being
+   polite. `_paced_search` therefore sets it in a `finally` covering every exit
+   path, success or exception.
+3. **`crawl_delay_seconds` / `consecutive_failure_limit` are read once per
+   claimed row**, via `load_config()` inside `_paced_search` and
+   `_record_site_result` — not "once per batch (or per worker-loop iteration)"
+   as step 4 allows. Strictly more responsive to a config change than the spec
+   required; no behavioral downside.
+4. **A recovered bot detection now counts as a circuit-breaker failure — this
+   is the one real fix from this review.** The first implementation had
+   `_paced_search` swallow a `BotDetectedError` whose post-`_reset_context`
+   retry succeeded, and `_drain_one_batch` then recorded
+   `succeeded=bool(matches)`, so a site that walls *every* request but yields to
+   *every* retry reset the counter to `0` each time and could never trip the
+   breaker — directly contradicting the "Bot-detection interaction" section
+   below, which is explicit that recovered instances must still count.
+   `_paced_search` now returns `(matches, bot_detected)` and `_drain_one_batch`
+   records `succeeded=bool(matches) and not bot_detected`. Covered by
+   `test_drain_one_batch_counts_recovered_bot_detection_as_a_failure`.
+5. **Cooldown exclusion is claim-time only.** A site whose breaker trips partway
+   through a batch still has that batch's already-claimed rows crawled to
+   completion; the cooldown only keeps its rows from being claimed on subsequent
+   drain cycles. Bounded by `batch_size` (5) and not worth the complexity of
+   re-checking mid-loop, but it is not the "stops immediately" reading the
+   Design section invites.
+6. **No cooldown-expiry test shipped.** The Testing section's "Cooldown expires"
+   item is unimplemented: expiry is structural rather than behavioral —
+   `_drain_one_batch` recomputes `_cooling_down_crawler_ids()` from
+   `_site_cooldown_until` on every single call and nothing caches it, so a site
+   becomes claimable again on the very next drain cycle after its timestamp
+   passes, with no restart or eviction step to get wrong. The circuit-breaker
+   test also asserts against `_site_cooldown_until`/`_site_consecutive_failures`
+   directly rather than inspecting the arguments passed to
+   `claim_crawl_queue_batch`; `db`-level exclusion is covered separately in
+   `test_crawl_queue.py`.
+
 ---
 
 ## Overview
