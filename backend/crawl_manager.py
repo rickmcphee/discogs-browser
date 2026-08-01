@@ -19,6 +19,8 @@ class CrawlManager:
         self._seq = 0
         self._site_locks: dict[int, asyncio.Lock] = {}
         self._site_next_allowed_at: dict[int, float] = {}
+        self._site_consecutive_failures: dict[int, int] = {}
+        self._site_cooldown_until: dict[int, float] = {}
 
     @property
     def any_job_running(self) -> bool:
@@ -111,6 +113,28 @@ class CrawlManager:
             for context, _page in pages.values():
                 await context.close()
 
+    def _cooling_down_crawler_ids(self) -> list[int]:
+        import time
+        now = time.monotonic()
+        return [cid for cid, until in self._site_cooldown_until.items() if now < until]
+
+    def _record_site_result(self, crawler_id: int, succeeded: bool):
+        import time
+        from config import load_config
+        if succeeded:
+            self._site_consecutive_failures[crawler_id] = 0
+            return
+        count = self._site_consecutive_failures.get(crawler_id, 0) + 1
+        self._site_consecutive_failures[crawler_id] = count
+        limit = int(load_config().get("consecutive_failure_limit", 10))
+        if limit and count >= limit:
+            self._site_cooldown_until[crawler_id] = time.monotonic() + 1800
+            self._site_consecutive_failures[crawler_id] = 0
+            log.warning(
+                "Crawler %d hit %d consecutive failures, cooling down for 30 minutes",
+                crawler_id, count,
+            )
+
     async def _paced_search(self, crawler_id: int, plugin, release: dict, pages: dict) -> list:
         """Runs plugin.search() for one crawler_id under that site's lock,
         enforcing the minimum inter-request delay and covering the existing
@@ -154,11 +178,12 @@ class CrawlManager:
                 self._site_next_allowed_at[crawler_id] = time.monotonic() + random.uniform(0.5, 1.0) * delay
 
     async def _drain_one_batch(self, worker_id: str, plugins_by_crawler_id: dict, pages: dict, batch_size: int = 5) -> int:
-        from crawler import _new_context, _reset_context, BotDetectedError
+        from crawler import _new_context
         from db import get_app_pool, claim_crawl_queue_batch, mark_crawl_queue_done, upsert_listing, get_catalog_release
 
+        excluded = self._cooling_down_crawler_ids()
         with get_app_pool().connection() as conn:
-            rows = claim_crawl_queue_batch(conn, worker_id, limit=batch_size)
+            rows = claim_crawl_queue_batch(conn, worker_id, limit=batch_size, excluded_crawler_ids=excluded)
             conn.commit()
         if not rows:
             return 0
@@ -185,27 +210,18 @@ class CrawlManager:
 
             if row["crawler_id"] not in pages:
                 pages[row["crawler_id"]] = await _new_context(self._browser, self._stealth)
-            context, page = pages[row["crawler_id"]]
 
             try:
-                matches = await plugin.search(release, page)
-            except BotDetectedError:
-                context, page = await _reset_context(context, self._browser, self._stealth, None)
-                pages[row["crawler_id"]] = (context, page)
-                try:
-                    matches = await plugin.search(release, page)
-                except Exception as e:
-                    log.error("[%s] Crawl failed after bot-detection retry for %s: %s", plugin._db_site_name, row["discogs_id"], e)
-                    with get_app_pool().connection() as conn:
-                        mark_crawl_queue_done(conn, row["id"])
-                        conn.commit()
-                    continue
+                matches = await self._paced_search(row["crawler_id"], plugin, release, pages)
             except Exception as e:
                 log.error("[%s] Crawl failed for %s: %s", plugin._db_site_name, row["discogs_id"], e)
+                self._record_site_result(row["crawler_id"], succeeded=False)
                 with get_app_pool().connection() as conn:
                     mark_crawl_queue_done(conn, row["id"])
                     conn.commit()
                 continue
+
+            self._record_site_result(row["crawler_id"], succeeded=bool(matches))
 
             with get_app_pool().connection() as conn:
                 if matches:
