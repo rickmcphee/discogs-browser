@@ -352,10 +352,19 @@ async def test_worker_row_commit_is_isolated_from_a_later_rows_failure(pg_schema
     manager._browser = MagicMock()
     manager._stealth = MagicMock()
     fake_plugin = AsyncMock()
-    fake_plugin.search = AsyncMock(side_effect=[
-        [{"url": "https://x/1", "price": 9.99, "shipping": None, "currency": "USD", "condition": None}],
-        asyncio.CancelledError(),
-    ])
+
+    # r1 and r2 are enqueued in the same transaction, so crawl_queue.requested_at
+    # (DEFAULT CURRENT_TIMESTAMP -- transaction-start time, not statement time)
+    # is identical for both rows; claim_crawl_queue_batch's ORDER BY requested_at
+    # has no tiebreaker, so which row comes back first is not guaranteed. Keying
+    # the side effect off the release actually passed in (not call order) makes
+    # this test's outcome independent of that claim order.
+    async def _search(release, page):
+        if release["discogs_id"] == "r1":
+            return [{"url": "https://x/1", "price": 9.99, "shipping": None, "currency": "USD", "condition": None}]
+        raise asyncio.CancelledError()
+
+    fake_plugin.search = AsyncMock(side_effect=_search)
     fake_plugin._db_id = crawler_id
     fake_plugin._db_site_name = "Amazon"
 

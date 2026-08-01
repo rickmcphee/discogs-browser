@@ -627,7 +627,7 @@ def claim_crawl_queue_batch(
         WHERE id IN (
             SELECT id FROM crawl_queue
             WHERE status = 'pending' {exclusion_clause}
-            ORDER BY requested_at
+            ORDER BY requested_at, id
             LIMIT %(limit)s
             FOR UPDATE SKIP LOCKED
         )
