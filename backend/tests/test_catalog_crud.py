@@ -157,6 +157,45 @@ def test_get_library_releases_search_and_scope_filters(admin_conn):
         assert result["total"] == 1 and result["releases"][0]["discogs_id"] == "r2"
 
 
+def test_get_library_releases_includes_plex_url_in_default_sort(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r1", "artist": "Miles Davis", "title": "Kind of Blue", "year": None,
+        "label": None, "format": None, "discogs_price": None, "barcode": None,
+        "cover_image_url": None, "discogs_url": None,
+    })
+    db.upsert_library_item(admin_conn, alice["id"], "r1", in_collection=True)
+    db.set_plex_match(admin_conn, alice["id"], "r1", "http://plex.local:32400/web/x")
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"])
+    assert result["releases"][0]["plex_url"] == "http://plex.local:32400/web/x"
+    assert result["releases"][0]["plex_matched_at"] is not None
+
+
+def test_get_library_releases_includes_plex_url_when_sorting_by_known_site_price(admin_conn):
+    alice = _seed_three_releases_for_price_sort(admin_conn)
+    db.set_plex_match(admin_conn, alice["id"], "r1", "http://plex.local:32400/web/x")
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], sort="price_Amazon", order="asc")
+    r1 = next(r for r in result["releases"] if r["discogs_id"] == "r1")
+    assert r1["plex_url"] == "http://plex.local:32400/web/x"
+
+
+def test_get_library_releases_includes_plex_url_when_sort_falls_back_to_artist(admin_conn):
+    alice = _seed_three_releases_for_price_sort(admin_conn)
+    db.set_plex_match(admin_conn, alice["id"], "r1", "http://plex.local:32400/web/x")
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], sort="price_NoSuchSite", order="desc")
+    r1 = next(r for r in result["releases"] if r["discogs_id"] == "r1")
+    assert r1["plex_url"] == "http://plex.local:32400/web/x"
+
+
 def _seed_three_releases_for_price_sort(admin_conn):
     """r1/r2 have Amazon listings (cheap/expensive), r3 has none, so the
     NULL-price ordering arm of the price_<site> sort is exercised too."""
@@ -219,3 +258,64 @@ def test_get_listings_for_release_joins_crawler_site_name(admin_conn):
     listings = db.get_listings_for_release(admin_conn, "r1")
     assert listings["Amazon"]["price"] == 9.99
     assert listings["Amazon"]["condition"] == "VG+"
+
+
+def test_set_plex_match_sets_url_and_timestamp(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+        "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+        "discogs_url": None,
+    })
+    db.upsert_library_item(admin_conn, alice["id"], "r1", in_collection=True)
+    admin_conn.commit()
+
+    db.set_plex_match(admin_conn, alice["id"], "r1", "http://plex.local:32400/web/x")
+    admin_conn.commit()
+    row = admin_conn.execute(
+        "SELECT plex_url, plex_matched_at FROM library_items WHERE user_id = %s AND discogs_id = 'r1'",
+        [alice["id"]],
+    ).fetchone()
+    assert row["plex_url"] == "http://plex.local:32400/web/x"
+    assert row["plex_matched_at"] is not None
+
+
+def test_clear_plex_match_nulls_both_columns(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+        "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+        "discogs_url": None,
+    })
+    db.upsert_library_item(admin_conn, alice["id"], "r1", in_collection=True)
+    db.set_plex_match(admin_conn, alice["id"], "r1", "http://plex.local:32400/web/x")
+    admin_conn.commit()
+
+    db.clear_plex_match(admin_conn, alice["id"], "r1")
+    admin_conn.commit()
+    row = admin_conn.execute(
+        "SELECT plex_url, plex_matched_at FROM library_items WHERE user_id = %s AND discogs_id = 'r1'",
+        [alice["id"]],
+    ).fetchone()
+    assert row["plex_url"] is None
+    assert row["plex_matched_at"] is None
+
+
+def test_get_library_items_for_plex_match_only_returns_in_collection(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r1", "artist": "Miles Davis", "title": "Kind of Blue", "year": None,
+        "label": None, "format": None, "discogs_price": None, "barcode": None,
+        "cover_image_url": None, "discogs_url": None,
+    })
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r2", "artist": "Bill Evans", "title": "Waltz for Debby", "year": None,
+        "label": None, "format": None, "discogs_price": None, "barcode": None,
+        "cover_image_url": None, "discogs_url": None,
+    })
+    db.upsert_library_item(admin_conn, alice["id"], "r1", in_collection=True)
+    db.upsert_library_item(admin_conn, alice["id"], "r2", in_collection=False, in_wishlist=True)
+    admin_conn.commit()
+
+    items = db.get_library_items_for_plex_match(admin_conn, alice["id"])
+    assert items == [{"discogs_id": "r1", "artist": "Miles Davis", "title": "Kind of Blue"}]
