@@ -1003,3 +1003,26 @@ async def test_paced_search_covers_bot_detection_retry_under_one_lock_acquisitio
         result = await manager._paced_search(1, plugin, {}, pages)
     assert result == []
     assert plugin.search.call_count == 2
+
+
+async def test_paced_search_records_backoff_even_when_retry_also_fails():
+    from crawler import BotDetectedError
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    plugin = AsyncMock()
+    plugin.search = AsyncMock(side_effect=[BotDetectedError(), RuntimeError("still blocked")])
+    pages = {1: (MagicMock(), MagicMock())}
+
+    with patch("crawler._reset_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        before = time.monotonic()
+        with pytest.raises(RuntimeError):
+            await manager._paced_search(1, plugin, {}, pages)
+        after = time.monotonic()
+
+    # Even though the call ultimately raised, the next-allowed timestamp
+    # must still have been recorded -- otherwise the next request to this
+    # same site fires immediately with zero backoff.
+    next_allowed = manager._site_next_allowed_at[1]
+    assert next_allowed > before
+    assert next_allowed > after

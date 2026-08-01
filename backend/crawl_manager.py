@@ -116,7 +116,11 @@ class CrawlManager:
         enforcing the minimum inter-request delay and covering the existing
         bot-detection retry -- the lock spans both attempts so a second
         worker can never send a request to this same site in the middle of
-        this site's own bot-detection recovery."""
+        this site's own bot-detection recovery.
+
+        Caller must have already populated pages[crawler_id] (via
+        _new_context) before calling this -- this method does not create
+        pages itself."""
         import random
         import time
         from crawler import _reset_context, BotDetectedError
@@ -133,15 +137,21 @@ class CrawlManager:
 
             context, page = pages[crawler_id]
             try:
-                matches = await plugin.search(release, page)
-            except BotDetectedError:
-                context, page = await _reset_context(context, self._browser, self._stealth, None)
-                pages[crawler_id] = (context, page)
-                matches = await plugin.search(release, page)
-
-            delay = float(load_config().get("crawl_delay_seconds", 30))
-            self._site_next_allowed_at[crawler_id] = time.monotonic() + random.uniform(0.5, 1.0) * delay
-            return matches
+                try:
+                    matches = await plugin.search(release, page)
+                except BotDetectedError:
+                    context, page = await _reset_context(context, self._browser, self._stealth, None)
+                    pages[crawler_id] = (context, page)
+                    matches = await plugin.search(release, page)
+                return matches
+            finally:
+                # Recorded on every exit path, success or exception -- if only
+                # the success path set this, two consecutive failures (e.g. bot
+                # detection on both the initial attempt and the retry) would
+                # leave the next request to this same site free to fire
+                # immediately with zero backoff.
+                delay = float(load_config().get("crawl_delay_seconds", 30))
+                self._site_next_allowed_at[crawler_id] = time.monotonic() + random.uniform(0.5, 1.0) * delay
 
     async def _drain_one_batch(self, worker_id: str, plugins_by_crawler_id: dict, pages: dict, batch_size: int = 5) -> int:
         from crawler import _new_context, _reset_context, BotDetectedError
