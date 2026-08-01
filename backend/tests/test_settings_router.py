@@ -1,3 +1,5 @@
+import socket
+
 import pytest
 
 import db
@@ -76,17 +78,64 @@ def test_patch_crawler_as_admin_flips_enabled(pg_test_db, authed_client_factory)
     assert row["enabled"] is False
 
 
-def test_get_and_post_user_settings(pg_test_db, authed_client_factory):
+def test_get_and_post_user_settings(pg_test_db, authed_client_factory, monkeypatch):
+    with db.get_identity_pool().connection() as conn:
+        conn.execute("SELECT 1")
+    monkeypatch.setattr(
+        socket, "getaddrinfo",
+        lambda host, port, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", port))],
+    )
     with db.get_admin_pool().connection() as conn:
         user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
         conn.commit()
     client = authed_client_factory(user["id"])
     r = client.get("/api/user-settings")
     assert r.status_code == 200
-    assert r.json() == {"anthropic_api_key": "", "recommendation_item_limit": 300}
+    assert r.json() == {
+        "anthropic_api_key": "", "recommendation_item_limit": 300,
+        "plex_base_url": "", "plex_token": "", "plex_match_threshold": 90,
+    }
 
-    r = client.post("/api/user-settings", json={"anthropic_api_key": "sk-abc", "recommendation_item_limit": 100},
-                     headers={"X-Requested-With": "fetch"})
+    r = client.post("/api/user-settings", json={
+        "anthropic_api_key": "sk-abc", "recommendation_item_limit": 100,
+        "plex_base_url": "plex.example.com:32400", "plex_token": "ptok", "plex_match_threshold": 85,
+    }, headers={"X-Requested-With": "fetch"})
     assert r.status_code == 200
     r = client.get("/api/user-settings")
-    assert r.json() == {"anthropic_api_key": "sk-abc", "recommendation_item_limit": 100}
+    assert r.json() == {
+        "anthropic_api_key": "sk-abc", "recommendation_item_limit": 100,
+        "plex_base_url": "plex.example.com:32400", "plex_token": "ptok", "plex_match_threshold": 85,
+    }
+
+
+def test_post_user_settings_rejects_unsafe_plex_address(pg_test_db, authed_client_factory, monkeypatch):
+    with db.get_identity_pool().connection() as conn:
+        conn.execute("SELECT 1")
+    monkeypatch.setattr(
+        socket, "getaddrinfo",
+        lambda host, port, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", port))],
+    )
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    client = authed_client_factory(user["id"])
+    r = client.post("/api/user-settings", json={
+        "anthropic_api_key": "", "recommendation_item_limit": 300,
+        "plex_base_url": "10.0.0.5:32400", "plex_token": "ptok", "plex_match_threshold": 90,
+    }, headers={"X-Requested-With": "fetch"})
+    assert r.status_code == 400
+
+    r = client.get("/api/user-settings")
+    assert r.json()["plex_base_url"] == ""
+
+
+def test_post_user_settings_with_empty_plex_base_url_skips_validation(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    client = authed_client_factory(user["id"])
+    r = client.post("/api/user-settings", json={
+        "anthropic_api_key": "", "recommendation_item_limit": 300,
+        "plex_base_url": "", "plex_token": "", "plex_match_threshold": 90,
+    }, headers={"X-Requested-With": "fetch"})
+    assert r.status_code == 200
