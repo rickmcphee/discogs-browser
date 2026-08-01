@@ -82,10 +82,18 @@ def test_raises_on_out_of_range_port():
         validate_address("http://plex.example.com:99999")
 
 
-def test_raises_on_malformed_hostname(monkeypatch):
+def test_raises_on_resolution_failure_unicode_error(monkeypatch):
+    # UnicodeError from getaddrinfo (e.g., malformed hostname IDNA encoding)
+    # is a subclass of ValueError, caught and wrapped as PlexUnsafeAddressError
     def _boom(*a, **k):
         raise UnicodeError("hostname too long")
 
     monkeypatch.setattr(socket, "getaddrinfo", _boom)
     with pytest.raises(PlexUnsafeAddressError):
         validate_address("http://invalid.example.com:32400")
+
+
+def test_raises_on_malformed_url_parsing():
+    # Malformed IPv6 literal (missing closing bracket) raises ValueError from urlsplit
+    with pytest.raises(PlexUnsafeAddressError):
+        validate_address("http://[::1")
