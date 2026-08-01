@@ -1,6 +1,7 @@
 """Tests for CrawlManager — background task, subscribe/broadcast, stop."""
 import asyncio
 import os
+import time
 import pytest
 import respx
 import httpx
@@ -921,3 +922,84 @@ async def test_start_stock_sync_and_start_judgment_only_run_independently(manage
     stock_event.set()
     judgment_event.set()
     await asyncio.sleep(0.01)
+
+
+async def test_paced_search_serializes_same_site_calls_across_concurrent_invocations():
+    manager = CrawlManager()
+    call_log: list[tuple[str, float]] = []
+
+    async def fake_search(release, page):
+        call_log.append(("start", time.monotonic()))
+        await asyncio.sleep(0.05)
+        call_log.append(("end", time.monotonic()))
+        return []
+
+    plugin = AsyncMock()
+    plugin.search = fake_search
+    pages = {1: (MagicMock(), MagicMock())}
+
+    # Two "concurrent" calls for the SAME crawler_id (1) must not overlap.
+    await asyncio.gather(
+        manager._paced_search(1, plugin, {}, pages),
+        manager._paced_search(1, plugin, {}, pages),
+    )
+    # call_log should read start,end,start,end (serialized), never start,start,end,end.
+    assert [entry[0] for entry in call_log] == ["start", "end", "start", "end"]
+
+
+async def test_paced_search_does_not_serialize_different_sites():
+    manager = CrawlManager()
+    call_log: list[str] = []
+
+    async def make_fake_search(tag):
+        async def fake_search(release, page):
+            call_log.append(f"{tag}-start")
+            await asyncio.sleep(0.05)
+            call_log.append(f"{tag}-end")
+            return []
+        return fake_search
+
+    plugin_a = AsyncMock()
+    plugin_a.search = await make_fake_search("a")
+    plugin_b = AsyncMock()
+    plugin_b.search = await make_fake_search("b")
+    pages = {1: (MagicMock(), MagicMock()), 2: (MagicMock(), MagicMock())}
+
+    await asyncio.gather(
+        manager._paced_search(1, plugin_a, {}, pages),
+        manager._paced_search(2, plugin_b, {}, pages),
+    )
+    # Different crawler_ids run concurrently — both "start"s happen before either "end".
+    assert call_log[0].endswith("start") and call_log[1].endswith("start")
+
+
+async def test_paced_search_sets_next_allowed_at_within_jitter_bounds():
+    from unittest.mock import patch
+    manager = CrawlManager()
+    plugin = AsyncMock()
+    plugin.search = AsyncMock(return_value=[])
+    pages = {1: (MagicMock(), MagicMock())}
+
+    with patch("config.load_config", return_value={"crawl_delay_seconds": 10}):
+        before = time.monotonic()
+        await manager._paced_search(1, plugin, {}, pages)
+        after = time.monotonic()
+
+    next_allowed = manager._site_next_allowed_at[1]
+    assert before + 5.0 <= next_allowed <= after + 10.0
+
+
+async def test_paced_search_covers_bot_detection_retry_under_one_lock_acquisition():
+    from crawler import BotDetectedError
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    plugin = AsyncMock()
+    plugin.search = AsyncMock(side_effect=[BotDetectedError(), []])
+    pages = {1: (MagicMock(), MagicMock())}
+
+    with patch("crawler._reset_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        # Must not raise -- the retry succeeds under the same _paced_search call.
+        result = await manager._paced_search(1, plugin, {}, pages)
+    assert result == []
+    assert plugin.search.call_count == 2

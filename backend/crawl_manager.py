@@ -17,6 +17,8 @@ class CrawlManager:
         self._subscribers: list[asyncio.Queue] = []
         self._recent: list[dict] = []
         self._seq = 0
+        self._site_locks: dict[int, asyncio.Lock] = {}
+        self._site_next_allowed_at: dict[int, float] = {}
 
     @property
     def any_job_running(self) -> bool:
@@ -108,6 +110,38 @@ class CrawlManager:
         finally:
             for context, _page in pages.values():
                 await context.close()
+
+    async def _paced_search(self, crawler_id: int, plugin, release: dict, pages: dict) -> list:
+        """Runs plugin.search() for one crawler_id under that site's lock,
+        enforcing the minimum inter-request delay and covering the existing
+        bot-detection retry -- the lock spans both attempts so a second
+        worker can never send a request to this same site in the middle of
+        this site's own bot-detection recovery."""
+        import random
+        import time
+        from crawler import _reset_context, BotDetectedError
+        from config import load_config
+
+        if crawler_id not in self._site_locks:
+            self._site_locks[crawler_id] = asyncio.Lock()
+
+        async with self._site_locks[crawler_id]:
+            next_allowed = self._site_next_allowed_at.get(crawler_id, 0.0)
+            now = time.monotonic()
+            if now < next_allowed:
+                await asyncio.sleep(next_allowed - now)
+
+            context, page = pages[crawler_id]
+            try:
+                matches = await plugin.search(release, page)
+            except BotDetectedError:
+                context, page = await _reset_context(context, self._browser, self._stealth, None)
+                pages[crawler_id] = (context, page)
+                matches = await plugin.search(release, page)
+
+            delay = float(load_config().get("crawl_delay_seconds", 30))
+            self._site_next_allowed_at[crawler_id] = time.monotonic() + random.uniform(0.5, 1.0) * delay
+            return matches
 
     async def _drain_one_batch(self, worker_id: str, plugins_by_crawler_id: dict, pages: dict, batch_size: int = 5) -> int:
         from crawler import _new_context, _reset_context, BotDetectedError
