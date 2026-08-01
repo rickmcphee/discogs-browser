@@ -1,5 +1,4 @@
 import os
-import sqlite3
 from datetime import datetime, timedelta
 
 import pytest
@@ -33,20 +32,6 @@ def pg_test_db(monkeypatch):
         if pool is not None:
             pool.close()
         setattr(db_module, attr, None)
-
-
-@pytest.fixture
-def conn(tmp_config_dir):
-    import db as db_module
-    from db import init_db
-    c = sqlite3.connect(":memory:")
-    c.row_factory = sqlite3.Row
-    c.execute("PRAGMA foreign_keys = ON")
-    db_module._local.conn = c
-    init_db(c)
-    yield c
-    db_module._local.conn = None
-    c.close()
 
 
 @pytest.fixture
