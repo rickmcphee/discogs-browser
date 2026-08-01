@@ -2,6 +2,26 @@
 
 **Date:** 2026-08-01
 
+**Amendment (2026-08-01, during grounding for the implementation plan):** the
+original text below described validating a resolved IP and then connecting
+*directly to that IP* (with the hostname preserved only in a `Host` header), to
+eliminate the DNS-rebinding TOCTOU gap outright. That breaks `https://` Plex
+addresses: TLS certificate validation and the SNI extension both need the
+*hostname*, not a raw IP, to work, and Plex's own "Remote Access" reachability
+feature — the mechanism this whole plan exists to support — is typically
+`https://`. A fully correct fix exists (a custom low-level transport that
+resolves/validates the IP itself but still hands the original hostname to the
+TLS layer for SNI/cert checks), but it means coding against `httpx`'s internal
+`httpcore` transport API rather than its public surface — disproportionate for
+an app with a small, invited user base rather than a large public attack
+surface. Decided instead: validate immediately before each call, then let
+`httpx` connect normally by hostname, so TLS/SNI/cert behavior for `https` is
+unaffected. This narrows the DNS-rebinding window to the moment between our
+check and httpx's own resolution, rather than eliminating it — an accepted,
+explicitly documented residual risk rather than a silently dropped one. The
+"Decisions" and "SSRF validation" sections below describe this corrected
+design directly, not the original IP-pinning one.
+
 ## Overview
 
 This is decomposition item 4 of the multi-tenant migration (see
@@ -34,10 +54,12 @@ The schema this depends on already shipped in PR #30 (`multi-tenant-architecture
   internal network addresses (cloud metadata endpoints, other services on the
   hosting network, loopback) — the SSRF vector introduced by the pivot to
   multi-tenancy.
-- The address-safety check cannot be bypassed by DNS rebinding (a hostname that
-  resolves to a public IP when saved but a private IP at request time) or by an
-  HTTP redirect (a public IP that redirects to a private one after the check
-  passes).
+- The address-safety check cannot be bypassed by an HTTP redirect (a public IP
+  that redirects to a private one after the check passes), and is re-run
+  immediately before every outbound call rather than once at save time, so a
+  hostname that resolves to a public IP when saved but a private IP later
+  (DNS rebinding) is caught on the very next sync — see the amendment above
+  for why this narrows rather than fully eliminates the rebinding window.
 
 **Non-goals** (carried over from the original spec, and one new one)
 - Any UI treatment for a low-confidence or ambiguous match.
@@ -54,18 +76,21 @@ The schema this depends on already shipped in PR #30 (`multi-tenant-architecture
 
 ## Decisions
 
-**Resolve-and-connect-to-validated-IP, not resolve-then-let-httpx-re-resolve.**
-The straightforward approach — call `socket.getaddrinfo` ourselves, check the
-result, then call `httpx.get(hostname)` normally — still has a TOCTOU gap: httpx
-performs its *own*, separate DNS resolution when it actually connects, which is
-not guaranteed to return the same address just validated. This does not fully
-close the DNS-rebinding gap the architecture spec calls out. Instead: resolve the
-configured host ourselves, validate every resolved address, then issue the
-request directly against the validated IP (with the original hostname preserved
-in the `Host` header) so the address that gets validated is, by construction, the
-address that gets connected to. This is more code than a pre-flight check, but
-it's the only version of "re-validate on every use" that actually eliminates the
-rebinding window rather than just narrowing it.
+**Resolve-and-validate immediately before each call, then let `httpx` connect
+normally by hostname.** Pinning the connection to a pre-validated IP (bypassing
+`httpx`'s own resolution entirely) would close the DNS-rebinding gap outright,
+but it breaks `https://` addresses — TLS certificate validation and SNI both
+need the hostname, not a raw IP, and Plex's own "Remote Access" reachability
+feature is typically `https://` (see the amendment at the top of this document).
+Instead: resolve the configured host ourselves via `socket.getaddrinfo`,
+validate every resolved address, and if all are safe, call `httpx.get()`
+normally against the original URL — `httpx` performs its own separate
+resolution when it actually connects, which narrows this to a small race window
+(our check and httpx's own lookup happening back-to-back) rather than the full
+"safe at save time, unsafe by the time it's used minutes or days later" gap.
+Given this app's realistic threat model — a small number of invited users, not
+a large public attack surface — that narrowed window is an acceptable,
+explicitly documented trade-off against the complexity of a custom transport.
 
 **Reject via `ipaddress.ip_address(ip).is_global`, not a hand-rolled range list.**
 The architecture spec describes the mitigation in terms of specific ranges
@@ -117,30 +142,27 @@ row in an existing section, not a new abstraction.
 New module `backend/plex_security.py`:
 
 ```python
-def validate_and_resolve(base_url: str) -> ResolvedTarget: ...
-    # raises PlexUnsafeAddressError if the address is unsafe
-    # ResolvedTarget carries: scheme, hostname (for the Host header),
-    # validated ip, port, and a helper to build the request URL against
-    # the IP directly (e.g. "http://203.0.113.5:32400/...")
+def validate_address(base_url: str) -> None: ...
+    # raises PlexUnsafeAddressError if the address is unsafe; returns
+    # nothing otherwise -- callers proceed to make their own httpx call
+    # against base_url exactly as before, unmodified
 
 class PlexUnsafeAddressError(Exception): ...
 ```
 
-`validate_and_resolve`:
+`validate_address`:
 1. Parses `base_url` (defaulting to `http://` if no scheme is present, matching
    `plex.py`'s existing `_base()` helper). Rejects any scheme other than `http`/`https`.
 2. Resolves the hostname via `socket.getaddrinfo` (all returned addresses, not just
    the first — a multi-A-record host is unsafe if *any* resolved address is
-   non-global, since nothing guarantees which one the connection actually uses).
+   non-global, since nothing guarantees which one `httpx`'s own later resolution
+   picks).
 3. Rejects if any resolved address fails `ipaddress.ip_address(ip).is_global`.
-4. Returns a `ResolvedTarget` carrying one validated IP to connect to and the
-   original hostname to send as the `Host` header — used to build the
-   IP-addressed request URL.
 
 `plex.py`'s three functions (`get_music_section_key`, `fetch_albums`,
-`get_machine_identifier`) each call `validate_and_resolve` immediately before their
-`httpx.get`, build the request against the returned IP with an explicit `Host`
-header for the original hostname, and pass `follow_redirects=False`. A
+`get_machine_identifier`) each call `validate_address` immediately before their
+existing `httpx.get` call (otherwise unchanged — same hostname-based URL, normal
+`httpx`-managed TLS/SNI/cert verification), and add `follow_redirects=False`. A
 `PlexUnsafeAddressError` propagates like any other request failure — callers
 (`_run_plex_match`, the settings-save validator) treat it as "this address didn't
 work," with no distinction surfaced to the caller between "unreachable" and
@@ -193,7 +215,7 @@ personal, one server per user, same as Anthropic API key.
   `plex_match_threshold: int` (default 90) in its response, read off the `users`
   row already queried.
 - `POST /api/user-settings` gains the same three fields on `UserSettingsUpdate`.
-  Before saving, runs `plex_security.validate_and_resolve(plex_base_url)` if
+  Before saving, runs `plex_security.validate_address(plex_base_url)` if
   `plex_base_url` is non-empty; a `PlexUnsafeAddressError` becomes a 400 with a
   generic message (see Error handling) and the save is rejected — the existing
   fields on the same request are not partially saved.
@@ -260,15 +282,19 @@ Unchanged from the original spec except for one new case:
 
 ## Testing
 
-- **`plex_security.validate_and_resolve`**: accepts a public IP/hostname; rejects
+- **`plex_security.validate_address`**: accepts a public IP/hostname; rejects
   loopback (`127.0.0.1`, `::1`), RFC1918 ranges, link-local (`169.254.0.0/16`,
   including the cloud metadata IP `169.254.169.254`), IPv6 unique-local
   (`fc00::/7`); rejects a non-http(s) scheme; rejects when *any* of several
   resolved addresses for one hostname is non-global, not just the first.
 - **DNS-rebinding regression**: mock `socket.getaddrinfo` to return a public IP on
-  the first call and a private IP on a second call for the same hostname within
-  one test — assert the second (use-time) call is independently rejected, proving
-  save-time validation alone would have missed it.
+  the first call and a private IP on a second call for the same hostname across
+  two separate calls to `validate_address` — assert the second (use-time) call is
+  independently rejected, proving save-time validation alone would have missed
+  it. This proves the mitigation the design actually provides (re-validation on
+  every use catches a hostname that changed since it was saved); it does not
+  and cannot prove closure of the tighter, sub-request-scoped race the amendment
+  above documents as an accepted residual risk.
 - **Redirect handling**: a mocked 302 response from the Plex host is treated as a
   failure, not followed — `follow_redirects=False` is asserted via the actual
   request call, not just documented.
@@ -312,9 +338,10 @@ multi-library-section support), plus:
 - After a user configures both fields and syncs, their releases matching an album
   in *their* Plex library show a working hyperlink; another user's releases are
   never affected by this user's Plex configuration or sync.
-- Pointing `plex_base_url` at a private/loopback/link-local/metadata address —
-  whether at save time or via a rebinding hostname discovered only at sync
-  time — never results in an outbound request from the backend to that address.
+- Pointing `plex_base_url` at a private/loopback/link-local/metadata address is
+  rejected at save time, and a hostname that resolves safely at save time but
+  unsafely by the next sync is rejected then, on the very next use — not
+  silently accepted for the sync's duration.
 - A redirect response from the configured address is never followed.
 - Removing a previously-matched album from Plex results in the next sync clearing
   that release's link, for that user only.
