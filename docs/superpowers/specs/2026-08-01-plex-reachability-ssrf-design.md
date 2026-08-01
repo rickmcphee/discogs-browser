@@ -97,9 +97,11 @@ The architecture spec describes the mitigation in terms of specific ranges
 (RFC1918, `169.254.0.0/16`, `::1`). Implementing that as a literal list of CIDR
 checks is easy to get subtly wrong (IPv4-mapped IPv6 addresses, unique-local IPv6
 `fc00::/7`, `0.0.0.0/8`, multicast). Python's `ipaddress` module already
-encapsulates all of this correctly behind one property. A resolved address is
-allowed only if `is_global` is true for all of it; anything else — private,
-loopback, link-local, reserved, multicast, unspecified — is rejected.
+encapsulates most of this correctly. A resolved address is allowed only if
+`is_global` is true AND `is_multicast` is false; anything else — private,
+loopback, link-local, reserved, multicast, unspecified — is rejected. (Note:
+`is_global` alone does not exclude multicast; an explicit `not is_multicast`
+check is needed.)
 
 **No redirect-following on any Plex API call.** Per the redirect-handling
 decision: `httpx` calls in `plex.py` use `follow_redirects=False`. Any 3xx
@@ -157,7 +159,8 @@ class PlexUnsafeAddressError(Exception): ...
    the first — a multi-A-record host is unsafe if *any* resolved address is
    non-global, since nothing guarantees which one `httpx`'s own later resolution
    picks).
-3. Rejects if any resolved address fails `ipaddress.ip_address(ip).is_global`.
+3. Rejects if any resolved address fails `ipaddress.ip_address(ip).is_global` or is
+   multicast (`ipaddress.ip_address(ip).is_multicast`).
 
 `plex.py`'s three functions (`get_music_section_key`, `fetch_albums`,
 `get_machine_identifier`) each call `validate_address` immediately before their
@@ -285,8 +288,9 @@ Unchanged from the original spec except for one new case:
 - **`plex_security.validate_address`**: accepts a public IP/hostname; rejects
   loopback (`127.0.0.1`, `::1`), RFC1918 ranges, link-local (`169.254.0.0/16`,
   including the cloud metadata IP `169.254.169.254`), IPv6 unique-local
-  (`fc00::/7`); rejects a non-http(s) scheme; rejects when *any* of several
-  resolved addresses for one hostname is non-global, not just the first.
+  (`fc00::/7`), multicast; rejects a non-http(s) scheme; rejects when *any* of several
+  resolved addresses for one hostname is non-global, not just the first; rejects
+  out-of-range port numbers and malformed hostnames.
 - **DNS-rebinding regression**: mock `socket.getaddrinfo` to return a public IP on
   the first call and a private IP on a second call for the same hostname across
   two separate calls to `validate_address` — assert the second (use-time) call is

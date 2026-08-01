@@ -69,3 +69,23 @@ def test_raises_when_hostname_does_not_resolve(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", _boom)
     with pytest.raises(PlexUnsafeAddressError):
         validate_address("http://nonexistent.invalid:32400")
+
+
+def test_rejects_multicast_address(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: _fake_addrinfo("224.0.0.1"))
+    with pytest.raises(PlexUnsafeAddressError):
+        validate_address("http://multicast.example.com:32400")
+
+
+def test_raises_on_out_of_range_port():
+    with pytest.raises(PlexUnsafeAddressError):
+        validate_address("http://plex.example.com:99999")
+
+
+def test_raises_on_malformed_hostname(monkeypatch):
+    def _boom(*a, **k):
+        raise UnicodeError("hostname too long")
+
+    monkeypatch.setattr(socket, "getaddrinfo", _boom)
+    with pytest.raises(PlexUnsafeAddressError):
+        validate_address("http://invalid.example.com:32400")

@@ -20,14 +20,17 @@ def validate_address(base_url: str) -> None:
     hostname = parts.hostname
     if not hostname:
         raise PlexUnsafeAddressError("No hostname in address")
-    port = parts.port or (443 if parts.scheme == "https" else 80)
 
     try:
+        port = parts.port or (443 if parts.scheme == "https" else 80)
         addrinfo = socket.getaddrinfo(hostname, port, proto=socket.IPPROTO_TCP)
-    except socket.gaierror as e:
+    except ValueError as e:
+        raise PlexUnsafeAddressError(f"Invalid port: {e}") from e
+    except (socket.gaierror, UnicodeError) as e:
         raise PlexUnsafeAddressError(f"Could not resolve host: {e}") from e
 
     for info in addrinfo:
         ip = info[4][0]
-        if not ipaddress.ip_address(ip).is_global:
+        addr = ipaddress.ip_address(ip)
+        if not addr.is_global or addr.is_multicast:
             raise PlexUnsafeAddressError(f"Address resolves to a non-public range: {ip}")

@@ -183,9 +183,12 @@ Add this autouse fixture right after the imports, before the first test — it s
 ```python
 @pytest.fixture(autouse=True)
 def _mock_dns(monkeypatch):
+    # 8.8.8.8, not a documentation/example address like 203.0.113.5 (RFC 5737
+    # TEST-NET-3) -- Python's ipaddress module correctly treats TEST-NET
+    # ranges as non-global, so a "safe" mock IP must be a real public one.
     monkeypatch.setattr(
         socket, "getaddrinfo",
-        lambda host, port, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("203.0.113.5", port))],
+        lambda host, port, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", port))],
     )
 ```
 
@@ -237,7 +240,7 @@ def test_get_machine_identifier_rejects_private_address_before_any_request(monke
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `cd backend && pytest tests/test_plex.py -v`
-Expected: the four new tests FAIL (no validation happens yet, so no `PlexUnsafeAddressError` is raised and the redirect is followed instead of failing); all pre-existing tests in the file still PASS (the autouse fixture doesn't change their behavior, since `203.0.113.5` is a public IP).
+Expected: the four new tests FAIL (no validation happens yet, so no `PlexUnsafeAddressError` is raised and the redirect is followed instead of failing); all pre-existing tests in the file still PASS (the autouse fixture doesn't change their behavior, since `8.8.8.8` is a public IP).
 
 - [ ] **Step 3: Rewrite `backend/plex.py`'s request functions**
 
@@ -539,7 +542,7 @@ Replace the existing `test_get_and_post_user_settings` with:
 def test_get_and_post_user_settings(pg_test_db, authed_client_factory, monkeypatch):
     monkeypatch.setattr(
         socket, "getaddrinfo",
-        lambda host, port, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("203.0.113.5", port))],
+        lambda host, port, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", port))],
     )
     with db.get_admin_pool().connection() as conn:
         user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
