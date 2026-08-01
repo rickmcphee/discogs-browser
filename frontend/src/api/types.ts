@@ -39,8 +39,6 @@ export interface Crawler {
 }
 
 export interface Settings {
-  debug_screenshot_interval: number
-  shuffle_crawl_order: boolean
   crawl_delay_seconds: number
   consecutive_failure_limit: number
   crawl_schedule?: string

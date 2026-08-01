@@ -26,12 +26,6 @@ const CRAWLER_SETTING_ROWS: SettingRow[] = [
     placeholder: 'your Cert ID',
   },
   {
-    key: 'debug_screenshot_interval',
-    label: 'Screenshot interval',
-    description: '0 = off · 1 = every search · N = every Nth. First search always captured when > 0.',
-    type: 'number',
-  },
-  {
     key: 'crawl_delay_seconds',
     label: 'Crawl delay',
     description: 'Max seconds to wait between requests during bulk crawl. Actual wait is 50–100% of this value. Single-item refreshes always use a short delay.',
@@ -40,14 +34,8 @@ const CRAWLER_SETTING_ROWS: SettingRow[] = [
   {
     key: 'consecutive_failure_limit',
     label: 'Failure limit',
-    description: 'Stop bulk crawl after this many consecutive failures (not_found or error). Only active when shuffle is on. 0 = disabled.',
+    description: 'Pause crawling a site for 30 minutes after this many consecutive failures (not_found or error) in a row. 0 = disabled.',
     type: 'number',
-  },
-  {
-    key: 'shuffle_crawl_order',
-    label: 'Shuffle',
-    description: 'Randomize the order records are crawled. Reduces bot detection patterns.',
-    type: 'boolean',
   },
 ]
 
@@ -65,8 +53,6 @@ interface Props {
 
 function Settings({ crawlers, onCrawlersChange, onRefreshCollection, onRefreshPrices, onRefreshStock, onRefreshRecommendations, onExportRecommendations, onClearRecommendations, hasJudgedItems }: Props) {
   const [settings, setSettings] = useState<SettingsType>({
-    debug_screenshot_interval: 20,
-    shuffle_crawl_order: true,
     crawl_delay_seconds: 30,
     consecutive_failure_limit: 10,
     crawl_schedule: '',
