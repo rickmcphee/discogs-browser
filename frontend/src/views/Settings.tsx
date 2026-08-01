@@ -6,7 +6,7 @@ interface SettingRow {
   key: keyof SettingsType
   label: string
   description: string
-  type: 'password' | 'text' | 'number' | 'boolean'
+  type: 'password' | 'text' | 'number'
   placeholder?: string
 }
 
@@ -74,18 +74,7 @@ function Settings({ crawlers, onCrawlersChange, onRefreshCollection, onRefreshPr
           {row.label}
         </td>
         <td className={`py-3 pr-4 text-left align-top${first ? ' w-64' : ''}`}>
-          {row.type === 'boolean' ? (
-            <button
-              onClick={() => setSettings({ ...settings, [row.key]: !settings[row.key] })}
-              className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
-                settings[row.key]
-                  ? 'bg-green-700 hover:bg-green-600 text-white'
-                  : 'bg-gray-700 hover:bg-gray-600 text-gray-400'
-              }`}
-            >
-              {settings[row.key] ? 'On' : 'Off'}
-            </button>
-          ) : row.type === 'number' ? (
+          {row.type === 'number' ? (
             <input
               type="number"
               min={0}
