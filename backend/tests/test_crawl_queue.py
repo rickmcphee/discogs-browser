@@ -103,6 +103,29 @@ def test_enqueue_crawl_queue_leaves_in_progress_row_untouched(admin_conn):
     assert rows[0]["claimed_by"] == "worker-1"
 
 
+def test_claim_crawl_queue_batch_excludes_specified_crawler_ids(admin_conn):
+    crawler_a = _make_catalog_and_crawler(admin_conn, "r1", site_name="Amazon")
+    crawler_b = _make_catalog_and_crawler(admin_conn, "r2", site_name="Discogs Marketplace")
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1", crawler_a)
+    db.enqueue_crawl_queue(admin_conn, "r2", crawler_b)
+    admin_conn.commit()
+
+    claimed = db.claim_crawl_queue_batch(admin_conn, "worker-1", limit=10, excluded_crawler_ids=[crawler_a])
+    assert len(claimed) == 1
+    assert claimed[0]["crawler_id"] == crawler_b
+
+
+def test_claim_crawl_queue_batch_with_no_exclusions_behaves_as_before(admin_conn):
+    crawler_id = _make_catalog_and_crawler(admin_conn, "r1")
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1", crawler_id)
+    admin_conn.commit()
+
+    claimed = db.claim_crawl_queue_batch(admin_conn, "worker-1", limit=10, excluded_crawler_ids=[])
+    assert len(claimed) == 1
+
+
 def test_count_pending_crawl_queue_for_user_only_counts_their_library(admin_conn):
     alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
     bob = db.create_user(admin_conn, discogs_user_id=2, discogs_username="bob")

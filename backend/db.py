@@ -613,20 +613,27 @@ def enqueue_crawl_queue(conn, discogs_id: str, crawler_id: int):
 # crashed -- a crash rolls back the open transaction and self-heals). A
 # hung worker holding the transaction open leaves that row unclaimable by
 # anyone else indefinitely.
-def claim_crawl_queue_batch(conn, worker_id: str, limit: int) -> list[dict]:
+def claim_crawl_queue_batch(
+    conn, worker_id: str, limit: int, excluded_crawler_ids: Optional[list] = None
+) -> list[dict]:
+    exclusion_clause = ""
+    params: dict = {"worker_id": worker_id, "limit": limit}
+    if excluded_crawler_ids:
+        exclusion_clause = "AND crawler_id != ALL(%(excluded)s)"
+        params["excluded"] = list(excluded_crawler_ids)
     return conn.execute(
-        """
+        f"""
         UPDATE crawl_queue SET status = 'in_progress', claimed_by = %(worker_id)s, claimed_at = CURRENT_TIMESTAMP
         WHERE id IN (
             SELECT id FROM crawl_queue
-            WHERE status = 'pending'
+            WHERE status = 'pending' {exclusion_clause}
             ORDER BY requested_at
             LIMIT %(limit)s
             FOR UPDATE SKIP LOCKED
         )
         RETURNING id, discogs_id, crawler_id
         """,
-        {"worker_id": worker_id, "limit": limit},
+        params,
     ).fetchall()
 
 
