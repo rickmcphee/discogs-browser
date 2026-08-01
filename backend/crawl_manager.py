@@ -135,12 +135,19 @@ class CrawlManager:
                 crawler_id, count,
             )
 
-    async def _paced_search(self, crawler_id: int, plugin, release: dict, pages: dict) -> list:
+    async def _paced_search(self, crawler_id: int, plugin, release: dict, pages: dict) -> tuple:
         """Runs plugin.search() for one crawler_id under that site's lock,
         enforcing the minimum inter-request delay and covering the existing
         bot-detection retry -- the lock spans both attempts so a second
         worker can never send a request to this same site in the middle of
         this site's own bot-detection recovery.
+
+        Returns (matches, bot_detected). bot_detected is True when the first
+        attempt hit a bot interstitial and was retried after a context reset,
+        and the caller must count that as a circuit-breaker failure even when
+        the retry then succeeded: repeated bot detection on one site is the
+        signal to back off from that site entirely, not something a
+        successful retry should paper over by resetting the counter.
 
         Caller must have already populated pages[crawler_id] (via
         _new_context) before calling this -- this method does not create
@@ -160,14 +167,16 @@ class CrawlManager:
                 await asyncio.sleep(next_allowed - now)
 
             context, page = pages[crawler_id]
+            bot_detected = False
             try:
                 try:
                     matches = await plugin.search(release, page)
                 except BotDetectedError:
+                    bot_detected = True
                     context, page = await _reset_context(context, self._browser, self._stealth, None)
                     pages[crawler_id] = (context, page)
                     matches = await plugin.search(release, page)
-                return matches
+                return matches, bot_detected
             finally:
                 # Recorded on every exit path, success or exception -- if only
                 # the success path set this, two consecutive failures (e.g. bot
@@ -212,7 +221,7 @@ class CrawlManager:
                 pages[row["crawler_id"]] = await _new_context(self._browser, self._stealth)
 
             try:
-                matches = await self._paced_search(row["crawler_id"], plugin, release, pages)
+                matches, bot_detected = await self._paced_search(row["crawler_id"], plugin, release, pages)
             except Exception as e:
                 log.error("[%s] Crawl failed for %s: %s", plugin._db_site_name, row["discogs_id"], e)
                 self._record_site_result(row["crawler_id"], succeeded=False)
@@ -221,7 +230,7 @@ class CrawlManager:
                     conn.commit()
                 continue
 
-            self._record_site_result(row["crawler_id"], succeeded=bool(matches))
+            self._record_site_result(row["crawler_id"], succeeded=bool(matches) and not bot_detected)
 
             with get_app_pool().connection() as conn:
                 if matches:

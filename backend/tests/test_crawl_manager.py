@@ -448,6 +448,52 @@ async def test_drain_one_batch_resets_failure_count_on_success(pg_schema):
     assert manager._site_consecutive_failures[crawler_id] == 0
 
 
+async def test_drain_one_batch_counts_recovered_bot_detection_as_a_failure(pg_schema):
+    """A bot interstitial whose post-context-reset retry succeeds must still
+    count against the circuit breaker -- otherwise a site that walls every
+    request but yields to each retry keeps resetting the counter to 0 and the
+    breaker never trips, which is precisely the IP-ban scenario it exists to
+    prevent."""
+    from crawler import BotDetectedError
+
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1", crawler_id)
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    manager._site_consecutive_failures[crawler_id] = 4
+    fake_plugin = AsyncMock()
+    # First attempt walls, retry after the context reset finds a real match.
+    fake_plugin.search = AsyncMock(side_effect=[
+        BotDetectedError(),
+        [{"url": "https://x", "price": 9.99, "shipping": None, "currency": "USD", "condition": None}],
+    ])
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("crawler._reset_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("config.load_config", return_value={"crawl_delay_seconds": 0, "consecutive_failure_limit": 10}):
+        await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    assert manager._site_consecutive_failures[crawler_id] == 5
+    # The listing still gets written -- the retry's match is real data.
+    with db.get_admin_pool().connection() as conn:
+        listing = conn.execute(
+            "SELECT price FROM listings WHERE release_id = 'r1' AND crawler_id = %s", [crawler_id]
+        ).fetchone()
+    assert listing is not None and float(listing["price"]) == 9.99
+
+
 # ---------------------------------------------------------------------------
 # stock sync task
 # ---------------------------------------------------------------------------
@@ -1078,8 +1124,9 @@ async def test_paced_search_covers_bot_detection_retry_under_one_lock_acquisitio
 
     with patch("crawler._reset_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
         # Must not raise -- the retry succeeds under the same _paced_search call.
-        result = await manager._paced_search(1, plugin, {}, pages)
-    assert result == []
+        matches, bot_detected = await manager._paced_search(1, plugin, {}, pages)
+    assert matches == []
+    assert bot_detected is True
     assert plugin.search.call_count == 2
 
 
