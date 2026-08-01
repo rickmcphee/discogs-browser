@@ -3,6 +3,8 @@ from typing import Optional
 import httpx
 from rapidfuzz import fuzz
 
+from plex_security import PlexUnsafeAddressError, validate_address
+
 _SUFFIX_RE = re.compile(r"\s*\([^)]*\)\s*$")
 
 # httpx's default timeout is 5s; fetching a whole library's metadata over LAN
@@ -19,6 +21,18 @@ def _headers(token: str) -> dict:
     return {"X-Plex-Token": token, "Accept": "application/json"}
 
 
+def _get(base_url: str, path: str, token: str, params: Optional[dict] = None) -> httpx.Response:
+    validate_address(base_url)
+    r = httpx.get(
+        f"{_base(base_url)}{path}", params=params, headers=_headers(token),
+        timeout=_TIMEOUT, follow_redirects=False,
+    )
+    if r.is_redirect:
+        raise PlexUnsafeAddressError(f"Unexpected redirect from Plex server: {r.status_code}")
+    r.raise_for_status()
+    return r
+
+
 def normalize(value: str) -> str:
     result = value.strip().lower()
     while True:
@@ -32,8 +46,7 @@ def normalize(value: str) -> str:
 
 
 def get_music_section_key(base_url: str, token: str) -> Optional[str]:
-    r = httpx.get(f"{_base(base_url)}/library/sections", headers=_headers(token), timeout=_TIMEOUT)
-    r.raise_for_status()
+    r = _get(base_url, "/library/sections", token)
     for section in r.json()["MediaContainer"].get("Directory", []):
         if section.get("type") == "artist":
             return section["key"]
@@ -41,13 +54,7 @@ def get_music_section_key(base_url: str, token: str) -> Optional[str]:
 
 
 def fetch_albums(base_url: str, token: str, section_key: str) -> list:
-    r = httpx.get(
-        f"{_base(base_url)}/library/sections/{section_key}/all",
-        params={"type": 9},
-        headers=_headers(token),
-        timeout=_TIMEOUT,
-    )
-    r.raise_for_status()
+    r = _get(base_url, f"/library/sections/{section_key}/all", token, params={"type": 9})
     return [
         {
             "artist": item.get("parentTitle", ""),
@@ -59,8 +66,7 @@ def fetch_albums(base_url: str, token: str, section_key: str) -> list:
 
 
 def get_machine_identifier(base_url: str, token: str) -> str:
-    r = httpx.get(f"{_base(base_url)}/", headers=_headers(token), timeout=_TIMEOUT)
-    r.raise_for_status()
+    r = _get(base_url, "/", token)
     return r.json()["MediaContainer"]["machineIdentifier"]
 
 
