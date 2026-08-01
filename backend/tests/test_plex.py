@@ -162,7 +162,7 @@ def test_get_music_section_key_treats_redirect_as_failure_not_followed():
     respx.get("http://plex.local:32400/library/sections").mock(
         return_value=httpx.Response(302, headers={"Location": "http://169.254.169.254/"})
     )
-    with pytest.raises(Exception):
+    with pytest.raises(PlexUnsafeAddressError):
         get_music_section_key("plex.local:32400", "tok")
 
 
