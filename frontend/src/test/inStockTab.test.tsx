@@ -133,6 +133,7 @@ describe('In Stock tab', () => {
         screen.getByText(/In-stock sync stopped: Too many consecutive rate-limited catalog sites \(Run For Cover, Equal Vision\)/)
       ).toBeInTheDocument()
     )
+    expect(screen.getByRole('button', { name: /Dismiss/i })).toBeInTheDocument()
   })
 
   it('does not resurrect a dismissed in-stock sync message when a refresh replays the same buffered event', async () => {
