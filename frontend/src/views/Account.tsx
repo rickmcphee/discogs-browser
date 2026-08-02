@@ -18,6 +18,8 @@ function Account({
   onToggleViewAsUser = () => {},
 }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const skipNextAutoSave = useRef(true)
+  const saveChainRef = useRef<Promise<void>>(Promise.resolve())
   const [avatarError, setAvatarError] = useState('')
   const [avatarBusy, setAvatarBusy] = useState(false)
   const [anthropicApiKey, setAnthropicApiKey] = useState('')
@@ -25,9 +27,11 @@ function Account({
   const [plexBaseUrl, setPlexBaseUrl] = useState('')
   const [plexToken, setPlexToken] = useState('')
   const [plexMatchThreshold, setPlexMatchThreshold] = useState(90)
-  const [userSettingsSaving, setUserSettingsSaving] = useState(false)
-  const [userSettingsSaved, setUserSettingsSaved] = useState(false)
   const [plexSaveError, setPlexSaveError] = useState('')
+  // Value never read — its only job is forcing the debounce effect below to
+  // re-run once settings load, even when the fetched values equal the
+  // useState defaults above and React would otherwise bail out of re-rendering.
+  const [settingsLoaded, setSettingsLoaded] = useState(false)
 
   useEffect(() => {
     getUserSettings().then((s) => {
@@ -36,35 +40,46 @@ function Account({
       setPlexBaseUrl(s.plex_base_url)
       setPlexToken(s.plex_token)
       setPlexMatchThreshold(s.plex_match_threshold)
+      skipNextAutoSave.current = true
+      setSettingsLoaded(true)
     }).catch(() => {})
   }, [])
 
-  async function handleSaveUserSettings() {
-    setUserSettingsSaving(true)
-    setPlexSaveError('')
-    try {
-      await saveUserSettings({
-        anthropic_api_key: anthropicApiKey,
-        recommendation_item_limit: recommendationItemLimit,
-        plex_base_url: plexBaseUrl,
-        plex_token: plexToken,
-        plex_match_threshold: plexMatchThreshold,
-      })
-      setUserSettingsSaved(true)
-      setTimeout(() => setUserSettingsSaved(false), 2000)
-    } catch (err: any) {
-      let message = err.message || 'Save failed'
+  function saveUserSettingsNow() {
+    saveChainRef.current = saveChainRef.current.then(async () => {
+      setPlexSaveError('')
       try {
-        const parsed = JSON.parse(err.message)
-        if (parsed.detail) message = parsed.detail
-      } catch {
-        // not JSON, use raw message
+        await saveUserSettings({
+          anthropic_api_key: anthropicApiKey,
+          recommendation_item_limit: recommendationItemLimit,
+          plex_base_url: plexBaseUrl,
+          plex_token: plexToken,
+          plex_match_threshold: plexMatchThreshold,
+        })
+      } catch (err: any) {
+        let message = err.message || 'Save failed'
+        try {
+          const parsed = JSON.parse(err.message)
+          if (parsed.detail) message = parsed.detail
+        } catch {
+          // not JSON, use raw message
+        }
+        setPlexSaveError(message)
       }
-      setPlexSaveError(message)
-    } finally {
-      setUserSettingsSaving(false)
-    }
+    })
   }
+
+  useEffect(() => {
+    if (skipNextAutoSave.current) {
+      skipNextAutoSave.current = false
+      return
+    }
+    setPlexSaveError('')
+    const timer = setTimeout(() => {
+      saveUserSettingsNow()
+    }, 800)
+    return () => clearTimeout(timer)
+  }, [anthropicApiKey, recommendationItemLimit, plexBaseUrl, plexToken, plexMatchThreshold, settingsLoaded])
 
   async function handleFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -163,17 +178,7 @@ function Account({
 
       {/* Recommendations */}
       <section>
-        <div className="flex items-center justify-between mb-1">
-          <h2 className="text-lg font-semibold text-white text-left">Recommendations</h2>
-          <button
-            onClick={handleSaveUserSettings}
-            disabled={userSettingsSaving}
-            aria-label="Save Recommendations settings"
-            className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded text-sm font-medium transition-colors"
-          >
-            {userSettingsSaved ? '✓ Saved' : userSettingsSaving ? 'Saving…' : 'Save'}
-          </button>
-        </div>
+        <h2 className="text-lg font-semibold text-white mb-1 text-left">Recommendations</h2>
         <p className="text-sm text-gray-500 mb-4 text-left">
           Used to judge Store items against your collection for the Recommended filter.
         </p>
@@ -221,17 +226,7 @@ function Account({
 
       {/* Plex */}
       <section>
-        <div className="flex items-center justify-between mb-1">
-          <h2 className="text-lg font-semibold text-white text-left">Plex</h2>
-          <button
-            onClick={handleSaveUserSettings}
-            disabled={userSettingsSaving}
-            aria-label="Save Plex settings"
-            className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded text-sm font-medium transition-colors"
-          >
-            {userSettingsSaved ? '✓ Saved' : userSettingsSaving ? 'Saving…' : 'Save'}
-          </button>
-        </div>
+        <h2 className="text-lg font-semibold text-white mb-1 text-left">Plex</h2>
         <p className="text-sm text-gray-500 mb-4 text-left">
           Link collection releases to matching albums in your Plex music library.
         </p>
