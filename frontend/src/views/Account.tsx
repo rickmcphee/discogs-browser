@@ -218,7 +218,7 @@ function Account({ avatarVersion, onAvatarChange }: Props) {
                   type="text"
                   aria-label="Plex server address"
                   value={plexBaseUrl}
-                  placeholder="192.168.1.50:32400"
+                  placeholder="my-server.plex.direct:32400"
                   onChange={(e) => setPlexBaseUrl(e.target.value)}
                   className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500"
                 />
