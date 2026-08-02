@@ -28,7 +28,7 @@ This spec replaces both buttons with a single debounced auto-save: any edit to a
 **`frontend/src/views/Account.tsx`**
 
 - Delete `userSettingsSaving`/`userSettingsSaved` state and every reference to them (the `setTimeout(() => setUserSettingsSaved(false), 2000)` line, the button `disabled={userSettingsSaving}` props, and the `{userSettingsSaved ? '✓ Saved' : userSettingsSaving ? 'Saving…' : 'Save'}` button label — the buttons themselves are deleted, see below).
-- Add a `hasLoadedSettings` ref (`useRef(false)`), set to `true` inside the existing `getUserSettings().then(...)` callback (line 24-30), after the 5 `set*` calls. This distinguishes "fields just got populated from the server" from "the user edited a field," so the initial hydration doesn't immediately re-save the values it just fetched.
+- Add a `skipNextAutoSave` ref (`useRef(true)`, starting `true`). The debounce effect (below) runs once on mount with the fields' default blank/placeholder values, and once again when `getUserSettings()` resolves and populates them — neither of those two runs is a real edit, so both must be skipped. The ref starts `true` to skip the mount-time run, and is set back to `true` a second time inside the existing `getUserSettings().then(...)` callback (line 24-30, after the 5 `set*` calls) to also skip the fetch-triggered run. (A ref that's only set `true` once, after the fetch resolves, doesn't work: by the time the fetch-triggered render's effects run, the ref would already read `true` from that single assignment, which reads as "loaded" rather than "skip this one run" — it wouldn't distinguish the fetch-triggered run from any later real edit. Re-arming the flag specifically at the moment the fetch resolves is what makes the very next debounce-effect run — and only that one — a no-op.)
 - Replace `handleSaveUserSettings` (lines 33-58) with:
   ```tsx
   async function saveUserSettingsNow() {
@@ -57,7 +57,10 @@ This spec replaces both buttons with a single debounced auto-save: any edit to a
 - Add a new effect, placed after the existing load effect:
   ```tsx
   useEffect(() => {
-    if (!hasLoadedSettings.current) return
+    if (skipNextAutoSave.current) {
+      skipNextAutoSave.current = false
+      return
+    }
     setPlexSaveError('')
     const timer = setTimeout(() => {
       saveUserSettingsNow()
@@ -65,7 +68,7 @@ This spec replaces both buttons with a single debounced auto-save: any edit to a
     return () => clearTimeout(timer)
   }, [anthropicApiKey, recommendationItemLimit, plexBaseUrl, plexToken, plexMatchThreshold])
   ```
-  This is the entire auto-save mechanism: one shared debounce across all 5 fields, gated on `hasLoadedSettings` so the initial fetch-and-populate doesn't trigger a save. React runs this effect's cleanup (`clearTimeout(timer)`) before every re-run triggered by a dependency change, which is what gives the debounce its "reset on every keystroke" behavior — no ref needed. Clearing `plexSaveError` in the same effect body means any edit clears a stale error instantly, before the new timer even starts.
+  This is the entire auto-save mechanism: one shared debounce across all 5 fields. The first two times this effect runs (mount, then the fetch populating real values) it just consumes the `skipNextAutoSave` flag and returns; every run after that is a real edit, so it schedules a save. React runs this effect's cleanup (`clearTimeout(timer)`) before every re-run triggered by a dependency change, which is what gives the debounce its "reset on every keystroke" behavior. Clearing `plexSaveError` in the same effect body means any edit clears a stale error instantly, before the new timer even starts.
 - Recommendations section header (lines 137-146): replace the `flex items-center justify-between mb-1` wrapper + `<h2>` + Save button with a plain heading, matching "Account & Security"'s style:
   ```tsx
   <h2 className="text-lg font-semibold text-white mb-1 text-left">Recommendations</h2>
@@ -78,8 +81,8 @@ This spec replaces both buttons with a single debounced auto-save: any edit to a
 
 ## Data flow / lifecycle
 
-1. On mount, `getUserSettings()` populates all 5 fields and sets `hasLoadedSettings.current = true` once done.
-2. Every render after that, the debounce effect re-runs whenever any of the 5 values changes (any keystroke), clearing the previous pending timer and scheduling a new one 800ms out.
+1. On mount, the debounce effect's first run consumes the initial `skipNextAutoSave` flag and does nothing. `getUserSettings()` then populates all 5 fields and re-arms `skipNextAutoSave`, so the effect's second run (triggered by those 5 fields actually changing) also does nothing.
+2. Every run after that is a real edit: the debounce effect re-runs whenever any of the 5 values changes (any keystroke), clearing the previous pending timer and scheduling a new one 800ms out.
 3. When a timer actually fires (800ms with no further edits), `saveUserSettingsNow()` sends the current snapshot of all 5 fields in one `POST /api/user-settings` call — identical payload shape to today's manual save.
 4. A failed save shows `plexSaveError` inline; the next edit to any field clears it immediately, and the following debounced save attempt will show it again if it still fails.
 
