@@ -18,6 +18,9 @@ function Account({ avatarVersion, onAvatarChange }: Props) {
   const [plexToken, setPlexToken] = useState('')
   const [plexMatchThreshold, setPlexMatchThreshold] = useState(90)
   const [plexSaveError, setPlexSaveError] = useState('')
+  // Value never read — its only job is forcing the debounce effect below to
+  // re-run once settings load, even when the fetched values equal the
+  // useState defaults above and React would otherwise bail out of re-rendering.
   const [settingsLoaded, setSettingsLoaded] = useState(false)
 
   useEffect(() => {

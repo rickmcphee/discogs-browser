@@ -78,9 +78,16 @@ are unaffected.
   second child renders on the right: a text label ("Admin" / "User") next to
   a pill switch (`role="switch"`, `aria-checked={viewingAsUser}`,
   `aria-label="Toggle admin/user view"`), styled with the existing indigo/gray
-  convention — indigo track when in Admin view, gray when viewing as User —
-  matching the alignment of the "Save" buttons in the Recommendations/Plex
-  sections below.
+  convention — indigo track when in Admin view, gray when viewing as User.
+
+  **Amendment (2026-08-02, branch `account-autosave`):** the alignment
+  comparison this bullet originally made — "matching the alignment of the
+  'Save' buttons in the Recommendations/Plex sections below" — no longer
+  has a referent. Both Save buttons were removed in favor of auto-save; see
+  [`2026-08-02-account-autosave-design.md`](2026-08-02-account-autosave-design.md).
+  The switch's own `justify-between` row fully specifies its alignment
+  regardless, so this doesn't change anything about this spec's own design
+  — just removes a now-dangling comparison.
 - The "Log out" button's `onClick` also clears
   `localStorage.removeItem('discogs-browser.viewAsUser')` before the existing
   `logout().then(() => window.location.reload())`.
