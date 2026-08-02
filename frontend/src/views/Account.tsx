@@ -18,7 +18,7 @@ function Account({ avatarVersion, onAvatarChange }: Props) {
   const [plexMatchThreshold, setPlexMatchThreshold] = useState(90)
   const [userSettingsSaving, setUserSettingsSaving] = useState(false)
   const [userSettingsSaved, setUserSettingsSaved] = useState(false)
-  const [plexSaveError, setPlexSaveError] = useState('')
+  const [userSettingsSaveError, setUserSettingsSaveError] = useState('')
 
   useEffect(() => {
     getUserSettings().then((s) => {
@@ -32,7 +32,7 @@ function Account({ avatarVersion, onAvatarChange }: Props) {
 
   async function handleSaveUserSettings() {
     setUserSettingsSaving(true)
-    setPlexSaveError('')
+    setUserSettingsSaveError('')
     try {
       await saveUserSettings({
         anthropic_api_key: anthropicApiKey,
@@ -51,7 +51,7 @@ function Account({ avatarVersion, onAvatarChange }: Props) {
       } catch {
         // not JSON, use raw message
       }
-      setPlexSaveError(message)
+      setUserSettingsSaveError(message)
     } finally {
       setUserSettingsSaving(false)
     }
@@ -148,6 +148,7 @@ function Account({ avatarVersion, onAvatarChange }: Props) {
         <p className="text-sm text-gray-500 mb-4 text-left">
           Used to judge Store items against your collection for the Recommended filter.
         </p>
+        {userSettingsSaveError && <p className="text-xs text-red-400 mb-3 text-left">{userSettingsSaveError}</p>}
         <table className="w-full text-sm border-collapse">
           <tbody>
             <tr className="border-b border-gray-800/50">
@@ -206,7 +207,7 @@ function Account({ avatarVersion, onAvatarChange }: Props) {
         <p className="text-sm text-gray-500 mb-4 text-left">
           Link collection releases to matching albums in your Plex music library.
         </p>
-        {plexSaveError && <p className="text-xs text-red-400 mb-3 text-left">{plexSaveError}</p>}
+        {userSettingsSaveError && <p className="text-xs text-red-400 mb-3 text-left">{userSettingsSaveError}</p>}
         <table className="w-full text-sm border-collapse">
           <tbody>
             <tr className="border-b border-gray-800/50">

@@ -81,7 +81,23 @@ describe('Account', () => {
     render(<Account avatarVersion={0} onAvatarChange={() => {}} />)
     await waitFor(() => expect(getUserSettings).toHaveBeenCalled())
     fireEvent.click(screen.getByRole('button', { name: 'Save Plex settings' }))
-    await waitFor(() => expect(screen.getByText('Plex address not reachable')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getAllByText('Plex address not reachable').length).toBeGreaterThan(0))
     expect(screen.queryByText(/"detail"/)).not.toBeInTheDocument()
+  })
+
+  it('surfaces a save failure near the Recommendations save button, not just the Plex one', async () => {
+    saveUserSettings.mockRejectedValueOnce(new Error(JSON.stringify({ detail: 'Save failed' })))
+    render(<Account avatarVersion={0} onAvatarChange={() => {}} />)
+    await waitFor(() => expect(getUserSettings).toHaveBeenCalled())
+    fireEvent.click(screen.getByRole('button', { name: 'Save Recommendations settings' }))
+    const errors = await waitFor(() => screen.getAllByText('Save failed'))
+    // Shared error state renders near both save buttons, so a Recommendations
+    // failure isn't shown only far below in the Plex section: at least one
+    // error node must appear before the Plex save button in the DOM.
+    const plexButton = screen.getByRole('button', { name: 'Save Plex settings' })
+    const errorAboveOrNearRecommendations = errors.some(
+      (el) => plexButton.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_PRECEDING
+    )
+    expect(errorAboveOrNearRecommendations).toBe(true)
   })
 })
