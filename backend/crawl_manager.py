@@ -297,19 +297,20 @@ class CrawlManager:
         broadcast = lambda event: self._broadcast_threadsafe(event, loop)
 
         broadcast({"status": "sync_started"})
-        log.info("Collection sync started for user %d (mode=%s)", user_id, mode)
         try:
             with get_identity_pool().connection() as conn:
                 user = conn.execute("SELECT * FROM users WHERE id = %s", [user_id]).fetchone()
             if user is None:
+                log.info("Collection sync started for user %d (mode=%s)", user_id, mode)
                 broadcast({"status": "sync_error", "error": "User not found"})
                 return
+            username = user["discogs_username"]
+            log.info("Collection sync started for %s (mode=%s)", username, mode)
             if not user["discogs_oauth_token_encrypted"]:
                 broadcast({"status": "sync_error", "error": "Discogs account not connected"})
                 return
             oauth_token = token_encryption.decrypt(user["discogs_oauth_token_encrypted"])
             oauth_secret = token_encryption.decrypt(user["discogs_oauth_secret_encrypted"])
-            username = user["discogs_username"]
 
             try:
                 fields = discogs.fetch_collection_fields(oauth_token, oauth_secret, username)
@@ -365,7 +366,7 @@ class CrawlManager:
                     # this user.
                     conn.execute("SELECT set_config('app.user_id', %s, true)", [str(user_id)])
                     broadcast({"status": "sync_progress", "synced": count, "page": page, "total_pages": total_pages})
-                    log.info("Sync page %d/%d (%d releases) for user %d", page, total_pages, count, user_id)
+                    log.info("Sync page %d/%d (%d releases) for %s", page, total_pages, count, username)
 
                 for page, total_pages, items in discogs.iter_wantlist_pages(oauth_token, oauth_secret, username):
                     for item in items:
@@ -402,7 +403,7 @@ class CrawlManager:
                     # app.user_id for this connection's next transaction, since the
                     # commit just ended (and reset) the one that had it set.
                     conn.execute("SELECT set_config('app.user_id', %s, true)", [str(user_id)])
-                    log.info("Wishlist sync page %d/%d (%d items) for user %d", page, total_pages, wishlist_count, user_id)
+                    log.info("Wishlist sync page %d/%d (%d items) for %s", page, total_pages, wishlist_count, username)
 
                 cleared = clear_wishlist_flags_not_in(conn, user_id, wishlist_seen)
                 deleted = delete_orphaned_releases(conn, user_id)
