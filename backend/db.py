@@ -317,6 +317,10 @@ def init_tenant_schema():
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON stock_item_judgments TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE ON crawl_queue TO app_user")
         conn.execute("GRANT USAGE, SELECT ON SEQUENCE crawl_queue_id_seq TO app_user")
+        # INSERT only -- app_user never needs to read back another admin's
+        # minted invites, and redemption (SELECT/UPDATE) runs through
+        # app_identity, not this role.
+        conn.execute("GRANT INSERT ON invites TO app_user")
         conn.commit()
 
 
@@ -373,6 +377,17 @@ def create_user(conn, discogs_user_id: int, discogs_username: str, invited_by: O
         RETURNING *
         """,
         [discogs_user_id, discogs_username, invited_by],
+    ).fetchone()
+
+
+def create_invite(conn, created_by: int, code: str) -> dict:
+    return conn.execute(
+        """
+        INSERT INTO invites (code, created_by, created_at)
+        VALUES (%s, %s, CURRENT_TIMESTAMP)
+        RETURNING *
+        """,
+        [code, created_by],
     ).fetchone()
 
 
