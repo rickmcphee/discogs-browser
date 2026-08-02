@@ -5,6 +5,7 @@ import httpx
 from config import load_config
 
 _PAGE_LIMIT = 250
+_MAX_RETRY_AFTER_SECONDS = 600.0
 
 
 async def iter_products(base_url: str, collection_slug: str) -> AsyncIterator[dict]:
@@ -19,17 +20,24 @@ async def iter_products(base_url: str, collection_slug: str) -> AsyncIterator[di
     delay = float(cfg.get("crawl_delay_seconds", 30))
     failure_limit = int(cfg.get("consecutive_failure_limit", 10))
     consecutive_failures = 0
+    next_delay_override: Optional[float] = None
 
     page = 1
     async with httpx.AsyncClient() as client:
         while True:
             url = f"{base_url}/collections/{collection_slug}/products.json"
-            await asyncio.sleep(random.uniform(delay * 0.5, delay))
+            if next_delay_override is not None:
+                await asyncio.sleep(next_delay_override)
+                next_delay_override = None
+            else:
+                await asyncio.sleep(random.uniform(delay * 0.5, delay))
             try:
                 r = await client.get(url, params={"limit": _PAGE_LIMIT, "page": page})
                 r.raise_for_status()
-            except httpx.HTTPError:
+            except httpx.HTTPError as e:
                 consecutive_failures += 1
+                if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 429:
+                    next_delay_override = _parse_retry_after(e.response.headers.get("Retry-After"))
                 # A limit of 0 means "disabled" elsewhere, but disabled must mean
                 # fail fast here, not unlimited retries — this loop has no next
                 # item to move on to like crawl_releases() does.
@@ -43,6 +51,22 @@ async def iter_products(base_url: str, collection_slug: str) -> AsyncIterator[di
             for product in products:
                 yield product
             page += 1
+
+
+def _parse_retry_after(value: Optional[str]) -> Optional[float]:
+    """Parses a 429 response's Retry-After header (numeric-seconds form only).
+    Returns None for a missing, non-numeric, or negative value, so the caller
+    falls back to the jittered delay instead.
+    """
+    if value is None:
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        return None
+    if seconds < 0:
+        return None
+    return min(seconds, _MAX_RETRY_AFTER_SECONDS)
 
 
 def has_tag(product: dict, tag: str) -> bool:
