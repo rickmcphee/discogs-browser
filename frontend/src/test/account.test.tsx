@@ -21,6 +21,7 @@ vi.mock('../api/client', () => ({
 
 beforeEach(() => {
   vi.clearAllMocks()
+  localStorage.clear()
 })
 
 describe('Account', () => {
@@ -83,5 +84,57 @@ describe('Account', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save Plex settings' }))
     await waitFor(() => expect(screen.getByText('Plex address not reachable')).toBeInTheDocument())
     expect(screen.queryByText(/"detail"/)).not.toBeInTheDocument()
+  })
+
+  it('does not show the role switch by default', () => {
+    render(<Account avatarVersion={0} onAvatarChange={() => {}} />)
+    expect(screen.queryByRole('switch')).not.toBeInTheDocument()
+  })
+
+  it('shows the role switch for an admin, labeled "Admin" when not viewing as user', () => {
+    render(
+      <Account avatarVersion={0} onAvatarChange={() => {}} isAdmin viewingAsUser={false} />
+    )
+    const roleSwitch = screen.getByRole('switch', { name: 'Toggle admin/user view' })
+    expect(roleSwitch).toHaveAttribute('aria-checked', 'false')
+    expect(screen.getByText('Admin')).toBeInTheDocument()
+  })
+
+  it('labels the role switch "User" and checks it when viewing as user', () => {
+    render(<Account avatarVersion={0} onAvatarChange={() => {}} isAdmin viewingAsUser />)
+    const roleSwitch = screen.getByRole('switch', { name: 'Toggle admin/user view' })
+    expect(roleSwitch).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByText('User')).toBeInTheDocument()
+  })
+
+  it('calls onToggleViewAsUser when the role switch is clicked', () => {
+    const onToggleViewAsUser = vi.fn()
+    render(
+      <Account
+        avatarVersion={0}
+        onAvatarChange={() => {}}
+        isAdmin
+        onToggleViewAsUser={onToggleViewAsUser}
+      />
+    )
+    fireEvent.click(screen.getByRole('switch', { name: 'Toggle admin/user view' }))
+    expect(onToggleViewAsUser).toHaveBeenCalledTimes(1)
+  })
+
+  it('clears the stored view-as-user flag when logging out', async () => {
+    localStorage.setItem('discogs-browser.viewAsUser', 'true')
+    render(<Account avatarVersion={0} onAvatarChange={() => {}} />)
+    fireEvent.click(screen.getByText('Log out'))
+    await waitFor(() => expect(logout).toHaveBeenCalled())
+    expect(localStorage.getItem('discogs-browser.viewAsUser')).toBeNull()
+  })
+
+  it('keeps the stored view-as-user flag when logout fails', async () => {
+    logout.mockRejectedValueOnce(new Error('Network error'))
+    localStorage.setItem('discogs-browser.viewAsUser', 'true')
+    render(<Account avatarVersion={0} onAvatarChange={() => {}} />)
+    fireEvent.click(screen.getByText('Log out'))
+    await waitFor(() => expect(logout).toHaveBeenCalled())
+    expect(localStorage.getItem('discogs-browser.viewAsUser')).toBe('true')
   })
 })

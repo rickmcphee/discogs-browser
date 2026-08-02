@@ -8,6 +8,8 @@ _2026-07-18_
 
 **Amendment (2026-08-01, branch `plex-reachability-ssrf`):** `Account.tsx` now also shows a "Plex" section — `plex_base_url`/`plex_token`/`plex_match_threshold`, same `getUserSettings`/`saveUserSettings` round-trip as Recommendations above — inserted between "Recommendations" and "Account & Security". See [`2026-08-01-plex-reachability-ssrf-design.md`](2026-08-01-plex-reachability-ssrf-design.md).
 
+**Amendment (2026-08-02, branch `account-role-toggle`):** the page's top-level `<h1>Account</h1>` heading (implicit in this spec's "dedicated Account view" framing, never spelled out as a requirement) has been removed as redundant — the view is already reached via the profile avatar button described below. The Avatar section also gained an admin-only "view as user" switch, visible only when the real account is `is_admin`, that hides the Settings/Logs nav items so an admin can preview the non-admin UX; this is frontend-only display state and never touches `is_admin` itself. See [`2026-08-02-account-role-toggle-design.md`](2026-08-02-account-role-toggle-design.md).
+
 ---
 
 ## Overview

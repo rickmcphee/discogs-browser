@@ -50,6 +50,7 @@ vi.mock('../api/client', () => ({
 
 beforeEach(() => {
   vi.clearAllMocks()
+  localStorage.clear()
 })
 
 describe('header profile navigation', () => {
@@ -58,7 +59,7 @@ describe('header profile navigation', () => {
     const button = await screen.findByRole('button', { name: /profile/i })
     fireEvent.click(button)
     await waitFor(() => expect(button.className).toContain('ring-2 ring-indigo-500'))
-    expect(screen.getByRole('heading', { name: 'Account' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Recommendations' })).toBeInTheDocument()
   })
 
   it('places the profile avatar as the rightmost header control', async () => {
@@ -77,5 +78,45 @@ describe('header profile navigation', () => {
     await screen.findByRole('button', { name: 'Store' })
     expect(screen.queryByRole('button', { name: 'Settings' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Logs' })).not.toBeInTheDocument()
+  })
+
+  it('shows the role switch to an admin, and toggling it hides Settings/Logs until toggled back', async () => {
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: /profile/i }))
+    const roleSwitch = await screen.findByRole('switch', { name: 'Toggle admin/user view' })
+    expect(roleSwitch).toHaveAttribute('aria-checked', 'false')
+    expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Logs' })).toBeInTheDocument()
+
+    fireEvent.click(roleSwitch)
+    expect(roleSwitch).toHaveAttribute('aria-checked', 'true')
+    expect(screen.queryByRole('button', { name: 'Settings' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Logs' })).not.toBeInTheDocument()
+
+    fireEvent.click(roleSwitch)
+    expect(roleSwitch).toHaveAttribute('aria-checked', 'false')
+    expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument()
+  })
+
+  it('persists the view-as-user toggle to localStorage and restores it on remount', async () => {
+    const { unmount } = render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: /profile/i }))
+    const roleSwitch = await screen.findByRole('switch', { name: 'Toggle admin/user view' })
+    fireEvent.click(roleSwitch)
+    expect(localStorage.getItem('discogs-browser.viewAsUser')).toBe('true')
+    unmount()
+
+    render(<App />)
+    await screen.findByRole('button', { name: /profile/i })
+    expect(screen.queryByRole('button', { name: 'Settings' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Logs' })).not.toBeInTheDocument()
+  })
+
+  it('does not show the role switch to a non-admin', async () => {
+    getAuthStatus.mockResolvedValueOnce({ state: 'authenticated', user: { discogs_username: 'test', is_admin: false } })
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: /profile/i }))
+    await screen.findByRole('heading', { name: 'Recommendations' })
+    expect(screen.queryByRole('switch')).not.toBeInTheDocument()
   })
 })

@@ -124,6 +124,14 @@ item/view for non-admin users, per
 [`2026-07-27-crawl-queue-refactor-design.md`](2026-07-27-crawl-queue-refactor-design.md)'s
 admin concept.
 
+**Amendment (2026-08-02, branch `account-role-toggle`):** "gate the Settings
+nav item/view for non-admin users" above is no longer the complete picture.
+An admin can now also self-hide the Settings and Logs nav items via a
+frontend-only "view as user" switch on the Account page — a `viewAsUser`
+flag persisted to `localStorage`, never touching `is_admin` on the `users`
+row returned by this endpoint. See
+[`2026-08-02-account-role-toggle-design.md`](2026-08-02-account-role-toggle-design.md).
+
 **`GET /api/auth/discogs/start`** — begins the handshake. Calls Discogs'
 `POST /oauth/request_token` (signed with `DISCOGS_CONSUMER_KEY`/`SECRET`),
 stores the resulting request token + secret in `oauth_request_state`, then
