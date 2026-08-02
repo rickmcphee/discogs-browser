@@ -37,4 +37,4 @@ def _fast_catalog_crawl_sleep(request, monkeypatch):
         async def fake_sleep(seconds):
             pass
 
-        monkeypatch.setattr("shopify_catalog.asyncio.sleep", fake_sleep)
+        monkeypatch.setattr("shopify_catalog.sleep", fake_sleep)
