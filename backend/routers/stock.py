@@ -8,6 +8,12 @@ from crawl_manager import crawl_manager
 router = APIRouter()
 
 
+def _parse_crawler_ids(raw: Optional[str]) -> Optional[list[int]]:
+    if not raw:
+        return None
+    return [int(x) for x in raw.split(",") if x]
+
+
 @router.get("/stock")
 def list_stock(
     request: Request,
@@ -19,20 +25,28 @@ def list_stock(
     per_page: int = Query(50, ge=1, le=500),
     overlapping: bool = Query(False),
     recommended: bool = Query(False),
+    hidden_crawler_ids: Optional[str] = Query(None),
 ):
     user_id = request.state.user_id
+    exclude_crawler_ids = _parse_crawler_ids(hidden_crawler_ids)
     with db.user_scope(user_id) as conn:
         return db.get_stock_items(
             conn, user_id, search=search, artist=artist, sort=sort, order=order,
             page=page, per_page=per_page, overlapping=overlapping, recommended=recommended,
+            exclude_crawler_ids=exclude_crawler_ids,
         )
 
 
 @router.get("/stock/artists")
-def list_stock_artists(request: Request, overlapping: bool = Query(False), recommended: bool = Query(False)):
+def list_stock_artists(request: Request, overlapping: bool = Query(False), recommended: bool = Query(False),
+    hidden_crawler_ids: Optional[str] = Query(None),
+):
     user_id = request.state.user_id
+    exclude_crawler_ids = _parse_crawler_ids(hidden_crawler_ids)
     with db.user_scope(user_id) as conn:
-        return {"artists": db.get_distinct_stock_artists(conn, user_id, overlapping=overlapping, recommended=recommended)}
+        return {"artists": db.get_distinct_stock_artists(conn, user_id, overlapping=overlapping, recommended=recommended,
+            exclude_crawler_ids=exclude_crawler_ids,
+        )}
 
 
 @router.get("/stock/judge/status")
