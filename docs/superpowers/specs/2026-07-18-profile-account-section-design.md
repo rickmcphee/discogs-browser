@@ -6,6 +6,8 @@ _2026-07-18_
 
 **Amendment (2026-07-31, crawl-queue-refactor Task 21):** `Account.tsx` now also shows a "Recommendations" section — `anthropic_api_key` and `recommendation_item_limit`, per-user fields moved out of the global `Settings.tsx` surface (see [`2026-07-27-crawl-queue-refactor-design.md`](2026-07-27-crawl-queue-refactor-design.md)'s "Settings split") — read/saved via `getUserSettings`/`saveUserSettings` against `GET`/`POST /api/user-settings`, alongside the avatar management and logout button.
 
+**Amendment (2026-08-01, branch `plex-reachability-ssrf`):** `Account.tsx` now also shows a "Plex" section — `plex_base_url`/`plex_token`/`plex_match_threshold`, same `getUserSettings`/`saveUserSettings` round-trip as Recommendations above — inserted between "Recommendations" and "Account & Security". See [`2026-08-01-plex-reachability-ssrf-design.md`](2026-08-01-plex-reachability-ssrf-design.md).
+
 ---
 
 ## Overview

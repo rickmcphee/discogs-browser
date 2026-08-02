@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Request, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from config import load_config, save_config
 import db
 from admin import require_admin
@@ -28,7 +28,7 @@ class UserSettingsUpdate(BaseModel):
     recommendation_item_limit: int = 300
     plex_base_url: str = ""
     plex_token: str = ""
-    plex_match_threshold: int = 90
+    plex_match_threshold: int = Field(90, ge=0, le=100)
 
 
 @router.get("/settings", dependencies=[Depends(require_admin)])

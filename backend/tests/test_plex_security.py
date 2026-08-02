@@ -97,3 +97,28 @@ def test_raises_on_malformed_url_parsing():
     # Malformed IPv6 literal (missing closing bracket) raises ValueError from urlsplit
     with pytest.raises(PlexUnsafeAddressError):
         validate_address("http://[::1")
+
+
+def test_rejects_ipv6_multicast_address(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: _fake_addrinfo("ff02::1"))
+    with pytest.raises(PlexUnsafeAddressError):
+        validate_address("http://[ff02::1]:32400")
+
+
+def test_rejects_a_hostname_that_rebinds_to_private_between_two_calls(monkeypatch):
+    # validate_address gives no durable guarantee -- it's re-run before every
+    # use specifically so a hostname that resolved safely once (e.g. at
+    # settings-save time) but is later repointed at a private address gets
+    # caught on the very next call, not just at save time. Simulates that by
+    # having the same hostname resolve differently across two calls.
+    calls = {"n": 0}
+
+    def _rebinding_getaddrinfo(*a, **k):
+        calls["n"] += 1
+        return _fake_addrinfo("8.8.8.8" if calls["n"] == 1 else "10.0.0.1")
+
+    monkeypatch.setattr(socket, "getaddrinfo", _rebinding_getaddrinfo)
+
+    validate_address("http://rebinding.example.com:32400")  # first call: safe, does not raise
+    with pytest.raises(PlexUnsafeAddressError):
+        validate_address("http://rebinding.example.com:32400")  # second call: now private, rejected

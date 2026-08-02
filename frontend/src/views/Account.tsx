@@ -218,15 +218,16 @@ function Account({ avatarVersion, onAvatarChange }: Props) {
                   type="text"
                   aria-label="Plex server address"
                   value={plexBaseUrl}
-                  placeholder="my-server.plex.direct:32400"
+                  placeholder="https://1-2-3-4.abcd1234.plex.direct:32400"
                   onChange={(e) => setPlexBaseUrl(e.target.value)}
                   className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500"
                 />
               </td>
               <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
-                Must be reachable from this server over the internet — a bare LAN
-                address won't work; use Plex Remote Access or a tunnel such as
-                Tailscale.
+                Must be reachable from this server over the public internet —
+                enable Plex Remote Access on your server and use the
+                plex.direct address it gives you. A LAN address, or a private
+                tunnel address (e.g. Tailscale), won't work.
               </td>
             </tr>
             <tr className="border-b border-gray-800/50">

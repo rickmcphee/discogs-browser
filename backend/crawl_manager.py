@@ -589,7 +589,12 @@ class CrawlManager:
                 items = get_library_items_for_plex_match(conn, user_id)
                 matched = 0
                 for i, item in enumerate(items, start=1):
-                    best = plex.find_best_match(item["artist"], item["title"], albums, threshold)
+                    # Fuzzy-matching one release against the full album list is CPU-bound
+                    # and, at real collection/library sizes, expensive enough per item to
+                    # stall the shared event loop for other users' requests if run inline
+                    # -- to_thread here yields control back between every item, same
+                    # rationale as the three plex.py calls above.
+                    best = await asyncio.to_thread(plex.find_best_match, item["artist"], item["title"], albums, threshold)
                     if best:
                         url = plex.build_album_url(base_url, machine_id, best["rating_key"])
                         set_plex_match(conn, user_id, item["discogs_id"], url)
@@ -613,6 +618,6 @@ class CrawlManager:
                 await self._broadcast({"status": "plex_match_error", "error": "Plex address not reachable"})
             else:
                 log.warning("Plex match phase failed for user %d, skipping: %s", user_id, e)
-                await self._broadcast({"status": "plex_match_error", "error": "Plex match failed"})
+                await self._broadcast({"status": "plex_match_error", "error": "an unexpected error occurred"})
 
 crawl_manager = CrawlManager()

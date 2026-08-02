@@ -241,8 +241,10 @@ personal, one server per user, same as Anthropic API key.
   original spec.
 - `frontend/src/views/Account.tsx`: new "Plex" section, same table/row pattern as
   the existing "Recommendations" section (label cell, input cell, description
-  cell) — three rows: server address (text, e.g. `192.168.1.50:32400` or a
-  Tailscale hostname), token (password-style input), match threshold (number
+  cell) — three rows: server address (text, e.g. a Plex Remote Access
+  `plex.direct` address — a LAN address or a private tunnel address such as
+  Tailscale is rejected by the SSRF check below, so the copy must not suggest
+  either works), token (password-style input), match threshold (number
   input, default 90). One save button for the section, following the existing
   `handleSaveUserSettings` pattern.
 - `frontend/src/App.tsx`: SSE handler gains the four `plex_match_*` cases,
