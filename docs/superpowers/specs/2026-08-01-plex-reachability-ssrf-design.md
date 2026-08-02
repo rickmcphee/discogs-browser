@@ -2,6 +2,32 @@
 
 **Date:** 2026-08-01
 
+**Amendment (2026-08-02, closing two residual gaps found in final whole-branch
+review):** two edge cases in `validate_address` were tracked as follow-up
+rather than fixed in the review that produced them (see that review's own
+commit message for the full description) — both are now fixed, and the two
+sections below ("Reject via `is_global`..." and "SSRF validation") describe
+the pre-fix behavior only. (1) **NAT64.** `ipaddress.ip_address(ip).is_global`
+does not special-case RFC 6052 NAT64 addresses (`64:ff9b::/96`, which embed an
+IPv4 address in the low 32 bits) — `64:ff9b::7f00:1` (NAT64-encoded
+127.0.0.1) reads as globally routable. `validate_address` now rejects any
+resolved address in `64:ff9b::/96` outright, as one narrow, explicitly
+documented exception to "`is_global` only, not a hand-rolled range list" —
+this app has no legitimate reason to reach a NAT64-only host, so the simpler
+whole-prefix rejection was chosen over decoding and separately validating the
+embedded IPv4 address. (2) **Parser divergence.** `validate_address` parsed
+`base_url` with `urllib.parse.urlsplit`, while the real outbound request
+(`plex.py`'s `_get`) is parsed by `httpx`'s own URL parser when the request
+actually fires. Fuzzing found one confirmed divergence: a hostname containing
+the Unicode "ideographic full stop" (U+3002) as a label separator —
+`urlsplit(...).hostname` keeps it verbatim, `httpx.URL(...).host` normalizes
+it to a regular period, so the two parsers could in principle validate and
+request different hostnames. No live bypass was demonstrated (every
+constructed test case still failed closed), but `validate_address` now parses
+`base_url` with `httpx.URL` instead of `urlsplit`, so the hostname it checks
+is always exactly the hostname `httpx` will actually resolve for the real
+request — same parser, not a second independent one.
+
 **Amendment (2026-08-01, during grounding for the implementation plan):** the
 original text below described validating a resolved IP and then connecting
 *directly to that IP* (with the hostname preserved only in a `Host` header), to

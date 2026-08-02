@@ -1,5 +1,6 @@
 import socket
 
+import httpx
 import pytest
 
 from plex_security import PlexUnsafeAddressError, validate_address
@@ -122,3 +123,41 @@ def test_rejects_a_hostname_that_rebinds_to_private_between_two_calls(monkeypatc
     validate_address("http://rebinding.example.com:32400")  # first call: safe, does not raise
     with pytest.raises(PlexUnsafeAddressError):
         validate_address("http://rebinding.example.com:32400")  # second call: now private, rejected
+
+
+def test_rejects_nat64_encoded_loopback(monkeypatch):
+    # 64:ff9b::7f00:1 is the NAT64 (RFC 6052) encoding of 127.0.0.1. Python's
+    # ipaddress.is_global doesn't special-case this range, so it reads as
+    # globally routable unless checked explicitly.
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: _fake_addrinfo("64:ff9b::7f00:1"))
+    with pytest.raises(PlexUnsafeAddressError):
+        validate_address("http://[64:ff9b::7f00:1]:32400")
+
+
+def test_rejects_nat64_encoded_private_address(monkeypatch):
+    # 64:ff9b::a00:1 encodes 10.0.0.1 -- same NAT64 prefix, different embedded range.
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: _fake_addrinfo("64:ff9b::a00:1"))
+    with pytest.raises(PlexUnsafeAddressError):
+        validate_address("http://[64:ff9b::a00:1]:32400")
+
+
+def test_resolves_the_same_hostname_httpx_will_actually_request(monkeypatch):
+    # Regression: validate_address used to parse base_url with urllib's urlsplit,
+    # while the real outbound request (plex.py's _get) is built as a plain string
+    # and parsed by httpx's own URL parser when the request fires. A Unicode
+    # "ideographic full stop" (U+3002) label separator diverges between the two --
+    # urlsplit keeps it verbatim in .hostname, httpx.URL normalizes it to a
+    # regular period -- so validate_address could resolve/validate a different
+    # hostname than the one httpx actually connects to.
+    captured = {}
+
+    def _capture_and_resolve(host, *a, **k):
+        captured["host"] = host
+        return _fake_addrinfo("8.8.8.8")
+
+    monkeypatch.setattr(socket, "getaddrinfo", _capture_and_resolve)
+
+    url = "http://evil.com。internal.example.com:32400"
+    validate_address(url)  # does not raise -- the resolved address is public
+
+    assert captured["host"] == httpx.URL(url).host == "evil.com.internal.example.com"
