@@ -71,11 +71,11 @@ describe('header profile navigation', () => {
     ).toBeTruthy()
   })
 
-  it('hides the Settings and Logs nav buttons for a non-admin user', async () => {
+  it('hides the Logs nav button but shows Settings for a non-admin user', async () => {
     getAuthStatus.mockResolvedValueOnce({ state: 'authenticated', user: { discogs_username: 'test', is_admin: false } })
     render(<App />)
     await screen.findByRole('button', { name: 'Store' })
-    expect(screen.queryByRole('button', { name: 'Settings' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Logs' })).not.toBeInTheDocument()
   })
 })
