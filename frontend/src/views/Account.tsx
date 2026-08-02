@@ -10,6 +10,7 @@ interface Props {
 function Account({ avatarVersion, onAvatarChange }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const skipNextAutoSave = useRef(true)
+  const saveChainRef = useRef<Promise<void>>(Promise.resolve())
   const [avatarError, setAvatarError] = useState('')
   const [avatarBusy, setAvatarBusy] = useState(false)
   const [anthropicApiKey, setAnthropicApiKey] = useState('')
@@ -35,26 +36,28 @@ function Account({ avatarVersion, onAvatarChange }: Props) {
     }).catch(() => {})
   }, [])
 
-  async function saveUserSettingsNow() {
-    setPlexSaveError('')
-    try {
-      await saveUserSettings({
-        anthropic_api_key: anthropicApiKey,
-        recommendation_item_limit: recommendationItemLimit,
-        plex_base_url: plexBaseUrl,
-        plex_token: plexToken,
-        plex_match_threshold: plexMatchThreshold,
-      })
-    } catch (err: any) {
-      let message = err.message || 'Save failed'
+  function saveUserSettingsNow() {
+    saveChainRef.current = saveChainRef.current.then(async () => {
+      setPlexSaveError('')
       try {
-        const parsed = JSON.parse(err.message)
-        if (parsed.detail) message = parsed.detail
-      } catch {
-        // not JSON, use raw message
+        await saveUserSettings({
+          anthropic_api_key: anthropicApiKey,
+          recommendation_item_limit: recommendationItemLimit,
+          plex_base_url: plexBaseUrl,
+          plex_token: plexToken,
+          plex_match_threshold: plexMatchThreshold,
+        })
+      } catch (err: any) {
+        let message = err.message || 'Save failed'
+        try {
+          const parsed = JSON.parse(err.message)
+          if (parsed.detail) message = parsed.detail
+        } catch {
+          // not JSON, use raw message
+        }
+        setPlexSaveError(message)
       }
-      setPlexSaveError(message)
-    }
+    })
   }
 
   useEffect(() => {

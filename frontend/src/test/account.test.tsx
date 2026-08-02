@@ -138,4 +138,46 @@ describe('Account', () => {
     fireEvent.change(screen.getByLabelText('Plex server address'), { target: { value: 'http://still-typing' } })
     expect(screen.queryByText('Plex address not reachable')).not.toBeInTheDocument()
   })
+
+  it('serializes overlapping saves so a slower earlier save cannot overwrite a later one', async () => {
+    let resolveFirstSave: () => void = () => {}
+    let resolveSecondSave: () => void = () => {}
+    const firstSave = new Promise<void>((resolve) => { resolveFirstSave = resolve })
+    const secondSave = new Promise<void>((resolve) => { resolveSecondSave = resolve })
+    saveUserSettings.mockImplementationOnce(() => firstSave)
+    saveUserSettings.mockImplementationOnce(() => secondSave)
+
+    render(<Account avatarVersion={0} onAvatarChange={() => {}} />)
+    await waitFor(() => expect(getUserSettings).toHaveBeenCalled())
+
+    const input = screen.getByLabelText('Anthropic API key')
+    fireEvent.change(input, { target: { value: 'first-edit' } })
+    await waitFor(() => expect(saveUserSettings).toHaveBeenCalledTimes(1), { timeout: 2000 })
+    expect(saveUserSettings).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ anthropic_api_key: 'first-edit' })
+    )
+
+    // Trigger a second debounced save while the first request is still
+    // in flight (its promise hasn't resolved yet).
+    fireEvent.change(input, { target: { value: 'second-edit' } })
+
+    // Let the second debounce window (800ms) fully elapse. If saves were
+    // fired concurrently instead of serialized, saveUserSettings would
+    // already have been called a second time by now, even though the
+    // first request hasn't settled.
+    await new Promise((resolve) => setTimeout(resolve, 1200))
+    expect(saveUserSettings).toHaveBeenCalledTimes(1)
+
+    // Only once the first request settles should the second one's actual
+    // network call fire.
+    resolveFirstSave()
+    await waitFor(() => expect(saveUserSettings).toHaveBeenCalledTimes(2), { timeout: 2000 })
+    expect(saveUserSettings).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ anthropic_api_key: 'second-edit' })
+    )
+
+    resolveSecondSave()
+  })
 })
