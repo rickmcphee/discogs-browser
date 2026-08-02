@@ -9,7 +9,7 @@ at a time, each pulling pages from `shopify_catalog.iter_products()`. On
 2026-08-02, a single run hit HTTP 429 on the *first* request of four unrelated
 Shopify merchants in a row (Run For Cover, Equal Vision, Saddle Creek,
 Temporary Residence Ltd) — after the existing 22.5–45s pre-request delay added
-in `dd969c1`/`98cbcfe`. robots.txt, this app's Playwright-only
+in `dd969c1`/`98cbcfe`; robots.txt, this app's Playwright-only
 `BotDetectedError` mechanism, and any single site's own defenses were all
 ruled out (see `stock-sync-429-followup` investigation notes). The
 cross-merchant, first-request-fails pattern points to Shopify's shared

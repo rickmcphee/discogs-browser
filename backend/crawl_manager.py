@@ -300,15 +300,17 @@ class CrawlManager:
                     async for item in crawler.crawl_catalog():
                         items.append(item)
                 except Exception as e:
-                    log.error("[%s] Stock crawl failed: %s", crawler._db_site_name, e, exc_info=True)
-                    await self._broadcast({
-                        "status": "stock_sync_error",
-                        "error": str(e),
-                        "source": crawler._db_site_name,
-                    })
-                    if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 429:
+                    is_rate_limited = isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 429
+                    if is_rate_limited:
+                        log.warning("[%s] Stock crawl rate-limited (HTTP 429): %s", crawler._db_site_name, e)
                         consecutive_429_sites.append(crawler._db_site_name)
                     else:
+                        log.error("[%s] Stock crawl failed: %s", crawler._db_site_name, e, exc_info=True)
+                        await self._broadcast({
+                            "status": "stock_sync_error",
+                            "error": str(e),
+                            "source": crawler._db_site_name,
+                        })
                         consecutive_429_sites = []
                     if len(consecutive_429_sites) >= 2:
                         log.warning(

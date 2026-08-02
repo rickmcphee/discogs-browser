@@ -147,7 +147,8 @@ export default function App() {
       }
       if (event.status === 'stock_sync_aborted') {
         setSyncing(false)
-        setSyncStatus(`In-stock sync stopped: ${event.error} (${event.sources?.join(', ')})`, event.id ?? null)
+        const sources = event.sources?.length ? ` (${event.sources.join(', ')})` : ''
+        setSyncStatus(`In-stock sync stopped: ${event.error}${sources}`, event.id ?? null)
         return
       }
       if (event.status === 'stock_judgment_started') {

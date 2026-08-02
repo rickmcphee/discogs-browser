@@ -568,6 +568,59 @@ async def test_sync_stock_resets_429_streak_after_a_non_429_failure(manager, tmp
     conn.close()
 
 
+async def test_sync_stock_does_not_broadcast_stock_sync_error_for_a_lone_429(manager, tmp_config_dir, monkeypatch):
+    import config as cfg_module
+    import db as db_module
+    import crawler as crawler_module
+    import httpx
+    from db import register_crawler
+
+    conn = sqlite3.connect(cfg_module.DB_FILE)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db_module.init_db(conn)
+    for name in ["Run For Cover", "Middle Site"]:
+        register_crawler(conn, name, f"/path/{name}.py", crawler_type="catalog")
+    ids = {row["site_name"]: row["id"] for row in conn.execute("SELECT id, site_name FROM crawlers")}
+
+    def _http_429():
+        request = httpx.Request("GET", "https://example.test/products.json")
+        return httpx.HTTPStatusError("429", request=request, response=httpx.Response(429))
+
+    class _FailingCrawler:
+        def __init__(self, name):
+            self._db_id = ids[name]
+            self._db_site_name = name
+
+        async def crawl_catalog(self):
+            raise _http_429()
+            yield  # pragma: no cover
+
+    class _SucceedingCrawler:
+        def __init__(self, name):
+            self._db_id = ids[name]
+            self._db_site_name = name
+
+        async def crawl_catalog(self):
+            yield {"artist": "A", "title": "T", "price": 1.0, "currency": "USD", "url": "https://x/1"}
+
+    monkeypatch.setattr(crawler_module, "load_enabled_crawlers", lambda enabled: [
+        _FailingCrawler("Run For Cover"),
+        _SucceedingCrawler("Middle Site"),
+    ])
+
+    await manager._sync_stock()
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    # A single 429 that never reaches the abort threshold is an expected, handled
+    # condition -- it must not be reported as a stock_sync_error (that would make
+    # the circuit breaker's own normal operation look like a crash).
+    assert "stock_sync_error" not in statuses
+    assert "stock_sync_aborted" not in statuses
+    assert "stock_sync_complete" in statuses
+    conn.close()
+
+
 async def test_run_judgment_phase_broadcasts_complete_when_nothing_unjudged(manager, tmp_config_dir, caplog):
     import config as cfg_module
     import db as db_module
