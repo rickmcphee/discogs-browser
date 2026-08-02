@@ -280,6 +280,50 @@ async def test_sync_collection_calls_plex_match_when_configured(pg_schema, monke
     assert calls == [(user["id"], "plex.local:32400", "ptok", 90)]
 
 
+@respx.mock
+async def test_sync_collection_skips_plex_match_when_unconfigured(pg_schema, monkeypatch):
+    import config
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        # plex_base_url/plex_token are left NULL -- create_user doesn't set them.
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s "
+            "WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        return_value=_collection_page(111, total_pages=1)
+    )
+    respx.get(url__regex=r"https://api\.discogs\.com/releases/\d+").mock(
+        return_value=httpx.Response(200, json={"identifiers": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    manager = CrawlManager()
+    calls = []
+
+    async def _fake_plex_match(user_id, base_url, token, threshold):
+        calls.append((user_id, base_url, token, threshold))
+
+    manager._run_plex_match = _fake_plex_match
+    await manager._sync_collection(user["id"], "all")
+
+    assert calls == []
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert not any(s.startswith("plex_match") for s in statuses)
+
+
 # ---------------------------------------------------------------------------
 # _run_plex_match (per-user Plex library matching, SSRF-guarded via plex_security)
 # ---------------------------------------------------------------------------
@@ -326,6 +370,80 @@ async def test_run_plex_match_updates_matched_and_clears_unmatched(pg_schema, mo
 
     statuses = [e["status"] for e in manager.recent_events()]
     assert statuses == ["plex_match_started", "plex_match_progress", "plex_match_complete"]
+
+
+async def test_run_plex_match_handles_more_than_25_items_without_losing_rls_scope(pg_schema, monkeypatch):
+    """Regression test: the loop's own intermediate conn.commit() every 25
+    items ends user_scope()'s transaction and resets the transaction-local
+    app.user_id GUC. Without re-issuing set_config after that commit, item 26
+    onward raised InvalidTextRepresentation from the library_items RLS policy
+    and the whole run aborted as plex_match_error -- verified by removing the
+    re-set_config call and watching this test fail with exactly that error."""
+    import plex
+
+    matched_pairs = [(f"Artist {i}", f"Album {i}") for i in range(1, 16)]
+    # Deliberately share no words with matched_pairs, so rapidfuzz's WRatio
+    # can't accidentally score one of these above the match threshold against
+    # an "Artist N" / "Album N" album -- these must genuinely fail to match.
+    unmatched_pairs = [
+        ("Nebula Choir", "Silent Ember"), ("Velvet Radio", "Frost Giants"),
+        ("Copper Wolves", "Marble Skyline"), ("Paper Lanterns", "Iron Horizon"),
+        ("Glass Orchard", "Neon Tundra"), ("Salt Marsh", "Granite Bloom"),
+        ("Quiet Static", "Amber Foxtrot"), ("Wandering Kites", "Hollow Anchor"),
+        ("Crimson Ferry", "Midnight Loom"), ("Driftwood Signal", "Pale Harvest"),
+        ("Slate River", "Echo Bramble"), ("Ivory Static", "Blue Thicket"),
+        ("Rust Meridian", "Quiet Compass"), ("Feral Chorus", "Umber Trellis"),
+        ("Lantern Row", "Coral Undertow"),
+    ]
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        for i, (artist, title) in enumerate(matched_pairs, start=1):
+            db.upsert_catalog_release(conn, {
+                "discogs_id": f"r{i}", "artist": artist, "title": title, "year": None, "label": None,
+                "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+                "discogs_url": None,
+            })
+            db.upsert_library_item(conn, user["id"], f"r{i}", in_collection=True)
+        for j, (artist, title) in enumerate(unmatched_pairs, start=1):
+            i = 15 + j
+            db.upsert_catalog_release(conn, {
+                "discogs_id": f"r{i}", "artist": artist, "title": title, "year": None, "label": None,
+                "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+                "discogs_url": None,
+            })
+            db.upsert_library_item(conn, user["id"], f"r{i}", in_collection=True)
+        # Pre-seed a stale match on the very last item -- past the 25-item
+        # commit boundary -- to confirm the clear path also survives the
+        # re-scoping, not just the set path.
+        db.set_plex_match(conn, user["id"], "r30", "http://plex.local:32400/web/stale")
+        conn.commit()
+
+    albums = [
+        {"artist": artist, "title": title, "rating_key": str(i)}
+        for i, (artist, title) in enumerate(matched_pairs, start=1)
+    ]
+    monkeypatch.setattr(plex, "get_music_section_key", lambda base_url, token: "2")
+    monkeypatch.setattr(plex, "fetch_albums", lambda base_url, token, key: albums)
+    monkeypatch.setattr(plex, "get_machine_identifier", lambda base_url, token: "abc123")
+
+    manager = CrawlManager()
+    await manager._run_plex_match(user["id"], "plex.local:32400", "tok", 90)
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert statuses == [
+        "plex_match_started", "plex_match_progress", "plex_match_progress", "plex_match_complete",
+    ]
+
+    with db.get_admin_pool().connection() as conn:
+        rows = conn.execute(
+            "SELECT discogs_id, plex_url FROM library_items WHERE user_id = %s", [user["id"]]
+        ).fetchall()
+    plex_urls = {r["discogs_id"]: r["plex_url"] for r in rows}
+    for i in range(1, 16):
+        assert plex_urls[f"r{i}"] is not None, f"r{i} (index {i}, before the 25-item boundary) should have matched"
+    for i in range(16, 31):
+        assert plex_urls[f"r{i}"] is None, f"r{i} (index {i}, past the 25-item boundary) should have been cleared"
 
 
 async def test_run_plex_match_broadcasts_error_when_no_music_section_found(pg_schema, monkeypatch):

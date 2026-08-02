@@ -598,8 +598,12 @@ class CrawlManager:
                         clear_plex_match(conn, user_id, item["discogs_id"])
                     if i % 25 == 0 or i == len(items):
                         conn.commit()
+                        # user_scope()'s set_config(..., true) is transaction-local and
+                        # was just reverted by the commit above -- re-issue it so the
+                        # remaining items in this same connection are still RLS-scoped
+                        # to this user (same hazard _sync_collection's page loop hits).
+                        conn.execute("SELECT set_config('app.user_id', %s, true)", [str(user_id)])
                         await self._broadcast({"status": "plex_match_progress", "matched": matched, "total": len(items)})
-                conn.commit()
 
             await self._broadcast({"status": "plex_match_complete", "matched": matched})
             log.info("Plex match complete for user %d: %d/%d matched", user_id, matched, len(items))
@@ -609,6 +613,6 @@ class CrawlManager:
                 await self._broadcast({"status": "plex_match_error", "error": "Plex address not reachable"})
             else:
                 log.warning("Plex match phase failed for user %d, skipping: %s", user_id, e)
-                await self._broadcast({"status": "plex_match_error", "error": str(e)})
+                await self._broadcast({"status": "plex_match_error", "error": "Plex match failed"})
 
 crawl_manager = CrawlManager()
