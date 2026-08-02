@@ -68,11 +68,20 @@ describe('Account', () => {
     await waitFor(() => expect(getUserSettings).toHaveBeenCalled())
     const input = screen.getByLabelText('Anthropic API key')
     fireEvent.change(input, { target: { value: 'sk-ant-new-key' } })
-    fireEvent.click(screen.getAllByRole('button', { name: /Save/i })[0])
+    fireEvent.click(screen.getByRole('button', { name: 'Save Recommendations settings' }))
     await waitFor(() =>
       expect(saveUserSettings).toHaveBeenCalledWith(
         expect.objectContaining({ anthropic_api_key: 'sk-ant-new-key' })
       )
     )
+  })
+
+  it('shows a clean error message (not raw JSON) when saving Plex settings fails', async () => {
+    saveUserSettings.mockRejectedValueOnce(new Error(JSON.stringify({ detail: 'Plex address not reachable' })))
+    render(<Account avatarVersion={0} onAvatarChange={() => {}} />)
+    await waitFor(() => expect(getUserSettings).toHaveBeenCalled())
+    fireEvent.click(screen.getByRole('button', { name: 'Save Plex settings' }))
+    await waitFor(() => expect(screen.getByText('Plex address not reachable')).toBeInTheDocument())
+    expect(screen.queryByText(/"detail"/)).not.toBeInTheDocument()
   })
 })

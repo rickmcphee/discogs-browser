@@ -44,7 +44,14 @@ function Account({ avatarVersion, onAvatarChange }: Props) {
       setUserSettingsSaved(true)
       setTimeout(() => setUserSettingsSaved(false), 2000)
     } catch (err: any) {
-      setPlexSaveError(err.message || 'Save failed')
+      let message = err.message || 'Save failed'
+      try {
+        const parsed = JSON.parse(err.message)
+        if (parsed.detail) message = parsed.detail
+      } catch {
+        // not JSON, use raw message
+      }
+      setPlexSaveError(message)
     } finally {
       setUserSettingsSaving(false)
     }
@@ -132,6 +139,7 @@ function Account({ avatarVersion, onAvatarChange }: Props) {
           <button
             onClick={handleSaveUserSettings}
             disabled={userSettingsSaving}
+            aria-label="Save Recommendations settings"
             className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded text-sm font-medium transition-colors"
           >
             {userSettingsSaved ? '✓ Saved' : userSettingsSaving ? 'Saving…' : 'Save'}
@@ -189,6 +197,7 @@ function Account({ avatarVersion, onAvatarChange }: Props) {
           <button
             onClick={handleSaveUserSettings}
             disabled={userSettingsSaving}
+            aria-label="Save Plex settings"
             className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded text-sm font-medium transition-colors"
           >
             {userSettingsSaved ? '✓ Saved' : userSettingsSaving ? 'Saving…' : 'Save'}
@@ -215,9 +224,9 @@ function Account({ avatarVersion, onAvatarChange }: Props) {
                 />
               </td>
               <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
-                Must be reachable from this server — a LAN address only works for a
-                self-hosted deployment; a hosted deployment needs Plex Remote Access
-                or a tunnel such as Tailscale.
+                Must be reachable from this server over the internet — a bare LAN
+                address won't work; use Plex Remote Access or a tunnel such as
+                Tailscale.
               </td>
             </tr>
             <tr className="border-b border-gray-800/50">
