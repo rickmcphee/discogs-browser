@@ -148,6 +148,7 @@ export async function getStock(params: {
   per_page?: number
   overlapping?: boolean
   recommended?: boolean
+  hiddenCrawlerIds?: number[]
 }): Promise<StockResponse> {
   const q = new URLSearchParams()
   if (params.search) q.set('search', params.search)
@@ -158,15 +159,17 @@ export async function getStock(params: {
   if (params.per_page) q.set('per_page', String(params.per_page))
   if (params.overlapping) q.set('overlapping', 'true')
   if (params.recommended) q.set('recommended', 'true')
+  if (params.hiddenCrawlerIds?.length) q.set('hidden_crawler_ids', params.hiddenCrawlerIds.join(','))
   const r = await apiFetch(`/stock?${q}`)
   if (!r.ok) throw new Error(await r.text())
   return r.json()
 }
 
-export async function getStockArtists(overlapping?: boolean, recommended?: boolean): Promise<string[]> {
+export async function getStockArtists(overlapping?: boolean, recommended?: boolean, hiddenCrawlerIds?: number[]): Promise<string[]> {
   const q = new URLSearchParams()
   if (overlapping) q.set('overlapping', 'true')
   if (recommended) q.set('recommended', 'true')
+  if (hiddenCrawlerIds?.length) q.set('hidden_crawler_ids', hiddenCrawlerIds.join(','))
   const qs = q.toString() ? `?${q}` : ''
   const r = await apiFetch(`/stock/artists${qs}`)
   if (!r.ok) throw new Error(await r.text())
