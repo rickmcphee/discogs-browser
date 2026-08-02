@@ -210,7 +210,18 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
                       )}
                       <div className="mt-1.5 text-sm text-gray-200 truncate group-hover:text-indigo-400">{r.artist}</div>
                     </a>
-                    <div className="text-xs text-gray-400 truncate">{r.title}</div>
+                    {r.plex_url ? (
+                      <a
+                        href={r.plex_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-xs text-gray-400 truncate hover:text-indigo-400 block"
+                      >
+                        {r.title}
+                      </a>
+                    ) : (
+                      <div className="text-xs text-gray-400 truncate">{r.title}</div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -314,7 +325,13 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
                     </a>
                   </td>
                   <td className="px-3 py-2 text-gray-300">
-                    {r.title}
+                    {r.plex_url ? (
+                      <a href={r.plex_url} target="_blank" rel="noreferrer" className="hover:text-indigo-400">
+                        {r.title}
+                      </a>
+                    ) : (
+                      r.title
+                    )}
                   </td>
                   <td className="px-3 py-2 text-gray-400">{r.year ?? '—'}</td>
                   <td className="px-3 py-2 text-gray-400 truncate max-w-32">{r.label}</td>
