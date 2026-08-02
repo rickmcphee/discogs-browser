@@ -9,6 +9,7 @@ interface Props {
 
 function Account({ avatarVersion, onAvatarChange }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const skipNextAutoSave = useRef(true)
   const [avatarError, setAvatarError] = useState('')
   const [avatarBusy, setAvatarBusy] = useState(false)
   const [anthropicApiKey, setAnthropicApiKey] = useState('')
@@ -16,9 +17,8 @@ function Account({ avatarVersion, onAvatarChange }: Props) {
   const [plexBaseUrl, setPlexBaseUrl] = useState('')
   const [plexToken, setPlexToken] = useState('')
   const [plexMatchThreshold, setPlexMatchThreshold] = useState(90)
-  const [userSettingsSaving, setUserSettingsSaving] = useState(false)
-  const [userSettingsSaved, setUserSettingsSaved] = useState(false)
   const [plexSaveError, setPlexSaveError] = useState('')
+  const [settingsLoaded, setSettingsLoaded] = useState(false)
 
   useEffect(() => {
     getUserSettings().then((s) => {
@@ -27,11 +27,12 @@ function Account({ avatarVersion, onAvatarChange }: Props) {
       setPlexBaseUrl(s.plex_base_url)
       setPlexToken(s.plex_token)
       setPlexMatchThreshold(s.plex_match_threshold)
+      skipNextAutoSave.current = true
+      setSettingsLoaded(true)
     }).catch(() => {})
   }, [])
 
-  async function handleSaveUserSettings() {
-    setUserSettingsSaving(true)
+  async function saveUserSettingsNow() {
     setPlexSaveError('')
     try {
       await saveUserSettings({
@@ -41,8 +42,6 @@ function Account({ avatarVersion, onAvatarChange }: Props) {
         plex_token: plexToken,
         plex_match_threshold: plexMatchThreshold,
       })
-      setUserSettingsSaved(true)
-      setTimeout(() => setUserSettingsSaved(false), 2000)
     } catch (err: any) {
       let message = err.message || 'Save failed'
       try {
@@ -52,10 +51,20 @@ function Account({ avatarVersion, onAvatarChange }: Props) {
         // not JSON, use raw message
       }
       setPlexSaveError(message)
-    } finally {
-      setUserSettingsSaving(false)
     }
   }
+
+  useEffect(() => {
+    if (skipNextAutoSave.current) {
+      skipNextAutoSave.current = false
+      return
+    }
+    setPlexSaveError('')
+    const timer = setTimeout(() => {
+      saveUserSettingsNow()
+    }, 800)
+    return () => clearTimeout(timer)
+  }, [anthropicApiKey, recommendationItemLimit, plexBaseUrl, plexToken, plexMatchThreshold, settingsLoaded])
 
   async function handleFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -134,17 +143,7 @@ function Account({ avatarVersion, onAvatarChange }: Props) {
 
       {/* Recommendations */}
       <section>
-        <div className="flex items-center justify-between mb-1">
-          <h2 className="text-lg font-semibold text-white text-left">Recommendations</h2>
-          <button
-            onClick={handleSaveUserSettings}
-            disabled={userSettingsSaving}
-            aria-label="Save Recommendations settings"
-            className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded text-sm font-medium transition-colors"
-          >
-            {userSettingsSaved ? '✓ Saved' : userSettingsSaving ? 'Saving…' : 'Save'}
-          </button>
-        </div>
+        <h2 className="text-lg font-semibold text-white mb-1 text-left">Recommendations</h2>
         <p className="text-sm text-gray-500 mb-4 text-left">
           Used to judge Store items against your collection for the Recommended filter.
         </p>
@@ -192,17 +191,7 @@ function Account({ avatarVersion, onAvatarChange }: Props) {
 
       {/* Plex */}
       <section>
-        <div className="flex items-center justify-between mb-1">
-          <h2 className="text-lg font-semibold text-white text-left">Plex</h2>
-          <button
-            onClick={handleSaveUserSettings}
-            disabled={userSettingsSaving}
-            aria-label="Save Plex settings"
-            className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded text-sm font-medium transition-colors"
-          >
-            {userSettingsSaved ? '✓ Saved' : userSettingsSaving ? 'Saving…' : 'Save'}
-          </button>
-        </div>
+        <h2 className="text-lg font-semibold text-white mb-1 text-left">Plex</h2>
         <p className="text-sm text-gray-500 mb-4 text-left">
           Link collection releases to matching albums in your Plex music library.
         </p>
