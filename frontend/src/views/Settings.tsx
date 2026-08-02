@@ -77,6 +77,8 @@ function Settings({
 
   const releaseCrawlers = crawlers.filter((c) => c.crawler_type !== 'catalog')
   const catalogCrawlers = crawlers.filter((c) => c.crawler_type === 'catalog')
+  const shownReleaseCrawlers = isAdmin ? releaseCrawlers : releaseCrawlers.filter((c) => c.enabled)
+  const shownCatalogCrawlers = isAdmin ? catalogCrawlers : catalogCrawlers.filter((c) => c.enabled)
 
   function renderSettingRow(row: SettingRow, first: boolean) {
     return (
@@ -111,6 +113,59 @@ function Settings({
           {row.description}
         </td>
       </tr>
+    )
+  }
+
+  function renderCrawlerTable(crawlerList: Crawler[], emptyMessage: string) {
+    if (crawlerList.length === 0) {
+      return <p className="text-gray-500 text-sm text-left mt-4">{emptyMessage}</p>
+    }
+    return (
+      <table className="w-full text-sm border-collapse mt-4">
+        <thead>
+          <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-800">
+            <th className="text-left py-2 pr-4 w-40">Site</th>
+            {isAdmin && <th className="text-left py-2 pr-4 w-48">Last run</th>}
+            <th className="text-left py-2 pr-4">View</th>
+            {isAdmin && <th className="text-left py-2">Crawl</th>}
+          </tr>
+        </thead>
+        <tbody>
+          {crawlerList.map((c) => (
+            <tr key={c.id} className="border-b border-gray-800/50">
+              <td className="py-3 pr-4 text-left text-gray-200 font-medium">
+                {c.base_url
+                  ? <a href={c.base_url} target="_blank" rel="noreferrer"
+                       className="text-indigo-400 hover:text-indigo-300 underline">{c.site_name}</a>
+                  : c.site_name}
+              </td>
+              {isAdmin && (
+                <td className="py-3 pr-4 text-left text-gray-500 text-xs">
+                  {c.last_run ? new Date(c.last_run).toLocaleString() : '—'}
+                </td>
+              )}
+              <td className="py-3 pr-4 text-left">
+                <button
+                  onClick={() => onToggleCrawlerView(c.id)}
+                  className={toggleButtonClass(!hiddenCrawlerIds.includes(c.id))}
+                >
+                  {hiddenCrawlerIds.includes(c.id) ? 'Hidden' : 'Visible'}
+                </button>
+              </td>
+              {isAdmin && (
+                <td className="py-3 text-left">
+                  <button
+                    onClick={() => handleToggleCrawler(c)}
+                    className={toggleButtonClass(c.enabled)}
+                  >
+                    {c.enabled ? 'Enabled' : 'Disabled'}
+                  </button>
+                </td>
+              )}
+            </tr>
+          ))}
+        </tbody>
+      </table>
     )
   }
 
@@ -218,58 +273,7 @@ function Settings({
             </table>
           </>
         )}
-        {(() => {
-          const shown = isAdmin ? releaseCrawlers : releaseCrawlers.filter((c) => c.enabled)
-          return shown.length === 0 ? (
-            <p className="text-gray-500 text-sm text-left mt-4">No crawlers configured.</p>
-          ) : (
-            <table className="w-full text-sm border-collapse mt-4">
-              <thead>
-                <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-800">
-                  <th className="text-left py-2 pr-4 w-40">Site</th>
-                  {isAdmin && <th className="text-left py-2 pr-4 w-48">Last run</th>}
-                  <th className="text-left py-2 pr-4">View</th>
-                  {isAdmin && <th className="text-left py-2">Crawl</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {shown.map((c) => (
-                  <tr key={c.id} className="border-b border-gray-800/50">
-                    <td className="py-3 pr-4 text-left text-gray-200 font-medium">
-                      {c.base_url
-                        ? <a href={c.base_url} target="_blank" rel="noreferrer"
-                             className="text-indigo-400 hover:text-indigo-300 underline">{c.site_name}</a>
-                        : c.site_name}
-                    </td>
-                    {isAdmin && (
-                      <td className="py-3 pr-4 text-left text-gray-500 text-xs">
-                        {c.last_run ? new Date(c.last_run).toLocaleString() : '—'}
-                      </td>
-                    )}
-                    <td className="py-3 pr-4 text-left">
-                      <button
-                        onClick={() => onToggleCrawlerView(c.id)}
-                        className={toggleButtonClass(!hiddenCrawlerIds.includes(c.id))}
-                      >
-                        {hiddenCrawlerIds.includes(c.id) ? 'Hidden' : 'Visible'}
-                      </button>
-                    </td>
-                    {isAdmin && (
-                      <td className="py-3 text-left">
-                        <button
-                          onClick={() => handleToggleCrawler(c)}
-                          className={toggleButtonClass(c.enabled)}
-                        >
-                          {c.enabled ? 'Enabled' : 'Disabled'}
-                        </button>
-                      </td>
-                    )}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )
-        })()}
+        {renderCrawlerTable(shownReleaseCrawlers, 'No crawlers configured.')}
       </section>
 
       {/* Store Management */}
@@ -317,58 +321,7 @@ function Settings({
             </tbody>
           </table>
         )}
-        {(() => {
-          const shown = isAdmin ? catalogCrawlers : catalogCrawlers.filter((c) => c.enabled)
-          return shown.length === 0 ? (
-            <p className="text-gray-500 text-sm text-left mt-4">No catalog crawlers configured.</p>
-          ) : (
-            <table className="w-full text-sm border-collapse mt-4">
-              <thead>
-                <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-800">
-                  <th className="text-left py-2 pr-4 w-40">Site</th>
-                  {isAdmin && <th className="text-left py-2 pr-4 w-48">Last run</th>}
-                  <th className="text-left py-2 pr-4">View</th>
-                  {isAdmin && <th className="text-left py-2">Crawl</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {shown.map((c) => (
-                  <tr key={c.id} className="border-b border-gray-800/50">
-                    <td className="py-3 pr-4 text-left text-gray-200 font-medium">
-                      {c.base_url
-                        ? <a href={c.base_url} target="_blank" rel="noreferrer"
-                             className="text-indigo-400 hover:text-indigo-300 underline">{c.site_name}</a>
-                        : c.site_name}
-                    </td>
-                    {isAdmin && (
-                      <td className="py-3 pr-4 text-left text-gray-500 text-xs">
-                        {c.last_run ? new Date(c.last_run).toLocaleString() : '—'}
-                      </td>
-                    )}
-                    <td className="py-3 pr-4 text-left">
-                      <button
-                        onClick={() => onToggleCrawlerView(c.id)}
-                        className={toggleButtonClass(!hiddenCrawlerIds.includes(c.id))}
-                      >
-                        {hiddenCrawlerIds.includes(c.id) ? 'Hidden' : 'Visible'}
-                      </button>
-                    </td>
-                    {isAdmin && (
-                      <td className="py-3 text-left">
-                        <button
-                          onClick={() => handleToggleCrawler(c)}
-                          className={toggleButtonClass(c.enabled)}
-                        >
-                          {c.enabled ? 'Enabled' : 'Disabled'}
-                        </button>
-                      </td>
-                    )}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )
-        })()}
+        {renderCrawlerTable(shownCatalogCrawlers, 'No catalog crawlers configured.')}
       </section>
 
       {/* Recommendations Management */}
