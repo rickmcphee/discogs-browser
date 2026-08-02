@@ -42,6 +42,7 @@ export default function App() {
   const [syncMessageId, setSyncMessageId] = useState<number | null>(null)
   const [dismissedSyncId, setDismissedSyncId] = useState(() => Number(localStorage.getItem(DISMISSED_SYNC_KEY) ?? 0))
   const [syncing, setSyncing] = useState(false)
+  const [syncGeneration, setSyncGeneration] = useState(0)
   const [authState, setAuthState] = useState<AuthStatus | null>(null)
   const [signupToken, setSignupToken] = useState<string | null>(() => {
     const params = new URLSearchParams(window.location.search)
@@ -99,12 +100,14 @@ export default function App() {
       }
       if (event.status === 'sync_progress') {
         setSyncStatus(`Syncing collection… ${event.synced} records (page ${event.page}/${event.total_pages})`, event.id ?? null)
+        setSyncGeneration(g => g + 1)
         return
       }
       if (event.status === 'sync_complete') {
         setSyncing(false)
         const wishlistPart = event.wishlist_synced != null ? `, ${event.wishlist_synced} wishlist items` : ''
         setSyncStatus(`Synced ${event.synced} records for ${event.username}${wishlistPart}`, event.id ?? null)
+        setSyncGeneration(g => g + 1)
         return
       }
       if (event.status === 'sync_error') {
@@ -438,6 +441,7 @@ export default function App() {
             crawlers={crawlers}
             syncing={syncing}
             onRefreshCollection={() => handleRefresh()}
+            syncGeneration={syncGeneration}
           />
         </div>
         <div className={view === 'wishlist' ? 'h-full' : 'hidden'}>
@@ -450,6 +454,7 @@ export default function App() {
             crawlers={crawlers}
             syncing={syncing}
             onRefreshCollection={() => handleRefresh()}
+            syncGeneration={syncGeneration}
           />
         </div>
         <div className={view === 'instock' ? 'h-full' : 'hidden'}>

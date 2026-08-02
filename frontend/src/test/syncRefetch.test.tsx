@@ -20,28 +20,38 @@ beforeEach(() => {
   })
 })
 
-describe('refetch on sync completion', () => {
-  it('reloads releases when syncing transitions from true to false', async () => {
+describe('refetch on sync progress', () => {
+  it('reloads releases each time syncGeneration increments', async () => {
     const { rerender } = render(
-      <RecordBrowser scope="collection" onRefreshPrices={() => {}} syncing={true} />
+      <RecordBrowser scope="collection" onRefreshPrices={() => {}} syncGeneration={0} />
     )
     await waitFor(() => expect(getReleases).toHaveBeenCalledTimes(1))
 
     rerender(
-      <RecordBrowser scope="collection" onRefreshPrices={() => {}} syncing={false} />
+      <RecordBrowser scope="collection" onRefreshPrices={() => {}} syncGeneration={1} />
     )
     await waitFor(() => expect(getReleases).toHaveBeenCalledTimes(2))
+
+    rerender(
+      <RecordBrowser scope="collection" onRefreshPrices={() => {}} syncGeneration={2} />
+    )
+    await waitFor(() => expect(getReleases).toHaveBeenCalledTimes(3))
   })
 
-  it('does not reload again while syncing stays false', async () => {
+  it('does not reload again when syncGeneration stays the same', async () => {
     const { rerender } = render(
-      <RecordBrowser scope="collection" onRefreshPrices={() => {}} syncing={false} />
+      <RecordBrowser scope="collection" onRefreshPrices={() => {}} syncGeneration={0} />
     )
     await waitFor(() => expect(getReleases).toHaveBeenCalledTimes(1))
 
     rerender(
-      <RecordBrowser scope="collection" onRefreshPrices={() => {}} syncing={false} />
+      <RecordBrowser scope="collection" onRefreshPrices={() => {}} syncGeneration={1} />
     )
-    await waitFor(() => expect(getReleases).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(getReleases).toHaveBeenCalledTimes(2))
+
+    rerender(
+      <RecordBrowser scope="collection" onRefreshPrices={() => {}} syncGeneration={1} />
+    )
+    await waitFor(() => expect(getReleases).toHaveBeenCalledTimes(2))
   })
 })
