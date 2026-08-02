@@ -413,6 +413,161 @@ async def test_sync_stock_judgment_phase_failure_broadcasts_error(manager, tmp_c
     conn.close()
 
 
+async def test_sync_stock_aborts_after_two_consecutive_429_crawlers(manager, tmp_config_dir, monkeypatch):
+    import config as cfg_module
+    import db as db_module
+    import crawler as crawler_module
+    import httpx
+    from db import register_crawler
+
+    conn = sqlite3.connect(cfg_module.DB_FILE)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db_module.init_db(conn)
+    for name in ["Run For Cover", "Equal Vision", "Never Attempted"]:
+        register_crawler(conn, name, f"/path/{name}.py", crawler_type="catalog")
+    ids = {row["site_name"]: row["id"] for row in conn.execute("SELECT id, site_name FROM crawlers")}
+
+    def _http_429():
+        request = httpx.Request("GET", "https://example.test/products.json")
+        return httpx.HTTPStatusError("429", request=request, response=httpx.Response(429))
+
+    class _FailingCrawler:
+        def __init__(self, name):
+            self._db_id = ids[name]
+            self._db_site_name = name
+
+        async def crawl_catalog(self):
+            raise _http_429()
+            yield  # pragma: no cover -- keeps this an async generator function
+
+    class _SucceedingCrawler:
+        def __init__(self, name):
+            self._db_id = ids[name]
+            self._db_site_name = name
+
+        async def crawl_catalog(self):
+            yield {"artist": "A", "title": "T", "price": 1.0, "currency": "USD", "url": "https://x/1"}
+
+    monkeypatch.setattr(crawler_module, "load_enabled_crawlers", lambda enabled: [
+        _FailingCrawler("Run For Cover"),
+        _FailingCrawler("Equal Vision"),
+        _SucceedingCrawler("Never Attempted"),
+    ])
+
+    await manager._sync_stock()
+
+    events = manager.recent_events()
+    statuses = [e["status"] for e in events]
+    assert "stock_sync_aborted" in statuses
+    assert "stock_sync_complete" not in statuses
+    aborted = next(e for e in events if e["status"] == "stock_sync_aborted")
+    assert aborted["sources"] == ["Run For Cover", "Equal Vision"]
+    assert not any(e.get("source") == "Never Attempted" for e in events)
+    conn.close()
+
+
+async def test_sync_stock_resets_429_streak_after_a_success(manager, tmp_config_dir, monkeypatch):
+    import config as cfg_module
+    import db as db_module
+    import crawler as crawler_module
+    import httpx
+    from db import register_crawler
+
+    conn = sqlite3.connect(cfg_module.DB_FILE)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db_module.init_db(conn)
+    for name in ["Run For Cover", "Middle Site", "Equal Vision"]:
+        register_crawler(conn, name, f"/path/{name}.py", crawler_type="catalog")
+    ids = {row["site_name"]: row["id"] for row in conn.execute("SELECT id, site_name FROM crawlers")}
+
+    def _http_429():
+        request = httpx.Request("GET", "https://example.test/products.json")
+        return httpx.HTTPStatusError("429", request=request, response=httpx.Response(429))
+
+    class _FailingCrawler:
+        def __init__(self, name):
+            self._db_id = ids[name]
+            self._db_site_name = name
+
+        async def crawl_catalog(self):
+            raise _http_429()
+            yield  # pragma: no cover
+
+    class _SucceedingCrawler:
+        def __init__(self, name):
+            self._db_id = ids[name]
+            self._db_site_name = name
+
+        async def crawl_catalog(self):
+            yield {"artist": "A", "title": "T", "price": 1.0, "currency": "USD", "url": "https://x/1"}
+
+    monkeypatch.setattr(crawler_module, "load_enabled_crawlers", lambda enabled: [
+        _FailingCrawler("Run For Cover"),
+        _SucceedingCrawler("Middle Site"),
+        _FailingCrawler("Equal Vision"),
+    ])
+
+    await manager._sync_stock()
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert "stock_sync_aborted" not in statuses
+    assert "stock_sync_complete" in statuses
+    conn.close()
+
+
+async def test_sync_stock_resets_429_streak_after_a_non_429_failure(manager, tmp_config_dir, monkeypatch):
+    import config as cfg_module
+    import db as db_module
+    import crawler as crawler_module
+    import httpx
+    from db import register_crawler
+
+    conn = sqlite3.connect(cfg_module.DB_FILE)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    db_module.init_db(conn)
+    for name in ["Run For Cover", "Middle Site", "Equal Vision"]:
+        register_crawler(conn, name, f"/path/{name}.py", crawler_type="catalog")
+    ids = {row["site_name"]: row["id"] for row in conn.execute("SELECT id, site_name FROM crawlers")}
+
+    def _http_429():
+        request = httpx.Request("GET", "https://example.test/products.json")
+        return httpx.HTTPStatusError("429", request=request, response=httpx.Response(429))
+
+    class _FailingCrawler:
+        def __init__(self, name):
+            self._db_id = ids[name]
+            self._db_site_name = name
+
+        async def crawl_catalog(self):
+            raise _http_429()
+            yield  # pragma: no cover
+
+    class _OtherFailureCrawler:
+        def __init__(self, name):
+            self._db_id = ids[name]
+            self._db_site_name = name
+
+        async def crawl_catalog(self):
+            raise RuntimeError("boom")
+            yield  # pragma: no cover
+
+    monkeypatch.setattr(crawler_module, "load_enabled_crawlers", lambda enabled: [
+        _FailingCrawler("Run For Cover"),
+        _OtherFailureCrawler("Middle Site"),
+        _FailingCrawler("Equal Vision"),
+    ])
+
+    await manager._sync_stock()
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert "stock_sync_aborted" not in statuses
+    assert "stock_sync_complete" in statuses
+    conn.close()
+
+
 async def test_run_judgment_phase_broadcasts_complete_when_nothing_unjudged(manager, tmp_config_dir, caplog):
     import config as cfg_module
     import db as db_module

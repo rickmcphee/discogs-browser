@@ -272,6 +272,7 @@ class CrawlManager:
 
     async def _sync_stock(self):
         import sqlite3
+        import httpx
         import config as cfg_module
         from config import load_config
         from db import get_enabled_crawlers, replace_stock_items, update_crawler_last_run
@@ -292,6 +293,7 @@ class CrawlManager:
                 return
 
             total_synced = 0
+            consecutive_429_sites: list[str] = []
             for crawler in crawlers:
                 items = []
                 try:
@@ -304,8 +306,25 @@ class CrawlManager:
                         "error": str(e),
                         "source": crawler._db_site_name,
                     })
+                    if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 429:
+                        consecutive_429_sites.append(crawler._db_site_name)
+                    else:
+                        consecutive_429_sites = []
+                    if len(consecutive_429_sites) >= 2:
+                        log.warning(
+                            "Stock sync aborted: %d catalog sites in a row hit HTTP 429 (%s) -- "
+                            "likely a platform-wide rate limit, not grinding the rest of the run into it",
+                            len(consecutive_429_sites), ", ".join(consecutive_429_sites),
+                        )
+                        await self._broadcast({
+                            "status": "stock_sync_aborted",
+                            "error": "Too many consecutive rate-limited catalog sites",
+                            "sources": list(consecutive_429_sites),
+                        })
+                        return
                     continue
 
+                consecutive_429_sites = []
                 replace_stock_items(conn, crawler._db_id, items)
                 total_synced += len(items)
                 update_crawler_last_run(conn, crawler._db_id)
