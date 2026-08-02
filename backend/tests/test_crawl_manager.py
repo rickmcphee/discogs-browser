@@ -236,6 +236,198 @@ async def test_sync_collection_enqueues_crawl_queue_for_missing_listings(pg_sche
     assert [(q["discogs_id"], q["status"]) for q in queued] == [("r111", "pending"), ("r222", "pending")]
 
 
+@respx.mock
+async def test_sync_collection_calls_plex_match_when_configured(pg_schema, monkeypatch):
+    import config
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s, "
+            "plex_base_url = %s, plex_token = %s WHERE id = %s",
+            [
+                token_encryption.encrypt("tok"), token_encryption.encrypt("sec"),
+                "plex.local:32400", "ptok", user["id"],
+            ],
+        )
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        return_value=_collection_page(111, total_pages=1)
+    )
+    respx.get(url__regex=r"https://api\.discogs\.com/releases/\d+").mock(
+        return_value=httpx.Response(200, json={"identifiers": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    manager = CrawlManager()
+    calls = []
+
+    async def _fake_plex_match(user_id, base_url, token, threshold):
+        calls.append((user_id, base_url, token, threshold))
+
+    manager._run_plex_match = _fake_plex_match
+    await manager._sync_collection(user["id"], "all")
+
+    assert calls == [(user["id"], "plex.local:32400", "ptok", 90)]
+
+
+# ---------------------------------------------------------------------------
+# _run_plex_match (per-user Plex library matching, SSRF-guarded via plex_security)
+# ---------------------------------------------------------------------------
+
+async def test_run_plex_match_updates_matched_and_clears_unmatched(pg_schema, monkeypatch):
+    import plex
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "Miles Davis", "title": "Kind of Blue", "year": 1959,
+            "label": "Columbia", "format": "Vinyl", "discogs_price": None, "barcode": None,
+            "cover_image_url": None, "discogs_url": None,
+        })
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r2", "artist": "Bill Evans", "title": "Waltz for Debby", "year": 1961,
+            "label": "Riverside", "format": "Vinyl", "discogs_price": None, "barcode": None,
+            "cover_image_url": None, "discogs_url": None,
+        })
+        db.upsert_library_item(conn, user["id"], "r1", in_collection=True)
+        db.upsert_library_item(conn, user["id"], "r2", in_collection=True)
+        conn.commit()
+
+    monkeypatch.setattr(plex, "get_music_section_key", lambda base_url, token: "2")
+    monkeypatch.setattr(plex, "fetch_albums", lambda base_url, token, key: [
+        {"artist": "Miles Davis", "title": "Kind of Blue", "rating_key": "500"},
+    ])
+    monkeypatch.setattr(plex, "get_machine_identifier", lambda base_url, token: "abc123")
+
+    manager = CrawlManager()
+    await manager._run_plex_match(user["id"], "plex.local:32400", "tok", 90)
+
+    with db.get_admin_pool().connection() as conn:
+        row1 = conn.execute(
+            "SELECT plex_url FROM library_items WHERE user_id = %s AND discogs_id = 'r1'", [user["id"]]
+        ).fetchone()
+        row2 = conn.execute(
+            "SELECT plex_url FROM library_items WHERE user_id = %s AND discogs_id = 'r2'", [user["id"]]
+        ).fetchone()
+    assert row1["plex_url"] == (
+        "http://plex.local:32400/web/index.html#!/server/abc123/details?key=/library/metadata/500"
+    )
+    assert row2["plex_url"] is None
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert statuses == ["plex_match_started", "plex_match_progress", "plex_match_complete"]
+
+
+async def test_run_plex_match_broadcasts_error_when_no_music_section_found(pg_schema, monkeypatch):
+    import plex
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None, "discogs_url": None,
+        })
+        db.upsert_library_item(conn, user["id"], "r1", in_collection=True)
+        db.set_plex_match(conn, user["id"], "r1", "http://plex.local:32400/web/x")
+        conn.commit()
+
+    monkeypatch.setattr(plex, "get_music_section_key", lambda base_url, token: None)
+
+    manager = CrawlManager()
+    await manager._run_plex_match(user["id"], "plex.local:32400", "tok", 90)
+
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT plex_url FROM library_items WHERE user_id = %s AND discogs_id = 'r1'", [user["id"]]
+        ).fetchone()
+    assert row["plex_url"] == "http://plex.local:32400/web/x"
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert statuses == ["plex_match_started", "plex_match_error"]
+
+
+@respx.mock
+async def test_run_plex_match_rejects_unsafe_address_with_generic_error(pg_schema, monkeypatch):
+    import socket
+
+    # No respx route is registered for plex.local -- this decorator exists so
+    # that if validate_address were accidentally skipped, the resulting real
+    # httpx call fails fast via respx's assert_all_mocked instead of actually
+    # reaching out over the network.
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None, "discogs_url": None,
+        })
+        db.upsert_library_item(conn, user["id"], "r1", in_collection=True)
+        db.set_plex_match(conn, user["id"], "r1", "http://plex.local:32400/web/x")
+        conn.commit()
+
+    monkeypatch.setattr(
+        socket, "getaddrinfo",
+        lambda host, port, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", port))],
+    )
+
+    manager = CrawlManager()
+    await manager._run_plex_match(user["id"], "plex.local:32400", "tok", 90)
+
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT plex_url FROM library_items WHERE user_id = %s AND discogs_id = 'r1'", [user["id"]]
+        ).fetchone()
+    assert row["plex_url"] == "http://plex.local:32400/web/x"
+
+    events = manager.recent_events()
+    assert [e["status"] for e in events] == ["plex_match_started", "plex_match_error"]
+    assert events[-1]["error"] == "Plex address not reachable"
+
+
+async def test_run_plex_match_does_not_touch_another_users_library_items(pg_schema, monkeypatch):
+    import plex
+
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        bob = db.create_user(conn, discogs_user_id=2, discogs_username="bob")
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "Miles Davis", "title": "Kind of Blue", "year": None,
+            "label": None, "format": None, "discogs_price": None, "barcode": None,
+            "cover_image_url": None, "discogs_url": None,
+        })
+        db.upsert_library_item(conn, alice["id"], "r1", in_collection=True)
+        db.upsert_library_item(conn, bob["id"], "r1", in_collection=True)
+        conn.commit()
+
+    monkeypatch.setattr(plex, "get_music_section_key", lambda base_url, token: "2")
+    monkeypatch.setattr(plex, "fetch_albums", lambda base_url, token, key: [
+        {"artist": "Miles Davis", "title": "Kind of Blue", "rating_key": "500"},
+    ])
+    monkeypatch.setattr(plex, "get_machine_identifier", lambda base_url, token: "abc123")
+
+    manager = CrawlManager()
+    await manager._run_plex_match(alice["id"], "plex.local:32400", "tok", 90)
+
+    with db.get_admin_pool().connection() as conn:
+        alice_row = conn.execute(
+            "SELECT plex_url FROM library_items WHERE user_id = %s AND discogs_id = 'r1'", [alice["id"]]
+        ).fetchone()
+        bob_row = conn.execute(
+            "SELECT plex_url FROM library_items WHERE user_id = %s AND discogs_id = 'r1'", [bob["id"]]
+        ).fetchone()
+    assert alice_row["plex_url"] is not None
+    assert bob_row["plex_url"] is None
+
+
 # ---------------------------------------------------------------------------
 # worker pool (_drain_one_batch: claim / crawl / bot-recovery / mark done)
 #

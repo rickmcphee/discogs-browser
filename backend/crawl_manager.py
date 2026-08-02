@@ -391,6 +391,11 @@ class CrawlManager:
                     user_id, wishlist_count, cleared, len(deleted),
                 )
 
+            plex_base_url = user["plex_base_url"] or ""
+            plex_token = user["plex_token"] or ""
+            if plex_base_url and plex_token:
+                await self._run_plex_match(user_id, plex_base_url, plex_token, user["plex_match_threshold"])
+
             await self._broadcast({
                 "status": "sync_complete",
                 "synced": count,
@@ -560,5 +565,50 @@ class CrawlManager:
         except Exception as e:
             log.error("Judgment phase failed for user %d: %s", user_id, e, exc_info=True)
             await self._broadcast({"status": "stock_judgment_error", "error": str(e)})
+
+    async def _run_plex_match(self, user_id: int, base_url: str, token: str, threshold: int):
+        import plex
+        import plex_security
+        from db import (
+            user_scope, get_library_items_for_plex_match, set_plex_match, clear_plex_match,
+        )
+
+        await self._broadcast({"status": "plex_match_started"})
+        log.info("Plex match started for user %d", user_id)
+        try:
+            section_key = await asyncio.to_thread(plex.get_music_section_key, base_url, token)
+            if section_key is None:
+                log.warning("Plex match skipped for user %d: no music library section found on %s", user_id, base_url)
+                await self._broadcast({"status": "plex_match_error", "error": "No music library found on Plex server"})
+                return
+
+            albums = await asyncio.to_thread(plex.fetch_albums, base_url, token, section_key)
+            machine_id = await asyncio.to_thread(plex.get_machine_identifier, base_url, token)
+
+            with user_scope(user_id) as conn:
+                items = get_library_items_for_plex_match(conn, user_id)
+                matched = 0
+                for i, item in enumerate(items, start=1):
+                    best = plex.find_best_match(item["artist"], item["title"], albums, threshold)
+                    if best:
+                        url = plex.build_album_url(base_url, machine_id, best["rating_key"])
+                        set_plex_match(conn, user_id, item["discogs_id"], url)
+                        matched += 1
+                    else:
+                        clear_plex_match(conn, user_id, item["discogs_id"])
+                    if i % 25 == 0 or i == len(items):
+                        conn.commit()
+                        await self._broadcast({"status": "plex_match_progress", "matched": matched, "total": len(items)})
+                conn.commit()
+
+            await self._broadcast({"status": "plex_match_complete", "matched": matched})
+            log.info("Plex match complete for user %d: %d/%d matched", user_id, matched, len(items))
+        except Exception as e:
+            if isinstance(e, plex_security.PlexUnsafeAddressError):
+                log.warning("Plex match rejected for user %d: %s", user_id, e)
+                await self._broadcast({"status": "plex_match_error", "error": "Plex address not reachable"})
+            else:
+                log.warning("Plex match phase failed for user %d, skipping: %s", user_id, e)
+                await self._broadcast({"status": "plex_match_error", "error": str(e)})
 
 crawl_manager = CrawlManager()
