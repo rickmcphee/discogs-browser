@@ -7,7 +7,7 @@ from config import ensure_dirs, CRAWLERS_DIR, load_config
 from version import VERSION
 from crawler import load_crawler_from_path
 from crawl_manager import crawl_manager
-from db import get_admin_pool, init_global_schema, init_tenant_schema, register_crawler
+from db import get_admin_pool, init_global_schema, init_tenant_schema, register_crawler, rename_crawler
 from routers import collection, releases, settings, crawl, logs, screenshots, health, session, stock
 from auth_middleware import AuthMiddleware
 import scheduler
@@ -27,6 +27,8 @@ def _crawler_metadata(path: Path, fallback_site_name: str) -> tuple[str, str]:
 
 def seed_bundled_crawlers():
     with get_admin_pool().connection() as conn:
+        rename_crawler(conn, "CC Music/eBay", "eBay/CCmusic")
+
         # Remove stale crawlers that were once bundled but no longer exist
         for stale in CRAWLERS_DIR.glob("*.py"):
             if stale.name == "__init__.py":

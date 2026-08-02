@@ -223,7 +223,7 @@ When `HEADLESS_AUTH=1` (Docker), `POST /api/crawler-auth/login` returns HTTP 501
 
 ## eBay Browse API Crawler (CC Music)
 
-`backend/crawlers/ebay.py` implements the CC Music price lookup using the eBay Browse API rather than Playwright. It presents as `site_name = "CC Music"` and filters to the `collectorschoicemusic` eBay seller. Full details in [`docs/superpowers/specs/crawlers/ccmusic.md`](../specs/crawlers/ccmusic.md).
+`backend/crawlers/ebay.py` implements the CC Music price lookup using the eBay Browse API rather than Playwright. It presents as `site_name = "eBay/CCmusic"` and filters to the `collectorschoicemusic` eBay seller. Full details in [`docs/superpowers/specs/crawlers/ccmusic.md`](../specs/crawlers/ccmusic.md).
 
 **Credentials**: `ebay_app_id` and `ebay_cert_id` from `config.json`; OAuth client credentials flow, token cached module-level.
 

@@ -63,6 +63,31 @@ def test_register_crawler_preserves_enabled_flag(admin_conn):
     assert row["module_path"] == "/new/path.py"
 
 
+def test_rename_crawler_preserves_id_and_history(admin_conn):
+    db.register_crawler(admin_conn, "CC Music/eBay", "/path/ebay.py")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute(
+        "SELECT id FROM crawlers WHERE site_name = 'CC Music/eBay'"
+    ).fetchone()["id"]
+
+    db.rename_crawler(admin_conn, "CC Music/eBay", "eBay/CCmusic")
+    admin_conn.commit()
+
+    rows = admin_conn.execute("SELECT id, site_name FROM crawlers").fetchall()
+    assert [dict(r) for r in rows] == [{"id": crawler_id, "site_name": "eBay/CCmusic"}]
+
+
+def test_rename_crawler_is_a_noop_once_old_name_is_gone(admin_conn):
+    db.register_crawler(admin_conn, "eBay/CCmusic", "/path/ebay.py")
+    admin_conn.commit()
+
+    db.rename_crawler(admin_conn, "CC Music/eBay", "eBay/CCmusic")
+    admin_conn.commit()
+
+    rows = admin_conn.execute("SELECT site_name FROM crawlers").fetchall()
+    assert [r["site_name"] for r in rows] == ["eBay/CCmusic"]
+
+
 def test_set_crawler_enabled_and_update_last_run(admin_conn):
     db.register_crawler(admin_conn, "Amazon", "/path.py")
     admin_conn.commit()

@@ -607,6 +607,16 @@ def get_all_crawlers(conn) -> list[dict]:
     return result
 
 
+def rename_crawler(conn, old_site_name: str, new_site_name: str):
+    # register_crawler() upserts ON CONFLICT (site_name), so a plugin's site_name
+    # literal can't just be edited in place -- that inserts a new row and orphans
+    # the old crawler's id along with its listings/crawl_queue/stock_listings history.
+    conn.execute(
+        "UPDATE crawlers SET site_name = %s WHERE site_name = %s",
+        [new_site_name, old_site_name],
+    )
+
+
 def register_crawler(conn, site_name: str, module_path: str, crawler_type: str = "release"):
     conn.execute(
         """

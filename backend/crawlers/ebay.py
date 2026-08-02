@@ -7,7 +7,7 @@ CCMUSIC_SELLER = "collectorschoicemusic"
 
 
 class Crawler:
-    site_name: str = "CC Music/eBay"
+    site_name: str = "eBay/CCmusic"
     base_url: str = f"https://www.ebay.com/str/{CCMUSIC_SELLER}"
 
     @classmethod
@@ -25,6 +25,6 @@ class Crawler:
             cfg.get("ebay_cert_id", ""),
             seller=CCMUSIC_SELLER,
             limit=3,
-            log_prefix="CC Music/eBay",
+            log_prefix="eBay/CCmusic",
             fallback_url=self.search_url(release),
         )
