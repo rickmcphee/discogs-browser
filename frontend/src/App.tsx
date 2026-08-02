@@ -145,6 +145,11 @@ export default function App() {
         setSyncStatus(`In-stock sync failed: ${event.error}`, event.id ?? null)
         return
       }
+      if (event.status === 'stock_sync_aborted') {
+        setSyncing(false)
+        setSyncStatus(`In-stock sync stopped: ${event.error} (${event.sources?.join(', ')})`, event.id ?? null)
+        return
+      }
       if (event.status === 'stock_judgment_started') {
         setSyncing(true)
         setJudgmentRunning(true)
