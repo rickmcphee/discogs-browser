@@ -58,7 +58,7 @@ describe('header profile navigation', () => {
     const button = await screen.findByRole('button', { name: /profile/i })
     fireEvent.click(button)
     await waitFor(() => expect(button.className).toContain('ring-2 ring-indigo-500'))
-    expect(screen.getByRole('heading', { name: 'Account' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Recommendations' })).toBeInTheDocument()
   })
 
   it('places the profile avatar as the rightmost header control', async () => {
