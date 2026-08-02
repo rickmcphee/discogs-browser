@@ -413,16 +413,18 @@ export default function App() {
               Settings
             </button>
           )}
-          <button
-            onClick={() => setView('logs')}
-            className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
-              view === 'logs'
-                ? 'bg-indigo-600 text-white'
-                : 'text-gray-400 hover:text-white'
-            }`}
-          >
-            Logs
-          </button>
+          {authState.state === 'authenticated' && authState.user.is_admin && (
+            <button
+              onClick={() => setView('logs')}
+              className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
+                view === 'logs'
+                  ? 'bg-indigo-600 text-white'
+                  : 'text-gray-400 hover:text-white'
+              }`}
+            >
+              Logs
+            </button>
+          )}
           <button
             onClick={() => setView('account')}
             aria-label="Profile"
