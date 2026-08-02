@@ -1178,6 +1178,186 @@ async def test_run_judgment_phase_broadcasts_error_when_no_api_key(pg_schema):
     assert statuses == ["stock_judgment_started", "stock_judgment_error"]
 
 
+async def test_sync_stock_aborts_after_two_consecutive_429_crawlers(pg_schema, manager, monkeypatch):
+    import crawler as crawler_module
+
+    with db.get_admin_pool().connection() as conn:
+        for name in ["Run For Cover", "Equal Vision", "Never Attempted"]:
+            db.register_crawler(conn, name, f"/path/{name}.py", crawler_type="catalog")
+        conn.commit()
+        ids = {row["site_name"]: row["id"] for row in conn.execute("SELECT id, site_name FROM crawlers").fetchall()}
+
+    def _http_429():
+        request = httpx.Request("GET", "https://example.test/products.json")
+        return httpx.HTTPStatusError("429", request=request, response=httpx.Response(429))
+
+    class _FailingCrawler:
+        def __init__(self, name):
+            self._db_id = ids[name]
+            self._db_site_name = name
+
+        async def crawl_catalog(self):
+            raise _http_429()
+            yield  # pragma: no cover -- keeps this an async generator function
+
+    class _SucceedingCrawler:
+        def __init__(self, name):
+            self._db_id = ids[name]
+            self._db_site_name = name
+
+        async def crawl_catalog(self):
+            yield {"artist": "A", "title": "T", "price": 1.0, "currency": "USD", "url": "https://x/1"}
+
+    monkeypatch.setattr(crawler_module, "load_enabled_crawlers", lambda enabled: [
+        _FailingCrawler("Run For Cover"),
+        _FailingCrawler("Equal Vision"),
+        _SucceedingCrawler("Never Attempted"),
+    ])
+
+    await manager._sync_stock()
+
+    events = manager.recent_events()
+    statuses = [e["status"] for e in events]
+    assert "stock_sync_aborted" in statuses
+    assert "stock_sync_complete" not in statuses
+    aborted = next(e for e in events if e["status"] == "stock_sync_aborted")
+    assert aborted["sources"] == ["Run For Cover", "Equal Vision"]
+    assert not any(e.get("source") == "Never Attempted" for e in events)
+
+
+async def test_sync_stock_resets_429_streak_after_a_success(pg_schema, manager, monkeypatch):
+    import crawler as crawler_module
+
+    with db.get_admin_pool().connection() as conn:
+        for name in ["Run For Cover", "Middle Site", "Equal Vision"]:
+            db.register_crawler(conn, name, f"/path/{name}.py", crawler_type="catalog")
+        conn.commit()
+        ids = {row["site_name"]: row["id"] for row in conn.execute("SELECT id, site_name FROM crawlers").fetchall()}
+
+    def _http_429():
+        request = httpx.Request("GET", "https://example.test/products.json")
+        return httpx.HTTPStatusError("429", request=request, response=httpx.Response(429))
+
+    class _FailingCrawler:
+        def __init__(self, name):
+            self._db_id = ids[name]
+            self._db_site_name = name
+
+        async def crawl_catalog(self):
+            raise _http_429()
+            yield  # pragma: no cover
+
+    class _SucceedingCrawler:
+        def __init__(self, name):
+            self._db_id = ids[name]
+            self._db_site_name = name
+
+        async def crawl_catalog(self):
+            yield {"artist": "A", "title": "T", "price": 1.0, "currency": "USD", "url": "https://x/1"}
+
+    monkeypatch.setattr(crawler_module, "load_enabled_crawlers", lambda enabled: [
+        _FailingCrawler("Run For Cover"),
+        _SucceedingCrawler("Middle Site"),
+        _FailingCrawler("Equal Vision"),
+    ])
+
+    await manager._sync_stock()
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert "stock_sync_aborted" not in statuses
+    assert "stock_sync_complete" in statuses
+
+
+async def test_sync_stock_resets_429_streak_after_a_non_429_failure(pg_schema, manager, monkeypatch):
+    import crawler as crawler_module
+
+    with db.get_admin_pool().connection() as conn:
+        for name in ["Run For Cover", "Middle Site", "Equal Vision"]:
+            db.register_crawler(conn, name, f"/path/{name}.py", crawler_type="catalog")
+        conn.commit()
+        ids = {row["site_name"]: row["id"] for row in conn.execute("SELECT id, site_name FROM crawlers").fetchall()}
+
+    def _http_429():
+        request = httpx.Request("GET", "https://example.test/products.json")
+        return httpx.HTTPStatusError("429", request=request, response=httpx.Response(429))
+
+    class _FailingCrawler:
+        def __init__(self, name):
+            self._db_id = ids[name]
+            self._db_site_name = name
+
+        async def crawl_catalog(self):
+            raise _http_429()
+            yield  # pragma: no cover
+
+    class _OtherFailureCrawler:
+        def __init__(self, name):
+            self._db_id = ids[name]
+            self._db_site_name = name
+
+        async def crawl_catalog(self):
+            raise RuntimeError("boom")
+            yield  # pragma: no cover
+
+    monkeypatch.setattr(crawler_module, "load_enabled_crawlers", lambda enabled: [
+        _FailingCrawler("Run For Cover"),
+        _OtherFailureCrawler("Middle Site"),
+        _FailingCrawler("Equal Vision"),
+    ])
+
+    await manager._sync_stock()
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert "stock_sync_aborted" not in statuses
+    assert "stock_sync_complete" in statuses
+
+
+async def test_sync_stock_does_not_broadcast_stock_sync_error_for_a_lone_429(pg_schema, manager, monkeypatch):
+    import crawler as crawler_module
+
+    with db.get_admin_pool().connection() as conn:
+        for name in ["Run For Cover", "Middle Site"]:
+            db.register_crawler(conn, name, f"/path/{name}.py", crawler_type="catalog")
+        conn.commit()
+        ids = {row["site_name"]: row["id"] for row in conn.execute("SELECT id, site_name FROM crawlers").fetchall()}
+
+    def _http_429():
+        request = httpx.Request("GET", "https://example.test/products.json")
+        return httpx.HTTPStatusError("429", request=request, response=httpx.Response(429))
+
+    class _FailingCrawler:
+        def __init__(self, name):
+            self._db_id = ids[name]
+            self._db_site_name = name
+
+        async def crawl_catalog(self):
+            raise _http_429()
+            yield  # pragma: no cover
+
+    class _SucceedingCrawler:
+        def __init__(self, name):
+            self._db_id = ids[name]
+            self._db_site_name = name
+
+        async def crawl_catalog(self):
+            yield {"artist": "A", "title": "T", "price": 1.0, "currency": "USD", "url": "https://x/1"}
+
+    monkeypatch.setattr(crawler_module, "load_enabled_crawlers", lambda enabled: [
+        _FailingCrawler("Run For Cover"),
+        _SucceedingCrawler("Middle Site"),
+    ])
+
+    await manager._sync_stock()
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    # A single 429 that never reaches the abort threshold is an expected, handled
+    # condition -- it must not be reported as a stock_sync_error (that would make
+    # the circuit breaker's own normal operation look like a crash).
+    assert "stock_sync_error" not in statuses
+    assert "stock_sync_aborted" not in statuses
+    assert "stock_sync_complete" in statuses
+
+
 async def test_run_judgment_phase_broadcasts_complete_when_nothing_unjudged(pg_schema, caplog):
     with db.get_admin_pool().connection() as conn:
         alice = db.create_user(conn, discogs_user_id=3, discogs_username="alice3")

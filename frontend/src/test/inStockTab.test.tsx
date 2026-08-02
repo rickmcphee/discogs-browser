@@ -119,6 +119,26 @@ describe('In Stock tab', () => {
     await waitFor(() => expect(screen.getByText(/In-stock sync complete: 12 items/)).toBeInTheDocument())
   })
 
+  it('surfaces stock_sync_aborted events in the bottom status bar and stops syncing', async () => {
+    render(<App />)
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    const source = getLastCrawlSource()
+    source.emit({ status: 'stock_sync_started', id: 1 })
+    await waitFor(() => expect(screen.getByText(/Syncing in-stock catalog…/)).toBeInTheDocument())
+    source.emit({
+      status: 'stock_sync_aborted',
+      error: 'Too many consecutive rate-limited catalog sites',
+      sources: ['Run For Cover', 'Equal Vision'],
+      id: 2,
+    })
+    await waitFor(() =>
+      expect(
+        screen.getByText(/In-stock sync stopped: Too many consecutive rate-limited catalog sites \(Run For Cover, Equal Vision\)/)
+      ).toBeInTheDocument()
+    )
+    expect(screen.getByRole('button', { name: /Dismiss/i })).toBeInTheDocument()
+  })
+
   it('does not resurrect a dismissed in-stock sync message when a refresh replays the same buffered event', async () => {
     const { unmount } = render(<App />)
     await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))

@@ -475,6 +475,7 @@ class CrawlManager:
         return True
 
     async def _sync_stock(self):
+        import httpx
         from db import get_app_pool, get_enabled_crawlers, replace_stock_items, update_crawler_last_run
         from crawler import load_enabled_crawlers
 
@@ -489,16 +490,40 @@ class CrawlManager:
                 return
 
             total_synced = 0
+            consecutive_429_sites: list[str] = []
             for crawler in crawlers:
                 items = []
                 try:
                     async for item in crawler.crawl_catalog():
                         items.append(item)
                 except Exception as e:
-                    log.error("[%s] Stock crawl failed: %s", crawler._db_site_name, e, exc_info=True)
-                    await self._broadcast({"status": "stock_sync_error", "error": str(e), "source": crawler._db_site_name})
+                    is_rate_limited = isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 429
+                    if is_rate_limited:
+                        log.warning("[%s] Stock crawl rate-limited (HTTP 429): %s", crawler._db_site_name, e)
+                        consecutive_429_sites.append(crawler._db_site_name)
+                    else:
+                        log.error("[%s] Stock crawl failed: %s", crawler._db_site_name, e, exc_info=True)
+                        await self._broadcast({
+                            "status": "stock_sync_error",
+                            "error": str(e),
+                            "source": crawler._db_site_name,
+                        })
+                        consecutive_429_sites = []
+                    if len(consecutive_429_sites) >= 2:
+                        log.warning(
+                            "Stock sync aborted: %d catalog sites in a row hit HTTP 429 (%s) -- "
+                            "likely a platform-wide rate limit, not grinding the rest of the run into it",
+                            len(consecutive_429_sites), ", ".join(consecutive_429_sites),
+                        )
+                        await self._broadcast({
+                            "status": "stock_sync_aborted",
+                            "error": "Too many consecutive rate-limited catalog sites",
+                            "sources": list(consecutive_429_sites),
+                        })
+                        return
                     continue
 
+                consecutive_429_sites = []
                 with get_app_pool().connection() as conn:
                     replace_stock_items(conn, crawler._db_id, items)
                     update_crawler_last_run(conn, crawler._db_id)

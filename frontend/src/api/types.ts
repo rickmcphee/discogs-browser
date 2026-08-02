@@ -66,7 +66,7 @@ export interface CrawlEvent {
   id?: number
   status?: 'found' | 'not_found' | 'error' | 'complete' | 'started' | 'stopped' | 'ping'
     | 'sync_started' | 'sync_progress' | 'sync_complete' | 'sync_error'
-    | 'stock_sync_started' | 'stock_sync_progress' | 'stock_sync_complete' | 'stock_sync_error'
+    | 'stock_sync_started' | 'stock_sync_progress' | 'stock_sync_complete' | 'stock_sync_error' | 'stock_sync_aborted'
     | 'stock_judgment_started' | 'stock_judgment_progress' | 'stock_judgment_complete' | 'stock_judgment_error'
     | 'plex_match_started' | 'plex_match_progress' | 'plex_match_complete' | 'plex_match_error'
   discogs_id?: string
@@ -83,6 +83,7 @@ export interface CrawlEvent {
   username?: string
   screenshots?: string[]
   source?: string
+  sources?: string[]
   judged?: number
   matched?: number
 }
