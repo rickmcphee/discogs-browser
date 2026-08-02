@@ -195,3 +195,9 @@ def test_parse_retry_after_passes_through_a_valid_value():
 def test_parse_retry_after_caps_at_max():
     from shopify_catalog import _parse_retry_after
     assert _parse_retry_after("99999") == 600.0
+
+
+def test_parse_retry_after_returns_none_for_nan_and_infinity():
+    from shopify_catalog import _parse_retry_after
+    assert _parse_retry_after("nan") is None
+    assert _parse_retry_after("inf") is None

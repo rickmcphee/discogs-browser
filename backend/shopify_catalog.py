@@ -1,4 +1,5 @@
 import asyncio
+import math
 import random
 from typing import AsyncIterator, Optional
 import httpx
@@ -55,7 +56,7 @@ async def iter_products(base_url: str, collection_slug: str) -> AsyncIterator[di
 
 def _parse_retry_after(value: Optional[str]) -> Optional[float]:
     """Parses a 429 response's Retry-After header (numeric-seconds form only).
-    Returns None for a missing, non-numeric, or negative value, so the caller
+    Returns None for a missing, non-numeric, negative, or non-finite value, so the caller
     falls back to the jittered delay instead.
     """
     if value is None:
@@ -64,7 +65,7 @@ def _parse_retry_after(value: Optional[str]) -> Optional[float]:
         seconds = float(value)
     except ValueError:
         return None
-    if seconds < 0:
+    if not math.isfinite(seconds) or seconds < 0:
         return None
     return min(seconds, _MAX_RETRY_AFTER_SECONDS)
 
