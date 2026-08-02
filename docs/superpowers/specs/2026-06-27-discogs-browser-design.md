@@ -261,7 +261,8 @@ Uses the persistent Chrome profile with `playwright_stealth`. Raises `BotDetecte
 2. Backend calls `CrawlManager.start_sync(mode)`, which launches `_sync_collection()` as an asyncio background task. Returns `{started: true, running: true}` immediately (or `{started: false, running: true}` if already running, 409).
 3. `_sync_collection()` broadcasts events on the shared crawl SSE stream:
    - `sync_started` — sync has begun
-   - `sync_progress {synced, page, total_pages}` — after each collection page
+   - `sync_page_fetched {page, total_pages, page_count}` — as soon as a collection page is fetched from Discogs, before that page's items (barcode fetch etc.) are processed
+   - `sync_progress {synced, page, total_pages}` — after each collection page finishes processing
    - `sync_complete {synced, username}` — on success
    - `sync_error {error}` — on failure
 4. For each release, the backend fetches full release detail from `GET /releases/{id}` to extract the first `Barcode` identifier. Non-digit characters are stripped; stored as `NULL` if absent. Barcode fetch is skipped when a non-null barcode already exists. A 1.1-second delay is inserted between barcode fetches to stay within the Discogs rate limit (60 req/min). A failed fetch is logged and does not abort the sync.
