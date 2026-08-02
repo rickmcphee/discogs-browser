@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Request, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from config import load_config, save_config
 import db
 from admin import require_admin
@@ -24,7 +24,9 @@ class CrawlerUpdate(BaseModel):
 
 class UserSettingsUpdate(BaseModel):
     anthropic_api_key: str = ""
-    recommendation_item_limit: int = 300
+    # 0 is a deliberate "unlimited" sentinel (see get_unjudged_stock_items) --
+    # negative values have no meaning and must be rejected at the boundary.
+    recommendation_item_limit: int = Field(default=300, ge=0)
 
 
 @router.get("/settings", dependencies=[Depends(require_admin)])
@@ -75,6 +77,8 @@ def get_user_settings(request: Request):
             "SELECT anthropic_api_key, recommendation_item_limit FROM users WHERE id = %s",
             [request.state.user_id],
         ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="User not found")
     return {"anthropic_api_key": row["anthropic_api_key"] or "", "recommendation_item_limit": row["recommendation_item_limit"]}
 
 

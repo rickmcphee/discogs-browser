@@ -50,4 +50,20 @@ describe('RecordBrowser', () => {
     await waitFor(() => expect(getReleases).toHaveBeenCalled())
     expect(screen.getByTitle('Sync collection from Discogs')).toBeDisabled()
   })
+
+  it('exposes an aria-label and aria-busy state on the sync button, not just title', async () => {
+    const { rerender } = render(
+      <RecordBrowser scope="collection" onRefreshPrices={() => {}} onRefreshCollection={() => {}} />
+    )
+    await waitFor(() => expect(getReleases).toHaveBeenCalled())
+    const button = screen.getByTitle('Sync collection from Discogs')
+    expect(button).toHaveAttribute('aria-label', 'Sync collection from Discogs')
+    expect(button).toHaveAttribute('aria-busy', 'false')
+
+    rerender(
+      <RecordBrowser scope="collection" onRefreshPrices={() => {}} onRefreshCollection={() => {}} syncing />
+    )
+    expect(button).toHaveAttribute('aria-label', 'Syncing collection from Discogs')
+    expect(button).toHaveAttribute('aria-busy', 'true')
+  })
 })

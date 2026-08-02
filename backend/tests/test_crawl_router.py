@@ -131,6 +131,30 @@ def test_crawl_start_release_id_enqueues_a_release_the_caller_owns(pg_test_db, a
     assert row is not None
 
 
+def test_crawl_start_enqueued_count_excludes_already_pending_rows(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        db.upsert_library_item(conn, user["id"], "r1", in_collection=True)
+        conn.commit()
+
+    client = authed_client_factory(user["id"])
+    r1 = client.post("/api/crawl/start", json={"mode": "all"}, headers={"X-Requested-With": "fetch"})
+    assert r1.json()["enqueued"] == 1
+
+    # r1/Amazon is still 'pending' from the first call -- re-requesting it
+    # must not be counted a second time, or the response over-reports how
+    # many jobs were actually inserted/reset.
+    r2 = client.post("/api/crawl/start", json={"mode": "all"}, headers={"X-Requested-With": "fetch"})
+    assert r2.status_code == 200
+    assert r2.json()["enqueued"] == 0
+
+
 def test_crawl_stop_endpoint_removed(pg_test_db, authed_client_factory):
     with db.get_admin_pool().connection() as conn:
         user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")

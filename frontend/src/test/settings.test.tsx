@@ -48,4 +48,16 @@ describe('Settings', () => {
     expect(screen.queryByText('Screenshot interval')).not.toBeInTheDocument()
     expect(screen.queryByText('Shuffle')).not.toBeInTheDocument()
   })
+
+  it('disables Save and surfaces an error when settings fail to load', async () => {
+    getSettings.mockRejectedValueOnce(new Error('network error'))
+    renderSettings()
+    await waitFor(() => expect(screen.getByText(/Failed to load settings/)).toBeInTheDocument())
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+  })
+
+  it('enables Save once settings load successfully', async () => {
+    renderSettings()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled())
+  })
 })

@@ -606,8 +606,12 @@ def update_crawler_last_run(conn, crawler_id: int):
 # 'done' pair must reset it to 'pending' so periodic re-crawling of stale
 # listings actually happens -- a plain ON CONFLICT DO NOTHING would let a
 # pair be crawled exactly once, ever, for the app's entire lifetime.
-def enqueue_crawl_queue(conn, discogs_id: str, crawler_id: int):
-    conn.execute(
+def enqueue_crawl_queue(conn, discogs_id: str, crawler_id: int) -> int:
+    """Returns 1 if a row was inserted or reset to pending, 0 if the
+    existing row was left untouched (already pending/in_progress) -- the
+    ON CONFLICT ... WHERE clause only counts toward rowcount when it fires.
+    """
+    cursor = conn.execute(
         """
         INSERT INTO crawl_queue (discogs_id, crawler_id) VALUES (%s, %s)
         ON CONFLICT (discogs_id, crawler_id) DO UPDATE SET
@@ -616,6 +620,7 @@ def enqueue_crawl_queue(conn, discogs_id: str, crawler_id: int):
         """,
         [discogs_id, crawler_id],
     )
+    return cursor.rowcount
 
 
 # The row lock taken by the inner SELECT ... FOR UPDATE SKIP LOCKED is held

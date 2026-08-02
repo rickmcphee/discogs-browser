@@ -186,9 +186,11 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
                 onClick={onRefreshCollection}
                 disabled={syncing}
                 title="Sync collection from Discogs"
+                aria-label={syncing ? 'Syncing collection from Discogs' : 'Sync collection from Discogs'}
+                aria-busy={!!syncing}
                 className="p-1.5 rounded text-gray-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
               >
-                <span className="block text-base leading-none">{syncing ? '⟳' : '↻'}</span>
+                <span className="block text-base leading-none" aria-hidden="true">{syncing ? '⟳' : '↻'}</span>
               </button>
             )}
           </div>

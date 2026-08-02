@@ -62,6 +62,8 @@ function Settings({ crawlers, onCrawlersChange, onRefreshPrices, onRefreshStock,
   })
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [loaded, setLoaded] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   const releaseCrawlers = crawlers.filter((c) => c.crawler_type !== 'catalog')
   const catalogCrawlers = crawlers.filter((c) => c.crawler_type === 'catalog')
@@ -103,7 +105,12 @@ function Settings({ crawlers, onCrawlersChange, onRefreshPrices, onRefreshStock,
   }
 
   useEffect(() => {
-    getSettings().then(setSettings).catch(() => {})
+    getSettings()
+      .then((s) => {
+        setSettings(s)
+        setLoaded(true)
+      })
+      .catch((e: any) => setLoadError(e.message || 'Failed to load settings'))
   }, [])
 
   async function handleSave() {
@@ -129,12 +136,18 @@ function Settings({ crawlers, onCrawlersChange, onRefreshPrices, onRefreshStock,
         <h1 className="text-lg font-semibold text-white">Settings</h1>
         <button
           onClick={handleSave}
-          disabled={saving}
+          disabled={saving || !loaded}
+          title={!loaded ? 'Settings have not finished loading' : undefined}
           className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded text-sm font-medium transition-colors"
         >
           {saved ? '✓ Saved' : saving ? 'Saving…' : 'Save'}
         </button>
       </div>
+      {loadError && (
+        <div className="text-red-400 text-sm">
+          Failed to load settings: {loadError}. Editing is disabled until settings load successfully — reload the page to retry.
+        </div>
+      )}
 
       {/* Crawler Management */}
       <section>

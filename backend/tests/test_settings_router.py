@@ -1,4 +1,5 @@
 import pytest
+from fastapi import HTTPException
 
 import db
 from routers import settings as settings_router
@@ -90,3 +91,50 @@ def test_get_and_post_user_settings(pg_test_db, authed_client_factory):
     assert r.status_code == 200
     r = client.get("/api/user-settings")
     assert r.json() == {"anthropic_api_key": "sk-abc", "recommendation_item_limit": 100}
+
+
+def test_post_user_settings_rejects_negative_item_limit(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    client = authed_client_factory(user["id"])
+    r = client.post("/api/user-settings", json={"anthropic_api_key": "", "recommendation_item_limit": -1},
+                     headers={"X-Requested-With": "fetch"})
+    assert r.status_code == 422
+
+
+def test_get_user_settings_404s_when_session_user_row_is_missing(monkeypatch):
+    # Simulates a session token that no longer resolves to a real user row
+    # (deleted user, or a test/fixture that fabricated a session directly) --
+    # the sessions.user_id FK normally prevents this, but the endpoint should
+    # not rely solely on that for a clean error instead of a 500.
+    class _FakeResult:
+        def fetchone(self):
+            return None
+
+    class _FakeConn:
+        def execute(self, *args, **kwargs):
+            return _FakeResult()
+
+    class _FakeConnCtx:
+        def __enter__(self):
+            return _FakeConn()
+
+        def __exit__(self, *args):
+            return False
+
+    class _FakePool:
+        def connection(self):
+            return _FakeConnCtx()
+
+    monkeypatch.setattr(db, "get_identity_pool", lambda: _FakePool())
+
+    class _FakeState:
+        user_id = 999999
+
+    class _FakeRequest:
+        state = _FakeState()
+
+    with pytest.raises(HTTPException) as exc_info:
+        settings_router.get_user_settings(_FakeRequest())
+    assert exc_info.value.status_code == 404

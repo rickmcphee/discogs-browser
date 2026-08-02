@@ -52,8 +52,7 @@ def crawl_start(body: CrawlStartRequest, request: Request):
         enqueued = 0
         for discogs_id in target_ids:
             for crawler in enabled_crawlers:
-                db.enqueue_crawl_queue(conn, discogs_id, crawler["id"])
-                enqueued += 1
+                enqueued += db.enqueue_crawl_queue(conn, discogs_id, crawler["id"])
         conn.commit()
     return {"enqueued": enqueued}
 

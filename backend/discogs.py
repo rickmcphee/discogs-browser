@@ -8,10 +8,13 @@ DISCOGS_API = "https://api.discogs.com"
 _USER_AGENT = "DiscogsCollectionBrowser/1.0 +https://github.com/local/discogs-browser"
 
 # Every caller of _client() runs this module's blocking httpx calls inside
-# crawl_manager._sync_collection, an async def scheduled on the main event
-# loop with no run_in_threadpool wrapper -- a request that hangs with no
-# timeout freezes that loop (and therefore the worker pool and every other
-# user's requests) indefinitely rather than failing after a bounded wait.
+# crawl_manager._sync_collection_blocking, which runs in a worker thread via
+# run_in_threadpool (see crawl_manager._sync_collection) rather than on the
+# main event loop. A request that hangs with no timeout still ties up that
+# worker thread indefinitely -- starving the shared threadpool other
+# run_in_threadpool callers (e.g. auth_middleware._resolve_session) depend
+# on -- and never resolves the future _sync_collection is awaiting, so the
+# sync never completes for that user.
 _TIMEOUT = 30.0
 
 
