@@ -65,14 +65,16 @@ export default function App() {
   }, [])
 
   const toggleCrawlerView = useCallback((crawlerId: number) => {
-    setHiddenCrawlerIds((current) => {
-      const next = current.includes(crawlerId)
+    setHiddenCrawlerIds((current) =>
+      current.includes(crawlerId)
         ? current.filter((id) => id !== crawlerId)
         : [...current, crawlerId]
-      localStorage.setItem(HIDDEN_CRAWLER_IDS_KEY, JSON.stringify(next))
-      return next
-    })
+    )
   }, [])
+
+  useEffect(() => {
+    localStorage.setItem(HIDDEN_CRAWLER_IDS_KEY, JSON.stringify(hiddenCrawlerIds))
+  }, [hiddenCrawlerIds])
 
   // Poll /api/health until the backend is up, then load initial data.
   useEffect(() => {
