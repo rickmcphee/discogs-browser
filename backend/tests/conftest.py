@@ -28,3 +28,13 @@ def tmp_config_dir(tmp_path):
          patch("config.CRAWLERS_DIR", crawlers_dir), \
          patch("config.CONFIG_FILE", tmp_path / "config.json"):
         yield tmp_path
+
+
+@pytest.fixture(autouse=True)
+def _fast_catalog_crawl_sleep(request, monkeypatch):
+    """crawl_catalog() sleeps real seconds per page; *_crawler.py tests check parsing, not timing."""
+    if request.module.__name__.endswith("_crawler"):
+        async def fake_sleep(seconds):
+            pass
+
+        monkeypatch.setattr("shopify_catalog.asyncio.sleep", fake_sleep)
