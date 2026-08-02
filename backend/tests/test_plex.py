@@ -5,6 +5,23 @@ from plex import (
     build_album_url, find_best_match,
 )
 
+import socket
+
+import pytest
+
+from plex_security import PlexUnsafeAddressError
+
+
+@pytest.fixture(autouse=True)
+def _mock_dns(monkeypatch):
+    # 8.8.8.8, not a documentation/example address like 203.0.113.5 (RFC 5737
+    # TEST-NET-3) -- Python's ipaddress module correctly treats TEST-NET
+    # ranges as non-global, so a "safe" mock IP must be a real public one.
+    monkeypatch.setattr(
+        socket, "getaddrinfo",
+        lambda host, port, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", port))],
+    )
+
 
 def test_normalize_lowercases_and_strips_leading_the():
     assert normalize("The Wall") == "wall"
@@ -125,3 +142,45 @@ def test_find_best_match_returns_none_when_no_candidate_clears_threshold():
 
 def test_find_best_match_returns_none_for_empty_library():
     assert find_best_match("Miles Davis", "Kind of Blue", [], threshold=90) is None
+
+
+@respx.mock
+def test_get_music_section_key_rejects_private_address_before_any_request(monkeypatch):
+    monkeypatch.setattr(
+        socket, "getaddrinfo",
+        lambda host, port, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", port))],
+    )
+    with pytest.raises(PlexUnsafeAddressError):
+        get_music_section_key("plex.local:32400", "tok")
+    # No respx route was registered above -- if validate_address didn't run
+    # first and the code tried a real request, respx's assert_all_mocked
+    # default would raise a different error here, not silently pass.
+
+
+@respx.mock
+def test_get_music_section_key_treats_redirect_as_failure_not_followed():
+    respx.get("http://plex.local:32400/library/sections").mock(
+        return_value=httpx.Response(302, headers={"Location": "http://169.254.169.254/"})
+    )
+    with pytest.raises(PlexUnsafeAddressError):
+        get_music_section_key("plex.local:32400", "tok")
+
+
+@respx.mock
+def test_fetch_albums_rejects_private_address_before_any_request(monkeypatch):
+    monkeypatch.setattr(
+        socket, "getaddrinfo",
+        lambda host, port, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", port))],
+    )
+    with pytest.raises(PlexUnsafeAddressError):
+        fetch_albums("plex.local:32400", "tok", "2")
+
+
+@respx.mock
+def test_get_machine_identifier_rejects_private_address_before_any_request(monkeypatch):
+    monkeypatch.setattr(
+        socket, "getaddrinfo",
+        lambda host, port, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", port))],
+    )
+    with pytest.raises(PlexUnsafeAddressError):
+        get_machine_identifier("plex.local:32400", "tok")

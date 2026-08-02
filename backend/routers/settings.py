@@ -1,8 +1,9 @@
 from fastapi import APIRouter, HTTPException, Request, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from config import load_config, save_config
 import db
 from admin import require_admin
+import plex_security
 import scheduler
 
 router = APIRouter()
@@ -25,6 +26,9 @@ class CrawlerUpdate(BaseModel):
 class UserSettingsUpdate(BaseModel):
     anthropic_api_key: str = ""
     recommendation_item_limit: int = 300
+    plex_base_url: str = ""
+    plex_token: str = ""
+    plex_match_threshold: int = Field(90, ge=0, le=100)
 
 
 @router.get("/settings", dependencies=[Depends(require_admin)])
@@ -72,18 +76,35 @@ def update_crawler(crawler_id: int, body: CrawlerUpdate):
 def get_user_settings(request: Request):
     with db.get_identity_pool().connection() as conn:
         row = conn.execute(
-            "SELECT anthropic_api_key, recommendation_item_limit FROM users WHERE id = %s",
+            "SELECT anthropic_api_key, recommendation_item_limit, plex_base_url, plex_token, "
+            "plex_match_threshold FROM users WHERE id = %s",
             [request.state.user_id],
         ).fetchone()
-    return {"anthropic_api_key": row["anthropic_api_key"] or "", "recommendation_item_limit": row["recommendation_item_limit"]}
+    return {
+        "anthropic_api_key": row["anthropic_api_key"] or "",
+        "recommendation_item_limit": row["recommendation_item_limit"],
+        "plex_base_url": row["plex_base_url"] or "",
+        "plex_token": row["plex_token"] or "",
+        "plex_match_threshold": row["plex_match_threshold"],
+    }
 
 
 @router.post("/user-settings")
 def update_user_settings(body: UserSettingsUpdate, request: Request):
+    if body.plex_base_url:
+        try:
+            plex_security.validate_address(body.plex_base_url)
+        except plex_security.PlexUnsafeAddressError:
+            raise HTTPException(status_code=400, detail="Plex address not reachable")
     with db.get_identity_pool().connection() as conn:
         conn.execute(
-            "UPDATE users SET anthropic_api_key = %s, recommendation_item_limit = %s WHERE id = %s",
-            [body.anthropic_api_key or None, body.recommendation_item_limit, request.state.user_id],
+            "UPDATE users SET anthropic_api_key = %s, recommendation_item_limit = %s, "
+            "plex_base_url = %s, plex_token = %s, plex_match_threshold = %s WHERE id = %s",
+            [
+                body.anthropic_api_key or None, body.recommendation_item_limit,
+                body.plex_base_url or None, body.plex_token or None, body.plex_match_threshold,
+                request.state.user_id,
+            ],
         )
         conn.commit()
     return {"ok": True}

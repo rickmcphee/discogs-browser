@@ -17,6 +17,8 @@ export interface Release {
   discogs_price: string | null
   cover_image_url: string
   discogs_url: string
+  plex_url: string | null
+  plex_matched_at: string | null
   last_synced: string
   listings: Record<string, Listing | null>
 }
@@ -51,6 +53,9 @@ export interface Settings {
 export interface UserSettings {
   anthropic_api_key: string
   recommendation_item_limit: number
+  plex_base_url: string
+  plex_token: string
+  plex_match_threshold: number
 }
 
 export type SortField = 'artist' | 'title' | 'year' | 'label' | 'format' | string
@@ -63,6 +68,7 @@ export interface CrawlEvent {
     | 'sync_started' | 'sync_progress' | 'sync_complete' | 'sync_error'
     | 'stock_sync_started' | 'stock_sync_progress' | 'stock_sync_complete' | 'stock_sync_error'
     | 'stock_judgment_started' | 'stock_judgment_progress' | 'stock_judgment_complete' | 'stock_judgment_error'
+    | 'plex_match_started' | 'plex_match_progress' | 'plex_match_complete' | 'plex_match_error'
   discogs_id?: string
   release?: string
   artist?: string

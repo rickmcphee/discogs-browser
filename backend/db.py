@@ -427,6 +427,34 @@ def get_library_items_for_user(conn, user_id: int) -> list[dict]:
     ).fetchall()
 
 
+def set_plex_match(conn, user_id: int, discogs_id: str, url: str):
+    conn.execute(
+        "UPDATE library_items SET plex_url = %s, plex_matched_at = CURRENT_TIMESTAMP "
+        "WHERE user_id = %s AND discogs_id = %s",
+        [url, user_id, discogs_id],
+    )
+
+
+def clear_plex_match(conn, user_id: int, discogs_id: str):
+    conn.execute(
+        "UPDATE library_items SET plex_url = NULL, plex_matched_at = NULL "
+        "WHERE user_id = %s AND discogs_id = %s",
+        [user_id, discogs_id],
+    )
+
+
+def get_library_items_for_plex_match(conn, user_id: int) -> list:
+    rows = conn.execute(
+        """
+        SELECT li.discogs_id, c.artist, c.title
+        FROM library_items li JOIN catalog c ON c.discogs_id = li.discogs_id
+        WHERE li.user_id = %s AND li.in_collection = TRUE
+        """,
+        [user_id],
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
 _RELEASE_ALLOWED_SORT = {"artist", "title", "year", "label", "format", "discogs_price"}
 
 
@@ -480,7 +508,7 @@ def get_library_releases(
             params["crawler_id"] = crawler_row["id"]
             rows = conn.execute(
                 f"""
-                SELECT c.* {base_from}
+                SELECT c.*, li.plex_url, li.plex_matched_at {base_from}
                 LEFT JOIN listings ls ON ls.release_id = c.discogs_id AND ls.crawler_id = %(crawler_id)s
                 {where}
                 ORDER BY CASE WHEN ls.price IS NULL THEN 1 ELSE 0 END {null_order}, ls.price {order_sql}
@@ -490,14 +518,14 @@ def get_library_releases(
             ).fetchall()
         else:
             rows = conn.execute(
-                f"SELECT c.* {base_from} {where} ORDER BY c.artist ASC LIMIT %(limit)s OFFSET %(offset)s",
+                f"SELECT c.*, li.plex_url, li.plex_matched_at {base_from} {where} ORDER BY c.artist ASC LIMIT %(limit)s OFFSET %(offset)s",
                 params,
             ).fetchall()
     else:
         sort_col = sort if sort in _RELEASE_ALLOWED_SORT else "artist"
         rows = conn.execute(
             f"""
-            SELECT c.* {base_from} {where}
+            SELECT c.*, li.plex_url, li.plex_matched_at {base_from} {where}
             ORDER BY CASE WHEN c.{sort_col} IS NULL THEN 1 ELSE 0 END {null_order}, c.{sort_col} {order_sql}
             LIMIT %(limit)s OFFSET %(offset)s
             """,

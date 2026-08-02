@@ -277,7 +277,10 @@ class CrawlManager:
         # other user's requests -- for its entire duration, or indefinitely if a
         # single call hangs.
         loop = asyncio.get_running_loop()
-        await run_in_threadpool(self._sync_collection_blocking, user_id, mode, loop)
+        plex_params = await run_in_threadpool(self._sync_collection_blocking, user_id, mode, loop)
+        if plex_params:
+            base_url, token, threshold = plex_params
+            await self._run_plex_match(user_id, base_url, token, threshold)
 
     def _broadcast_threadsafe(self, event: dict, loop: asyncio.AbstractEventLoop):
         asyncio.run_coroutine_threadsafe(self._broadcast(event), loop)
@@ -417,9 +420,20 @@ class CrawlManager:
             })
             log.info("Collection sync complete: %d releases, %d wishlist items for %s", count, wishlist_count, username)
 
+            # Plex matching needs a real event loop (it awaits asyncio.to_thread
+            # internally) and this function runs inside run_in_threadpool, so it
+            # can't be awaited here -- return the params and let _sync_collection
+            # run it after this thread-pool call returns.
+            plex_base_url = user["plex_base_url"] or ""
+            plex_token = user["plex_token"] or ""
+            if plex_base_url and plex_token:
+                return (plex_base_url, plex_token, user["plex_match_threshold"])
+            return None
+
         except Exception as e:
             log.error("Collection sync failed: %s", e, exc_info=True)
             broadcast({"status": "sync_error", "error": str(e)})
+            return None
 
     async def sweep_enqueue(self, mode: str = "missing"):
         from db import get_identity_pool, get_app_pool, get_enabled_crawlers, enqueue_crawl_queue, get_missing_releases, user_scope
@@ -575,5 +589,59 @@ class CrawlManager:
         except Exception as e:
             log.error("Judgment phase failed for user %d: %s", user_id, e, exc_info=True)
             await self._broadcast({"status": "stock_judgment_error", "error": str(e)})
+
+    async def _run_plex_match(self, user_id: int, base_url: str, token: str, threshold: int):
+        import plex
+        import plex_security
+        from db import (
+            user_scope, get_library_items_for_plex_match, set_plex_match, clear_plex_match,
+        )
+
+        await self._broadcast({"status": "plex_match_started"})
+        log.info("Plex match started for user %d", user_id)
+        try:
+            section_key = await asyncio.to_thread(plex.get_music_section_key, base_url, token)
+            if section_key is None:
+                log.warning("Plex match skipped for user %d: no music library section found on %s", user_id, base_url)
+                await self._broadcast({"status": "plex_match_error", "error": "No music library found on Plex server"})
+                return
+
+            albums = await asyncio.to_thread(plex.fetch_albums, base_url, token, section_key)
+            machine_id = await asyncio.to_thread(plex.get_machine_identifier, base_url, token)
+
+            with user_scope(user_id) as conn:
+                items = get_library_items_for_plex_match(conn, user_id)
+                matched = 0
+                for i, item in enumerate(items, start=1):
+                    # Fuzzy-matching one release against the full album list is CPU-bound
+                    # and, at real collection/library sizes, expensive enough per item to
+                    # stall the shared event loop for other users' requests if run inline
+                    # -- to_thread here yields control back between every item, same
+                    # rationale as the three plex.py calls above.
+                    best = await asyncio.to_thread(plex.find_best_match, item["artist"], item["title"], albums, threshold)
+                    if best:
+                        url = plex.build_album_url(base_url, machine_id, best["rating_key"])
+                        set_plex_match(conn, user_id, item["discogs_id"], url)
+                        matched += 1
+                    else:
+                        clear_plex_match(conn, user_id, item["discogs_id"])
+                    if i % 25 == 0 or i == len(items):
+                        conn.commit()
+                        # user_scope()'s set_config(..., true) is transaction-local and
+                        # was just reverted by the commit above -- re-issue it so the
+                        # remaining items in this same connection are still RLS-scoped
+                        # to this user (same hazard _sync_collection's page loop hits).
+                        conn.execute("SELECT set_config('app.user_id', %s, true)", [str(user_id)])
+                        await self._broadcast({"status": "plex_match_progress", "matched": matched, "total": len(items)})
+
+            await self._broadcast({"status": "plex_match_complete", "matched": matched})
+            log.info("Plex match complete for user %d: %d/%d matched", user_id, matched, len(items))
+        except Exception as e:
+            if isinstance(e, plex_security.PlexUnsafeAddressError):
+                log.warning("Plex match rejected for user %d: %s", user_id, e)
+                await self._broadcast({"status": "plex_match_error", "error": "Plex address not reachable"})
+            else:
+                log.warning("Plex match phase failed for user %d, skipping: %s", user_id, e)
+                await self._broadcast({"status": "plex_match_error", "error": "an unexpected error occurred"})
 
 crawl_manager = CrawlManager()

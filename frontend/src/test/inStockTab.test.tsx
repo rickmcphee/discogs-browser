@@ -69,7 +69,7 @@ const defaultSettings = {
   ebay_app_id: '', ebay_cert_id: '', stock_schedule: '',
 }
 
-const defaultUserSettings = { anthropic_api_key: '', recommendation_item_limit: 300 }
+const defaultUserSettings = { anthropic_api_key: '', recommendation_item_limit: 300, plex_base_url: '', plex_token: '', plex_match_threshold: 90 }
 
 beforeEach(() => {
   MockEventSource.instances = []
