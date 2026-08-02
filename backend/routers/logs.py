@@ -3,12 +3,13 @@ import json
 import re
 from collections import deque
 from typing import Optional
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from sse_starlette.sse import EventSourceResponse
 import config
+from admin import require_admin
 from screenshots import clear_screenshots
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_admin)])
 
 LOG_FILE = config.CONFIG_DIR / "app.log"
 
