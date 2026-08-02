@@ -79,6 +79,26 @@ describe('Account', () => {
     )
   })
 
+  it('still auto-saves the first real edit when fetched settings equal the field defaults', async () => {
+    getUserSettings.mockResolvedValueOnce({
+      anthropic_api_key: '',
+      recommendation_item_limit: 300,
+      plex_base_url: '',
+      plex_token: '',
+      plex_match_threshold: 90,
+    })
+    render(<Account avatarVersion={0} onAvatarChange={() => {}} />)
+    await waitFor(() => expect(getUserSettings).toHaveBeenCalled())
+    fireEvent.change(screen.getByLabelText('Anthropic API key'), { target: { value: 'sk-ant-new-key' } })
+    await waitFor(
+      () =>
+        expect(saveUserSettings).toHaveBeenCalledWith(
+          expect.objectContaining({ anthropic_api_key: 'sk-ant-new-key' })
+        ),
+      { timeout: 2000 }
+    )
+  })
+
   it('does not save immediately on edit — only after the debounce settles', async () => {
     render(<Account avatarVersion={0} onAvatarChange={() => {}} />)
     await waitFor(() => expect(getUserSettings).toHaveBeenCalled())
