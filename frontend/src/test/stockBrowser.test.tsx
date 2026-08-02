@@ -130,9 +130,9 @@ describe('StockBrowser', () => {
   it('refetches the artist sidebar scoped to recommended when Recommended is selected', async () => {
     render(<StockBrowser recommendedAvailable />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    expect(getStockArtists).toHaveBeenLastCalledWith(false, false)
+    expect(getStockArtists).toHaveBeenLastCalledWith(false, false, [])
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'recommended' } })
-    await waitFor(() => expect(getStockArtists).toHaveBeenLastCalledWith(false, true))
+    await waitFor(() => expect(getStockArtists).toHaveBeenLastCalledWith(false, true, []))
   })
 
   it('restores a previously-selected Recommended filter from localStorage', async () => {
@@ -176,6 +176,20 @@ describe('StockBrowser', () => {
     await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ overlapping: true })))
   })
 
+  it('passes hiddenCrawlerIds through to getStock', async () => {
+    render(<StockBrowser hiddenCrawlerIds={[3, 7]} />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ hiddenCrawlerIds: [3, 7] }))
+  })
+
+  it('refetches items and the artist sidebar when hiddenCrawlerIds changes', async () => {
+    const { rerender } = render(<StockBrowser hiddenCrawlerIds={[]} />)
+    await waitFor(() => expect(getStock).toHaveBeenCalledTimes(1))
+    rerender(<StockBrowser hiddenCrawlerIds={[3]} />)
+    await waitFor(() => expect(getStock).toHaveBeenCalledTimes(2))
+    expect(getStockArtists).toHaveBeenLastCalledWith(false, false, [3])
+  })
+
   it('turns the filter back off when All is selected after Overlapping', async () => {
     render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
@@ -197,9 +211,9 @@ describe('StockBrowser', () => {
   it('refetches the artist sidebar scoped to overlapping when Overlapping is selected', async () => {
     render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    expect(getStockArtists).toHaveBeenLastCalledWith(false, false)
+    expect(getStockArtists).toHaveBeenLastCalledWith(false, false, [])
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'overlapping' } })
-    await waitFor(() => expect(getStockArtists).toHaveBeenLastCalledWith(true, false))
+    await waitFor(() => expect(getStockArtists).toHaveBeenLastCalledWith(true, false, []))
   })
 
   it('persists the filter to localStorage under stockFilter and restores it on remount', async () => {
