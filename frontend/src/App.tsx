@@ -112,6 +112,22 @@ export default function App() {
         setSyncStatus(`Sync failed: ${event.error}`, event.id ?? null)
         return
       }
+      if (event.status === 'plex_match_started') {
+        setSyncStatus('Matching collection against Plex…', event.id ?? null)
+        return
+      }
+      if (event.status === 'plex_match_progress') {
+        setSyncStatus(`Matching collection against Plex… ${event.matched}/${event.total}`, event.id ?? null)
+        return
+      }
+      if (event.status === 'plex_match_complete') {
+        setSyncStatus(`Plex match complete — ${event.matched} matched`, event.id ?? null)
+        return
+      }
+      if (event.status === 'plex_match_error') {
+        setSyncStatus(`Plex match failed: ${event.error}`, event.id ?? null)
+        return
+      }
       if (event.status === 'stock_sync_started') {
         setSyncing(true)
         setSyncStatus('Syncing in-stock catalog…', event.id ?? null)
