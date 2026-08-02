@@ -152,7 +152,7 @@ function Account({
               >
                 <span
                   className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                    viewingAsUser ? 'translate-x-1' : 'translate-x-6'
+                    viewingAsUser ? 'translate-x-6' : 'translate-x-1'
                   }`}
                 />
               </button>
