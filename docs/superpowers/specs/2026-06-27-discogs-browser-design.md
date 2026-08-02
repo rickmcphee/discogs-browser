@@ -460,6 +460,40 @@ services:
 
 `bootstrap.sh` (repo root) creates the `workspace/` directory and runs `docker-compose build`.
 
+**Amendment (2026-08-02, branch `multi-tenant-architecture-design`):** the two-service shape above predates the Postgres pivot and is now stale — `docker-compose.yml` defines three services, and the Synology NAS target above still holds (`postgres:16` ships both `amd64`/`arm64` images):
+
+```yaml
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: discogs_browser
+    volumes:
+      - ./postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+  backend:
+    build: ./backend
+    volumes:
+      - ./workspace:/data
+    environment:
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/discogs_browser
+      # ...IDENTITY_DB_PASSWORD, APP_DB_PASSWORD, TOKEN_ENCRYPTION_KEY,
+      # DISCOGS_CONSUMER_KEY/SECRET, BACKEND_BASE_URL -- see .env.example
+    depends_on:
+      postgres:
+        condition: service_healthy
+  frontend:
+    build: ./frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+```
+
+`postgres`'s data directory is a bind mount (`./postgres-data`), matching `./workspace`'s existing convention, so both land on the NAS's own storage and backup routine without any NAS-specific configuration. See [`2026-07-26-multi-tenant-architecture-design.md`](2026-07-26-multi-tenant-architecture-design.md)'s "Deployment" section for the full rationale.
+
 ---
 
 ## Out of Scope

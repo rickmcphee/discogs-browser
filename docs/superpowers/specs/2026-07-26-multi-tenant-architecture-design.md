@@ -426,11 +426,41 @@ This is a one-time script, not a general "import your SQLite instance" feature.
 
 ---
 
+## Deployment
+
+**Amendment (2026-08-02):** this spec's "Out of scope" section (below) defers
+hosting-provider/CI-CD/managed-Postgres decisions for a hypothetical
+publicly-hosted deployment, but missed that it also broke the app's
+existing, already-shipping self-hosted `docker-compose.yml` path — none of
+this spec's own PR or its three follow-ons updated it for the Postgres
+cutover, so as merged it pointed `backend` at a Postgres that doesn't exist
+in the compose network. Fixed here, not deferred, since keeping the
+pre-existing deployment mode working isn't a new hosting decision:
+
+- Added a `postgres` service (`postgres:16`, healthcheck-gated so `backend`
+  doesn't start against a not-yet-ready database), and wired `backend`'s
+  `DATABASE_URL`/`IDENTITY_DB_PASSWORD`/`APP_DB_PASSWORD`/
+  `TOKEN_ENCRYPTION_KEY`/`DISCOGS_CONSUMER_KEY`/`DISCOGS_CONSUMER_SECRET`/
+  `BACKEND_BASE_URL` from a root `.env` (see `.env.example`).
+- `postgres`'s data directory is a plain bind mount (`./postgres-data`),
+  matching `backend`'s existing `./workspace` convention, rather than a
+  Docker-managed named volume.
+- This makes self-hosting on a NAS (Synology Container Manager, QNAP
+  Container Station, etc.) a supported target for the same reason it worked
+  before the multi-tenant pivot: point the project checkout at NAS storage
+  and both bind mounts land there, included in the NAS's own backup
+  routine. No NAS-specific code or compose changes — "multi-tenant" here
+  means per-user Postgres rows and auth, not that it requires cloud
+  hosting.
+
 ## Out of scope
 
 - Billing/subscription logic.
 - Self-serve invite generation.
-- Detailed infra/ops (hosting provider, CI/CD, managed Postgres choice).
+- Detailed infra/ops (hosting provider, CI/CD, managed Postgres choice) for
+  a publicly-hosted deployment. Keeping the pre-existing self-hosted
+  docker-compose path working (above) is not this — it's not a new hosting
+  decision, just not breaking what already shipped.
 - Any UI/UX polish for the Plex remote-access setup flow beyond the SSRF mitigation
   needed to ship it safely.
 - Keeping the single-owner self-hosted mode running — retired, tagged at
