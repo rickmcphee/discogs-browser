@@ -81,9 +81,12 @@ are unaffected.
   convention — indigo track when in Admin view, gray when viewing as User —
   matching the alignment of the "Save" buttons in the Recommendations/Plex
   sections below.
-- The "Log out" button's `onClick` also clears
-  `localStorage.removeItem('discogs-browser.viewAsUser')` before the existing
-  `logout().then(() => window.location.reload())`.
+- The "Log out" button's `onClick` calls
+  `logout().then(() => { localStorage.removeItem('discogs-browser.viewAsUser'); window.location.reload() })`.
+  The flag is cleared only after `logout()` resolves, so a failed logout
+  (network/server error) leaves the session and the admin/user preview state
+  untouched. `logout()` (`frontend/src/api/client.ts`) throws on a non-2xx
+  response, matching `uploadAvatar`/`deleteAvatar`.
 
 ## Testing
 
