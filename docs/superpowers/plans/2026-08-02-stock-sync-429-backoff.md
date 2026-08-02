@@ -476,14 +476,122 @@ git commit -m "fix: abort stock sync after 2 consecutive 429 catalog crawlers"
 
 ---
 
-### Task 3: Final review
+### Task 3: Frontend — handle `stock_sync_aborted`
 
-Not a code task — dispatch a final reviewer over this plan's whole diff (2 commits plus the earlier spec-only commit), checking:
-- `_parse_retry_after` is only ever reached from the 429 branch (confirm `isinstance(e, httpx.HTTPStatusError)` correctly guards `e.response` — a plain `httpx.RequestError`, e.g. a timeout or connection error, has no `.response` attribute and must never reach that line).
+**Added after Task 2's code-quality review** (not in the original plan as approved): the design spec's Goal 3 ("The frontend/log clearly show a deliberate backoff, not a crash") was only half-implemented by Task 2 — the backend logs and broadcasts `stock_sync_aborted`, but nothing in the frontend handles that event. Neither `stock_sync_complete` nor `stock_sync_error` fires on the abort path, so without this task the sync spinner and "Syncing in-stock catalog…" status text would stay stuck indefinitely after an abort. This closes that gap.
+
+**Files:**
+- Modify: `frontend/src/api/types.ts`
+- Modify: `frontend/src/App.tsx`
+- Test: `frontend/src/test/inStockTab.test.tsx`
+
+- [ ] **Step 1: Write the failing test**
+
+Add to `frontend/src/test/inStockTab.test.tsx`, in the `describe('In Stock tab', ...)` block, near the existing `stock_sync_complete`/`stock_sync_progress` tests (matches their exact `render`/`getLastCrawlSource`/`source.emit`/`waitFor` pattern):
+
+```tsx
+it('surfaces stock_sync_aborted events in the bottom status bar and stops syncing', async () => {
+  render(<App />)
+  await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+  const source = getLastCrawlSource()
+  source.emit({ status: 'stock_sync_started', id: 1 })
+  await waitFor(() => expect(screen.getByText(/Syncing in-stock catalog…/)).toBeInTheDocument())
+  source.emit({
+    status: 'stock_sync_aborted',
+    error: 'Too many consecutive rate-limited catalog sites',
+    sources: ['Run For Cover', 'Equal Vision'],
+    id: 2,
+  })
+  await waitFor(() =>
+    expect(
+      screen.getByText(/In-stock sync stopped: Too many consecutive rate-limited catalog sites \(Run For Cover, Equal Vision\)/)
+    ).toBeInTheDocument()
+  )
+})
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `cd frontend && npm test -- --run inStockTab`
+Expected: FAIL — `stock_sync_aborted` isn't in the `CrawlEvent` status union yet (TypeScript) and `App.tsx` has no handler for it, so the status bar never shows the expected text (it stays stuck on "Syncing in-stock catalog…" from the `stock_sync_started` event just before it).
+
+- [ ] **Step 3: Implement**
+
+In `frontend/src/api/types.ts`, in the `CrawlEvent` interface (currently lines 66-89), add `stock_sync_aborted` to the status union (line 70) and a new `sources` field:
+
+```ts
+export interface CrawlEvent {
+  id?: number
+  status?: 'found' | 'not_found' | 'error' | 'complete' | 'started' | 'stopped' | 'ping'
+    | 'sync_started' | 'sync_progress' | 'sync_complete' | 'sync_error'
+    | 'stock_sync_started' | 'stock_sync_progress' | 'stock_sync_complete' | 'stock_sync_error' | 'stock_sync_aborted'
+    | 'stock_judgment_started' | 'stock_judgment_progress' | 'stock_judgment_complete' | 'stock_judgment_error'
+    | 'plex_match_started' | 'plex_match_progress' | 'plex_match_complete' | 'plex_match_error'
+  discogs_id?: string
+  release?: string
+  artist?: string
+  site?: string
+  price?: number
+  error?: string
+  total?: number
+  total_pages?: number
+  page?: number
+  synced?: number
+  wishlist_synced?: number
+  username?: string
+  screenshots?: string[]
+  source?: string
+  sources?: string[]
+  judged?: number
+  matched?: number
+}
+```
+
+(Only change: `stock_sync_aborted` added to the status union on the existing `stock_sync_*` line, and a new `sources?: string[]` field added after the existing `source?: string` field. Everything else in the interface is unchanged.)
+
+In `frontend/src/App.tsx`, immediately after the existing `stock_sync_error` block (currently lines 143-147):
+
+```tsx
+      if (event.status === 'stock_sync_error') {
+        setSyncing(false)
+        setSyncStatus(`In-stock sync failed: ${event.error}`, event.id ?? null)
+        return
+      }
+      if (event.status === 'stock_sync_aborted') {
+        setSyncing(false)
+        setSyncStatus(`In-stock sync stopped: ${event.error} (${event.sources?.join(', ')})`, event.id ?? null)
+        return
+      }
+```
+
+(i.e., add the new `stock_sync_aborted` block right after the existing `stock_sync_error` block — same shape, `setSyncing(false)` + `setSyncStatus(...)` + `return`, matching every other terminal status handler in this function.)
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `cd frontend && npm test -- --run inStockTab` — should pass.
+Run: `cd frontend && npm test -- --run` — full suite, should pass (confirms no regression elsewhere).
+Run: `cd frontend && npx tsc -b` — should be clean.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add frontend/src/api/types.ts frontend/src/App.tsx frontend/src/test/inStockTab.test.tsx
+git commit -m "fix: show stock_sync_aborted status in the frontend sync banner"
+```
+
+---
+
+### Task 4: Final review
+
+Not a code task — dispatch a final reviewer over this plan's whole diff (4 code/doc commits plus the earlier spec-only commit), checking:
+- `_parse_retry_after` is only ever reached from the 429 branch (confirm `isinstance(e, httpx.HTTPStatusError)` correctly guards `e.response` — a plain `httpx.RequestError`, e.g. a timeout or connection error, has no `.response` attribute and must never reach that line), and correctly rejects non-finite values (`math.isfinite`) as well as negative/non-numeric ones (this was a fix-up found during Task 1's code-quality review, added in a follow-up commit — confirm it actually landed).
 - `_sync_stock`'s early `return` on abort genuinely skips the judgment phase and the `stock_sync_complete` broadcast for that run, and still closes the SQLite connection (via the untouched `finally`).
 - `consecutive_429_sites` is reset to `[]` on *every* non-429 outcome, not just success — re-read the final code to confirm the non-429-failure branch's `else: consecutive_429_sites = []` actually landed (this is the detail `test_sync_stock_resets_429_streak_after_a_non_429_failure` exists to catch).
-- Full backend test suite green: `cd backend && .venv/bin/pytest tests/ -q`.
-- Pre-PR spec-drift check per `CLAUDE.md`: `grep -rl "iter_products\|_sync_stock\|stock_sync" docs/superpowers/specs/` and confirm `docs/superpowers/specs/2026-06-27-discogs-browser-design.md` (the master spec) doesn't describe `_sync_stock`'s per-crawler failure handling in a way this plan's change now contradicts — amend it in its own commit on this branch if it does, per the required check.
-- Confirm `docs/superpowers/specs/2026-08-02-stock-sync-429-backoff-design.md` itself needs no amendment (i.e., what shipped matches what it describes — unlike the worker-pool-pacing spec's final review, no deviation is expected here since this is a much smaller, single-pass fix, but verify rather than assume).
+- Task 3's frontend handler actually stops the UI's "syncing" state on `stock_sync_aborted` (not just that the status text renders) — re-read `App.tsx`'s handler to confirm `setSyncing(false)` is really there, not just assumed from the test passing.
+- Full backend test suite green: `cd backend && .venv/bin/pytest tests/ -q`. Full frontend suite green: `cd frontend && npm test -- --run` and `cd frontend && npx tsc -b`.
+- Pre-PR spec-drift check per `CLAUDE.md`: `grep -rl "iter_products\|_sync_stock\|stock_sync" docs/superpowers/specs/`. This is expected to surface at least two real hits found during code-quality review and not yet fixed — amend both in their own commit(s) on this branch:
+  - `docs/superpowers/specs/2026-07-05-in-stock-crawler-design.md`: its description of `iter_products()`'s retry delay (a flat random delay in `[crawl_delay_seconds/2, crawl_delay_seconds]`) is now incomplete since a 429 with `Retry-After` overrides that delay once; and its enumerated SSE event list for stock sync (`stock_sync_started/progress/complete/error`) is missing `stock_sync_aborted`.
+  - `docs/superpowers/specs/2026-06-27-discogs-browser-design.md` (the master spec): confirm whether it describes `_sync_stock`'s per-crawler failure handling or the stock-sync SSE event list in a way this plan's changes now contradict; amend if so.
+- Confirm `docs/superpowers/specs/2026-08-02-stock-sync-429-backoff-design.md` itself needs no amendment beyond what's already tracked above (i.e., what shipped matches what it describes for the backend pieces it covers — verify rather than assume).
 
 Once approved, this branch is ready for the `finishing-a-development-branch` conversation (merge/PR/cleanup).
