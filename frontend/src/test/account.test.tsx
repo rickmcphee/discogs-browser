@@ -6,7 +6,7 @@ const { uploadAvatar, deleteAvatar, logout, getUserSettings, saveUserSettings } 
   uploadAvatar: vi.fn().mockResolvedValue(undefined),
   deleteAvatar: vi.fn().mockResolvedValue(undefined),
   logout: vi.fn().mockResolvedValue(undefined),
-  getUserSettings: vi.fn().mockResolvedValue({ anthropic_api_key: '', recommendation_item_limit: 300 }),
+  getUserSettings: vi.fn().mockResolvedValue({ anthropic_api_key: '', recommendation_item_limit: 300, plex_base_url: '', plex_token: '', plex_match_threshold: 90 }),
   saveUserSettings: vi.fn().mockResolvedValue(undefined),
 }))
 
