@@ -13,25 +13,38 @@ function Account({ avatarVersion, onAvatarChange }: Props) {
   const [avatarBusy, setAvatarBusy] = useState(false)
   const [anthropicApiKey, setAnthropicApiKey] = useState('')
   const [recommendationItemLimit, setRecommendationItemLimit] = useState(300)
+  const [plexBaseUrl, setPlexBaseUrl] = useState('')
+  const [plexToken, setPlexToken] = useState('')
+  const [plexMatchThreshold, setPlexMatchThreshold] = useState(90)
   const [userSettingsSaving, setUserSettingsSaving] = useState(false)
   const [userSettingsSaved, setUserSettingsSaved] = useState(false)
+  const [plexSaveError, setPlexSaveError] = useState('')
 
   useEffect(() => {
     getUserSettings().then((s) => {
       setAnthropicApiKey(s.anthropic_api_key)
       setRecommendationItemLimit(s.recommendation_item_limit)
+      setPlexBaseUrl(s.plex_base_url)
+      setPlexToken(s.plex_token)
+      setPlexMatchThreshold(s.plex_match_threshold)
     }).catch(() => {})
   }, [])
 
   async function handleSaveUserSettings() {
     setUserSettingsSaving(true)
+    setPlexSaveError('')
     try {
       await saveUserSettings({
         anthropic_api_key: anthropicApiKey,
         recommendation_item_limit: recommendationItemLimit,
+        plex_base_url: plexBaseUrl,
+        plex_token: plexToken,
+        plex_match_threshold: plexMatchThreshold,
       })
       setUserSettingsSaved(true)
       setTimeout(() => setUserSettingsSaved(false), 2000)
+    } catch (err: any) {
+      setPlexSaveError(err.message || 'Save failed')
     } finally {
       setUserSettingsSaving(false)
     }
@@ -163,6 +176,85 @@ function Account({ avatarVersion, onAvatarChange }: Props) {
               </td>
               <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
                 Maximum number of unprocessed Store items evaluated by Claude for recommendation each time. Extra items are evaluated on a later run. 0 = no limit.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      {/* Plex */}
+      <section>
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="text-lg font-semibold text-white text-left">Plex</h2>
+          <button
+            onClick={handleSaveUserSettings}
+            disabled={userSettingsSaving}
+            className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded text-sm font-medium transition-colors"
+          >
+            {userSettingsSaved ? '✓ Saved' : userSettingsSaving ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+        <p className="text-sm text-gray-500 mb-4 text-left">
+          Link collection releases to matching albums in your Plex music library.
+        </p>
+        {plexSaveError && <p className="text-xs text-red-400 mb-3 text-left">{plexSaveError}</p>}
+        <table className="w-full text-sm border-collapse">
+          <tbody>
+            <tr className="border-b border-gray-800/50">
+              <td className="py-3 pr-4 text-left text-gray-300 font-medium align-top whitespace-nowrap w-40">
+                Plex server address
+              </td>
+              <td className="py-3 pr-4 text-left align-top w-64">
+                <input
+                  type="text"
+                  aria-label="Plex server address"
+                  value={plexBaseUrl}
+                  placeholder="192.168.1.50:32400"
+                  onChange={(e) => setPlexBaseUrl(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500"
+                />
+              </td>
+              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                Must be reachable from this server — a LAN address only works for a
+                self-hosted deployment; a hosted deployment needs Plex Remote Access
+                or a tunnel such as Tailscale.
+              </td>
+            </tr>
+            <tr className="border-b border-gray-800/50">
+              <td className="py-3 pr-4 text-left text-gray-300 font-medium align-top whitespace-nowrap">
+                Plex token
+              </td>
+              <td className="py-3 pr-4 text-left align-top">
+                <input
+                  type="password"
+                  aria-label="Plex token"
+                  value={plexToken}
+                  placeholder="your Plex token"
+                  onChange={(e) => setPlexToken(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500"
+                />
+              </td>
+              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                Find it via a browser request while logged into Plex Web (see Plex support docs).
+              </td>
+            </tr>
+            <tr className="border-b border-gray-800/50">
+              <td className="py-3 pr-4 text-left text-gray-300 font-medium align-top whitespace-nowrap">
+                Match threshold
+              </td>
+              <td className="py-3 pr-4 text-left align-top">
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  aria-label="Match threshold"
+                  value={plexMatchThreshold}
+                  onChange={(e) => setPlexMatchThreshold(Math.max(0, Math.min(100, parseInt(e.target.value) || 0)))}
+                  className="w-24 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-indigo-500"
+                />
+              </td>
+              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                Minimum fuzzy-match score (0–100) for a release to be linked to a Plex album. Default 90.
               </td>
             </tr>
           </tbody>

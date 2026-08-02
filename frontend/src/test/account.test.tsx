@@ -68,7 +68,7 @@ describe('Account', () => {
     await waitFor(() => expect(getUserSettings).toHaveBeenCalled())
     const input = screen.getByLabelText('Anthropic API key')
     fireEvent.change(input, { target: { value: 'sk-ant-new-key' } })
-    fireEvent.click(screen.getByRole('button', { name: /Save/i }))
+    fireEvent.click(screen.getAllByRole('button', { name: /Save/i })[0])
     await waitFor(() =>
       expect(saveUserSettings).toHaveBeenCalledWith(
         expect.objectContaining({ anthropic_api_key: 'sk-ant-new-key' })
