@@ -1,5 +1,7 @@
 import asyncio
+import time
 from typing import Optional
+from starlette.concurrency import run_in_threadpool
 from logging_config import get_logger
 
 log = get_logger("crawl_manager")
@@ -267,6 +269,20 @@ class CrawlManager:
         return True
 
     async def _sync_collection(self, user_id: int, mode: str):
+        # The actual work is a long sequence of blocking httpx/psycopg calls with
+        # no natural await points between them (barcode-fetch pacing aside) --
+        # run it in a worker thread via run_in_threadpool (same pattern
+        # auth_middleware._resolve_session uses for the same reason) so it can't
+        # freeze the main event loop -- and therefore the worker pool and every
+        # other user's requests -- for its entire duration, or indefinitely if a
+        # single call hangs.
+        loop = asyncio.get_running_loop()
+        await run_in_threadpool(self._sync_collection_blocking, user_id, mode, loop)
+
+    def _broadcast_threadsafe(self, event: dict, loop: asyncio.AbstractEventLoop):
+        asyncio.run_coroutine_threadsafe(self._broadcast(event), loop)
+
+    def _sync_collection_blocking(self, user_id: int, mode: str, loop: asyncio.AbstractEventLoop):
         import token_encryption
         import discogs
         from db import (
@@ -275,16 +291,18 @@ class CrawlManager:
         )
         import httpx
 
-        await self._broadcast({"status": "sync_started"})
+        broadcast = lambda event: self._broadcast_threadsafe(event, loop)
+
+        broadcast({"status": "sync_started"})
         log.info("Collection sync started for user %d (mode=%s)", user_id, mode)
         try:
             with get_identity_pool().connection() as conn:
                 user = conn.execute("SELECT * FROM users WHERE id = %s", [user_id]).fetchone()
             if user is None:
-                await self._broadcast({"status": "sync_error", "error": "User not found"})
+                broadcast({"status": "sync_error", "error": "User not found"})
                 return
             if not user["discogs_oauth_token_encrypted"]:
-                await self._broadcast({"status": "sync_error", "error": "Discogs account not connected"})
+                broadcast({"status": "sync_error", "error": "Discogs account not connected"})
                 return
             oauth_token = token_encryption.decrypt(user["discogs_oauth_token_encrypted"])
             oauth_secret = token_encryption.decrypt(user["discogs_oauth_secret_encrypted"])
@@ -293,7 +311,7 @@ class CrawlManager:
             try:
                 fields = discogs.fetch_collection_fields(oauth_token, oauth_secret, username)
             except httpx.HTTPStatusError:
-                await self._broadcast({"status": "sync_error", "error": "Discogs request failed"})
+                broadcast({"status": "sync_error", "error": "Discogs request failed"})
                 return
             price_field_id = next((fid for fid, name in fields.items() if name.lower() == "price"), None)
 
@@ -326,7 +344,7 @@ class CrawlManager:
                                 ) or None
                             except Exception as e:
                                 log.warning("Barcode fetch failed for release %s: %s", rid, e)
-                            await asyncio.sleep(1.1)
+                            time.sleep(1.1)
                         else:
                             release["barcode"] = existing_row["barcode"]
                         upsert_catalog_release(conn, release)
@@ -343,7 +361,7 @@ class CrawlManager:
                     # issue it so the next page's writes are still RLS-scoped to
                     # this user.
                     conn.execute("SELECT set_config('app.user_id', %s, true)", [str(user_id)])
-                    await self._broadcast({"status": "sync_progress", "synced": count, "page": page, "total_pages": total_pages})
+                    broadcast({"status": "sync_progress", "synced": count, "page": page, "total_pages": total_pages})
                     log.info("Sync page %d/%d (%d releases) for user %d", page, total_pages, count, user_id)
 
                 for page, total_pages, items in discogs.iter_wantlist_pages(oauth_token, oauth_secret, username):
@@ -365,7 +383,7 @@ class CrawlManager:
                                 ) or None
                             except Exception as e:
                                 log.warning("Barcode fetch failed for wishlist release %s: %s", rid, e)
-                            await asyncio.sleep(1.1)
+                            time.sleep(1.1)
                         else:
                             release["barcode"] = existing_row["barcode"]
                         upsert_catalog_release(conn, release)
@@ -391,7 +409,7 @@ class CrawlManager:
                     user_id, wishlist_count, cleared, len(deleted),
                 )
 
-            await self._broadcast({
+            broadcast({
                 "status": "sync_complete",
                 "synced": count,
                 "wishlist_synced": wishlist_count,
@@ -399,12 +417,9 @@ class CrawlManager:
             })
             log.info("Collection sync complete: %d releases, %d wishlist items for %s", count, wishlist_count, username)
 
-        except asyncio.CancelledError:
-            log.info("Collection sync cancelled")
-            raise
         except Exception as e:
             log.error("Collection sync failed: %s", e, exc_info=True)
-            await self._broadcast({"status": "sync_error", "error": str(e)})
+            broadcast({"status": "sync_error", "error": str(e)})
 
     async def sweep_enqueue(self, mode: str = "missing"):
         from db import get_identity_pool, get_app_pool, get_enabled_crawlers, enqueue_crawl_queue, get_missing_releases, user_scope

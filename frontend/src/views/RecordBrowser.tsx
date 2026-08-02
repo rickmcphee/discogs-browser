@@ -10,9 +10,10 @@ interface Props {
   crawlEvents?: CrawlEvent[]
   crawlers?: Crawler[]
   syncing?: boolean
+  onRefreshCollection?: () => void
 }
 
-export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawlingReleaseId, crawlEvents, crawlers = [], syncing }: Props) {
+export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawlingReleaseId, crawlEvents, crawlers = [], syncing, onRefreshCollection }: Props) {
   const [releases, setReleases] = useState<Release[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -180,6 +181,16 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
                 <rect x="9" y="9" width="5" height="5" />
               </svg>
             </button>
+            {onRefreshCollection && (
+              <button
+                onClick={onRefreshCollection}
+                disabled={syncing}
+                title="Sync collection from Discogs"
+                className="p-1.5 rounded text-gray-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              >
+                <span className="block text-base leading-none">{syncing ? '⟳' : '↻'}</span>
+              </button>
+            )}
           </div>
         </div>
 
