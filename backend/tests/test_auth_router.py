@@ -295,6 +295,55 @@ def test_redeem_invite_rejects_expired_pending_signup(client):
     assert r.status_code == 400
 
 
+def test_create_invite_requires_admin(client):
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    token = session_tokens.new_session_token()
+    with db.get_admin_pool().connection() as conn:
+        db.create_session(conn, session_tokens.hash_token(token), user["id"], datetime.utcnow() + timedelta(days=1))
+        conn.commit()
+
+    client.cookies.set(config.COOKIE_NAME, token)
+    r = client.post("/api/auth/invites", headers={"X-Requested-With": "fetch"})
+    assert r.status_code == 403
+
+
+def test_create_invite_as_admin_returns_code_that_redeems_successfully(client):
+    with db.get_admin_pool().connection() as conn:
+        admin_user = db.create_user(conn, discogs_user_id=1, discogs_username="admin")
+        conn.execute("UPDATE users SET is_admin = TRUE WHERE id = %s", [admin_user["id"]])
+        conn.commit()
+    token = session_tokens.new_session_token()
+    with db.get_admin_pool().connection() as conn:
+        db.create_session(conn, session_tokens.hash_token(token), admin_user["id"], datetime.utcnow() + timedelta(days=1))
+        conn.commit()
+    client.cookies.set(config.COOKIE_NAME, token)
+
+    r = client.post("/api/auth/invites", headers={"X-Requested-With": "fetch"})
+    assert r.status_code == 200
+    code = r.json()["code"]
+    assert code
+
+    with db.get_admin_pool().connection() as conn:
+        invite = conn.execute(
+            "SELECT created_by, redeemed_by FROM invites WHERE code = %s", [code]
+        ).fetchone()
+    assert invite["created_by"] == admin_user["id"]
+    assert invite["redeemed_by"] is None
+
+    # Prove the minted code is genuinely usable, not just present in the table.
+    with db.get_admin_pool().connection() as conn:
+        db.create_pending_signup(conn, "signup-token-invite", 777, "erin", b"x", b"y")
+        conn.commit()
+    r = client.post(
+        "/api/auth/redeem-invite",
+        json={"signup_token": "signup-token-invite", "invite_code": code},
+        headers={"X-Requested-With": "fetch"},
+    )
+    assert r.status_code == 200
+
+
 def test_logout_deletes_session_and_clears_cookie(client):
     with db.get_admin_pool().connection() as conn:
         user = db.create_user(conn, discogs_user_id=42, discogs_username="alice")

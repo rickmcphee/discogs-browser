@@ -347,6 +347,13 @@ there's a real need" precedent (e.g. `plex_match_threshold` being config-only ra
 than a settings-page field). A real invite-generation UI is a fast follow if/when
 signup opens up further.
 
+**Amendment (2026-08-02, branch `crawl-queue-refactor`):** "minted by hand" no longer
+describes the only path — `POST /api/auth/invites` (admin-gated via `require_admin`,
+in `routers/session.py`) mints a code through the app itself, returning `{code}`.
+This is still not the "real invite-generation UI" described above (no frontend for
+it, no listing of existing invites, no waitlist mechanism), just enough for an admin
+to hand out a code without a raw SQL `INSERT`.
+
 ---
 
 ## Admin crawler curation
@@ -450,6 +457,9 @@ implementation plan (per this repo's spec-first workflow):
 4. **Plex reachability + SSRF hardening** — per-user `plex_base_url`/`plex_token`,
    the validation logic, and re-validation on use.
 5. **Invite/waitlist gating** — `invites` table, redemption flow, code-minting path.
+   The table and redemption flow shipped with the foundational spec; code-minting got
+   a minimal admin API endpoint on 2026-08-02 (see "Invite / waitlist gating" above) —
+   a waitlist mechanism, if wanted, is still unbuilt.
 
 ---
 

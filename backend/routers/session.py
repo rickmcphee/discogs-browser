@@ -1,13 +1,14 @@
 import secrets
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
 
 import avatar as avatar_storage
 import config
 import db
+from admin import require_admin
 import oauth_discogs
 import session_tokens
 import token_encryption
@@ -190,6 +191,15 @@ def redeem_invite(body: RedeemInviteRequest, request: Request, response: Respons
         _create_session_for_user(conn, request, response, user["id"])
         conn.commit()
     return {"ok": True}
+
+
+@router.post("/auth/invites", dependencies=[Depends(require_admin)])
+def create_invite(request: Request):
+    code = secrets.token_urlsafe(12)
+    with db.get_app_pool().connection() as conn:
+        db.create_invite(conn, request.state.user_id, code)
+        conn.commit()
+    return {"code": code}
 
 
 @router.post("/auth/logout")
