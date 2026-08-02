@@ -751,6 +751,7 @@ def get_stock_items(
     per_page: int = 50,
     overlapping: bool = False,
     recommended: bool = False,
+    exclude_crawler_ids: Optional[list[int]] = None,
 ) -> dict:
     order_sql = "DESC" if order.lower() == "desc" else "ASC"
     sort_col = sort if sort in _STOCK_ALLOWED_SORT else "artist"
@@ -771,6 +772,9 @@ def get_stock_items(
             "WHERE user_id = %(user_id)s AND recommended = TRUE)"
         )
         conditions.append(_not_owned_clause("%(user_id)s"))
+    if exclude_crawler_ids:
+        conditions.append("s.crawler_id != ALL(%(exclude_crawler_ids)s)")
+        params["exclude_crawler_ids"] = exclude_crawler_ids
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
     total = conn.execute(f"SELECT COUNT(*) FROM stock_items s {where}", params).fetchone()["count"]
@@ -796,7 +800,9 @@ def get_stock_items(
     return {"total": total, "page": page, "per_page": per_page, "items": rows}
 
 
-def get_distinct_stock_artists(conn, user_id: int, overlapping: bool = False, recommended: bool = False) -> list[str]:
+def get_distinct_stock_artists(conn, user_id: int, overlapping: bool = False, recommended: bool = False,
+    exclude_crawler_ids: Optional[list[int]] = None,
+) -> list[str]:
     conditions = []
     params: dict = {"user_id": user_id}
     if overlapping:
@@ -807,6 +813,9 @@ def get_distinct_stock_artists(conn, user_id: int, overlapping: bool = False, re
             "WHERE user_id = %(user_id)s AND recommended = TRUE)"
         )
         conditions.append(_not_owned_clause("%(user_id)s"))
+    if exclude_crawler_ids:
+        conditions.append("s.crawler_id != ALL(%(exclude_crawler_ids)s)")
+        params["exclude_crawler_ids"] = exclude_crawler_ids
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     rows = conn.execute(f"SELECT DISTINCT s.artist FROM stock_items s {where} ORDER BY s.artist", params).fetchall()
     return [row["artist"] for row in rows]
