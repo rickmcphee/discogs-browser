@@ -7,7 +7,9 @@ interface Props {
   hiddenCrawlerIds?: number[]
 }
 
-function StockBrowser({ recommendedAvailable = false, hiddenCrawlerIds = [] }: Props) {
+const NO_HIDDEN_CRAWLER_IDS: number[] = []
+
+function StockBrowser({ recommendedAvailable = false, hiddenCrawlerIds = NO_HIDDEN_CRAWLER_IDS }: Props) {
   const [items, setItems] = useState<StockItem[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
