@@ -55,3 +55,30 @@ describe('refetch on sync progress', () => {
     await waitFor(() => expect(getReleases).toHaveBeenCalledTimes(2))
   })
 })
+
+describe('active-gated refetch (avoids duplicate refetch for a hidden view)', () => {
+  it('does not reload on a syncGeneration tick while inactive', async () => {
+    const { rerender } = render(
+      <RecordBrowser scope="wishlist" onRefreshPrices={() => {}} syncGeneration={0} active={false} />
+    )
+    await waitFor(() => expect(getReleases).toHaveBeenCalledTimes(1))
+
+    rerender(
+      <RecordBrowser scope="wishlist" onRefreshPrices={() => {}} syncGeneration={1} active={false} />
+    )
+    await new Promise((r) => setTimeout(r, 10))
+    expect(getReleases).toHaveBeenCalledTimes(1)
+  })
+
+  it('reloads once when becoming active, catching up on generations missed while inactive', async () => {
+    const { rerender } = render(
+      <RecordBrowser scope="wishlist" onRefreshPrices={() => {}} syncGeneration={1} active={false} />
+    )
+    await waitFor(() => expect(getReleases).toHaveBeenCalledTimes(1))
+
+    rerender(
+      <RecordBrowser scope="wishlist" onRefreshPrices={() => {}} syncGeneration={1} active={true} />
+    )
+    await waitFor(() => expect(getReleases).toHaveBeenCalledTimes(2))
+  })
+})

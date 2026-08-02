@@ -236,6 +236,55 @@ async def test_sync_collection_enqueues_crawl_queue_for_missing_listings(pg_sche
     assert [(q["discogs_id"], q["status"]) for q in queued] == [("r111", "pending"), ("r222", "pending")]
 
 
+async def test_sync_collection_does_not_block_event_loop(pg_schema, monkeypatch):
+    import config
+    import discogs
+
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=99, discogs_username="slowbob")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        conn.commit()
+
+    def slow_fetch_fields(oauth_token, oauth_token_secret, username):
+        time.sleep(0.3)
+        return {}
+
+    monkeypatch.setattr(discogs, "fetch_collection_fields", slow_fetch_fields)
+    monkeypatch.setattr(discogs, "iter_collection_pages", lambda *a, **k: iter(()))
+    monkeypatch.setattr(discogs, "iter_wantlist_pages", lambda *a, **k: iter(()))
+
+    heartbeat_count = 0
+
+    async def heartbeat():
+        nonlocal heartbeat_count
+        while True:
+            heartbeat_count += 1
+            await asyncio.sleep(0.02)
+
+    manager = CrawlManager()
+    hb_task = asyncio.create_task(heartbeat())
+    try:
+        await manager._sync_collection(user["id"], "all")
+    finally:
+        hb_task.cancel()
+
+    # A blocking (non-offloaded) fetch_collection_fields call would starve the event
+    # loop for the full 0.3s sleep, so the heartbeat (ticking every 0.02s) would get
+    # essentially no chance to run. If the sync is properly offloaded to a thread, the
+    # loop stays free and the heartbeat ticks throughout.
+    assert heartbeat_count >= 5
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert "sync_complete" in statuses
+
+
 # ---------------------------------------------------------------------------
 # worker pool (_drain_one_batch: claim / crawl / bot-recovery / mark done)
 #

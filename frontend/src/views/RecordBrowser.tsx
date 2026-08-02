@@ -10,9 +10,12 @@ interface Props {
   crawlEvents?: CrawlEvent[]
   crawlers?: Crawler[]
   syncGeneration?: number
+  syncing?: boolean
+  onRefreshCollection?: () => void
+  active?: boolean
 }
 
-export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawlingReleaseId, crawlEvents, crawlers = [], syncGeneration }: Props) {
+export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawlingReleaseId, crawlEvents, crawlers = [], syncGeneration, syncing, onRefreshCollection, active = true }: Props) {
   const [releases, setReleases] = useState<Release[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -29,6 +32,7 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
 
   const processedCount = useRef(0)
   const tableScrollRef = useRef<HTMLDivElement>(null)
+  const wasActive = useRef(active)
 
   useEffect(() => {
     if (!crawlEvents) return
@@ -93,12 +97,16 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
   useEffect(() => { load() }, [load])
   // syncGeneration ticks on every sync_progress/sync_complete SSE event so the
   // collection/wishlist tables fill in as pages land, not just once the whole
-  // sync finishes. Guarded on truthy (not just changed) so the initial render's
-  // generation of 0 doesn't trigger a redundant second load alongside the
-  // mount effect above.
+  // sync finishes. Only refetches while active -- both collection and wishlist
+  // scopes mount simultaneously (one just CSS-hidden), so without this an
+  // inactive instance would double the refetch traffic on every tick for a
+  // view nobody's looking at. Catches back up with one refetch on the tick it
+  // becomes active, in case generations ticked while it was inactive.
   useEffect(() => {
-    if (syncGeneration) load()
-  }, [syncGeneration, load])
+    const justBecameActive = active && !wasActive.current
+    wasActive.current = active
+    if (active && (syncGeneration || justBecameActive)) load()
+  }, [syncGeneration, active, load])
   useEffect(() => { getArtists(scope).then(setArtists) }, [scope])
   useEffect(() => { localStorage.setItem(`collectionViewMode_${scope}`, viewMode) }, [viewMode, scope])
 
@@ -183,6 +191,16 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
                 <rect x="9" y="9" width="5" height="5" />
               </svg>
             </button>
+            {onRefreshCollection && (
+              <button
+                onClick={onRefreshCollection}
+                disabled={syncing}
+                title="Sync collection from Discogs"
+                className="p-1.5 rounded text-gray-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              >
+                <span className="block text-base leading-none">{syncing ? '⟳' : '↻'}</span>
+              </button>
+            )}
           </div>
         </div>
 

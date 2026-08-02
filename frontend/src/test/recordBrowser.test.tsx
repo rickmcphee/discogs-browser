@@ -30,4 +30,24 @@ describe('RecordBrowser', () => {
     await waitFor(() => expect(screen.getByText('Amazon')).toBeTruthy())
     expect(screen.queryByText('Epitaph')).toBeNull()
   })
+
+  it('does not render a sync button when onRefreshCollection is not provided', async () => {
+    render(<RecordBrowser scope="collection" onRefreshPrices={() => {}} />)
+    await waitFor(() => expect(getReleases).toHaveBeenCalled())
+    expect(screen.queryByTitle('Sync collection from Discogs')).toBeNull()
+  })
+
+  it('calls onRefreshCollection when the sync button is clicked', async () => {
+    const onRefreshCollection = vi.fn()
+    render(<RecordBrowser scope="collection" onRefreshPrices={() => {}} onRefreshCollection={onRefreshCollection} />)
+    await waitFor(() => expect(getReleases).toHaveBeenCalled())
+    screen.getByTitle('Sync collection from Discogs').click()
+    expect(onRefreshCollection).toHaveBeenCalledTimes(1)
+  })
+
+  it('disables the sync button while syncing', async () => {
+    render(<RecordBrowser scope="collection" onRefreshPrices={() => {}} onRefreshCollection={() => {}} syncing />)
+    await waitFor(() => expect(getReleases).toHaveBeenCalled())
+    expect(screen.getByTitle('Sync collection from Discogs')).toBeDisabled()
+  })
 })

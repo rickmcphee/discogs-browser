@@ -42,7 +42,6 @@ const CRAWLER_SETTING_ROWS: SettingRow[] = [
 interface Props {
   crawlers: Crawler[]
   onCrawlersChange: (crawlers: Crawler[]) => void
-  onRefreshCollection: (mode: 'all' | 'new') => void
   onRefreshPrices: (mode: 'missing' | 'all') => void
   onRefreshStock: () => void
   onRefreshRecommendations: () => void
@@ -51,7 +50,7 @@ interface Props {
   hasJudgedItems: boolean
 }
 
-function Settings({ crawlers, onCrawlersChange, onRefreshCollection, onRefreshPrices, onRefreshStock, onRefreshRecommendations, onExportRecommendations, onClearRecommendations, hasJudgedItems }: Props) {
+function Settings({ crawlers, onCrawlersChange, onRefreshPrices, onRefreshStock, onRefreshRecommendations, onExportRecommendations, onClearRecommendations, hasJudgedItems }: Props) {
   const [settings, setSettings] = useState<SettingsType>({
     crawl_delay_seconds: 30,
     consecutive_failure_limit: 10,
@@ -136,32 +135,6 @@ function Settings({ crawlers, onCrawlersChange, onRefreshCollection, onRefreshPr
           {saved ? '✓ Saved' : saving ? 'Saving…' : 'Save'}
         </button>
       </div>
-
-      {/* Collection Management */}
-      <section>
-        <h2 className="text-lg font-semibold text-white mb-1 text-left">Collection Management</h2>
-        <p className="text-sm text-gray-500 mb-4 text-left">
-          Sync your Discogs collection immediately.
-        </p>
-        <table className="w-full text-sm border-collapse">
-          <tbody>
-            <tr className="border-b border-gray-800/50">
-              <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
-              <td className="py-3 pr-4 text-left align-top">
-                <button
-                  onClick={() => onRefreshCollection('all')}
-                  className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 rounded text-xs font-medium transition-colors"
-                >
-                  Refresh
-                </button>
-              </td>
-              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
-                Sync collection and wishlist from Discogs immediately. Fetches barcodes for new records.
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </section>
 
       {/* Crawler Management */}
       <section>

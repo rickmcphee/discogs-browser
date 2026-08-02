@@ -31,7 +31,6 @@ function renderSettings() {
     <Settings
       crawlers={[]}
       onCrawlersChange={() => {}}
-      onRefreshCollection={() => {}}
       onRefreshPrices={() => {}}
       onRefreshStock={() => {}}
       onRefreshRecommendations={() => {}}

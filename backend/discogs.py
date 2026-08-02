@@ -7,6 +7,13 @@ log = get_logger("discogs")
 DISCOGS_API = "https://api.discogs.com"
 _USER_AGENT = "DiscogsCollectionBrowser/1.0 +https://github.com/local/discogs-browser"
 
+# Every caller of _client() runs this module's blocking httpx calls inside
+# crawl_manager._sync_collection, an async def scheduled on the main event
+# loop with no run_in_threadpool wrapper -- a request that hangs with no
+# timeout freezes that loop (and therefore the worker pool and every other
+# user's requests) indefinitely rather than failing after a bounded wait.
+_TIMEOUT = 30.0
+
 
 def _client(oauth_token: str, oauth_token_secret: str) -> OAuth1Client:
     _require_consumer_credentials()
@@ -16,6 +23,7 @@ def _client(oauth_token: str, oauth_token_secret: str) -> OAuth1Client:
         token=oauth_token,
         token_secret=oauth_token_secret,
         headers={"User-Agent": _USER_AGENT},
+        timeout=_TIMEOUT,
     )
 
 
