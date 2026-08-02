@@ -246,7 +246,8 @@ export async function redeemInvite(signupToken: string, inviteCode: string): Pro
 }
 
 export async function logout(): Promise<void> {
-  await apiFetch('/auth/logout', { method: 'POST' })
+  const r = await apiFetch('/auth/logout', { method: 'POST' })
+  if (!r.ok) throw new Error(await r.text())
 }
 
 export async function hasAvatar(): Promise<boolean> {

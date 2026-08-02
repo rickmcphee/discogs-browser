@@ -128,4 +128,13 @@ describe('Account', () => {
     await waitFor(() => expect(logout).toHaveBeenCalled())
     expect(localStorage.getItem('discogs-browser.viewAsUser')).toBeNull()
   })
+
+  it('keeps the stored view-as-user flag when logout fails', async () => {
+    logout.mockRejectedValueOnce(new Error('Network error'))
+    localStorage.setItem('discogs-browser.viewAsUser', 'true')
+    render(<Account avatarVersion={0} onAvatarChange={() => {}} />)
+    fireEvent.click(screen.getByText('Log out'))
+    await waitFor(() => expect(logout).toHaveBeenCalled())
+    expect(localStorage.getItem('discogs-browser.viewAsUser')).toBe('true')
+  })
 })

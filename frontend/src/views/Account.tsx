@@ -308,8 +308,10 @@ function Account({
         </p>
         <button
           onClick={() => {
-            localStorage.removeItem('discogs-browser.viewAsUser')
-            logout().then(() => window.location.reload())
+            logout().then(() => {
+              localStorage.removeItem('discogs-browser.viewAsUser')
+              window.location.reload()
+            }).catch(() => {})
           }}
           className="px-3 py-1 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded text-xs font-medium transition-colors"
         >
