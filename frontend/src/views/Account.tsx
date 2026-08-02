@@ -11,6 +11,7 @@ function Account({ avatarVersion, onAvatarChange }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const skipNextAutoSave = useRef(true)
   const saveChainRef = useRef<Promise<void>>(Promise.resolve())
+  const latestSaveSeq = useRef(0)
   const [avatarError, setAvatarError] = useState('')
   const [avatarBusy, setAvatarBusy] = useState(false)
   const [anthropicApiKey, setAnthropicApiKey] = useState('')
@@ -37,6 +38,7 @@ function Account({ avatarVersion, onAvatarChange }: Props) {
   }, [])
 
   function saveUserSettingsNow() {
+    const seq = ++latestSaveSeq.current
     saveChainRef.current = saveChainRef.current.then(async () => {
       setPlexSaveError('')
       try {
@@ -48,6 +50,7 @@ function Account({ avatarVersion, onAvatarChange }: Props) {
           plex_match_threshold: plexMatchThreshold,
         })
       } catch (err: any) {
+        if (seq !== latestSaveSeq.current) return
         let message = err.message || 'Save failed'
         try {
           const parsed = JSON.parse(err.message)

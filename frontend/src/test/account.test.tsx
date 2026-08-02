@@ -180,4 +180,43 @@ describe('Account', () => {
 
     resolveSecondSave()
   })
+
+  it('suppresses a stale error from a save already superseded by a newer edit', async () => {
+    let rejectFirstSave: (err: Error) => void = () => {}
+    let resolveSecondSave: () => void = () => {}
+    const firstSave = new Promise<void>((_resolve, reject) => { rejectFirstSave = reject })
+    const secondSave = new Promise<void>((resolve) => { resolveSecondSave = resolve })
+    saveUserSettings.mockImplementationOnce(() => firstSave)
+    saveUserSettings.mockImplementationOnce(() => secondSave)
+
+    render(<Account avatarVersion={0} onAvatarChange={() => {}} />)
+    await waitFor(() => expect(getUserSettings).toHaveBeenCalled())
+
+    const input = screen.getByLabelText('Anthropic API key')
+    fireEvent.change(input, { target: { value: 'first-edit' } })
+    await waitFor(() => expect(saveUserSettings).toHaveBeenCalledTimes(1), { timeout: 2000 })
+
+    // Trigger a second debounced save while the first request is still in
+    // flight -- it's queued behind the first in the chain but hasn't
+    // started yet. Wait out the real 800ms debounce so saveUserSettingsNow
+    // actually runs and claims sequence #2 before save #1 rejects below --
+    // otherwise save #1 would still be the latest sequence and the guard
+    // would have nothing to suppress.
+    fireEvent.change(input, { target: { value: 'second-edit' } })
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+    expect(saveUserSettings).toHaveBeenCalledTimes(1) // save #2 is queued, not yet fired
+
+    // Reject the now-superseded first save and let its catch block and
+    // save #2's handoff run to completion.
+    rejectFirstSave(new Error('stale save failed'))
+    await new Promise((resolve) => setTimeout(resolve, 100))
+
+    // The first save's error must never reach the screen -- a newer save
+    // (#2) has already superseded it.
+    expect(screen.queryByText('stale save failed')).not.toBeInTheDocument()
+
+    resolveSecondSave()
+    await waitFor(() => expect(saveUserSettings).toHaveBeenCalledTimes(2), { timeout: 2000 })
+    expect(screen.queryByText('stale save failed')).not.toBeInTheDocument()
+  })
 })
