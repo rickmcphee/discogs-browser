@@ -38,7 +38,7 @@ async def test_iter_products_uses_configured_crawl_delay_seconds(tmp_config_dir,
     async def fake_sleep(seconds):
         sleep_calls.append(seconds)
 
-    monkeypatch.setattr("shopify_catalog.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("shopify_catalog.sleep", fake_sleep)
     respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(return_value=_page_response([]))
     [p async for p in iter_products("https://example.myshopify.test", "vinyl")]
     assert sleep_calls
