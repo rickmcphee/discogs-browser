@@ -610,10 +610,17 @@ def get_all_crawlers(conn) -> list[dict]:
 def rename_crawler(conn, old_site_name: str, new_site_name: str):
     # register_crawler() upserts ON CONFLICT (site_name), so a plugin's site_name
     # literal can't just be edited in place -- that inserts a new row and orphans
-    # the old crawler's id along with its listings/crawl_queue/stock_listings history.
+    # the old crawler's id along with its listings/crawl_queue/stock_items history.
+    # The NOT EXISTS guard makes this a no-op instead of a unique-constraint crash
+    # when new_site_name is already registered (e.g. a prior deploy inserted it
+    # directly via register_crawler before this rename step existed).
     conn.execute(
-        "UPDATE crawlers SET site_name = %s WHERE site_name = %s",
-        [new_site_name, old_site_name],
+        """
+        UPDATE crawlers SET site_name = %s
+        WHERE site_name = %s
+          AND NOT EXISTS (SELECT 1 FROM crawlers WHERE site_name = %s)
+        """,
+        [new_site_name, old_site_name, new_site_name],
     )
 
 

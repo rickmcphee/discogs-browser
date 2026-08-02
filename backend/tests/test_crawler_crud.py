@@ -70,11 +70,30 @@ def test_rename_crawler_preserves_id_and_history(admin_conn):
         "SELECT id FROM crawlers WHERE site_name = 'CC Music/eBay'"
     ).fetchone()["id"]
 
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+        "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+        "discogs_url": None,
+    })
+    db.upsert_listing(admin_conn, "r1", crawler_id, "http://example.com/listing", 10.0, 2.0, "USD", "VG+")
+    db.enqueue_crawl_queue(admin_conn, "r1", crawler_id)
+    admin_conn.commit()
+
     db.rename_crawler(admin_conn, "CC Music/eBay", "eBay/CCmusic")
     admin_conn.commit()
 
     rows = admin_conn.execute("SELECT id, site_name FROM crawlers").fetchall()
     assert [dict(r) for r in rows] == [{"id": crawler_id, "site_name": "eBay/CCmusic"}]
+
+    listing = admin_conn.execute(
+        "SELECT crawler_id FROM listings WHERE release_id = 'r1'"
+    ).fetchone()
+    assert listing["crawler_id"] == crawler_id
+
+    queue_row = admin_conn.execute(
+        "SELECT crawler_id FROM crawl_queue WHERE discogs_id = 'r1'"
+    ).fetchone()
+    assert queue_row["crawler_id"] == crawler_id
 
 
 def test_rename_crawler_is_a_noop_once_old_name_is_gone(admin_conn):
