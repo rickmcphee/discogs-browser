@@ -1,6 +1,6 @@
-import asyncio
 import math
 import random
+from asyncio import sleep
 from typing import AsyncIterator, Optional
 import httpx
 from config import load_config
@@ -28,10 +28,10 @@ async def iter_products(base_url: str, collection_slug: str) -> AsyncIterator[di
         while True:
             url = f"{base_url}/collections/{collection_slug}/products.json"
             if next_delay_override is not None:
-                await asyncio.sleep(next_delay_override)
+                await sleep(next_delay_override)
                 next_delay_override = None
             else:
-                await asyncio.sleep(random.uniform(delay * 0.5, delay))
+                await sleep(random.uniform(delay * 0.5, delay))
             try:
                 r = await client.get(url, params={"limit": _PAGE_LIMIT, "page": page})
                 r.raise_for_status()

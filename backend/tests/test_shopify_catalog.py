@@ -38,7 +38,7 @@ async def test_iter_products_uses_configured_crawl_delay_seconds(tmp_config_dir,
     async def fake_sleep(seconds):
         sleep_calls.append(seconds)
 
-    monkeypatch.setattr("shopify_catalog.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("shopify_catalog.sleep", fake_sleep)
     respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(return_value=_page_response([]))
     [p async for p in iter_products("https://example.myshopify.test", "vinyl")]
     assert sleep_calls
@@ -131,7 +131,7 @@ async def test_iter_products_respects_retry_after_header_on_429(tmp_config_dir, 
     async def fake_sleep(seconds):
         sleep_calls.append(seconds)
 
-    monkeypatch.setattr("shopify_catalog.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("shopify_catalog.sleep", fake_sleep)
     route = respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"})
     route.side_effect = [
         httpx.Response(429, headers={"Retry-After": "5"}),
@@ -153,7 +153,7 @@ async def test_iter_products_falls_back_to_jitter_when_429_has_no_retry_after(tm
     async def fake_sleep(seconds):
         sleep_calls.append(seconds)
 
-    monkeypatch.setattr("shopify_catalog.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("shopify_catalog.sleep", fake_sleep)
     route = respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"})
     route.side_effect = [httpx.Response(429), _page_response([{"id": 1}])]
     respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "2"}).mock(return_value=_page_response([]))
@@ -170,7 +170,7 @@ async def test_iter_products_caps_retry_after_at_600_seconds(tmp_config_dir, mon
     async def fake_sleep(seconds):
         sleep_calls.append(seconds)
 
-    monkeypatch.setattr("shopify_catalog.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("shopify_catalog.sleep", fake_sleep)
     route = respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"})
     route.side_effect = [
         httpx.Response(429, headers={"Retry-After": "99999"}),
