@@ -49,6 +49,7 @@ export async function getReleases(params: {
   page?: number
   per_page?: number
   scope?: RecordScope
+  unmatched?: boolean
 }): Promise<ReleasesResponse> {
   const q = new URLSearchParams()
   if (params.search) q.set('search', params.search)
@@ -58,6 +59,7 @@ export async function getReleases(params: {
   if (params.page) q.set('page', String(params.page))
   if (params.per_page) q.set('per_page', String(params.per_page))
   if (params.scope) q.set('scope', params.scope)
+  if (params.unmatched) q.set('unmatched', 'true')
   const r = await apiFetch(`/releases?${q}`)
   if (!r.ok) throw new Error(await r.text())
   return r.json()
@@ -179,6 +181,12 @@ export async function getStockArtists(overlapping?: boolean, recommended?: boole
 
 export async function postStockSyncStart(): Promise<{ started: boolean; running: boolean }> {
   const r = await apiFetch('/stock/sync/start', { method: 'POST' })
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
+}
+
+export async function postPlexMatchStart(): Promise<{ started: boolean; running: boolean }> {
+  const r = await apiFetch('/plex/match/start', { method: 'POST' })
   if (!r.ok) throw new Error(await r.text())
   return r.json()
 }
