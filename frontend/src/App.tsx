@@ -36,7 +36,8 @@ export default function App() {
   const [crawlers, setCrawlers] = useState<Crawler[]>([])
   const [hiddenCrawlerIds, setHiddenCrawlerIds] = useState<number[]>(() => {
     try {
-      return JSON.parse(localStorage.getItem(HIDDEN_CRAWLER_IDS_KEY) ?? '[]')
+      const parsed = JSON.parse(localStorage.getItem(HIDDEN_CRAWLER_IDS_KEY) ?? '[]')
+      return Array.isArray(parsed) ? parsed.filter((n) => typeof n === 'number') : []
     } catch {
       return []
     }
