@@ -66,7 +66,7 @@ describe('Plex match hyperlink — list view', () => {
 })
 
 describe('Plex match hyperlink — tile view', () => {
-  it('links the tile title to Plex while cover/artist still link to Discogs', async () => {
+  it('links the tile title to Plex; artist is plain text, not a Discogs link', async () => {
     vi.stubGlobal('localStorage', {
       getItem: (key: string) => (key.startsWith('collectionViewMode') ? 'tiles' : null),
       setItem: () => {},
@@ -74,7 +74,6 @@ describe('Plex match hyperlink — tile view', () => {
     render(<RecordBrowser scope="collection" onRefreshPrices={() => {}} />)
     const titleLink = await screen.findByRole('link', { name: 'Kind of Blue' })
     expect(titleLink).toHaveAttribute('href', matchedRelease.plex_url as string)
-    const artistLink = screen.getByRole('link', { name: /Miles Davis/ })
-    expect(artistLink).toHaveAttribute('href', matchedRelease.discogs_url)
+    expect(screen.queryByRole('link', { name: /Miles Davis/ })).not.toBeInTheDocument()
   })
 })
