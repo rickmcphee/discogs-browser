@@ -2,12 +2,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import Account from '../views/Account'
 
-const { uploadAvatar, deleteAvatar, logout, getUserSettings, saveUserSettings } = vi.hoisted(() => ({
+const { uploadAvatar, deleteAvatar, logout, getUserSettings, saveUserSettings, postPlexMatchStart } = vi.hoisted(() => ({
   uploadAvatar: vi.fn().mockResolvedValue(undefined),
   deleteAvatar: vi.fn().mockResolvedValue(undefined),
   logout: vi.fn().mockResolvedValue(undefined),
   getUserSettings: vi.fn().mockResolvedValue({ anthropic_api_key: '', recommendation_item_limit: 300, plex_base_url: '', plex_token: '', plex_match_threshold: 90 }),
   saveUserSettings: vi.fn().mockResolvedValue(undefined),
+  postPlexMatchStart: vi.fn().mockResolvedValue({ started: true, running: true }),
 }))
 
 vi.mock('../api/client', () => ({
@@ -16,6 +17,7 @@ vi.mock('../api/client', () => ({
   logout,
   getUserSettings,
   saveUserSettings,
+  postPlexMatchStart,
   avatarUrl: (v: number) => `/api/auth/avatar?v=${v}`,
 }))
 
@@ -83,5 +85,23 @@ describe('Account', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save Plex settings' }))
     await waitFor(() => expect(screen.getByText('Plex address not reachable')).toBeInTheDocument())
     expect(screen.queryByText(/"detail"/)).not.toBeInTheDocument()
+  })
+
+  it('disables Link Now when Plex is not configured', async () => {
+    render(<Account avatarVersion={0} onAvatarChange={() => {}} />)
+    await waitFor(() => expect(getUserSettings).toHaveBeenCalled())
+    expect(screen.getByRole('button', { name: 'Link Now' })).toBeDisabled()
+  })
+
+  it('enables Link Now once Plex is configured and calls postPlexMatchStart when clicked', async () => {
+    getUserSettings.mockResolvedValueOnce({
+      anthropic_api_key: '', recommendation_item_limit: 300,
+      plex_base_url: 'https://plex.local:32400', plex_token: 'tok', plex_match_threshold: 90,
+    })
+    render(<Account avatarVersion={0} onAvatarChange={() => {}} />)
+    const button = await screen.findByRole('button', { name: 'Link Now' })
+    expect(button).not.toBeDisabled()
+    fireEvent.click(button)
+    await waitFor(() => expect(postPlexMatchStart).toHaveBeenCalledTimes(1))
   })
 })

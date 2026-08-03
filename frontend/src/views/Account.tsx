@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, memo } from 'react'
 import Avatar from '../components/Avatar'
-import { deleteAvatar, getUserSettings, logout, saveUserSettings, uploadAvatar } from '../api/client'
+import { deleteAvatar, getUserSettings, logout, postPlexMatchStart, saveUserSettings, uploadAvatar } from '../api/client'
 
 interface Props {
   avatarVersion: number
@@ -19,6 +19,7 @@ function Account({ avatarVersion, onAvatarChange }: Props) {
   const [userSettingsSaving, setUserSettingsSaving] = useState(false)
   const [userSettingsSaved, setUserSettingsSaved] = useState(false)
   const [plexSaveError, setPlexSaveError] = useState('')
+  const [plexMatchStarting, setPlexMatchStarting] = useState(false)
 
   useEffect(() => {
     getUserSettings().then((s) => {
@@ -54,6 +55,15 @@ function Account({ avatarVersion, onAvatarChange }: Props) {
       setPlexSaveError(message)
     } finally {
       setUserSettingsSaving(false)
+    }
+  }
+
+  async function handleLinkPlexNow() {
+    setPlexMatchStarting(true)
+    try {
+      await postPlexMatchStart()
+    } finally {
+      setPlexMatchStarting(false)
     }
   }
 
@@ -265,6 +275,21 @@ function Account({ avatarVersion, onAvatarChange }: Props) {
               </td>
               <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
                 Minimum fuzzy-match score (0–100) for a release to be linked to a Plex album. Default 90.
+              </td>
+            </tr>
+            <tr>
+              <td className="py-3 pr-4 text-left align-top whitespace-nowrap"></td>
+              <td className="py-3 pr-4 text-left align-top">
+                <button
+                  onClick={handleLinkPlexNow}
+                  disabled={!plexBaseUrl || !plexToken || plexMatchStarting}
+                  className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 disabled:opacity-50 rounded text-xs font-medium transition-colors"
+                >
+                  {plexMatchStarting ? 'Starting…' : 'Link Now'}
+                </button>
+              </td>
+              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                Re-run Plex matching against your current collection now, without waiting for the next sync.
               </td>
             </tr>
           </tbody>
