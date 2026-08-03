@@ -119,10 +119,16 @@ invite-gated path):
 
 **Amendment (2026-07-31, crawl-queue-refactor Task 21):** the `user` object
 also carries `is_admin: bool`, sourced from the same `users` row this
-endpoint already fetches — the frontend uses it to gate the Settings nav
-item/view for non-admin users, per
+endpoint already fetches, per
 [`2026-07-27-crawl-queue-refactor-design.md`](2026-07-27-crawl-queue-refactor-design.md)'s
 admin concept.
+
+**Amendment (2026-08-02, branch `user-settings-store-filter`):** the
+Settings nav item is no longer `is_admin`-gated — every authenticated user
+can reach Settings now, to set their personal store-view filter. `is_admin`
+still gates the Logs nav item, and gates the admin-only sections/controls
+*within* the Settings page itself. See
+[`2026-08-02-store-view-filter-design.md`](2026-08-02-store-view-filter-design.md).
 
 **`GET /api/auth/discogs/start`** — begins the handshake. Calls Discogs'
 `POST /oauth/request_token` (signed with `DISCOGS_CONSUMER_KEY`/`SECRET`),
