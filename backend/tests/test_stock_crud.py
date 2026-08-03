@@ -54,6 +54,59 @@ def test_get_stock_items_recommended_filters_to_calling_users_judgments(admin_co
         assert result["total"] == 0
 
 
+def test_get_stock_items_excludes_hidden_crawler_ids(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")
+    db.register_crawler(admin_conn, "Nuclear Blast", "/y.py", crawler_type="catalog")
+    admin_conn.commit()
+    amazon_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+    nb_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()["id"]
+    db.replace_stock_items(admin_conn, amazon_id, [
+        {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+    ])
+    db.replace_stock_items(admin_conn, nb_id, [
+        {"artist": "Artist B", "title": "Album B", "url": "https://x/2", "price": 20.0, "currency": "USD"},
+    ])
+    admin_conn.commit()
+
+    result = db.get_stock_items(admin_conn, alice["id"], exclude_crawler_ids=[amazon_id])
+    assert [i["artist"] for i in result["items"]] == ["Artist B"]
+    assert result["total"] == 1
+
+
+def test_get_stock_items_exclude_crawler_ids_empty_list_excludes_nothing(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")
+    admin_conn.commit()
+    amazon_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+    db.replace_stock_items(admin_conn, amazon_id, [
+        {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+    ])
+    admin_conn.commit()
+
+    result = db.get_stock_items(admin_conn, alice["id"], exclude_crawler_ids=[])
+    assert result["total"] == 1
+
+
+def test_get_distinct_stock_artists_excludes_hidden_crawler_ids(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")
+    db.register_crawler(admin_conn, "Nuclear Blast", "/y.py", crawler_type="catalog")
+    admin_conn.commit()
+    amazon_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+    nb_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()["id"]
+    db.replace_stock_items(admin_conn, amazon_id, [
+        {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+    ])
+    db.replace_stock_items(admin_conn, nb_id, [
+        {"artist": "Artist B", "title": "Album B", "url": "https://x/2", "price": 20.0, "currency": "USD"},
+    ])
+    admin_conn.commit()
+
+    artists = db.get_distinct_stock_artists(admin_conn, alice["id"], exclude_crawler_ids=[amazon_id])
+    assert artists == ["Artist B"]
+
+
 def test_get_stock_items_overlapping_excludes_items_matching_users_collection(admin_conn):
     alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
     db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")

@@ -228,6 +228,75 @@ def test_list_stock_artists_endpoint(pg_test_db, authed_client_factory):
     assert r.json()["artists"] == ["Nails", "Rob Zombie"]
 
 
+def test_list_stock_excludes_hidden_crawler_ids(pg_test_db, authed_client_factory):
+    amazon_id = _make_crawler("Amazon")
+    nb_id = _make_crawler("Nuclear Blast")
+    with db.get_admin_pool().connection() as conn:
+        db.replace_stock_items(conn, amazon_id, [
+            {"artist": "Artist A", "title": "Album A", "price": 10.0, "currency": "USD", "url": "https://x/1"},
+        ])
+        db.replace_stock_items(conn, nb_id, [
+            {"artist": "Artist B", "title": "Album B", "price": 20.0, "currency": "USD", "url": "https://x/2"},
+        ])
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+
+    client = authed_client_factory(user["id"])
+    r = client.get(f"/api/stock?hidden_crawler_ids={amazon_id}")
+    assert r.json()["total"] == 1
+    assert r.json()["items"][0]["artist"] == "Artist B"
+
+
+def test_list_stock_artists_excludes_hidden_crawler_ids(pg_test_db, authed_client_factory):
+    amazon_id = _make_crawler("Amazon")
+    nb_id = _make_crawler("Nuclear Blast")
+    with db.get_admin_pool().connection() as conn:
+        db.replace_stock_items(conn, amazon_id, [
+            {"artist": "Artist A", "title": "Album A", "price": 10.0, "currency": "USD", "url": "https://x/1"},
+        ])
+        db.replace_stock_items(conn, nb_id, [
+            {"artist": "Artist B", "title": "Album B", "price": 20.0, "currency": "USD", "url": "https://x/2"},
+        ])
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+
+    client = authed_client_factory(user["id"])
+    r = client.get(f"/api/stock/artists?hidden_crawler_ids={amazon_id},{nb_id}")
+    assert r.json()["artists"] == []
+
+
+def test_list_stock_ignores_non_numeric_hidden_crawler_ids(pg_test_db, authed_client_factory):
+    crawler_id = _make_crawler("Nuclear Blast")
+    with db.get_admin_pool().connection() as conn:
+        db.replace_stock_items(conn, crawler_id, [
+            {"artist": "Artist A", "title": "Album A", "price": 10.0, "currency": "USD", "url": "https://x/1"},
+        ])
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+
+    client = authed_client_factory(user["id"])
+    # Should not raise ValueError; bad tokens are silently dropped
+    r = client.get("/api/stock?hidden_crawler_ids=abc")
+    assert r.status_code == 200
+    assert r.json()["total"] == 1  # all items still visible, filter was empty
+
+
+def test_list_stock_artists_ignores_non_numeric_hidden_crawler_ids(pg_test_db, authed_client_factory):
+    crawler_id = _make_crawler("Nuclear Blast")
+    with db.get_admin_pool().connection() as conn:
+        db.replace_stock_items(conn, crawler_id, [
+            {"artist": "Artist A", "title": "Album A", "price": 10.0, "currency": "USD", "url": "https://x/1"},
+        ])
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+
+    client = authed_client_factory(user["id"])
+    # Should not raise ValueError; bad tokens are silently dropped
+    r = client.get("/api/stock/artists?hidden_crawler_ids=abc,xyz")
+    assert r.status_code == 200
+    assert r.json()["artists"] == ["Artist A"]
+
+
 def test_export_recommended_stock_returns_csv(pg_test_db, authed_client_factory):
     crawler_id = _make_crawler()
     with db.get_admin_pool().connection() as conn:

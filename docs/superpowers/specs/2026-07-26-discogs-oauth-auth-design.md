@@ -119,17 +119,25 @@ invite-gated path):
 
 **Amendment (2026-07-31, crawl-queue-refactor Task 21):** the `user` object
 also carries `is_admin: bool`, sourced from the same `users` row this
-endpoint already fetches — the frontend uses it to gate the Settings nav
-item/view for non-admin users, per
+endpoint already fetches, per
 [`2026-07-27-crawl-queue-refactor-design.md`](2026-07-27-crawl-queue-refactor-design.md)'s
 admin concept.
 
-**Amendment (2026-08-02, branch `account-role-toggle`):** "gate the Settings
-nav item/view for non-admin users" above is no longer the complete picture.
-An admin can now also self-hide the Settings and Logs nav items via a
-frontend-only "view as user" switch on the Account page — a `viewAsUser`
-flag persisted to `localStorage`, never touching `is_admin` on the `users`
-row returned by this endpoint. See
+**Amendment (2026-08-02, branch `user-settings-store-filter`):** "gate the
+Settings nav item/view for non-admin users" above is no longer the complete
+picture. The Settings nav item is no longer `is_admin`-gated at all — every
+authenticated user can reach Settings now, to set their personal
+store-view filter. `is_admin` still gates the Logs nav item, and gates the
+admin-only sections/controls *within* the Settings page itself. See
+[`2026-08-02-store-view-filter-design.md`](2026-08-02-store-view-filter-design.md).
+
+**Amendment (2026-08-02, branch `account-role-toggle`):** an admin can also
+self-hide admin-only UI — the Logs nav item, and the admin-only
+sections/controls inside Settings noted above — via a frontend-only "view as
+user" switch on the Account page. A `viewAsUser` flag persisted to
+`localStorage`, never touching `is_admin` on the `users` row returned by
+this endpoint. (Settings' nav item itself is unaffected by this toggle,
+since it's already visible to every user regardless of admin status.) See
 [`2026-08-02-account-role-toggle-design.md`](2026-08-02-account-role-toggle-design.md).
 
 **`GET /api/auth/discogs/start`** — begins the handshake. Calls Discogs'
