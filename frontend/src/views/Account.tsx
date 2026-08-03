@@ -5,10 +5,22 @@ import { deleteAvatar, getUserSettings, logout, saveUserSettings, uploadAvatar }
 interface Props {
   avatarVersion: number
   onAvatarChange: (version: number) => void
+  isAdmin?: boolean
+  viewingAsUser?: boolean
+  onToggleViewAsUser?: () => void
 }
 
-function Account({ avatarVersion, onAvatarChange }: Props) {
+function Account({
+  avatarVersion,
+  onAvatarChange,
+  isAdmin = false,
+  viewingAsUser = false,
+  onToggleViewAsUser = () => {},
+}: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const skipNextAutoSave = useRef(true)
+  const saveChainRef = useRef<Promise<void>>(Promise.resolve())
+  const latestSaveSeq = useRef(0)
   const [avatarError, setAvatarError] = useState('')
   const [avatarBusy, setAvatarBusy] = useState(false)
   const [anthropicApiKey, setAnthropicApiKey] = useState('')
@@ -16,9 +28,11 @@ function Account({ avatarVersion, onAvatarChange }: Props) {
   const [plexBaseUrl, setPlexBaseUrl] = useState('')
   const [plexToken, setPlexToken] = useState('')
   const [plexMatchThreshold, setPlexMatchThreshold] = useState(90)
-  const [userSettingsSaving, setUserSettingsSaving] = useState(false)
-  const [userSettingsSaved, setUserSettingsSaved] = useState(false)
   const [plexSaveError, setPlexSaveError] = useState('')
+  // Value never read — its only job is forcing the debounce effect below to
+  // re-run once settings load, even when the fetched values equal the
+  // useState defaults above and React would otherwise bail out of re-rendering.
+  const [settingsLoaded, setSettingsLoaded] = useState(false)
 
   useEffect(() => {
     getUserSettings().then((s) => {
@@ -27,35 +41,48 @@ function Account({ avatarVersion, onAvatarChange }: Props) {
       setPlexBaseUrl(s.plex_base_url)
       setPlexToken(s.plex_token)
       setPlexMatchThreshold(s.plex_match_threshold)
+      skipNextAutoSave.current = true
+      setSettingsLoaded(true)
     }).catch(() => {})
   }, [])
 
-  async function handleSaveUserSettings() {
-    setUserSettingsSaving(true)
-    setPlexSaveError('')
-    try {
-      await saveUserSettings({
-        anthropic_api_key: anthropicApiKey,
-        recommendation_item_limit: recommendationItemLimit,
-        plex_base_url: plexBaseUrl,
-        plex_token: plexToken,
-        plex_match_threshold: plexMatchThreshold,
-      })
-      setUserSettingsSaved(true)
-      setTimeout(() => setUserSettingsSaved(false), 2000)
-    } catch (err: any) {
-      let message = err.message || 'Save failed'
+  function saveUserSettingsNow() {
+    const seq = ++latestSaveSeq.current
+    saveChainRef.current = saveChainRef.current.then(async () => {
+      setPlexSaveError('')
       try {
-        const parsed = JSON.parse(err.message)
-        if (parsed.detail) message = parsed.detail
-      } catch {
-        // not JSON, use raw message
+        await saveUserSettings({
+          anthropic_api_key: anthropicApiKey,
+          recommendation_item_limit: recommendationItemLimit,
+          plex_base_url: plexBaseUrl,
+          plex_token: plexToken,
+          plex_match_threshold: plexMatchThreshold,
+        })
+      } catch (err: any) {
+        if (seq !== latestSaveSeq.current) return
+        let message = err.message || 'Save failed'
+        try {
+          const parsed = JSON.parse(err.message)
+          if (parsed.detail) message = parsed.detail
+        } catch {
+          // not JSON, use raw message
+        }
+        setPlexSaveError(message)
       }
-      setPlexSaveError(message)
-    } finally {
-      setUserSettingsSaving(false)
-    }
+    })
   }
+
+  useEffect(() => {
+    if (skipNextAutoSave.current) {
+      skipNextAutoSave.current = false
+      return
+    }
+    setPlexSaveError('')
+    const timer = setTimeout(() => {
+      saveUserSettingsNow()
+    }, 800)
+    return () => clearTimeout(timer)
+  }, [anthropicApiKey, recommendationItemLimit, plexBaseUrl, plexToken, plexMatchThreshold, settingsLoaded])
 
   async function handleFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -88,63 +115,73 @@ function Account({ avatarVersion, onAvatarChange }: Props) {
 
   return (
     <div className="max-w-3xl mx-auto p-6 space-y-10">
-      <h1 className="text-lg font-semibold text-white text-left">Account</h1>
-
       {/* Avatar */}
       <section>
-        <div className="flex items-center gap-4">
-          <button onClick={() => fileInputRef.current?.click()} disabled={avatarBusy} aria-label="Change photo" className="group relative rounded-full">
-            <Avatar version={avatarVersion} size="lg" />
-            <span className="absolute inset-0 rounded-full flex items-center justify-center bg-black/0 group-hover:bg-black/40 transition-colors">
-              <svg viewBox="0 0 24 24" fill="none" className="w-6 h-6 text-white opacity-0 group-hover:opacity-100">
-                <path d="M4 8a2 2 0 0 1 2-2h1.5l1-1.5h7l1 1.5H18a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8Z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
-                <circle cx="12" cy="13" r="3.25" stroke="currentColor" strokeWidth="1.5" />
-              </svg>
-            </span>
-          </button>
-          <div>
-            <input
-              ref={fileInputRef}
-              data-testid="avatar-file-input"
-              type="file"
-              accept="image/*"
-              className="hidden"
-              onChange={handleFileSelected}
-            />
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={avatarBusy}
-              className="text-sm text-indigo-400 hover:text-indigo-300 transition-colors"
-            >
-              Change photo
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-4">
+            <button onClick={() => fileInputRef.current?.click()} disabled={avatarBusy} aria-label="Change photo" className="group relative rounded-full">
+              <Avatar version={avatarVersion} size="lg" />
+              <span className="absolute inset-0 rounded-full flex items-center justify-center bg-black/0 group-hover:bg-black/40 transition-colors">
+                <svg viewBox="0 0 24 24" fill="none" className="w-6 h-6 text-white opacity-0 group-hover:opacity-100">
+                  <path d="M4 8a2 2 0 0 1 2-2h1.5l1-1.5h7l1 1.5H18a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8Z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+                  <circle cx="12" cy="13" r="3.25" stroke="currentColor" strokeWidth="1.5" />
+                </svg>
+              </span>
             </button>
-            {avatarVersion !== 0 && (
+            <div>
+              <input
+                ref={fileInputRef}
+                data-testid="avatar-file-input"
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={handleFileSelected}
+              />
               <button
-                onClick={handleRemovePhoto}
+                onClick={() => fileInputRef.current?.click()}
                 disabled={avatarBusy}
-                className="block text-sm text-gray-500 hover:text-red-400 transition-colors mt-1"
+                className="text-sm text-indigo-400 hover:text-indigo-300 transition-colors"
               >
-                Remove photo
+                Change photo
               </button>
-            )}
-            {avatarError && <p className="text-xs text-red-400 mt-1">{avatarError}</p>}
+              {avatarVersion !== 0 && (
+                <button
+                  onClick={handleRemovePhoto}
+                  disabled={avatarBusy}
+                  className="block text-sm text-gray-500 hover:text-red-400 transition-colors mt-1"
+                >
+                  Remove photo
+                </button>
+              )}
+              {avatarError && <p className="text-xs text-red-400 mt-1">{avatarError}</p>}
+            </div>
           </div>
+          {isAdmin && (
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-gray-400">{viewingAsUser ? 'User' : 'Admin'}</span>
+              <button
+                role="switch"
+                aria-checked={viewingAsUser}
+                aria-label="Toggle admin/user view"
+                onClick={onToggleViewAsUser}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                  viewingAsUser ? 'bg-gray-600' : 'bg-indigo-600'
+                }`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                    viewingAsUser ? 'translate-x-6' : 'translate-x-1'
+                  }`}
+                />
+              </button>
+            </div>
+          )}
         </div>
       </section>
 
       {/* Recommendations */}
       <section>
-        <div className="flex items-center justify-between mb-1">
-          <h2 className="text-lg font-semibold text-white text-left">Recommendations</h2>
-          <button
-            onClick={handleSaveUserSettings}
-            disabled={userSettingsSaving}
-            aria-label="Save Recommendations settings"
-            className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded text-sm font-medium transition-colors"
-          >
-            {userSettingsSaved ? '✓ Saved' : userSettingsSaving ? 'Saving…' : 'Save'}
-          </button>
-        </div>
+        <h2 className="text-lg font-semibold text-white mb-1 text-left">Recommendations</h2>
         <p className="text-sm text-gray-500 mb-4 text-left">
           Used to judge Store items against your collection for the Recommended filter.
         </p>
@@ -192,17 +229,7 @@ function Account({ avatarVersion, onAvatarChange }: Props) {
 
       {/* Plex */}
       <section>
-        <div className="flex items-center justify-between mb-1">
-          <h2 className="text-lg font-semibold text-white text-left">Plex</h2>
-          <button
-            onClick={handleSaveUserSettings}
-            disabled={userSettingsSaving}
-            aria-label="Save Plex settings"
-            className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded text-sm font-medium transition-colors"
-          >
-            {userSettingsSaved ? '✓ Saved' : userSettingsSaving ? 'Saving…' : 'Save'}
-          </button>
-        </div>
+        <h2 className="text-lg font-semibold text-white mb-1 text-left">Plex</h2>
         <p className="text-sm text-gray-500 mb-4 text-left">
           Link collection releases to matching albums in your Plex music library.
         </p>
@@ -278,7 +305,12 @@ function Account({ avatarVersion, onAvatarChange }: Props) {
           Log out of this session.
         </p>
         <button
-          onClick={() => logout().then(() => window.location.reload())}
+          onClick={() => {
+            logout().then(() => {
+              localStorage.removeItem('discogs-browser.viewAsUser')
+              window.location.reload()
+            }).catch(() => {})
+          }}
           className="px-3 py-1 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded text-xs font-medium transition-colors"
         >
           Log out
