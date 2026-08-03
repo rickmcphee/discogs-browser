@@ -348,6 +348,14 @@ Unchanged from the original spec except for one new case:
 - **No live-Plex-server test** — mocked throughout, same precedent as the
   original spec and the rest of this codebase's third-party-service tests.
 
+**Amendment (2026-08-02, branch `plex-manual-link-and-ui`):** the tile-view
+case above ("cover/artist-still-link-to-Discogs") is now stale — see
+[`2026-07-09-collection-plex-filter-design.md`](2026-07-09-collection-plex-filter-design.md)
+and [`2026-08-02-plex-manual-link-and-ui-design.md`](2026-08-02-plex-manual-link-and-ui-design.md):
+the artist name no longer links to Discogs in either view, only the cover
+icon does. `plexLink.test.tsx`'s tile-view test now asserts the artist is
+plain text, not a Discogs link.
+
 ---
 
 ## Out of scope
