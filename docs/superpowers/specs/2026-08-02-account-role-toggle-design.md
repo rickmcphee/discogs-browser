@@ -2,6 +2,8 @@
 
 _2026-08-02_
 
+**Amendment (2026-08-02, merged with branch `user-settings-store-filter`):** every mention below of the toggle hiding "the Settings and Logs nav buttons" is stale. `user-settings-store-filter` made the Settings nav item visible to every authenticated user regardless of admin status, so this toggle now only hides the Logs nav item — Settings is unaffected by it. See [`2026-08-02-store-view-filter-design.md`](2026-08-02-store-view-filter-design.md).
+
 ## Overview
 
 An admin has no way to see the app as a regular user does short of logging in
