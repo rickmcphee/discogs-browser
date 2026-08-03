@@ -18,14 +18,16 @@ def reset_crawl_manager():
     crawl_manager._seq = 0
     crawl_manager._sync_tasks = {}
     crawl_manager._judgment_tasks = {}
+    crawl_manager._plex_match_tasks = {}
     crawl_manager._stock_task = None
     yield
-    for tasks in (crawl_manager._sync_tasks, crawl_manager._judgment_tasks):
+    for tasks in (crawl_manager._sync_tasks, crawl_manager._judgment_tasks, crawl_manager._plex_match_tasks):
         for task in tasks.values():
             if task and not task.done():
                 task.cancel()
     crawl_manager._sync_tasks = {}
     crawl_manager._judgment_tasks = {}
+    crawl_manager._plex_match_tasks = {}
     if crawl_manager._stock_task and not crawl_manager._stock_task.done():
         crawl_manager._stock_task.cancel()
     crawl_manager._stock_task = None
@@ -225,19 +227,19 @@ def _pending_future():
     return asyncio.get_event_loop().create_future()
 
 
-@pytest.mark.parametrize("task_attr", ["_sync_task", "_stock_task", "_judgment_task"])
+@pytest.mark.parametrize("task_attr", ["_sync_task", "_stock_task", "_judgment_task", "_plex_match_task"])
 async def test_events_to_replay_gate_opens_for_a_running_job_even_with_no_pending_queue_rows(
     pg_test_db, authed_client_factory, task_attr
 ):
     """_events_to_replay's `any_active` gate has two independent ways to open:
     the calling user having their own pending crawl_queue rows (covered by
     test_crawl_stream_replay_only_includes_events_relevant_to_calling_user),
-    or a sync/stock/judgment job being active regardless of whether this
-    particular user has anything queued. Collection sync and judgment gate
-    open only for the calling user's own job (per-user dicts); stock sync is
-    process-global (one shared stock_items catalog). Both paths need their
-    own test, or deleting either half of the `or` silently regresses with
-    nothing failing.
+    or a sync/stock/judgment/plex-match job being active regardless of
+    whether this particular user has anything queued. Collection sync,
+    judgment, and Plex match gate open only for the calling user's own job
+    (per-user dicts); stock sync is process-global (one shared stock_items
+    catalog). Each path needs its own test, or deleting any one half of the
+    `or` chain silently regresses with nothing failing.
     """
     alice, _bob, _crawler_id = _setup_two_users_each_with_a_different_release()
     crawl_manager._recent = [{"id": 1, "status": "sync_started"}]
@@ -245,6 +247,8 @@ async def test_events_to_replay_gate_opens_for_a_running_job_even_with_no_pendin
         crawl_manager._sync_tasks[alice["id"]] = _pending_future()
     elif task_attr == "_judgment_task":
         crawl_manager._judgment_tasks[alice["id"]] = _pending_future()
+    elif task_attr == "_plex_match_task":
+        crawl_manager._plex_match_tasks[alice["id"]] = _pending_future()
     else:
         setattr(crawl_manager, task_attr, _pending_future())
 

@@ -28,10 +28,12 @@ class CrawlManager:
     @property
     def any_job_running(self) -> bool:
         """True while any background job that broadcasts SSE events is active:
-        collection sync (for any user), stock sync, or judgment (for any user)."""
+        collection sync (for any user), stock sync, judgment (for any user), or
+        a manual Plex match (for any user)."""
         any_sync_running = any(not t.done() for t in self._sync_tasks.values())
         any_judgment_running = any(not t.done() for t in self._judgment_tasks.values())
-        return any_sync_running or self.stock_sync_running or any_judgment_running
+        any_plex_match_running = any(not t.done() for t in self._plex_match_tasks.values())
+        return any_sync_running or self.stock_sync_running or any_judgment_running or any_plex_match_running
 
     def subscribe(self) -> asyncio.Queue:
         q: asyncio.Queue = asyncio.Queue()
@@ -263,7 +265,7 @@ class CrawlManager:
         return task is not None and not task.done()
 
     async def start_sync(self, user_id: int, mode: str = "all") -> bool:
-        if self.sync_running(user_id):
+        if self.sync_running(user_id) or self.plex_match_running(user_id):
             log.warning("Collection sync already running for user %d, ignoring start request", user_id)
             return False
         self._sync_tasks[user_id] = asyncio.create_task(self._sync_collection(user_id, mode))
@@ -275,6 +277,7 @@ class CrawlManager:
 
     async def start_plex_match(self, user_id: int) -> bool:
         if self.plex_match_running(user_id) or self.sync_running(user_id):
+            log.warning("Plex match already running or sync in progress for user %d, ignoring start request", user_id)
             return False
         from db import get_identity_pool
         with get_identity_pool().connection() as conn:
