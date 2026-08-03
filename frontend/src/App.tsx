@@ -100,6 +100,10 @@ export default function App() {
         setSyncStatus('Syncing collection…', event.id ?? null)
         return
       }
+      if (event.status === 'sync_page_fetched') {
+        setSyncStatus(`Syncing collection… ${event.page_count} records (page ${event.page}/${event.total_pages})`, event.id ?? null)
+        return
+      }
       if (event.status === 'sync_progress') {
         setSyncStatus(`Syncing collection… ${event.synced} records (page ${event.page}/${event.total_pages})`, event.id ?? null)
         setSyncGeneration(g => g + 1)

@@ -333,6 +333,10 @@ class CrawlManager:
                     ).fetchall()}
 
                 for page, total_pages, items in discogs.iter_collection_pages(oauth_token, oauth_secret, username):
+                    broadcast({
+                        "status": "sync_page_fetched", "page": page, "total_pages": total_pages,
+                        "page_count": len(items),
+                    })
                     for item in items:
                         rid = f"r{item['basic_information']['id']}"
                         if existing is not None and rid in existing:

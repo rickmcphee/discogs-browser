@@ -258,15 +258,16 @@ Uses the persistent Chrome profile with `playwright_stealth`. Raises `BotDetecte
 **Amendment (2026-07-31, branch `crawl-queue-refactor`):** step 2's `CrawlManager.start_sync(mode)` is now `start_sync(user_id, mode)`, called with the calling user's id from `routers/collection.py`, and the "already running" guard is per-user (`_sync_tasks: dict[int, asyncio.Task]`) rather than one global slot. Step 6 no longer applies at all — `scheduler.configure_sync` is deleted and there are no scheduled collection syncs; collection sync is manual-trigger-only, per user. The sync now finishes by enqueuing `crawl_queue` rows for the user's releases instead of leaving pre-populated `price IS NULL` listings rows. The SSE event shapes in steps 3–5 are unchanged.
 
 1. Frontend calls `POST /collection/refresh?mode=[all|new]`.
-2. Backend calls `CrawlManager.start_sync(mode)`, which launches `_sync_collection()` as an asyncio background task. Returns `{started: true, running: true}` immediately (or `{started: false, running: true}` if already running, 409).
+2. Backend calls `CrawlManager.start_sync(user_id, mode)`, which launches `_sync_collection()` as an asyncio background task. Returns `{started: true, running: true}` immediately (or `{started: false, running: true}` if already running for that user, 409).
 3. `_sync_collection()` broadcasts events on the shared crawl SSE stream:
    - `sync_started` — sync has begun
-   - `sync_progress {synced, page, total_pages}` — after each collection page
+   - `sync_page_fetched {page, total_pages, page_count}` — as soon as a collection page is fetched from Discogs, before that page's items (barcode fetch etc.) are processed
+   - `sync_progress {synced, page, total_pages}` — after each collection page finishes processing
    - `sync_complete {synced, username}` — on success
    - `sync_error {error}` — on failure
 4. For each release, the backend fetches full release detail from `GET /releases/{id}` to extract the first `Barcode` identifier. Non-digit characters are stripped; stored as `NULL` if absent. Barcode fetch is skipped when a non-null barcode already exists. A 1.1-second delay is inserted between barcode fetches to stay within the Discogs rate limit (60 req/min). A failed fetch is logged and does not abort the sync.
 5. The 500-event SSE replay buffer means a browser reconnecting mid-sync receives the latest `sync_progress` event and the footer bar is restored.
-6. Scheduled collection syncs follow the same path: APScheduler calls `CrawlManager.start_sync(mode)` directly via `scheduler.configure_sync(cron, mode)`.
+6. ~~Scheduled collection syncs follow the same path: APScheduler calls `CrawlManager.start_sync(mode)` directly via `scheduler.configure_sync(cron, mode)`.~~ No longer applies — `scheduler.configure_sync` is deleted; collection sync is manual-trigger-only, per user (see amendment above).
 
 ### Crawl
 
