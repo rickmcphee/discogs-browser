@@ -15,12 +15,14 @@ def list_releases(
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=500),
     scope: Optional[str] = Query(None),
+    unmatched: bool = Query(False),
 ):
     user_id = request.state.user_id
     with db.user_scope(user_id) as conn:
         return db.get_library_releases(
             conn, user_id, search=search, artist=artist, sort=sort,
             order=order, page=page, per_page=per_page, scope=scope,
+            unmatched=unmatched,
         )
 
 

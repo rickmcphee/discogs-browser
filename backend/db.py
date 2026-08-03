@@ -484,6 +484,7 @@ def get_library_releases(
     per_page: int = 50,
     release_id: Optional[str] = None,
     scope: Optional[str] = None,
+    unmatched: bool = False,
 ) -> dict:
     order_sql = "DESC" if order.lower() == "desc" else "ASC"
     null_order = "ASC" if order_sql == "ASC" else "DESC"
@@ -504,6 +505,8 @@ def get_library_releases(
         conditions.append("li.in_collection = TRUE")
     elif scope == "wishlist":
         conditions.append("li.in_wishlist = TRUE")
+    if unmatched:
+        conditions.append("li.plex_url IS NULL")
 
     where = "WHERE " + " AND ".join(conditions)
     base_from = "FROM library_items li JOIN catalog c ON c.discogs_id = li.discogs_id"

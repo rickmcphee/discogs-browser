@@ -45,6 +45,26 @@ def test_list_releases_scope_wishlist(pg_test_db, authed_client_factory):
     assert ids == {"r2"}
 
 
+def test_list_releases_unmatched_filter(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        for rid in ("r1", "r2"):
+            db.upsert_catalog_release(conn, {
+                "discogs_id": rid, "artist": "A", "title": "T", "year": None, "label": None,
+                "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+                "discogs_url": None,
+            })
+        db.upsert_library_item(conn, alice["id"], "r1", in_collection=True)
+        db.upsert_library_item(conn, alice["id"], "r2", in_collection=True)
+        db.set_plex_match(conn, alice["id"], "r1", "https://plex.local/album/1")
+        conn.commit()
+
+    client = authed_client_factory(alice["id"])
+    r = client.get("/api/releases?unmatched=true")
+    ids = {rel["discogs_id"] for rel in r.json()["releases"]}
+    assert ids == {"r2"}
+
+
 def test_list_releases_cross_user_isolation(pg_test_db, authed_client_factory):
     with db.get_admin_pool().connection() as conn:
         alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")

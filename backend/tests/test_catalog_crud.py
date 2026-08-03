@@ -157,6 +157,28 @@ def test_get_library_releases_search_and_scope_filters(admin_conn):
         assert result["total"] == 1 and result["releases"][0]["discogs_id"] == "r2"
 
 
+def test_get_library_releases_unmatched_filter(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    for rid in ("r1", "r2"):
+        db.upsert_catalog_release(admin_conn, {
+            "discogs_id": rid, "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+    db.upsert_library_item(admin_conn, alice["id"], "r1", in_collection=True)
+    db.upsert_library_item(admin_conn, alice["id"], "r2", in_collection=True)
+    db.set_plex_match(admin_conn, alice["id"], "r1", "https://plex.local/album/1")
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], unmatched=True)
+    assert [r["discogs_id"] for r in result["releases"]] == ["r2"]
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], unmatched=False)
+    assert {r["discogs_id"] for r in result["releases"]} == {"r1", "r2"}
+
+
 def test_get_library_releases_includes_plex_url_in_default_sort(admin_conn):
     alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
     db.upsert_catalog_release(admin_conn, {
