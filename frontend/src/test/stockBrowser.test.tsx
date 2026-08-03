@@ -190,6 +190,16 @@ describe('StockBrowser', () => {
     expect(getStockArtists).toHaveBeenLastCalledWith(false, false, [3])
   })
 
+  it('resets to page 1 when hiddenCrawlerIds changes', async () => {
+    getStock.mockResolvedValue({ total: 500, page: 1, per_page: 250, items })
+    const { rerender } = render(<StockBrowser hiddenCrawlerIds={[]} />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByText('Next →'))
+    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ page: 2 })))
+    rerender(<StockBrowser hiddenCrawlerIds={[3]} />)
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ page: 1, hiddenCrawlerIds: [3] })))
+  })
+
   it('turns the filter back off when All is selected after Overlapping', async () => {
     render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())

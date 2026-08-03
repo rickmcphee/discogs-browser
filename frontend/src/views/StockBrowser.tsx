@@ -53,6 +53,7 @@ function StockBrowser({ recommendedAvailable = false, hiddenCrawlerIds = NO_HIDD
       setFilter('all')
     }
   }, [recommendedAvailable, filter])
+  useEffect(() => { setPage(1) }, [hiddenCrawlerIds])
   useEffect(() => { getStockArtists(filter === 'overlapping', filter === 'recommended', hiddenCrawlerIds).then(setArtists) }, [filter, hiddenCrawlerIds])
   useEffect(() => { localStorage.setItem('collectionViewMode_instock', viewMode) }, [viewMode])
   useEffect(() => { localStorage.setItem('stockFilter', filter) }, [filter])
