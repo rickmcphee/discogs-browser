@@ -29,6 +29,12 @@ function StockBrowser({ recommendedAvailable = false, hiddenCrawlerIds = NO_HIDD
   const PER_PAGE = 250
   const tableScrollRef = useRef<HTMLDivElement>(null)
 
+  const [prevHiddenCrawlerIds, setPrevHiddenCrawlerIds] = useState(hiddenCrawlerIds)
+  if (hiddenCrawlerIds !== prevHiddenCrawlerIds) {
+    setPrevHiddenCrawlerIds(hiddenCrawlerIds)
+    setPage(1)
+  }
+
   const load = useCallback(async () => {
     setLoading(true)
     try {
@@ -53,7 +59,6 @@ function StockBrowser({ recommendedAvailable = false, hiddenCrawlerIds = NO_HIDD
       setFilter('all')
     }
   }, [recommendedAvailable, filter])
-  useEffect(() => { setPage(1) }, [hiddenCrawlerIds])
   useEffect(() => { getStockArtists(filter === 'overlapping', filter === 'recommended', hiddenCrawlerIds).then(setArtists) }, [filter, hiddenCrawlerIds])
   useEffect(() => { localStorage.setItem('collectionViewMode_instock', viewMode) }, [viewMode])
   useEffect(() => { localStorage.setItem('stockFilter', filter) }, [filter])
