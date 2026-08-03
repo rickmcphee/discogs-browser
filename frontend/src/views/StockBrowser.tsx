@@ -29,6 +29,11 @@ function StockBrowser({ recommendedAvailable = false, hiddenCrawlerIds = NO_HIDD
   const PER_PAGE = 250
   const tableScrollRef = useRef<HTMLDivElement>(null)
 
+  // Deliberate "adjust state during render" (react.dev) rather than a
+  // useEffect keyed on hiddenCrawlerIds: an effect-based reset ran *after*
+  // load()'s own effect on the same commit, firing an extra fetch with the
+  // stale page before the corrected one. This form corrects page in the
+  // same render that detects the change, so load() only ever sees page: 1.
   const [prevHiddenCrawlerIds, setPrevHiddenCrawlerIds] = useState(hiddenCrawlerIds)
   if (hiddenCrawlerIds !== prevHiddenCrawlerIds) {
     setPrevHiddenCrawlerIds(hiddenCrawlerIds)
