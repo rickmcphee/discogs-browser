@@ -81,7 +81,7 @@ describe('header profile navigation', () => {
     expect(screen.queryByRole('button', { name: 'Logs' })).not.toBeInTheDocument()
   })
 
-  it('shows the role switch to an admin, and toggling it hides Settings/Logs until toggled back', async () => {
+  it('shows the role switch to an admin, and toggling it hides Logs (but not Settings) until toggled back', async () => {
     render(<App />)
     fireEvent.click(await screen.findByRole('button', { name: /profile/i }))
     const roleSwitch = await screen.findByRole('switch', { name: 'Toggle admin/user view' })
@@ -91,7 +91,7 @@ describe('header profile navigation', () => {
 
     fireEvent.click(roleSwitch)
     expect(roleSwitch).toHaveAttribute('aria-checked', 'true')
-    expect(screen.queryByRole('button', { name: 'Settings' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Logs' })).not.toBeInTheDocument()
 
     fireEvent.click(roleSwitch)
@@ -109,7 +109,7 @@ describe('header profile navigation', () => {
 
     render(<App />)
     await screen.findByRole('button', { name: /profile/i })
-    expect(screen.queryByRole('button', { name: 'Settings' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Logs' })).not.toBeInTheDocument()
   })
 
