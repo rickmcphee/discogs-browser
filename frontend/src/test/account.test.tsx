@@ -104,4 +104,17 @@ describe('Account', () => {
     fireEvent.click(button)
     await waitFor(() => expect(postPlexMatchStart).toHaveBeenCalledTimes(1))
   })
+
+  it('shows a clean error message (not raw JSON) when Link Now fails', async () => {
+    postPlexMatchStart.mockRejectedValueOnce(new Error(JSON.stringify({ detail: 'Plex address not reachable' })))
+    getUserSettings.mockResolvedValueOnce({
+      anthropic_api_key: '', recommendation_item_limit: 300,
+      plex_base_url: 'https://plex.local:32400', plex_token: 'tok', plex_match_threshold: 90,
+    })
+    render(<Account avatarVersion={0} onAvatarChange={() => {}} />)
+    const button = await screen.findByRole('button', { name: 'Link Now' })
+    fireEvent.click(button)
+    await waitFor(() => expect(screen.getByText('Plex address not reachable')).toBeInTheDocument())
+    expect(screen.queryByText(/"detail"/)).not.toBeInTheDocument()
+  })
 })

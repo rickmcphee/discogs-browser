@@ -60,8 +60,18 @@ function Account({ avatarVersion, onAvatarChange }: Props) {
 
   async function handleLinkPlexNow() {
     setPlexMatchStarting(true)
+    setPlexSaveError('')
     try {
       await postPlexMatchStart()
+    } catch (err: any) {
+      let message = err.message || 'Link Now failed'
+      try {
+        const parsed = JSON.parse(err.message)
+        if (parsed.detail) message = parsed.detail
+      } catch {
+        // not JSON, use raw message
+      }
+      setPlexSaveError(message)
     } finally {
       setPlexMatchStarting(false)
     }
