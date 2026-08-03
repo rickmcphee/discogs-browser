@@ -74,6 +74,8 @@ describe('Plex match hyperlink — tile view', () => {
     render(<RecordBrowser scope="collection" onRefreshPrices={() => {}} />)
     const titleLink = await screen.findByRole('link', { name: 'Kind of Blue' })
     expect(titleLink).toHaveAttribute('href', matchedRelease.plex_url as string)
-    expect(screen.queryByRole('link', { name: /Miles Davis/ })).not.toBeInTheDocument()
+    for (const el of screen.getAllByText('Miles Davis')) {
+      expect(el.closest('a')).toBeNull()
+    }
   })
 })

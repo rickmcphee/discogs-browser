@@ -225,7 +225,7 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
               <div className="grid gap-4 p-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))' }}>
                 {releases.map((r) => (
                   <div key={r.discogs_id}>
-                    <a href={r.discogs_url} target="_blank" rel="noreferrer">
+                    <a href={r.discogs_url} target="_blank" rel="noreferrer" aria-label={`View ${r.artist} – ${r.title} on Discogs`}>
                       {r.cover_image_url ? (
                         <img
                           src={r.cover_image_url}
@@ -331,19 +331,17 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
               {releases.map((r) => (
                 <tr key={r.discogs_id} className="border-t border-gray-800 hover:bg-gray-900/50">
                   <td className="px-3 py-2">
-                    {r.cover_image_url ? (
-                      <a href={r.discogs_url} target="_blank" rel="noreferrer">
+                    <a href={r.discogs_url} target="_blank" rel="noreferrer" aria-label={`View ${r.artist} – ${r.title} on Discogs`}>
+                      {r.cover_image_url ? (
                         <img
                           src={r.cover_image_url}
                           alt={r.title}
                           className="w-10 h-10 min-w-10 object-cover rounded"
                         />
-                      </a>
-                    ) : (
-                      <a href={r.discogs_url} target="_blank" rel="noreferrer">
+                      ) : (
                         <div className="w-10 h-10 bg-gray-800 rounded" />
-                      </a>
-                    )}
+                      )}
+                    </a>
                   </td>
                   <td className="px-3 py-2 text-gray-200">
                     {r.artist}

@@ -66,6 +66,37 @@ describe('RecordBrowser', () => {
     expect(artistText.closest('a')).toBeNull()
   })
 
+  it('gives the placeholder icon link an accessible name when there is no cover art, in tile view', async () => {
+    getReleases.mockResolvedValue({
+      total: 1, page: 1, per_page: 250,
+      releases: [{
+        discogs_id: 'r1', artist: 'Pink Floyd', title: 'The Wall', year: 1979, label: 'Harvest',
+        format: 'Vinyl', discogs_price: null, cover_image_url: '',
+        discogs_url: 'https://discogs.com/r1', plex_url: null, plex_matched_at: null,
+        last_synced: '', listings: {},
+      }],
+    })
+    localStorage.setItem('collectionViewMode_collection', 'tiles')
+    render(<RecordBrowser scope="collection" onRefreshPrices={() => {}} />)
+    const link = await screen.findByRole('link', { name: 'View Pink Floyd – The Wall on Discogs' })
+    expect(link).toHaveAttribute('href', 'https://discogs.com/r1')
+  })
+
+  it('gives the placeholder icon link an accessible name when there is no cover art, in list view', async () => {
+    getReleases.mockResolvedValue({
+      total: 1, page: 1, per_page: 250,
+      releases: [{
+        discogs_id: 'r1', artist: 'Pink Floyd', title: 'The Wall', year: 1979, label: 'Harvest',
+        format: 'Vinyl', discogs_price: null, cover_image_url: '',
+        discogs_url: 'https://discogs.com/r1', plex_url: null, plex_matched_at: null,
+        last_synced: '', listings: {},
+      }],
+    })
+    render(<RecordBrowser scope="collection" onRefreshPrices={() => {}} />)
+    const link = await screen.findByRole('link', { name: 'View Pink Floyd – The Wall on Discogs' })
+    expect(link).toHaveAttribute('href', 'https://discogs.com/r1')
+  })
+
   it('shows the Unmatched filter dropdown for the collection scope but not wishlist', async () => {
     const { rerender } = render(<RecordBrowser scope="collection" onRefreshPrices={() => {}} />)
     await waitFor(() => expect(getReleases).toHaveBeenCalled())
