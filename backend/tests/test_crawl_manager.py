@@ -237,6 +237,52 @@ async def test_sync_collection_enqueues_crawl_queue_for_missing_listings(pg_sche
 
 
 @respx.mock
+async def test_sync_collection_broadcasts_page_fetched_before_that_pages_progress(pg_schema, monkeypatch):
+    import config
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=2, discogs_username="bob")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/bob/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/bob/collection/folders/0/releases").mock(
+        side_effect=[_collection_page(111, total_pages=2), _collection_page(222, total_pages=2)]
+    )
+    respx.get(url__regex=r"https://api\.discogs\.com/releases/\d+").mock(
+        return_value=httpx.Response(200, json={"identifiers": []})
+    )
+    respx.get("https://api.discogs.com/users/bob/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    manager = CrawlManager()
+    await manager._sync_collection(user["id"], "all")
+
+    events = manager.recent_events()
+    page_fetched = [e for e in events if e["status"] == "sync_page_fetched"]
+    assert [(e["page"], e["total_pages"], e["page_count"]) for e in page_fetched] == [
+        (1, 2, 1), (2, 2, 1),
+    ]
+
+    # Each page's sync_page_fetched must be broadcast before that page's sync_progress
+    # (i.e. before barcode-fetch processing for that page even starts) -- that's the
+    # whole point: page/total_pages info shows up immediately, not after the delay.
+    statuses = [e["status"] for e in events]
+    first_page_fetched = statuses.index("sync_page_fetched")
+    first_progress = statuses.index("sync_progress")
+    assert first_page_fetched < first_progress
+
+
+@respx.mock
 async def test_sync_collection_calls_plex_match_when_configured(pg_schema, monkeypatch):
     import config
     monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")

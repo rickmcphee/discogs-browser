@@ -18,6 +18,8 @@ type View = 'collection' | 'wishlist' | 'instock' | 'settings' | 'logs' | 'accou
 // event and only show a banner when the current event's id is newer than that.
 const DISMISSED_SYNC_KEY = 'discogs-browser.dismissedSyncEventId'
 const DISMISSED_CRAWL_KEY = 'discogs-browser.dismissedCrawlEventId'
+const VIEW_AS_USER_KEY = 'discogs-browser.viewAsUser'
+const HIDDEN_CRAWLER_IDS_KEY = 'discogs-browser.hiddenCrawlerIds'
 
 export default function App() {
   const [view, setView] = useState<View>('collection')
@@ -33,6 +35,14 @@ export default function App() {
   const [collectionStatus, setCollectionStatus] = useState<CollectionStatus | null>(null)
   const [crawlingReleaseId, setCrawlingReleaseId] = useState<string | undefined>(undefined)
   const [crawlers, setCrawlers] = useState<Crawler[]>([])
+  const [hiddenCrawlerIds, setHiddenCrawlerIds] = useState<number[]>(() => {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(HIDDEN_CRAWLER_IDS_KEY) ?? '[]')
+      return Array.isArray(parsed) ? parsed.filter((n) => typeof n === 'number') : []
+    } catch {
+      return []
+    }
+  })
   const [avatarVersion, setAvatarVersion] = useState(0)
   const [hasAnthropicKey, setHasAnthropicKey] = useState(false)
   const [hasJudgedItems, setHasJudgedItems] = useState(false)
@@ -44,6 +54,7 @@ export default function App() {
   const [syncing, setSyncing] = useState(false)
   const [syncGeneration, setSyncGeneration] = useState(0)
   const [authState, setAuthState] = useState<AuthStatus | null>(null)
+  const [viewAsUser, setViewAsUser] = useState(() => localStorage.getItem(VIEW_AS_USER_KEY) === 'true')
   const [signupToken, setSignupToken] = useState<string | null>(() => {
     const params = new URLSearchParams(window.location.search)
     return params.get('signup_pending')
@@ -55,6 +66,18 @@ export default function App() {
     setSyncMessage(message)
     setSyncMessageId(eventId)
   }, [])
+
+  const toggleCrawlerView = useCallback((crawlerId: number) => {
+    setHiddenCrawlerIds((current) =>
+      current.includes(crawlerId)
+        ? current.filter((id) => id !== crawlerId)
+        : [...current, crawlerId]
+    )
+  }, [])
+
+  useEffect(() => {
+    localStorage.setItem(HIDDEN_CRAWLER_IDS_KEY, JSON.stringify(hiddenCrawlerIds))
+  }, [hiddenCrawlerIds])
 
   // Poll /api/health until the backend is up, then load initial data.
   useEffect(() => {
@@ -96,6 +119,10 @@ export default function App() {
       if (event.status === 'sync_started') {
         setSyncing(true)
         setSyncStatus('Syncing collection…', event.id ?? null)
+        return
+      }
+      if (event.status === 'sync_page_fetched') {
+        setSyncStatus(`Syncing collection… ${event.page_count} records (page ${event.page}/${event.total_pages})`, event.id ?? null)
         return
       }
       if (event.status === 'sync_progress') {
@@ -328,6 +355,17 @@ export default function App() {
     }
   }, [setSyncStatus])
 
+  // useCallback keeps this referentially stable across renders so it doesn't
+  // defeat Account's memo() — see viewRenderChurn.test.tsx, which asserts
+  // Account isn't re-invoked on every crawl SSE event.
+  const toggleViewAsUser = useCallback(() => {
+    setViewAsUser((current) => {
+      const next = !current
+      localStorage.setItem(VIEW_AS_USER_KEY, String(next))
+      return next
+    })
+  }, [])
+
   if (authState === null) {
     return <div className="min-h-screen flex items-center justify-center text-gray-500">Loading…</div>
   }
@@ -346,6 +384,9 @@ export default function App() {
   if (authState.state === 'unauthenticated') {
     return <LoginScreen />
   }
+
+  const isRealAdmin = authState.user.is_admin
+  const showAdminNav = isRealAdmin && !viewAsUser
 
   const recommendedAvailable = hasAnthropicKey && hasJudgedItems && !judgmentRunning
   const syncBannerVisible = syncMessage !== null && (syncMessageId === null || syncMessageId > dismissedSyncId)
@@ -401,19 +442,17 @@ export default function App() {
           </button>
         </nav>
         <nav className="flex items-center gap-2 ml-auto">
-          {authState.state === 'authenticated' && authState.user.is_admin && (
-            <button
-              onClick={() => setView('settings')}
-              className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
-                view === 'settings'
-                  ? 'bg-indigo-600 text-white'
-                  : 'text-gray-400 hover:text-white'
-              }`}
-            >
-              Settings
-            </button>
-          )}
-          {authState.state === 'authenticated' && authState.user.is_admin && (
+          <button
+            onClick={() => setView('settings')}
+            className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
+              view === 'settings'
+                ? 'bg-indigo-600 text-white'
+                : 'text-gray-400 hover:text-white'
+            }`}
+          >
+            Settings
+          </button>
+          {showAdminNav && (
             <button
               onClick={() => setView('logs')}
               className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
@@ -447,6 +486,7 @@ export default function App() {
             crawlingReleaseId={crawlingReleaseId}
             crawlEvents={crawlEvents}
             crawlers={crawlers}
+            hiddenCrawlerIds={hiddenCrawlerIds}
             syncing={syncing}
             onRefreshCollection={() => handleRefresh()}
             syncGeneration={syncGeneration}
@@ -460,16 +500,39 @@ export default function App() {
             crawlingReleaseId={crawlingReleaseId}
             crawlEvents={crawlEvents}
             crawlers={crawlers}
+            hiddenCrawlerIds={hiddenCrawlerIds}
             syncing={syncing}
             onRefreshCollection={() => handleRefresh()}
             syncGeneration={syncGeneration}
           />
         </div>
         <div className={view === 'instock' ? 'h-full' : 'hidden'}>
-          <StockBrowser recommendedAvailable={recommendedAvailable} />
+          <StockBrowser recommendedAvailable={recommendedAvailable} hiddenCrawlerIds={hiddenCrawlerIds} />
         </div>
-        <div className={view === 'settings' ? 'h-full overflow-y-auto' : 'hidden'}><Settings crawlers={crawlers} onCrawlersChange={setCrawlers} onRefreshPrices={handleRefreshPricesFromSettings} onRefreshStock={handleRefreshStock} onRefreshRecommendations={handleRefreshRecommendations} onExportRecommendations={handleExportRecommendations} onClearRecommendations={handleClearRecommendations} hasJudgedItems={hasJudgedItems} /></div>
-        <div className={view === 'account' ? 'h-full overflow-y-auto' : 'hidden'}><Account avatarVersion={avatarVersion} onAvatarChange={setAvatarVersion} /></div>
+        <div className={view === 'settings' ? 'h-full overflow-y-auto' : 'hidden'}>
+          <Settings
+            crawlers={crawlers}
+            onCrawlersChange={setCrawlers}
+            onRefreshPrices={handleRefreshPricesFromSettings}
+            onRefreshStock={handleRefreshStock}
+            onRefreshRecommendations={handleRefreshRecommendations}
+            onExportRecommendations={handleExportRecommendations}
+            onClearRecommendations={handleClearRecommendations}
+            hasJudgedItems={hasJudgedItems}
+            isAdmin={showAdminNav}
+            hiddenCrawlerIds={hiddenCrawlerIds}
+            onToggleCrawlerView={toggleCrawlerView}
+          />
+        </div>
+        <div className={view === 'account' ? 'h-full overflow-y-auto' : 'hidden'}>
+          <Account
+            avatarVersion={avatarVersion}
+            onAvatarChange={setAvatarVersion}
+            isAdmin={isRealAdmin}
+            viewingAsUser={viewAsUser}
+            onToggleViewAsUser={toggleViewAsUser}
+          />
+        </div>
         <div className={view === 'logs' ? 'h-full' : 'hidden'}><LogViewer /></div>
       </main>
 

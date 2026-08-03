@@ -11,7 +11,7 @@
 Post-testing feedback on the Collections tab surfaced three issues, all in the "per-release price search" pipeline (not the Store tab's catalog crawlers):
 
 1. **Empty "Store" columns.** `RecordBrowser.tsx` renders one column per *enabled* crawler (`crawlers.filter(c => c.enabled)`), with no filter on `crawler_type`. Catalog crawlers (Century Media, Epitaph, Relapse, Secretly Store, and the other label-store sites added in the Store-tab work) populate `stock_items`, not per-release `listings` — so when one is enabled, its column renders in Collections/Wishlist but is always empty. There isn't enough overlap between a personal collection and any one store's current stock to make that column worth displaying anyway.
-2. **No unrestricted eBay search.** The existing `backend/crawlers/ebay.py` (`site_name: "CC Music/eBay"`) hardcodes a `sellers:{collectorschoicemusic}` filter on the eBay Browse API call — by design, per its original spec (`docs/brainstorms/2026-06-28-ebay-crawler-requirements.md`), which explicitly scoped out "general eBay search across all sellers." That's now wanted as a second, separate crawler.
+2. **No unrestricted eBay search.** The existing `backend/crawlers/ebay.py` (`site_name: "eBay/CCmusic"`) hardcodes a `sellers:{collectorschoicemusic}` filter on the eBay Browse API call — by design, per its original spec (`docs/brainstorms/2026-06-28-ebay-crawler-requirements.md`), which explicitly scoped out "general eBay search across all sellers." That's now wanted as a second, separate crawler.
 3. **No Discogs marketplace price.** Nothing searches Discogs's own marketplace. Note: the existing "Price" column (`r.discogs_price`) is *not* a live marketplace price — it's a custom note value pulled from the user's own Discogs collection entry (`backend/discogs.py:parse_release`, `price_field_id` lookup), typically what they paid or a manually-set field. A live "cheapest USA-shipping listing" price is a genuinely new data point, not a duplicate of that column.
 
 ## Goal
@@ -108,12 +108,12 @@ class Crawler:
 - Any condition/grading threshold beyond "cheapest USA-shipping listing" (e.g. excluding poor-grade copies).
 - Any change to `backend/discogs.py` or the authenticated Discogs API client — the new crawler is fully independent of it.
 - Deduplicating or reconciling the new "Discogs" column against the existing "Price" (`discogs_price`) column — they display side by side as distinct data.
-- A Settings UI change beyond the two new crawlers appearing in the existing crawler-enable table (no new section needed — they're `crawler_type: "release"`, same table as Amazon/CC Music/eBay).
+- A Settings UI change beyond the two new crawlers appearing in the existing crawler-enable table (no new section needed — they're `crawler_type: "release"`, same table as Amazon/eBay/CCmusic).
 
 ## Success criteria
 
 - Enabling any catalog (Store-type) crawler has no effect on Collections/Wishlist columns; only `release`-type crawlers ever appear there.
 - The "eBay" column returns results from sellers other than CC Music, sorted by price + shipping, Buy-It-Now only.
-- The "CC Music/eBay" column's behavior is unchanged after the `ebay_api.py` extraction — same seller scoping, same results, same config keys.
+- The "eBay/CCmusic" column's behavior is unchanged after the `ebay_api.py` extraction — same seller scoping, same results, same config keys.
 - The "Discogs" column shows the cheapest listing that ships from the USA for a release, or no result if none ships from the USA — independent of and never overwriting the existing "Price" column.
 - Both new crawlers appear enabled in Settings after this ships (matching every other crawler's first-registration behavior) and start producing results on the next price refresh without any new config fields to fill in first; the user can disable either via the existing toggle.

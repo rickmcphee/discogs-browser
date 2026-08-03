@@ -112,6 +112,12 @@ describe('RecordBrowser', () => {
     await waitFor(() => expect(getReleases).toHaveBeenLastCalledWith(expect.objectContaining({ unmatched: true })))
   })
 
+  it('does not render a column for a crawler in hiddenCrawlerIds even if enabled', async () => {
+    render(<RecordBrowser scope="collection" onRefreshPrices={() => {}} crawlers={CRAWLERS} hiddenCrawlerIds={[1]} />)
+    await waitFor(() => expect(getReleases).toHaveBeenCalled())
+    expect(screen.queryByText('Amazon')).toBeNull()
+  })
+
   it('does not render a sync button when onRefreshCollection is not provided', async () => {
     render(<RecordBrowser scope="collection" onRefreshPrices={() => {}} />)
     await waitFor(() => expect(getReleases).toHaveBeenCalled())

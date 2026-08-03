@@ -136,6 +136,30 @@ describe('crawl status bar', () => {
     expect(screen.queryByText('Done')).not.toBeInTheDocument()
   })
 
+  it('shows page/count as soon as a page is fetched, before that page finishes processing', async () => {
+    render(<App />)
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    const source = getLastCrawlSource()
+    source.emit({ status: 'sync_started', id: 1 })
+    await waitFor(() => expect(screen.getByText('Syncing collection…')).toBeInTheDocument())
+
+    source.emit({ status: 'sync_page_fetched', page: 1, total_pages: 12, page_count: 100, id: 2 })
+    await waitFor(() =>
+      expect(screen.getByText('Syncing collection… 100 records (page 1/12)')).toBeInTheDocument()
+    )
+  })
+
+  it('still shows the processed running total once a page finishes processing', async () => {
+    render(<App />)
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    const source = getLastCrawlSource()
+    source.emit({ status: 'sync_page_fetched', page: 1, total_pages: 12, page_count: 100, id: 1 })
+    source.emit({ status: 'sync_progress', synced: 100, page: 1, total_pages: 12, id: 2 })
+    await waitFor(() =>
+      expect(screen.getByText('Syncing collection… 100 records (page 1/12)')).toBeInTheDocument()
+    )
+  })
+
   it('does not resurrect a dismissed banner when a refresh replays the same buffered events', async () => {
     const { unmount } = render(<App />)
     const src = await clickRefreshAndGetSource()

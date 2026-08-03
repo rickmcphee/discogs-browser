@@ -9,12 +9,13 @@ interface Props {
   crawlingReleaseId?: string
   crawlEvents?: CrawlEvent[]
   crawlers?: Crawler[]
+  hiddenCrawlerIds?: number[]
   syncing?: boolean
   onRefreshCollection?: () => void
   syncGeneration?: number
 }
 
-export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawlingReleaseId, crawlEvents, crawlers = [], syncing, onRefreshCollection, syncGeneration }: Props) {
+export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawlingReleaseId, crawlEvents, crawlers = [], hiddenCrawlerIds = [], syncing, onRefreshCollection, syncGeneration }: Props) {
   const [releases, setReleases] = useState<Release[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -116,7 +117,7 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
     setPage(1)
   }
 
-  const enabledCrawlers = crawlers.filter((c) => c.enabled && c.crawler_type === 'release')
+  const enabledCrawlers = crawlers.filter((c) => c.enabled && c.crawler_type === 'release' && !hiddenCrawlerIds.includes(c.id))
   const totalPages = Math.ceil(total / PER_PAGE)
 
   return (

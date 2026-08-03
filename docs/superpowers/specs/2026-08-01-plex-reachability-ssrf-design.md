@@ -273,6 +273,13 @@ personal, one server per user, same as Anthropic API key.
   either works), token (password-style input), match threshold (number
   input, default 90). One save button for the section, following the existing
   `handleSaveUserSettings` pattern.
+
+  **Amendment (2026-08-02, branch `account-autosave`):** the "One save
+  button... `handleSaveUserSettings` pattern" sentence above is no longer
+  accurate. Both this section's save button and Recommendations' were
+  removed in favor of a single debounced auto-save across all 5 combined
+  fields — no button, no per-section save action. See
+  [`2026-08-02-account-autosave-design.md`](2026-08-02-account-autosave-design.md).
 - `frontend/src/App.tsx`: SSE handler gains the four `plex_match_*` cases,
   updating the sync status message — same messages and same "rides the existing
   `syncing` toggle, no dedicated one" behavior as the original spec's `App.tsx`

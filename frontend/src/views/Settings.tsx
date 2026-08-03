@@ -48,9 +48,21 @@ interface Props {
   onExportRecommendations: () => void
   onClearRecommendations: () => void
   hasJudgedItems: boolean
+  isAdmin: boolean
+  hiddenCrawlerIds: number[]
+  onToggleCrawlerView: (crawlerId: number) => void
 }
 
-function Settings({ crawlers, onCrawlersChange, onRefreshPrices, onRefreshStock, onRefreshRecommendations, onExportRecommendations, onClearRecommendations, hasJudgedItems }: Props) {
+function toggleButtonClass(on: boolean): string {
+  return `px-3 py-1 rounded text-xs font-medium transition-colors ${
+    on ? 'bg-green-700 hover:bg-green-600 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-400'
+  }`
+}
+
+function Settings({
+  crawlers, onCrawlersChange, onRefreshPrices, onRefreshStock, onRefreshRecommendations,
+  onExportRecommendations, onClearRecommendations, hasJudgedItems, isAdmin, hiddenCrawlerIds, onToggleCrawlerView,
+}: Props) {
   const [settings, setSettings] = useState<SettingsType>({
     crawl_delay_seconds: 30,
     consecutive_failure_limit: 10,
@@ -65,6 +77,8 @@ function Settings({ crawlers, onCrawlersChange, onRefreshPrices, onRefreshStock,
 
   const releaseCrawlers = crawlers.filter((c) => c.crawler_type !== 'catalog')
   const catalogCrawlers = crawlers.filter((c) => c.crawler_type === 'catalog')
+  const shownReleaseCrawlers = isAdmin ? releaseCrawlers : releaseCrawlers.filter((c) => c.enabled)
+  const shownCatalogCrawlers = isAdmin ? catalogCrawlers : catalogCrawlers.filter((c) => c.enabled)
 
   function renderSettingRow(row: SettingRow, first: boolean) {
     return (
@@ -102,9 +116,62 @@ function Settings({ crawlers, onCrawlersChange, onRefreshPrices, onRefreshStock,
     )
   }
 
+  function renderCrawlerTable(crawlerList: Crawler[], emptyMessage: string) {
+    if (crawlerList.length === 0) {
+      return <p className="text-gray-500 text-sm text-left mt-4">{emptyMessage}</p>
+    }
+    return (
+      <table className="w-full text-sm border-collapse mt-4">
+        <thead>
+          <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-800">
+            <th className="text-left py-2 pr-4 w-40">Site</th>
+            {isAdmin && <th className="text-left py-2 pr-4 w-48">Last run</th>}
+            <th className="text-left py-2 pr-4">View</th>
+            {isAdmin && <th className="text-left py-2">Crawl</th>}
+          </tr>
+        </thead>
+        <tbody>
+          {crawlerList.map((c) => (
+            <tr key={c.id} className="border-b border-gray-800/50">
+              <td className="py-3 pr-4 text-left text-gray-200 font-medium">
+                {c.base_url
+                  ? <a href={c.base_url} target="_blank" rel="noreferrer"
+                       className="text-indigo-400 hover:text-indigo-300 underline">{c.site_name}</a>
+                  : c.site_name}
+              </td>
+              {isAdmin && (
+                <td className="py-3 pr-4 text-left text-gray-500 text-xs">
+                  {c.last_run ? new Date(c.last_run).toLocaleString() : '—'}
+                </td>
+              )}
+              <td className="py-3 pr-4 text-left">
+                <button
+                  onClick={() => onToggleCrawlerView(c.id)}
+                  className={toggleButtonClass(!hiddenCrawlerIds.includes(c.id))}
+                >
+                  {hiddenCrawlerIds.includes(c.id) ? 'Hidden' : 'Visible'}
+                </button>
+              </td>
+              {isAdmin && (
+                <td className="py-3 text-left">
+                  <button
+                    onClick={() => handleToggleCrawler(c)}
+                    className={toggleButtonClass(c.enabled)}
+                  >
+                    {c.enabled ? 'Enabled' : 'Disabled'}
+                  </button>
+                </td>
+              )}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    )
+  }
+
   useEffect(() => {
-    getSettings().then(setSettings).catch(() => {})
-  }, [])
+    if (isAdmin) getSettings().then(setSettings).catch(() => {})
+  }, [isAdmin])
 
   async function handleSave() {
     setSaving(true)
@@ -127,256 +194,194 @@ function Settings({ crawlers, onCrawlersChange, onRefreshPrices, onRefreshStock,
 
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold text-white">Settings</h1>
-        <button
-          onClick={handleSave}
-          disabled={saving}
-          className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded text-sm font-medium transition-colors"
-        >
-          {saved ? '✓ Saved' : saving ? 'Saving…' : 'Save'}
-        </button>
+        {isAdmin && (
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded text-sm font-medium transition-colors"
+          >
+            {saved ? '✓ Saved' : saving ? 'Saving…' : 'Save'}
+          </button>
+        )}
       </div>
 
       {/* Crawler Management */}
       <section>
-        <h2 className="text-lg font-semibold text-white mb-1 text-left">Crawler Management</h2>
+        <h2 className="text-lg font-semibold text-white mb-1 text-left">
+          {isAdmin ? 'Crawler Management' : 'Collection & Wishlist Price Sources'}
+        </h2>
         <p className="text-sm text-gray-500 mb-4 text-left">
-          Run price crawlers on a schedule. Leave blank to disable.
-          Example: <code className="text-gray-400 font-mono">0 2 * * *</code> = 2 am daily.
+          {isAdmin
+            ? <>Run price crawlers on a schedule. Leave blank to disable. Example: <code className="text-gray-400 font-mono">0 2 * * *</code> = 2 am daily.</>
+            : 'Choose which stores\' prices you want to see in your Collection and Wishlist.'}
         </p>
-        <table className="w-full text-sm border-collapse mb-4">
-          <tbody>
-            {CRAWLER_SETTING_ROWS.map((row, i) => renderSettingRow(row, i === 0))}
-          </tbody>
-        </table>
-        <table className="w-full text-sm border-collapse">
-          <tbody>
-            <tr className="border-b border-gray-800/50">
-              <td className="py-3 pr-4 text-left text-gray-300 font-medium align-top whitespace-nowrap w-40">Schedule</td>
-              <td className="py-3 pr-4 text-left align-top w-64">
-                <input
-                  type="text"
-                  value={settings.crawl_schedule ?? ''}
-                  placeholder="0 2 * * *"
-                  onChange={(e) => setSettings({ ...settings, crawl_schedule: e.target.value })}
-                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500 font-mono text-xs"
-                />
-              </td>
-              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
-                Cron expression (5 fields: min hour day month weekday). Empty = disabled.
-              </td>
-            </tr>
-            <tr className="border-b border-gray-800/50">
-              <td className="py-3 pr-4 text-left text-gray-300 font-medium align-top whitespace-nowrap">Mode</td>
-              <td className="py-3 pr-4 text-left align-top">
-                <select
-                  value={settings.crawl_schedule_mode ?? 'missing'}
-                  onChange={(e) => setSettings({ ...settings, crawl_schedule_mode: e.target.value as 'missing' | 'all' })}
-                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-indigo-500"
-                >
-                  <option value="missing">Missing only</option>
-                  <option value="all">All records</option>
-                </select>
-              </td>
-              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
-                What to crawl on each scheduled run.
-              </td>
-            </tr>
-            <tr className="border-b border-gray-800/50">
-              <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
-              <td className="py-3 pr-4 text-left align-top">
-                <button
-                  onClick={() => onRefreshPrices(settings.crawl_schedule_mode as 'missing' | 'all' ?? 'missing')}
-                  className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 rounded text-xs font-medium transition-colors"
-                >
-                  Refresh
-                </button>
-              </td>
-              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
-                Run price crawlers immediately.
-              </td>
-            </tr>
-          </tbody>
-        </table>
-        {releaseCrawlers.length === 0 ? (
-          <p className="text-gray-500 text-sm text-left mt-4">No crawlers configured.</p>
-        ) : (
-          <table className="w-full text-sm border-collapse mt-4">
-            <thead>
-              <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-800">
-                <th className="text-left py-2 pr-4 w-40">Site</th>
-                <th className="text-left py-2 pr-4 w-48">Last run</th>
-                <th className="text-left py-2">Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {releaseCrawlers.map((c) => (
-                <tr key={c.id} className="border-b border-gray-800/50">
-                  <td className="py-3 pr-4 text-left text-gray-200 font-medium">
-                    {c.base_url
-                      ? <a href={c.base_url} target="_blank" rel="noreferrer"
-                           className="text-indigo-400 hover:text-indigo-300 underline">{c.site_name}</a>
-                      : c.site_name}
+        {isAdmin && (
+          <>
+            <table className="w-full text-sm border-collapse mb-4">
+              <tbody>
+                {CRAWLER_SETTING_ROWS.map((row, i) => renderSettingRow(row, i === 0))}
+              </tbody>
+            </table>
+            <table className="w-full text-sm border-collapse">
+              <tbody>
+                <tr className="border-b border-gray-800/50">
+                  <td className="py-3 pr-4 text-left text-gray-300 font-medium align-top whitespace-nowrap w-40">Schedule</td>
+                  <td className="py-3 pr-4 text-left align-top w-64">
+                    <input
+                      type="text"
+                      value={settings.crawl_schedule ?? ''}
+                      placeholder="0 2 * * *"
+                      onChange={(e) => setSettings({ ...settings, crawl_schedule: e.target.value })}
+                      className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500 font-mono text-xs"
+                    />
                   </td>
-                  <td className="py-3 pr-4 text-left text-gray-500 text-xs">
-                    {c.last_run ? new Date(c.last_run).toLocaleString() : '—'}
-                  </td>
-                  <td className="py-3 text-left">
-                    <button
-                      onClick={() => handleToggleCrawler(c)}
-                      className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
-                        c.enabled
-                          ? 'bg-green-700 hover:bg-green-600 text-white'
-                          : 'bg-gray-700 hover:bg-gray-600 text-gray-400'
-                      }`}
-                    >
-                      {c.enabled ? 'Enabled' : 'Disabled'}
-                    </button>
+                  <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                    Cron expression (5 fields: min hour day month weekday). Empty = disabled.
                   </td>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+                <tr className="border-b border-gray-800/50">
+                  <td className="py-3 pr-4 text-left text-gray-300 font-medium align-top whitespace-nowrap">Mode</td>
+                  <td className="py-3 pr-4 text-left align-top">
+                    <select
+                      value={settings.crawl_schedule_mode ?? 'missing'}
+                      onChange={(e) => setSettings({ ...settings, crawl_schedule_mode: e.target.value as 'missing' | 'all' })}
+                      className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-indigo-500"
+                    >
+                      <option value="missing">Missing only</option>
+                      <option value="all">All records</option>
+                    </select>
+                  </td>
+                  <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                    What to crawl on each scheduled run.
+                  </td>
+                </tr>
+                <tr className="border-b border-gray-800/50">
+                  <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
+                  <td className="py-3 pr-4 text-left align-top">
+                    <button
+                      onClick={() => onRefreshPrices(settings.crawl_schedule_mode as 'missing' | 'all' ?? 'missing')}
+                      className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 rounded text-xs font-medium transition-colors"
+                    >
+                      Refresh
+                    </button>
+                  </td>
+                  <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                    Run price crawlers immediately.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </>
         )}
+        {renderCrawlerTable(shownReleaseCrawlers, 'No crawlers configured.')}
       </section>
 
       {/* Store Management */}
       <section>
-        <h2 className="text-lg font-semibold text-white mb-1 text-left">Store Management</h2>
+        <h2 className="text-lg font-semibold text-white mb-1 text-left">
+          {isAdmin ? 'Store Management' : 'Store Catalog Sources'}
+        </h2>
         <p className="text-sm text-gray-500 mb-4 text-left">
-          Scan an entire site's in-stock catalog, independent of your collection. Results appear in the Store tab.
-          Leave schedule blank to disable.
+          {isAdmin
+            ? 'Scan an entire site\'s in-stock catalog, independent of your collection. Results appear in the Store tab. Leave schedule blank to disable.'
+            : 'Choose which stores\' items you want to see in the Store tab.'}
         </p>
-        <table className="w-full text-sm border-collapse">
-          <tbody>
-            <tr className="border-b border-gray-800/50">
-              <td className="py-3 pr-4 text-left text-gray-300 font-medium align-top whitespace-nowrap w-40">Schedule</td>
-              <td className="py-3 pr-4 text-left align-top w-64">
-                <input
-                  type="text"
-                  value={settings.stock_schedule ?? ''}
-                  placeholder="0 3 * * *"
-                  onChange={(e) => setSettings({ ...settings, stock_schedule: e.target.value })}
-                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500 font-mono text-xs"
-                />
-              </td>
-              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
-                Cron expression (5 fields: min hour day month weekday). Empty = disabled.
-              </td>
-            </tr>
-            <tr className="border-b border-gray-800/50">
-              <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
-              <td className="py-3 pr-4 text-left align-top">
-                <button
-                  onClick={onRefreshStock}
-                  className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 rounded text-xs font-medium transition-colors"
-                >
-                  Refresh
-                </button>
-              </td>
-              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
-                Scan all enabled catalog crawlers immediately.
-              </td>
-            </tr>
-          </tbody>
-        </table>
-        {catalogCrawlers.length === 0 ? (
-          <p className="text-gray-500 text-sm text-left mt-4">No catalog crawlers configured.</p>
-        ) : (
-          <table className="w-full text-sm border-collapse mt-4">
-            <thead>
-              <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-800">
-                <th className="text-left py-2 pr-4 w-40">Site</th>
-                <th className="text-left py-2 pr-4 w-48">Last run</th>
-                <th className="text-left py-2">Status</th>
-              </tr>
-            </thead>
+        {isAdmin && (
+          <table className="w-full text-sm border-collapse">
             <tbody>
-              {catalogCrawlers.map((c) => (
-                <tr key={c.id} className="border-b border-gray-800/50">
-                  <td className="py-3 pr-4 text-left text-gray-200 font-medium">
-                    {c.base_url
-                      ? <a href={c.base_url} target="_blank" rel="noreferrer"
-                           className="text-indigo-400 hover:text-indigo-300 underline">{c.site_name}</a>
-                      : c.site_name}
-                  </td>
-                  <td className="py-3 pr-4 text-left text-gray-500 text-xs">
-                    {c.last_run ? new Date(c.last_run).toLocaleString() : '—'}
-                  </td>
-                  <td className="py-3 text-left">
-                    <button
-                      onClick={() => handleToggleCrawler(c)}
-                      className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
-                        c.enabled
-                          ? 'bg-green-700 hover:bg-green-600 text-white'
-                          : 'bg-gray-700 hover:bg-gray-600 text-gray-400'
-                      }`}
-                    >
-                      {c.enabled ? 'Enabled' : 'Disabled'}
-                    </button>
-                  </td>
-                </tr>
-              ))}
+              <tr className="border-b border-gray-800/50">
+                <td className="py-3 pr-4 text-left text-gray-300 font-medium align-top whitespace-nowrap w-40">Schedule</td>
+                <td className="py-3 pr-4 text-left align-top w-64">
+                  <input
+                    type="text"
+                    value={settings.stock_schedule ?? ''}
+                    placeholder="0 3 * * *"
+                    onChange={(e) => setSettings({ ...settings, stock_schedule: e.target.value })}
+                    className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500 font-mono text-xs"
+                  />
+                </td>
+                <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                  Cron expression (5 fields: min hour day month weekday). Empty = disabled.
+                </td>
+              </tr>
+              <tr className="border-b border-gray-800/50">
+                <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
+                <td className="py-3 pr-4 text-left align-top">
+                  <button
+                    onClick={onRefreshStock}
+                    className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 rounded text-xs font-medium transition-colors"
+                  >
+                    Refresh
+                  </button>
+                </td>
+                <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                  Scan all enabled catalog crawlers immediately.
+                </td>
+              </tr>
             </tbody>
           </table>
         )}
+        {renderCrawlerTable(shownCatalogCrawlers, 'No catalog crawlers configured.')}
       </section>
 
       {/* Recommendations Management */}
-      <section>
-        <h2 className="text-lg font-semibold text-white mb-1 text-left">Recommendations Management</h2>
-        <p className="text-sm text-gray-500 mb-4 text-left">
-          Judge unprocessed Store items against your collection using Claude, then export or clear the results.
-          Requires each user to configure an Anthropic API key in their Account settings.
-        </p>
-        <table className="w-full text-sm border-collapse">
-          <tbody>
-            <tr className="border-b border-gray-800/50">
-              <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
-              <td className="py-3 pr-4 text-left align-top">
-                <button
-                  onClick={onRefreshRecommendations}
-                  className="w-20 text-center px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 disabled:opacity-50 rounded text-xs font-medium transition-colors"
-                >
-                  Refresh
-                </button>
-              </td>
-              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
-                Evaluate unprocessed Store items for recommendation, without a full catalog re-crawl.
-              </td>
-            </tr>
-            <tr className="border-b border-gray-800/50">
-              <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
-              <td className="py-3 pr-4 text-left align-top">
-                <button
-                  onClick={onExportRecommendations}
-                  disabled={!hasJudgedItems}
-                  className="w-20 text-center px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 disabled:opacity-50 rounded text-xs font-medium transition-colors"
-                >
-                  Export
-                </button>
-              </td>
-              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
-                Download recommended Store items as CSV (artist, title, format, price, source, link, reason).
-              </td>
-            </tr>
-            <tr className="border-b border-gray-800/50">
-              <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
-              <td className="py-3 pr-4 text-left align-top">
-                <button
-                  onClick={onClearRecommendations}
-                  disabled={!hasJudgedItems}
-                  className="w-20 text-center px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 disabled:opacity-50 rounded text-xs font-medium transition-colors"
-                >
-                  Clear
-                </button>
-              </td>
-              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
-                Remove all recommendation judgments, recommended and not-recommended, so every Store item is re-evaluated from scratch on the next run.
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </section>
+      {isAdmin && (
+        <section>
+          <h2 className="text-lg font-semibold text-white mb-1 text-left">Recommendations Management</h2>
+          <p className="text-sm text-gray-500 mb-4 text-left">
+            Judge unprocessed Store items against your collection using Claude, then export or clear the results.
+            Requires each user to configure an Anthropic API key in their Account settings.
+          </p>
+          <table className="w-full text-sm border-collapse">
+            <tbody>
+              <tr className="border-b border-gray-800/50">
+                <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
+                <td className="py-3 pr-4 text-left align-top">
+                  <button
+                    onClick={onRefreshRecommendations}
+                    className="w-20 text-center px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 disabled:opacity-50 rounded text-xs font-medium transition-colors"
+                  >
+                    Refresh
+                  </button>
+                </td>
+                <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                  Evaluate unprocessed Store items for recommendation, without a full catalog re-crawl.
+                </td>
+              </tr>
+              <tr className="border-b border-gray-800/50">
+                <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
+                <td className="py-3 pr-4 text-left align-top">
+                  <button
+                    onClick={onExportRecommendations}
+                    disabled={!hasJudgedItems}
+                    className="w-20 text-center px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 disabled:opacity-50 rounded text-xs font-medium transition-colors"
+                  >
+                    Export
+                  </button>
+                </td>
+                <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                  Download recommended Store items as CSV (artist, title, format, price, source, link, reason).
+                </td>
+              </tr>
+              <tr className="border-b border-gray-800/50">
+                <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
+                <td className="py-3 pr-4 text-left align-top">
+                  <button
+                    onClick={onClearRecommendations}
+                    disabled={!hasJudgedItems}
+                    className="w-20 text-center px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 disabled:opacity-50 rounded text-xs font-medium transition-colors"
+                  >
+                    Clear
+                  </button>
+                </td>
+                <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                  Remove all recommendation judgments, recommended and not-recommended, so every Store item is re-evaluated from scratch on the next run.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+      )}
 
     </div>
   )
