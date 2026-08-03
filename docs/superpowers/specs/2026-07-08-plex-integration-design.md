@@ -14,6 +14,8 @@
 
 **Amendment 4 (2026-07-18):** the `GET /library/sections/{key}/all?type=9` call was described below as "confirmed cheap for a personal-scale library," with no timeout discussed. Against the real Plex server, this call took long enough to exceed httpx's un-overridden 5-second default, so the Plex match phase failed with `"timed out"` on every collection sync — logged and skipped per the "Plex unreachable" handling below, but every time, not just on a transient outage. Fixed by adding an explicit 60s `timeout` to all three `httpx.get()` calls in `plex.py` (`get_music_section_key`, `fetch_albums`, `get_machine_identifier`). "Cheap" below describes payload size, which was and remains accurate; it never made a latency claim, and this amendment isn't disputing that — it's adding the timeout consideration that was simply absent.
 
+**Amendment 5 (2026-08-02, branch `plex-manual-link-and-ui`):** the "No standalone 'resync Plex' trigger" decision below (Non-goals and Decisions) is reversed. A manual trigger shipped — `CrawlManager.start_plex_match`/`plex_match_running` and `POST /plex/match/start`, plus a "Link Now" button in `Account.tsx`'s Plex section — using exactly the `start_plex_match_only()`-alongside-`start_judgment_only()` shape this document already anticipated as the likely follow-up. See [`2026-08-02-plex-manual-link-and-ui-design.md`](2026-08-02-plex-manual-link-and-ui-design.md) for the current, authoritative design of the trigger. The rest of this document's Non-goals/Decisions sections are otherwise unaffected.
+
 ---
 
 ## Overview
