@@ -324,6 +324,79 @@ async def test_sync_collection_skips_plex_match_when_unconfigured(pg_schema, mon
     assert not any(s.startswith("plex_match") for s in statuses)
 
 
+async def test_start_plex_match_runs_when_configured(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET plex_base_url = %s, plex_token = %s WHERE id = %s",
+            ["plex.local:32400", "ptok", user["id"]],
+        )
+        conn.commit()
+
+    manager = CrawlManager()
+    calls = []
+
+    async def _fake_plex_match(user_id, base_url, token, threshold):
+        calls.append((user_id, base_url, token, threshold))
+
+    manager._run_plex_match = _fake_plex_match
+    started = await manager.start_plex_match(user["id"])
+    assert started is True
+    await asyncio.sleep(0)
+    assert calls == [(user["id"], "plex.local:32400", "ptok", 90)]
+
+
+async def test_start_plex_match_returns_false_when_unconfigured(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+
+    manager = CrawlManager()
+    started = await manager.start_plex_match(user["id"])
+    assert started is False
+    assert manager.plex_match_running(user["id"]) is False
+
+
+async def test_start_plex_match_returns_false_when_already_running(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET plex_base_url = %s, plex_token = %s WHERE id = %s",
+            ["plex.local:32400", "ptok", user["id"]],
+        )
+        conn.commit()
+
+    manager = CrawlManager()
+
+    async def _never_finishes(user_id, base_url, token, threshold):
+        await asyncio.sleep(10)
+
+    manager._run_plex_match = _never_finishes
+    assert await manager.start_plex_match(user["id"]) is True
+    assert await manager.start_plex_match(user["id"]) is False
+    manager._plex_match_tasks[user["id"]].cancel()
+
+
+async def test_start_plex_match_returns_false_while_sync_running(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET plex_base_url = %s, plex_token = %s WHERE id = %s",
+            ["plex.local:32400", "ptok", user["id"]],
+        )
+        conn.commit()
+
+    manager = CrawlManager()
+
+    async def _never_finishes(user_id, mode):
+        await asyncio.sleep(10)
+
+    manager._sync_collection = _never_finishes
+    assert await manager.start_sync(user["id"], "all") is True
+    assert await manager.start_plex_match(user["id"]) is False
+    manager._sync_tasks[user["id"]].cancel()
+
+
 # ---------------------------------------------------------------------------
 # _run_plex_match (per-user Plex library matching, SSRF-guarded via plex_security)
 # ---------------------------------------------------------------------------

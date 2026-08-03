@@ -11,6 +11,7 @@ class CrawlManager:
         self._sync_tasks: dict[int, asyncio.Task] = {}
         self._stock_task: Optional[asyncio.Task] = None
         self._judgment_tasks: dict[int, asyncio.Task] = {}
+        self._plex_match_tasks: dict[int, asyncio.Task] = {}
         self._worker_tasks: list[asyncio.Task] = []
         self._pool_running = False
         self._playwright = None
@@ -266,6 +267,26 @@ class CrawlManager:
             log.warning("Collection sync already running for user %d, ignoring start request", user_id)
             return False
         self._sync_tasks[user_id] = asyncio.create_task(self._sync_collection(user_id, mode))
+        return True
+
+    def plex_match_running(self, user_id: int) -> bool:
+        task = self._plex_match_tasks.get(user_id)
+        return task is not None and not task.done()
+
+    async def start_plex_match(self, user_id: int) -> bool:
+        if self.plex_match_running(user_id) or self.sync_running(user_id):
+            return False
+        from db import get_identity_pool
+        with get_identity_pool().connection() as conn:
+            user = conn.execute(
+                "SELECT plex_base_url, plex_token, plex_match_threshold FROM users WHERE id = %s",
+                [user_id],
+            ).fetchone()
+        if user is None or not user["plex_base_url"] or not user["plex_token"]:
+            return False
+        self._plex_match_tasks[user_id] = asyncio.create_task(
+            self._run_plex_match(user_id, user["plex_base_url"], user["plex_token"], user["plex_match_threshold"])
+        )
         return True
 
     async def _sync_collection(self, user_id: int, mode: str):

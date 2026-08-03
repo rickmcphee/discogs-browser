@@ -8,7 +8,7 @@ from version import VERSION
 from crawler import load_crawler_from_path
 from crawl_manager import crawl_manager
 from db import get_admin_pool, init_global_schema, init_tenant_schema, register_crawler
-from routers import collection, releases, settings, crawl, logs, screenshots, health, session, stock
+from routers import collection, releases, settings, crawl, logs, screenshots, health, session, stock, plex
 from auth_middleware import AuthMiddleware
 import scheduler
 
@@ -107,3 +107,4 @@ app.include_router(logs.router, prefix="/api")
 app.include_router(screenshots.router, prefix="/api")
 app.include_router(session.router, prefix="/api")
 app.include_router(stock.router, prefix="/api")
+app.include_router(plex.router, prefix="/api")
