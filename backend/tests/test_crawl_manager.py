@@ -631,10 +631,19 @@ async def test_run_plex_match_rejects_unsafe_address_with_generic_error(pg_schem
         db.set_plex_match(conn, user["id"], "r1", "http://plex.local:32400/web/x")
         conn.commit()
 
-    monkeypatch.setattr(
-        socket, "getaddrinfo",
-        lambda host, port, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", port))],
-    )
+    # Only fakes resolution for the Plex hostname under test -- a blanket
+    # fake here would also hijack _run_plex_match's own new
+    # get_identity_pool() connection (used to resolve the username for
+    # logging), sending Postgres's real connection attempt to 10.0.0.5 too
+    # and hanging until the pool times out.
+    real_getaddrinfo = socket.getaddrinfo
+
+    def _fake_getaddrinfo(host, port, *a, **k):
+        if host == "plex.local":
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", port))]
+        return real_getaddrinfo(host, port, *a, **k)
+
+    monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo)
 
     manager = CrawlManager()
     # https:// explicitly, so this test's mocked private-IP resolution is
@@ -1547,8 +1556,8 @@ async def test_run_judgment_phase_logs_per_batch_progress(pg_schema, monkeypatch
 
     batch_logs = [r.message for r in caplog.records if "Judged batch" in r.message]
     assert len(batch_logs) == 2
-    assert batch_logs[0].startswith(f"Judged batch 2/3 for user {alice['id']}:")
-    assert batch_logs[1].startswith(f"Judged batch 3/3 for user {alice['id']}:")
+    assert batch_logs[0].startswith("Judged batch 2/3 for alice4:")
+    assert batch_logs[1].startswith("Judged batch 3/3 for alice4:")
     total_recommended_logged = sum(int(m.rsplit(":", 1)[1].split()[0]) for m in batch_logs)
     assert total_recommended_logged == 1
 
@@ -1577,7 +1586,7 @@ async def test_run_judgment_phase_logs_true_backlog_size_when_limit_smaller(pg_s
         await manager._run_judgment_phase(alice["id"])
 
     found_logs = [r.message for r in caplog.records if r.message.startswith("Found ")]
-    assert found_logs == [f"Found 2/5 items to judge for user {alice['id']}"]
+    assert found_logs == ["Found 2/5 items to judge for alice5"]
 
 
 async def test_run_judgment_phase_respects_zero_as_unlimited(pg_schema, monkeypatch, caplog):
@@ -1604,7 +1613,7 @@ async def test_run_judgment_phase_respects_zero_as_unlimited(pg_schema, monkeypa
         await manager._run_judgment_phase(alice["id"])
 
     found_logs = [r.message for r in caplog.records if r.message.startswith("Found ")]
-    assert found_logs == [f"Found 5/5 items to judge for user {alice['id']}"]
+    assert found_logs == ["Found 5/5 items to judge for alice6"]
 
 
 async def test_run_judgment_phase_does_not_block_event_loop(pg_schema, monkeypatch):

@@ -260,13 +260,24 @@ class CrawlManager:
         for q in list(self._subscribers):
             await q.put(event)
 
+    def _username_for_log(self, user_id: int) -> str:
+        """Best-effort display name for log messages -- falls back to the
+        numeric id if the user row is gone (e.g. deleted mid-run). Not
+        async: a single indexed single-row read, same as the several other
+        un-threadpooled inline connection lookups already in this file
+        (e.g. start_plex_match's existing plex_base_url/token read below)."""
+        from db import get_identity_pool
+        with get_identity_pool().connection() as conn:
+            row = conn.execute("SELECT discogs_username FROM users WHERE id = %s", [user_id]).fetchone()
+        return row["discogs_username"] if row else f"user {user_id}"
+
     def sync_running(self, user_id: int) -> bool:
         task = self._sync_tasks.get(user_id)
         return task is not None and not task.done()
 
     async def start_sync(self, user_id: int, mode: str = "all") -> bool:
         if self.sync_running(user_id) or self.plex_match_running(user_id):
-            log.warning("Collection sync already running for user %d, ignoring start request", user_id)
+            log.warning("Collection sync already running for %s, ignoring start request", self._username_for_log(user_id))
             return False
         self._sync_tasks[user_id] = asyncio.create_task(self._sync_collection(user_id, mode))
         return True
@@ -277,7 +288,7 @@ class CrawlManager:
 
     async def start_plex_match(self, user_id: int) -> bool:
         if self.plex_match_running(user_id) or self.sync_running(user_id):
-            log.warning("Plex match already running or sync in progress for user %d, ignoring start request", user_id)
+            log.warning("Plex match already running or sync in progress for %s, ignoring start request", self._username_for_log(user_id))
             return False
         from db import get_identity_pool
         with get_identity_pool().connection() as conn:
@@ -437,8 +448,8 @@ class CrawlManager:
                 deleted = delete_orphaned_releases(conn, user_id)
                 conn.commit()
                 log.info(
-                    "Wishlist sync complete for user %d: %d items, %d stale entries cleared, %d releases deleted",
-                    user_id, wishlist_count, cleared, len(deleted),
+                    "Wishlist sync complete for %s: %d items, %d stale entries cleared, %d releases deleted",
+                    username, wishlist_count, cleared, len(deleted),
                 )
 
             broadcast({
@@ -576,7 +587,7 @@ class CrawlManager:
 
     async def start_judgment_only(self, user_id: int) -> bool:
         if self.judgment_running(user_id):
-            log.warning("Judgment already running for user %d, ignoring start request", user_id)
+            log.warning("Judgment already running for %s, ignoring start request", self._username_for_log(user_id))
             return False
         self._judgment_tasks[user_id] = asyncio.create_task(self._run_judgment_phase(user_id))
         return True
@@ -589,16 +600,23 @@ class CrawlManager:
         import recommendations
         import anthropic
 
+        # Placeholder until the query below confirms the user still exists --
+        # keeps the except block's own log line safe even if that query itself
+        # (or anything after it) is what raises.
+        username = f"user {user_id}"
         await self._broadcast({"status": "stock_judgment_started"})
-        log.info("Judgment run started for user %d", user_id)
         try:
             with get_identity_pool().connection() as conn:
                 user = conn.execute(
-                    "SELECT anthropic_api_key, recommendation_item_limit FROM users WHERE id = %s", [user_id]
+                    "SELECT discogs_username, anthropic_api_key, recommendation_item_limit FROM users WHERE id = %s",
+                    [user_id],
                 ).fetchone()
             if user is None:
+                log.info("Judgment run started for %s", username)
                 await self._broadcast({"status": "stock_judgment_error", "error": "User not found"})
                 return
+            username = user["discogs_username"]
+            log.info("Judgment run started for %s", username)
             api_key = user["anthropic_api_key"]
             if not api_key:
                 await self._broadcast({"status": "stock_judgment_error", "error": "Anthropic API key not configured"})
@@ -616,9 +634,9 @@ class CrawlManager:
 
             if not unjudged:
                 await self._broadcast({"status": "stock_judgment_complete", "judged": 0})
-                log.info("Found 0/0 items to judge for user %d, nothing to do", user_id)
+                log.info("Found 0/0 items to judge for %s, nothing to do", username)
                 return
-            log.info("Found %d/%d items to judge for user %d", len(unjudged), total_unjudged, user_id)
+            log.info("Found %d/%d items to judge for %s", len(unjudged), total_unjudged, username)
 
             client = anthropic.Anthropic(api_key=api_key)
             judged = 0
@@ -632,16 +650,16 @@ class CrawlManager:
                         conn.commit()
                     judged += len(results)
                     recommended_in_batch = sum(1 for r in results if r["recommended"])
-                log.info("Judged batch %d/%d for user %d: %d recommended", judged, len(unjudged), user_id, recommended_in_batch)
+                log.info("Judged batch %d/%d for %s: %d recommended", judged, len(unjudged), username, recommended_in_batch)
                 await self._broadcast({"status": "stock_judgment_progress", "judged": judged, "total": len(unjudged)})
 
             await self._broadcast({"status": "stock_judgment_complete", "judged": judged})
-            log.info("Stock judgment complete for user %d: %d items judged", user_id, judged)
+            log.info("Stock judgment complete for %s: %d items judged", username, judged)
         except asyncio.CancelledError:
             log.info("Judgment run cancelled")
             raise
         except Exception as e:
-            log.error("Judgment phase failed for user %d: %s", user_id, e, exc_info=True)
+            log.error("Judgment phase failed for %s: %s", username, e, exc_info=True)
             await self._broadcast({"status": "stock_judgment_error", "error": str(e)})
 
     async def _run_plex_match(self, user_id: int, base_url: str, token: str, threshold: int):
@@ -651,12 +669,13 @@ class CrawlManager:
             user_scope, get_library_items_for_plex_match, set_plex_match, clear_plex_match,
         )
 
+        username = self._username_for_log(user_id)
         await self._broadcast({"status": "plex_match_started"})
-        log.info("Plex match started for user %d", user_id)
+        log.info("Plex match started for %s", username)
         try:
             section_key = await asyncio.to_thread(plex.get_music_section_key, base_url, token)
             if section_key is None:
-                log.warning("Plex match skipped for user %d: no music library section found on %s", user_id, base_url)
+                log.warning("Plex match skipped for %s: no music library section found on %s", username, base_url)
                 await self._broadcast({"status": "plex_match_error", "error": "No music library found on Plex server"})
                 return
 
@@ -689,13 +708,13 @@ class CrawlManager:
                         await self._broadcast({"status": "plex_match_progress", "matched": matched, "total": len(items)})
 
             await self._broadcast({"status": "plex_match_complete", "matched": matched})
-            log.info("Plex match complete for user %d: %d/%d matched", user_id, matched, len(items))
+            log.info("Plex match complete for %s: %d/%d matched", username, matched, len(items))
         except Exception as e:
             if isinstance(e, plex_security.PlexUnsafeAddressError):
-                log.warning("Plex match rejected for user %d: %s", user_id, e)
+                log.warning("Plex match rejected for %s: %s", username, e)
                 await self._broadcast({"status": "plex_match_error", "error": "Plex address not reachable"})
             else:
-                log.warning("Plex match phase failed for user %d, skipping: %s", user_id, e)
+                log.warning("Plex match phase failed for %s, skipping: %s", username, e)
                 await self._broadcast({"status": "plex_match_error", "error": "an unexpected error occurred"})
 
 crawl_manager = CrawlManager()
