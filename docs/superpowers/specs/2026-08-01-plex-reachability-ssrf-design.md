@@ -2,6 +2,21 @@
 
 **Date:** 2026-08-01
 
+**Amendment (2026-08-03, https-only enforcement):** `validate_address` no
+longer accepts `http`/`https` per the "SSRF validation" section's step 1
+below — it now rejects any scheme other than `https`. This app requires the
+Plex server be reachable over the *public internet* (see this document's
+Overview and Decisions), unlike the original single-owner, LAN-only design —
+a plain `http://` address here would carry `X-Plex-Token` in the clear across
+the public internet, not just a trusted home LAN. `plex.py`'s `_base()`
+helper's schemeless-input default changed from `http://` to `https://` to
+match, so the two default-scheme fallbacks (`validate_address`'s parsing
+fallback and `_base()`'s request-construction fallback) stay consistent with
+each other. The UI (`Account.tsx`) already recommended the `plex.direct`
+address, which supports `https://` with a publicly-trusted cert — this
+codifies that recommendation as a requirement rather than adding a new
+constraint users weren't already steered toward.
+
 **Amendment (2026-08-02, closing two residual gaps found in final whole-branch
 review):** two edge cases in `validate_address` were tracked as follow-up
 rather than fixed in the review that produced them (see that review's own

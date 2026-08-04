@@ -12,42 +12,55 @@ def _fake_addrinfo(*ips):
 
 def test_accepts_a_public_address(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: _fake_addrinfo("8.8.8.8"))
-    validate_address("http://plex.example.com:32400")  # does not raise
+    validate_address("https://plex.example.com:32400")  # does not raise
 
 
-def test_defaults_to_http_scheme_when_none_given(monkeypatch):
+def test_rejects_when_no_scheme_given_since_it_defaults_to_http(monkeypatch):
+    # A bare host:port has no scheme to reject on its own merits -- it's
+    # parsed as http:// (for hostname/port extraction only) and rejected by
+    # the same https-only check as an explicit http:// address would be.
     monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: _fake_addrinfo("8.8.8.8"))
-    validate_address("plex.example.com:32400")  # does not raise
+    with pytest.raises(PlexUnsafeAddressError):
+        validate_address("plex.example.com:32400")
+
+
+def test_rejects_plain_http_scheme(monkeypatch):
+    # https is required, not merely preferred -- see validate_address's
+    # docstring for why (X-Plex-Token would otherwise cross the public
+    # internet in the clear).
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: _fake_addrinfo("8.8.8.8"))
+    with pytest.raises(PlexUnsafeAddressError):
+        validate_address("http://plex.example.com:32400")
 
 
 def test_rejects_loopback(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: _fake_addrinfo("127.0.0.1"))
     with pytest.raises(PlexUnsafeAddressError):
-        validate_address("http://localhost:32400")
+        validate_address("https://localhost:32400")
 
 
 def test_rejects_rfc1918_private_range(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: _fake_addrinfo("192.168.1.50"))
     with pytest.raises(PlexUnsafeAddressError):
-        validate_address("http://192.168.1.50:32400")
+        validate_address("https://192.168.1.50:32400")
 
 
 def test_rejects_link_local_metadata_ip(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: _fake_addrinfo("169.254.169.254"))
     with pytest.raises(PlexUnsafeAddressError):
-        validate_address("http://169.254.169.254")
+        validate_address("https://169.254.169.254")
 
 
 def test_rejects_ipv6_loopback(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: _fake_addrinfo("::1"))
     with pytest.raises(PlexUnsafeAddressError):
-        validate_address("http://[::1]:32400")
+        validate_address("https://[::1]:32400")
 
 
 def test_rejects_ipv6_unique_local(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: _fake_addrinfo("fd00::1"))
     with pytest.raises(PlexUnsafeAddressError):
-        validate_address("http://[fd00::1]:32400")
+        validate_address("https://[fd00::1]:32400")
 
 
 def test_rejects_when_any_resolved_address_is_non_global(monkeypatch):
@@ -55,10 +68,10 @@ def test_rejects_when_any_resolved_address_is_non_global(monkeypatch):
     # if either could be the one actually connected to.
     monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: _fake_addrinfo("8.8.8.8", "10.0.0.1"))
     with pytest.raises(PlexUnsafeAddressError):
-        validate_address("http://multi.example.com:32400")
+        validate_address("https://multi.example.com:32400")
 
 
-def test_rejects_non_http_scheme():
+def test_rejects_non_https_scheme():
     with pytest.raises(PlexUnsafeAddressError):
         validate_address("ftp://plex.example.com:32400")
 
@@ -69,18 +82,18 @@ def test_raises_when_hostname_does_not_resolve(monkeypatch):
 
     monkeypatch.setattr(socket, "getaddrinfo", _boom)
     with pytest.raises(PlexUnsafeAddressError):
-        validate_address("http://nonexistent.invalid:32400")
+        validate_address("https://nonexistent.invalid:32400")
 
 
 def test_rejects_multicast_address(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: _fake_addrinfo("224.0.0.1"))
     with pytest.raises(PlexUnsafeAddressError):
-        validate_address("http://multicast.example.com:32400")
+        validate_address("https://multicast.example.com:32400")
 
 
 def test_raises_on_out_of_range_port():
     with pytest.raises(PlexUnsafeAddressError):
-        validate_address("http://plex.example.com:99999")
+        validate_address("https://plex.example.com:99999")
 
 
 def test_raises_on_resolution_failure_unicode_error(monkeypatch):
@@ -91,19 +104,19 @@ def test_raises_on_resolution_failure_unicode_error(monkeypatch):
 
     monkeypatch.setattr(socket, "getaddrinfo", _boom)
     with pytest.raises(PlexUnsafeAddressError):
-        validate_address("http://invalid.example.com:32400")
+        validate_address("https://invalid.example.com:32400")
 
 
 def test_raises_on_malformed_url_parsing():
     # Malformed IPv6 literal (missing closing bracket) raises ValueError from urlsplit
     with pytest.raises(PlexUnsafeAddressError):
-        validate_address("http://[::1")
+        validate_address("https://[::1")
 
 
 def test_rejects_ipv6_multicast_address(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: _fake_addrinfo("ff02::1"))
     with pytest.raises(PlexUnsafeAddressError):
-        validate_address("http://[ff02::1]:32400")
+        validate_address("https://[ff02::1]:32400")
 
 
 def test_rejects_a_hostname_that_rebinds_to_private_between_two_calls(monkeypatch):
@@ -120,9 +133,9 @@ def test_rejects_a_hostname_that_rebinds_to_private_between_two_calls(monkeypatc
 
     monkeypatch.setattr(socket, "getaddrinfo", _rebinding_getaddrinfo)
 
-    validate_address("http://rebinding.example.com:32400")  # first call: safe, does not raise
+    validate_address("https://rebinding.example.com:32400")  # first call: safe, does not raise
     with pytest.raises(PlexUnsafeAddressError):
-        validate_address("http://rebinding.example.com:32400")  # second call: now private, rejected
+        validate_address("https://rebinding.example.com:32400")  # second call: now private, rejected
 
 
 def test_rejects_nat64_encoded_loopback(monkeypatch):
@@ -131,14 +144,14 @@ def test_rejects_nat64_encoded_loopback(monkeypatch):
     # globally routable unless checked explicitly.
     monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: _fake_addrinfo("64:ff9b::7f00:1"))
     with pytest.raises(PlexUnsafeAddressError):
-        validate_address("http://[64:ff9b::7f00:1]:32400")
+        validate_address("https://[64:ff9b::7f00:1]:32400")
 
 
 def test_rejects_nat64_encoded_private_address(monkeypatch):
     # 64:ff9b::a00:1 encodes 10.0.0.1 -- same NAT64 prefix, different embedded range.
     monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: _fake_addrinfo("64:ff9b::a00:1"))
     with pytest.raises(PlexUnsafeAddressError):
-        validate_address("http://[64:ff9b::a00:1]:32400")
+        validate_address("https://[64:ff9b::a00:1]:32400")
 
 
 def test_resolves_the_same_hostname_httpx_will_actually_request(monkeypatch):
@@ -157,7 +170,7 @@ def test_resolves_the_same_hostname_httpx_will_actually_request(monkeypatch):
 
     monkeypatch.setattr(socket, "getaddrinfo", _capture_and_resolve)
 
-    url = "http://evil.com。internal.example.com:32400"
+    url = "https://evil.com。internal.example.com:32400"
     validate_address(url)  # does not raise -- the resolved address is public
 
     assert captured["host"] == httpx.URL(url).host == "evil.com.internal.example.com"

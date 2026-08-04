@@ -503,7 +503,7 @@ async def test_run_plex_match_updates_matched_and_clears_unmatched(pg_schema, mo
             "SELECT plex_url FROM library_items WHERE user_id = %s AND discogs_id = 'r2'", [user["id"]]
         ).fetchone()
     assert row1["plex_url"] == (
-        "http://plex.local:32400/web/index.html#!/server/abc123/details?key=/library/metadata/500"
+        "https://plex.local:32400/web/index.html#!/server/abc123/details?key=/library/metadata/500"
     )
     assert row2["plex_url"] is None
 
@@ -637,7 +637,11 @@ async def test_run_plex_match_rejects_unsafe_address_with_generic_error(pg_schem
     )
 
     manager = CrawlManager()
-    await manager._run_plex_match(user["id"], "plex.local:32400", "tok", 90)
+    # https:// explicitly, so this test's mocked private-IP resolution is
+    # actually what triggers the rejection below, not the separate
+    # https-only scheme check (see test_rejects_plain_http_scheme in
+    # test_plex_security.py for that case).
+    await manager._run_plex_match(user["id"], "https://plex.local:32400", "tok", 90)
 
     with db.get_admin_pool().connection() as conn:
         row = conn.execute(
