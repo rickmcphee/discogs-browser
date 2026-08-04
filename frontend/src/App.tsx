@@ -442,16 +442,6 @@ export default function App() {
           </button>
         </nav>
         <nav className="flex items-center gap-2 ml-auto">
-          <button
-            onClick={() => setView('settings')}
-            className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
-              view === 'settings'
-                ? 'bg-indigo-600 text-white'
-                : 'text-gray-400 hover:text-white'
-            }`}
-          >
-            Settings
-          </button>
           {showAdminNav && (
             <button
               onClick={() => setView('logs')}
@@ -464,6 +454,16 @@ export default function App() {
               Logs
             </button>
           )}
+          <button
+            onClick={() => setView('settings')}
+            className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
+              view === 'settings'
+                ? 'bg-indigo-600 text-white'
+                : 'text-gray-400 hover:text-white'
+            }`}
+          >
+            Settings
+          </button>
           <button
             onClick={() => setView('account')}
             aria-label="Profile"
