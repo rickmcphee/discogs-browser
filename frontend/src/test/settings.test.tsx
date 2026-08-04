@@ -54,6 +54,51 @@ function renderSettings(overrides: Partial<ComponentProps<typeof Settings>> = {}
 }
 
 describe('Settings', () => {
+  it('renders no page heading and no Save button', async () => {
+    renderSettings()
+    await waitFor(() => expect(getSettings).toHaveBeenCalled())
+    expect(screen.queryByText('Settings')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
+  })
+
+  it('auto-saves a settings field after editing, with no Save button', async () => {
+    renderSettings()
+    await waitFor(() => expect(getSettings).toHaveBeenCalled())
+    const input = screen.getByLabelText('eBay Client ID')
+    fireEvent.change(input, { target: { value: 'new-app-id' } })
+    await waitFor(
+      () => expect(saveSettings).toHaveBeenCalledWith(expect.objectContaining({ ebay_app_id: 'new-app-id' })),
+      { timeout: 2000 }
+    )
+  })
+
+  it('does not save immediately on edit — only after the debounce settles', async () => {
+    renderSettings()
+    await waitFor(() => expect(getSettings).toHaveBeenCalled())
+    fireEvent.change(screen.getByLabelText('eBay Client ID'), { target: { value: 'new-app-id' } })
+    expect(saveSettings).not.toHaveBeenCalled()
+    await waitFor(() => expect(saveSettings).toHaveBeenCalled(), { timeout: 2000 })
+  })
+
+  it('does not auto-save on initial load when nothing was edited', async () => {
+    renderSettings()
+    await waitFor(() => expect(getSettings).toHaveBeenCalled())
+    await new Promise((resolve) => setTimeout(resolve, 1200))
+    expect(saveSettings).not.toHaveBeenCalled()
+  })
+
+  it('shows a clean error message (not raw JSON) when an auto-save fails', async () => {
+    saveSettings.mockRejectedValueOnce(new Error(JSON.stringify({ detail: 'Invalid cron expression' })))
+    renderSettings()
+    await waitFor(() => expect(getSettings).toHaveBeenCalled())
+    fireEvent.change(screen.getByLabelText('eBay Client ID'), { target: { value: 'new-app-id' } })
+    await waitFor(
+      () => expect(screen.getByText('Invalid cron expression')).toBeInTheDocument(),
+      { timeout: 2000 }
+    )
+    expect(screen.queryByText(/"detail"/)).not.toBeInTheDocument()
+  })
+
   it('does not render the removed screenshot-interval or shuffle rows', async () => {
     renderSettings()
     await waitFor(() => expect(getSettings).toHaveBeenCalled())

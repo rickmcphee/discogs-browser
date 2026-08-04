@@ -1,4 +1,4 @@
-import { useState, useEffect, memo } from 'react'
+import { useState, useEffect, useRef, memo } from 'react'
 import { getSettings, saveSettings, setCrawlerEnabled } from '../api/client'
 import type { Settings as SettingsType, Crawler } from '../api/types'
 
@@ -72,8 +72,14 @@ function Settings({
     ebay_cert_id: '',
     stock_schedule: '',
   })
-  const [saving, setSaving] = useState(false)
-  const [saved, setSaved] = useState(false)
+  const [settingsSaveError, setSettingsSaveError] = useState('')
+  const skipNextAutoSave = useRef(true)
+  const saveChainRef = useRef<Promise<void>>(Promise.resolve())
+  const latestSaveSeq = useRef(0)
+  // Value never read — its only job is forcing the debounce effect below to
+  // re-run once settings load, even when the fetched values equal the
+  // useState defaults above and React would otherwise bail out of re-rendering.
+  const [settingsLoaded, setSettingsLoaded] = useState(false)
 
   const releaseCrawlers = crawlers.filter((c) => c.crawler_type !== 'catalog')
   const catalogCrawlers = crawlers.filter((c) => c.crawler_type === 'catalog')
@@ -91,6 +97,7 @@ function Settings({
             <input
               type="number"
               min={0}
+              aria-label={row.label}
               value={settings[row.key] as number}
               onChange={(e) =>
                 setSettings({ ...settings, [row.key]: parseInt(e.target.value) || 0 })
@@ -100,6 +107,7 @@ function Settings({
           ) : (
             <input
               type={row.type === 'text' ? 'text' : 'password'}
+              aria-label={row.label}
               value={settings[row.key] as string}
               placeholder={row.placeholder}
               onChange={(e) =>
@@ -170,19 +178,45 @@ function Settings({
   }
 
   useEffect(() => {
-    if (isAdmin) getSettings().then(setSettings).catch(() => {})
+    if (!isAdmin) return
+    getSettings().then((s) => {
+      setSettings(s)
+      skipNextAutoSave.current = true
+      setSettingsLoaded(true)
+    }).catch(() => {})
   }, [isAdmin])
 
-  async function handleSave() {
-    setSaving(true)
-    try {
-      await saveSettings(settings)
-      setSaved(true)
-      setTimeout(() => setSaved(false), 2000)
-    } finally {
-      setSaving(false)
-    }
+  function saveSettingsNow() {
+    const seq = ++latestSaveSeq.current
+    saveChainRef.current = saveChainRef.current.then(async () => {
+      setSettingsSaveError('')
+      try {
+        await saveSettings(settings)
+      } catch (err: any) {
+        if (seq !== latestSaveSeq.current) return
+        let message = err.message || 'Save failed'
+        try {
+          const parsed = JSON.parse(err.message)
+          if (parsed.detail) message = parsed.detail
+        } catch {
+          // not JSON, use raw message
+        }
+        setSettingsSaveError(message)
+      }
+    })
   }
+
+  useEffect(() => {
+    if (skipNextAutoSave.current) {
+      skipNextAutoSave.current = false
+      return
+    }
+    setSettingsSaveError('')
+    const timer = setTimeout(() => {
+      saveSettingsNow()
+    }, 800)
+    return () => clearTimeout(timer)
+  }, [settings, settingsLoaded])
 
   async function handleToggleCrawler(crawler: Crawler) {
     await setCrawlerEnabled(crawler.id, !crawler.enabled)
@@ -191,19 +225,6 @@ function Settings({
 
   return (
     <div className="max-w-3xl mx-auto p-6 space-y-10">
-
-      <div className="flex items-center justify-between">
-        <h1 className="text-lg font-semibold text-white">Settings</h1>
-        {isAdmin && (
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded text-sm font-medium transition-colors"
-          >
-            {saved ? '✓ Saved' : saving ? 'Saving…' : 'Save'}
-          </button>
-        )}
-      </div>
 
       {/* Crawler Management */}
       <section>
@@ -215,6 +236,7 @@ function Settings({
             ? <>Run price crawlers on a schedule. Leave blank to disable. Example: <code className="text-gray-400 font-mono">0 2 * * *</code> = 2 am daily.</>
             : 'Choose which stores\' prices you want to see in your Collection and Wishlist.'}
         </p>
+        {isAdmin && settingsSaveError && <p className="text-xs text-red-400 mb-3 text-left">{settingsSaveError}</p>}
         {isAdmin && (
           <>
             <table className="w-full text-sm border-collapse mb-4">
