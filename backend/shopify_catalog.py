@@ -4,6 +4,9 @@ from asyncio import sleep
 from typing import AsyncIterator, Optional
 import httpx
 from config import load_config
+from logging_config import get_logger
+
+log = get_logger("shopify_catalog")
 
 _PAGE_LIMIT = 250
 _MAX_RETRY_AFTER_SECONDS = 600.0
@@ -49,6 +52,7 @@ async def iter_products(base_url: str, collection_slug: str) -> AsyncIterator[di
             products = r.json().get("products", [])
             if not products:
                 break
+            log.info("[%s] Fetched page %d: %d products", base_url, page, len(products))
             for product in products:
                 yield product
             page += 1
