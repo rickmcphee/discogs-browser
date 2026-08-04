@@ -195,6 +195,21 @@ describe('Account', () => {
     expect(onToggleViewAsUser).toHaveBeenCalledTimes(1)
   })
 
+  it('has no Account & Security section, but still shows Log out for a non-admin', () => {
+    render(<Account avatarVersion={0} onAvatarChange={() => {}} />)
+    expect(screen.queryByText('Account & Security')).not.toBeInTheDocument()
+    expect(screen.getByText('Log out')).toBeInTheDocument()
+  })
+
+  it('positions Log out to the right of the role switch for an admin', () => {
+    render(<Account avatarVersion={0} onAvatarChange={() => {}} isAdmin />)
+    const roleSwitch = screen.getByRole('switch', { name: 'Toggle admin/user view' })
+    const logoutButton = screen.getByText('Log out')
+    // DOCUMENT_POSITION_FOLLOWING (4) means logoutButton comes after roleSwitch
+    // in DOM order, which is left-to-right in their shared flex row.
+    expect(roleSwitch.compareDocumentPosition(logoutButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
   it('clears the stored view-as-user flag when logging out', async () => {
     localStorage.setItem('discogs-browser.viewAsUser', 'true')
     render(<Account avatarVersion={0} onAvatarChange={() => {}} />)

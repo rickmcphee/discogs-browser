@@ -12,6 +12,8 @@ _2026-07-18_
 
 **Amendment (2026-08-02, merged with branch `user-settings-store-filter`):** the previous amendment's claim that the view-as-user toggle hides "the Settings/Logs nav items" is no longer accurate as of merging in `user-settings-store-filter` — that branch made the Settings nav item visible to every authenticated user regardless of admin status (personal store-view filter), so the toggle now only affects the Logs nav item. See [`2026-08-02-store-view-filter-design.md`](2026-08-02-store-view-filter-design.md) and the corresponding amendment in [`2026-07-26-discogs-oauth-auth-design.md`](2026-07-26-discogs-oauth-auth-design.md).
 
+**Amendment (2026-08-03):** the "Account & Security" `<section>` this spec created (see "Delete the 'Account & Security' `<section>`" below, referring to its removal from `Settings.tsx`, not from `Account.tsx`) is now itself deleted from `Account.tsx` — its only remaining content by this point was the "Log out" button, which moved up into the Avatar section's top row, immediately to the right of the admin role-switch added in the 2026-08-02 amendment above (or alone, right-aligned, for a non-admin viewer who has no role-switch to sit next to). The Amendment (2026-08-01) line above describing the Plex section as "inserted between 'Recommendations' and 'Account & Security'" is superseded by this: Plex is now simply the last section on the page, since there is no "Account & Security" section left to sit above.
+
 ---
 
 ## Overview

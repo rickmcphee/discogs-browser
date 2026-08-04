@@ -176,26 +176,39 @@ function Account({
               {avatarError && <p className="text-xs text-red-400 mt-1">{avatarError}</p>}
             </div>
           </div>
-          {isAdmin && (
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-gray-400">{viewingAsUser ? 'User' : 'Admin'}</span>
-              <button
-                role="switch"
-                aria-checked={viewingAsUser}
-                aria-label="Toggle admin/user view"
-                onClick={onToggleViewAsUser}
-                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                  viewingAsUser ? 'bg-gray-600' : 'bg-indigo-600'
-                }`}
-              >
-                <span
-                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                    viewingAsUser ? 'translate-x-6' : 'translate-x-1'
+          <div className="flex items-center gap-4">
+            {isAdmin && (
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-gray-400">{viewingAsUser ? 'User' : 'Admin'}</span>
+                <button
+                  role="switch"
+                  aria-checked={viewingAsUser}
+                  aria-label="Toggle admin/user view"
+                  onClick={onToggleViewAsUser}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                    viewingAsUser ? 'bg-gray-600' : 'bg-indigo-600'
                   }`}
-                />
-              </button>
-            </div>
-          )}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      viewingAsUser ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
+              </div>
+            )}
+            <button
+              onClick={() => {
+                logout().then(() => {
+                  localStorage.removeItem('discogs-browser.viewAsUser')
+                  window.location.reload()
+                }).catch(() => {})
+              }}
+              className="px-3 py-1 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded text-xs font-medium transition-colors"
+            >
+              Log out
+            </button>
+          </div>
         </div>
       </section>
 
@@ -333,25 +346,6 @@ function Account({
             </tr>
           </tbody>
         </table>
-      </section>
-
-      {/* Account & Security */}
-      <section>
-        <h2 className="text-lg font-semibold text-white mb-1 text-left">Account & Security</h2>
-        <p className="text-sm text-gray-500 mb-4 text-left">
-          Log out of this session.
-        </p>
-        <button
-          onClick={() => {
-            logout().then(() => {
-              localStorage.removeItem('discogs-browser.viewAsUser')
-              window.location.reload()
-            }).catch(() => {})
-          }}
-          className="px-3 py-1 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded text-xs font-medium transition-colors"
-        >
-          Log out
-        </button>
       </section>
     </div>
   )
