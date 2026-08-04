@@ -71,7 +71,7 @@ async def extract_price(page, fmt_keywords: list[str]):
             log.debug("[Amazon] price selector %r → raw=%r cleaned=%r", selector, raw, cleaned)
             try:
                 price = float(cleaned.split()[0])
-                log.debug("[Amazon] price parsed: %s", price)
+                log.info("[Amazon] price parsed: %s", price)
                 break
             except (ValueError, IndexError) as e:
                 log.debug("[Amazon] price parse failed for %r: %s", cleaned, e)
@@ -141,7 +141,7 @@ class Crawler:
         fmt = release.get("format", "vinyl") or "vinyl"
         fmt_keywords = _amazon_format_keywords(fmt)
         sc = release.get("_screenshotter")
-        log.debug("[Amazon] %s — searching for: %s %s [format: %s]", _VERSION, artist, title, fmt)
+        log.info("[Amazon] %s — searching for: %s %s [format: %s]", _VERSION, artist, title, fmt)
 
         vinyl_url = None
         vinyl_price = None
