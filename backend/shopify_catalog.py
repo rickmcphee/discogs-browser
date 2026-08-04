@@ -41,6 +41,12 @@ async def iter_products(base_url: str, collection_slug: str) -> AsyncIterator[di
             except httpx.HTTPError as e:
                 consecutive_failures += 1
                 if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 429:
+                    # Full header dump, not just Retry-After -- Shopify's shared
+                    # platform-edge IP throttle (distinct from the per-store bucket
+                    # this Retry-After handling was originally built for) is not
+                    # publicly documented, so the next time it fires this is the
+                    # only way to see what signal, if any, actually accompanies it.
+                    log.debug("[%s] 429 response headers: %s", base_url, dict(e.response.headers))
                     next_delay_override = _parse_retry_after(e.response.headers.get("Retry-After"))
                 # A limit of 0 means "disabled" elsewhere, but disabled must mean
                 # fail fast here, not unlimited retries — this loop has no next
