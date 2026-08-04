@@ -98,13 +98,13 @@ def test_get_and_post_user_settings(pg_test_db, authed_client_factory, monkeypat
 
     r = client.post("/api/user-settings", json={
         "anthropic_api_key": "sk-abc", "recommendation_item_limit": 100,
-        "plex_base_url": "plex.example.com:32400", "plex_token": "ptok", "plex_match_threshold": 85,
+        "plex_base_url": "https://plex.example.com:32400", "plex_token": "ptok", "plex_match_threshold": 85,
     }, headers={"X-Requested-With": "fetch"})
     assert r.status_code == 200
     r = client.get("/api/user-settings")
     assert r.json() == {
         "anthropic_api_key": "sk-abc", "recommendation_item_limit": 100,
-        "plex_base_url": "plex.example.com:32400", "plex_token": "ptok", "plex_match_threshold": 85,
+        "plex_base_url": "https://plex.example.com:32400", "plex_token": "ptok", "plex_match_threshold": 85,
     }
 
 

@@ -274,7 +274,9 @@ function Account({
                 Must be reachable from this server over the public internet —
                 enable Plex Remote Access on your server and use the
                 plex.direct address it gives you. A LAN address, or a private
-                tunnel address (e.g. Tailscale), won't work.
+                tunnel address (e.g. Tailscale), won't work. Must start with
+                https:// — a plain http:// address is rejected, since your
+                Plex token would otherwise cross the internet unencrypted.
               </td>
             </tr>
             <tr className="border-b border-gray-800/50">

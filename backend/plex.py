@@ -14,7 +14,7 @@ _TIMEOUT = 60.0
 
 def _base(base_url: str) -> str:
     base_url = base_url.rstrip("/")
-    return base_url if base_url.startswith(("http://", "https://")) else f"http://{base_url}"
+    return base_url if base_url.startswith(("http://", "https://")) else f"https://{base_url}"
 
 
 def _headers(token: str) -> dict:
