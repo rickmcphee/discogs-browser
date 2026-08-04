@@ -124,98 +124,33 @@ def test_resolve_cover_image_none_when_neither_present():
 
 
 @respx.mock
-async def test_iter_products_respects_retry_after_header_on_429(tmp_config_dir, monkeypatch):
-    save_config({"crawl_delay_seconds": 30, "consecutive_failure_limit": 3})
-    sleep_calls = []
-
-    async def fake_sleep(seconds):
-        sleep_calls.append(seconds)
-
-    monkeypatch.setattr("shopify_catalog.sleep", fake_sleep)
-    route = respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"})
-    route.side_effect = [
-        httpx.Response(429, headers={"Retry-After": "5"}),
-        _page_response([{"id": 1}]),
-    ]
-    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "2"}).mock(return_value=_page_response([]))
-    products = [p async for p in iter_products("https://example.myshopify.test", "vinyl")]
-    assert [p["id"] for p in products] == [1]
-    # sleep_calls[0] is the pre-request delay before the first (failing) attempt;
-    # sleep_calls[1] is the delay before the retry, which must be exactly Retry-After.
-    assert sleep_calls[1] == 5.0
-
-
-@respx.mock
-async def test_iter_products_falls_back_to_jitter_when_429_has_no_retry_after(tmp_config_dir, monkeypatch):
-    save_config({"crawl_delay_seconds": 40, "consecutive_failure_limit": 3})
-    sleep_calls = []
-
-    async def fake_sleep(seconds):
-        sleep_calls.append(seconds)
-
-    monkeypatch.setattr("shopify_catalog.sleep", fake_sleep)
-    route = respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"})
-    route.side_effect = [httpx.Response(429), _page_response([{"id": 1}])]
-    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "2"}).mock(return_value=_page_response([]))
-    products = [p async for p in iter_products("https://example.myshopify.test", "vinyl")]
-    assert [p["id"] for p in products] == [1]
-    assert 20 <= sleep_calls[1] <= 40
-
-
-@respx.mock
-async def test_iter_products_logs_429_response_headers_at_debug_level(tmp_config_dir, monkeypatch, caplog):
+async def test_iter_products_raises_immediately_on_429_without_retrying(tmp_config_dir, monkeypatch):
+    # Empirically confirmed (stock-sync-429-followup): Shopify's shared platform-edge
+    # IP throttle does not clear within a Retry-After-paced retry window, so retrying
+    # a 429 -- honoring Retry-After or not -- just burns the whole consecutive_failure_limit
+    # budget before giving up anyway. A 429 must raise on the very first occurrence,
+    # never counted against consecutive_failure_limit or retried.
     save_config({"crawl_delay_seconds": 0, "consecutive_failure_limit": 3})
-    route = respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"})
-    route.side_effect = [
-        httpx.Response(429, headers={"Retry-After": "5", "X-Shopify-Shop-Api-Call-Limit": "1/40"}),
-        _page_response([{"id": 1}]),
-    ]
-    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "2"}).mock(return_value=_page_response([]))
-    with caplog.at_level("DEBUG", logger="shopify_catalog"):
+    route = respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(
+        return_value=httpx.Response(429, headers={"Retry-After": "5"})
+    )
+    with pytest.raises(httpx.HTTPStatusError) as exc_info:
         [p async for p in iter_products("https://example.myshopify.test", "vinyl")]
+    assert exc_info.value.response.status_code == 429
+    assert route.call_count == 1
+
+
+@respx.mock
+async def test_iter_products_logs_429_response_headers_at_debug_level(tmp_config_dir, caplog):
+    save_config({"crawl_delay_seconds": 0, "consecutive_failure_limit": 3})
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(
+        return_value=httpx.Response(429, headers={"Retry-After": "5", "X-Shopify-Shop-Api-Call-Limit": "1/40"})
+    )
+    with caplog.at_level("DEBUG", logger="shopify_catalog"):
+        with pytest.raises(httpx.HTTPStatusError):
+            [p async for p in iter_products("https://example.myshopify.test", "vinyl")]
     debug_records = [r for r in caplog.records if r.levelname == "DEBUG" and "429" in r.message]
     assert len(debug_records) == 1
     assert "retry-after" in debug_records[0].message.lower()
     assert "5" in debug_records[0].message
     assert "x-shopify-shop-api-call-limit" in debug_records[0].message.lower()
-
-
-@respx.mock
-async def test_iter_products_caps_retry_after_at_600_seconds(tmp_config_dir, monkeypatch):
-    save_config({"crawl_delay_seconds": 30, "consecutive_failure_limit": 3})
-    sleep_calls = []
-
-    async def fake_sleep(seconds):
-        sleep_calls.append(seconds)
-
-    monkeypatch.setattr("shopify_catalog.sleep", fake_sleep)
-    route = respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"})
-    route.side_effect = [
-        httpx.Response(429, headers={"Retry-After": "99999"}),
-        _page_response([]),
-    ]
-    [p async for p in iter_products("https://example.myshopify.test", "vinyl")]
-    assert sleep_calls[1] == 600.0
-
-
-def test_parse_retry_after_returns_none_for_missing_invalid_or_negative():
-    from shopify_catalog import _parse_retry_after
-    assert _parse_retry_after(None) is None
-    assert _parse_retry_after("not-a-number") is None
-    assert _parse_retry_after("-5") is None
-
-
-def test_parse_retry_after_passes_through_a_valid_value():
-    from shopify_catalog import _parse_retry_after
-    assert _parse_retry_after("5") == 5.0
-
-
-def test_parse_retry_after_caps_at_max():
-    from shopify_catalog import _parse_retry_after
-    assert _parse_retry_after("99999") == 600.0
-
-
-def test_parse_retry_after_returns_none_for_nan_and_infinity():
-    from shopify_catalog import _parse_retry_after
-    assert _parse_retry_after("nan") is None
-    assert _parse_retry_after("inf") is None

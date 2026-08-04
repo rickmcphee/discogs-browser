@@ -26,6 +26,8 @@
 
 **Amendment (2026-08-02, branch `stock-sync-429-backoff`):** `iter_products()`'s retry delay described just above is now overridden once when a failure is a 429 carrying a `Retry-After` header — see `docs/superpowers/specs/2026-08-02-stock-sync-429-backoff-design.md` for the full design. `_sync_stock` also gains a `stock_sync_aborted` SSE event (two consecutive 429-caused crawler failures abort the rest of that sync run). Text below is updated in place to match.
 
+**Amendment (2026-08-04):** the Retry-After override this amendment just described is itself superseded — see that same spec's 2026-08-04 amendment. A 429 is no longer retried at all (Retry-After-paced or not); `iter_products()` raises immediately and it's never counted against `consecutive_failure_limit`. That limit still governs retries for non-429 failures only. The `stock_sync_aborted` circuit breaker described above is unaffected and still fires on two consecutive 429-caused crawler failures — it now just triggers within seconds instead of after each crawler's own multi-minute retry loop.
+
 ---
 
 ## Problem

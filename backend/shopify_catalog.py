@@ -1,4 +1,3 @@
-import math
 import random
 from asyncio import sleep
 from typing import AsyncIterator, Optional
@@ -9,7 +8,6 @@ from logging_config import get_logger
 log = get_logger("shopify_catalog")
 
 _PAGE_LIMIT = 250
-_MAX_RETRY_AFTER_SECONDS = 600.0
 
 
 async def iter_products(base_url: str, collection_slug: str) -> AsyncIterator[dict]:
@@ -18,36 +16,37 @@ async def iter_products(base_url: str, collection_slug: str) -> AsyncIterator[di
     Reuses the crawl_delay_seconds / consecutive_failure_limit settings crawl_releases()
     applies to release search requests, extended here with retry-on-failure: unlike
     crawl_releases(), which just moves on to the next release/crawler pair, pagination
-    has no next item to fall through to, so a failed page is retried instead.
+    has no next item to fall through to, so a non-429 failed page is retried instead.
+
+    A 429 is never retried, regardless of consecutive_failure_limit or any Retry-After
+    header value: confirmed empirically (see stock-sync-429-followup investigation notes)
+    that Shopify's shared platform-edge IP throttle does not clear within a
+    Retry-After-paced retry window -- retrying just spends consecutive_failure_limit's
+    entire budget (up to ~10 minutes) before giving up anyway. Raising immediately lets
+    the caller (_sync_stock) move on, or abort the run via its own 2-consecutive-429
+    circuit breaker, much sooner.
     """
     cfg = load_config()
     delay = float(cfg.get("crawl_delay_seconds", 30))
     failure_limit = int(cfg.get("consecutive_failure_limit", 10))
     consecutive_failures = 0
-    next_delay_override: Optional[float] = None
 
     page = 1
     async with httpx.AsyncClient() as client:
         while True:
             url = f"{base_url}/collections/{collection_slug}/products.json"
-            if next_delay_override is not None:
-                await sleep(next_delay_override)
-                next_delay_override = None
-            else:
-                await sleep(random.uniform(delay * 0.5, delay))
+            await sleep(random.uniform(delay * 0.5, delay))
             try:
                 r = await client.get(url, params={"limit": _PAGE_LIMIT, "page": page})
                 r.raise_for_status()
             except httpx.HTTPError as e:
-                consecutive_failures += 1
                 if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 429:
-                    # Full header dump, not just Retry-After -- Shopify's shared
-                    # platform-edge IP throttle (distinct from the per-store bucket
-                    # this Retry-After handling was originally built for) is not
-                    # publicly documented, so the next time it fires this is the
-                    # only way to see what signal, if any, actually accompanies it.
+                    # Full header dump -- Shopify's shared platform-edge IP throttle is
+                    # not publicly documented, so this is the only way to see what
+                    # signal (if any) accompanies it. Not acted on: see docstring above.
                     log.debug("[%s] 429 response headers: %s", base_url, dict(e.response.headers))
-                    next_delay_override = _parse_retry_after(e.response.headers.get("Retry-After"))
+                    raise
+                consecutive_failures += 1
                 # A limit of 0 means "disabled" elsewhere, but disabled must mean
                 # fail fast here, not unlimited retries — this loop has no next
                 # item to move on to like crawl_releases() does.
@@ -62,22 +61,6 @@ async def iter_products(base_url: str, collection_slug: str) -> AsyncIterator[di
             for product in products:
                 yield product
             page += 1
-
-
-def _parse_retry_after(value: Optional[str]) -> Optional[float]:
-    """Parses a 429 response's Retry-After header (numeric-seconds form only).
-    Returns None for a missing, non-numeric, negative, or non-finite value, so the caller
-    falls back to the jittered delay instead.
-    """
-    if value is None:
-        return None
-    try:
-        seconds = float(value)
-    except ValueError:
-        return None
-    if not math.isfinite(seconds) or seconds < 0:
-        return None
-    return min(seconds, _MAX_RETRY_AFTER_SECONDS)
 
 
 def has_tag(product: dict, tag: str) -> bool:
