@@ -8,6 +8,8 @@ interface Props {
   isAdmin?: boolean
   viewingAsUser?: boolean
   onToggleViewAsUser?: () => void
+  onExportRecommendations?: () => void
+  hasJudgedItems?: boolean
 }
 
 function Account({
@@ -16,6 +18,8 @@ function Account({
   isAdmin = false,
   viewingAsUser = false,
   onToggleViewAsUser = () => {},
+  onExportRecommendations = () => {},
+  hasJudgedItems = false,
 }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const skipNextAutoSave = useRef(true)
@@ -254,6 +258,21 @@ function Account({
               </td>
               <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
                 Maximum number of unprocessed Store items evaluated by Claude for recommendation each time. Extra items are evaluated on a later run. 0 = no limit.
+              </td>
+            </tr>
+            <tr>
+              <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
+              <td className="py-3 pr-4 text-left align-top">
+                <button
+                  onClick={onExportRecommendations}
+                  disabled={!hasJudgedItems}
+                  className="w-20 text-center px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 disabled:opacity-50 rounded text-xs font-medium transition-colors"
+                >
+                  Export
+                </button>
+              </td>
+              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                Download recommended Store items as CSV (artist, title, format, price, source, link, reason).
               </td>
             </tr>
           </tbody>

@@ -160,6 +160,33 @@ describe('Account', () => {
     expect(screen.queryByText(/"detail"/)).not.toBeInTheDocument()
   })
 
+  it('disables Export until a judgment has completed', async () => {
+    render(<Account avatarVersion={0} onAvatarChange={() => {}} hasJudgedItems={false} />)
+    await waitFor(() => expect(getUserSettings).toHaveBeenCalled())
+    expect(screen.getByRole('button', { name: 'Export' })).toBeDisabled()
+  })
+
+  it('enables Export once a judgment has completed and calls onExportRecommendations when clicked', async () => {
+    const onExportRecommendations = vi.fn()
+    render(
+      <Account
+        avatarVersion={0}
+        onAvatarChange={() => {}}
+        hasJudgedItems
+        onExportRecommendations={onExportRecommendations}
+      />
+    )
+    const button = await screen.findByRole('button', { name: 'Export' })
+    expect(button).not.toBeDisabled()
+    fireEvent.click(button)
+    expect(onExportRecommendations).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows Export for a non-admin', () => {
+    render(<Account avatarVersion={0} onAvatarChange={() => {}} isAdmin={false} />)
+    expect(screen.getByRole('button', { name: 'Export' })).toBeInTheDocument()
+  })
+
   it('does not show the role switch by default', () => {
     render(<Account avatarVersion={0} onAvatarChange={() => {}} />)
     expect(screen.queryByRole('switch')).not.toBeInTheDocument()

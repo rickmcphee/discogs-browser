@@ -14,6 +14,8 @@ _2026-07-18_
 
 **Amendment (2026-08-03):** the "Account & Security" `<section>` this spec created (see "Delete the 'Account & Security' `<section>`" below, referring to its removal from `Settings.tsx`, not from `Account.tsx`) is now itself deleted from `Account.tsx` — its only remaining content by this point was the "Log out" button, which moved up into the Avatar section's top row, immediately to the right of the admin role-switch added in the 2026-08-02 amendment above (or alone, right-aligned, for a non-admin viewer who has no role-switch to sit next to). The Amendment (2026-08-01) line above describing the Plex section as "inserted between 'Recommendations' and 'Account & Security'" is superseded by this: Plex is now simply the last section on the page, since there is no "Account & Security" section left to sit above.
 
+**Amendment (2026-08-04):** the "Export Recommendations" button — previously in `Settings.tsx`'s "Recommendations Management" section, and gated by `isAdmin` there (see the Amendment 4 section of [`2026-07-06-store-recommended-filter-design.md`](2026-07-06-store-recommended-filter-design.md)) — moved to `Account.tsx`'s "Recommendations" section (added in the 2026-07-31 amendment above), as the last row in that section's table. It is ungated, consistent with the rest of that section being per-user/non-admin-only; `hasJudgedItems` still gates it (disabled until a judgment run has completed). This fixes the 'user' role having no way to export recommendations at all, since the Settings section it lived in was admin-only. `Refresh`/`Clear` remain in `Settings.tsx`, still `isAdmin`-gated.
+
 ---
 
 ## Overview

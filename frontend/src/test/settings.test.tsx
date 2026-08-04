@@ -42,7 +42,6 @@ function renderSettings(overrides: Partial<ComponentProps<typeof Settings>> = {}
       onRefreshPrices={() => {}}
       onRefreshStock={() => {}}
       onRefreshRecommendations={() => {}}
-      onExportRecommendations={() => {}}
       onClearRecommendations={() => {}}
       hasJudgedItems={false}
       isAdmin

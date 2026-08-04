@@ -45,7 +45,6 @@ interface Props {
   onRefreshPrices: (mode: 'missing' | 'all') => void
   onRefreshStock: () => void
   onRefreshRecommendations: () => void
-  onExportRecommendations: () => void
   onClearRecommendations: () => void
   hasJudgedItems: boolean
   isAdmin: boolean
@@ -61,7 +60,7 @@ function toggleButtonClass(on: boolean): string {
 
 function Settings({
   crawlers, onCrawlersChange, onRefreshPrices, onRefreshStock, onRefreshRecommendations,
-  onExportRecommendations, onClearRecommendations, hasJudgedItems, isAdmin, hiddenCrawlerIds, onToggleCrawlerView,
+  onClearRecommendations, hasJudgedItems, isAdmin, hiddenCrawlerIds, onToggleCrawlerView,
 }: Props) {
   const [settings, setSettings] = useState<SettingsType>({
     crawl_delay_seconds: 30,
@@ -368,21 +367,6 @@ function Settings({
                 </td>
                 <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
                   Evaluate unprocessed Store items for recommendation, without a full catalog re-crawl.
-                </td>
-              </tr>
-              <tr className="border-b border-gray-800/50">
-                <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
-                <td className="py-3 pr-4 text-left align-top">
-                  <button
-                    onClick={onExportRecommendations}
-                    disabled={!hasJudgedItems}
-                    className="w-20 text-center px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 disabled:opacity-50 rounded text-xs font-medium transition-colors"
-                  >
-                    Export
-                  </button>
-                </td>
-                <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
-                  Download recommended Store items as CSV (artist, title, format, price, source, link, reason).
                 </td>
               </tr>
               <tr className="border-b border-gray-800/50">

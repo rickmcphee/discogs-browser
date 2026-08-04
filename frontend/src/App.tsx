@@ -516,7 +516,6 @@ export default function App() {
             onRefreshPrices={handleRefreshPricesFromSettings}
             onRefreshStock={handleRefreshStock}
             onRefreshRecommendations={handleRefreshRecommendations}
-            onExportRecommendations={handleExportRecommendations}
             onClearRecommendations={handleClearRecommendations}
             hasJudgedItems={hasJudgedItems}
             isAdmin={showAdminNav}
@@ -531,6 +530,8 @@ export default function App() {
             isAdmin={isRealAdmin}
             viewingAsUser={viewAsUser}
             onToggleViewAsUser={toggleViewAsUser}
+            onExportRecommendations={handleExportRecommendations}
+            hasJudgedItems={hasJudgedItems}
           />
         </div>
         <div className={view === 'logs' ? 'h-full' : 'hidden'}><LogViewer /></div>

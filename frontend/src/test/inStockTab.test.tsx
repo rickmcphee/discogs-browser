@@ -204,8 +204,7 @@ describe('In Stock tab', () => {
 
   it('disables Export until a judgment has completed', async () => {
     render(<App />)
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
-    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByRole('button', { name: /profile/i }))
     await waitFor(() => expect(screen.getByText('Export')).toBeInTheDocument())
     expect(screen.getByText('Export').closest('button')).toBeDisabled()
   })
@@ -213,8 +212,7 @@ describe('In Stock tab', () => {
   it('calls exportRecommendationsCsv when Export is clicked', async () => {
     getJudgmentStatus.mockResolvedValue({ any_judged: true })
     render(<App />)
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
-    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByRole('button', { name: /profile/i }))
     await waitFor(() => expect(screen.getByText('Export').closest('button')).not.toBeDisabled())
     fireEvent.click(screen.getByText('Export'))
     await waitFor(() => expect(exportRecommendationsCsv).toHaveBeenCalled())

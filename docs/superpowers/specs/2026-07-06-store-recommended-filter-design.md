@@ -382,7 +382,7 @@ Recommendations cost real Anthropic API spend to generate. Since the only way to
 
 - `db.get_recommended_stock_items(conn) -> list[dict]` — all `recommended = 1`, not-owned items (same ownership exclusion as `get_stock_items(recommended=True)`), returning `artist, title, format, price, source, url, reason`.
 - `GET /api/stock/export` — streams the above as CSV (`artist,title,format,price,source,link,reason`) with `Content-Disposition: attachment; filename=recommendations.csv`.
-- Settings gains an "Export Recommendations" button, between "Refresh Recommendations" and "Clear Recommendations" — export before destroy. Disabled until `hasJudgedItems` is true.
+- Settings gains an "Export Recommendations" button, between "Refresh Recommendations" and "Clear Recommendations" — export before destroy. Disabled until `hasJudgedItems` is true. **Correction (2026-08-04):** the Export button was moved out of `Settings.tsx` (whose "Recommendations Management" section is `isAdmin`-gated, leaving no way for a 'user'-role account to export) into `Account.tsx`'s ungated "Recommendations" section, as the last row in that section. "Refresh Recommendations" and "Clear Recommendations" remain in Settings as described. See the 2026-08-04 amendment in [`2026-07-18-profile-account-section-design.md`](2026-07-18-profile-account-section-design.md).
 - The frontend fetches the CSV as a `Blob` and triggers a client-side download via a temporary `<a download>` element, rather than a plain `<a href>` link — `AuthMiddleware` requires the `X-Requested-With` header that `apiFetch` sets on every request, which a normal browser navigation doesn't send (it would 403).
 
 ### Testing additions
