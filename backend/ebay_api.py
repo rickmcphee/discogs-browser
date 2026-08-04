@@ -139,7 +139,7 @@ async def search_ebay(
 
     items = data.get("itemSummaries")
     if not items:
-        log.info("[%s] No results for: %s", log_prefix, query)
+        log.debug("[%s] No results for: %s", log_prefix, query)
         return []
 
     item = pick_matching_item(items, release)
