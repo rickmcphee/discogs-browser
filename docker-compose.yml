@@ -23,7 +23,8 @@ services:
     environment:
       DISCOGS_BROWSER_DATA: /data
       PLAYWRIGHT_CHANNEL: ""
-      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/discogs_browser
+      DATABASE_URL: postgresql://postgres@postgres:5432/discogs_browser
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       IDENTITY_DB_PASSWORD: ${IDENTITY_DB_PASSWORD}
       APP_DB_PASSWORD: ${APP_DB_PASSWORD}
       TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY}

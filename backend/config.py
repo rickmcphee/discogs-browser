@@ -23,7 +23,15 @@ def _with_userinfo(url: str, username: str, password: str) -> str:
     return urlunsplit((parts.scheme, f"{userinfo}@{host}", parts.path, parts.query, parts.fragment))
 
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/discogs_browser")
+# POSTGRES_PASSWORD is injected here (quoted) rather than baked into DATABASE_URL
+# by docker-compose's raw string interpolation -- a password containing URL-reserved
+# characters (%, &, ^, etc, all of which a decent password generator will produce)
+# makes an unquoted DSN unparseable.
+DATABASE_URL = _with_userinfo(
+    os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/discogs_browser"),
+    "postgres",
+    os.environ.get("POSTGRES_PASSWORD", "postgres"),
+)
 IDENTITY_DB_PASSWORD = os.environ.get("IDENTITY_DB_PASSWORD", "")
 APP_DB_PASSWORD = os.environ.get("APP_DB_PASSWORD", "")
 IDENTITY_DATABASE_URL = os.environ.get(
