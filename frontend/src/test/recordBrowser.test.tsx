@@ -137,4 +137,13 @@ describe('RecordBrowser', () => {
     await waitFor(() => expect(getReleases).toHaveBeenCalled())
     expect(screen.getByTitle('Sync collection from Discogs')).toBeDisabled()
   })
+
+  it('refetches the artist nav list on every syncGeneration tick, not just on scope change', async () => {
+    const { rerender } = render(<RecordBrowser scope="collection" onRefreshPrices={() => {}} syncGeneration={0} />)
+    await waitFor(() => expect(getArtists).toHaveBeenCalledTimes(1))
+    rerender(<RecordBrowser scope="collection" onRefreshPrices={() => {}} syncGeneration={1} />)
+    await waitFor(() => expect(getArtists).toHaveBeenCalledTimes(2))
+    rerender(<RecordBrowser scope="collection" onRefreshPrices={() => {}} syncGeneration={2} />)
+    await waitFor(() => expect(getArtists).toHaveBeenCalledTimes(3))
+  })
 })

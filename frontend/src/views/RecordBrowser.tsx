@@ -104,7 +104,10 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
   useEffect(() => {
     if (syncGeneration) load()
   }, [syncGeneration, load])
-  useEffect(() => { getArtists(scope).then(setArtists) }, [scope])
+  // Also refetches on syncGeneration ticks, same as load() above -- otherwise
+  // the nav list stays stuck at whatever it was on mount while a collection
+  // sync fills the table in page by page.
+  useEffect(() => { getArtists(scope).then(setArtists) }, [scope, syncGeneration])
   useEffect(() => { localStorage.setItem(`collectionViewMode_${scope}`, viewMode) }, [viewMode, scope])
 
   function toggleSort(field: SortField) {
