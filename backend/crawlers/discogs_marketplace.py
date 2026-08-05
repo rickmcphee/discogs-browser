@@ -55,6 +55,8 @@ class Crawler:
         shipping = _parse_amount(await shipping_el.inner_text()) if await shipping_el.count() else None
         condition = (await condition_el.inner_text()).strip() if await condition_el.count() else None
 
+        log.info("[Discogs] matched USA-shipping listing for release %s: %s %s", release.get("discogs_id"), currency, price)
+
         return [{
             "url": url,
             "price": price,
