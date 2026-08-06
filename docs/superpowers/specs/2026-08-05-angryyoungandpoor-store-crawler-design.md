@@ -262,16 +262,28 @@ at this scale. If a second used/vintage source shows up later, revisit.
 
 ## Testing
 
-Per this repo's convention, Playwright-dependent code isn't unit-tested —
-integration testing is manual. The parser (`_parse_category` and the
-artist/title/format/condition extraction) is unit-testable against saved
-HTML fixtures, one per category, following the existing
-`backend/tests/fixtures/crawlers/amazon/` pattern:
-`backend/tests/fixtures/crawlers/angryyoungandpoor/`. A new
-`test_angryyoungandpoor_crawler.py` asserts: artist/title/format split,
-accessory exclusion (record sleeve / cleaning fluid samples), `(USED)` →
-condition suffix, and cross-category pid dedup (a fixture pair sharing one
-`data-pid`, confirming only one item is yielded).
+`backend/tests/crawlers/test_amazon_price_extraction.py` already establishes
+the pattern for testing Playwright-dependent extraction offline: launch a
+real local headless browser, load a saved static HTML fixture via
+`page.set_content()` (no navigation, no live site, no bot-detection risk),
+and call the extraction code against that real page. This crawler follows
+the same pattern rather than the dict-based unit test originally sketched
+here: a small saved fixture per category shape
+(`backend/tests/fixtures/crawlers/angryyoungandpoor/records.html`,
+`va_compilation.html`) containing a handful of representative
+`.pcShowProducts`/`data-pid` blocks (2-3 real releases, 1-2 accessories, one
+`(USED)` item for the `records.html` fixture; 2-3 soundtrack titles for
+`va_compilation.html`) — enough to exercise the real `_EXTRACT_JS`
+`page.evaluate()` call plus the downstream Python parsing, not the full
+~15MB live page. A new `test_angryyoungandpoor_crawler.py` asserts:
+artist/title/format split for the dash-shaped categories, `"Various
+Artists"` for V/A Compilation LPs, accessory exclusion (record sleeve /
+cleaning fluid samples), `(USED)` → condition suffix, and cross-category pid
+dedup (the same `pid` appearing in two loaded fixtures, confirming only one
+item is yielded across a full `crawl_catalog()` run — this last assertion
+does need `crawl_catalog()` itself, via a fake `page` stub whose `goto()`
+loads the matching fixture per category and whose `evaluate()` delegates to
+the real Playwright page's `evaluate()`).
 
 ## Frontend impact
 
