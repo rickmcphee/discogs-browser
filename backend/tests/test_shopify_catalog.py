@@ -38,7 +38,7 @@ async def test_iter_products_uses_configured_crawl_delay_seconds(tmp_config_dir,
     async def fake_sleep(seconds):
         sleep_calls.append(seconds)
 
-    monkeypatch.setattr("shopify_catalog.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("shopify_catalog.sleep", fake_sleep)
     respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(return_value=_page_response([]))
     [p async for p in iter_products("https://example.myshopify.test", "vinyl")]
     assert sleep_calls
@@ -121,3 +121,36 @@ def test_resolve_cover_image_falls_back_to_product_image():
 
 def test_resolve_cover_image_none_when_neither_present():
     assert resolve_cover_image({"images": []}, {}) is None
+
+
+@respx.mock
+async def test_iter_products_raises_immediately_on_429_without_retrying(tmp_config_dir, monkeypatch):
+    # Empirically confirmed (stock-sync-429-followup): Shopify's shared platform-edge
+    # IP throttle does not clear within a Retry-After-paced retry window, so retrying
+    # a 429 -- honoring Retry-After or not -- just burns the whole consecutive_failure_limit
+    # budget before giving up anyway. A 429 must raise on the very first occurrence,
+    # never counted against consecutive_failure_limit or retried.
+    save_config({"crawl_delay_seconds": 0, "consecutive_failure_limit": 3})
+    route = respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(
+        return_value=httpx.Response(429, headers={"Retry-After": "5"})
+    )
+    with pytest.raises(httpx.HTTPStatusError) as exc_info:
+        [p async for p in iter_products("https://example.myshopify.test", "vinyl")]
+    assert exc_info.value.response.status_code == 429
+    assert route.call_count == 1
+
+
+@respx.mock
+async def test_iter_products_logs_429_response_headers_at_debug_level(tmp_config_dir, caplog):
+    save_config({"crawl_delay_seconds": 0, "consecutive_failure_limit": 3})
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(
+        return_value=httpx.Response(429, headers={"Retry-After": "5", "X-Shopify-Shop-Api-Call-Limit": "1/40"})
+    )
+    with caplog.at_level("DEBUG", logger="shopify_catalog"):
+        with pytest.raises(httpx.HTTPStatusError):
+            [p async for p in iter_products("https://example.myshopify.test", "vinyl")]
+    debug_records = [r for r in caplog.records if r.levelname == "DEBUG" and "429" in r.message]
+    assert len(debug_records) == 1
+    assert "retry-after" in debug_records[0].message.lower()
+    assert "5" in debug_records[0].message
+    assert "x-shopify-shop-api-call-limit" in debug_records[0].message.lower()

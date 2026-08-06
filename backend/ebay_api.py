@@ -139,12 +139,12 @@ async def search_ebay(
 
     items = data.get("itemSummaries")
     if not items:
-        log.info("[%s] No results for: %s", log_prefix, query)
+        log.debug("[%s] No results for: %s", log_prefix, query)
         return []
 
     item = pick_matching_item(items, release)
     if item is None:
-        log.info("[%s] no validated match for: %s", log_prefix, query)
+        log.debug("[%s] no validated match for: %s", log_prefix, query)
         return []
 
     price_val = item.get("price", {})
@@ -167,6 +167,8 @@ async def search_ebay(
     if not item_url or not item_url.startswith("https://www.ebay.com"):
         legacy_id = item.get("legacyItemId")
         item_url = f"https://www.ebay.com/itm/{legacy_id}" if legacy_id else fallback_url
+
+    log.debug("[%s] matched item for: %s → %s %s", log_prefix, query, price_val.get("currency"), price)
 
     return [{
         "url": item_url,

@@ -1,103 +1,122 @@
-import sqlite3
+from datetime import datetime, timedelta
 
-import pyotp
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 import config
-import db as db_module
+import db
+import session_tokens
 from auth_middleware import AuthMiddleware
-from routers import session as session_router
 
 
 @pytest.fixture
-def client(tmp_config_dir, monkeypatch):
-    monkeypatch.setattr(config, "BOOTSTRAP_TOKEN_FILE", tmp_config_dir / "bootstrap_token")
-    c = sqlite3.connect(":memory:", check_same_thread=False)
-    c.row_factory = sqlite3.Row
-    c.execute("PRAGMA foreign_keys = ON")
-    db_module.init_db(c)
-    monkeypatch.setattr(db_module, "get_connection", lambda: c)
-    session_router.login_limiter.clear("testclient")
+def app_and_client(pg_test_db):
+    db.init_global_schema()
+    db.init_tenant_schema()
 
     app = FastAPI()
     app.add_middleware(AuthMiddleware)
-    app.include_router(session_router.router, prefix="/api")
 
     @app.get("/api/health")
     def health():
         return {"ok": True}
 
-    @app.get("/api/releases")
-    def releases():
+    @app.get("/api/auth/status")
+    def status():
+        return {"state": "unauthenticated"}
+
+    @app.get("/api/protected")
+    def protected(request: Request):
+        return {"user_id": request.state.user_id}
+
+    @app.post("/api/protected-mutate")
+    def protected_mutate():
         return {"ok": True}
 
-    @app.post("/api/collection/refresh")
-    def refresh():
-        return {"ok": True}
+    yield app, TestClient(app)
 
-    return TestClient(app)
-
-
-HDR = {"X-Requested-With": "fetch"}
+    with db.get_admin_pool().connection() as conn:
+        conn.execute("TRUNCATE users, sessions CASCADE")
+        conn.commit()
 
 
-def _login(client):
-    config.BOOTSTRAP_TOKEN_FILE.write_text("boot")
-    r = client.post("/api/auth/setup", json={"bootstrap_token": "boot", "password": "pw"}, headers=HDR)
-    secret = r.json()["secret"]
-    client.post("/api/auth/setup/verify", json={"code": pyotp.TOTP(secret).now()}, headers=HDR)
-    client.post("/api/auth/login", json={"password": "pw", "code": pyotp.TOTP(secret).now()}, headers=HDR)
+def _make_session(user_discogs_id=42):
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=user_discogs_id, discogs_username="alice")
+        token = session_tokens.new_session_token()
+        db.create_session(
+            conn,
+            session_tokens.hash_token(token),
+            user["id"],
+            datetime.utcnow() + timedelta(days=1),
+        )
+        conn.commit()
+    return token, user["id"]
 
 
-def test_protected_blocked_when_unauthenticated(client):
-    assert client.get("/api/releases").status_code == 401
-
-
-def test_allowlisted_status_open(client):
-    assert client.get("/api/auth/status").status_code == 200
-
-
-def test_health_open(client):
+def test_health_is_allowlisted(app_and_client):
+    _app, client = app_and_client
     assert client.get("/api/health").status_code == 200
 
 
-def test_mutating_request_requires_header(client):
-    _login(client)
-    assert client.post("/api/collection/refresh").status_code == 403
-    assert client.post("/api/collection/refresh", headers=HDR).status_code == 200
+def test_status_is_allowlisted(app_and_client):
+    _app, client = app_and_client
+    assert client.get("/api/auth/status").status_code == 200
 
 
-def test_protected_allowed_after_login(client):
-    _login(client)
-    assert client.get("/api/releases").status_code == 200
+def test_protected_blocked_without_session(app_and_client):
+    _app, client = app_and_client
+    assert client.get("/api/protected").status_code == 401
 
 
-def test_idle_expired_session_rejected_and_deleted(client):
-    _login(client)
-    conn = db_module.get_connection()
-    th = conn.execute("SELECT token_hash FROM session").fetchone()["token_hash"]
-    conn.execute("UPDATE session SET last_seen_at = ? WHERE token_hash = ?",
-                 ["2000-01-01T00:00:00", th])
-    conn.commit()
-    assert client.get("/api/releases").status_code == 401
-    assert conn.execute("SELECT 1 FROM session WHERE token_hash = ?", [th]).fetchone() is None
+def test_protected_allowed_with_valid_session_and_sets_user_id(app_and_client):
+    _app, client = app_and_client
+    token, user_id = _make_session()
+    client.cookies.set(config.COOKIE_NAME, token)
+    r = client.get("/api/protected")
+    assert r.status_code == 200
+    assert r.json()["user_id"] == user_id
 
 
-def test_absolute_expired_session_rejected(client):
-    _login(client)
-    conn = db_module.get_connection()
-    th = conn.execute("SELECT token_hash FROM session").fetchone()["token_hash"]
-    conn.execute("UPDATE session SET expires_at = ? WHERE token_hash = ?",
-                 ["2000-01-01T00:00:00", th])
-    conn.commit()
-    assert client.get("/api/releases").status_code == 401
+def test_mutating_request_requires_x_requested_with_header(app_and_client):
+    _app, client = app_and_client
+    token, _ = _make_session()
+    client.cookies.set(config.COOKIE_NAME, token)
+    r = client.post("/api/protected-mutate")
+    assert r.status_code == 403
 
 
-def test_status_unauthenticated_for_expired_session(client):
-    _login(client)
-    conn = db_module.get_connection()
-    conn.execute("UPDATE session SET last_seen_at = ?", ["2000-01-01T00:00:00"])
-    conn.commit()
-    assert client.get("/api/auth/status").json()["state"] == "unauthenticated"
+def test_idle_expired_session_is_rejected_and_deleted(app_and_client, monkeypatch):
+    _app, client = app_and_client
+    monkeypatch.setattr(config, "SESSION_IDLE_SECONDS", 1)
+    token, _ = _make_session()
+    token_hash = session_tokens.hash_token(token)
+    with db.get_admin_pool().connection() as conn:
+        conn.execute(
+            "UPDATE sessions SET last_seen_at = %s WHERE token_hash = %s",
+            [datetime.utcnow() - timedelta(seconds=10), token_hash],
+        )
+        conn.commit()
+
+    client.cookies.set(config.COOKIE_NAME, token)
+    r = client.get("/api/protected")
+    assert r.status_code == 401
+
+    with db.get_admin_pool().connection() as conn:
+        assert db.get_session_by_token_hash(conn, token_hash) is None
+
+
+def test_valid_request_touches_last_seen_at(app_and_client):
+    _app, client = app_and_client
+    token, _ = _make_session()
+    token_hash = session_tokens.hash_token(token)
+    with db.get_admin_pool().connection() as conn:
+        before = db.get_session_by_token_hash(conn, token_hash)["last_seen_at"]
+
+    client.cookies.set(config.COOKIE_NAME, token)
+    client.get("/api/protected")
+
+    with db.get_admin_pool().connection() as conn:
+        after = db.get_session_by_token_hash(conn, token_hash)["last_seen_at"]
+    assert after >= before

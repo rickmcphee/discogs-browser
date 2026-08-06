@@ -5,10 +5,10 @@ import Settings from './views/Settings'
 import Account from './views/Account'
 import LogViewer from './views/LogViewer'
 import LoginScreen from './views/LoginScreen'
-import SetupWizard from './views/SetupWizard'
+import InviteCodeScreen from './views/InviteCodeScreen'
 import Avatar from './components/Avatar'
-import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, clearJudgments, exportRecommendationsCsv, getCrawlers, getSettings, getJudgmentStatus, checkHealth, getAuthState, setUnauthorizedHandler, hasAvatar } from './api/client'
-import type { CrawlEvent, CrawlStatus, CollectionStatus, Crawler, AuthState } from './api/types'
+import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, clearJudgments, exportRecommendationsCsv, getCrawlers, getUserSettings, getJudgmentStatus, checkHealth, getAuthStatus, setUnauthorizedHandler, hasAvatar } from './api/client'
+import type { CrawlEvent, CrawlStatus, CollectionStatus, Crawler, AuthStatus } from './api/types'
 
 type View = 'collection' | 'wishlist' | 'instock' | 'settings' | 'logs' | 'account'
 
@@ -18,6 +18,8 @@ type View = 'collection' | 'wishlist' | 'instock' | 'settings' | 'logs' | 'accou
 // event and only show a banner when the current event's id is newer than that.
 const DISMISSED_SYNC_KEY = 'discogs-browser.dismissedSyncEventId'
 const DISMISSED_CRAWL_KEY = 'discogs-browser.dismissedCrawlEventId'
+const VIEW_AS_USER_KEY = 'discogs-browser.viewAsUser'
+const HIDDEN_CRAWLER_IDS_KEY = 'discogs-browser.hiddenCrawlerIds'
 
 export default function App() {
   const [view, setView] = useState<View>('collection')
@@ -33,9 +35,16 @@ export default function App() {
   const [collectionStatus, setCollectionStatus] = useState<CollectionStatus | null>(null)
   const [crawlingReleaseId, setCrawlingReleaseId] = useState<string | undefined>(undefined)
   const [crawlers, setCrawlers] = useState<Crawler[]>([])
+  const [hiddenCrawlerIds, setHiddenCrawlerIds] = useState<number[]>(() => {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(HIDDEN_CRAWLER_IDS_KEY) ?? '[]')
+      return Array.isArray(parsed) ? parsed.filter((n) => typeof n === 'number') : []
+    } catch {
+      return []
+    }
+  })
   const [avatarVersion, setAvatarVersion] = useState(0)
   const [hasAnthropicKey, setHasAnthropicKey] = useState(false)
-  const [hasPlexConfigured, setHasPlexConfigured] = useState(false)
   const [hasJudgedItems, setHasJudgedItems] = useState(false)
   const [judgmentRunning, setJudgmentRunning] = useState(false)
   const [serverReady, setServerReady] = useState(false)
@@ -43,7 +52,13 @@ export default function App() {
   const [syncMessageId, setSyncMessageId] = useState<number | null>(null)
   const [dismissedSyncId, setDismissedSyncId] = useState(() => Number(localStorage.getItem(DISMISSED_SYNC_KEY) ?? 0))
   const [syncing, setSyncing] = useState(false)
-  const [authState, setAuthState] = useState<AuthState | null>(null)
+  const [syncGeneration, setSyncGeneration] = useState(0)
+  const [authState, setAuthState] = useState<AuthStatus | null>(null)
+  const [viewAsUser, setViewAsUser] = useState(() => localStorage.getItem(VIEW_AS_USER_KEY) === 'true')
+  const [signupToken, setSignupToken] = useState<string | null>(() => {
+    const params = new URLSearchParams(window.location.search)
+    return params.get('signup_pending')
+  })
 
   // eventId is null for locally-generated messages (button-click failures) that never
   // survive a refresh and so never need replay suppression; those always show.
@@ -52,9 +67,21 @@ export default function App() {
     setSyncMessageId(eventId)
   }, [])
 
+  const toggleCrawlerView = useCallback((crawlerId: number) => {
+    setHiddenCrawlerIds((current) =>
+      current.includes(crawlerId)
+        ? current.filter((id) => id !== crawlerId)
+        : [...current, crawlerId]
+    )
+  }, [])
+
+  useEffect(() => {
+    localStorage.setItem(HIDDEN_CRAWLER_IDS_KEY, JSON.stringify(hiddenCrawlerIds))
+  }, [hiddenCrawlerIds])
+
   // Poll /api/health until the backend is up, then load initial data.
   useEffect(() => {
-    if (authState !== 'authenticated') return
+    if (authState?.state !== 'authenticated') return
     let cancelled = false
     async function poll() {
       while (!cancelled) {
@@ -63,9 +90,8 @@ export default function App() {
           if (!cancelled) {
             setServerReady(true)
             getCrawlers().then(setCrawlers).catch(() => {})
-            getSettings().then((s) => {
+            getUserSettings().then((s) => {
               setHasAnthropicKey(Boolean(s.anthropic_api_key))
-              setHasPlexConfigured(Boolean(s.plex_base_url && s.plex_token))
             }).catch(() => {})
             getJudgmentStatus().then((s) => setHasJudgedItems(s.any_judged)).catch(() => {})
             hasAvatar().then((exists) => setAvatarVersion(exists ? Date.now() : 0)).catch(() => {})
@@ -82,7 +108,7 @@ export default function App() {
   // Persistent SSE connection — reconnects on error. Waits for server to be ready.
   // Handles both user-triggered and scheduled crawls.
   useEffect(() => {
-    if (authState !== 'authenticated') return
+    if (authState?.state !== 'authenticated') return
     let source: EventSource | null = null
     let reconnectTimer: ReturnType<typeof setTimeout>
     let destroyed = false
@@ -95,14 +121,20 @@ export default function App() {
         setSyncStatus('Syncing collection…', event.id ?? null)
         return
       }
+      if (event.status === 'sync_page_fetched') {
+        setSyncStatus(`Syncing collection… ${event.page_count} records (page ${event.page}/${event.total_pages})`, event.id ?? null)
+        return
+      }
       if (event.status === 'sync_progress') {
         setSyncStatus(`Syncing collection… ${event.synced} records (page ${event.page}/${event.total_pages})`, event.id ?? null)
+        setSyncGeneration(g => g + 1)
         return
       }
       if (event.status === 'sync_complete') {
         setSyncing(false)
         const wishlistPart = event.wishlist_synced != null ? `, ${event.wishlist_synced} wishlist items` : ''
         setSyncStatus(`Synced ${event.synced} records for ${event.username}${wishlistPart}`, event.id ?? null)
+        setSyncGeneration(g => g + 1)
         return
       }
       if (event.status === 'sync_error') {
@@ -143,6 +175,12 @@ export default function App() {
       if (event.status === 'stock_sync_error') {
         setSyncing(false)
         setSyncStatus(`In-stock sync failed: ${event.error}`, event.id ?? null)
+        return
+      }
+      if (event.status === 'stock_sync_aborted') {
+        setSyncing(false)
+        const sources = event.sources?.length ? ` (${event.sources.join(', ')})` : ''
+        setSyncStatus(`In-stock sync stopped: ${event.error}${sources}`, event.id ?? null)
         return
       }
       if (event.status === 'stock_judgment_started') {
@@ -207,8 +245,8 @@ export default function App() {
   }, [authState, setSyncStatus])
 
   useEffect(() => {
-    setUnauthorizedHandler(() => setAuthState('unauthenticated'))
-    getAuthState().then(setAuthState).catch(() => setAuthState('unauthenticated'))
+    setUnauthorizedHandler(() => setAuthState({ state: 'unauthenticated' }))
+    getAuthStatus().then(setAuthState).catch(() => setAuthState({ state: 'unauthenticated' }))
   }, [])
 
   const startRefresh = useCallback(async (mode: 'all' | 'new') => {
@@ -317,15 +355,38 @@ export default function App() {
     }
   }, [setSyncStatus])
 
+  // useCallback keeps this referentially stable across renders so it doesn't
+  // defeat Account's memo() — see viewRenderChurn.test.tsx, which asserts
+  // Account isn't re-invoked on every crawl SSE event.
+  const toggleViewAsUser = useCallback(() => {
+    setViewAsUser((current) => {
+      const next = !current
+      localStorage.setItem(VIEW_AS_USER_KEY, String(next))
+      return next
+    })
+  }, [])
+
   if (authState === null) {
     return <div className="min-h-screen flex items-center justify-center text-gray-500">Loading…</div>
   }
-  if (authState === 'setup_required') {
-    return <SetupWizard onComplete={() => setAuthState('authenticated')} />
+  if (authState.state !== 'authenticated' && signupToken) {
+    return (
+      <InviteCodeScreen
+        signupToken={signupToken}
+        onRedeemed={() => {
+          setSignupToken(null)
+          window.history.replaceState({}, '', window.location.pathname)
+          getAuthStatus().then(setAuthState)
+        }}
+      />
+    )
   }
-  if (authState === 'unauthenticated') {
-    return <LoginScreen onAuthenticated={() => setAuthState('authenticated')} />
+  if (authState.state === 'unauthenticated') {
+    return <LoginScreen />
   }
+
+  const isRealAdmin = authState.user.is_admin
+  const showAdminNav = isRealAdmin && !viewAsUser
 
   const recommendedAvailable = hasAnthropicKey && hasJudgedItems && !judgmentRunning
   const syncBannerVisible = syncMessage !== null && (syncMessageId === null || syncMessageId > dismissedSyncId)
@@ -381,6 +442,18 @@ export default function App() {
           </button>
         </nav>
         <nav className="flex items-center gap-2 ml-auto">
+          {showAdminNav && (
+            <button
+              onClick={() => setView('logs')}
+              className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
+                view === 'logs'
+                  ? 'bg-indigo-600 text-white'
+                  : 'text-gray-400 hover:text-white'
+              }`}
+            >
+              Logs
+            </button>
+          )}
           <button
             onClick={() => setView('settings')}
             className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
@@ -390,16 +463,6 @@ export default function App() {
             }`}
           >
             Settings
-          </button>
-          <button
-            onClick={() => setView('logs')}
-            className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
-              view === 'logs'
-                ? 'bg-indigo-600 text-white'
-                : 'text-gray-400 hover:text-white'
-            }`}
-          >
-            Logs
           </button>
           <button
             onClick={() => setView('account')}
@@ -423,8 +486,10 @@ export default function App() {
             crawlingReleaseId={crawlingReleaseId}
             crawlEvents={crawlEvents}
             crawlers={crawlers}
+            hiddenCrawlerIds={hiddenCrawlerIds}
             syncing={syncing}
-            plexAvailable={hasPlexConfigured}
+            onRefreshCollection={() => handleRefresh()}
+            syncGeneration={syncGeneration}
           />
         </div>
         <div className={view === 'wishlist' ? 'h-full' : 'hidden'}>
@@ -435,15 +500,40 @@ export default function App() {
             crawlingReleaseId={crawlingReleaseId}
             crawlEvents={crawlEvents}
             crawlers={crawlers}
+            hiddenCrawlerIds={hiddenCrawlerIds}
             syncing={syncing}
-            plexAvailable={hasPlexConfigured}
+            onRefreshCollection={() => handleRefresh()}
+            syncGeneration={syncGeneration}
           />
         </div>
         <div className={view === 'instock' ? 'h-full' : 'hidden'}>
-          <StockBrowser recommendedAvailable={recommendedAvailable} />
+          <StockBrowser recommendedAvailable={recommendedAvailable} hiddenCrawlerIds={hiddenCrawlerIds} />
         </div>
-        <div className={view === 'settings' ? 'h-full overflow-y-auto' : 'hidden'}><Settings crawlers={crawlers} onCrawlersChange={setCrawlers} onRefreshCollection={handleRefresh} onRefreshPrices={handleRefreshPricesFromSettings} onRefreshStock={handleRefreshStock} onRefreshRecommendations={handleRefreshRecommendations} onExportRecommendations={handleExportRecommendations} onClearRecommendations={handleClearRecommendations} hasJudgedItems={hasJudgedItems} /></div>
-        <div className={view === 'account' ? 'h-full overflow-y-auto' : 'hidden'}><Account avatarVersion={avatarVersion} onAvatarChange={setAvatarVersion} /></div>
+        <div className={view === 'settings' ? 'h-full overflow-y-auto' : 'hidden'}>
+          <Settings
+            crawlers={crawlers}
+            onCrawlersChange={setCrawlers}
+            onRefreshPrices={handleRefreshPricesFromSettings}
+            onRefreshStock={handleRefreshStock}
+            onRefreshRecommendations={handleRefreshRecommendations}
+            onClearRecommendations={handleClearRecommendations}
+            hasJudgedItems={hasJudgedItems}
+            isAdmin={showAdminNav}
+            hiddenCrawlerIds={hiddenCrawlerIds}
+            onToggleCrawlerView={toggleCrawlerView}
+          />
+        </div>
+        <div className={view === 'account' ? 'h-full overflow-y-auto' : 'hidden'}>
+          <Account
+            avatarVersion={avatarVersion}
+            onAvatarChange={setAvatarVersion}
+            isAdmin={isRealAdmin}
+            viewingAsUser={viewAsUser}
+            onToggleViewAsUser={toggleViewAsUser}
+            onExportRecommendations={handleExportRecommendations}
+            hasJudgedItems={hasJudgedItems}
+          />
+        </div>
         <div className={view === 'logs' ? 'h-full' : 'hidden'}><LogViewer /></div>
       </main>
 

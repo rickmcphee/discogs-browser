@@ -2,6 +2,8 @@
 
 _2026-07-05_
 
+**Amendment (2026-07-31, branch `crawl-queue-refactor`):** the hard delete described below is now a per-user `library_items` delete only. Under the multi-tenant model ([`2026-07-26-multi-tenant-architecture-design.md`](2026-07-26-multi-tenant-architecture-design.md)) the `catalog` row and its `listings` are global and shared, so `delete_orphaned_releases(conn, user_id)` removes just that user's `library_items` row and leaves catalog and listings intact — every "row + listings" claim below, and the no-`ON DELETE CASCADE`/`delete_listings_for_release` reasoning that followed from it, no longer applies (`delete_listings_for_release` is itself deleted). Consequently the Error-handling bullet's FK-error-on-`upsert_listing` race can no longer arise, and its reference to "the existing broad `except Exception` in `crawl_releases` (`crawler.py`)" is stale twice over: `crawl_releases` is deleted (the crawl now runs in `crawl_manager._drain_one_batch`), and a crawl-side failure there is logged and the queue row marked done — no per-item error event is broadcast.
+
 ---
 
 ## Overview

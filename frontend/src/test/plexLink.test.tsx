@@ -15,6 +15,7 @@ const { matchedRelease, unmatchedRelease } = vi.hoisted(() => ({
     cover_image_url: '',
     discogs_url: 'https://discogs.com/release/1',
     plex_url: 'http://plex.local:32400/web/index.html#!/server/abc/details?key=/library/metadata/500',
+    plex_matched_at: '2026-08-01T00:00:00Z',
     last_synced: '',
     listings: {},
   } as Release,
@@ -29,6 +30,7 @@ const { matchedRelease, unmatchedRelease } = vi.hoisted(() => ({
     cover_image_url: '',
     discogs_url: 'https://discogs.com/release/2',
     plex_url: null,
+    plex_matched_at: null,
     last_synced: '',
     listings: {},
   } as Release,
@@ -64,7 +66,7 @@ describe('Plex match hyperlink — list view', () => {
 })
 
 describe('Plex match hyperlink — tile view', () => {
-  it('links the tile title to Plex while cover/artist still link to Discogs', async () => {
+  it('links the tile title to Plex; artist is plain text, not a Discogs link', async () => {
     vi.stubGlobal('localStorage', {
       getItem: (key: string) => (key.startsWith('collectionViewMode') ? 'tiles' : null),
       setItem: () => {},
@@ -72,7 +74,8 @@ describe('Plex match hyperlink — tile view', () => {
     render(<RecordBrowser scope="collection" onRefreshPrices={() => {}} />)
     const titleLink = await screen.findByRole('link', { name: 'Kind of Blue' })
     expect(titleLink).toHaveAttribute('href', matchedRelease.plex_url as string)
-    const artistLink = screen.getByRole('link', { name: /Miles Davis/ })
-    expect(artistLink).toHaveAttribute('href', matchedRelease.discogs_url)
+    for (const el of screen.getAllByText('Miles Davis')) {
+      expect(el.closest('a')).toBeNull()
+    }
   })
 })

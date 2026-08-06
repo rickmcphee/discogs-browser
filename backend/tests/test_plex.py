@@ -5,6 +5,23 @@ from plex import (
     build_album_url, find_best_match,
 )
 
+import socket
+
+import pytest
+
+from plex_security import PlexUnsafeAddressError
+
+
+@pytest.fixture(autouse=True)
+def _mock_dns(monkeypatch):
+    # 8.8.8.8, not a documentation/example address like 203.0.113.5 (RFC 5737
+    # TEST-NET-3) -- Python's ipaddress module correctly treats TEST-NET
+    # ranges as non-global, so a "safe" mock IP must be a real public one.
+    monkeypatch.setattr(
+        socket, "getaddrinfo",
+        lambda host, port, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", port))],
+    )
+
 
 def test_normalize_lowercases_and_strips_leading_the():
     assert normalize("The Wall") == "wall"
@@ -24,7 +41,7 @@ def test_normalize_is_idempotent_on_plain_title():
 
 @respx.mock
 def test_get_music_section_key_returns_artist_section_key():
-    respx.get("http://plex.local:32400/library/sections").mock(
+    respx.get("https://plex.local:32400/library/sections").mock(
         return_value=httpx.Response(200, json={
             "MediaContainer": {"Directory": [
                 {"key": "1", "type": "movie"},
@@ -32,71 +49,73 @@ def test_get_music_section_key_returns_artist_section_key():
             ]}
         })
     )
-    assert get_music_section_key("plex.local:32400", "tok") == "2"
+    assert get_music_section_key("https://plex.local:32400", "tok") == "2"
 
 
 @respx.mock
 def test_get_music_section_key_returns_none_when_no_music_library():
-    respx.get("http://plex.local:32400/library/sections").mock(
+    respx.get("https://plex.local:32400/library/sections").mock(
         return_value=httpx.Response(200, json={
             "MediaContainer": {"Directory": [{"key": "1", "type": "movie"}]}
         })
     )
-    assert get_music_section_key("plex.local:32400", "tok") is None
+    assert get_music_section_key("https://plex.local:32400", "tok") is None
 
 
 @respx.mock
 def test_get_music_section_key_uses_timeout_above_httpx_default():
-    route = respx.get("http://plex.local:32400/library/sections").mock(
+    route = respx.get("https://plex.local:32400/library/sections").mock(
         return_value=httpx.Response(200, json={"MediaContainer": {"Directory": []}})
     )
-    get_music_section_key("plex.local:32400", "tok")
+    get_music_section_key("https://plex.local:32400", "tok")
     assert route.calls.last.request.extensions["timeout"]["read"] > 5.0
 
 
 @respx.mock
 def test_fetch_albums_parses_artist_title_and_rating_key():
-    respx.get("http://plex.local:32400/library/sections/2/all").mock(
+    respx.get("https://plex.local:32400/library/sections/2/all").mock(
         return_value=httpx.Response(200, json={
             "MediaContainer": {"Metadata": [
                 {"ratingKey": "500", "title": "Kind of Blue", "parentTitle": "Miles Davis"},
             ]}
         })
     )
-    albums = fetch_albums("plex.local:32400", "tok", "2")
+    albums = fetch_albums("https://plex.local:32400", "tok", "2")
     assert albums == [{"artist": "Miles Davis", "title": "Kind of Blue", "rating_key": "500"}]
 
 
 @respx.mock
 def test_fetch_albums_uses_timeout_above_httpx_default():
-    route = respx.get("http://plex.local:32400/library/sections/2/all").mock(
+    route = respx.get("https://plex.local:32400/library/sections/2/all").mock(
         return_value=httpx.Response(200, json={"MediaContainer": {"Metadata": []}})
     )
-    fetch_albums("plex.local:32400", "tok", "2")
+    fetch_albums("https://plex.local:32400", "tok", "2")
     assert route.calls.last.request.extensions["timeout"]["read"] > 5.0
 
 
 @respx.mock
 def test_get_machine_identifier():
-    respx.get("http://plex.local:32400/").mock(
+    respx.get("https://plex.local:32400/").mock(
         return_value=httpx.Response(200, json={"MediaContainer": {"machineIdentifier": "abc123"}})
     )
-    assert get_machine_identifier("plex.local:32400", "tok") == "abc123"
+    assert get_machine_identifier("https://plex.local:32400", "tok") == "abc123"
 
 
 @respx.mock
 def test_get_machine_identifier_uses_timeout_above_httpx_default():
-    route = respx.get("http://plex.local:32400/").mock(
+    route = respx.get("https://plex.local:32400/").mock(
         return_value=httpx.Response(200, json={"MediaContainer": {"machineIdentifier": "abc123"}})
     )
-    get_machine_identifier("plex.local:32400", "tok")
+    get_machine_identifier("https://plex.local:32400", "tok")
     assert route.calls.last.request.extensions["timeout"]["read"] > 5.0
 
 
 def test_build_album_url_shape():
+    # No scheme given -- exercises _base()'s own default, which is https
+    # (validate_address requires https, so the default must match it).
     url = build_album_url("plex.local:32400", "abc123", "500")
     assert url == (
-        "http://plex.local:32400/web/index.html#!/server/abc123"
+        "https://plex.local:32400/web/index.html#!/server/abc123"
         "/details?key=/library/metadata/500"
     )
 
@@ -104,7 +123,7 @@ def test_build_album_url_shape():
 def test_build_album_url_strips_trailing_slash_from_base():
     url = build_album_url("plex.local:32400/", "abc123", "500")
     assert url == (
-        "http://plex.local:32400/web/index.html#!/server/abc123"
+        "https://plex.local:32400/web/index.html#!/server/abc123"
         "/details?key=/library/metadata/500"
     )
 
@@ -125,3 +144,45 @@ def test_find_best_match_returns_none_when_no_candidate_clears_threshold():
 
 def test_find_best_match_returns_none_for_empty_library():
     assert find_best_match("Miles Davis", "Kind of Blue", [], threshold=90) is None
+
+
+@respx.mock
+def test_get_music_section_key_rejects_private_address_before_any_request(monkeypatch):
+    monkeypatch.setattr(
+        socket, "getaddrinfo",
+        lambda host, port, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", port))],
+    )
+    with pytest.raises(PlexUnsafeAddressError):
+        get_music_section_key("https://plex.local:32400", "tok")
+    # No respx route was registered above -- if validate_address didn't run
+    # first and the code tried a real request, respx's assert_all_mocked
+    # default would raise a different error here, not silently pass.
+
+
+@respx.mock
+def test_get_music_section_key_treats_redirect_as_failure_not_followed():
+    respx.get("https://plex.local:32400/library/sections").mock(
+        return_value=httpx.Response(302, headers={"Location": "https://169.254.169.254/"})
+    )
+    with pytest.raises(PlexUnsafeAddressError):
+        get_music_section_key("https://plex.local:32400", "tok")
+
+
+@respx.mock
+def test_fetch_albums_rejects_private_address_before_any_request(monkeypatch):
+    monkeypatch.setattr(
+        socket, "getaddrinfo",
+        lambda host, port, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", port))],
+    )
+    with pytest.raises(PlexUnsafeAddressError):
+        fetch_albums("https://plex.local:32400", "tok", "2")
+
+
+@respx.mock
+def test_get_machine_identifier_rejects_private_address_before_any_request(monkeypatch):
+    monkeypatch.setattr(
+        socket, "getaddrinfo",
+        lambda host, port, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", port))],
+    )
+    with pytest.raises(PlexUnsafeAddressError):
+        get_machine_identifier("https://plex.local:32400", "tok")

@@ -26,6 +26,7 @@ const { release } = vi.hoisted(() => ({
     cover_image_url: '',
     discogs_url: '',
     plex_url: null,
+    plex_matched_at: null,
     last_synced: '',
     listings: {},
   } as Release,
@@ -33,7 +34,7 @@ const { release } = vi.hoisted(() => ({
 
 vi.mock('../api/client', () => ({
   checkHealth: vi.fn().mockResolvedValue(true),
-  getAuthState: vi.fn().mockResolvedValue('authenticated'),
+  getAuthStatus: vi.fn().mockResolvedValue({ state: 'authenticated', user: { discogs_username: 'test', is_admin: true } }),
   setUnauthorizedHandler: vi.fn(),
   refreshCollection: vi.fn().mockResolvedValue({ synced: 0, username: 'test' }),
   getCollectionStatus: vi.fn().mockResolvedValue({ total: 0, last_synced: null }),
@@ -44,14 +45,14 @@ vi.mock('../api/client', () => ({
   getReleases: vi.fn().mockResolvedValue({ total: 1, page: 1, per_page: 50, releases: [release] }),
   getArtists: vi.fn().mockResolvedValue(['Pink Floyd']),
   getSettings: vi.fn().mockResolvedValue({
-    discogs_token: '', debug_screenshot_interval: 20, shuffle_crawl_order: true,
     crawl_delay_seconds: 30, consecutive_failure_limit: 10, crawl_schedule: '',
-    crawl_schedule_mode: 'missing', collection_schedule: '', collection_schedule_mode: 'all',
-    ebay_app_id: '', ebay_cert_id: '', stock_schedule: '', recommendation_item_limit: 300,
+    crawl_schedule_mode: 'missing',
+    ebay_app_id: '', ebay_cert_id: '', stock_schedule: '',
   }),
+  getUserSettings: vi.fn().mockResolvedValue({ anthropic_api_key: '', recommendation_item_limit: 300, plex_base_url: '', plex_token: '', plex_match_threshold: 90 }),
   saveSettings: vi.fn(),
+  saveUserSettings: vi.fn(),
   setCrawlerEnabled: vi.fn(),
-  changePassword: vi.fn(),
   logout: vi.fn(),
   hasAvatar: vi.fn().mockResolvedValue(false),
   uploadAvatar: vi.fn(),
@@ -133,6 +134,30 @@ describe('crawl status bar', () => {
     fireEvent.click(screen.getByRole('button', { name: /Dismiss/i }))
 
     expect(screen.queryByText('Done')).not.toBeInTheDocument()
+  })
+
+  it('shows page/count as soon as a page is fetched, before that page finishes processing', async () => {
+    render(<App />)
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    const source = getLastCrawlSource()
+    source.emit({ status: 'sync_started', id: 1 })
+    await waitFor(() => expect(screen.getByText('Syncing collection…')).toBeInTheDocument())
+
+    source.emit({ status: 'sync_page_fetched', page: 1, total_pages: 12, page_count: 100, id: 2 })
+    await waitFor(() =>
+      expect(screen.getByText('Syncing collection… 100 records (page 1/12)')).toBeInTheDocument()
+    )
+  })
+
+  it('still shows the processed running total once a page finishes processing', async () => {
+    render(<App />)
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    const source = getLastCrawlSource()
+    source.emit({ status: 'sync_page_fetched', page: 1, total_pages: 12, page_count: 100, id: 1 })
+    source.emit({ status: 'sync_progress', synced: 100, page: 1, total_pages: 12, id: 2 })
+    await waitFor(() =>
+      expect(screen.getByText('Syncing collection… 100 records (page 1/12)')).toBeInTheDocument()
+    )
   })
 
   it('does not resurrect a dismissed banner when a refresh replays the same buffered events', async () => {

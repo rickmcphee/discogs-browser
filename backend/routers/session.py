@@ -1,62 +1,44 @@
-import json
+import secrets
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
 
-import auth_core
 import avatar as avatar_storage
 import config
 import db
+from admin import require_admin
+import oauth_discogs
+import session_tokens
+import token_encryption
 from logging_config import get_logger
 from rate_limit import RateLimiter
 
 router = APIRouter()
 log = get_logger("session")
 
-login_limiter = RateLimiter(config.LOGIN_MAX_FAILURES, config.LOGIN_LOCKOUT_SECONDS)
-
-_DUMMY_HASH = auth_core.hash_password("dummy-password-for-timing")
-
-
-class SetupRequest(BaseModel):
-    bootstrap_token: str
-    password: str
+redeem_limiter = RateLimiter(config.LOGIN_MAX_FAILURES, config.LOGIN_LOCKOUT_SECONDS)
+discogs_oauth_limiter = RateLimiter(config.LOGIN_MAX_FAILURES, config.LOGIN_LOCKOUT_SECONDS)
 
 
-class SetupVerifyRequest(BaseModel):
-    code: str
+class RedeemInviteRequest(BaseModel):
+    signup_token: str
+    invite_code: str
 
 
-class LoginRequest(BaseModel):
-    password: str
-    code: str
-
-
-class ChangePasswordRequest(BaseModel):
-    current_password: str
-    new_password: str
-    code: str
-
-
-class FactorRequest(BaseModel):
-    password: str
-    code: str
-
-
-def _client_key(request):
+def _client_key(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
-def _is_secure(request):
+def _is_secure(request: Request) -> bool:
     proto = request.headers.get("x-forwarded-proto", "").lower()
     if proto:
         return proto == "https"
     return request.url.scheme == "https"
 
 
-def _set_session_cookie(request, response, token):
+def _set_session_cookie(request: Request, response: Response, token: str):
     response.set_cookie(
         config.COOKIE_NAME,
         token,
@@ -68,153 +50,167 @@ def _set_session_cookie(request, response, token):
     )
 
 
-def _valid_session(conn, token):
-    row = db.get_session(conn, auth_core.hash_token(token))
-    if row is None:
-        return False
-    now = datetime.utcnow()
-    if now > datetime.fromisoformat(row["expires_at"]):
-        return False
-    idle = now - datetime.fromisoformat(row["last_seen_at"])
-    return idle <= timedelta(seconds=config.SESSION_IDLE_SECONDS)
+def _create_session_for_user(conn, request: Request, response: Response, user_id: int):
+    """Caller owns the transaction: this does not commit. Call within the
+    same conn/transaction as whatever created or looked up the user, so a
+    session is never left committed for a user row that later rolled back."""
+    token = session_tokens.new_session_token()
+    db.create_session(
+        conn,
+        session_tokens.hash_token(token),
+        user_id,
+        datetime.utcnow() + timedelta(seconds=config.SESSION_MAX_SECONDS),
+    )
+    _set_session_cookie(request, response, token)
 
 
 @router.get("/auth/status")
 def auth_status(request: Request):
-    conn = db.get_connection()
-    if not db.owner_exists(conn):
-        return {"state": "setup_required"}
     token = request.cookies.get(config.COOKIE_NAME)
-    if token and _valid_session(conn, token):
-        return {"state": "authenticated"}
-    return {"state": "unauthenticated"}
-
-
-@router.post("/auth/setup")
-def setup(body: SetupRequest):
-    conn = db.get_connection()
-    if db.owner_exists(conn):
-        raise HTTPException(status_code=409, detail="Already set up")
-    if not config.BOOTSTRAP_TOKEN_FILE.exists():
-        raise HTTPException(status_code=403, detail="Setup not available")
-    expected = config.BOOTSTRAP_TOKEN_FILE.read_text().strip()
-    if not expected or body.bootstrap_token.strip() != expected:
-        raise HTTPException(status_code=403, detail="Invalid bootstrap token")
-
-    secret = auth_core.generate_totp_secret()
-    db.create_owner(conn, auth_core.hash_password(body.password), secret, [])
+    if not token:
+        return {"state": "unauthenticated"}
+    with db.get_identity_pool().connection() as conn:
+        row = db.get_session_by_token_hash(conn, session_tokens.hash_token(token))
+        if row is None:
+            return {"state": "unauthenticated"}
+        user = conn.execute(
+            "SELECT discogs_username, is_admin FROM users WHERE id = %s", [row["user_id"]]
+        ).fetchone()
     return {
-        "secret": secret,
-        "provisioning_uri": auth_core.totp_provisioning_uri(secret),
+        "state": "authenticated",
+        "user": {"discogs_username": user["discogs_username"], "is_admin": user["is_admin"]},
     }
 
 
-@router.post("/auth/setup/verify")
-def setup_verify(body: SetupVerifyRequest):
-    conn = db.get_connection()
-    owner = db.get_owner(conn)
-    if owner is None:
-        raise HTTPException(status_code=409, detail="Run setup first")
-    # setup/verify is unauthenticated (allowlisted) and only valid during first-run,
-    # before recovery codes are issued. Once issued, setup is complete; reuse would let
-    # anyone with a single TOTP code rotate recovery codes. Post-setup rotation goes
-    # through /auth/regenerate-recovery-codes (password + TOTP).
-    if json.loads(owner["recovery_codes"]):
-        raise HTTPException(status_code=409, detail="Already set up")
-    if not auth_core.verify_totp(owner["totp_secret"], body.code):
-        raise HTTPException(status_code=400, detail="Invalid code")
-    codes = auth_core.generate_recovery_codes()
-    db.set_owner_recovery_codes(conn, [auth_core.hash_token(c) for c in codes])
-    if config.BOOTSTRAP_TOKEN_FILE.exists():
-        config.BOOTSTRAP_TOKEN_FILE.unlink()
-    log.info("Owner setup completed")
-    return {"recovery_codes": codes}
-
-
-@router.post("/auth/login")
-def login(body: LoginRequest, request: Request, response: Response):
-    conn = db.get_connection()
+@router.get("/auth/discogs/start")
+def discogs_start(request: Request):
     key = _client_key(request)
-    if login_limiter.is_locked(key):
+    if discogs_oauth_limiter.is_locked(key):
+        raise HTTPException(status_code=429, detail="Too many attempts, try later")
+    discogs_oauth_limiter.register_failure(key)  # counts every call, not just failures —
+    # this limiter caps raw handshake volume (each call is a real outbound request to
+    # Discogs under this app's shared consumer key), not repeated wrong-guess attempts
+
+    try:
+        handshake = oauth_discogs.start_handshake()
+    except Exception:
+        log.warning("Discogs OAuth handshake start failed")
+        return RedirectResponse(f"{config.FRONTEND_BASE_URL}/?auth_error=discogs_failed")
+
+    with db.get_identity_pool().connection() as conn:
+        db.create_oauth_request_state(
+            conn, handshake["oauth_token"], handshake["oauth_token_secret"]
+        )
+        conn.commit()
+    return RedirectResponse(handshake["authorize_url"])
+
+
+@router.get("/auth/discogs/callback")
+def discogs_callback(oauth_token: str, oauth_verifier: str, request: Request):
+    key = _client_key(request)
+    if discogs_oauth_limiter.is_locked(key):
         raise HTTPException(status_code=429, detail="Too many attempts, try later")
 
-    owner = db.get_owner(conn)
-    if owner is None:
-        auth_core.verify_password(_DUMMY_HASH, body.password)
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+    with db.get_identity_pool().connection() as conn:
+        state = db.get_and_delete_oauth_request_state(conn, oauth_token)
+        conn.commit()
+    if state is None:
+        discogs_oauth_limiter.register_failure(key)
+        return RedirectResponse(f"{config.FRONTEND_BASE_URL}/?auth_error=expired")
 
-    if not auth_core.verify_password(owner["password_hash"], body.password):
-        login_limiter.register_failure(key)
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+    try:
+        access = oauth_discogs.fetch_access_token(
+            oauth_token, state["request_token_secret"], oauth_verifier
+        )
+        identity = oauth_discogs.fetch_identity(access["oauth_token"], access["oauth_token_secret"])
+    except Exception:
+        log.warning("Discogs OAuth exchange failed for oauth_token=%s", oauth_token)
+        discogs_oauth_limiter.register_failure(key)
+        return RedirectResponse(f"{config.FRONTEND_BASE_URL}/?auth_error=discogs_failed")
 
-    second_factor_ok = auth_core.verify_totp(owner["totp_secret"], body.code) or \
-        db.consume_recovery_code(conn, auth_core.hash_token(body.code.strip()))
-    if not second_factor_ok:
-        login_limiter.register_failure(key)
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+    discogs_user_id = identity["id"]
+    discogs_username = identity["username"]
 
-    login_limiter.clear(key)
-    token = auth_core.new_session_token()
-    now = datetime.utcnow()
-    db.create_session(
-        conn,
-        auth_core.hash_token(token),
-        now.isoformat(),
-        (now + timedelta(seconds=config.SESSION_MAX_SECONDS)).isoformat(),
-    )
-    _set_session_cookie(request, response, token)
+    with db.get_identity_pool().connection() as conn:
+        user = db.get_user_by_discogs_id(conn, discogs_user_id)
+        if user is not None:
+            redirect = RedirectResponse(config.FRONTEND_BASE_URL or "/")
+            _create_session_for_user(conn, request, redirect, user["id"])
+            conn.commit()
+            return redirect
+
+        signup_token = secrets.token_urlsafe(32)
+        db.create_pending_signup(
+            conn,
+            signup_token,
+            discogs_user_id,
+            discogs_username,
+            token_encryption.encrypt(access["oauth_token"]),
+            token_encryption.encrypt(access["oauth_token_secret"]),
+        )
+        conn.commit()
+    return RedirectResponse(f"{config.FRONTEND_BASE_URL}/?signup_pending={signup_token}")
+
+
+@router.post("/auth/redeem-invite")
+def redeem_invite(body: RedeemInviteRequest, request: Request, response: Response):
+    key = _client_key(request)
+    if redeem_limiter.is_locked(key):
+        raise HTTPException(status_code=429, detail="Too many attempts, try later")
+
+    with db.get_identity_pool().connection() as conn:
+        pending = db.get_and_delete_pending_signup(conn, body.signup_token)
+        if pending is None:
+            redeem_limiter.register_failure(key)
+            conn.commit()
+            raise HTTPException(status_code=400, detail="Signup expired, start over")
+
+        invite = conn.execute(
+            "SELECT created_by FROM invites WHERE code = %s AND redeemed_by IS NULL",
+            [body.invite_code],
+        ).fetchone()
+        if invite is None:
+            redeem_limiter.register_failure(key)
+            conn.rollback()  # restores the pending_signups row deleted above — a bad
+            # invite code shouldn't burn a valid OAuth grant the user could retry with
+            raise HTTPException(status_code=400, detail="Invalid or already-used invite code")
+
+        user = db.create_user(
+            conn, pending["discogs_user_id"], pending["discogs_username"], invited_by=invite["created_by"]
+        )
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s "
+            "WHERE id = %s",
+            [pending["oauth_token_encrypted"], pending["oauth_secret_encrypted"], user["id"]],
+        )
+        conn.execute(
+            "UPDATE invites SET redeemed_by = %s, redeemed_at = CURRENT_TIMESTAMP WHERE code = %s",
+            [user["id"], body.invite_code],
+        )
+        redeem_limiter.clear(key)
+        _create_session_for_user(conn, request, response, user["id"])
+        conn.commit()
     return {"ok": True}
+
+
+@router.post("/auth/invites", dependencies=[Depends(require_admin)])
+def create_invite(request: Request):
+    code = secrets.token_urlsafe(12)
+    with db.get_app_pool().connection() as conn:
+        db.create_invite(conn, request.state.user_id, code)
+        conn.commit()
+    return {"code": code}
 
 
 @router.post("/auth/logout")
 def logout(request: Request, response: Response):
-    conn = db.get_connection()
     token = request.cookies.get(config.COOKIE_NAME)
     if token:
-        db.delete_session(conn, auth_core.hash_token(token))
+        with db.get_identity_pool().connection() as conn:
+            db.delete_session(conn, session_tokens.hash_token(token))
+            conn.commit()
     response.delete_cookie(config.COOKIE_NAME, path="/")
     return {"ok": True}
-
-
-@router.post("/auth/change-password")
-def change_password(body: ChangePasswordRequest):
-    conn = db.get_connection()
-    owner = db.get_owner(conn)
-    if owner is None:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    if not auth_core.verify_password(owner["password_hash"], body.current_password) or \
-            not auth_core.verify_totp(owner["totp_secret"], body.code):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    db.update_owner_password(conn, auth_core.hash_password(body.new_password))
-    return {"ok": True}
-
-
-@router.post("/auth/reset-totp")
-def reset_totp(body: FactorRequest):
-    conn = db.get_connection()
-    owner = db.get_owner(conn)
-    if owner is None:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    if not auth_core.verify_password(owner["password_hash"], body.password) or \
-            not auth_core.verify_totp(owner["totp_secret"], body.code):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    secret = auth_core.generate_totp_secret()
-    db.update_owner_totp(conn, secret)
-    return {"secret": secret, "provisioning_uri": auth_core.totp_provisioning_uri(secret)}
-
-
-@router.post("/auth/regenerate-recovery-codes")
-def regenerate_recovery_codes(body: FactorRequest):
-    conn = db.get_connection()
-    owner = db.get_owner(conn)
-    if owner is None:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    if not auth_core.verify_password(owner["password_hash"], body.password) or \
-            not auth_core.verify_totp(owner["totp_secret"], body.code):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    codes = auth_core.generate_recovery_codes()
-    db.set_owner_recovery_codes(conn, [auth_core.hash_token(c) for c in codes])
-    return {"recovery_codes": codes}
 
 
 @router.post("/auth/avatar")

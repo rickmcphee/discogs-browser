@@ -1,6 +1,6 @@
 import type {
-  ReleasesResponse, Crawler, Settings, SortField, SortOrder, CrawlStatus, CollectionStatus, ScreenshotSession,
-  AuthState, SetupResponse, RecordScope, StockResponse, StockSortField,
+  ReleasesResponse, Crawler, Settings, UserSettings, SortField, SortOrder, CrawlStatus, CollectionStatus, ScreenshotSession,
+  AuthStatus, RecordScope, StockResponse, StockSortField,
 } from './types'
 
 const BASE = '/api'
@@ -12,7 +12,7 @@ async function apiFetch(path: string, init: RequestInit = {}): Promise<Response>
   const headers = new Headers(init.headers)
   headers.set('X-Requested-With', 'fetch')
   const r = await fetch(`${BASE}${path}`, { ...init, headers })
-  if (r.status === 401 && path !== '/auth/status' && path !== '/auth/login') {
+  if (r.status === 401) {
     onUnauthorized?.()
   }
   return r
@@ -49,7 +49,7 @@ export async function getReleases(params: {
   page?: number
   per_page?: number
   scope?: RecordScope
-  no_plex?: boolean
+  unmatched?: boolean
 }): Promise<ReleasesResponse> {
   const q = new URLSearchParams()
   if (params.search) q.set('search', params.search)
@@ -59,16 +59,15 @@ export async function getReleases(params: {
   if (params.page) q.set('page', String(params.page))
   if (params.per_page) q.set('per_page', String(params.per_page))
   if (params.scope) q.set('scope', params.scope)
-  if (params.no_plex) q.set('no_plex', 'true')
+  if (params.unmatched) q.set('unmatched', 'true')
   const r = await apiFetch(`/releases?${q}`)
   if (!r.ok) throw new Error(await r.text())
   return r.json()
 }
 
-export async function getArtists(scope?: RecordScope, noPlex?: boolean): Promise<string[]> {
+export async function getArtists(scope?: RecordScope): Promise<string[]> {
   const q = new URLSearchParams()
   if (scope) q.set('scope', scope)
-  if (noPlex) q.set('no_plex', 'true')
   const qs = q.toString() ? `?${q}` : ''
   const r = await apiFetch(`/artists${qs}`)
   if (!r.ok) throw new Error(await r.text())
@@ -98,6 +97,21 @@ export async function saveSettings(settings: Settings): Promise<void> {
   if (!r.ok) throw new Error(await r.text())
 }
 
+export async function getUserSettings(): Promise<UserSettings> {
+  const r = await apiFetch('/user-settings')
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
+}
+
+export async function saveUserSettings(settings: UserSettings): Promise<void> {
+  const r = await apiFetch('/user-settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings),
+  })
+  if (!r.ok) throw new Error(await r.text())
+}
+
 export async function setCrawlerEnabled(id: number, enabled: boolean): Promise<void> {
   const r = await apiFetch(`/crawlers/${id}`, {
     method: 'PATCH',
@@ -117,7 +131,7 @@ export function openCrawlStream(): EventSource {
   return new EventSource('/api/crawl/stream')
 }
 
-export async function postCrawlStart(mode: 'all' | 'missing' = 'all', releaseId?: string): Promise<{ started: boolean; running: boolean }> {
+export async function postCrawlStart(mode: 'all' | 'missing' = 'all', releaseId?: string): Promise<{ enqueued: number }> {
   const r = await apiFetch('/crawl/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -125,10 +139,6 @@ export async function postCrawlStart(mode: 'all' | 'missing' = 'all', releaseId?
   })
   if (!r.ok) throw new Error(await r.text())
   return r.json()
-}
-
-export async function postCrawlStop(): Promise<void> {
-  await apiFetch('/crawl/stop', { method: 'POST' })
 }
 
 export async function getStock(params: {
@@ -140,6 +150,7 @@ export async function getStock(params: {
   per_page?: number
   overlapping?: boolean
   recommended?: boolean
+  hiddenCrawlerIds?: number[]
 }): Promise<StockResponse> {
   const q = new URLSearchParams()
   if (params.search) q.set('search', params.search)
@@ -150,15 +161,17 @@ export async function getStock(params: {
   if (params.per_page) q.set('per_page', String(params.per_page))
   if (params.overlapping) q.set('overlapping', 'true')
   if (params.recommended) q.set('recommended', 'true')
+  if (params.hiddenCrawlerIds?.length) q.set('hidden_crawler_ids', params.hiddenCrawlerIds.join(','))
   const r = await apiFetch(`/stock?${q}`)
   if (!r.ok) throw new Error(await r.text())
   return r.json()
 }
 
-export async function getStockArtists(overlapping?: boolean, recommended?: boolean): Promise<string[]> {
+export async function getStockArtists(overlapping?: boolean, recommended?: boolean, hiddenCrawlerIds?: number[]): Promise<string[]> {
   const q = new URLSearchParams()
   if (overlapping) q.set('overlapping', 'true')
   if (recommended) q.set('recommended', 'true')
+  if (hiddenCrawlerIds?.length) q.set('hidden_crawler_ids', hiddenCrawlerIds.join(','))
   const qs = q.toString() ? `?${q}` : ''
   const r = await apiFetch(`/stock/artists${qs}`)
   if (!r.ok) throw new Error(await r.text())
@@ -168,6 +181,12 @@ export async function getStockArtists(overlapping?: boolean, recommended?: boole
 
 export async function postStockSyncStart(): Promise<{ started: boolean; running: boolean }> {
   const r = await apiFetch('/stock/sync/start', { method: 'POST' })
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
+}
+
+export async function postPlexMatchStart(): Promise<{ started: boolean; running: boolean }> {
+  const r = await apiFetch('/plex/match/start', { method: 'POST' })
   if (!r.ok) throw new Error(await r.text())
   return r.json()
 }
@@ -218,51 +237,27 @@ export function screenshotUrl(path: string): string {
   return `${BASE}/screenshots/${path}`
 }
 
-export async function getAuthState(): Promise<AuthState> {
+export async function getAuthStatus(): Promise<AuthStatus> {
   const r = await apiFetch('/auth/status')
-  if (!r.ok) throw new Error(await r.text())
-  return (await r.json()).state
-}
-
-export async function setupOwner(bootstrapToken: string, password: string): Promise<SetupResponse> {
-  const r = await apiFetch('/auth/setup', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ bootstrap_token: bootstrapToken, password }),
-  })
   if (!r.ok) throw new Error(await r.text())
   return r.json()
 }
 
-export async function verifySetup(code: string): Promise<string[]> {
-  const r = await apiFetch('/auth/setup/verify', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code }),
-  })
-  if (!r.ok) throw new Error(await r.text())
-  return (await r.json()).recovery_codes
+export function discogsLoginUrl(): string {
+  return `${BASE}/auth/discogs/start`
 }
 
-export async function login(password: string, code: string): Promise<void> {
-  const r = await apiFetch('/auth/login', {
+export async function redeemInvite(signupToken: string, inviteCode: string): Promise<void> {
+  const r = await apiFetch('/auth/redeem-invite', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ password, code }),
+    body: JSON.stringify({ signup_token: signupToken, invite_code: inviteCode }),
   })
   if (!r.ok) throw new Error(await r.text())
 }
 
 export async function logout(): Promise<void> {
-  await apiFetch('/auth/logout', { method: 'POST' })
-}
-
-export async function changePassword(currentPassword: string, newPassword: string, code: string): Promise<void> {
-  const r = await apiFetch('/auth/change-password', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword, code }),
-  })
+  const r = await apiFetch('/auth/logout', { method: 'POST' })
   if (!r.ok) throw new Error(await r.text())
 }
 

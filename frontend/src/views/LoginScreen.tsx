@@ -1,46 +1,17 @@
-import { useState } from 'react'
-import { login } from '../api/client'
+import { discogsLoginUrl } from '../api/client'
 
-export default function LoginScreen({ onAuthenticated }: { onAuthenticated: () => void }) {
-  const [password, setPassword] = useState('')
-  const [code, setCode] = useState('')
-  const [error, setError] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
-
-  async function submit(e: React.FormEvent) {
-    e.preventDefault()
-    setError(null)
-    setBusy(true)
-    try {
-      await login(password, code)
-      onAuthenticated()
-    } catch {
-      setError('Invalid credentials')
-    } finally {
-      setBusy(false)
-    }
-  }
-
+export default function LoginScreen() {
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-100">
-      <form onSubmit={submit} className="bg-white p-8 rounded shadow w-80 space-y-4">
-        <h1 className="text-xl font-semibold">Sign In</h1>
-        <input
-          type="password" placeholder="Password" value={password}
-          onChange={e => setPassword(e.target.value)}
-          className="w-full border rounded px-3 py-2" autoFocus
-        />
-        <input
-          type="text" inputMode="numeric" placeholder="Authenticator code or recovery code"
-          value={code} onChange={e => setCode(e.target.value)}
-          className="w-full border rounded px-3 py-2"
-        />
-        {error && <p className="text-red-600 text-sm">{error}</p>}
-        <button type="submit" disabled={busy}
-          className="w-full bg-blue-600 text-white rounded py-2 disabled:opacity-50">
-          {busy ? 'Signing in…' : 'Sign In'}
-        </button>
-      </form>
+    <div className="min-h-screen flex items-center justify-center bg-gray-950">
+      <div className="bg-gray-900 border border-gray-700 rounded-lg shadow-xl p-8 w-80 space-y-4 text-center">
+        <h1 className="text-base font-semibold text-white">Sign In</h1>
+        <a
+          href={discogsLoginUrl()}
+          className="block w-full bg-indigo-600 hover:bg-indigo-500 text-white rounded py-2 text-sm font-medium transition-colors"
+        >
+          Continue with Discogs
+        </a>
+      </div>
     </div>
   )
 }

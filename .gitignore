@@ -11,5 +11,8 @@ dist/
 .claude/
 .superpowers/
 workspace/
+postgres-data/
 .worktrees/
 .venv/
+.env
+backend/.env

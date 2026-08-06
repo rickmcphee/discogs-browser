@@ -4,9 +4,12 @@ import type { StockItem, StockSortField, SortOrder } from '../api/types'
 
 interface Props {
   recommendedAvailable?: boolean
+  hiddenCrawlerIds?: number[]
 }
 
-function StockBrowser({ recommendedAvailable = false }: Props) {
+const NO_HIDDEN_CRAWLER_IDS: number[] = []
+
+function StockBrowser({ recommendedAvailable = false, hiddenCrawlerIds = NO_HIDDEN_CRAWLER_IDS }: Props) {
   const [items, setItems] = useState<StockItem[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -26,6 +29,12 @@ function StockBrowser({ recommendedAvailable = false }: Props) {
   const PER_PAGE = 250
   const tableScrollRef = useRef<HTMLDivElement>(null)
 
+  const [prevHiddenCrawlerIds, setPrevHiddenCrawlerIds] = useState(hiddenCrawlerIds)
+  if (hiddenCrawlerIds !== prevHiddenCrawlerIds) {
+    setPrevHiddenCrawlerIds(hiddenCrawlerIds)
+    setPage(1)
+  }
+
   const load = useCallback(async () => {
     setLoading(true)
     try {
@@ -35,13 +44,14 @@ function StockBrowser({ recommendedAvailable = false }: Props) {
         sort, order, page, per_page: PER_PAGE,
         overlapping: filter === 'overlapping',
         recommended: filter === 'recommended',
+        hiddenCrawlerIds,
       })
       setItems(result.items)
       setTotal(result.total)
     } finally {
       setLoading(false)
     }
-  }, [search, selectedArtist, sort, order, page, filter])
+  }, [search, selectedArtist, sort, order, page, filter, hiddenCrawlerIds])
 
   useEffect(() => { load() }, [load])
   useEffect(() => {
@@ -49,7 +59,7 @@ function StockBrowser({ recommendedAvailable = false }: Props) {
       setFilter('all')
     }
   }, [recommendedAvailable, filter])
-  useEffect(() => { getStockArtists(filter === 'overlapping', filter === 'recommended').then(setArtists) }, [filter])
+  useEffect(() => { getStockArtists(filter === 'overlapping', filter === 'recommended', hiddenCrawlerIds).then(setArtists) }, [filter, hiddenCrawlerIds])
   useEffect(() => { localStorage.setItem('collectionViewMode_instock', viewMode) }, [viewMode])
   useEffect(() => { localStorage.setItem('stockFilter', filter) }, [filter])
   useEffect(() => { tableScrollRef.current?.scrollTo({ top: 0 }) }, [selectedArtist])

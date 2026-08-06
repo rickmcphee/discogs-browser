@@ -18,6 +18,7 @@ export interface Release {
   cover_image_url: string
   discogs_url: string
   plex_url: string | null
+  plex_matched_at: string | null
   last_synced: string
   listings: Record<string, Listing | null>
 }
@@ -40,23 +41,21 @@ export interface Crawler {
 }
 
 export interface Settings {
-  discogs_token: string
-  debug_screenshot_interval: number
-  shuffle_crawl_order: boolean
   crawl_delay_seconds: number
   consecutive_failure_limit: number
   crawl_schedule?: string
   crawl_schedule_mode?: 'missing' | 'all'
-  collection_schedule?: string
-  collection_schedule_mode?: 'all' | 'new'
   ebay_app_id?: string
   ebay_cert_id?: string
   stock_schedule?: string
-  anthropic_api_key?: string
-  recommendation_item_limit?: number
-  plex_base_url?: string
-  plex_token?: string
-  plex_match_threshold?: number
+}
+
+export interface UserSettings {
+  anthropic_api_key: string
+  recommendation_item_limit: number
+  plex_base_url: string
+  plex_token: string
+  plex_match_threshold: number
 }
 
 export type SortField = 'artist' | 'title' | 'year' | 'label' | 'format' | string
@@ -66,8 +65,8 @@ export type RecordScope = 'collection' | 'wishlist'
 export interface CrawlEvent {
   id?: number
   status?: 'found' | 'not_found' | 'error' | 'complete' | 'started' | 'stopped' | 'ping'
-    | 'sync_started' | 'sync_progress' | 'sync_complete' | 'sync_error'
-    | 'stock_sync_started' | 'stock_sync_progress' | 'stock_sync_complete' | 'stock_sync_error'
+    | 'sync_started' | 'sync_page_fetched' | 'sync_progress' | 'sync_complete' | 'sync_error'
+    | 'stock_sync_started' | 'stock_sync_progress' | 'stock_sync_complete' | 'stock_sync_error' | 'stock_sync_aborted'
     | 'stock_judgment_started' | 'stock_judgment_progress' | 'stock_judgment_complete' | 'stock_judgment_error'
     | 'plex_match_started' | 'plex_match_progress' | 'plex_match_complete' | 'plex_match_error'
   discogs_id?: string
@@ -79,11 +78,13 @@ export interface CrawlEvent {
   total?: number
   total_pages?: number
   page?: number
+  page_count?: number
   synced?: number
   wishlist_synced?: number
   username?: string
   screenshots?: string[]
   source?: string
+  sources?: string[]
   judged?: number
   matched?: number
 }
@@ -97,7 +98,8 @@ export interface CrawlStatus {
   total: number
   missing: number
   oldest_checked: string | null
-  running?: boolean
+  pending: number
+  pool_running: boolean
 }
 
 export interface ScreenshotEntry {
@@ -110,12 +112,9 @@ export interface ScreenshotSession {
   entries: ScreenshotEntry[]
 }
 
-export type AuthState = 'setup_required' | 'unauthenticated' | 'authenticated'
-
-export interface SetupResponse {
-  secret: string
-  provisioning_uri: string
-}
+export type AuthStatus =
+  | { state: 'unauthenticated' }
+  | { state: 'authenticated'; user: { discogs_username: string; is_admin: boolean } }
 
 export interface StockItem {
   id: number

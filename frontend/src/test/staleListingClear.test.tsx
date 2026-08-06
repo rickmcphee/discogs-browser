@@ -15,6 +15,7 @@ const { release } = vi.hoisted(() => ({
     cover_image_url: '',
     discogs_url: '',
     plex_url: null,
+    plex_matched_at: null,
     last_synced: '',
     listings: {
       Amazon: { url: 'https://amazon.com/x', price: 24.99, shipping: null, currency: 'USD', condition: null, last_checked: '' },

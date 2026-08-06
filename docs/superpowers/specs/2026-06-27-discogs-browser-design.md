@@ -46,6 +46,8 @@ nginx (:8080)
 
 ## Application Authentication
 
+**Amendment (2026-07-26):** the single-owner, password+TOTP model described below is retired. The app now uses Discogs OAuth 1.0a login, gated by invite code for new accounts, as part of a broader multi-tenant pivot. See [`docs/superpowers/specs/2026-07-26-multi-tenant-architecture-design.md`](2026-07-26-multi-tenant-architecture-design.md) and [`docs/superpowers/specs/2026-07-26-discogs-oauth-auth-design.md`](2026-07-26-discogs-oauth-auth-design.md) for the current design. The paragraph below is left as historical record, not current behavior.
+
 The app is single-owner: every `/api` request is gated by `AuthMiddleware` requiring a valid server-side session, established by password (Argon2id) + TOTP login. Always enforced, no bypass flag. Full design in [`docs/superpowers/specs/2026-07-02-app-authentication-design.md`](2026-07-02-app-authentication-design.md).
 
 Namespace note: `/api/auth/*` (`routers/session.py`) is *app* authentication — login, setup, session and account management. It is distinct from `/api/crawler-auth/*` (`routers/crawler_auth.py`), the *crawler* browser-login flow described under [Bot Detection and Session Auth](#bot-detection-and-session-auth).
@@ -153,6 +155,8 @@ Playwright uses `launch_persistent_context` with `DISCOGS_BROWSER_DATA/chrome_pr
 
 ## CrawlManager
 
+**Amendment (2026-07-31, branch `crawl-queue-refactor`):** the single foreground crawl this section describes no longer exists, and this note governs the API list, the SSE paragraph, the Key Flows below, and the file-layout tree. `crawl_releases()` is deleted from `crawler.py` (only the plugin loader, `clean_search_text()`, `BotDetectedError`, `_new_context`/`_reset_context` remain), and `CrawlManager.start`/`stop`/`_run` are replaced by an always-on in-process worker pool: `start_worker_pool(worker_count)` → N `_worker_loop` tasks → `_drain_one_batch`, each claiming rows off a shared `crawl_queue` table with `SELECT … FOR UPDATE SKIP LOCKED`. See [`2026-07-27-crawl-queue-refactor-design.md`](2026-07-27-crawl-queue-refactor-design.md). Consequences: **`POST /crawl/stop` is removed** (there is no single job to stop, and the frontend's Stop button went with it), so the `routers/crawl.py` entry in the file tree is stale; `POST /crawl/start` is a per-user enqueue returning `{"enqueued": N}`, not a job launch, and validates `release_id` against the caller's own `library_items`; `GET /crawl/status` returns the caller's pending queue count plus `pool_running`; the `started`/`complete`/`stopped` events no longer exist, replaced by per-write `{"type": "listing_changed", …}` events filtered per user in `routers/crawl.py`; `any_job_running` still exists but has no callers — replay is gated on `pending > 0 or sync_running(user_id) or stock_sync_running or judgment_running(user_id)`. `scheduler.configure(cron, mode)` now runs `crawl_manager.sweep_enqueue(mode)` across all users, and `scheduler.configure_sync` is deleted (automatic per-user collection sync is an explicit non-goal); `start_sync` is now `start_sync(user_id, mode)` with per-user `_sync_tasks`. `main.py`'s startup is `init_global_schema()`/`init_tenant_schema()`/`seed_bundled_crawlers()`/`start_worker_pool()`/`scheduler.start()` — no `init_db`, no listings pre-population. Text below is left as historical record, not current behavior.
+
 `crawl_manager.py` is a singleton that decouples the crawl from the SSE connection.
 
 - `CrawlManager.start(mode, release_id)` — launches an asyncio background task running `crawl_releases()`. Returns `False` if already running.
@@ -181,17 +185,23 @@ Scheduled crawls trigger `CrawlManager.start(mode)` exactly like a manual crawl.
 
 All fields live in `DISCOGS_BROWSER_DATA/config.json`.
 
+**Amendment (2026-07-31, crawl-queue-refactor Task 21):** this table describes the single-owner app. Under the multi-tenant refactor ([`2026-07-26-multi-tenant-architecture-design.md`](2026-07-26-multi-tenant-architecture-design.md), [`2026-07-27-crawl-queue-refactor-design.md`](2026-07-27-crawl-queue-refactor-design.md)'s "Settings split"), `discogs_token` is deleted (replaced entirely by per-user Discogs OAuth token pairs) and `collection_schedule`/`collection_schedule_mode` are removed (collection sync is manual-trigger-only per user, a non-goal of that plan). `GET`/`POST /settings` is now admin-only and covers only the remaining global fields below.
+
+**Amendment (2026-07-31, branch `crawl-queue-refactor`):** four fields in the table below are still saved and still rendered in the admin Settings UI, but **nothing in the release-crawl path reads them any more** — the worker pool that replaced `crawl_releases()` implements no inter-request delay, no consecutive-failure circuit breaker, no order shuffling, and passes `None` as the screenshotter. `debug_screenshot_interval` and `shuffle_crawl_order` now have no reader at all; `crawl_delay_seconds` and `consecutive_failure_limit` are read only by `shopify_catalog.py` for the catalog/stock crawl (see [`2026-07-05-in-stock-crawler-design.md`](2026-07-05-in-stock-crawler-design.md)'s 2026-07-18 amendment). This was an unintended consequence of deleting `crawl_releases()` rather than a decision — the descriptions below therefore overstate what these fields do today, and restoring politeness/failure-limit behavior on the shared queue is open work.
+
+**Amendment (2026-08-01, branch `crawl-queue-refactor`):** the open work the note above flagged is now closed, and it closed two ways — two of the four fields were restored, two were deleted. See [`2026-08-01-worker-pool-pacing-design.md`](2026-08-01-worker-pool-pacing-design.md).
+
+- `crawl_delay_seconds` and `consecutive_failure_limit` **are read by the release-crawl path again**, no longer only by `shopify_catalog.py`. Both are now enforced **per site** (per `crawler_id`) rather than per crawl run, since the worker pool has no "one crawl run" to pace or abort: `CrawlManager._paced_search` holds a per-site `asyncio.Lock` across each `plugin.search()` call and its bot-detection retry, sleeping until `crawl_delay_seconds × random.uniform(0.5, 1.0)` has elapsed since that site's last request, so only one request per site is ever in flight pool-wide while different sites stay fully parallel. `_record_site_result` counts consecutive failures (`not_found`, any exception, or a bot detection that was recovered by retry) per site and, on reaching `consecutive_failure_limit`, sets a fixed 30-minute cooldown; `db.claim_crawl_queue_batch`'s `excluded_crawler_ids` then keeps that site's rows unclaimed until it expires. So the row below reading "Stop crawl after N consecutive failures" is wrong twice over — nothing stops, and the scope is one site, not the crawl. Read it as "pause this one site for 30 minutes after N consecutive failures; 0 = disabled".
+- `debug_screenshot_interval` and `shuffle_crawl_order` **no longer exist as settings at all** — removed from `SettingsUpdate`, `GET`/`POST /api/settings`, `frontend/src/api/types.ts`'s `Settings`, and the Settings UI table. Neither had a reader after `crawl_releases()` was deleted, and reviving them was rejected rather than deferred: shuffling doesn't map onto a claimed-queue model (enqueue order across many users' syncs already supplies more entropy than one shuffled batch did), and per-search debug screenshots were tied to the per-batch session concept the worker pool dropped, so rebuilding them needs its own design. The two table rows below are retained as historical record only. Any stale keys still sitting in an existing `config.json` on disk are inert.
+
 | Field | Default | Description |
 |---|---|---|
-| `discogs_token` | `""` | Discogs personal access token |
 | `debug_screenshot_interval` | `20` | Screenshot interval: 0 = off, 1 = every search, N = every Nth search |
 | `shuffle_crawl_order` | `true` | Randomise release order before each crawl |
 | `crawl_delay_seconds` | `30` | Maximum random delay between requests (seconds) |
 | `consecutive_failure_limit` | `10` | Stop crawl after N consecutive failures (0 = disabled) |
 | `crawl_schedule` | `""` | Cron expression for scheduled price crawl; blank = disabled |
 | `crawl_schedule_mode` | `"missing"` | `"missing"` (skip already-priced) or `"all"` |
-| `collection_schedule` | `""` | Cron expression for scheduled collection sync; blank = disabled |
-| `collection_schedule_mode` | `"all"` | `"all"` (full re-sync) or `"new"` (new records only) |
 | `ebay_app_id` | `""` | eBay Developer App ID (client_id) for Browse API OAuth |
 | `ebay_cert_id` | `""` | eBay Developer Cert ID (client_secret) for Browse API OAuth |
 
@@ -213,7 +223,7 @@ When `HEADLESS_AUTH=1` (Docker), `POST /api/crawler-auth/login` returns HTTP 501
 
 ## eBay Browse API Crawler (CC Music)
 
-`backend/crawlers/ebay.py` implements the CC Music price lookup using the eBay Browse API rather than Playwright. It presents as `site_name = "CC Music"` and filters to the `collectorschoicemusic` eBay seller. Full details in [`docs/superpowers/specs/crawlers/ccmusic.md`](../specs/crawlers/ccmusic.md).
+`backend/crawlers/ebay.py` implements the CC Music price lookup using the eBay Browse API rather than Playwright. It presents as `site_name = "eBay/CCmusic"` and filters to the `collectorschoicemusic` eBay seller. Full details in [`docs/superpowers/specs/crawlers/ccmusic.md`](../specs/crawlers/ccmusic.md).
 
 **Credentials**: `ebay_app_id` and `ebay_cert_id` from `config.json`; OAuth client credentials flow, token cached module-level.
 
@@ -245,16 +255,19 @@ Uses the persistent Chrome profile with `playwright_stealth`. Raises `BotDetecte
 
 ### Refresh Collection
 
+**Amendment (2026-07-31, branch `crawl-queue-refactor`):** step 2's `CrawlManager.start_sync(mode)` is now `start_sync(user_id, mode)`, called with the calling user's id from `routers/collection.py`, and the "already running" guard is per-user (`_sync_tasks: dict[int, asyncio.Task]`) rather than one global slot. Step 6 no longer applies at all — `scheduler.configure_sync` is deleted and there are no scheduled collection syncs; collection sync is manual-trigger-only, per user. The sync now finishes by enqueuing `crawl_queue` rows for the user's releases instead of leaving pre-populated `price IS NULL` listings rows. The SSE event shapes in steps 3–5 are unchanged.
+
 1. Frontend calls `POST /collection/refresh?mode=[all|new]`.
-2. Backend calls `CrawlManager.start_sync(mode)`, which launches `_sync_collection()` as an asyncio background task. Returns `{started: true, running: true}` immediately (or `{started: false, running: true}` if already running, 409).
+2. Backend calls `CrawlManager.start_sync(user_id, mode)`, which launches `_sync_collection()` as an asyncio background task. Returns `{started: true, running: true}` immediately (or `{started: false, running: true}` if already running for that user, 409).
 3. `_sync_collection()` broadcasts events on the shared crawl SSE stream:
    - `sync_started` — sync has begun
-   - `sync_progress {synced, page, total_pages}` — after each collection page
+   - `sync_page_fetched {page, total_pages, page_count}` — as soon as a collection page is fetched from Discogs, before that page's items (barcode fetch etc.) are processed
+   - `sync_progress {synced, page, total_pages}` — after each collection page finishes processing
    - `sync_complete {synced, username}` — on success
    - `sync_error {error}` — on failure
 4. For each release, the backend fetches full release detail from `GET /releases/{id}` to extract the first `Barcode` identifier. Non-digit characters are stripped; stored as `NULL` if absent. Barcode fetch is skipped when a non-null barcode already exists. A 1.1-second delay is inserted between barcode fetches to stay within the Discogs rate limit (60 req/min). A failed fetch is logged and does not abort the sync.
 5. The 500-event SSE replay buffer means a browser reconnecting mid-sync receives the latest `sync_progress` event and the footer bar is restored.
-6. Scheduled collection syncs follow the same path: APScheduler calls `CrawlManager.start_sync(mode)` directly via `scheduler.configure_sync(cron, mode)`.
+6. ~~Scheduled collection syncs follow the same path: APScheduler calls `CrawlManager.start_sync(mode)` directly via `scheduler.configure_sync(cron, mode)`.~~ No longer applies — `scheduler.configure_sync` is deleted; collection sync is manual-trigger-only, per user (see amendment above).
 
 ### Crawl
 
@@ -284,6 +297,8 @@ Artist sidebar (independent scroll, `shrink-0` buttons) + main area with search 
 
 **View toggle.** Two icon buttons, right-justified in the search bar row, switch `viewMode` between `list` (the table above) and `tiles`. Choice persists in `localStorage` (`collectionViewMode`), defaulting to `list`. Tile view is a responsive grid (`auto-fill, minmax(140px, 1fr)`) of uniform square covers with artist and title truncated underneath; each tile links to `discogs_url`, same as the artist link in list view. Tile view shows no price/crawler columns and no refresh button — cover art browsing only. Sidebar artist filter, search, and pagination behave identically in both modes.
 
+**Amendment (2026-08-02, branch `plex-manual-link-and-ui`):** "each tile links to `discogs_url`, same as the artist link in list view" is corrected — in both tile and list view, only the cover icon links to `discogs_url`; the artist name is plain text, not a link. See [`2026-07-09-collection-plex-filter-design.md`](2026-07-09-collection-plex-filter-design.md) and [`2026-08-02-plex-manual-link-and-ui-design.md`](2026-08-02-plex-manual-link-and-ui-design.md) for the current, authoritative hyperlink design, including the Collection-tab-only "Unmatched" filter dropdown next to the view-toggle buttons.
+
 ### Crawl Status Bar
 
 Fixed bottom bar visible while a crawl is active (or just completed). Shows progress count, current release/site, and a Dismiss button. The bar appears automatically when a scheduled crawl starts (via the `"started"` SSE event) with no user interaction required.
@@ -305,6 +320,8 @@ The Settings tab wrapper has `overflow-y-auto` so the panel scrolls independentl
 Scrollable monospace log tail over SSE. Automatically scrolls to bottom on new lines. Level toggle buttons (DEBUG/INFO/WARNING/ERROR; DEBUG off by default) drive the `levels` query param — changing a toggle reconnects the stream so the server re-seeds and tails only the selected levels (see [Logging](#logging)). A regex message field additionally filters the view client-side.
 
 ### Debug View
+
+**Amendment (2026-08-01, branch `crawl-queue-refactor`):** this view can no longer show anything new. `debug_screenshot_interval` is deleted (see the Crawl Configuration amendment above) and nothing instantiates `screenshots.CrawlScreenshotter` any more — the worker pool passes `None` where `crawl_releases()` passed a screenshotter, so `crawler._reset_context`'s `screenshotter` parameter is now permanently `None`. The `screenshots.py` module, `routers/screenshots.py`, and this UI all still exist and still serve whatever session directories are already on disk; they are dead-but-harmless surface pending a decision to either delete the subsystem or redesign it around a per-worker session concept.
 
 Screenshot browser showing session directories and per-search screenshots. Only meaningful when `debug_screenshot_interval > 0`. Screenshots are served by `GET /api/screenshots/{path}`; the handler resolves the requested path and rejects anything that escapes the screenshots directory (`..` traversal or absolute paths) before serving, so only files under `DISCOGS_BROWSER_DATA/screenshots/` are reachable.
 
@@ -445,6 +462,40 @@ services:
 ```
 
 `bootstrap.sh` (repo root) creates the `workspace/` directory and runs `docker-compose build`.
+
+**Amendment (2026-08-02, branch `multi-tenant-architecture-design`):** the two-service shape above predates the Postgres pivot and is now stale — `docker-compose.yml` defines three services, and the Synology NAS target above still holds (`postgres:16` ships both `amd64`/`arm64` images):
+
+```yaml
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: discogs_browser
+    volumes:
+      - ./postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+  backend:
+    build: ./backend
+    volumes:
+      - ./workspace:/data
+    environment:
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/discogs_browser
+      # ...IDENTITY_DB_PASSWORD, APP_DB_PASSWORD, TOKEN_ENCRYPTION_KEY,
+      # DISCOGS_CONSUMER_KEY/SECRET, BACKEND_BASE_URL -- see .env.example
+    depends_on:
+      postgres:
+        condition: service_healthy
+  frontend:
+    build: ./frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+```
+
+`postgres`'s data directory is a bind mount (`./postgres-data`), matching `./workspace`'s existing convention, so both land on the NAS's own storage and backup routine without any NAS-specific configuration. See [`2026-07-26-multi-tenant-architecture-design.md`](2026-07-26-multi-tenant-architecture-design.md)'s "Deployment" section for the full rationale.
 
 ---
 

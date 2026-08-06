@@ -9,11 +9,13 @@ interface Props {
   crawlingReleaseId?: string
   crawlEvents?: CrawlEvent[]
   crawlers?: Crawler[]
+  hiddenCrawlerIds?: number[]
   syncing?: boolean
-  plexAvailable?: boolean
+  onRefreshCollection?: () => void
+  syncGeneration?: number
 }
 
-export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawlingReleaseId, crawlEvents, crawlers = [], syncing, plexAvailable }: Props) {
+export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawlingReleaseId, crawlEvents, crawlers = [], hiddenCrawlerIds = [], syncing, onRefreshCollection, syncGeneration }: Props) {
   const [releases, setReleases] = useState<Release[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -26,14 +28,11 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
   const [viewMode, setViewMode] = useState<'list' | 'tiles'>(
     () => (localStorage.getItem(`collectionViewMode_${scope}`) === 'tiles' ? 'tiles' : 'list')
   )
-  const [filter, setFilter] = useState<'all' | 'no_plex'>(
-    () => (localStorage.getItem(`collectionFilter_${scope}`) === 'no_plex' ? 'no_plex' : 'all')
-  )
+  const [unmatched, setUnmatched] = useState(false)
   const PER_PAGE = 250
 
   const processedCount = useRef(0)
   const tableScrollRef = useRef<HTMLDivElement>(null)
-  const wasSyncing = useRef(false)
 
   useEffect(() => {
     if (!crawlEvents) return
@@ -87,26 +86,29 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
         page,
         per_page: PER_PAGE,
         scope,
-        no_plex: filter === 'no_plex',
+        unmatched: scope === 'collection' ? unmatched : undefined,
       })
       setReleases(result.releases)
       setTotal(result.total)
     } finally {
       setLoading(false)
     }
-  }, [search, selectedArtist, sort, order, page, scope, filter])
+  }, [search, selectedArtist, sort, order, page, scope, unmatched])
 
   useEffect(() => { load() }, [load])
+  // syncGeneration ticks on every sync_progress/sync_complete SSE event so the
+  // collection/wishlist tables fill in as pages land, not just once the whole
+  // sync finishes. Guarded on truthy (not just changed) so the initial render's
+  // generation of 0 doesn't trigger a redundant second load alongside the
+  // mount effect above.
   useEffect(() => {
-    if (wasSyncing.current && !syncing) load()
-    wasSyncing.current = !!syncing
-  }, [syncing, load])
-  useEffect(() => { getArtists(scope, filter === 'no_plex').then(setArtists) }, [scope, filter])
+    if (syncGeneration) load()
+  }, [syncGeneration, load])
+  // Also refetches on syncGeneration ticks, same as load() above -- otherwise
+  // the nav list stays stuck at whatever it was on mount while a collection
+  // sync fills the table in page by page.
+  useEffect(() => { getArtists(scope).then(setArtists) }, [scope, syncGeneration])
   useEffect(() => { localStorage.setItem(`collectionViewMode_${scope}`, viewMode) }, [viewMode, scope])
-  useEffect(() => {
-    if (!plexAvailable && filter === 'no_plex') setFilter('all')
-  }, [plexAvailable, filter])
-  useEffect(() => { localStorage.setItem(`collectionFilter_${scope}`, filter) }, [filter, scope])
 
   function toggleSort(field: SortField) {
     if (sort === field) {
@@ -118,7 +120,7 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
     setPage(1)
   }
 
-  const enabledCrawlers = crawlers.filter((c) => c.enabled && c.crawler_type === 'release')
+  const enabledCrawlers = crawlers.filter((c) => c.enabled && c.crawler_type === 'release' && !hiddenCrawlerIds.includes(c.id))
   const totalPages = Math.ceil(total / PER_PAGE)
 
   return (
@@ -168,12 +170,12 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
           <div className="ml-auto flex items-center gap-1">
             {scope === 'collection' && (
               <select
-                value={filter}
-                onChange={(e) => { setFilter(e.target.value as 'all' | 'no_plex'); setPage(1) }}
-                className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-indigo-500 mr-1"
+                value={unmatched ? 'unmatched' : 'all'}
+                onChange={(e) => { setUnmatched(e.target.value === 'unmatched'); setPage(1) }}
+                className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-indigo-500"
               >
                 <option value="all">All</option>
-                <option value="no_plex" disabled={!plexAvailable}>No Plex</option>
+                <option value="unmatched">Unmatched</option>
               </select>
             )}
             <button
@@ -199,6 +201,16 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
                 <rect x="9" y="9" width="5" height="5" />
               </svg>
             </button>
+            {onRefreshCollection && (
+              <button
+                onClick={onRefreshCollection}
+                disabled={syncing}
+                title="Sync collection from Discogs"
+                className="p-1.5 rounded text-gray-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              >
+                <span className="block text-base leading-none">{syncing ? '⟳' : '↻'}</span>
+              </button>
+            )}
           </div>
         </div>
 
@@ -216,8 +228,8 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
             {!loading && releases.length > 0 && (
               <div className="grid gap-4 p-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))' }}>
                 {releases.map((r) => (
-                  <div key={r.discogs_id} className="group">
-                    <a href={r.discogs_url} target="_blank" rel="noreferrer">
+                  <div key={r.discogs_id}>
+                    <a href={r.discogs_url} target="_blank" rel="noreferrer" aria-label={`View ${r.artist} – ${r.title} on Discogs`}>
                       {r.cover_image_url ? (
                         <img
                           src={r.cover_image_url}
@@ -227,8 +239,8 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
                       ) : (
                         <div className="w-full aspect-square bg-gray-800 rounded" />
                       )}
-                      <div className="mt-1.5 text-sm text-gray-200 truncate group-hover:text-indigo-400">{r.artist}</div>
                     </a>
+                    <div className="mt-1.5 text-sm text-gray-200 truncate">{r.artist}</div>
                     {r.plex_url ? (
                       <a
                         href={r.plex_url}
@@ -323,25 +335,20 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
               {releases.map((r) => (
                 <tr key={r.discogs_id} className="border-t border-gray-800 hover:bg-gray-900/50">
                   <td className="px-3 py-2">
-                    {r.cover_image_url ? (
-                      <img
-                        src={r.cover_image_url}
-                        alt={r.title}
-                        className="w-10 h-10 min-w-10 object-cover rounded"
-                      />
-                    ) : (
-                      <div className="w-10 h-10 bg-gray-800 rounded" />
-                    )}
+                    <a href={r.discogs_url} target="_blank" rel="noreferrer" aria-label={`View ${r.artist} – ${r.title} on Discogs`}>
+                      {r.cover_image_url ? (
+                        <img
+                          src={r.cover_image_url}
+                          alt={r.title}
+                          className="w-10 h-10 min-w-10 object-cover rounded"
+                        />
+                      ) : (
+                        <div className="w-10 h-10 bg-gray-800 rounded" />
+                      )}
+                    </a>
                   </td>
                   <td className="px-3 py-2 text-gray-200">
-                    <a
-                      href={r.discogs_url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="hover:text-indigo-400"
-                    >
-                      {r.artist}
-                    </a>
+                    {r.artist}
                   </td>
                   <td className="px-3 py-2 text-gray-300">
                     {r.plex_url ? (

@@ -1,13 +1,57 @@
 """Tests for CrawlManager — background task, subscribe/broadcast, stop."""
 import asyncio
-import sqlite3
+import os
+import time
 import pytest
+import respx
+import httpx
+from unittest.mock import AsyncMock, MagicMock, patch
+import db
+import recommendations
+import token_encryption
 from crawl_manager import CrawlManager
 
 
 @pytest.fixture
 def manager():
     return CrawlManager()
+
+
+# Mirrors test_judgment_crud.py's _clean_tables convention (schema init +
+# TRUNCATE teardown) but scoped to just the tests that need it via an
+# explicit fixture param, rather than autouse. The TRUNCATE teardown also
+# matters for the stock-sync/judgment tests further down: crawlers,
+# stock_items, and stock_item_judgments are shared/global tables, so without
+# per-test cleanup one test's rows would leak into the next test's counts.
+#
+# Also repoints APP_DATABASE_URL at the real app_user role, same as
+# test_rls_isolation.py's two_users_one_shared_release fixture -- pg_test_db's
+# default points every pool (including the app pool) at the admin/superuser
+# DSN, which BYPASSES RLS entirely (Postgres superusers ignore FORCE ROW
+# LEVEL SECURITY). Without this repoint, _sync_collection's user_scope()
+# connection would silently have superuser privileges and the mid-sync
+# commit/re-scoping test below would pass even if the re-scoping code were
+# deleted -- proven by hand: this was verified against a build with the
+# re-`set_config` calls removed, which passed the test until this repoint
+# was added, and failed with a real psycopg.errors.InsufficientPrivilege
+# once it was.
+@pytest.fixture
+def pg_schema(pg_test_db, monkeypatch):
+    db.init_global_schema()
+    db.init_tenant_schema()
+    monkeypatch.setattr(
+        db.config,
+        "APP_DATABASE_URL",
+        db.config._with_userinfo(
+            os.environ["TEST_DATABASE_URL"], "app_user", os.environ["APP_DB_PASSWORD"]
+        ),
+    )
+    # No db._app_pool = None here: pg_test_db already reset it to None before
+    # this fixture body runs, and nothing in between touches it.
+    yield
+    with db.get_admin_pool().connection() as conn:
+        conn.execute("TRUNCATE catalog, users, crawlers CASCADE")
+        conn.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -51,97 +95,19 @@ async def test_recent_events_capped_at_500(manager):
 
 
 # ---------------------------------------------------------------------------
-# running state
-# ---------------------------------------------------------------------------
-
-async def test_not_running_initially(manager):
-    assert manager.running is False
-
-
-async def test_start_returns_true_when_idle(manager):
-    async def _fake_run(mode, release_id):
-        await asyncio.sleep(0)
-
-    manager._run = _fake_run  # type: ignore
-    started = await manager.start("all")
-    assert started is True
-    assert manager.running is True
-    # wait for task to complete
-    await asyncio.sleep(0.01)
-
-
-async def test_start_returns_false_when_already_running(manager):
-    event = asyncio.Event()
-
-    async def _fake_run(mode, release_id):
-        await event.wait()  # block until we signal
-
-    manager._run = _fake_run  # type: ignore
-    await manager.start("all")
-    second = await manager.start("all")
-    assert second is False
-    event.set()
-    await asyncio.sleep(0.01)
-
-
-# ---------------------------------------------------------------------------
-# stop
-# ---------------------------------------------------------------------------
-
-async def test_stop_broadcasts_stopped(manager):
-    q = manager.subscribe()
-    await manager.stop()
-    event = q.get_nowait()
-    assert event["status"] == "stopped"
-
-
-async def test_stop_cancels_running_task(manager):
-    event = asyncio.Event()
-
-    async def _fake_run(mode, release_id):
-        try:
-            await event.wait()
-        except asyncio.CancelledError:
-            raise
-
-    manager._run = _fake_run  # type: ignore
-    await manager.start("all")
-    assert manager.running is True
-    await manager.stop()
-    await asyncio.sleep(0.05)
-    assert manager.running is False
-
-
-# ---------------------------------------------------------------------------
-# recent_events cleared on new start
-# ---------------------------------------------------------------------------
-
-async def test_recent_events_cleared_on_start(manager):
-    await manager._broadcast({"status": "old"})
-    assert len(manager.recent_events()) == 1
-
-    async def _instant(mode, release_id):
-        pass
-
-    manager._run = _instant  # type: ignore
-    await manager.start("all")
-    assert manager.recent_events() == []
-
-
-# ---------------------------------------------------------------------------
 # sync task (collection sync)
 # ---------------------------------------------------------------------------
 
 async def test_sync_not_running_initially(manager):
-    assert manager.sync_running is False
+    assert manager.sync_running(1) is False
 
 
 async def test_start_sync_returns_true_when_idle(manager):
-    async def _fake_sync(mode):
+    async def _fake_sync(user_id, mode):
         await asyncio.sleep(0)
 
     manager._sync_collection = _fake_sync  # type: ignore
-    started = await manager.start_sync("all")
+    started = await manager.start_sync(1, "all")
     assert started is True
     await asyncio.sleep(0.01)
 
@@ -149,50 +115,903 @@ async def test_start_sync_returns_true_when_idle(manager):
 async def test_start_sync_returns_false_when_already_running(manager):
     event = asyncio.Event()
 
-    async def _fake_sync(mode):
+    async def _fake_sync(user_id, mode):
         await event.wait()
 
     manager._sync_collection = _fake_sync  # type: ignore
-    await manager.start_sync("all")
-    assert manager.sync_running is True
-    second = await manager.start_sync("all")
+    await manager.start_sync(1, "all")
+    assert manager.sync_running(1) is True
+    second = await manager.start_sync(1, "all")
     assert second is False
     event.set()
     await asyncio.sleep(0.01)
 
 
 async def test_sync_running_false_after_completion(manager):
-    async def _instant(mode):
+    async def _instant(user_id, mode):
         pass
 
     manager._sync_collection = _instant  # type: ignore
-    await manager.start_sync("all")
+    await manager.start_sync(1, "all")
     await asyncio.sleep(0.05)
-    assert manager.sync_running is False
+    assert manager.sync_running(1) is False
 
 
-async def test_crawl_and_sync_can_run_concurrently(manager):
-    crawl_event = asyncio.Event()
-    sync_event = asyncio.Event()
+async def test_start_sync_for_one_user_does_not_block_another_users_sync(manager):
+    """Collection sync has no shared-resource reason to serialize different
+    users against each other (unlike stock sync, which writes one shared
+    stock_items catalog) -- each user has their own OAuth token and own
+    library_items. A per-user _sync_tasks dict, not a single global task, is
+    what makes this true."""
+    event = asyncio.Event()
 
-    async def _fake_run(mode, release_id):
-        await crawl_event.wait()
+    async def _fake_sync(user_id, mode):
+        await event.wait()
 
-    async def _fake_sync(mode):
-        await sync_event.wait()
-
-    manager._run = _fake_run  # type: ignore
     manager._sync_collection = _fake_sync  # type: ignore
+    alice_started = await manager.start_sync(1, "all")
+    assert alice_started is True
+    assert manager.sync_running(1) is True
 
-    await manager.start("all")
-    await manager.start_sync("all")
+    bob_started = await manager.start_sync(2, "all")
+    assert bob_started is True
+    assert manager.sync_running(2) is True
 
-    assert manager.running is True
-    assert manager.sync_running is True
+    # Alice's own second concurrent call is still refused.
+    alice_second = await manager.start_sync(1, "all")
+    assert alice_second is False
 
-    crawl_event.set()
-    sync_event.set()
-    await asyncio.sleep(0.05)
+    event.set()
+    await asyncio.sleep(0.01)
+
+
+# ---------------------------------------------------------------------------
+# _sync_collection (per-user, Postgres-backed, enqueues crawl_queue)
+# ---------------------------------------------------------------------------
+
+def _collection_page(release_id: int, total_pages: int) -> httpx.Response:
+    return httpx.Response(200, json={
+        "pagination": {"pages": total_pages},
+        "releases": [{
+            "basic_information": {
+                "id": release_id, "title": "Album", "year": 2020,
+                "artists": [{"name": "Artist"}], "labels": [], "formats": [],
+                "cover_image": "",
+            },
+        }],
+    })
+
+
+@respx.mock
+async def test_sync_collection_enqueues_crawl_queue_for_missing_listings(pg_schema, monkeypatch):
+    import config
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        db.register_crawler(conn, "Amazon", "/x.py")
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    # Two pages, two distinct releases -- forces _sync_collection's mid-loop
+    # conn.commit() to actually fire between page 1 and page 2. If the
+    # subsequent re-set_config("app.user_id", ...) were missing or wrong, the
+    # page-2 upsert_library_item call below would raise a row-level-security
+    # violation (app.user_id resets to unset on every commit, since
+    # user_scope()'s set_config call is transaction-local) and the whole sync
+    # would end in sync_error with only page 1's release ever persisted.
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        side_effect=[_collection_page(111, total_pages=2), _collection_page(222, total_pages=2)]
+    )
+    respx.get(url__regex=r"https://api\.discogs\.com/releases/\d+").mock(
+        return_value=httpx.Response(200, json={"identifiers": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    manager = CrawlManager()
+    await manager._sync_collection(user["id"], "all")
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert "sync_complete" in statuses
+    assert "sync_error" not in statuses
+
+    with db.user_scope(user["id"]) as conn:
+        items = conn.execute(
+            "SELECT discogs_id, in_collection FROM library_items WHERE user_id = %s ORDER BY discogs_id", [user["id"]]
+        ).fetchall()
+    assert [(i["discogs_id"], i["in_collection"]) for i in items] == [("r111", True), ("r222", True)]
+
+    with db.get_admin_pool().connection() as conn:
+        queued = conn.execute("SELECT discogs_id, status FROM crawl_queue ORDER BY discogs_id").fetchall()
+    assert [(q["discogs_id"], q["status"]) for q in queued] == [("r111", "pending"), ("r222", "pending")]
+
+
+@respx.mock
+async def test_sync_collection_broadcasts_page_fetched_before_that_pages_progress(pg_schema, monkeypatch):
+    import config
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=2, discogs_username="bob")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/bob/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/bob/collection/folders/0/releases").mock(
+        side_effect=[_collection_page(111, total_pages=2), _collection_page(222, total_pages=2)]
+    )
+    respx.get(url__regex=r"https://api\.discogs\.com/releases/\d+").mock(
+        return_value=httpx.Response(200, json={"identifiers": []})
+    )
+    respx.get("https://api.discogs.com/users/bob/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    manager = CrawlManager()
+    await manager._sync_collection(user["id"], "all")
+
+    events = manager.recent_events()
+    page_fetched = [e for e in events if e["status"] == "sync_page_fetched"]
+    assert [(e["page"], e["total_pages"], e["page_count"]) for e in page_fetched] == [
+        (1, 2, 1), (2, 2, 1),
+    ]
+
+    # Each page's sync_page_fetched must be broadcast before that page's sync_progress
+    # (i.e. before barcode-fetch processing for that page even starts) -- that's the
+    # whole point: page/total_pages info shows up immediately, not after the delay.
+    statuses = [e["status"] for e in events]
+    first_page_fetched = statuses.index("sync_page_fetched")
+    first_progress = statuses.index("sync_progress")
+    assert first_page_fetched < first_progress
+
+
+@respx.mock
+async def test_sync_collection_calls_plex_match_when_configured(pg_schema, monkeypatch):
+    import config
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s, "
+            "plex_base_url = %s, plex_token = %s WHERE id = %s",
+            [
+                token_encryption.encrypt("tok"), token_encryption.encrypt("sec"),
+                "plex.local:32400", "ptok", user["id"],
+            ],
+        )
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        return_value=_collection_page(111, total_pages=1)
+    )
+    respx.get(url__regex=r"https://api\.discogs\.com/releases/\d+").mock(
+        return_value=httpx.Response(200, json={"identifiers": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    manager = CrawlManager()
+    calls = []
+
+    async def _fake_plex_match(user_id, base_url, token, threshold):
+        calls.append((user_id, base_url, token, threshold))
+
+    manager._run_plex_match = _fake_plex_match
+    await manager._sync_collection(user["id"], "all")
+
+    assert calls == [(user["id"], "plex.local:32400", "ptok", 90)]
+
+
+@respx.mock
+async def test_sync_collection_skips_plex_match_when_unconfigured(pg_schema, monkeypatch):
+    import config
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        # plex_base_url/plex_token are left NULL -- create_user doesn't set them.
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s "
+            "WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        return_value=_collection_page(111, total_pages=1)
+    )
+    respx.get(url__regex=r"https://api\.discogs\.com/releases/\d+").mock(
+        return_value=httpx.Response(200, json={"identifiers": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    manager = CrawlManager()
+    calls = []
+
+    async def _fake_plex_match(user_id, base_url, token, threshold):
+        calls.append((user_id, base_url, token, threshold))
+
+    manager._run_plex_match = _fake_plex_match
+    await manager._sync_collection(user["id"], "all")
+
+    assert calls == []
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert not any(s.startswith("plex_match") for s in statuses)
+
+
+async def test_start_plex_match_runs_when_configured(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET plex_base_url = %s, plex_token = %s WHERE id = %s",
+            ["plex.local:32400", "ptok", user["id"]],
+        )
+        conn.commit()
+
+    manager = CrawlManager()
+    calls = []
+
+    async def _fake_plex_match(user_id, base_url, token, threshold):
+        calls.append((user_id, base_url, token, threshold))
+
+    manager._run_plex_match = _fake_plex_match
+    started = await manager.start_plex_match(user["id"])
+    assert started is True
+    await asyncio.sleep(0)
+    assert calls == [(user["id"], "plex.local:32400", "ptok", 90)]
+
+
+async def test_start_plex_match_returns_false_when_unconfigured(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+
+    manager = CrawlManager()
+    started = await manager.start_plex_match(user["id"])
+    assert started is False
+    assert manager.plex_match_running(user["id"]) is False
+
+
+async def test_start_plex_match_returns_false_when_already_running(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET plex_base_url = %s, plex_token = %s WHERE id = %s",
+            ["plex.local:32400", "ptok", user["id"]],
+        )
+        conn.commit()
+
+    manager = CrawlManager()
+
+    async def _never_finishes(user_id, base_url, token, threshold):
+        await asyncio.sleep(10)
+
+    manager._run_plex_match = _never_finishes
+    assert await manager.start_plex_match(user["id"]) is True
+    assert await manager.start_plex_match(user["id"]) is False
+    manager._plex_match_tasks[user["id"]].cancel()
+
+
+async def test_start_plex_match_returns_false_while_sync_running(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET plex_base_url = %s, plex_token = %s WHERE id = %s",
+            ["plex.local:32400", "ptok", user["id"]],
+        )
+        conn.commit()
+
+    manager = CrawlManager()
+
+    async def _never_finishes(user_id, mode):
+        await asyncio.sleep(10)
+
+    manager._sync_collection = _never_finishes
+    assert await manager.start_sync(user["id"], "all") is True
+    assert await manager.start_plex_match(user["id"]) is False
+    manager._sync_tasks[user["id"]].cancel()
+
+
+async def test_start_sync_returns_false_while_plex_match_running(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET plex_base_url = %s, plex_token = %s WHERE id = %s",
+            ["plex.local:32400", "ptok", user["id"]],
+        )
+        conn.commit()
+
+    manager = CrawlManager()
+
+    async def _never_finishes(user_id, base_url, token, threshold):
+        await asyncio.sleep(10)
+
+    manager._run_plex_match = _never_finishes
+    assert await manager.start_plex_match(user["id"]) is True
+    assert await manager.start_sync(user["id"], "all") is False
+    manager._plex_match_tasks[user["id"]].cancel()
+
+
+# ---------------------------------------------------------------------------
+# _run_plex_match (per-user Plex library matching, SSRF-guarded via plex_security)
+# ---------------------------------------------------------------------------
+
+async def test_run_plex_match_updates_matched_and_clears_unmatched(pg_schema, monkeypatch):
+    import plex
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "Miles Davis", "title": "Kind of Blue", "year": 1959,
+            "label": "Columbia", "format": "Vinyl", "discogs_price": None, "barcode": None,
+            "cover_image_url": None, "discogs_url": None,
+        })
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r2", "artist": "Bill Evans", "title": "Waltz for Debby", "year": 1961,
+            "label": "Riverside", "format": "Vinyl", "discogs_price": None, "barcode": None,
+            "cover_image_url": None, "discogs_url": None,
+        })
+        db.upsert_library_item(conn, user["id"], "r1", in_collection=True)
+        db.upsert_library_item(conn, user["id"], "r2", in_collection=True)
+        conn.commit()
+
+    monkeypatch.setattr(plex, "get_music_section_key", lambda base_url, token: "2")
+    monkeypatch.setattr(plex, "fetch_albums", lambda base_url, token, key: [
+        {"artist": "Miles Davis", "title": "Kind of Blue", "rating_key": "500"},
+    ])
+    monkeypatch.setattr(plex, "get_machine_identifier", lambda base_url, token: "abc123")
+
+    manager = CrawlManager()
+    await manager._run_plex_match(user["id"], "plex.local:32400", "tok", 90)
+
+    with db.get_admin_pool().connection() as conn:
+        row1 = conn.execute(
+            "SELECT plex_url FROM library_items WHERE user_id = %s AND discogs_id = 'r1'", [user["id"]]
+        ).fetchone()
+        row2 = conn.execute(
+            "SELECT plex_url FROM library_items WHERE user_id = %s AND discogs_id = 'r2'", [user["id"]]
+        ).fetchone()
+    assert row1["plex_url"] == (
+        "https://plex.local:32400/web/index.html#!/server/abc123/details?key=/library/metadata/500"
+    )
+    assert row2["plex_url"] is None
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert statuses == ["plex_match_started", "plex_match_progress", "plex_match_complete"]
+
+
+async def test_run_plex_match_handles_more_than_25_items_without_losing_rls_scope(pg_schema, monkeypatch):
+    """Regression test: the loop's own intermediate conn.commit() every 25
+    items ends user_scope()'s transaction and resets the transaction-local
+    app.user_id GUC. Without re-issuing set_config after that commit, item 26
+    onward raised InvalidTextRepresentation from the library_items RLS policy
+    and the whole run aborted as plex_match_error -- verified by removing the
+    re-set_config call and watching this test fail with exactly that error."""
+    import plex
+
+    matched_pairs = [(f"Artist {i}", f"Album {i}") for i in range(1, 16)]
+    # Deliberately share no words with matched_pairs, so rapidfuzz's WRatio
+    # can't accidentally score one of these above the match threshold against
+    # an "Artist N" / "Album N" album -- these must genuinely fail to match.
+    unmatched_pairs = [
+        ("Nebula Choir", "Silent Ember"), ("Velvet Radio", "Frost Giants"),
+        ("Copper Wolves", "Marble Skyline"), ("Paper Lanterns", "Iron Horizon"),
+        ("Glass Orchard", "Neon Tundra"), ("Salt Marsh", "Granite Bloom"),
+        ("Quiet Static", "Amber Foxtrot"), ("Wandering Kites", "Hollow Anchor"),
+        ("Crimson Ferry", "Midnight Loom"), ("Driftwood Signal", "Pale Harvest"),
+        ("Slate River", "Echo Bramble"), ("Ivory Static", "Blue Thicket"),
+        ("Rust Meridian", "Quiet Compass"), ("Feral Chorus", "Umber Trellis"),
+        ("Lantern Row", "Coral Undertow"),
+    ]
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        for i, (artist, title) in enumerate(matched_pairs, start=1):
+            db.upsert_catalog_release(conn, {
+                "discogs_id": f"r{i}", "artist": artist, "title": title, "year": None, "label": None,
+                "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+                "discogs_url": None,
+            })
+            db.upsert_library_item(conn, user["id"], f"r{i}", in_collection=True)
+        for j, (artist, title) in enumerate(unmatched_pairs, start=1):
+            i = 15 + j
+            db.upsert_catalog_release(conn, {
+                "discogs_id": f"r{i}", "artist": artist, "title": title, "year": None, "label": None,
+                "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+                "discogs_url": None,
+            })
+            db.upsert_library_item(conn, user["id"], f"r{i}", in_collection=True)
+        # Pre-seed a stale match on the very last item -- past the 25-item
+        # commit boundary -- to confirm the clear path also survives the
+        # re-scoping, not just the set path.
+        db.set_plex_match(conn, user["id"], "r30", "http://plex.local:32400/web/stale")
+        conn.commit()
+
+    albums = [
+        {"artist": artist, "title": title, "rating_key": str(i)}
+        for i, (artist, title) in enumerate(matched_pairs, start=1)
+    ]
+    monkeypatch.setattr(plex, "get_music_section_key", lambda base_url, token: "2")
+    monkeypatch.setattr(plex, "fetch_albums", lambda base_url, token, key: albums)
+    monkeypatch.setattr(plex, "get_machine_identifier", lambda base_url, token: "abc123")
+
+    manager = CrawlManager()
+    await manager._run_plex_match(user["id"], "plex.local:32400", "tok", 90)
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert statuses == [
+        "plex_match_started", "plex_match_progress", "plex_match_progress", "plex_match_complete",
+    ]
+
+    with db.get_admin_pool().connection() as conn:
+        rows = conn.execute(
+            "SELECT discogs_id, plex_url FROM library_items WHERE user_id = %s", [user["id"]]
+        ).fetchall()
+    plex_urls = {r["discogs_id"]: r["plex_url"] for r in rows}
+    for i in range(1, 16):
+        assert plex_urls[f"r{i}"] is not None, f"r{i} (index {i}, before the 25-item boundary) should have matched"
+    for i in range(16, 31):
+        assert plex_urls[f"r{i}"] is None, f"r{i} (index {i}, past the 25-item boundary) should have been cleared"
+
+
+async def test_run_plex_match_broadcasts_error_when_no_music_section_found(pg_schema, monkeypatch):
+    import plex
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None, "discogs_url": None,
+        })
+        db.upsert_library_item(conn, user["id"], "r1", in_collection=True)
+        db.set_plex_match(conn, user["id"], "r1", "http://plex.local:32400/web/x")
+        conn.commit()
+
+    monkeypatch.setattr(plex, "get_music_section_key", lambda base_url, token: None)
+
+    manager = CrawlManager()
+    await manager._run_plex_match(user["id"], "plex.local:32400", "tok", 90)
+
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT plex_url FROM library_items WHERE user_id = %s AND discogs_id = 'r1'", [user["id"]]
+        ).fetchone()
+    assert row["plex_url"] == "http://plex.local:32400/web/x"
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert statuses == ["plex_match_started", "plex_match_error"]
+
+
+@respx.mock
+async def test_run_plex_match_rejects_unsafe_address_with_generic_error(pg_schema, monkeypatch):
+    import socket
+
+    # No respx route is registered for plex.local -- this decorator exists so
+    # that if validate_address were accidentally skipped, the resulting real
+    # httpx call fails fast via respx's assert_all_mocked instead of actually
+    # reaching out over the network.
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None, "discogs_url": None,
+        })
+        db.upsert_library_item(conn, user["id"], "r1", in_collection=True)
+        db.set_plex_match(conn, user["id"], "r1", "http://plex.local:32400/web/x")
+        conn.commit()
+
+    # Only fakes resolution for the Plex hostname under test -- a blanket
+    # fake here would also hijack _run_plex_match's own new
+    # get_identity_pool() connection (used to resolve the username for
+    # logging), sending Postgres's real connection attempt to 10.0.0.5 too
+    # and hanging until the pool times out.
+    real_getaddrinfo = socket.getaddrinfo
+
+    def _fake_getaddrinfo(host, port, *a, **k):
+        if host == "plex.local":
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", port))]
+        return real_getaddrinfo(host, port, *a, **k)
+
+    monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo)
+
+    manager = CrawlManager()
+    # https:// explicitly, so this test's mocked private-IP resolution is
+    # actually what triggers the rejection below, not the separate
+    # https-only scheme check (see test_rejects_plain_http_scheme in
+    # test_plex_security.py for that case).
+    await manager._run_plex_match(user["id"], "https://plex.local:32400", "tok", 90)
+
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT plex_url FROM library_items WHERE user_id = %s AND discogs_id = 'r1'", [user["id"]]
+        ).fetchone()
+    assert row["plex_url"] == "http://plex.local:32400/web/x"
+
+    events = manager.recent_events()
+    assert [e["status"] for e in events] == ["plex_match_started", "plex_match_error"]
+    assert events[-1]["error"] == "Plex address not reachable"
+
+
+async def test_run_plex_match_does_not_touch_another_users_library_items(pg_schema, monkeypatch):
+    import plex
+
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        bob = db.create_user(conn, discogs_user_id=2, discogs_username="bob")
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "Miles Davis", "title": "Kind of Blue", "year": None,
+            "label": None, "format": None, "discogs_price": None, "barcode": None,
+            "cover_image_url": None, "discogs_url": None,
+        })
+        db.upsert_library_item(conn, alice["id"], "r1", in_collection=True)
+        db.upsert_library_item(conn, bob["id"], "r1", in_collection=True)
+        conn.commit()
+
+    monkeypatch.setattr(plex, "get_music_section_key", lambda base_url, token: "2")
+    monkeypatch.setattr(plex, "fetch_albums", lambda base_url, token, key: [
+        {"artist": "Miles Davis", "title": "Kind of Blue", "rating_key": "500"},
+    ])
+    monkeypatch.setattr(plex, "get_machine_identifier", lambda base_url, token: "abc123")
+
+    manager = CrawlManager()
+    await manager._run_plex_match(alice["id"], "plex.local:32400", "tok", 90)
+
+    with db.get_admin_pool().connection() as conn:
+        alice_row = conn.execute(
+            "SELECT plex_url FROM library_items WHERE user_id = %s AND discogs_id = 'r1'", [alice["id"]]
+        ).fetchone()
+        bob_row = conn.execute(
+            "SELECT plex_url FROM library_items WHERE user_id = %s AND discogs_id = 'r1'", [bob["id"]]
+        ).fetchone()
+    assert alice_row["plex_url"] is not None
+    assert bob_row["plex_url"] is None
+
+
+async def test_sync_collection_does_not_block_event_loop(pg_schema, monkeypatch):
+    import config
+    import discogs
+
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=99, discogs_username="slowbob")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        conn.commit()
+
+    def slow_fetch_fields(oauth_token, oauth_token_secret, username):
+        time.sleep(0.3)
+        return {}
+
+    monkeypatch.setattr(discogs, "fetch_collection_fields", slow_fetch_fields)
+    monkeypatch.setattr(discogs, "iter_collection_pages", lambda *a, **k: iter(()))
+    monkeypatch.setattr(discogs, "iter_wantlist_pages", lambda *a, **k: iter(()))
+
+    heartbeat_count = 0
+
+    async def heartbeat():
+        nonlocal heartbeat_count
+        while True:
+            heartbeat_count += 1
+            await asyncio.sleep(0.02)
+
+    manager = CrawlManager()
+    hb_task = asyncio.create_task(heartbeat())
+    try:
+        await manager._sync_collection(user["id"], "all")
+    finally:
+        hb_task.cancel()
+
+    # A blocking (non-offloaded) fetch_collection_fields call would starve the event
+    # loop for the full 0.3s sleep, so the heartbeat (ticking every 0.02s) would get
+    # essentially no chance to run. If the sync is properly offloaded to a thread, the
+    # loop stays free and the heartbeat ticks throughout.
+    assert heartbeat_count >= 5
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert "sync_complete" in statuses
+
+
+# ---------------------------------------------------------------------------
+# worker pool (_drain_one_batch: claim / crawl / bot-recovery / mark done)
+#
+# Uses db.get_admin_pool() for setup and assertions, same as
+# test_sync_collection_enqueues_crawl_queue_for_missing_listings above --
+# but _drain_one_batch itself runs through get_app_pool() (the pg_schema
+# fixture repoints APP_DATABASE_URL at the real app_user role), since the
+# worker pool has no per-request user context and never uses user_scope().
+# catalog/listings/crawlers/crawl_queue carry no RLS policy, so app_user's
+# plain GRANTs (init_tenant_schema) are all that's needed for it to read and
+# write them.
+# ---------------------------------------------------------------------------
+
+async def test_worker_claims_and_completes_one_queue_row(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1", crawler_id)
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(return_value=[{"url": "https://x", "price": 9.99, "shipping": None, "currency": "USD", "condition": None}])
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        claimed = await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    assert claimed == 1
+    with db.get_admin_pool().connection() as conn:
+        listing = conn.execute("SELECT price FROM listings WHERE release_id = 'r1'").fetchone()
+        queue_row = conn.execute("SELECT status FROM crawl_queue WHERE discogs_id = 'r1'").fetchone()
+    assert listing["price"] == 9.99
+    assert queue_row["status"] == "done"
+
+
+async def test_worker_retries_once_on_bot_detection_then_succeeds(pg_schema):
+    from crawler import BotDetectedError
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1", crawler_id)
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(side_effect=[
+        BotDetectedError(),
+        [{"url": "https://x", "price": 5.0, "shipping": None, "currency": "USD", "condition": None}],
+    ])
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("crawler._reset_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        claimed = await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    assert claimed == 1
+    with db.get_admin_pool().connection() as conn:
+        listing = conn.execute("SELECT price FROM listings WHERE release_id = 'r1'").fetchone()
+    assert listing["price"] == 5.0
+
+
+async def test_worker_row_commit_is_isolated_from_a_later_rows_failure(pg_schema):
+    # Proves per-row connection/commit scoping: row 1 finishing successfully
+    # must not be rolled back by row 2 blowing up afterward. Before the fix,
+    # both rows shared one connection/transaction committed once at the very
+    # end of the batch loop, so anything that escaped mid-batch (a crash, a
+    # worker cancellation) would have taken row 1's already-finished work
+    # down with it.
+    #
+    # asyncio.CancelledError specifically (not a plain Exception subclass,
+    # e.g. RuntimeError) is what actually distinguishes old vs. new behavior
+    # here: CancelledError is a BaseException, not an Exception, so it isn't
+    # caught by _drain_one_batch's own `except Exception` around
+    # plugin.search() either before or after this fix -- it always propagates
+    # out uncaught, matching stop_worker_pool's task.cancel() for real. A
+    # plain Exception from plugin.search() was already fully absorbed by that
+    # existing per-row except-and-continue, in both the old and new code, so
+    # it wouldn't actually exercise the batch-wide-rollback bug this fixes.
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r2", "artist": "B", "title": "T2", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1", crawler_id)
+        db.enqueue_crawl_queue(conn, "r2", crawler_id)
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+
+    # r1 and r2 are enqueued in the same transaction, so crawl_queue.requested_at
+    # (DEFAULT CURRENT_TIMESTAMP -- transaction-start time, not statement time)
+    # is identical for both rows; claim_crawl_queue_batch's ORDER BY requested_at
+    # has no tiebreaker, so which row comes back first is not guaranteed. Keying
+    # the side effect off the release actually passed in (not call order) makes
+    # this test's outcome independent of that claim order.
+    async def _search(release, page):
+        if release["discogs_id"] == "r1":
+            return [{"url": "https://x/1", "price": 9.99, "shipping": None, "currency": "USD", "condition": None}]
+        raise asyncio.CancelledError()
+
+    fake_plugin.search = AsyncMock(side_effect=_search)
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        with pytest.raises(asyncio.CancelledError):
+            await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    with db.get_admin_pool().connection() as conn:
+        listing = conn.execute("SELECT price FROM listings WHERE release_id = 'r1'").fetchone()
+        queue_row1 = conn.execute("SELECT status FROM crawl_queue WHERE discogs_id = 'r1'").fetchone()
+    assert listing["price"] == 9.99
+    assert queue_row1["status"] == "done"
+
+
+async def test_drain_one_batch_records_failure_and_cools_down_after_limit(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1", crawler_id)
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(return_value=[])  # not_found every time
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("config.load_config", return_value={"crawl_delay_seconds": 0, "consecutive_failure_limit": 1}):
+        await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    assert manager._site_cooldown_until.get(crawler_id, 0) > time.monotonic()
+    assert manager._site_consecutive_failures.get(crawler_id, 0) == 0  # reset after tripping
+
+
+async def test_drain_one_batch_excludes_cooling_down_crawler_from_claim(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1", crawler_id)
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._site_cooldown_until[crawler_id] = time.monotonic() + 1800  # already cooling down
+
+    fake_plugin = AsyncMock()
+    claimed = await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    assert claimed == 0  # nothing claimed -- the only pending row belongs to the cooling-down site
+    fake_plugin.search.assert_not_called()
+
+
+async def test_drain_one_batch_resets_failure_count_on_success(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1", crawler_id)
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    manager._site_consecutive_failures[crawler_id] = 5  # pretend it already had failures
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(return_value=[{"url": "https://x", "price": 9.99, "shipping": None, "currency": "USD", "condition": None}])
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("config.load_config", return_value={"crawl_delay_seconds": 0, "consecutive_failure_limit": 10}):
+        await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    assert manager._site_consecutive_failures[crawler_id] == 0
+
+
+async def test_drain_one_batch_counts_recovered_bot_detection_as_a_failure(pg_schema):
+    """A bot interstitial whose post-context-reset retry succeeds must still
+    count against the circuit breaker -- otherwise a site that walls every
+    request but yields to each retry keeps resetting the counter to 0 and the
+    breaker never trips, which is precisely the IP-ban scenario it exists to
+    prevent."""
+    from crawler import BotDetectedError
+
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1", crawler_id)
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    manager._site_consecutive_failures[crawler_id] = 4
+    fake_plugin = AsyncMock()
+    # First attempt walls, retry after the context reset finds a real match.
+    fake_plugin.search = AsyncMock(side_effect=[
+        BotDetectedError(),
+        [{"url": "https://x", "price": 9.99, "shipping": None, "currency": "USD", "condition": None}],
+    ])
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("crawler._reset_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("config.load_config", return_value={"crawl_delay_seconds": 0, "consecutive_failure_limit": 10}):
+        await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    assert manager._site_consecutive_failures[crawler_id] == 5
+    # The listing still gets written -- the retry's match is real data.
+    with db.get_admin_pool().connection() as conn:
+        listing = conn.execute(
+            "SELECT price FROM listings WHERE release_id = 'r1' AND crawler_id = %s", [crawler_id]
+        ).fetchone()
+    assert listing is not None and float(listing["price"]) == 9.99
 
 
 # ---------------------------------------------------------------------------
@@ -238,251 +1057,488 @@ async def test_stock_sync_running_false_after_completion(manager):
     assert manager.stock_sync_running is False
 
 
-async def test_price_crawl_and_stock_sync_can_run_concurrently(manager):
-    crawl_event = asyncio.Event()
-    stock_event = asyncio.Event()
+async def test_sync_stock_replaces_items_for_each_enabled_catalog_crawler(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Stock Site", "/x.py", crawler_type="catalog")
+        conn.commit()
 
-    async def _fake_run(mode, release_id):
-        await crawl_event.wait()
+    fake_plugin = AsyncMock()
 
-    async def _fake_stock_sync():
-        await stock_event.wait()
+    async def _items():
+        yield {"artist": "A", "title": "T", "url": "https://x/1", "price": 5.0, "currency": "USD"}
 
-    manager._run = _fake_run  # type: ignore
-    manager._sync_stock = _fake_stock_sync  # type: ignore
+    fake_plugin.crawl_catalog = lambda: _items()
+    fake_plugin._db_site_name = "Stock Site"
 
-    await manager.start("all")
-    await manager.start_stock_sync()
+    with db.get_admin_pool().connection() as conn:
+        fake_plugin._db_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Stock Site'").fetchone()["id"]
 
-    assert manager.running is True
-    assert manager.stock_sync_running is True
+    manager = CrawlManager()
+    with patch("crawler.load_enabled_crawlers", return_value=[fake_plugin]):
+        await manager._sync_stock()
 
-    crawl_event.set()
-    stock_event.set()
-    await asyncio.sleep(0.05)
+    with db.get_admin_pool().connection() as conn:
+        items = conn.execute("SELECT artist FROM stock_items").fetchall()
+        last_run = conn.execute(
+            "SELECT last_run FROM crawlers WHERE id = %s", [fake_plugin._db_id]
+        ).fetchone()["last_run"]
+    assert len(items) == 1
+    assert last_run is not None
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert statuses == ["stock_sync_started", "stock_sync_progress", "stock_sync_complete"]
 
 
-async def test_sync_stock_updates_crawler_last_run(manager, tmp_config_dir, monkeypatch):
-    import config as cfg_module
-    import db as db_module
-    import crawler as crawler_module
-    from db import register_crawler
+async def test_sync_stock_broadcasts_error_and_continues_when_a_crawler_fails(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Broken Site", "/x.py", crawler_type="catalog")
+        db.register_crawler(conn, "Good Site", "/y.py", crawler_type="catalog")
+        conn.commit()
+        broken_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Broken Site'").fetchone()["id"]
+        good_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Good Site'").fetchone()["id"]
 
-    conn = sqlite3.connect(cfg_module.DB_FILE)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    db_module.init_db(conn)
-    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
-    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()[0]
+    broken = AsyncMock()
 
-    before = conn.execute("SELECT last_run FROM crawlers WHERE id = ?", [crawler_id]).fetchone()[0]
-    assert before is None
+    async def _boom():
+        raise RuntimeError("crawl failed")
+        yield  # pragma: no cover -- unreachable, but keeps this an async generator
 
-    class _FakeCrawler:
-        _db_id = crawler_id
-        _db_site_name = "Nuclear Blast"
+    broken.crawl_catalog = lambda: _boom()
+    broken._db_id = broken_id
+    broken._db_site_name = "Broken Site"
 
-        async def crawl_catalog(self):
-            yield {
-                "artist": "Rob Zombie",
-                "title": "The Great Satan",
-                "price": 31.99,
-                "currency": "USD",
-                "url": "https://x/1",
-            }
+    good = AsyncMock()
 
-    monkeypatch.setattr(crawler_module, "load_enabled_crawlers", lambda enabled: [_FakeCrawler()])
+    async def _items():
+        yield {"artist": "B", "title": "T2", "url": "https://x/2", "price": 3.0, "currency": "USD"}
 
-    await manager._sync_stock()
+    good.crawl_catalog = lambda: _items()
+    good._db_id = good_id
+    good._db_site_name = "Good Site"
 
-    after = conn.execute("SELECT last_run FROM crawlers WHERE id = ?", [crawler_id]).fetchone()[0]
-    assert after is not None
-    conn.close()
+    manager = CrawlManager()
+    with patch("crawler.load_enabled_crawlers", return_value=[broken, good]):
+        await manager._sync_stock()
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert "stock_sync_error" in statuses
+    assert "stock_sync_complete" in statuses  # one crawler's failure doesn't abort the sync
+    with db.get_admin_pool().connection() as conn:
+        items = conn.execute("SELECT artist FROM stock_items").fetchall()
+    assert [i["artist"] for i in items] == ["B"]
 
 
 # ---------------------------------------------------------------------------
-# judgment phase
+# sweep_enqueue (admin-scheduled, all-users crawl_schedule sweep)
+#
+# Enumerates users via db.get_identity_pool() rather than db.get_app_pool():
+# app_user (the role pg_schema repoints the app pool to) has no grant at all
+# on users -- only app_identity does (init_tenant_schema) -- so a get_app_pool()
+# connection can't read it, matching how _sync_collection already reads the
+# single calling user's row.
 # ---------------------------------------------------------------------------
 
-async def test_sync_stock_skips_judgment_when_no_api_key(manager, tmp_config_dir, monkeypatch):
-    import config as cfg_module
-    import db as db_module
-    import crawler as crawler_module
-    from db import register_crawler
+async def test_sweep_enqueue_missing_mode_enqueues_for_every_user(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        bob = db.create_user(conn, discogs_user_id=2, discogs_username="bob")
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        for rid, owner in [("r1", alice), ("r2", bob)]:
+            db.upsert_catalog_release(conn, {
+                "discogs_id": rid, "artist": "A", "title": "T", "year": None, "label": None,
+                "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+                "discogs_url": None,
+            })
+            db.upsert_library_item(conn, owner["id"], rid, in_collection=True)
+        conn.commit()
 
-    conn = sqlite3.connect(cfg_module.DB_FILE)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    db_module.init_db(conn)
-    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
-    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()[0]
+    manager = CrawlManager()
+    await manager.sweep_enqueue("missing")
 
-    class _FakeCrawler:
-        _db_id = crawler_id
-        _db_site_name = "Nuclear Blast"
-
-        async def crawl_catalog(self):
-            yield {"artist": "Rob Zombie", "title": "T1", "price": 1.0, "currency": "USD", "url": "https://x/1"}
-
-    monkeypatch.setattr(crawler_module, "load_enabled_crawlers", lambda enabled: [_FakeCrawler()])
-
-    await manager._sync_stock()
-
-    statuses = [e["status"] for e in manager.recent_events()]
-    assert not any(s.startswith("stock_judgment") for s in statuses)
-    conn.close()
+    with db.get_admin_pool().connection() as conn:
+        queued = {row["discogs_id"] for row in conn.execute("SELECT discogs_id FROM crawl_queue").fetchall()}
+    assert queued == {"r1", "r2"}
 
 
-async def test_sync_stock_runs_judgment_phase_when_api_key_configured(manager, tmp_config_dir, monkeypatch):
-    import config as cfg_module
-    import db as db_module
-    import crawler as crawler_module
-    import recommendations
-    from db import register_crawler, compute_item_key
+async def test_sweep_enqueue_all_mode_enqueues_every_library_item_regardless_of_listing_state(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=8, discogs_username="alice8")
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.upsert_library_item(conn, alice["id"], "r1", in_collection=True)
+        # Already fully crawled -- "missing" mode would skip this, "all" must not.
+        db.upsert_listing(conn, "r1", crawler_id, "https://x", 9.99, None, "USD", None)
+        conn.commit()
 
-    cfg_module.save_config({"anthropic_api_key": "sk-ant-test"})
+    manager = CrawlManager()
+    await manager.sweep_enqueue("all")
 
-    conn = sqlite3.connect(cfg_module.DB_FILE)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    db_module.init_db(conn)
-    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
-    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()[0]
-
-    class _FakeCrawler:
-        _db_id = crawler_id
-        _db_site_name = "Nuclear Blast"
-
-        async def crawl_catalog(self):
-            yield {"artist": "Rob Zombie", "title": "T1", "price": 1.0, "currency": "USD", "url": "https://x/1"}
-
-    monkeypatch.setattr(crawler_module, "load_enabled_crawlers", lambda enabled: [_FakeCrawler()])
-
-    key = compute_item_key("Rob Zombie", "T1", "https://x/1")
-    monkeypatch.setattr(
-        recommendations, "judge_batch",
-        lambda client, taste, batch: [{"item_key": key, "recommended": True, "reason": "similar genre"}],
-    )
-
-    await manager._sync_stock()
-
-    statuses = [e["status"] for e in manager.recent_events()]
-    assert "stock_judgment_started" in statuses
-    assert "stock_judgment_complete" in statuses
-    row = conn.execute("SELECT recommended, reason FROM stock_item_judgments WHERE item_key = ?", [key]).fetchone()
-    assert row["recommended"] == 1
-    assert row["reason"] == "similar genre"
-    conn.close()
+    with db.get_admin_pool().connection() as conn:
+        queued = {row["discogs_id"] for row in conn.execute("SELECT discogs_id FROM crawl_queue").fetchall()}
+    assert queued == {"r1"}
 
 
-async def test_sync_stock_judgment_phase_failure_broadcasts_error(manager, tmp_config_dir, monkeypatch):
-    import config as cfg_module
-    import db as db_module
-    import crawler as crawler_module
-    import recommendations
-    from db import register_crawler
+async def test_sweep_enqueue_no_users_is_a_noop(pg_schema):
+    manager = CrawlManager()
+    await manager.sweep_enqueue("missing")
 
-    cfg_module.save_config({"anthropic_api_key": "sk-ant-test"})
+    with db.get_admin_pool().connection() as conn:
+        queued = conn.execute("SELECT discogs_id FROM crawl_queue").fetchall()
+    assert queued == []
 
-    conn = sqlite3.connect(cfg_module.DB_FILE)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    db_module.init_db(conn)
-    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
-    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()[0]
 
-    class _FakeCrawler:
-        _db_id = crawler_id
-        _db_site_name = "Nuclear Blast"
+# ---------------------------------------------------------------------------
+# judgment phase (per-user key/taste, Postgres-backed)
+# ---------------------------------------------------------------------------
 
-        async def crawl_catalog(self):
-            yield {"artist": "Rob Zombie", "title": "T1", "price": 1.0, "currency": "USD", "url": "https://x/1"}
+async def test_judgment_phase_uses_calling_users_own_key_and_taste(pg_schema, monkeypatch):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute("UPDATE users SET anthropic_api_key = 'sk-alice' WHERE id = %s", [alice["id"]])
+        db.register_crawler(conn, "Stock Site", "/x.py", crawler_type="catalog")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Stock Site'").fetchone()["id"]
+        db.replace_stock_items(conn, crawler_id, [
+            {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+        ])
+        conn.commit()
 
-    monkeypatch.setattr(crawler_module, "load_enabled_crawlers", lambda enabled: [_FakeCrawler()])
+    with patch("recommendations.judge_batch", return_value=[
+        {"item_key": db.compute_item_key("Artist A", "Album A", "https://x/1"), "recommended": True, "reason": "matches taste"}
+    ]) as mock_judge:
+        manager = CrawlManager()
+        await manager._run_judgment_phase(alice["id"])
 
-    def _boom(client, taste, batch):
-        raise RuntimeError("boom")
+    with db.user_scope(alice["id"]) as conn:
+        judged = conn.execute("SELECT reason FROM stock_item_judgments WHERE user_id = %s", [alice["id"]]).fetchall()
+    assert judged[0]["reason"] == "matches taste"
 
-    monkeypatch.setattr(recommendations, "judge_batch", _boom)
+    # "own key and taste" is the actual point of this test -- verify judge_batch
+    # was actually called with alice's own Anthropic client (keyed off her
+    # anthropic_api_key column) and her own taste listing (empty here, since
+    # alice has no collection/wishlist), not some other user's or a global one.
+    client_arg, taste_arg, batch_arg = mock_judge.call_args[0]
+    assert client_arg.api_key == "sk-alice"
+    assert taste_arg == []
+    assert batch_arg[0]["artist"] == "Artist A"
 
-    await manager._sync_stock()
+
+async def test_judgment_phase_does_not_touch_another_users_key_taste_or_judgments(pg_schema):
+    # The headline claim of this rewrite is "per-user key/taste" -- this is the
+    # one property that actually proves it: running alice's judgment must use
+    # only alice's Anthropic key and taste listing, and must create zero rows
+    # scoped to bob, even though bob also has an API key, a taste listing, and
+    # (via the shared, global stock_items table) visibility into the same item.
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=20, discogs_username="alice20")
+        bob = db.create_user(conn, discogs_user_id=21, discogs_username="bob21")
+        conn.execute("UPDATE users SET anthropic_api_key = 'sk-alice' WHERE id = %s", [alice["id"]])
+        conn.execute("UPDATE users SET anthropic_api_key = 'sk-bob' WHERE id = %s", [bob["id"]])
+
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r-alice", "artist": "Alice Fave", "title": "Album X", "year": None,
+            "label": None, "format": None, "discogs_price": None, "barcode": None,
+            "cover_image_url": None, "discogs_url": None,
+        })
+        db.upsert_library_item(conn, alice["id"], "r-alice", in_collection=True)
+
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r-bob", "artist": "Bob Fave", "title": "Album Y", "year": None,
+            "label": None, "format": None, "discogs_price": None, "barcode": None,
+            "cover_image_url": None, "discogs_url": None,
+        })
+        db.upsert_library_item(conn, bob["id"], "r-bob", in_collection=True)
+
+        db.register_crawler(conn, "Stock Site", "/x.py", crawler_type="catalog")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Stock Site'").fetchone()["id"]
+        db.replace_stock_items(conn, crawler_id, [
+            {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+        ])
+        conn.commit()
+
+    with patch("recommendations.judge_batch", return_value=[
+        {"item_key": db.compute_item_key("Artist A", "Album A", "https://x/1"), "recommended": True, "reason": "matches alice"}
+    ]) as mock_judge:
+        manager = CrawlManager()
+        await manager._run_judgment_phase(alice["id"])
+
+    client_arg, taste_arg, _ = mock_judge.call_args[0]
+    assert client_arg.api_key == "sk-alice"
+    assert taste_arg == ["Alice Fave - Album X"]
+
+    with db.get_admin_pool().connection() as conn:
+        judgments = conn.execute("SELECT user_id, reason FROM stock_item_judgments").fetchall()
+    assert [(j["user_id"], j["reason"]) for j in judgments] == [(alice["id"], "matches alice")]
+    assert all(j["user_id"] != bob["id"] for j in judgments)
+
+
+async def test_judgment_phase_first_batchs_judgments_survive_a_later_batchs_failure(pg_schema):
+    # Mirrors test_worker_row_commit_is_isolated_from_a_later_rows_failure's
+    # proof for the worker pool: _run_judgment_phase commits each batch through
+    # its own fresh user_scope() connection, so a later batch blowing up must
+    # not roll back an earlier batch's already-committed judgments.
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=22, discogs_username="alice22")
+        conn.execute("UPDATE users SET anthropic_api_key = 'sk-alice' WHERE id = %s", [alice["id"]])
+        db.register_crawler(conn, "Stock Site", "/x.py", crawler_type="catalog")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Stock Site'").fetchone()["id"]
+        item_count = recommendations.BATCH_SIZE + 5  # spans exactly two batches
+        db.replace_stock_items(conn, crawler_id, [
+            {"artist": f"Artist {i}", "title": f"T{i}", "price": 1.0, "currency": "USD", "url": f"https://x/{i}"}
+            for i in range(item_count)
+        ])
+        conn.commit()
+
+    call_count = {"n": 0}
+
+    def _judge_side_effect(client, taste, batch):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return [{"item_key": item["item_key"], "recommended": False, "reason": "first batch ok"} for item in batch]
+        raise RuntimeError("second batch boom")
+
+    manager = CrawlManager()
+    with patch("recommendations.judge_batch", side_effect=_judge_side_effect):
+        await manager._run_judgment_phase(alice["id"])
 
     statuses = [e["status"] for e in manager.recent_events()]
     assert "stock_judgment_error" in statuses
-    assert "stock_sync_complete" in statuses  # phase failure doesn't abort the sync
-    conn.close()
+    assert "stock_judgment_complete" not in statuses
+
+    with db.get_admin_pool().connection() as conn:
+        judgments = conn.execute(
+            "SELECT reason FROM stock_item_judgments WHERE user_id = %s", [alice["id"]]
+        ).fetchall()
+    assert len(judgments) == recommendations.BATCH_SIZE
+    assert all(j["reason"] == "first batch ok" for j in judgments)
 
 
-async def test_run_judgment_phase_broadcasts_complete_when_nothing_unjudged(manager, tmp_config_dir, caplog):
-    import config as cfg_module
-    import db as db_module
+async def test_run_judgment_phase_broadcasts_error_when_no_api_key(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=2, discogs_username="alice2")
+        conn.commit()
 
-    conn = sqlite3.connect(cfg_module.DB_FILE)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    db_module.init_db(conn)
+    manager = CrawlManager()
+    await manager._run_judgment_phase(alice["id"])
 
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert statuses == ["stock_judgment_started", "stock_judgment_error"]
+
+
+async def test_sync_stock_aborts_after_two_consecutive_429_crawlers(pg_schema, manager, monkeypatch):
+    import crawler as crawler_module
+
+    with db.get_admin_pool().connection() as conn:
+        for name in ["Run For Cover", "Equal Vision", "Never Attempted"]:
+            db.register_crawler(conn, name, f"/path/{name}.py", crawler_type="catalog")
+        conn.commit()
+        ids = {row["site_name"]: row["id"] for row in conn.execute("SELECT id, site_name FROM crawlers").fetchall()}
+
+    def _http_429():
+        request = httpx.Request("GET", "https://example.test/products.json")
+        return httpx.HTTPStatusError("429", request=request, response=httpx.Response(429))
+
+    class _FailingCrawler:
+        def __init__(self, name):
+            self._db_id = ids[name]
+            self._db_site_name = name
+
+        async def crawl_catalog(self):
+            raise _http_429()
+            yield  # pragma: no cover -- keeps this an async generator function
+
+    class _SucceedingCrawler:
+        def __init__(self, name):
+            self._db_id = ids[name]
+            self._db_site_name = name
+
+        async def crawl_catalog(self):
+            yield {"artist": "A", "title": "T", "price": 1.0, "currency": "USD", "url": "https://x/1"}
+
+    monkeypatch.setattr(crawler_module, "load_enabled_crawlers", lambda enabled: [
+        _FailingCrawler("Run For Cover"),
+        _FailingCrawler("Equal Vision"),
+        _SucceedingCrawler("Never Attempted"),
+    ])
+
+    await manager._sync_stock()
+
+    events = manager.recent_events()
+    statuses = [e["status"] for e in events]
+    assert "stock_sync_aborted" in statuses
+    assert "stock_sync_complete" not in statuses
+    aborted = next(e for e in events if e["status"] == "stock_sync_aborted")
+    assert aborted["sources"] == ["Run For Cover", "Equal Vision"]
+    assert not any(e.get("source") == "Never Attempted" for e in events)
+
+
+async def test_sync_stock_resets_429_streak_after_a_success(pg_schema, manager, monkeypatch):
+    import crawler as crawler_module
+
+    with db.get_admin_pool().connection() as conn:
+        for name in ["Run For Cover", "Middle Site", "Equal Vision"]:
+            db.register_crawler(conn, name, f"/path/{name}.py", crawler_type="catalog")
+        conn.commit()
+        ids = {row["site_name"]: row["id"] for row in conn.execute("SELECT id, site_name FROM crawlers").fetchall()}
+
+    def _http_429():
+        request = httpx.Request("GET", "https://example.test/products.json")
+        return httpx.HTTPStatusError("429", request=request, response=httpx.Response(429))
+
+    class _FailingCrawler:
+        def __init__(self, name):
+            self._db_id = ids[name]
+            self._db_site_name = name
+
+        async def crawl_catalog(self):
+            raise _http_429()
+            yield  # pragma: no cover
+
+    class _SucceedingCrawler:
+        def __init__(self, name):
+            self._db_id = ids[name]
+            self._db_site_name = name
+
+        async def crawl_catalog(self):
+            yield {"artist": "A", "title": "T", "price": 1.0, "currency": "USD", "url": "https://x/1"}
+
+    monkeypatch.setattr(crawler_module, "load_enabled_crawlers", lambda enabled: [
+        _FailingCrawler("Run For Cover"),
+        _SucceedingCrawler("Middle Site"),
+        _FailingCrawler("Equal Vision"),
+    ])
+
+    await manager._sync_stock()
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert "stock_sync_aborted" not in statuses
+    assert "stock_sync_complete" in statuses
+
+
+async def test_sync_stock_resets_429_streak_after_a_non_429_failure(pg_schema, manager, monkeypatch):
+    import crawler as crawler_module
+
+    with db.get_admin_pool().connection() as conn:
+        for name in ["Run For Cover", "Middle Site", "Equal Vision"]:
+            db.register_crawler(conn, name, f"/path/{name}.py", crawler_type="catalog")
+        conn.commit()
+        ids = {row["site_name"]: row["id"] for row in conn.execute("SELECT id, site_name FROM crawlers").fetchall()}
+
+    def _http_429():
+        request = httpx.Request("GET", "https://example.test/products.json")
+        return httpx.HTTPStatusError("429", request=request, response=httpx.Response(429))
+
+    class _FailingCrawler:
+        def __init__(self, name):
+            self._db_id = ids[name]
+            self._db_site_name = name
+
+        async def crawl_catalog(self):
+            raise _http_429()
+            yield  # pragma: no cover
+
+    class _OtherFailureCrawler:
+        def __init__(self, name):
+            self._db_id = ids[name]
+            self._db_site_name = name
+
+        async def crawl_catalog(self):
+            raise RuntimeError("boom")
+            yield  # pragma: no cover
+
+    monkeypatch.setattr(crawler_module, "load_enabled_crawlers", lambda enabled: [
+        _FailingCrawler("Run For Cover"),
+        _OtherFailureCrawler("Middle Site"),
+        _FailingCrawler("Equal Vision"),
+    ])
+
+    await manager._sync_stock()
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert "stock_sync_aborted" not in statuses
+    assert "stock_sync_complete" in statuses
+
+
+async def test_sync_stock_does_not_broadcast_stock_sync_error_for_a_lone_429(pg_schema, manager, monkeypatch):
+    import crawler as crawler_module
+
+    with db.get_admin_pool().connection() as conn:
+        for name in ["Run For Cover", "Middle Site"]:
+            db.register_crawler(conn, name, f"/path/{name}.py", crawler_type="catalog")
+        conn.commit()
+        ids = {row["site_name"]: row["id"] for row in conn.execute("SELECT id, site_name FROM crawlers").fetchall()}
+
+    def _http_429():
+        request = httpx.Request("GET", "https://example.test/products.json")
+        return httpx.HTTPStatusError("429", request=request, response=httpx.Response(429))
+
+    class _FailingCrawler:
+        def __init__(self, name):
+            self._db_id = ids[name]
+            self._db_site_name = name
+
+        async def crawl_catalog(self):
+            raise _http_429()
+            yield  # pragma: no cover
+
+    class _SucceedingCrawler:
+        def __init__(self, name):
+            self._db_id = ids[name]
+            self._db_site_name = name
+
+        async def crawl_catalog(self):
+            yield {"artist": "A", "title": "T", "price": 1.0, "currency": "USD", "url": "https://x/1"}
+
+    monkeypatch.setattr(crawler_module, "load_enabled_crawlers", lambda enabled: [
+        _FailingCrawler("Run For Cover"),
+        _SucceedingCrawler("Middle Site"),
+    ])
+
+    await manager._sync_stock()
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    # A single 429 that never reaches the abort threshold is an expected, handled
+    # condition -- it must not be reported as a stock_sync_error (that would make
+    # the circuit breaker's own normal operation look like a crash).
+    assert "stock_sync_error" not in statuses
+    assert "stock_sync_aborted" not in statuses
+    assert "stock_sync_complete" in statuses
+
+
+async def test_run_judgment_phase_broadcasts_complete_when_nothing_unjudged(pg_schema, caplog):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=3, discogs_username="alice3")
+        conn.execute("UPDATE users SET anthropic_api_key = 'sk-alice' WHERE id = %s", [alice["id"]])
+        conn.commit()
+
+    manager = CrawlManager()
     with caplog.at_level("INFO", logger="crawl_manager"):
-        await manager._run_judgment_phase(conn, "sk-ant-test")
+        await manager._run_judgment_phase(alice["id"])
 
     statuses = [e["status"] for e in manager.recent_events()]
     assert statuses == ["stock_judgment_started", "stock_judgment_complete"]
     events = [e for e in manager.recent_events() if e["status"] == "stock_judgment_complete"]
     assert events == [{"status": "stock_judgment_complete", "judged": 0, "id": 2}]
     assert any("nothing to do" in r.message for r in caplog.records)
-    conn.close()
 
 
-async def test_run_judgment_phase_broadcasts_started_before_querying_backlog(manager, tmp_config_dir, monkeypatch, caplog):
-    import config as cfg_module
-    import db as db_module
-    import recommendations
-    from db import register_crawler, replace_stock_items
-
-    conn = sqlite3.connect(cfg_module.DB_FILE)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    db_module.init_db(conn)
-    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
-    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()[0]
-    replace_stock_items(conn, crawler_id, [
-        {"artist": "Rob Zombie", "title": "T1", "price": 1.0, "currency": "USD", "url": "https://x/1"},
-    ])
-
-    monkeypatch.setattr(recommendations, "judge_batch", lambda client, taste, batch: [
-        {"item_key": item["item_key"], "recommended": False, "reason": None} for item in batch
-    ])
-
-    with caplog.at_level("INFO", logger="crawl_manager"):
-        await manager._run_judgment_phase(conn, "sk-ant-test")
-
-    statuses = [e["status"] for e in manager.recent_events()]
-    assert statuses.index("stock_judgment_started") < statuses.index("stock_judgment_complete")
-
-    messages = [r.message for r in caplog.records]
-    started_idx = next(i for i, m in enumerate(messages) if "Judgment run started" in m)
-    found_idx = next(i for i, m in enumerate(messages) if m.startswith("Found "))
-    assert started_idx < found_idx
-    conn.close()
-
-
-async def test_run_judgment_phase_logs_per_batch_progress(manager, tmp_config_dir, monkeypatch, caplog):
-    import config as cfg_module
-    import db as db_module
-    import recommendations
-    from db import register_crawler, replace_stock_items
-
-    conn = sqlite3.connect(cfg_module.DB_FILE)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    db_module.init_db(conn)
-    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
-    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()[0]
-    replace_stock_items(conn, crawler_id, [
-        {"artist": "Rob Zombie", "title": "T1", "price": 1.0, "currency": "USD", "url": "https://x/1"},
-        {"artist": "NAILS", "title": "T2", "price": 2.0, "currency": "USD", "url": "https://x/2"},
-        {"artist": "Ghost", "title": "T3", "price": 3.0, "currency": "USD", "url": "https://x/3"},
-    ])
+async def test_run_judgment_phase_logs_per_batch_progress(pg_schema, monkeypatch, caplog):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=4, discogs_username="alice4")
+        conn.execute("UPDATE users SET anthropic_api_key = 'sk-alice' WHERE id = %s", [alice["id"]])
+        db.register_crawler(conn, "Stock Site", "/x.py", crawler_type="catalog")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Stock Site'").fetchone()["id"]
+        db.replace_stock_items(conn, crawler_id, [
+            {"artist": "Rob Zombie", "title": "T1", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+            {"artist": "NAILS", "title": "T2", "price": 2.0, "currency": "USD", "url": "https://x/2"},
+            {"artist": "Ghost", "title": "T3", "price": 3.0, "currency": "USD", "url": "https://x/3"},
+        ])
+        conn.commit()
 
     monkeypatch.setattr(recommendations, "BATCH_SIZE", 2)
 
@@ -494,127 +1550,84 @@ async def test_run_judgment_phase_logs_per_batch_progress(manager, tmp_config_di
 
     monkeypatch.setattr(recommendations, "judge_batch", _fake_judge)
 
+    manager = CrawlManager()
     with caplog.at_level("INFO", logger="crawl_manager"):
-        await manager._run_judgment_phase(conn, "sk-ant-test")
+        await manager._run_judgment_phase(alice["id"])
 
     batch_logs = [r.message for r in caplog.records if "Judged batch" in r.message]
     assert len(batch_logs) == 2
-    assert batch_logs[0].startswith("Judged batch 2/3:")
-    assert batch_logs[1].startswith("Judged batch 3/3:")
+    assert batch_logs[0].startswith("Judged batch 2/3 for alice4:")
+    assert batch_logs[1].startswith("Judged batch 3/3 for alice4:")
     total_recommended_logged = sum(int(m.rsplit(":", 1)[1].split()[0]) for m in batch_logs)
     assert total_recommended_logged == 1
-    conn.close()
 
 
-async def test_run_judgment_phase_logs_true_backlog_size_when_limit_smaller(manager, tmp_config_dir, monkeypatch, caplog):
-    import config as cfg_module
-    import db as db_module
-    import recommendations
-    from db import register_crawler, replace_stock_items
-
-    cfg_module.save_config({"recommendation_item_limit": 2})
-
-    conn = sqlite3.connect(cfg_module.DB_FILE)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    db_module.init_db(conn)
-    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
-    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()[0]
-    replace_stock_items(conn, crawler_id, [
-        {"artist": "Rob Zombie", "title": "T1", "price": 1.0, "currency": "USD", "url": "https://x/1"},
-        {"artist": "NAILS", "title": "T2", "price": 2.0, "currency": "USD", "url": "https://x/2"},
-        {"artist": "Ghost", "title": "T3", "price": 3.0, "currency": "USD", "url": "https://x/3"},
-        {"artist": "Poison", "title": "T4", "price": 4.0, "currency": "USD", "url": "https://x/4"},
-        {"artist": "Slayer", "title": "T5", "price": 5.0, "currency": "USD", "url": "https://x/5"},
-    ])
+async def test_run_judgment_phase_logs_true_backlog_size_when_limit_smaller(pg_schema, monkeypatch, caplog):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=5, discogs_username="alice5")
+        conn.execute(
+            "UPDATE users SET anthropic_api_key = 'sk-alice', recommendation_item_limit = 2 WHERE id = %s",
+            [alice["id"]],
+        )
+        db.register_crawler(conn, "Stock Site", "/x.py", crawler_type="catalog")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Stock Site'").fetchone()["id"]
+        db.replace_stock_items(conn, crawler_id, [
+            {"artist": f"Artist {i}", "title": f"T{i}", "price": 1.0, "currency": "USD", "url": f"https://x/{i}"}
+            for i in range(5)
+        ])
+        conn.commit()
 
     monkeypatch.setattr(recommendations, "judge_batch", lambda client, taste, batch: [
         {"item_key": item["item_key"], "recommended": False, "reason": None} for item in batch
     ])
 
+    manager = CrawlManager()
     with caplog.at_level("INFO", logger="crawl_manager"):
-        await manager._run_judgment_phase(conn, "sk-ant-test")
+        await manager._run_judgment_phase(alice["id"])
 
     found_logs = [r.message for r in caplog.records if r.message.startswith("Found ")]
-    assert found_logs == ["Found 2/5 items to judge for recommendation"]
-    conn.close()
+    assert found_logs == ["Found 2/5 items to judge for alice5"]
 
 
-async def test_run_judgment_phase_logs_equal_counts_when_limit_unset(manager, tmp_config_dir, monkeypatch, caplog):
-    import config as cfg_module
-    import db as db_module
-    import recommendations
-    from db import register_crawler, replace_stock_items
-
-    conn = sqlite3.connect(cfg_module.DB_FILE)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    db_module.init_db(conn)
-    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
-    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()[0]
-    replace_stock_items(conn, crawler_id, [
-        {"artist": "Rob Zombie", "title": "T1", "price": 1.0, "currency": "USD", "url": "https://x/1"},
-    ])
+async def test_run_judgment_phase_respects_zero_as_unlimited(pg_schema, monkeypatch, caplog):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=6, discogs_username="alice6")
+        conn.execute(
+            "UPDATE users SET anthropic_api_key = 'sk-alice', recommendation_item_limit = 0 WHERE id = %s",
+            [alice["id"]],
+        )
+        db.register_crawler(conn, "Stock Site", "/x.py", crawler_type="catalog")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Stock Site'").fetchone()["id"]
+        db.replace_stock_items(conn, crawler_id, [
+            {"artist": f"Artist {i}", "title": f"T{i}", "price": 1.0, "currency": "USD", "url": f"https://x/{i}"}
+            for i in range(5)
+        ])
+        conn.commit()
 
     monkeypatch.setattr(recommendations, "judge_batch", lambda client, taste, batch: [
         {"item_key": item["item_key"], "recommended": False, "reason": None} for item in batch
     ])
 
+    manager = CrawlManager()
     with caplog.at_level("INFO", logger="crawl_manager"):
-        await manager._run_judgment_phase(conn, "sk-ant-test")
+        await manager._run_judgment_phase(alice["id"])
 
     found_logs = [r.message for r in caplog.records if r.message.startswith("Found ")]
-    assert found_logs == ["Found 1/1 items to judge for recommendation"]
-    conn.close()
+    assert found_logs == ["Found 5/5 items to judge for alice6"]
 
 
-async def test_run_judgment_phase_respects_zero_as_unlimited(manager, tmp_config_dir, monkeypatch, caplog):
-    import config as cfg_module
-    import db as db_module
-    import recommendations
-    from db import register_crawler, replace_stock_items
-
-    cfg_module.save_config({"recommendation_item_limit": 0})
-
-    conn = sqlite3.connect(cfg_module.DB_FILE)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    db_module.init_db(conn)
-    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
-    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()[0]
-    replace_stock_items(conn, crawler_id, [
-        {"artist": f"Artist {i}", "title": f"T{i}", "price": 1.0, "currency": "USD", "url": f"https://x/{i}"}
-        for i in range(5)
-    ])
-
-    monkeypatch.setattr(recommendations, "judge_batch", lambda client, taste, batch: [
-        {"item_key": item["item_key"], "recommended": False, "reason": None} for item in batch
-    ])
-
-    with caplog.at_level("INFO", logger="crawl_manager"):
-        await manager._run_judgment_phase(conn, "sk-ant-test")
-
-    found_logs = [r.message for r in caplog.records if r.message.startswith("Found ")]
-    assert found_logs == ["Found 5/5 items to judge for recommendation"]
-    conn.close()
-
-
-async def test_run_judgment_phase_does_not_block_event_loop(manager, tmp_config_dir, monkeypatch):
+async def test_run_judgment_phase_does_not_block_event_loop(pg_schema, monkeypatch):
     import time
-    import config as cfg_module
-    import db as db_module
-    import recommendations
-    from db import register_crawler, replace_stock_items
 
-    conn = sqlite3.connect(cfg_module.DB_FILE)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    db_module.init_db(conn)
-    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
-    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()[0]
-    replace_stock_items(conn, crawler_id, [
-        {"artist": "Rob Zombie", "title": "T1", "price": 1.0, "currency": "USD", "url": "https://x/1"},
-    ])
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=7, discogs_username="alice7")
+        conn.execute("UPDATE users SET anthropic_api_key = 'sk-alice' WHERE id = %s", [alice["id"]])
+        db.register_crawler(conn, "Stock Site", "/x.py", crawler_type="catalog")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Stock Site'").fetchone()["id"]
+        db.replace_stock_items(conn, crawler_id, [
+            {"artist": "Rob Zombie", "title": "T1", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+        ])
+        conn.commit()
 
     def slow_judge_batch(client, taste, batch):
         time.sleep(0.3)
@@ -630,9 +1643,10 @@ async def test_run_judgment_phase_does_not_block_event_loop(manager, tmp_config_
             heartbeat_count += 1
             await asyncio.sleep(0.02)
 
+    manager = CrawlManager()
     hb_task = asyncio.create_task(heartbeat())
     try:
-        await manager._run_judgment_phase(conn, "sk-ant-test")
+        await manager._run_judgment_phase(alice["id"])
     finally:
         hb_task.cancel()
 
@@ -641,125 +1655,22 @@ async def test_run_judgment_phase_does_not_block_event_loop(manager, tmp_config_
     # chance to run. If judge_batch is properly offloaded, the loop stays free and the
     # heartbeat ticks throughout.
     assert heartbeat_count >= 5
-    conn.close()
-
-
-async def test_run_plex_match_updates_matched_and_clears_unmatched(manager, tmp_config_dir, monkeypatch):
-    import config as cfg_module
-    import db as db_module
-    from db import upsert_release
-    import plex
-
-    conn = sqlite3.connect(cfg_module.DB_FILE)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    db_module.init_db(conn)
-    upsert_release(conn, {
-        "discogs_id": "r1", "artist": "Miles Davis", "title": "Kind of Blue", "year": 1959,
-        "label": "Columbia", "format": "Vinyl", "discogs_price": None, "barcode": None,
-        "cover_image_url": "", "discogs_url": "https://discogs.com/release/1",
-    })
-    upsert_release(conn, {
-        "discogs_id": "r2", "artist": "Bill Evans", "title": "Waltz for Debby", "year": 1961,
-        "label": "Riverside", "format": "Vinyl", "discogs_price": None, "barcode": None,
-        "cover_image_url": "", "discogs_url": "https://discogs.com/release/2",
-    })
-
-    monkeypatch.setattr(plex, "get_music_section_key", lambda base_url, token: "2")
-    monkeypatch.setattr(plex, "fetch_albums", lambda base_url, token, key: [
-        {"artist": "Miles Davis", "title": "Kind of Blue", "rating_key": "500"},
-    ])
-    monkeypatch.setattr(plex, "get_machine_identifier", lambda base_url, token: "abc123")
-
-    await manager._run_plex_match(conn, "plex.local:32400", "tok", 90)
-
-    row1 = conn.execute("SELECT plex_url FROM releases WHERE discogs_id='r1'").fetchone()
-    row2 = conn.execute("SELECT plex_url FROM releases WHERE discogs_id='r2'").fetchone()
-    assert row1[0] == "http://plex.local:32400/web/index.html#!/server/abc123/details?key=/library/metadata/500"
-    assert row2[0] is None
-
-    statuses = [e["status"] for e in manager.recent_events()]
-    assert statuses == ["plex_match_started", "plex_match_progress", "plex_match_complete"]
-    conn.close()
-
-
-async def test_run_plex_match_broadcasts_error_when_no_music_section_found(manager, tmp_config_dir, monkeypatch):
-    import config as cfg_module
-    import db as db_module
-    from db import upsert_release, set_plex_match
-    import plex
-
-    conn = sqlite3.connect(cfg_module.DB_FILE)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    db_module.init_db(conn)
-    upsert_release(conn, {
-        "discogs_id": "r1", "artist": "Miles Davis", "title": "Kind of Blue", "year": 1959,
-        "label": "Columbia", "format": "Vinyl", "discogs_price": None, "barcode": None,
-        "cover_image_url": "", "discogs_url": "https://discogs.com/release/1",
-    })
-    set_plex_match(conn, "r1", "http://plex.local:32400/web/x")
-
-    monkeypatch.setattr(plex, "get_music_section_key", lambda base_url, token: None)
-
-    await manager._run_plex_match(conn, "plex.local:32400", "tok", 90)
-
-    row = conn.execute("SELECT plex_url FROM releases WHERE discogs_id='r1'").fetchone()
-    assert row[0] == "http://plex.local:32400/web/x"
-
-    statuses = [e["status"] for e in manager.recent_events()]
-    assert statuses == ["plex_match_started", "plex_match_error"]
-    conn.close()
-
-
-async def test_run_plex_match_leaves_existing_links_untouched_on_connection_failure(manager, tmp_config_dir, monkeypatch):
-    import config as cfg_module
-    import db as db_module
-    from db import upsert_release, set_plex_match
-    import plex
-
-    conn = sqlite3.connect(cfg_module.DB_FILE)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    db_module.init_db(conn)
-    upsert_release(conn, {
-        "discogs_id": "r1", "artist": "Miles Davis", "title": "Kind of Blue", "year": 1959,
-        "label": "Columbia", "format": "Vinyl", "discogs_price": None, "barcode": None,
-        "cover_image_url": "", "discogs_url": "https://discogs.com/release/1",
-    })
-    set_plex_match(conn, "r1", "http://plex.local:32400/web/x")
-
-    def _boom(base_url, token):
-        raise ConnectionError("Plex unreachable")
-    monkeypatch.setattr(plex, "get_music_section_key", _boom)
-
-    await manager._run_plex_match(conn, "plex.local:32400", "tok", 90)
-
-    row = conn.execute("SELECT plex_url FROM releases WHERE discogs_id='r1'").fetchone()
-    assert row[0] == "http://plex.local:32400/web/x"
-
-    statuses = [e["status"] for e in manager.recent_events()]
-    assert statuses == ["plex_match_started", "plex_match_error"]
-    conn.close()
 
 
 # ---------------------------------------------------------------------------
-# judgment-only task (decoupled from full stock sync)
+# judgment-only task (decoupled from stock sync, per-user)
 # ---------------------------------------------------------------------------
 
 async def test_judgment_running_false_initially(manager):
-    assert manager.judgment_running is False
+    assert manager.judgment_running(1) is False
 
 
-async def test_start_judgment_only_returns_true_when_idle(manager, tmp_config_dir):
-    import config as cfg_module
-    cfg_module.save_config({"anthropic_api_key": "sk-ant-test"})
-
-    async def _fake_judgment_only():
+async def test_start_judgment_only_returns_true_when_idle(manager):
+    async def _fake_judgment_phase(user_id):
         await asyncio.sleep(0)
 
-    manager._run_judgment_only = _fake_judgment_only  # type: ignore
-    started = await manager.start_judgment_only()
+    manager._run_judgment_phase = _fake_judgment_phase  # type: ignore
+    started = await manager.start_judgment_only(1)
     assert started is True
     await asyncio.sleep(0.01)
 
@@ -767,86 +1678,176 @@ async def test_start_judgment_only_returns_true_when_idle(manager, tmp_config_di
 async def test_start_judgment_only_returns_false_when_already_running(manager):
     event = asyncio.Event()
 
-    async def _fake_judgment_only():
+    async def _fake_judgment_phase(user_id):
         await event.wait()
 
-    manager._run_judgment_only = _fake_judgment_only  # type: ignore
-    await manager.start_judgment_only()
-    assert manager.judgment_running is True
-    second = await manager.start_judgment_only()
+    manager._run_judgment_phase = _fake_judgment_phase  # type: ignore
+    await manager.start_judgment_only(1)
+    assert manager.judgment_running(1) is True
+    second = await manager.start_judgment_only(1)
     assert second is False
     event.set()
     await asyncio.sleep(0.01)
 
 
-async def test_start_judgment_only_returns_false_when_stock_sync_running(manager):
+async def test_judgment_running_for_one_user_does_not_block_another_users_judgment(manager):
+    """_run_judgment_phase is per-user (own taste listing, own Anthropic key,
+    own stock_item_judgments rows) with no shared-mutable-resource reason to
+    serialize different users against each other, unlike stock sync (which
+    writes one shared stock_items catalog and legitimately stays a single
+    global slot). A per-user _judgment_tasks dict, not a single global task,
+    is what makes this true -- this is the same bug class Task 16 fixed for
+    collection sync's sync_running/_sync_task."""
     event = asyncio.Event()
+
+    async def _fake_judgment_phase(user_id):
+        await event.wait()
+
+    manager._run_judgment_phase = _fake_judgment_phase  # type: ignore
+    alice_started = await manager.start_judgment_only(1)
+    assert alice_started is True
+    assert manager.judgment_running(1) is True
+
+    bob_started = await manager.start_judgment_only(2)
+    assert bob_started is True
+    assert manager.judgment_running(2) is True
+
+    # Alice's own second concurrent call is still refused.
+    alice_second = await manager.start_judgment_only(1)
+    assert alice_second is False
+
+    event.set()
+    await asyncio.sleep(0.01)
+
+
+async def test_start_stock_sync_and_start_judgment_only_run_independently(manager):
+    # Stock sync (global, no user context) and judgment (always per-user) no
+    # longer share a mutex -- unlike the old single-owner build, one user
+    # running a judgment pass must not block another crawl of the shared
+    # catalog, nor vice versa.
+    stock_event = asyncio.Event()
+    judgment_event = asyncio.Event()
 
     async def _fake_sync_stock():
-        await event.wait()
+        await stock_event.wait()
+
+    async def _fake_judgment_phase(user_id):
+        await judgment_event.wait()
 
     manager._sync_stock = _fake_sync_stock  # type: ignore
+    manager._run_judgment_phase = _fake_judgment_phase  # type: ignore
+
     await manager.start_stock_sync()
+    started = await manager.start_judgment_only(1)
+    assert started is True
     assert manager.stock_sync_running is True
-    started = await manager.start_judgment_only()
-    assert started is False
-    event.set()
+    assert manager.judgment_running(1) is True
+
+    stock_event.set()
+    judgment_event.set()
     await asyncio.sleep(0.01)
 
 
-async def test_start_stock_sync_returns_false_when_judgment_running(manager):
-    event = asyncio.Event()
+async def test_paced_search_serializes_same_site_calls_across_concurrent_invocations():
+    manager = CrawlManager()
+    call_log: list[tuple[str, float]] = []
 
-    async def _fake_judgment_only():
-        await event.wait()
+    async def fake_search(release, page):
+        call_log.append(("start", time.monotonic()))
+        await asyncio.sleep(0.05)
+        call_log.append(("end", time.monotonic()))
+        return []
 
-    manager._run_judgment_only = _fake_judgment_only  # type: ignore
-    await manager.start_judgment_only()
-    assert manager.judgment_running is True
-    started = await manager.start_stock_sync()
-    assert started is False
-    event.set()
-    await asyncio.sleep(0.01)
+    plugin = AsyncMock()
+    plugin.search = fake_search
+    pages = {1: (MagicMock(), MagicMock())}
 
-
-async def test_run_judgment_only_broadcasts_error_when_no_api_key(manager, tmp_config_dir):
-    await manager._run_judgment_only()
-    statuses = [e["status"] for e in manager.recent_events()]
-    assert "stock_judgment_error" in statuses
-
-
-async def test_run_judgment_only_judges_unjudged_items_when_api_key_configured(manager, tmp_config_dir, monkeypatch):
-    import config as cfg_module
-    import db as db_module
-    import recommendations
-    from db import register_crawler, replace_stock_items, compute_item_key
-
-    cfg_module.save_config({"anthropic_api_key": "sk-ant-test"})
-
-    conn = sqlite3.connect(cfg_module.DB_FILE)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    db_module.init_db(conn)
-    register_crawler(conn, "Nuclear Blast", "/path/nb.py", crawler_type="catalog")
-    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()[0]
-    replace_stock_items(conn, crawler_id, [
-        {"artist": "Rob Zombie", "title": "T1", "price": 1.0, "currency": "USD", "url": "https://x/1"},
-    ])
-    conn.close()
-
-    key = compute_item_key("Rob Zombie", "T1", "https://x/1")
-    monkeypatch.setattr(
-        recommendations, "judge_batch",
-        lambda client, taste, batch: [{"item_key": key, "recommended": True, "reason": "similar genre"}],
+    # Two "concurrent" calls for the SAME crawler_id (1) must not overlap.
+    await asyncio.gather(
+        manager._paced_search(1, plugin, {}, pages),
+        manager._paced_search(1, plugin, {}, pages),
     )
+    # call_log should read start,end,start,end (serialized), never start,start,end,end.
+    assert [entry[0] for entry in call_log] == ["start", "end", "start", "end"]
 
-    await manager._run_judgment_only()
 
-    statuses = [e["status"] for e in manager.recent_events()]
-    assert "stock_judgment_complete" in statuses
+async def test_paced_search_does_not_serialize_different_sites():
+    manager = CrawlManager()
+    call_log: list[str] = []
 
-    conn2 = sqlite3.connect(cfg_module.DB_FILE)
-    conn2.row_factory = sqlite3.Row
-    row = conn2.execute("SELECT recommended FROM stock_item_judgments WHERE item_key = ?", [key]).fetchone()
-    assert row["recommended"] == 1
-    conn2.close()
+    async def make_fake_search(tag):
+        async def fake_search(release, page):
+            call_log.append(f"{tag}-start")
+            await asyncio.sleep(0.05)
+            call_log.append(f"{tag}-end")
+            return []
+        return fake_search
+
+    plugin_a = AsyncMock()
+    plugin_a.search = await make_fake_search("a")
+    plugin_b = AsyncMock()
+    plugin_b.search = await make_fake_search("b")
+    pages = {1: (MagicMock(), MagicMock()), 2: (MagicMock(), MagicMock())}
+
+    await asyncio.gather(
+        manager._paced_search(1, plugin_a, {}, pages),
+        manager._paced_search(2, plugin_b, {}, pages),
+    )
+    # Different crawler_ids run concurrently — both "start"s happen before either "end".
+    assert call_log[0].endswith("start") and call_log[1].endswith("start")
+
+
+async def test_paced_search_sets_next_allowed_at_within_jitter_bounds():
+    from unittest.mock import patch
+    manager = CrawlManager()
+    plugin = AsyncMock()
+    plugin.search = AsyncMock(return_value=[])
+    pages = {1: (MagicMock(), MagicMock())}
+
+    with patch("config.load_config", return_value={"crawl_delay_seconds": 10}):
+        before = time.monotonic()
+        await manager._paced_search(1, plugin, {}, pages)
+        after = time.monotonic()
+
+    next_allowed = manager._site_next_allowed_at[1]
+    assert before + 5.0 <= next_allowed <= after + 10.0
+
+
+async def test_paced_search_covers_bot_detection_retry_under_one_lock_acquisition():
+    from crawler import BotDetectedError
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    plugin = AsyncMock()
+    plugin.search = AsyncMock(side_effect=[BotDetectedError(), []])
+    pages = {1: (MagicMock(), MagicMock())}
+
+    with patch("crawler._reset_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        # Must not raise -- the retry succeeds under the same _paced_search call.
+        matches, bot_detected = await manager._paced_search(1, plugin, {}, pages)
+    assert matches == []
+    assert bot_detected is True
+    assert plugin.search.call_count == 2
+
+
+async def test_paced_search_records_backoff_even_when_retry_also_fails():
+    from crawler import BotDetectedError
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    plugin = AsyncMock()
+    plugin.search = AsyncMock(side_effect=[BotDetectedError(), RuntimeError("still blocked")])
+    pages = {1: (MagicMock(), MagicMock())}
+
+    with patch("crawler._reset_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        before = time.monotonic()
+        with pytest.raises(RuntimeError):
+            await manager._paced_search(1, plugin, {}, pages)
+        after = time.monotonic()
+
+    # Even though the call ultimately raised, the next-allowed timestamp
+    # must still have been recorded -- otherwise the next request to this
+    # same site fires immediately with zero backoff.
+    next_allowed = manager._site_next_allowed_at[1]
+    assert next_allowed > before
+    assert next_allowed > after
