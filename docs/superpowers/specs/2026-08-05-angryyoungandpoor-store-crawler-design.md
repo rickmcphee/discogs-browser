@@ -5,6 +5,13 @@ _2026-08-05_
 **Status:** Draft
 **Branch:** `store-crawler-angryyoungandpoor`
 
+**Amendment (2026-08-05, during plan-writing):** two corrections to the original Title parsing and accessory filtering section below, found while verifying details against live data before writing the implementation plan (text below is updated in place to match):
+
+1. **The filter is category-specific, not global.** V/A Compilation LPs (`V-A-Compilation-LPs-c397`) titles carry no `"Artist- "` prefix at all — confirmed live: `"Barbarian (Soundtrack) LP (Mothers Milk & Blood Splatter Vinyl)"`, `"Carrie (Soundtrack) 2xLP (Red & Orange Smoke Vinyl)"`. Requiring a `"- "` split globally, as originally written, would have silently dropped every item in that category. The dash+format-token filter applies only to Records-c301, Sale-Records-c472, and Used-Records-c1215 (all three confirmed to use the `"Artist- Title FORMAT (variant)"` shape). V/A Compilation LPs instead requires only a format-token match, with `artist` hardcoded to `"Various Artists"` — that category isn't confirmed to mix in non-release accessories the way Records-c301 does, so the dash gate isn't needed there, and the category can't provide one anyway.
+2. **A format-token check alone is not a safe accessory filter.** `12" Record Sleeve` contains a literal `12"`, which matches the same inch-size token (`\d+\s*"`) used to detect 7"/10"/12" singles — a format-token-only rule would have let it back in. The dash-split requirement is what actually excludes accessories (none of the sampled accessory names contain `"- "` at all); the format-token check is a second, additional gate on top of it, not a substitute for it.
+
+The rest of this section (the concrete regex/split rule) is written below already reflecting both corrections.
+
 ## Overview
 
 Add `angryyoungandpoor.com` as a 32nd catalog source for the Store tab —
@@ -111,16 +118,28 @@ no category tag) distinguishes them:
 Vinyl Styl Record Cleaning Fluid (16oz)
 ```
 
-Filter: require the name to split on `"- "` into two non-empty parts (artist,
-remainder) **and** the remainder to contain a format token
-(`LP`, `2XLP`, `3XLP`, `7"`, `10"`, `12"`, `EP`, case-insensitive). Accessory
-titles have no `"- "` separator at all and fail this immediately. This is a
-new filter shape relative to every existing Shopify crawler — none of them
-lean on a title-regex to separate real releases from non-music listings,
-because Shopify's `product_type`/tags already do that cleanly. Flagging this
-as the weakest part of the design: a real release titled without that dash
-would be silently dropped. None were found in sampling, but sampling wasn't
-exhaustive.
+Filter, for Records-c301 / Sale-Records-c472 / Used-Records-c1215 (all three
+confirmed to use this title shape): require the name to split on `"- "` into
+two non-empty parts (artist, remainder) **and** the remainder to contain a
+format token (`LP`, `2XLP`, `3XLP`, `7"`, `10"`, `12"`, `EP`,
+case-insensitive). Both conditions are required — a format token alone isn't
+enough, since `12" Record Sleeve` contains a literal `12"` and would
+otherwise pass; the dash-split is what actually excludes accessories (no
+sampled accessory name contains `"- "` at all). Accessory titles fail the
+dash-split immediately.
+
+V/A Compilation LPs (`V-A-Compilation-LPs-c397`) doesn't fit this shape —
+titles carry no artist prefix at all (`"Barbarian (Soundtrack) LP (Mothers
+Milk & Blood Splatter Vinyl)"`, `"Carrie (Soundtrack) 2xLP (Red & Orange
+Smoke Vinyl)"`). For this one category, skip the dash requirement, require
+only the format-token match, and hardcode `artist = "Various Artists"`.
+
+This is a new filter shape relative to every existing Shopify crawler — none
+of them lean on a title-regex to separate real releases from non-music
+listings, because Shopify's `product_type`/tags already do that cleanly.
+Flagging this as the weakest part of the design: a real release in one of
+the three dash-shaped categories, titled without a dash, would be silently
+dropped. None were found in sampling, but sampling wasn't exhaustive.
 
 ### Condition and sale-price noise
 
@@ -193,21 +212,27 @@ class Crawler:
             await page.goto(f"{self.base_url}/{category_path}?viewAll=yes", timeout=120_000)
             if "Cloudflare" in await page.title():
                 raise BotDetectedError("Cloudflare interstitial")
-            html = await page.content()
-            for pid, item in self._parse_category(html):
+            raw_products = await page.evaluate(_EXTRACT_JS)
+            for pid, item in self._parse_category(category_path, raw_products):
                 if pid in seen_pids:
                     continue
                 seen_pids.add(pid)
                 yield item
 ```
 
-Parsing (`_parse_category`, likely BeautifulSoup over `page.content()`, same
-as this codebase's other HTML-scraping crawlers) extracts, per
-`data-pid` block: `itemprop="name"` for the raw title, splits on `"- "` for
-artist/remainder, regex-matches a format token, reads
-`<meta itemprop="price" content="...">` for price, `itemprop="url"` for the
-product link, `itemprop="image"` for the cover image. Blocks failing the
-artist/format split are skipped (accessories).
+No HTML-parsing library is added — this codebase has no BeautifulSoup/lxml
+dependency today, and every other Playwright-driven crawler here
+(`amazon.py`) queries the live DOM directly rather than parsing a raw HTML
+string. `_parse_category` instead runs a single `page.evaluate()` per
+category, extracting all `data-pid` blocks inside the confirmed single
+`.pcShowProducts` container into a plain JSON array in one round trip
+(cheaper than looping `page.locator()` calls across ~4400 items):
+`itemprop="name"` for the raw title, `<meta itemprop="price" content="...">`
+for price, `itemprop="url"` for the product link, `itemprop="image"` for the
+cover image, `data-pid` for the dedup key. The artist/title/format split,
+accessory filtering, and `(USED)` condition suffix are then plain Python
+string/regex work on the returned title strings, not part of the
+in-browser extraction.
 
 ## Data model
 
@@ -248,12 +273,34 @@ accessory exclusion (record sleeve / cleaning fluid samples), `(USED)` →
 condition suffix, and cross-category pid dedup (a fixture pair sharing one
 `data-pid`, confirming only one item is yielded).
 
+## Frontend impact
+
+`frontend/src/views/Settings.tsx` buckets crawlers into the Settings page's
+two tables by literal string comparison — `releaseCrawlers = crawlers.filter(c
+=> c.crawler_type !== 'catalog')` and `catalogCrawlers = crawlers.filter(c =>
+c.crawler_type === 'catalog')` ([Settings.tsx:83-84](../../../frontend/src/views/Settings.tsx#L83-L84)).
+A `catalog_browser` crawler would fail the strict `=== 'catalog'` check (so
+it's dropped from the Store Crawlers table) while passing `!== 'catalog'`
+(so it's wrongly bucketed into the release-crawler table instead). This
+needs both filters tightened — `releaseCrawlers` to `c.crawler_type ===
+'release'`, `catalogCrawlers` to `c.crawler_type === 'catalog' ||
+c.crawler_type === 'catalog_browser'` — and `frontend/src/api/types.ts`'s
+`crawler_type: 'release' | 'catalog'` union widened to include
+`'catalog_browser'`. `RecordBrowser.tsx`'s own `crawler_type === 'release'`
+check ([RecordBrowser.tsx:123](../../../frontend/src/views/RecordBrowser.tsx#L123))
+is already strict and needs no change.
+
 ## Open items / accepted gaps
 
 - No sold-out signal confirmed. Everything scraped is treated as in-stock.
-- The `"- "` + format-token filter is a title-shape heuristic, not a
-  structural field — the weakest point in this design; revisit if a real
-  release turns out to lack a dash separator.
+- The `"- "` + format-token filter (Records/Sale/Used) is a title-shape
+  heuristic, not a structural field — the weakest point in this design;
+  revisit if a real release in one of those three categories turns out to
+  lack a dash separator.
+- V/A Compilation LPs is assumed not to mix in non-release accessories the
+  way Records-c301 does, which is why it skips the dash-split gate — this
+  wasn't exhaustively verified, only spot-checked against ~10 sampled titles,
+  all soundtrack/score releases.
 - V/A Compilation LPs' non-overlap with Records-c301 wasn't exhaustively
   verified, only spot-checked. The pid-based dedup makes this safe either
   way.
