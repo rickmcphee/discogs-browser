@@ -98,7 +98,7 @@ def _gsrp_response(fragment_html, page_number, total_pages, count):
 
 
 @respx.mock
-async def test_crawl_catalog_scrapes_search_id_and_yields_parsed_items(monkeypatch):
+async def test_crawl_catalog_scrapes_search_id_and_yields_parsed_items(monkeypatch, tmp_config_dir):
     save_config({"crawl_delay_seconds": 0})
     monkeypatch.setattr(Crawler, "_CATEGORIES", ["/c/2728/record-shop-metal?&so=9&af=-10|-2003|-2"])
     fragment = _load_fragment("rock_pop_indie_page1.json")
@@ -118,7 +118,7 @@ async def test_crawl_catalog_scrapes_search_id_and_yields_parsed_items(monkeypat
 
 
 @respx.mock
-async def test_crawl_catalog_paginates_within_a_category(monkeypatch):
+async def test_crawl_catalog_paginates_within_a_category(monkeypatch, tmp_config_dir):
     save_config({"crawl_delay_seconds": 0})
     monkeypatch.setattr(Crawler, "_CATEGORIES", ["/c/2728/record-shop-metal?&so=9&af=-10|-2003|-2"])
     fragment = _load_fragment("rock_pop_indie_page1.json")
@@ -151,7 +151,7 @@ async def test_crawl_catalog_paginates_within_a_category(monkeypatch):
 
 
 @respx.mock
-async def test_crawl_catalog_dedupes_same_pid_across_categories(monkeypatch):
+async def test_crawl_catalog_dedupes_same_pid_across_categories(monkeypatch, tmp_config_dir):
     save_config({"crawl_delay_seconds": 0})
     monkeypatch.setattr(Crawler, "_CATEGORIES", [
         "/c/2728/record-shop-metal?&so=9&af=-10|-2003|-2",
@@ -184,7 +184,7 @@ async def test_crawl_catalog_dedupes_same_pid_across_categories(monkeypatch):
 
 
 @respx.mock
-async def test_crawl_catalog_skips_category_with_no_search_id(monkeypatch):
+async def test_crawl_catalog_skips_category_with_no_search_id(monkeypatch, tmp_config_dir):
     save_config({"crawl_delay_seconds": 0})
     monkeypatch.setattr(Crawler, "_CATEGORIES", [
         "/c/2728/record-shop-metal?&so=9&af=-10|-2003|-2",
@@ -211,7 +211,7 @@ async def test_crawl_catalog_skips_category_with_no_search_id(monkeypatch):
 
 
 @respx.mock
-async def test_crawl_catalog_sleeps_between_requests_using_configured_delay(monkeypatch):
+async def test_crawl_catalog_sleeps_between_requests_using_configured_delay(monkeypatch, tmp_config_dir):
     save_config({"crawl_delay_seconds": 40})
     monkeypatch.setattr(Crawler, "_CATEGORIES", ["/c/2728/record-shop-metal?&so=9&af=-10|-2003|-2"])
     fragment = _load_fragment("rock_pop_indie_page1.json")
@@ -232,12 +232,12 @@ async def test_crawl_catalog_sleeps_between_requests_using_configured_delay(monk
 
     crawler = Crawler()
     [item async for item in crawler.crawl_catalog()]
-    assert sleep_calls
+    assert len(sleep_calls) == 2
     assert all(20 <= s <= 40 for s in sleep_calls)
 
 
 @respx.mock
-async def test_crawl_catalog_raises_on_http_error(monkeypatch):
+async def test_crawl_catalog_raises_on_http_error(monkeypatch, tmp_config_dir):
     save_config({"crawl_delay_seconds": 0})
     monkeypatch.setattr(Crawler, "_CATEGORIES", ["/c/2728/record-shop-metal?&so=9&af=-10|-2003|-2"])
 
