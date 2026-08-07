@@ -238,10 +238,16 @@ async def test_sync_collection_enqueues_crawl_queue_for_missing_listings(pg_sche
 
 async def test_sync_collection_wishlist_scope_skips_collection_loop(pg_schema, monkeypatch):
     import config
+    import crawl_manager as crawl_manager_module
     import discogs
     monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
     monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
     monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+    # The catalog row for r111 doesn't exist yet, so the wantlist loop's
+    # barcode-fetch branch runs the real 1.1s rate-limit pacing sleep -- skip
+    # it here since this test only cares about scope=wishlist skipping the
+    # collection loop, not barcode-fetch pacing.
+    monkeypatch.setattr(crawl_manager_module.time, "sleep", lambda *a, **k: None)
 
     def _must_not_be_called(*a, **k):
         raise AssertionError("collection loop must not run for scope=wishlist")

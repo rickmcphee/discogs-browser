@@ -102,6 +102,46 @@ def test_refresh_collection_defaults_scope_to_all(pg_test_db, authed_client_fact
     assert calls == [(alice["id"], "all", "all")]
 
 
+def test_refresh_collection_rejects_invalid_scope(pg_test_db, authed_client_factory, monkeypatch):
+    calls = []
+
+    async def _fake_sync(user_id, mode, scope="all"):
+        calls.append((user_id, mode, scope))
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(crawl_manager, "_sync_collection", _fake_sync)
+
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+
+    client = authed_client_factory(alice["id"])
+    r = client.post("/api/collection/refresh?scope=bogus", headers={"X-Requested-With": "fetch"})
+
+    assert r.status_code == 400
+    assert calls == []
+
+
+def test_refresh_collection_rejects_invalid_mode(pg_test_db, authed_client_factory, monkeypatch):
+    calls = []
+
+    async def _fake_sync(user_id, mode, scope="all"):
+        calls.append((user_id, mode, scope))
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(crawl_manager, "_sync_collection", _fake_sync)
+
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+
+    client = authed_client_factory(alice["id"])
+    r = client.post("/api/collection/refresh?mode=bogus", headers={"X-Requested-With": "fetch"})
+
+    assert r.status_code == 400
+    assert calls == []
+
+
 def test_refresh_collection_returns_409_when_already_running_for_calling_user(
     pg_test_db, authed_client_factory, monkeypatch
 ):
