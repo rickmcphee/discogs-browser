@@ -2,12 +2,14 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace eight (nine, counting `piratespressrecords.py`, which uses
-only half the contract) near-identical local `title.split("Artist - Album")`
-implementations with one shared, whitespace-and-en-dash-anchored function in
-`backend/shopify_catalog.py`, eliminating both the duplication and the
-whack-a-mole regex bug currently being patched file-by-file on
-`fix-hyphenated-artist-title-split`.
+**Goal:** Replace eight near-identical local `title.split("Artist - Album")`
+implementations, all currently on `main`, with one shared,
+whitespace-and-en-dash-anchored function in `backend/shopify_catalog.py`,
+eliminating both the duplication and the whack-a-mole regex bug currently
+being patched file-by-file on `fix-hyphenated-artist-title-split`. A ninth
+crawler, `piratespressrecords.py` — which uses only half the contract (the
+album, not artist, half) — gets migrated too, but only once its still-unmerged
+branch (`store-crawler-piratespressrecords`) lands on `main` (see Task 4).
 
 **Architecture:** Spec:
 `docs/specifications/shaping/2026-08-07-shared-title-split-helper-design.md`.
@@ -37,9 +39,11 @@ calls the same function and discards the artist half.
   commit -F <file>` (never `-m`) — see repo `CLAUDE.md` "Commits" section.
 - All work happens in a worktree per this repo's `CLAUDE.md`
   workspace-isolation rule.
-- **No behavior change for any of the nine crawlers on their current live
-  catalogs.** This is a pure refactor: same regex semantics (widened to also
-  accept en-dash, which is a no-op for the seven crawlers that never see one),
+- **No behavior change for any of the eight crawlers already on `main`
+  (plus `piratespressrecords.py`, once its branch merges) on their current
+  live catalogs.** This is a pure refactor: same regex semantics (widened to
+  also accept en-dash, which is a no-op for the seven crawlers that never see
+  one),
   same fallback rule, same return values. Existing crawler tests (which test
   through `crawl_catalog()`, not the private `_parse_artist_title` function
   directly) are the regression check — none should need behavior changes,

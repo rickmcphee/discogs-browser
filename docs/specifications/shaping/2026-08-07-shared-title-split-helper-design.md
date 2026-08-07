@@ -19,7 +19,7 @@ return (vendor or "").strip(), title.strip()
 ```
 
 `_TITLE_RE` itself is byte-identical across seven of those eight
-(`seasonofmist.py`* , `fatherdaughterrecords.py`, `closedcasketactivities.py`,
+(`seasonofmist.py`*, `fatherdaughterrecords.py`, `closedcasketactivities.py`,
 `triplebrecords.py`, `runforcoverrecords.py`, `polyvinylrecords.py`,
 `twentybuckspin.py`):
 
@@ -34,7 +34,7 @@ support: `r'^(?P<artist>.+?)\s*[-–]\s*(?P<album>.+)$'`.
 (see below) — its `_TITLE_RE` will read
 `r'^(?P<artist>.+?)(?:\s+-\s*|\s*-\s+)(?P<album>.+)$'` once that branch lands.
 
-The ninth, `piratespressrecords.py`, has a related but distinct contract:
+The ninth, `piratespressrecords.py`†, has a related but distinct contract:
 `vendor` **is** trusted there, so it only needs the album half of the split,
 not an artist capture group. Its regex is already the whitespace-anchored,
 bug-fixed shape:
@@ -42,6 +42,11 @@ bug-fixed shape:
 ```python
 _TITLE_RE = re.compile(r'^.+?(?:\s+-\s*|\s*-\s+)(?P<album>.+)$')
 ```
+
+† Not yet on `main` — lives on the still-open branch
+`store-crawler-piratespressrecords`. Counted here because it shares the same
+underlying regex bug and this design covers it too (see Task 4 of the plan),
+not because it's already part of the codebase today.
 
 **This is the same regex bug in eight places, not eight independent design
 choices.** The plain `\s*-\s*` form splits on the *first hyphen anywhere*,
