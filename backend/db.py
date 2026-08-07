@@ -1,4 +1,5 @@
 import hashlib
+import re
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Optional
@@ -719,13 +720,28 @@ def compute_item_key(artist: str, title: str, url: str) -> str:
     return hashlib.sha256(f"{artist}|{title}|{url}".encode()).hexdigest()
 
 
+def _title_case_artist(name: str) -> str:
+    # str.title() treats any digit/letter boundary as a new word, mangling
+    # names like "13th Floor Elevators" into "13Th Floor Elevators". Only
+    # capitalize a letter run's first character when it isn't glued directly
+    # to a preceding digit.
+    def _cap_word(match: "re.Match") -> str:
+        word = match.group(0)
+        prev_char = match.string[match.start() - 1] if match.start() > 0 else ""
+        if prev_char.isdigit():
+            return word.lower()
+        return word[0].upper() + word[1:].lower()
+
+    return re.sub(r"[A-Za-z]+", _cap_word, name)
+
+
 def replace_stock_items(conn, crawler_id: int, items: list[dict]):
     conn.execute("DELETE FROM stock_items WHERE crawler_id = %s", [crawler_id])
     if not items:
         return
     rows = []
     for item in items:
-        artist = item["artist"].title()
+        artist = _title_case_artist(item["artist"])
         rows.append((
             crawler_id, artist, item["title"], item.get("format"), item.get("price"),
             item.get("currency"), item["url"], item.get("cover_image_url"),
