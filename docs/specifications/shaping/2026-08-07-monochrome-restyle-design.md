@@ -87,3 +87,25 @@ exist in this repo. This change is a pure visual restyle of existing UI: it
 adds no new trigger, input, output, or external call, and does not change
 the stack, golden commands, or CI/CD. `README.md` has no color or screenshot
 references to update. No agent-facing documentation changes are needed.
+
+## Amendment (2026-08-07, post-implementation)
+
+- The palette table's `ring-indigo-500 → ring-white/70` and
+  `border-indigo-500 border-t-transparent → border-white/70 border-t-transparent`
+  rows shipped without the `/70` opacity — actual values are `ring-white` and
+  `border-white` (solid, not translucent). This was a deliberate
+  simplification made during implementation, not an oversight.
+- The shape mapping's "Modals, cards, inputs, dropdowns → rounded-xl" shipped
+  only for modals/cards (App.tsx's two modals, LoginScreen's card,
+  InviteCodeScreen's form, DebugView's session panel) — plain
+  `<input>`/`<select>` elements across the app were intentionally left at the
+  smaller `rounded`, since bumping every text input's corner radius was
+  outside what this restyle's plan scoped (the plan's per-file tasks never
+  touched input radius, only input focus-border color).
+- The palette table's "Settings toggle switches" row was inaccurate when
+  written — Settings.tsx's `toggleButtonClass` (Visible/Hidden,
+  Enabled/Disabled chips) is green/gray, never indigo; it only needed a
+  radius bump, which shipped. The actual indigo-to-white toggle-style switch
+  is Account.tsx's admin/user role switch, which shipped as `bg-gray-800`
+  (admin) / `bg-gray-600` (user) — two grays, not white/gray as the table
+  stated.
