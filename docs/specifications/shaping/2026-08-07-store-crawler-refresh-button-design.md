@@ -120,7 +120,7 @@ export async function postStockSyncStart(crawlerId?: number): Promise<{ started:
   const r = await apiFetch('/stock/sync/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ crawler_id: crawlerId ?? null }),
+    body: JSON.stringify({ crawler_id: crawlerId }),
   })
   if (!r.ok) throw new Error(await r.text())
   return r.json()
@@ -130,7 +130,9 @@ export async function postStockSyncStart(crawlerId?: number): Promise<{ started:
 `frontend/src/App.tsx`:
 
 - New state: `const [stockSyncTarget, setStockSyncTarget] = useState<number | 'all' | null>(null)`.
-- In the SSE handler: `stock_sync_started` sets `setStockSyncTarget(event.crawler_id ?? 'all')` (in addition to the existing `setSyncing(true)`/`setSyncStatus(...)`); `stock_sync_complete`, `stock_sync_error`, and `stock_sync_aborted` each add `setStockSyncTarget(null)`.
+- In the SSE handler: `stock_sync_started` sets `setStockSyncTarget(event.crawler_id ?? 'all')` (in addition to the existing `setSyncing(true)`/`setSyncStatus(...)`); `stock_sync_complete` and `stock_sync_aborted` each add `setStockSyncTarget(null)`.
+
+**Amendment (found during final review, corrected before merge):** `stock_sync_error` is *not* always terminal — the per-crawler failure inside `_sync_stock`'s loop (the one carrying `"source"`, described above) lets the sync continue to the next crawler, eventually reaching `stock_sync_complete`. The first implementation cleared `stockSyncTarget` unconditionally on every `stock_sync_error`, which re-enabled every refresh button mid-bulk-sync on a single crawler's failure — exactly the silent-no-op the shared lock was meant to prevent. The fix: on `stock_sync_error`, only clear `stockSyncTarget` when `!event.source` — the two terminal emission sites ("no enabled catalog crawlers" and the outer catch-all) never carry `source`; only the non-terminal per-crawler one does.
 - `handleRefreshStock` (existing bulk handler) is unchanged apart from now implicitly passing no `crawler_id`.
 - New `handleRefreshStoreCrawler`:
 
@@ -152,14 +154,14 @@ const handleRefreshStoreCrawler = useCallback(async (crawlerId: number) => {
 
 - New props: `stockSyncBusy: boolean`, `stockSyncCrawlerId: number | null`,
   `onRefreshStoreCrawler: (crawlerId: number) => void`.
-- `renderCrawlerTable` takes a new parameter, `showRefreshColumn: boolean`,
+- `renderCrawlerTable` takes a new parameter, `showRefresh: boolean`,
   `false` by default; only the catalog-crawler call site
   (`renderCrawlerTable(shownCatalogCrawlers, ..., true)`) passes `true`. The
   release-crawler call site is unchanged.
-- Header row: when `isAdmin && showRefreshColumn`, add `<th
+- Header row: when `isAdmin && showRefresh`, add `<th
   className="text-left py-2 w-24">Refresh</th>` immediately after the
   existing `Crawl` header.
-- Body row: when `isAdmin && showRefreshColumn`, add a cell using the same
+- Body row: when `isAdmin && showRefresh`, add a cell using the same
   `navButtonClass` helper `RecordBrowser.tsx` uses for its collection-refresh
   icon button (imported from `../styles/buttons`, not reinvented):
 
@@ -189,11 +191,17 @@ const handleRefreshStoreCrawler = useCallback(async (crawlerId: number) => {
 
 - `backend/tests/test_stock_router.py` — new cases: `POST /stock/sync/start`
   as a non-admin returns 403 (covers both the bulk and single-crawler body
-  shapes, since it's one route); `POST /stock/sync/start` with a
-  `crawler_id` that isn't an enabled catalog crawler starts but syncs
-  nothing (mirrors the existing "no enabled crawlers" bulk test).
-- `backend/tests/test_crawl_manager.py` — new case: `_sync_stock(crawler_id=X)`
-  only calls `crawl_catalog()` on the matching crawler and calls
+  shapes, since it's one route); a `crawler_id` given in the body is
+  forwarded through to `crawl_manager.start_stock_sync` unchanged (verified
+  by faking that method, mirroring this file's existing judgment-start
+  tests — a real asyncio.Task can't be observed across two separate
+  `TestClient` requests here).
+- `backend/tests/test_crawl_manager.py` — new cases: `_sync_stock(crawler_id=X)`
+  only calls `crawl_catalog()` on the matching crawler (both a plain
+  `"catalog"` one and a `"catalog_browser"` one, in two separate tests —
+  the latter added after the final review flagged that nothing guarded the
+  `catalog_browser` half of the enabled-crawler union, the exact clause a
+  stale plan read had deleted earlier in this branch's history) and calls
   `replace_stock_items`/`update_crawler_last_run` only for it; the
   `stock_sync_started` and `stock_sync_complete` broadcasts carry
   `crawler_id=X`; a `crawler_id` for a disabled/nonexistent crawler produces
@@ -204,6 +212,10 @@ const handleRefreshStoreCrawler = useCallback(async (crawlerId: number) => {
   `disabled` when the crawler is disabled or `stockSyncBusy`; clicking it
   calls `onRefreshStoreCrawler` with that crawler's id; the bulk Refresh
   button is `disabled` when `stockSyncBusy`.
+- `frontend/src/test/inStockTab.test.tsx` — new case (added after the final
+  review's Important finding): a non-terminal, `source`-carrying
+  `stock_sync_error` mid-bulk-sync does not clear `stockSyncTarget` or
+  re-enable the refresh buttons; a subsequent `stock_sync_complete` does.
 
 Playwright-driven crawl behavior is unit-tested only insofar as it already
 is (fixtures, mocked `crawl_catalog()`); no new fixture is needed since this
