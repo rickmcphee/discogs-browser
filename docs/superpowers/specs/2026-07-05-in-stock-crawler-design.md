@@ -574,6 +574,7 @@ Using `vendor` as artist here, the way every other site's crawler does, would mi
 - **`vendor` is confirmed unreliable, even for the same artist**: `"Lakes - Slow Fade"` (above) has `vendor: "Big Scary Monsters USA"` (the store itself), while a different Lakes release, `"Lakes - Elysian Skies"`, correctly has `vendor: "Lakes"`. Title parsing is the only consistent source — the crawler never uses `vendor` as the primary artist signal here.
 - **Titles use either a hyphen or an en dash (`–`, U+2013)** as the artist/album separator — confirmed live (`"Alpha Male Tea Party – Reptilian Brain"` uses an en dash; most others use a plain hyphen). The title-parsing regex matches either.
 - Pre-order tag is `"Pre-order"` (capital P, no hyphen) — `has_tag`'s exact match is safe here despite an unrelated `"Test Pressing"` tag also starting with "Pre", since `has_tag` requires exact equality, not a substring match.
+- **Checked for the same hyphenated-artist-name collision** (against both the hyphen and en-dash branches of this crawler's `_TITLE_RE`) — confirmed live against the full 37-product `/collections/vinyl` catalog that no title triggers it here. No code change made.
 
 ### Kill Rock Stars — `/collections/vinyl` is empty; a positive regex plus a bundle-exclusion overlay handles a 38-variant bundle product
 
