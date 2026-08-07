@@ -741,13 +741,22 @@ def _title_case_artist(name: str) -> str:
     return "".join(result)
 
 
+def normalize_artist_casing(artist: str) -> str:
+    # Title-casing an already-mixed-case name (e.g. "A-100s") mangles it
+    # worse than leaving it alone, so only normalize inputs that are all one
+    # case to begin with (all-caps "NAILS", all-lowercase "aphex twin").
+    if artist.isupper() or artist.islower():
+        return _title_case_artist(artist)
+    return artist
+
+
 def replace_stock_items(conn, crawler_id: int, items: list[dict]):
     conn.execute("DELETE FROM stock_items WHERE crawler_id = %s", [crawler_id])
     if not items:
         return
     rows = []
     for item in items:
-        artist = _title_case_artist(item["artist"])
+        artist = normalize_artist_casing(item["artist"])
         # item_key keeps hashing the legacy str.title() casing (not the
         # corrected `artist` above) so existing stock_item_judgments rows,
         # which join on item_key, don't orphan for artists whose casing

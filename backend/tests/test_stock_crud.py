@@ -31,6 +31,23 @@ def test_replace_stock_items_clears_and_inserts_for_crawler(admin_conn):
     assert rows == []
 
 
+def test_replace_stock_items_leaves_mixed_case_artist_untouched(admin_conn):
+    db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "A-100s", "title": "Untitled", "url": "https://x/1", "price": 20.0, "currency": "USD"},
+        {"artist": "NAILS", "title": "Untitled", "url": "https://x/2", "price": 20.0, "currency": "USD"},
+    ])
+    admin_conn.commit()
+    rows = {
+        r["artist"]
+        for r in admin_conn.execute("SELECT artist FROM stock_items WHERE crawler_id = %s", [crawler_id]).fetchall()
+    }
+    assert rows == {"A-100s", "Nails"}  # mixed-case input left as-is; all-caps still title-cased
+
+
 def test_replace_stock_items_title_case_does_not_mangle_leading_digit(admin_conn):
     # Regression: str.title() treats the digit/letter boundary in "13th" as a
     # new word, producing "13Th Floor Elevators".
