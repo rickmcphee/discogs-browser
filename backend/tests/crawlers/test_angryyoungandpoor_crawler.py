@@ -59,14 +59,22 @@ async def test_crawl_catalog_excludes_accessories_and_dedupes_across_categories(
     items = [item async for item in crawler.crawl_catalog(fake_page)]
 
     # records.html loads 3 times (Records, Sale Records, Used Records
-    # categories all map to it) and has 5 raw entries: 2 accessories
-    # (excluded) + 3 real releases, deduped by pid across the 3 loads to 3
-    # unique items. va_compilation.html loads once with 2 real entries.
-    # 3 + 2 = 5 unique items total.
+    # categories all map to it) and has 6 raw entries: 3 non-release items
+    # (2 accessories with no "- " dash separator excluded by the format-token
+    # check, plus a merch item with a "- " dash separator but no format
+    # token, excluded by that same format-token check even though it passes
+    # the dash-split gate) + 3 real releases, deduped by pid across the 3
+    # loads to 3 unique items. va_compilation.html loads once with 2 real
+    # entries. 3 + 2 = 5 unique items total.
     assert len(items) == 5
     titles = {item["title"] for item in items}
     assert "12\" Record Sleeve" not in titles
     assert "Vinyl Styl Record Cleaning Fluid (1.25oz)" not in titles
+    # This one has a "- " dash separator (would pass the dash-split gate
+    # alone) but no format token -- proves the format-token check is a real,
+    # independent second gate on the dash-category branch, not redundant
+    # with the dash-split check.
+    assert "Logo Tote Bag" not in titles
 
 
 async def test_crawl_catalog_parses_real_release(fake_page):
