@@ -1287,6 +1287,43 @@ async def test_sync_stock_with_unmatched_crawler_id_filters_out_all_crawlers(pg_
     ]
 
 
+async def test_sync_stock_with_catalog_browser_crawler_id_filters_to_that_crawler_only(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Browser Site", "/browser.py", crawler_type="catalog_browser")
+        db.register_crawler(conn, "Catalog Site", "/catalog.py", crawler_type="catalog")
+        conn.commit()
+        browser_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Browser Site'").fetchone()["id"]
+
+    loaded_rows = []
+
+    def _fake_load(enabled_crawlers):
+        loaded_rows.extend(enabled_crawlers)
+        plugin = AsyncMock()
+
+        async def _items():
+            yield {"artist": "B", "title": "T", "url": "https://x/2", "price": 15.0, "currency": "USD"}
+
+        plugin.crawl_catalog = lambda: _items()
+        plugin._db_id = enabled_crawlers[0]["id"]
+        plugin._db_site_name = enabled_crawlers[0]["site_name"]
+        return [plugin]
+
+    manager = CrawlManager()
+    with patch("crawler.load_enabled_crawlers", side_effect=_fake_load):
+        await manager._sync_stock(crawler_id=browser_id)
+
+    # Only Browser Site's row was ever handed to the loader -- Catalog Site,
+    # though equally enabled, must never be touched by a single-crawler refresh.
+    assert [row["id"] for row in loaded_rows] == [browser_id]
+
+    events = [(e["status"], e.get("crawler_id")) for e in manager.recent_events()]
+    assert events == [
+        ("stock_sync_started", browser_id),
+        ("stock_sync_progress", None),
+        ("stock_sync_complete", browser_id),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # sweep_enqueue (admin-scheduled, all-users crawl_schedule sweep)
 #

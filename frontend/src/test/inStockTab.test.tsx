@@ -185,6 +185,31 @@ describe('In Stock tab', () => {
     expect(screen.getByRole('button', { name: /Dismiss/i })).toBeInTheDocument()
   })
 
+  it('does not clear stockSyncTarget when a non-terminal per-crawler stock_sync_error fires mid-bulk-sync', async () => {
+    getCrawlers.mockResolvedValue([CATALOG_CRAWLER])
+    render(<App />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    const rowButton = await screen.findByTitle('Refresh Epitaph catalog now')
+    const description = await screen.findByText('Scan all enabled catalog crawlers immediately.')
+    const bulkButton = within(description.closest('tr') as HTMLElement).getByText('Refresh')
+
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    const source = getLastCrawlSource()
+    source.emit({ status: 'stock_sync_started', id: 1 })
+    await waitFor(() => expect(rowButton).toBeDisabled())
+
+    // Non-terminal: a single crawler failed mid-bulk-sync, but the sync
+    // continues (carries "source", the discriminator for "not terminal").
+    source.emit({ status: 'stock_sync_error', error: 'boom', source: 'Some Other Site', id: 2 })
+    expect(rowButton).toBeDisabled()
+    expect(bulkButton).toBeDisabled()
+
+    // Terminal: the bulk sync actually finishes afterward.
+    source.emit({ status: 'stock_sync_complete', synced: 5, id: 3 })
+    await waitFor(() => expect(rowButton).not.toBeDisabled())
+  })
+
   it('does not resurrect a dismissed in-stock sync message when a refresh replays the same buffered event', async () => {
     const { unmount } = render(<App />)
     await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))

@@ -177,8 +177,10 @@ export default function App() {
         return
       }
       if (event.status === 'stock_sync_error') {
-        setSyncing(false)
-        setStockSyncTarget(null)
+        if (!event.source) {
+          setSyncing(false)
+          setStockSyncTarget(null)
+        }
         setSyncStatus(`In-stock sync failed: ${event.error}`, event.id ?? null)
         return
       }
