@@ -57,6 +57,24 @@ async def test_crawl_catalog_parses_artist_from_dash_separated_title_not_vendor(
 
 
 @respx.mock
+async def test_crawl_catalog_keeps_hyphenated_artist_name_intact(crawler):
+    # Confirmed live: the old regex (\s*-\s*, no whitespace requirement) splits
+    # on the FIRST hyphen anywhere, including one inside the artist's own name
+    # with no surrounding space — clipping "Cro-Mags" to "Cro". 16 such titles
+    # were found live (e.g. "Vio-lence", "Al-Namrood", "Bosse-De-Nage").
+    product = {
+        **_PRODUCT,
+        "title": "Cro-Mags - Best Wishes - LP",
+        "handle": "cro-mags-best-wishes-lp",
+    }
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(return_value=_page_response([product]))
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "2"}).mock(return_value=_page_response([]))
+    items = [item async for item in crawler.crawl_catalog()]
+    assert items[0]["artist"] == "Cro-Mags"
+    assert items[0]["title"] == "Best Wishes - LP"
+
+
+@respx.mock
 async def test_crawl_catalog_detects_preorder_from_body_html_not_tags(crawler):
     # No tag or product_type carries pre-order status on this store (both are
     # always "_visible"/"" respectively, confirmed live) — only body_html free
