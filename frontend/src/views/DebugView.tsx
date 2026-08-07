@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { listScreenshotSessions, screenshotUrl } from '../api/client'
 import type { ScreenshotSession, ScreenshotEntry } from '../api/types'
+import { secondaryButtonClass } from '../styles/buttons'
 
 function groupByPath(entries: ScreenshotEntry[]): Record<string, ScreenshotEntry[]> {
   const groups: Record<string, ScreenshotEntry[]> = {}
@@ -22,7 +23,7 @@ function ScreenshotThumb({ entry }: { entry: ScreenshotEntry }) {
       href={url}
       target="_blank"
       rel="noreferrer"
-      className="group block bg-gray-900 border border-gray-700 rounded overflow-hidden hover:border-indigo-500 transition-colors"
+      className="group block bg-gray-900 border border-gray-700 rounded overflow-hidden hover:border-gray-500 transition-colors"
       title={entry.url || entry.path}
     >
       <img
@@ -53,7 +54,7 @@ function SessionPanel({ session }: { session: ScreenshotSession }) {
   )
 
   return (
-    <div className="border border-gray-800 rounded-lg overflow-hidden">
+    <div className="border border-gray-800 rounded-xl overflow-hidden">
       <button
         onClick={() => setExpanded((e) => !e)}
         className="w-full flex items-center justify-between px-4 py-3 bg-gray-900 hover:bg-gray-800 transition-colors"
@@ -71,7 +72,7 @@ function SessionPanel({ session }: { session: ScreenshotSession }) {
             return (
               <div key={groupKey}>
                 <div className="text-xs text-gray-500 mb-2 font-mono">
-                  <span className="text-indigo-400">{site}</span>
+                  <span className="text-gray-300">{site}</span>
                   {release && <span className="text-gray-600"> / {release}</span>}
                 </div>
                 <div className="grid grid-cols-3 gap-3 sm:grid-cols-4 lg:grid-cols-6">
@@ -118,7 +119,7 @@ export default function DebugView() {
         </div>
         <button
           onClick={load}
-          className="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 rounded text-sm text-gray-300 transition-colors"
+          className={`px-3 py-1.5 text-sm ${secondaryButtonClass()}`}
         >
           Refresh
         </button>

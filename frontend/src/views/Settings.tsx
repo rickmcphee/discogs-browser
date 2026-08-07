@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, memo } from 'react'
 import { getSettings, saveSettings, setCrawlerEnabled } from '../api/client'
 import type { Settings as SettingsType, Crawler } from '../api/types'
+import { primaryButtonClass } from '../styles/buttons'
 
 interface SettingRow {
   key: keyof SettingsType
@@ -53,7 +54,7 @@ interface Props {
 }
 
 function toggleButtonClass(on: boolean): string {
-  return `px-3 py-1 rounded text-xs font-medium transition-colors ${
+  return `px-3 py-1 rounded-full text-xs font-medium transition-colors ${
     on ? 'bg-green-700 hover:bg-green-600 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-400'
   }`
 }
@@ -101,7 +102,7 @@ function Settings({
               onChange={(e) =>
                 setSettings({ ...settings, [row.key]: parseInt(e.target.value) || 0 })
               }
-              className="w-24 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-indigo-500"
+              className="w-24 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-gray-400"
             />
           ) : (
             <input
@@ -112,7 +113,7 @@ function Settings({
               onChange={(e) =>
                 setSettings({ ...settings, [row.key]: e.target.value })
               }
-              className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500"
+              className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white placeholder-gray-600 focus:outline-none focus:border-gray-400"
             />
           )}
         </td>
@@ -143,7 +144,7 @@ function Settings({
               <td className="py-3 pr-4 text-left text-gray-200 font-medium">
                 {c.base_url
                   ? <a href={c.base_url} target="_blank" rel="noreferrer"
-                       className="text-indigo-400 hover:text-indigo-300 underline">{c.site_name}</a>
+                       className="text-gray-400 hover:text-white underline">{c.site_name}</a>
                   : c.site_name}
               </td>
               {isAdmin && (
@@ -253,7 +254,7 @@ function Settings({
                       value={settings.crawl_schedule ?? ''}
                       placeholder="0 2 * * *"
                       onChange={(e) => setSettings({ ...settings, crawl_schedule: e.target.value })}
-                      className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500 font-mono text-xs"
+                      className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white placeholder-gray-600 focus:outline-none focus:border-gray-400 font-mono text-xs"
                     />
                   </td>
                   <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
@@ -266,7 +267,7 @@ function Settings({
                     <select
                       value={settings.crawl_schedule_mode ?? 'missing'}
                       onChange={(e) => setSettings({ ...settings, crawl_schedule_mode: e.target.value as 'missing' | 'all' })}
-                      className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-indigo-500"
+                      className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-gray-400"
                     >
                       <option value="missing">Missing only</option>
                       <option value="all">All records</option>
@@ -281,7 +282,7 @@ function Settings({
                   <td className="py-3 pr-4 text-left align-top">
                     <button
                       onClick={() => onRefreshPrices(settings.crawl_schedule_mode as 'missing' | 'all' ?? 'missing')}
-                      className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 rounded text-xs font-medium transition-colors"
+                      className={`px-3 py-1 text-xs ${primaryButtonClass()}`}
                     >
                       Refresh
                     </button>
@@ -318,7 +319,7 @@ function Settings({
                     value={settings.stock_schedule ?? ''}
                     placeholder="0 3 * * *"
                     onChange={(e) => setSettings({ ...settings, stock_schedule: e.target.value })}
-                    className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500 font-mono text-xs"
+                    className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white placeholder-gray-600 focus:outline-none focus:border-gray-400 font-mono text-xs"
                   />
                 </td>
                 <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
@@ -330,7 +331,7 @@ function Settings({
                 <td className="py-3 pr-4 text-left align-top">
                   <button
                     onClick={onRefreshStock}
-                    className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 rounded text-xs font-medium transition-colors"
+                    className={`px-3 py-1 text-xs ${primaryButtonClass()}`}
                   >
                     Refresh
                   </button>
@@ -360,7 +361,7 @@ function Settings({
                 <td className="py-3 pr-4 text-left align-top">
                   <button
                     onClick={onRefreshRecommendations}
-                    className="w-20 text-center px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 disabled:opacity-50 rounded text-xs font-medium transition-colors"
+                    className={`w-20 text-center px-3 py-1 text-xs disabled:opacity-50 ${primaryButtonClass()}`}
                   >
                     Refresh
                   </button>
@@ -375,7 +376,7 @@ function Settings({
                   <button
                     onClick={onClearRecommendations}
                     disabled={!hasJudgedItems}
-                    className="w-20 text-center px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 disabled:opacity-50 rounded text-xs font-medium transition-colors"
+                    className={`w-20 text-center px-3 py-1 text-xs disabled:opacity-50 ${primaryButtonClass()}`}
                   >
                     Clear
                   </button>

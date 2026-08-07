@@ -235,9 +235,13 @@ Today `_run_judgment_phase` logs exactly two lines per run — "Stock judgment s
 
 Several Settings action buttons ("Refresh Now" for collection/prices/stock, "Refresh Recommendations") have a `hover:` style but no `active:` (pressed) style, so a click gives no immediate visual confirmation before the eventual async status-bar update arrives. Fix: add `active:bg-indigo-800` (darker than the existing `hover:bg-indigo-600`) to each. Pure CSS, no behavior change.
 
+**Amendment (2026-08-07, branch `monochrome-restyle`):** `active:bg-indigo-800`/`hover:bg-indigo-600` no longer exist — the app-wide monochrome restyle (see [`2026-08-07-monochrome-restyle-design.md`](../../specifications/shaping/2026-08-07-monochrome-restyle-design.md)) replaced these buttons' indigo styling with the shared `primaryButtonClass()` helper (`frontend/src/styles/buttons.ts`), which already includes distinct `hover:`/`active:` states (`hover:bg-gray-200`/`active:bg-gray-300`). The pressed-feedback behavior this section asked for is preserved, just via the new helper instead of a hand-added `active:` class.
+
 ### 3. Store tab first-load flash
 
 `StockBrowser` renders bare `"Loading…"` text (both list and tile view) during its one-time initial fetch (all five tabs mount immediately at app startup, just hidden via CSS, so this fires once per app session, not per tab click — confirmed not a re-fetch bug). Fix: pair the text with the same small spinner already used in the bottom status bar (`w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin`), for visual consistency with the rest of the app. Cosmetic only — no change to when or how often the fetch runs.
+
+**Amendment (2026-08-07, branch `monochrome-restyle`):** `border-indigo-500` no longer exists anywhere in the app, including this spinner and the bottom status bar's — the monochrome restyle (see [`2026-08-07-monochrome-restyle-design.md`](../../specifications/shaping/2026-08-07-monochrome-restyle-design.md)) changed both to `border-white border-t-transparent`. The two spinners are still visually consistent with each other, just white instead of indigo.
 
 ### 4. `Recommended` gating
 

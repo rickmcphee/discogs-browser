@@ -90,7 +90,7 @@ describe('In Stock tab', () => {
     await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
     const storeButton = screen.getByText('Store')
     fireEvent.click(storeButton)
-    await waitFor(() => expect(storeButton.className).toContain('bg-indigo-600'))
+    await waitFor(() => expect(storeButton.className).toContain('bg-white'))
   })
 
   it('calls postStockSyncStart when Refresh is clicked in Settings', async () => {

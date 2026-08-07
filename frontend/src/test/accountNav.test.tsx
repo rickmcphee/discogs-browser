@@ -59,7 +59,7 @@ describe('header profile navigation', () => {
     render(<App />)
     const button = await screen.findByRole('button', { name: /profile/i })
     fireEvent.click(button)
-    await waitFor(() => expect(button.className).toContain('ring-2 ring-indigo-500'))
+    await waitFor(() => expect(button.className).toContain('ring-2 ring-white'))
     expect(screen.getByRole('heading', { name: 'Recommendations' })).toBeInTheDocument()
   })
 
