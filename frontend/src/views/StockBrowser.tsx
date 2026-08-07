@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, memo } from 'react'
 import { getStock, getStockArtists } from '../api/client'
 import type { StockItem, StockSortField, SortOrder } from '../api/types'
+import { navButtonClass } from '../styles/buttons'
 
 interface Props {
   recommendedAvailable?: boolean
@@ -84,7 +85,7 @@ function StockBrowser({ recommendedAvailable = false, hiddenCrawlerIds = NO_HIDD
         <div className="flex flex-col gap-2 overflow-y-auto p-3">
           <button
             onClick={() => { setSelectedArtist(''); setPage(1) }}
-            className={`shrink-0 text-left text-sm px-2 py-1 rounded ${!selectedArtist ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white'}`}
+            className={`shrink-0 text-left text-sm px-2 py-1 ${navButtonClass(!selectedArtist)}`}
           >
             All
           </button>
@@ -92,7 +93,7 @@ function StockBrowser({ recommendedAvailable = false, hiddenCrawlerIds = NO_HIDD
             <button
               key={a}
               onClick={() => { setSelectedArtist(a); setPage(1) }}
-              className={`shrink-0 text-left text-sm px-2 py-1 rounded truncate ${selectedArtist === a ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white'}`}
+              className={`shrink-0 text-left text-sm px-2 py-1 truncate ${navButtonClass(selectedArtist === a)}`}
             >
               {a}
             </button>
@@ -110,7 +111,7 @@ function StockBrowser({ recommendedAvailable = false, hiddenCrawlerIds = NO_HIDD
               placeholder="Search artist or title…"
               value={search}
               onChange={(e) => { setSearch(e.target.value); setPage(1) }}
-              className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 pr-7 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500"
+              className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 pr-7 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-gray-400"
             />
             <button
               onClick={() => { setSearch(''); setPage(1) }}
@@ -124,7 +125,7 @@ function StockBrowser({ recommendedAvailable = false, hiddenCrawlerIds = NO_HIDD
             <select
               value={filter}
               onChange={(e) => { setFilter(e.target.value as 'all' | 'overlapping' | 'recommended'); setPage(1) }}
-              className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-indigo-500"
+              className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-gray-400"
             >
               <option value="all">All</option>
               <option value="overlapping">Overlapping</option>
@@ -133,7 +134,7 @@ function StockBrowser({ recommendedAvailable = false, hiddenCrawlerIds = NO_HIDD
             <button
               onClick={() => setViewMode('list')}
               title="List view"
-              className={`p-1.5 rounded ${viewMode === 'list' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white'}`}
+              className={`p-1.5 ${navButtonClass(viewMode === 'list')}`}
             >
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
                 <line x1="2" y1="4" x2="14" y2="4" />
@@ -144,7 +145,7 @@ function StockBrowser({ recommendedAvailable = false, hiddenCrawlerIds = NO_HIDD
             <button
               onClick={() => setViewMode('tiles')}
               title="Tile view"
-              className={`p-1.5 rounded ${viewMode === 'tiles' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white'}`}
+              className={`p-1.5 ${navButtonClass(viewMode === 'tiles')}`}
             >
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
                 <rect x="2" y="2" width="5" height="5" />
@@ -161,7 +162,7 @@ function StockBrowser({ recommendedAvailable = false, hiddenCrawlerIds = NO_HIDD
           <div className="flex-1 overflow-auto" ref={tableScrollRef}>
             {loading && (
               <div className="flex items-center justify-center gap-2 py-8 text-gray-500">
-                <div className="w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
                 Loading…
               </div>
             )}
@@ -189,7 +190,7 @@ function StockBrowser({ recommendedAvailable = false, hiddenCrawlerIds = NO_HIDD
                     ) : (
                       <div className="w-full aspect-square bg-gray-800 rounded" />
                     )}
-                    <div className="mt-1.5 text-sm text-gray-200 truncate group-hover:text-indigo-400" title={item.reason ?? undefined}>{item.artist}</div>
+                    <div className="mt-1.5 text-sm text-gray-200 truncate group-hover:text-white" title={item.reason ?? undefined}>{item.artist}</div>
                     <div className="text-xs text-gray-400 truncate" title={item.reason ?? undefined}>{item.title}</div>
                   </a>
                 ))}
@@ -224,7 +225,7 @@ function StockBrowser({ recommendedAvailable = false, hiddenCrawlerIds = NO_HIDD
               {loading && (
                 <tr><td colSpan={6} className="py-8 text-gray-500">
                   <div className="flex items-center justify-center gap-2">
-                    <div className="w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
                     Loading…
                   </div>
                 </td></tr>
