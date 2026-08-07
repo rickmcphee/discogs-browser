@@ -884,6 +884,29 @@ async def test_run_catalog_crawler_retries_once_on_bot_detection_then_succeeds(m
     assert call_count["n"] == 2
 
 
+async def test_run_catalog_crawler_propagates_when_retry_also_fails(manager):
+    from crawler import BotDetectedError
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_context = AsyncMock()
+    fake_page = MagicMock()
+    fake_plugin = MagicMock()
+    fake_plugin.crawler_type = "catalog_browser"
+
+    async def fake_crawl_catalog(page):
+        raise BotDetectedError("interstitial")
+        yield  # pragma: no cover -- unreachable, makes this an async generator
+
+    fake_plugin.crawl_catalog = fake_crawl_catalog
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(fake_context, fake_page))), \
+         patch("crawler._reset_context", new=AsyncMock(return_value=(fake_context, fake_page))):
+        with pytest.raises(BotDetectedError):
+            await manager._run_catalog_crawler(fake_plugin)
+
+    fake_context.close.assert_awaited_once()
+
+
 async def test_worker_row_commit_is_isolated_from_a_later_rows_failure(pg_schema):
     # Proves per-row connection/commit scoping: row 1 finishing successfully
     # must not be rolled back by row 2 blowing up afterward. Before the fix,
