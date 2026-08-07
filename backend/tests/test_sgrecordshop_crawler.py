@@ -52,3 +52,204 @@ def test_parse_items_handles_with_abbreviation_inside_variant_text():
 def test_parse_items_excludes_unavailable_item():
     items = Crawler._parse_items(_load_fragment("rock_pop_indie_page1.json"))
     assert not any(i["pid"] == "26427979" for i in items)
+
+
+import httpx
+import pytest
+import respx
+from config import save_config
+
+
+_METAL_HTML = """
+<script type="text/javascript">
+    $(document).ready(function () {
+        searchFilterable.init({
+                CategoryId: "2728",
+                SearchId: '11111111-1111-1111-1111-111111111111',
+                PageNumber: "1"
+        });
+    });
+</script>
+"""
+
+_ELECTRONIC_HTML = """
+<script type="text/javascript">
+    $(document).ready(function () {
+        searchFilterable.init({
+                CategoryId: "2738",
+                SearchId: '22222222-2222-2222-2222-222222222222',
+                PageNumber: "1"
+        });
+    });
+</script>
+"""
+
+
+def _gsrp_response(fragment_html, page_number, total_pages, count):
+    return httpx.Response(200, json={
+        "success": True,
+        "data": {
+            "data": fragment_html,
+            "itemcount": f"<div>1-{count} of {count} results</div>",
+            "pageNumber": page_number,
+            "totalPages": total_pages,
+        },
+    })
+
+
+@respx.mock
+async def test_crawl_catalog_scrapes_search_id_and_yields_parsed_items(monkeypatch):
+    save_config({"crawl_delay_seconds": 0})
+    monkeypatch.setattr(Crawler, "_CATEGORIES", ["/c/2728/record-shop-metal?&so=9&af=-10|-2003|-2"])
+    fragment = _load_fragment("rock_pop_indie_page1.json")
+
+    respx.get("https://www.sgrecordshop.com/c/2728/record-shop-metal", params={"so": "9", "af": "-10|-2003|-2", "page": "1"}).mock(
+        return_value=httpx.Response(200, text=_METAL_HTML)
+    )
+    respx.get(
+        "https://www.sgrecordshop.com/gsrp/1",
+        params={"so": "9", "af": "-10|-2003|-2", "page": "1"},
+        headers={"X-Search-Guid": "11111111-1111-1111-1111-111111111111"},
+    ).mock(return_value=_gsrp_response(fragment, 1, 1, 3))
+
+    crawler = Crawler()
+    items = [item async for item in crawler.crawl_catalog()]
+    assert {i["pid"] for i in items} == {"26467060", "25883436", "26472934"}
+
+
+@respx.mock
+async def test_crawl_catalog_paginates_within_a_category(monkeypatch):
+    save_config({"crawl_delay_seconds": 0})
+    monkeypatch.setattr(Crawler, "_CATEGORIES", ["/c/2728/record-shop-metal?&so=9&af=-10|-2003|-2"])
+    fragment = _load_fragment("rock_pop_indie_page1.json")
+
+    respx.get("https://www.sgrecordshop.com/c/2728/record-shop-metal", params={"so": "9", "af": "-10|-2003|-2", "page": "1"}).mock(
+        return_value=httpx.Response(200, text=_METAL_HTML)
+    )
+    page1_route = respx.get(
+        "https://www.sgrecordshop.com/gsrp/1",
+        params={"so": "9", "af": "-10|-2003|-2", "page": "1"},
+        headers={"X-Search-Guid": "11111111-1111-1111-1111-111111111111"},
+    ).mock(return_value=_gsrp_response(fragment, 1, 2, 6))
+    page2_route = respx.get(
+        "https://www.sgrecordshop.com/gsrp/2",
+        params={"so": "9", "af": "-10|-2003|-2", "page": "2"},
+        headers={"X-Search-Guid": "11111111-1111-1111-1111-111111111111"},
+    ).mock(return_value=_gsrp_response(fragment, 2, 2, 6))
+
+    crawler = Crawler()
+    items = [item async for item in crawler.crawl_catalog()]
+    # both pages serve the same 3 pids -- this proves both page requests
+    # actually fired (call_count), while dedup correctly still collapses
+    # the result to 3, not 6. (An earlier draft of this test asserted
+    # len(items) == 6 here, which is wrong: dedup collapsing same-category
+    # repeat pids to 3 is correct behavior, not a bug -- caught by actually
+    # running this test during plan-writing, not by inspection.)
+    assert page1_route.call_count == 1
+    assert page2_route.call_count == 1
+    assert len(items) == 3
+
+
+@respx.mock
+async def test_crawl_catalog_dedupes_same_pid_across_categories(monkeypatch):
+    save_config({"crawl_delay_seconds": 0})
+    monkeypatch.setattr(Crawler, "_CATEGORIES", [
+        "/c/2728/record-shop-metal?&so=9&af=-10|-2003|-2",
+        "/c/2738/record-shop-electronic?&so=9&af=-10|-2003|-2013|-2",
+    ])
+    fragment = _load_fragment("rock_pop_indie_page1.json")
+
+    respx.get("https://www.sgrecordshop.com/c/2728/record-shop-metal", params={"so": "9", "af": "-10|-2003|-2", "page": "1"}).mock(
+        return_value=httpx.Response(200, text=_METAL_HTML)
+    )
+    respx.get(
+        "https://www.sgrecordshop.com/gsrp/1",
+        params={"so": "9", "af": "-10|-2003|-2", "page": "1"},
+        headers={"X-Search-Guid": "11111111-1111-1111-1111-111111111111"},
+    ).mock(return_value=_gsrp_response(fragment, 1, 1, 3))
+
+    respx.get("https://www.sgrecordshop.com/c/2738/record-shop-electronic", params={"so": "9", "af": "-10|-2003|-2013|-2", "page": "1"}).mock(
+        return_value=httpx.Response(200, text=_ELECTRONIC_HTML)
+    )
+    respx.get(
+        "https://www.sgrecordshop.com/gsrp/1",
+        params={"so": "9", "af": "-10|-2003|-2013|-2", "page": "1"},
+        headers={"X-Search-Guid": "22222222-2222-2222-2222-222222222222"},
+    ).mock(return_value=_gsrp_response(fragment, 1, 1, 3))
+
+    crawler = Crawler()
+    items = [item async for item in crawler.crawl_catalog()]
+    # both categories serve the same 3 pids -- dedup means 3, not 6
+    assert len(items) == 3
+
+
+@respx.mock
+async def test_crawl_catalog_skips_category_with_no_search_id(monkeypatch):
+    save_config({"crawl_delay_seconds": 0})
+    monkeypatch.setattr(Crawler, "_CATEGORIES", [
+        "/c/2728/record-shop-metal?&so=9&af=-10|-2003|-2",
+        "/c/2738/record-shop-electronic?&so=9&af=-10|-2003|-2013|-2",
+    ])
+    fragment = _load_fragment("rock_pop_indie_page1.json")
+
+    respx.get("https://www.sgrecordshop.com/c/2728/record-shop-metal", params={"so": "9", "af": "-10|-2003|-2", "page": "1"}).mock(
+        return_value=httpx.Response(200, text="<html>no search id here</html>")
+    )
+    respx.get("https://www.sgrecordshop.com/c/2738/record-shop-electronic", params={"so": "9", "af": "-10|-2003|-2013|-2", "page": "1"}).mock(
+        return_value=httpx.Response(200, text=_ELECTRONIC_HTML)
+    )
+    respx.get(
+        "https://www.sgrecordshop.com/gsrp/1",
+        params={"so": "9", "af": "-10|-2003|-2013|-2", "page": "1"},
+        headers={"X-Search-Guid": "22222222-2222-2222-2222-222222222222"},
+    ).mock(return_value=_gsrp_response(fragment, 1, 1, 3))
+
+    crawler = Crawler()
+    items = [item async for item in crawler.crawl_catalog()]
+    # first category has no SearchId and is skipped; second still yields
+    assert len(items) == 3
+
+
+@respx.mock
+async def test_crawl_catalog_sleeps_between_requests_using_configured_delay(monkeypatch):
+    save_config({"crawl_delay_seconds": 40})
+    monkeypatch.setattr(Crawler, "_CATEGORIES", ["/c/2728/record-shop-metal?&so=9&af=-10|-2003|-2"])
+    fragment = _load_fragment("rock_pop_indie_page1.json")
+    sleep_calls = []
+
+    async def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+
+    monkeypatch.setattr("crawlers.sgrecordshop.sleep", fake_sleep)
+    respx.get("https://www.sgrecordshop.com/c/2728/record-shop-metal", params={"so": "9", "af": "-10|-2003|-2", "page": "1"}).mock(
+        return_value=httpx.Response(200, text=_METAL_HTML)
+    )
+    respx.get(
+        "https://www.sgrecordshop.com/gsrp/1",
+        params={"so": "9", "af": "-10|-2003|-2", "page": "1"},
+        headers={"X-Search-Guid": "11111111-1111-1111-1111-111111111111"},
+    ).mock(return_value=_gsrp_response(fragment, 1, 1, 3))
+
+    crawler = Crawler()
+    [item async for item in crawler.crawl_catalog()]
+    assert sleep_calls
+    assert all(20 <= s <= 40 for s in sleep_calls)
+
+
+@respx.mock
+async def test_crawl_catalog_raises_on_http_error(monkeypatch):
+    save_config({"crawl_delay_seconds": 0})
+    monkeypatch.setattr(Crawler, "_CATEGORIES", ["/c/2728/record-shop-metal?&so=9&af=-10|-2003|-2"])
+
+    respx.get("https://www.sgrecordshop.com/c/2728/record-shop-metal", params={"so": "9", "af": "-10|-2003|-2", "page": "1"}).mock(
+        return_value=httpx.Response(200, text=_METAL_HTML)
+    )
+    respx.get(
+        "https://www.sgrecordshop.com/gsrp/1",
+        params={"so": "9", "af": "-10|-2003|-2", "page": "1"},
+        headers={"X-Search-Guid": "11111111-1111-1111-1111-111111111111"},
+    ).mock(return_value=httpx.Response(500))
+
+    crawler = Crawler()
+    with pytest.raises(httpx.HTTPStatusError):
+        [item async for item in crawler.crawl_catalog()]

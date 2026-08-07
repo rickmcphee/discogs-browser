@@ -1,5 +1,15 @@
 import html
+import random
 import re
+from asyncio import sleep
+from typing import AsyncIterator
+
+import httpx
+
+from config import load_config
+from logging_config import get_logger
+
+log = get_logger("sgrecordshop")
 
 _BLOCK_RE = re.compile(
     r'<div class="producttitlelink product-grid-variant".*?'
@@ -11,6 +21,7 @@ _FORMAT_RE = re.compile(r'see-more-format">\s*([^<]+?)\s*<span')
 _PRICE_RE = re.compile(r'itemprop="price">([\d.]+)</span>')
 _IMG_RE = re.compile(r'data-src="([^"]+)"')
 _UNAVAILABLE_RE = re.compile(r'product-variant-unavailable')
+_SEARCH_ID_RE = re.compile(r"SearchId:\s*'([0-9a-f-]+)'")
 
 
 def _norm(s: str) -> str:
@@ -40,6 +51,41 @@ class Crawler:
         "/c/2765/record-shop-soundtracks?&so=9&af=-10|-2003|-2",
         "/c/2753/record-shop-experimental-modern-classical?&so=9&af=-10|-2003",
     ]
+
+    async def crawl_catalog(self) -> AsyncIterator[dict]:
+        cfg = load_config()
+        delay = float(cfg.get("crawl_delay_seconds", 30))
+        seen_pids = set()
+
+        async with httpx.AsyncClient(base_url=self.base_url, follow_redirects=True) as client:
+            for category_qs in self._CATEGORIES:
+                category_path, qs = category_qs.split("?", 1)
+                await sleep(random.uniform(delay * 0.5, delay))
+                r = await client.get(f"{category_path}?{qs}&page=1")
+                r.raise_for_status()
+                m = _SEARCH_ID_RE.search(r.text)
+                if not m:
+                    log.warning("[sgrecordshop] no SearchId on %s, skipping category", category_path)
+                    continue
+                search_id = m.group(1)
+
+                page, total_pages = 1, 1
+                while page <= total_pages:
+                    if page > 1:
+                        await sleep(random.uniform(delay * 0.5, delay))
+                    r = await client.get(
+                        f"/gsrp/{page}?{qs}&page={page}",
+                        headers={"X-Search-Guid": search_id},
+                    )
+                    r.raise_for_status()
+                    payload = r.json()["data"]
+                    total_pages = int(payload["totalPages"])
+                    for item in self._parse_items(payload["data"]):
+                        if item["pid"] in seen_pids:
+                            continue
+                        seen_pids.add(item["pid"])
+                        yield item
+                    page += 1
 
     @classmethod
     def _parse_items(cls, fragment_html: str) -> list:
