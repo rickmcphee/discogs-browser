@@ -206,6 +206,7 @@ describe('Account', () => {
         onRefreshRecommendations={onRefreshRecommendations}
       />
     )
+    await waitFor(() => expect(getUserSettings).toHaveBeenCalled())
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
     expect(onRefreshRecommendations).toHaveBeenCalledTimes(1)
   })
