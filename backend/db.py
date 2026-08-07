@@ -719,13 +719,22 @@ def compute_item_key(artist: str, title: str, url: str) -> str:
     return hashlib.sha256(f"{artist}|{title}|{url}".encode()).hexdigest()
 
 
+def normalize_artist_casing(artist: str) -> str:
+    # .title()-casing an already-mixed-case name (e.g. "A-100s") mangles it
+    # worse than leaving it alone, so only normalize inputs that are all one
+    # case to begin with (all-caps "NAILS", all-lowercase "aphex twin").
+    if artist.isupper() or artist.islower():
+        return artist.title()
+    return artist
+
+
 def replace_stock_items(conn, crawler_id: int, items: list[dict]):
     conn.execute("DELETE FROM stock_items WHERE crawler_id = %s", [crawler_id])
     if not items:
         return
     rows = []
     for item in items:
-        artist = item["artist"].title()
+        artist = normalize_artist_casing(item["artist"])
         rows.append((
             crawler_id, artist, item["title"], item.get("format"), item.get("price"),
             item.get("currency"), item["url"], item.get("cover_image_url"),
