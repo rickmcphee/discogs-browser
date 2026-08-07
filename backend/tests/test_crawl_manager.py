@@ -112,7 +112,7 @@ async def test_start_sync_returns_true_when_idle(manager):
     await asyncio.sleep(0.01)
 
 
-async def test_start_sync_returns_false_when_already_running(manager):
+async def test_start_sync_returns_false_when_already_running(manager, pg_schema):
     event = asyncio.Event()
 
     async def _fake_sync(user_id, mode):
@@ -137,7 +137,7 @@ async def test_sync_running_false_after_completion(manager):
     assert manager.sync_running(1) is False
 
 
-async def test_start_sync_for_one_user_does_not_block_another_users_sync(manager):
+async def test_start_sync_for_one_user_does_not_block_another_users_sync(manager, pg_schema):
     """Collection sync has no shared-resource reason to serialize different
     users against each other (unlike stock sync, which writes one shared
     stock_items catalog) -- each user has their own OAuth token and own
@@ -825,6 +825,88 @@ async def test_worker_retries_once_on_bot_detection_then_succeeds(pg_schema):
     assert listing["price"] == 5.0
 
 
+async def test_run_catalog_crawler_calls_zero_arg_crawl_catalog_for_plain_catalog_type(manager):
+    fake_plugin = MagicMock()
+    fake_plugin.crawler_type = "catalog"
+
+    async def fake_crawl_catalog():
+        yield {"artist": "A", "title": "T", "url": "https://x"}
+    fake_plugin.crawl_catalog = fake_crawl_catalog
+
+    items = await manager._run_catalog_crawler(fake_plugin)
+    assert items == [{"artist": "A", "title": "T", "url": "https://x"}]
+
+
+async def test_run_catalog_crawler_opens_a_page_and_closes_it_for_catalog_browser_type(manager):
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_context = AsyncMock()
+    fake_page = MagicMock()
+    fake_plugin = MagicMock()
+    fake_plugin.crawler_type = "catalog_browser"
+    received_pages = []
+
+    async def fake_crawl_catalog(page):
+        received_pages.append(page)
+        yield {"artist": "A", "title": "T", "url": "https://x"}
+    fake_plugin.crawl_catalog = fake_crawl_catalog
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(fake_context, fake_page))):
+        items = await manager._run_catalog_crawler(fake_plugin)
+
+    assert items == [{"artist": "A", "title": "T", "url": "https://x"}]
+    assert received_pages == [fake_page]
+    fake_context.close.assert_awaited_once()
+
+
+async def test_run_catalog_crawler_retries_once_on_bot_detection_then_succeeds(manager):
+    from crawler import BotDetectedError
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_context = AsyncMock()
+    fake_page = MagicMock()
+    fake_plugin = MagicMock()
+    fake_plugin.crawler_type = "catalog_browser"
+    call_count = {"n": 0}
+
+    async def fake_crawl_catalog(page):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise BotDetectedError("interstitial")
+        yield {"artist": "A", "title": "T", "url": "https://x"}
+    fake_plugin.crawl_catalog = fake_crawl_catalog
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(fake_context, fake_page))), \
+         patch("crawler._reset_context", new=AsyncMock(return_value=(fake_context, fake_page))):
+        items = await manager._run_catalog_crawler(fake_plugin)
+
+    assert items == [{"artist": "A", "title": "T", "url": "https://x"}]
+    assert call_count["n"] == 2
+
+
+async def test_run_catalog_crawler_propagates_when_retry_also_fails(manager):
+    from crawler import BotDetectedError
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_context = AsyncMock()
+    fake_page = MagicMock()
+    fake_plugin = MagicMock()
+    fake_plugin.crawler_type = "catalog_browser"
+
+    async def fake_crawl_catalog(page):
+        raise BotDetectedError("interstitial")
+        yield  # pragma: no cover -- unreachable, makes this an async generator
+
+    fake_plugin.crawl_catalog = fake_crawl_catalog
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(fake_context, fake_page))), \
+         patch("crawler._reset_context", new=AsyncMock(return_value=(fake_context, fake_page))):
+        with pytest.raises(BotDetectedError):
+            await manager._run_catalog_crawler(fake_plugin)
+
+    fake_context.close.assert_awaited_once()
+
+
 async def test_worker_row_commit_is_isolated_from_a_later_rows_failure(pg_schema):
     # Proves per-row connection/commit scoping: row 1 finishing successfully
     # must not be rolled back by row 2 blowing up afterward. Before the fix,
@@ -1344,6 +1426,8 @@ async def test_sync_stock_aborts_after_two_consecutive_429_crawlers(pg_schema, m
         return httpx.HTTPStatusError("429", request=request, response=httpx.Response(429))
 
     class _FailingCrawler:
+        crawler_type = "catalog"
+
         def __init__(self, name):
             self._db_id = ids[name]
             self._db_site_name = name
@@ -1353,6 +1437,8 @@ async def test_sync_stock_aborts_after_two_consecutive_429_crawlers(pg_schema, m
             yield  # pragma: no cover -- keeps this an async generator function
 
     class _SucceedingCrawler:
+        crawler_type = "catalog"
+
         def __init__(self, name):
             self._db_id = ids[name]
             self._db_site_name = name
@@ -1391,6 +1477,8 @@ async def test_sync_stock_resets_429_streak_after_a_success(pg_schema, manager, 
         return httpx.HTTPStatusError("429", request=request, response=httpx.Response(429))
 
     class _FailingCrawler:
+        crawler_type = "catalog"
+
         def __init__(self, name):
             self._db_id = ids[name]
             self._db_site_name = name
@@ -1400,6 +1488,8 @@ async def test_sync_stock_resets_429_streak_after_a_success(pg_schema, manager, 
             yield  # pragma: no cover
 
     class _SucceedingCrawler:
+        crawler_type = "catalog"
+
         def __init__(self, name):
             self._db_id = ids[name]
             self._db_site_name = name
@@ -1434,6 +1524,8 @@ async def test_sync_stock_resets_429_streak_after_a_non_429_failure(pg_schema, m
         return httpx.HTTPStatusError("429", request=request, response=httpx.Response(429))
 
     class _FailingCrawler:
+        crawler_type = "catalog"
+
         def __init__(self, name):
             self._db_id = ids[name]
             self._db_site_name = name
@@ -1443,6 +1535,8 @@ async def test_sync_stock_resets_429_streak_after_a_non_429_failure(pg_schema, m
             yield  # pragma: no cover
 
     class _OtherFailureCrawler:
+        crawler_type = "catalog"
+
         def __init__(self, name):
             self._db_id = ids[name]
             self._db_site_name = name
@@ -1478,6 +1572,8 @@ async def test_sync_stock_does_not_broadcast_stock_sync_error_for_a_lone_429(pg_
         return httpx.HTTPStatusError("429", request=request, response=httpx.Response(429))
 
     class _FailingCrawler:
+        crawler_type = "catalog"
+
         def __init__(self, name):
             self._db_id = ids[name]
             self._db_site_name = name
@@ -1487,6 +1583,8 @@ async def test_sync_stock_does_not_broadcast_stock_sync_error_for_a_lone_429(pg_
             yield  # pragma: no cover
 
     class _SucceedingCrawler:
+        crawler_type = "catalog"
+
         def __init__(self, name):
             self._db_id = ids[name]
             self._db_site_name = name
@@ -1675,7 +1773,7 @@ async def test_start_judgment_only_returns_true_when_idle(manager):
     await asyncio.sleep(0.01)
 
 
-async def test_start_judgment_only_returns_false_when_already_running(manager):
+async def test_start_judgment_only_returns_false_when_already_running(manager, pg_schema):
     event = asyncio.Event()
 
     async def _fake_judgment_phase(user_id):
@@ -1690,7 +1788,7 @@ async def test_start_judgment_only_returns_false_when_already_running(manager):
     await asyncio.sleep(0.01)
 
 
-async def test_judgment_running_for_one_user_does_not_block_another_users_judgment(manager):
+async def test_judgment_running_for_one_user_does_not_block_another_users_judgment(manager, pg_schema):
     """_run_judgment_phase is per-user (own taste listing, own Anthropic key,
     own stock_item_judgments rows) with no shared-mutable-resource reason to
     serialize different users against each other, unlike stock sync (which

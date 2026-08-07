@@ -719,12 +719,34 @@ def compute_item_key(artist: str, title: str, url: str) -> str:
     return hashlib.sha256(f"{artist}|{title}|{url}".encode()).hexdigest()
 
 
+def _title_case_artist(name: str) -> str:
+    # str.title() treats any digit/letter boundary as a new word, mangling
+    # names like "13th Floor Elevators" into "13Th Floor Elevators". Walk
+    # runs of Unicode letters (str.isalpha(), not an ASCII-only [A-Za-z]
+    # regex, which would mishandle accented names like "Björk") and only
+    # capitalize a run's first letter when it isn't glued directly to a
+    # preceding digit.
+    result = []
+    in_word = False
+    for i, ch in enumerate(name):
+        if ch.isalpha():
+            if not in_word and not (i > 0 and name[i - 1].isdigit()):
+                ch = ch.upper()
+            else:
+                ch = ch.lower()
+            in_word = True
+        else:
+            in_word = False
+        result.append(ch)
+    return "".join(result)
+
+
 def normalize_artist_casing(artist: str) -> str:
-    # .title()-casing an already-mixed-case name (e.g. "A-100s") mangles it
+    # Title-casing an already-mixed-case name (e.g. "A-100s") mangles it
     # worse than leaving it alone, so only normalize inputs that are all one
     # case to begin with (all-caps "NAILS", all-lowercase "aphex twin").
     if artist.isupper() or artist.islower():
-        return artist.title()
+        return _title_case_artist(artist)
     return artist
 
 
@@ -735,10 +757,14 @@ def replace_stock_items(conn, crawler_id: int, items: list[dict]):
     rows = []
     for item in items:
         artist = normalize_artist_casing(item["artist"])
+        # item_key keeps hashing the legacy str.title() casing (not the
+        # corrected `artist` above) so existing stock_item_judgments rows,
+        # which join on item_key, don't orphan for artists whose casing
+        # changed here.
         rows.append((
             crawler_id, artist, item["title"], item.get("format"), item.get("price"),
             item.get("currency"), item["url"], item.get("cover_image_url"),
-            compute_item_key(artist, item["title"], item["url"]),
+            compute_item_key(item["artist"].title(), item["title"], item["url"]),
         ))
     with conn.cursor() as cur:
         cur.executemany(
