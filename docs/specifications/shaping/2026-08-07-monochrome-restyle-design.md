@@ -74,7 +74,7 @@ to the matching helper.
 Two existing tests assert on the current indigo classes and must be updated
 to assert on the new grayscale classes instead:
 
-- `frontend/src/test/accountNav.test.tsx:62` — asserts `ring-2 ring-indigo-500`, becomes `ring-2 ring-white/70`.
+- `frontend/src/test/accountNav.test.tsx:62` — asserts `ring-2 ring-indigo-500`, becomes `ring-2 ring-white` (shipped without the `/70` opacity — see the Amendment below).
 - `frontend/src/test/inStockTab.test.tsx:93` — asserts `bg-indigo-600`, becomes `bg-white`.
 
 No other test files assert on color or radius classes (verified via grep for
