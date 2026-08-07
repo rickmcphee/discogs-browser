@@ -112,7 +112,7 @@ async def test_start_sync_returns_true_when_idle(manager):
     await asyncio.sleep(0.01)
 
 
-async def test_start_sync_returns_false_when_already_running(manager):
+async def test_start_sync_returns_false_when_already_running(manager, pg_schema):
     event = asyncio.Event()
 
     async def _fake_sync(user_id, mode):
@@ -137,7 +137,7 @@ async def test_sync_running_false_after_completion(manager):
     assert manager.sync_running(1) is False
 
 
-async def test_start_sync_for_one_user_does_not_block_another_users_sync(manager):
+async def test_start_sync_for_one_user_does_not_block_another_users_sync(manager, pg_schema):
     """Collection sync has no shared-resource reason to serialize different
     users against each other (unlike stock sync, which writes one shared
     stock_items catalog) -- each user has their own OAuth token and own
@@ -1773,7 +1773,7 @@ async def test_start_judgment_only_returns_true_when_idle(manager):
     await asyncio.sleep(0.01)
 
 
-async def test_start_judgment_only_returns_false_when_already_running(manager):
+async def test_start_judgment_only_returns_false_when_already_running(manager, pg_schema):
     event = asyncio.Event()
 
     async def _fake_judgment_phase(user_id):
@@ -1788,7 +1788,7 @@ async def test_start_judgment_only_returns_false_when_already_running(manager):
     await asyncio.sleep(0.01)
 
 
-async def test_judgment_running_for_one_user_does_not_block_another_users_judgment(manager):
+async def test_judgment_running_for_one_user_does_not_block_another_users_judgment(manager, pg_schema):
     """_run_judgment_phase is per-user (own taste listing, own Anthropic key,
     own stock_item_judgments rows) with no shared-mutable-resource reason to
     serialize different users against each other, unlike stock sync (which
