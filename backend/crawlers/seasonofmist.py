@@ -3,7 +3,12 @@ from typing import AsyncIterator
 from shopify_catalog import iter_products, resolve_cover_image
 
 _COLLECTION_SLUG = "vinyl"
-_TITLE_RE = re.compile(r'^(?P<artist>.+?)\s*-\s*(?P<album>.+)$')
+# Requires whitespace on at least one side of the splitting hyphen, not just
+# any hyphen — confirmed live that 16 real artist names on this store contain
+# an internal hyphen with no surrounding space (e.g. "Cro-Mags", "Vio-lence",
+# "Al-Namrood"), and the plain \s*-\s* form clips them (e.g. "Cro-Mags" ->
+# "Cro"). The real separator " - " always has whitespace on both sides.
+_TITLE_RE = re.compile(r'^(?P<artist>.+?)(?:\s+-\s*|\s*-\s+)(?P<album>.+)$')
 _PREORDER_RE = re.compile(r'pre-?order', re.IGNORECASE)
 
 
@@ -53,8 +58,11 @@ class Crawler:
         # "Artist - Album - Format" (e.g. "Windir - 1184 - DOUBLE LP GATEFOLD
         # COLORED"). Reuses Run For Cover's non-greedy dash-split: it stops at
         # the FIRST " - ", so the album capture correctly keeps any further
-        # dashes (the format descriptor) intact. Falls back to vendor only for
-        # the rare title with no " - " at all.
+        # dashes (the format descriptor) intact. Requires whitespace on at least
+        # one side of the splitting hyphen to avoid clipping hyphenated artist
+        # names like "Cro-Mags" (confirmed live: 16 such names would clip to
+        # "Cro", "Vio", etc. with the plain \s*-\s* form). Falls back to vendor
+        # only for the rare title with no " - " at all.
         m = _TITLE_RE.match(title)
         if m:
             return m.group("artist").strip(), m.group("album").strip()
