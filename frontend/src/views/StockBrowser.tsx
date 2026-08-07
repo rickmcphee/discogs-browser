@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, memo } from 'react'
 import { getStock, getStockArtists } from '../api/client'
 import type { StockItem, StockSortField, SortOrder } from '../api/types'
-import { navButtonClass } from '../styles/buttons'
+import { navButtonClass, dismissButtonClass } from '../styles/buttons'
 
 interface Props {
   recommendedAvailable?: boolean
@@ -265,9 +265,9 @@ function StockBrowser({ recommendedAvailable = false, hiddenCrawlerIds = NO_HIDD
         {/* Pagination */}
         {totalPages > 1 && (
           <div className="border-t border-gray-800 px-4 py-2 flex items-center gap-2 text-sm text-gray-400">
-            <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1} className="px-2 py-1 rounded hover:bg-gray-800 disabled:opacity-40">← Prev</button>
+            <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1} className={`px-2 py-1 disabled:opacity-40 ${dismissButtonClass()}`}>← Prev</button>
             <span>Page {page} of {totalPages}</span>
-            <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages} className="px-2 py-1 rounded hover:bg-gray-800 disabled:opacity-40">Next →</button>
+            <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages} className={`px-2 py-1 disabled:opacity-40 ${dismissButtonClass()}`}>Next →</button>
           </div>
         )}
       </div>

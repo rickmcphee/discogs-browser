@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { getReleases, getArtists } from '../api/client'
 import type { Release, Crawler, SortField, SortOrder, CrawlEvent, RecordScope } from '../api/types'
-import { navButtonClass } from '../styles/buttons'
+import { navButtonClass, dismissButtonClass } from '../styles/buttons'
 
 interface Props {
   scope: RecordScope
@@ -207,7 +207,7 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
                 onClick={onRefreshCollection}
                 disabled={syncing}
                 title="Sync collection from Discogs"
-                className="p-1.5 rounded text-gray-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                className={`p-1.5 disabled:opacity-30 disabled:cursor-not-allowed ${navButtonClass(false)}`}
               >
                 <span className="block text-base leading-none">{syncing ? '⟳' : '↻'}</span>
               </button>
@@ -408,7 +408,7 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
             <button
               onClick={() => setPage((p) => Math.max(1, p - 1))}
               disabled={page === 1}
-              className="px-2 py-1 rounded hover:bg-gray-800 disabled:opacity-40"
+              className={`px-2 py-1 disabled:opacity-40 ${dismissButtonClass()}`}
             >
               ← Prev
             </button>
@@ -416,7 +416,7 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
             <button
               onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
               disabled={page === totalPages}
-              className="px-2 py-1 rounded hover:bg-gray-800 disabled:opacity-40"
+              className={`px-2 py-1 disabled:opacity-40 ${dismissButtonClass()}`}
             >
               Next →
             </button>

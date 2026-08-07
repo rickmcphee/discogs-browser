@@ -521,7 +521,7 @@ export default function App() {
       {/* Collection refresh modal */}
       {collectionStatus && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-          <div className="bg-gray-900 border border-gray-700 rounded-lg shadow-xl p-6 w-96 max-w-full mx-4">
+          <div className="bg-gray-900 border border-gray-700 rounded-xl shadow-xl p-6 w-96 max-w-full mx-4">
             <h2 className="text-white font-semibold text-lg mb-2">Collection already loaded</h2>
             <p className="text-gray-400 text-sm mb-1">
               <span className="text-white font-medium">{collectionStatus.total}</span> records in your collection.
@@ -560,7 +560,7 @@ export default function App() {
       {/* Checkpoint modal */}
       {checkpointStatus && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-          <div className="bg-gray-900 border border-gray-700 rounded-lg shadow-xl p-6 w-96 max-w-full mx-4">
+          <div className="bg-gray-900 border border-gray-700 rounded-xl shadow-xl p-6 w-96 max-w-full mx-4">
             <h2 className="text-white font-semibold text-lg mb-2">Resume previous run?</h2>
             <p className="text-gray-400 text-sm mb-1">
               <span className="text-white font-medium">{checkpointStatus.missing}</span> of{' '}
@@ -635,7 +635,7 @@ export default function App() {
               {crawlTotal > 0 ? `${crawlCount}/${crawlTotal}: ` : ''}
               <span className="text-gray-200">{crawlCurrent.artist} — {crawlCurrent.release}</span>
               {' '}on{' '}
-              <span className="text-gray-400">{crawlCurrent.site}</span>
+              <span className="text-gray-200">{crawlCurrent.site}</span>
             </span>
           )}
           {!crawling && (
