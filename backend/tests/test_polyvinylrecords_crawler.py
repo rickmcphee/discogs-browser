@@ -76,6 +76,25 @@ async def test_crawl_catalog_parses_artist_from_title_not_label_vendor(crawler):
 
 
 @respx.mock
+async def test_crawl_catalog_keeps_hyphenated_artist_name_intact(crawler):
+    # Confirmed live: the old regex (\s*-\s*, no whitespace requirement) splits
+    # on the FIRST hyphen anywhere, clipping "blink-182" to "blink". 7 other
+    # real titles on this store hit the same collision (e.g. "Sleater-Kinney",
+    # "Wu-Tang Clan", "The All-American Rejects").
+    product = {
+        **_PRODUCT,
+        "title": "blink-182 - Dude Ranch",
+        "vendor": "Geffen Records",
+        "handle": "blink-182-dude-ranch",
+    }
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(return_value=_page_response([product]))
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "2"}).mock(return_value=_page_response([]))
+    items = [item async for item in crawler.crawl_catalog()]
+    assert items[0]["artist"] == "blink-182"
+    assert items[0]["title"] == "Dude Ranch — Vinyl (Blue)"
+
+
+@respx.mock
 async def test_crawl_catalog_includes_third_party_distributed_title(crawler):
     respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(return_value=_page_response([_NON_POLYVINYL_PRODUCT]))
     respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "2"}).mock(return_value=_page_response([]))

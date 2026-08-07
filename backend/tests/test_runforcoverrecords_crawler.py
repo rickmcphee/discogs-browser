@@ -62,6 +62,24 @@ async def test_crawl_catalog_excludes_digital_download_variant(crawler):
 
 
 @respx.mock
+async def test_crawl_catalog_keeps_hyphenated_artist_name_intact(crawler):
+    # Confirmed live: the old regex (\s*-\s*, no whitespace requirement) splits
+    # on the FIRST hyphen anywhere, clipping "Ultra-Lite" to "Ultra".
+    product = {
+        **_PRODUCT,
+        "title": "Ultra-Lite - Enjoy Your Time in the Sun LP",
+        "vendor": "Ultra-Lite",
+        "handle": "ultra-lite-enjoy-your-time-in-the-sun-lp",
+        "variants": [{"title": "LP", "price": "22.00", "available": True}],
+    }
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(return_value=_page_response([product]))
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "2"}).mock(return_value=_page_response([]))
+    items = [item async for item in crawler.crawl_catalog()]
+    assert items[0]["artist"] == "Ultra-Lite"
+    assert items[0]["title"] == "Enjoy Your Time in the Sun LP — LP"
+
+
+@respx.mock
 async def test_crawl_catalog_uses_vendor_fallback_when_vendor_is_distro_placeholder(crawler):
     # Even the distro placeholder vendor doesn't break title-based parsing since the
     # dash split always wins when present.
