@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { getReleases, getArtists } from '../api/client'
 import type { Release, Crawler, SortField, SortOrder, CrawlEvent, RecordScope } from '../api/types'
+import { navButtonClass, dismissButtonClass } from '../styles/buttons'
 
 interface Props {
   scope: RecordScope
@@ -131,7 +132,7 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
         <div className="flex flex-col gap-2 overflow-y-auto p-3">
           <button
             onClick={() => { setSelectedArtist(''); setPage(1) }}
-            className={`shrink-0 text-left text-sm px-2 py-1 rounded ${!selectedArtist ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white'}`}
+            className={`shrink-0 text-left text-sm px-2 py-1 ${navButtonClass(!selectedArtist)}`}
           >
             All
           </button>
@@ -139,7 +140,7 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
             <button
               key={a}
               onClick={() => { setSelectedArtist(a); setPage(1) }}
-              className={`shrink-0 text-left text-sm px-2 py-1 rounded truncate ${selectedArtist === a ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white'}`}
+              className={`shrink-0 text-left text-sm px-2 py-1 truncate ${navButtonClass(selectedArtist === a)}`}
             >
               {a}
             </button>
@@ -157,7 +158,7 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
               placeholder="Search artist or title…"
               value={search}
               onChange={(e) => { setSearch(e.target.value); setPage(1) }}
-              className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 pr-7 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500"
+              className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 pr-7 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-gray-400"
             />
             <button
               onClick={() => { setSearch(''); setPage(1) }}
@@ -172,7 +173,7 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
               <select
                 value={unmatched ? 'unmatched' : 'all'}
                 onChange={(e) => { setUnmatched(e.target.value === 'unmatched'); setPage(1) }}
-                className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-indigo-500"
+                className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-gray-400"
               >
                 <option value="all">All</option>
                 <option value="unmatched">Unmatched</option>
@@ -181,7 +182,7 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
             <button
               onClick={() => setViewMode('list')}
               title="List view"
-              className={`p-1.5 rounded ${viewMode === 'list' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white'}`}
+              className={`p-1.5 ${navButtonClass(viewMode === 'list')}`}
             >
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
                 <line x1="2" y1="4" x2="14" y2="4" />
@@ -192,7 +193,7 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
             <button
               onClick={() => setViewMode('tiles')}
               title="Tile view"
-              className={`p-1.5 rounded ${viewMode === 'tiles' ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white'}`}
+              className={`p-1.5 ${navButtonClass(viewMode === 'tiles')}`}
             >
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
                 <rect x="2" y="2" width="5" height="5" />
@@ -206,7 +207,7 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
                 onClick={onRefreshCollection}
                 disabled={syncing}
                 title="Sync collection from Discogs"
-                className="p-1.5 rounded text-gray-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                className={`p-1.5 disabled:opacity-30 disabled:cursor-not-allowed ${navButtonClass(false)}`}
               >
                 <span className="block text-base leading-none">{syncing ? '⟳' : '↻'}</span>
               </button>
@@ -246,7 +247,7 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
                         href={r.plex_url}
                         target="_blank"
                         rel="noreferrer"
-                        className="text-xs text-gray-400 truncate hover:text-indigo-400 block"
+                        className="text-xs text-gray-400 truncate hover:text-white block"
                       >
                         {r.title}
                       </a>
@@ -352,7 +353,7 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
                   </td>
                   <td className="px-3 py-2 text-gray-300">
                     {r.plex_url ? (
-                      <a href={r.plex_url} target="_blank" rel="noreferrer" className="hover:text-indigo-400">
+                      <a href={r.plex_url} target="_blank" rel="noreferrer" className="hover:text-white">
                         {r.title}
                       </a>
                     ) : (
@@ -388,7 +389,7 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
                     <button
                       onClick={() => onRefreshPrices(r.discogs_id)}
                       disabled={crawling}
-                      className="text-xs text-gray-500 hover:text-indigo-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                      className="text-xs text-gray-500 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                       title="Refresh prices for this record"
                     >
                       {crawlingReleaseId === r.discogs_id ? '⟳' : '↻'}
@@ -407,7 +408,7 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
             <button
               onClick={() => setPage((p) => Math.max(1, p - 1))}
               disabled={page === 1}
-              className="px-2 py-1 rounded hover:bg-gray-800 disabled:opacity-40"
+              className={`px-2 py-1 disabled:opacity-40 ${dismissButtonClass()}`}
             >
               ← Prev
             </button>
@@ -415,7 +416,7 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
             <button
               onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
               disabled={page === totalPages}
-              className="px-2 py-1 rounded hover:bg-gray-800 disabled:opacity-40"
+              className={`px-2 py-1 disabled:opacity-40 ${dismissButtonClass()}`}
             >
               Next →
             </button>

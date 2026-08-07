@@ -103,6 +103,8 @@ export function avatarUrl(version: number): string {
     <Avatar version={avatarVersion} size="sm" />
   </button>
   ```
+
+  **Amendment (2026-08-07, branch `monochrome-restyle`):** `ring-indigo-500` no longer exists — the app-wide monochrome restyle (see [`2026-08-07-monochrome-restyle-design.md`](../../specifications/shaping/2026-08-07-monochrome-restyle-design.md)) changed the active-view ring to `ring-2 ring-white`, keeping the `hover:ring-2 hover:ring-gray-600` inactive state unchanged. The snippet above is left as originally written for historical context; the current source is the ground truth.
 - Render `<Account />` when `view === 'account'`, passing `avatarVersion`/`onAvatarChange` (same pattern as the existing `view === 'settings'` wrapper `div`).
 
 **New `frontend/src/views/Account.tsx`** (replaces the removed section in `Settings.tsx`):

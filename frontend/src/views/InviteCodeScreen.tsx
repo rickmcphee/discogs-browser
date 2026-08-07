@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { redeemInvite } from '../api/client'
+import { primaryButtonClass } from '../styles/buttons'
 
 export default function InviteCodeScreen({
   signupToken,
@@ -28,17 +29,17 @@ export default function InviteCodeScreen({
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-950">
-      <form onSubmit={submit} className="bg-gray-900 border border-gray-700 rounded-lg shadow-xl p-8 w-80 space-y-4">
+      <form onSubmit={submit} className="bg-gray-900 border border-gray-700 rounded-xl shadow-xl p-8 w-80 space-y-4">
         <h1 className="text-base font-semibold text-white">Enter your invite code</h1>
         <input
           type="text" placeholder="Invite code" value={code}
           onChange={e => setCode(e.target.value)}
-          className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500"
+          className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white placeholder-gray-500 focus:outline-none focus:border-gray-400"
           autoFocus
         />
         {error && <p className="text-red-400 text-sm">{error}</p>}
         <button type="submit" disabled={busy}
-          className="w-full bg-indigo-600 hover:bg-indigo-500 text-white rounded py-2 text-sm font-medium transition-colors disabled:opacity-50">
+          className={`w-full py-2 text-sm disabled:opacity-50 ${primaryButtonClass()}`}>
           {busy ? 'Checking…' : 'Continue'}
         </button>
       </form>

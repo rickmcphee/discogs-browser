@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, memo } from 'react'
 import Avatar from '../components/Avatar'
 import { deleteAvatar, getUserSettings, logout, postPlexMatchStart, saveUserSettings, uploadAvatar } from '../api/client'
+import { primaryButtonClass, secondaryButtonClass } from '../styles/buttons'
 
 interface Props {
   avatarVersion: number
@@ -164,7 +165,7 @@ function Account({
               <button
                 onClick={() => fileInputRef.current?.click()}
                 disabled={avatarBusy}
-                className="text-sm text-indigo-400 hover:text-indigo-300 transition-colors"
+                className="text-sm text-gray-400 hover:text-white transition-colors"
               >
                 Change photo
               </button>
@@ -190,7 +191,7 @@ function Account({
                   aria-label="Toggle admin/user view"
                   onClick={onToggleViewAsUser}
                   className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                    viewingAsUser ? 'bg-gray-600' : 'bg-indigo-600'
+                    viewingAsUser ? 'bg-gray-600' : 'bg-gray-800'
                   }`}
                 >
                   <span
@@ -208,7 +209,7 @@ function Account({
                   window.location.reload()
                 }).catch(() => {})
               }}
-              className="px-3 py-1 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded text-xs font-medium transition-colors"
+              className={`px-3 py-1 text-xs ${secondaryButtonClass()}`}
             >
               Log out
             </button>
@@ -235,7 +236,7 @@ function Account({
                   value={anthropicApiKey}
                   placeholder="sk-ant-..."
                   onChange={(e) => setAnthropicApiKey(e.target.value)}
-                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500"
+                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white placeholder-gray-600 focus:outline-none focus:border-gray-400"
                 />
               </td>
               <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
@@ -253,7 +254,7 @@ function Account({
                   aria-label="Recommendation item limit"
                   value={recommendationItemLimit}
                   onChange={(e) => setRecommendationItemLimit(Math.max(0, parseInt(e.target.value) || 0))}
-                  className="w-24 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-indigo-500"
+                  className="w-24 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-gray-400"
                 />
               </td>
               <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
@@ -266,7 +267,7 @@ function Account({
                 <button
                   onClick={onExportRecommendations}
                   disabled={!hasJudgedItems}
-                  className="w-20 text-center px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 disabled:opacity-50 rounded text-xs font-medium transition-colors"
+                  className={`w-20 text-center px-3 py-1 text-xs disabled:opacity-50 ${primaryButtonClass()}`}
                 >
                   Export
                 </button>
@@ -299,7 +300,7 @@ function Account({
                   value={plexBaseUrl}
                   placeholder="https://1-2-3-4.abcd1234.plex.direct:32400"
                   onChange={(e) => setPlexBaseUrl(e.target.value)}
-                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500"
+                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white placeholder-gray-600 focus:outline-none focus:border-gray-400"
                 />
               </td>
               <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
@@ -322,7 +323,7 @@ function Account({
                   value={plexToken}
                   placeholder="your Plex token"
                   onChange={(e) => setPlexToken(e.target.value)}
-                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500"
+                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white placeholder-gray-600 focus:outline-none focus:border-gray-400"
                 />
               </td>
               <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
@@ -341,7 +342,7 @@ function Account({
                   aria-label="Match threshold"
                   value={plexMatchThreshold}
                   onChange={(e) => setPlexMatchThreshold(Math.max(0, Math.min(100, parseInt(e.target.value) || 0)))}
-                  className="w-24 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-indigo-500"
+                  className="w-24 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-gray-400"
                 />
               </td>
               <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
@@ -354,7 +355,7 @@ function Account({
                 <button
                   onClick={handleLinkPlexNow}
                   disabled={!plexBaseUrl || !plexToken || plexMatchStarting}
-                  className="px-3 py-1 bg-indigo-700 hover:bg-indigo-600 active:bg-indigo-800 disabled:opacity-50 rounded text-xs font-medium transition-colors"
+                  className={`px-3 py-1 text-xs disabled:opacity-50 ${primaryButtonClass()}`}
                 >
                   {plexMatchStarting ? 'Starting…' : 'Link Now'}
                 </button>

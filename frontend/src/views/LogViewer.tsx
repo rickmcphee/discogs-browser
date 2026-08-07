@@ -23,7 +23,7 @@ function renderMessage(msg: string) {
   return parts.map((part, i) =>
     URL_RE.test(part) && BROWSABLE_URL_RE.test(part)
       ? <a key={i} href={part} target="_blank" rel="noreferrer"
-           className="text-indigo-400 hover:text-indigo-300 underline break-all">{part}</a>
+           className="text-gray-400 hover:text-white underline break-all">{part}</a>
       : part
   )
 }
@@ -120,7 +120,7 @@ function LogViewer() {
             <button
               key={level}
               onClick={() => toggleLevel(level)}
-              className={`px-2 py-0.5 rounded text-xs font-medium transition-colors ${
+              className={`px-2 py-0.5 rounded-full text-xs font-medium transition-colors ${
                 levelFilter.has(level)
                   ? level === 'ERROR'   ? 'bg-red-700 text-white'
                   : level === 'WARNING' ? 'bg-yellow-700 text-white'
@@ -140,7 +140,7 @@ function LogViewer() {
             value={msgFilter}
             onChange={(e) => setMsgFilter(e.target.value)}
             placeholder="Filter message (regexp)…"
-            className={`w-full bg-gray-800 border rounded px-2 py-0.5 pr-6 text-gray-200 placeholder-gray-600 outline-none focus:border-indigo-500 ${
+            className={`w-full bg-gray-800 border rounded px-2 py-0.5 pr-6 text-gray-200 placeholder-gray-600 outline-none focus:border-gray-400 ${
               regexError ? 'border-red-500' : 'border-gray-700'
             }`}
           />
@@ -162,7 +162,7 @@ function LogViewer() {
           </button>
           <button
             onClick={() => setPaused((p) => !p)}
-            className={`px-2 py-0.5 rounded transition-colors ${
+            className={`px-2 py-0.5 rounded-full transition-colors ${
               paused ? 'bg-yellow-600 text-white hover:bg-yellow-500' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
             }`}
           >
@@ -199,7 +199,7 @@ function LogViewer() {
                   href={screenshotUrl(e.screenshotPath)}
                   target="_blank"
                   rel="noreferrer"
-                  className="ml-2 text-indigo-400 hover:text-indigo-300 transition-colors"
+                  className="ml-2 text-gray-400 hover:text-white transition-colors"
                   title="View screenshot"
                 >
                   📷
