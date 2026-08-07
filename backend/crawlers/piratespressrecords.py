@@ -2,14 +2,18 @@ import re
 from typing import AsyncIterator
 from shopify_catalog import iter_products, has_tag, resolve_cover_image
 
-_COLLECTION_SLUGS = ("ppr-12-vinyl", "ppr-7", "ppr-10-vinyl", "all-distro-titles")
+_COLLECTION_SLUG = "all"
 _PREORDER_TAG = "preorder"
 _VINYL_PRODUCT_TYPES = {"Vinyl LP", "Picture Disc"}
 # vendor is reliably the artist here, but doesn't always exact-prefix-match the
-# title (case/whitespace drift confirmed on 58/500 titles live, e.g. vendor
+# title (case/whitespace drift confirmed on 58/566 titles live, e.g. vendor
 # "Crim" vs. title "CRIM - ..."), so strip_vendor_prefix would miss those.
-# Splitting the title on its own first " - " works regardless of vendor's casing.
-_TITLE_RE = re.compile(r'^.+?\s*-\s*(?P<album>.+)$')
+# Splitting the title on its own first " - " works regardless of vendor's
+# casing -- but the hyphen must have whitespace on at least one side, not just
+# any hyphen: two artists on this store ("A-100s", "The Re-Volts") have an
+# internal hyphen with no surrounding space, and a plain \s*-\s* split breaks
+# on both (confirmed live against all 566 vinyl titles).
+_TITLE_RE = re.compile(r'^.+?(?:\s+-\s*|\s*-\s+)(?P<album>.+)$')
 
 
 class Crawler:
@@ -18,14 +22,9 @@ class Crawler:
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:
-        seen_ids = set()
-        for slug in _COLLECTION_SLUGS:
-            async for product in iter_products(self.base_url, slug):
-                if product["id"] in seen_ids:
-                    continue
-                seen_ids.add(product["id"])
-                for item in self._items(product):
-                    yield item
+        async for product in iter_products(self.base_url, _COLLECTION_SLUG):
+            for item in self._items(product):
+                yield item
 
     @classmethod
     def _items(cls, product: dict) -> list:
