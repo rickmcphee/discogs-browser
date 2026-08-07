@@ -87,6 +87,7 @@ export interface CrawlEvent {
   sources?: string[]
   judged?: number
   matched?: number
+  crawler_id?: number
 }
 
 export interface CollectionStatus {
