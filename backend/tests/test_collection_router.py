@@ -44,7 +44,7 @@ def test_collection_status_scoped_to_calling_user(pg_test_db, authed_client_fact
 
 
 def test_refresh_collection_starts_a_sync_for_the_calling_user(pg_test_db, authed_client_factory, monkeypatch):
-    async def _fake_sync(user_id, mode):
+    async def _fake_sync(user_id, mode, scope="all"):
         await asyncio.sleep(0)
 
     monkeypatch.setattr(crawl_manager, "_sync_collection", _fake_sync)
@@ -62,10 +62,50 @@ def test_refresh_collection_starts_a_sync_for_the_calling_user(pg_test_db, authe
     assert body["running"] is True
 
 
+def test_refresh_collection_passes_scope_through_to_start_sync(pg_test_db, authed_client_factory, monkeypatch):
+    calls = []
+
+    async def _fake_sync(user_id, mode, scope="all"):
+        calls.append((user_id, mode, scope))
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(crawl_manager, "_sync_collection", _fake_sync)
+
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+
+    client = authed_client_factory(alice["id"])
+    r = client.post("/api/collection/refresh?scope=wishlist", headers={"X-Requested-With": "fetch"})
+
+    assert r.status_code == 200
+    assert calls == [(alice["id"], "all", "wishlist")]
+
+
+def test_refresh_collection_defaults_scope_to_all(pg_test_db, authed_client_factory, monkeypatch):
+    calls = []
+
+    async def _fake_sync(user_id, mode, scope="all"):
+        calls.append((user_id, mode, scope))
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(crawl_manager, "_sync_collection", _fake_sync)
+
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+
+    client = authed_client_factory(alice["id"])
+    r = client.post("/api/collection/refresh", headers={"X-Requested-With": "fetch"})
+
+    assert r.status_code == 200
+    assert calls == [(alice["id"], "all", "all")]
+
+
 def test_refresh_collection_returns_409_when_already_running_for_calling_user(
     pg_test_db, authed_client_factory, monkeypatch
 ):
-    async def _already_running(user_id, mode):
+    async def _already_running(user_id, mode, scope="all"):
         return False
 
     monkeypatch.setattr(crawl_manager, "start_sync", _already_running)
@@ -99,7 +139,7 @@ def test_refresh_collection_for_one_user_does_not_block_another_users_refresh(
     """
     running_for: set = set()
 
-    async def _fake_start_sync(user_id, mode):
+    async def _fake_start_sync(user_id, mode, scope="all"):
         if user_id in running_for:
             return False
         running_for.add(user_id)

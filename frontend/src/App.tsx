@@ -119,7 +119,7 @@ export default function App() {
       if (event.status === 'ping') return
       if (event.status === 'sync_started') {
         setSyncing(true)
-        setSyncStatus('Syncing collection…', event.id ?? null)
+        setSyncStatus(event.scope === 'wishlist' ? 'Syncing wishlist…' : 'Syncing collection…', event.id ?? null)
         return
       }
       if (event.status === 'sync_page_fetched') {
@@ -133,8 +133,12 @@ export default function App() {
       }
       if (event.status === 'sync_complete') {
         setSyncing(false)
-        const wishlistPart = event.wishlist_synced != null ? `, ${event.wishlist_synced} wishlist items` : ''
-        setSyncStatus(`Synced ${event.synced} records for ${event.username}${wishlistPart}`, event.id ?? null)
+        if (event.scope === 'wishlist') {
+          setSyncStatus(`Synced ${event.wishlist_synced} wishlist items for ${event.username}`, event.id ?? null)
+        } else {
+          const wishlistPart = event.wishlist_synced != null ? `, ${event.wishlist_synced} wishlist items` : ''
+          setSyncStatus(`Synced ${event.synced} records for ${event.username}${wishlistPart}`, event.id ?? null)
+        }
         setSyncGeneration(g => g + 1)
         return
       }
@@ -275,6 +279,18 @@ export default function App() {
     }
     startRefresh('all')
   }, [startRefresh])
+
+  // Wishlist tab's refresh has nothing analogous to the "N records already
+  // loaded, refresh new or all?" choice that collectionStatus's modal offers --
+  // wantlists are small and always fully re-synced -- so this skips straight
+  // to the sync, same as Settings' "Refresh Now" bypassing that modal.
+  const handleRefreshWishlist = useCallback(async () => {
+    try {
+      await refreshCollection('all', 'wishlist')
+    } catch (e: any) {
+      setSyncStatus(`Sync failed: ${e.message}`)
+    }
+  }, [setSyncStatus])
 
   const startCrawl = useCallback((releaseId?: string, mode?: 'all' | 'missing') => {
     setCheckpointStatus(null)
@@ -483,7 +499,7 @@ export default function App() {
             crawlers={crawlers}
             hiddenCrawlerIds={hiddenCrawlerIds}
             syncing={syncing}
-            onRefreshCollection={() => handleRefresh()}
+            onRefreshCollection={() => handleRefreshWishlist()}
             syncGeneration={syncGeneration}
           />
         </div>

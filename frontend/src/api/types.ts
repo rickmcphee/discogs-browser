@@ -82,6 +82,7 @@ export interface CrawlEvent {
   synced?: number
   wishlist_synced?: number
   username?: string
+  scope?: 'all' | 'wishlist'
   screenshots?: string[]
   source?: string
   sources?: string[]
