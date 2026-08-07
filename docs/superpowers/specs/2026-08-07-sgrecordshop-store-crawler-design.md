@@ -338,11 +338,20 @@ other purely-new-stock crawler in this codebase.
   log a warning and skip that category, not fail the whole run — each
   category is independent, no reason to abort the other 13 over one.
 - **Any `httpx.HTTPStatusError`** (from either the category-page GET or a
-  `/gsrp/` GET) propagates and fails the run for this crawl cycle, same as
-  `shopify_catalog.py`'s non-429 path. No 429/throttle behavior was
-  observed in ~90 live requests made during this investigation, so there's
-  no special-case retry logic to add — unlike Shopify's confirmed
-  platform-edge throttle, this hasn't been seen to need one yet.
+  `/gsrp/` GET) propagates immediately, on the first occurrence — unlike
+  `shopify_catalog.py`'s `iter_products()`, which retries a non-429
+  failure up to `consecutive_failure_limit` times before propagating
+  (pagination has no next item to fall through to, so a failed page is
+  retried rather than skipped). This crawler reads `crawl_delay_seconds`
+  for its jitter but never reads `consecutive_failure_limit` — there is
+  no retry loop to bound. This is a real reduction in resilience relative
+  to the Shopify path, not an equivalent alternative: at 80 sequential
+  requests per crawl (14 categories × up to several pages each) versus
+  1-3 for a typical Shopify site, a single transient failure here costs
+  the whole crawl's output, not just one page's worth. Accepted for now
+  since no failure mode was observed to design around during ~90 live
+  requests made during this investigation; revisit if one shows up in
+  production.
 
 ## Testing
 
