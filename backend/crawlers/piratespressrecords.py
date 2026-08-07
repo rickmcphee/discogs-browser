@@ -27,8 +27,8 @@ class Crawler:
                 yield item
 
     @classmethod
-    def _items(cls, product: dict) -> list:
-        if product.get("product_type") not in _VINYL_PRODUCT_TYPES:
+    def _items(cls, product: dict) -> list[dict]:
+        if (product.get("product_type") or "").strip() not in _VINYL_PRODUCT_TYPES:
             return []
 
         artist = (product.get("vendor") or "").strip()
@@ -60,4 +60,4 @@ class Crawler:
     @staticmethod
     def _display_title(title: str) -> str:
         m = _TITLE_RE.match(title)
-        return m.group("album") if m else title
+        return m.group("album").strip() if m else title
