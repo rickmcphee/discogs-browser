@@ -507,56 +507,41 @@ class CrawlManager:
     def stock_sync_running(self) -> bool:
         return self._stock_task is not None and not self._stock_task.done()
 
-    async def start_stock_sync(self) -> bool:
+    async def start_stock_sync(self, crawler_id: Optional[int] = None) -> bool:
         if self.stock_sync_running:
             log.warning("Stock sync already running, ignoring start request")
             return False
-        self._stock_task = asyncio.create_task(self._sync_stock())
+        self._stock_task = asyncio.create_task(self._sync_stock(crawler_id))
         return True
 
-    async def _run_catalog_crawler(self, crawler) -> list[dict]:
-        """Runs crawler.crawl_catalog(), handling the catalog_browser kind's
-        Playwright page + one-retry-on-BotDetectedError convention (same as
-        the release-crawl path's _paced_search). Plain catalog crawlers keep
-        calling crawl_catalog() zero-arg, unchanged."""
-        from crawler import _new_context, _reset_context, BotDetectedError
-
-        if crawler.crawler_type != "catalog_browser":
-            return [item async for item in crawler.crawl_catalog()]
-
-        context, page = await _new_context(self._browser, self._stealth)
-        try:
-            try:
-                return [item async for item in crawler.crawl_catalog(page)]
-            except BotDetectedError:
-                context, page = await _reset_context(context, self._browser, self._stealth, None)
-                return [item async for item in crawler.crawl_catalog(page)]
-        finally:
-            await context.close()
-
-    async def _sync_stock(self):
+    async def _sync_stock(self, crawler_id: Optional[int] = None):
         import httpx
         from db import get_app_pool, get_enabled_crawlers, replace_stock_items, update_crawler_last_run
         from crawler import load_enabled_crawlers
 
-        await self._broadcast({"status": "stock_sync_started"})
+        await self._broadcast({"status": "stock_sync_started", "crawler_id": crawler_id})
         log.info("Stock sync started")
         try:
             with get_app_pool().connection() as conn:
-                enabled = (
-                    get_enabled_crawlers(conn, crawler_type="catalog")
-                    + get_enabled_crawlers(conn, crawler_type="catalog_browser")
-                )
+                enabled = get_enabled_crawlers(conn, crawler_type="catalog")
+            if crawler_id is not None:
+                enabled = [c for c in enabled if c["id"] == crawler_id]
             crawlers = load_enabled_crawlers(enabled)
             if not crawlers:
-                await self._broadcast({"status": "stock_sync_error", "error": "No enabled catalog crawlers"})
+                await self._broadcast({
+                    "status": "stock_sync_error",
+                    "error": "No enabled catalog crawlers",
+                    "crawler_id": crawler_id,
+                })
                 return
 
             total_synced = 0
             consecutive_429_sites: list[str] = []
             for crawler in crawlers:
+                items = []
                 try:
-                    items = await self._run_catalog_crawler(crawler)
+                    async for item in crawler.crawl_catalog():
+                        items.append(item)
                 except Exception as e:
                     is_rate_limited = isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 429
                     if is_rate_limited:
@@ -568,6 +553,7 @@ class CrawlManager:
                             "status": "stock_sync_error",
                             "error": str(e),
                             "source": crawler._db_site_name,
+                            "crawler_id": crawler_id,
                         })
                         consecutive_429_sites = []
                     if len(consecutive_429_sites) >= 2:
@@ -593,14 +579,14 @@ class CrawlManager:
                 log.info("[%s] Stock sync found %d items", crawler._db_site_name, len(items))
                 await self._broadcast({"status": "stock_sync_progress", "synced": total_synced, "source": crawler._db_site_name})
 
-            await self._broadcast({"status": "stock_sync_complete", "synced": total_synced})
+            await self._broadcast({"status": "stock_sync_complete", "synced": total_synced, "crawler_id": crawler_id})
             log.info("Stock sync complete: %d items", total_synced)
         except asyncio.CancelledError:
             log.info("Stock sync cancelled")
             raise
         except Exception as e:
             log.error("Stock sync failed: %s", e, exc_info=True)
-            await self._broadcast({"status": "stock_sync_error", "error": str(e)})
+            await self._broadcast({"status": "stock_sync_error", "error": str(e), "crawler_id": crawler_id})
 
     def judgment_running(self, user_id: int) -> bool:
         task = self._judgment_tasks.get(user_id)
