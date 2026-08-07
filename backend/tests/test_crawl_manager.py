@@ -103,7 +103,7 @@ async def test_sync_not_running_initially(manager):
 
 
 async def test_start_sync_returns_true_when_idle(manager):
-    async def _fake_sync(user_id, mode):
+    async def _fake_sync(user_id, mode, scope="all"):
         await asyncio.sleep(0)
 
     manager._sync_collection = _fake_sync  # type: ignore
@@ -115,7 +115,7 @@ async def test_start_sync_returns_true_when_idle(manager):
 async def test_start_sync_returns_false_when_already_running(manager, pg_schema):
     event = asyncio.Event()
 
-    async def _fake_sync(user_id, mode):
+    async def _fake_sync(user_id, mode, scope="all"):
         await event.wait()
 
     manager._sync_collection = _fake_sync  # type: ignore
@@ -128,7 +128,7 @@ async def test_start_sync_returns_false_when_already_running(manager, pg_schema)
 
 
 async def test_sync_running_false_after_completion(manager):
-    async def _instant(user_id, mode):
+    async def _instant(user_id, mode, scope="all"):
         pass
 
     manager._sync_collection = _instant  # type: ignore
@@ -145,7 +145,7 @@ async def test_start_sync_for_one_user_does_not_block_another_users_sync(manager
     what makes this true."""
     event = asyncio.Event()
 
-    async def _fake_sync(user_id, mode):
+    async def _fake_sync(user_id, mode, scope="all"):
         await event.wait()
 
     manager._sync_collection = _fake_sync  # type: ignore
@@ -234,6 +234,76 @@ async def test_sync_collection_enqueues_crawl_queue_for_missing_listings(pg_sche
     with db.get_admin_pool().connection() as conn:
         queued = conn.execute("SELECT discogs_id, status FROM crawl_queue ORDER BY discogs_id").fetchall()
     assert [(q["discogs_id"], q["status"]) for q in queued] == [("r111", "pending"), ("r222", "pending")]
+
+
+async def test_sync_collection_wishlist_scope_skips_collection_loop(pg_schema, monkeypatch):
+    import config
+    import crawl_manager as crawl_manager_module
+    import discogs
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+    # The catalog row for r111 doesn't exist yet, so the wantlist loop's
+    # barcode-fetch branch runs the real 1.1s rate-limit pacing sleep -- skip
+    # it here since this test only cares about scope=wishlist skipping the
+    # collection loop, not barcode-fetch pacing.
+    monkeypatch.setattr(crawl_manager_module.time, "sleep", lambda *a, **k: None)
+
+    def _must_not_be_called(*a, **k):
+        raise AssertionError("collection loop must not run for scope=wishlist")
+
+    monkeypatch.setattr(discogs, "fetch_collection_fields", _must_not_be_called)
+    monkeypatch.setattr(discogs, "iter_collection_pages", _must_not_be_called)
+
+    def _wants_pages(*a, **k):
+        yield 1, 1, [{
+            "basic_information": {
+                "id": 111, "title": "Album", "year": 2020,
+                "artists": [{"name": "Artist"}], "labels": [], "formats": [],
+                "cover_image": "",
+            },
+        }]
+
+    monkeypatch.setattr(discogs, "iter_wantlist_pages", _wants_pages)
+    monkeypatch.setattr(discogs, "fetch_release_barcode", lambda *a, **k: None)
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        # Pre-existing collection item -- must survive untouched since the
+        # collection loop never runs for a wishlist-scoped sync.
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r999", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.upsert_library_item(conn, user["id"], "r999", in_collection=True)
+        conn.commit()
+
+    manager = CrawlManager()
+    await manager._sync_collection(user["id"], "all", "wishlist")
+
+    events = manager.recent_events()
+    statuses = [e["status"] for e in events]
+    assert "sync_error" not in statuses
+    started = next(e for e in events if e["status"] == "sync_started")
+    assert started["scope"] == "wishlist"
+    complete = next(e for e in events if e["status"] == "sync_complete")
+    assert complete["synced"] == 0
+    assert complete["wishlist_synced"] == 1
+    assert complete["scope"] == "wishlist"
+
+    with db.user_scope(user["id"]) as conn:
+        items = conn.execute(
+            "SELECT discogs_id, in_collection, in_wishlist FROM library_items WHERE user_id = %s ORDER BY discogs_id",
+            [user["id"]],
+        ).fetchall()
+    assert [(i["discogs_id"], i["in_collection"], i["in_wishlist"]) for i in items] == [
+        ("r111", False, True), ("r999", True, False),
+    ]
 
 
 @respx.mock
@@ -434,7 +504,7 @@ async def test_start_plex_match_returns_false_while_sync_running(pg_schema):
 
     manager = CrawlManager()
 
-    async def _never_finishes(user_id, mode):
+    async def _never_finishes(user_id, mode, scope="all"):
         await asyncio.sleep(10)
 
     manager._sync_collection = _never_finishes

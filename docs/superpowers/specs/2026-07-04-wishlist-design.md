@@ -89,6 +89,17 @@ One button ("Refresh Now" in Settings, `POST /collection/refresh`), one
 background job, both `in_collection` and `in_wishlist` state updated together.
 No new endpoint, no new schedule.
 
+**Amendment (2026-08-07, branch `wishlist-only-refresh`):** the "both updated
+together" behavior above is now the *default*, not the only mode. The Wishlist
+pane's own refresh button calls `POST /collection/refresh?scope=wishlist`,
+which runs only step 5's wantlist phase (skipping the collection loop
+entirely) — still no new endpoint, still the same background job type, just
+parameterized. The Collection pane's refresh button and Settings' "Refresh
+Now" are unchanged and still sync both lists together. See the amendment on
+the "Refresh Collection" flow in
+[`2026-06-27-discogs-browser-design.md`](2026-06-27-discogs-browser-design.md)
+for the full mechanism.
+
 ---
 
 ## Crawling

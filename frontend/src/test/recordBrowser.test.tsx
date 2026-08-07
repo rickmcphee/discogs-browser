@@ -138,6 +138,14 @@ describe('RecordBrowser', () => {
     expect(screen.getByTitle('Sync collection from Discogs')).toBeDisabled()
   })
 
+  it('labels the wishlist sync button distinctly from the collection one', async () => {
+    const onRefreshCollection = vi.fn()
+    render(<RecordBrowser scope="wishlist" onRefreshPrices={() => {}} onRefreshCollection={onRefreshCollection} />)
+    await waitFor(() => expect(getReleases).toHaveBeenCalled())
+    screen.getByTitle('Sync wishlist from Discogs').click()
+    expect(onRefreshCollection).toHaveBeenCalledTimes(1)
+  })
+
   it('refetches the artist nav list on every syncGeneration tick, not just on scope change', async () => {
     const { rerender } = render(<RecordBrowser scope="collection" onRefreshPrices={() => {}} syncGeneration={0} />)
     await waitFor(() => expect(getArtists).toHaveBeenCalledTimes(1))

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { postCrawlStart, postStockSyncStart, getUserSettings, saveUserSettings, logout, getStock, getStockArtists, getReleases, postPlexMatchStart } from '../api/client'
+import { postCrawlStart, postStockSyncStart, getUserSettings, saveUserSettings, logout, getStock, getStockArtists, getReleases, postPlexMatchStart, refreshCollection } from '../api/client'
 
 describe('crawl/user-settings client functions', () => {
   let fetchMock: ReturnType<typeof vi.fn>
@@ -80,6 +80,26 @@ describe('crawl/user-settings client functions', () => {
     fetchMock.mockResolvedValue({ ok: true, json: async () => ({ total: 0, page: 1, per_page: 50, releases: [] }) })
     await getReleases({})
     expect(fetchMock.mock.calls[0][0]).not.toContain('unmatched')
+  })
+
+  it('refreshCollection omits query params when called with no args', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ started: true, running: true }) })
+    await refreshCollection()
+    expect(fetchMock.mock.calls[0][0]).not.toContain('?')
+  })
+
+  it('refreshCollection includes scope=wishlist when scope is wishlist', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ started: true, running: true }) })
+    await refreshCollection('all', 'wishlist')
+    expect(fetchMock.mock.calls[0][0]).toContain('scope=wishlist')
+    expect(fetchMock.mock.calls[0][0]).not.toContain('mode=')
+  })
+
+  it('refreshCollection includes both mode=new and scope=wishlist when both given', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ started: true, running: true }) })
+    await refreshCollection('new', 'wishlist')
+    expect(fetchMock.mock.calls[0][0]).toContain('mode=new')
+    expect(fetchMock.mock.calls[0][0]).toContain('scope=wishlist')
   })
 
   it('postPlexMatchStart posts to /plex/match/start', async () => {
