@@ -1,6 +1,6 @@
 import type { ComponentProps } from 'react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import Settings from '../views/Settings'
 import type { Crawler } from '../api/types'
 
@@ -149,5 +149,16 @@ describe('Settings', () => {
     const amazonRow = screen.getByText('Amazon').closest('tr') as HTMLElement
     fireEvent.click(screen.getAllByText('Visible').find((el) => amazonRow.contains(el))!)
     expect(onToggleCrawlerView).toHaveBeenCalledWith(1)
+  })
+
+  it('buckets a catalog_browser crawler into the Store Catalog Sources table, not the release table', () => {
+    const crawlers: Crawler[] = [
+      ...CRAWLERS,
+      { id: 4, site_name: 'Angry Young and Poor', module_path: '', crawler_type: 'catalog_browser', enabled: true, last_run: null, base_url: null },
+    ]
+    renderSettings({ crawlers, isAdmin: false })
+    const tables = screen.getAllByRole('table')
+    expect(within(tables[0]).queryByText('Angry Young and Poor')).not.toBeInTheDocument()
+    expect(within(tables[1]).getByText('Angry Young and Poor')).toBeInTheDocument()
   })
 })

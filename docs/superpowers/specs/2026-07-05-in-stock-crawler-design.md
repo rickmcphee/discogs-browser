@@ -28,6 +28,8 @@
 
 **Amendment (2026-08-04):** the Retry-After override this amendment just described is itself superseded — see that same spec's 2026-08-04 amendment. A 429 is no longer retried at all (Retry-After-paced or not); `iter_products()` raises immediately and it's never counted against `consecutive_failure_limit`. That limit still governs retries for non-429 failures only. The `stock_sync_aborted` circuit breaker described above is unaffected and still fires on two consecutive 429-caused crawler failures — it now just triggers within seconds instead of after each crawler's own multi-minute retry loop.
 
+**Amendment (2026-08-05, branch `store-crawler-angryyoungandpoor`):** a 32nd catalog source, Angry Young and Poor (`angryyoungandpoor.com`), is the first that doesn't fit this spec's `catalog`/`shopify_catalog.py` contract at all — it's PinnacleCart, not Shopify, and Cloudflare blocks any non-browser request outright (confirmed via `curl`, including on `robots.txt`). This requires a new `crawler_type="catalog_browser"` that gets a Playwright `Page` and can raise `BotDetectedError`, reusing the shared stealth Chromium instance and retry convention the release-crawl path already has — `_sync_stock` and `crawl_catalog()`'s zero-arg signature are otherwise unchanged for the 31 existing `catalog`-type crawlers. Full design, including the accessory-filtering and category-dedup specifics: [`2026-08-05-angryyoungandpoor-store-crawler-design.md`](2026-08-05-angryyoungandpoor-store-crawler-design.md).
+
 ---
 
 ## Problem
