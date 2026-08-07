@@ -496,9 +496,6 @@ export default function App() {
             onCrawlersChange={setCrawlers}
             onRefreshPrices={handleRefreshPricesFromSettings}
             onRefreshStock={handleRefreshStock}
-            onRefreshRecommendations={handleRefreshRecommendations}
-            onClearRecommendations={handleClearRecommendations}
-            hasJudgedItems={hasJudgedItems}
             isAdmin={showAdminNav}
             hiddenCrawlerIds={hiddenCrawlerIds}
             onToggleCrawlerView={toggleCrawlerView}
@@ -511,7 +508,9 @@ export default function App() {
             isAdmin={isRealAdmin}
             viewingAsUser={viewAsUser}
             onToggleViewAsUser={toggleViewAsUser}
+            onRefreshRecommendations={handleRefreshRecommendations}
             onExportRecommendations={handleExportRecommendations}
+            onClearRecommendations={handleClearRecommendations}
             hasJudgedItems={hasJudgedItems}
           />
         </div>

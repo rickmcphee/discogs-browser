@@ -191,11 +191,10 @@ describe('In Stock tab', () => {
     await waitFor(() => expect(screen.getByText(/Finding recommendations failed: boom/)).toBeInTheDocument())
   })
 
-  it('calls postJudgmentStart when Refresh is clicked in the Store Recommendations section', async () => {
+  it('calls postJudgmentStart when Refresh is clicked in the Account Recommendations section', async () => {
     getUserSettings.mockResolvedValue({ ...defaultUserSettings, anthropic_api_key: 'sk-ant-test' })
     render(<App />)
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
-    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByRole('button', { name: /profile/i }))
     const description = await screen.findByText('Evaluate unprocessed Store items for recommendation, without a full catalog re-crawl.')
     const row = description.closest('tr') as HTMLElement
     fireEvent.click(within(row).getByText('Refresh'))
@@ -220,8 +219,7 @@ describe('In Stock tab', () => {
 
   it('disables Clear until a judgment has completed', async () => {
     render(<App />)
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
-    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByRole('button', { name: /profile/i }))
     const description = await screen.findByText('Remove all recommendation judgments, recommended and not-recommended, so every Store item is re-evaluated from scratch on the next run.')
     const row = description.closest('tr') as HTMLElement
     expect(within(row).getByText('Clear').closest('button')).toBeDisabled()
@@ -231,8 +229,7 @@ describe('In Stock tab', () => {
     getJudgmentStatus.mockResolvedValue({ any_judged: true })
     vi.spyOn(window, 'confirm').mockReturnValue(false)
     render(<App />)
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
-    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByRole('button', { name: /profile/i }))
     const description = await screen.findByText('Remove all recommendation judgments, recommended and not-recommended, so every Store item is re-evaluated from scratch on the next run.')
     const row = description.closest('tr') as HTMLElement
     await waitFor(() => expect(within(row).getByText('Clear').closest('button')).not.toBeDisabled())
@@ -245,8 +242,7 @@ describe('In Stock tab', () => {
     getJudgmentStatus.mockResolvedValue({ any_judged: true })
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     render(<App />)
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
-    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByRole('button', { name: /profile/i }))
     const description = await screen.findByText('Remove all recommendation judgments, recommended and not-recommended, so every Store item is re-evaluated from scratch on the next run.')
     const row = description.closest('tr') as HTMLElement
     await waitFor(() => expect(within(row).getByText('Clear').closest('button')).not.toBeDisabled())
@@ -260,8 +256,7 @@ describe('In Stock tab', () => {
     clearJudgments.mockResolvedValue({ cleared: false, running: true })
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     render(<App />)
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
-    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByRole('button', { name: /profile/i }))
     const description = await screen.findByText('Remove all recommendation judgments, recommended and not-recommended, so every Store item is re-evaluated from scratch on the next run.')
     const row = description.closest('tr') as HTMLElement
     await waitFor(() => expect(within(row).getByText('Clear').closest('button')).not.toBeDisabled())

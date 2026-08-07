@@ -41,9 +41,6 @@ function renderSettings(overrides: Partial<ComponentProps<typeof Settings>> = {}
       onCrawlersChange={() => {}}
       onRefreshPrices={() => {}}
       onRefreshStock={() => {}}
-      onRefreshRecommendations={() => {}}
-      onClearRecommendations={() => {}}
-      hasJudgedItems={false}
       isAdmin
       hiddenCrawlerIds={[]}
       onToggleCrawlerView={() => {}}
@@ -105,6 +102,12 @@ describe('Settings', () => {
     expect(screen.queryByText('Shuffle')).not.toBeInTheDocument()
   })
 
+  it('does not render Recommendations Management, moved to the Account view', async () => {
+    renderSettings()
+    await waitFor(() => expect(getSettings).toHaveBeenCalled())
+    expect(screen.queryByText('Recommendations Management')).not.toBeInTheDocument()
+  })
+
   it('shows both View and Crawl columns to an admin, for every crawler regardless of enabled state', async () => {
     renderSettings({ crawlers: CRAWLERS })
     await waitFor(() => expect(getSettings).toHaveBeenCalled())
@@ -138,7 +141,6 @@ describe('Settings', () => {
     expect(screen.getByText('Amazon')).toBeInTheDocument()
     expect(screen.queryByText('Disabled Site')).not.toBeInTheDocument()
     expect(screen.queryByText('Enabled')).not.toBeInTheDocument()
-    expect(screen.queryByText('Recommendations Management')).not.toBeInTheDocument()
     expect(screen.getByText('Collection & Wishlist Price Sources')).toBeInTheDocument()
     expect(screen.getByText('Store Catalog Sources')).toBeInTheDocument()
   })

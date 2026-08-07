@@ -187,6 +187,62 @@ describe('Account', () => {
     expect(screen.getByRole('button', { name: 'Export' })).toBeInTheDocument()
   })
 
+  it('shows Refresh, Export, and Clear in that order, and Refresh is always enabled', async () => {
+    render(<Account avatarVersion={0} onAvatarChange={() => {}} hasJudgedItems={false} />)
+    await waitFor(() => expect(getUserSettings).toHaveBeenCalled())
+    const buttons = screen.getAllByRole('button').filter((b) =>
+      ['Refresh', 'Export', 'Clear'].includes(b.textContent ?? '')
+    )
+    expect(buttons.map((b) => b.textContent)).toEqual(['Refresh', 'Export', 'Clear'])
+    expect(screen.getByRole('button', { name: 'Refresh' })).not.toBeDisabled()
+  })
+
+  it('calls onRefreshRecommendations when Refresh is clicked', async () => {
+    const onRefreshRecommendations = vi.fn()
+    render(
+      <Account
+        avatarVersion={0}
+        onAvatarChange={() => {}}
+        onRefreshRecommendations={onRefreshRecommendations}
+      />
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+    expect(onRefreshRecommendations).toHaveBeenCalledTimes(1)
+  })
+
+  it('disables Clear until a judgment has completed, and calls onClearRecommendations when clicked', async () => {
+    const onClearRecommendations = vi.fn()
+    const { rerender } = render(
+      <Account
+        avatarVersion={0}
+        onAvatarChange={() => {}}
+        hasJudgedItems={false}
+        onClearRecommendations={onClearRecommendations}
+      />
+    )
+    await waitFor(() => expect(getUserSettings).toHaveBeenCalled())
+    expect(screen.getByRole('button', { name: 'Clear' })).toBeDisabled()
+
+    rerender(
+      <Account
+        avatarVersion={0}
+        onAvatarChange={() => {}}
+        hasJudgedItems
+        onClearRecommendations={onClearRecommendations}
+      />
+    )
+    const button = screen.getByRole('button', { name: 'Clear' })
+    expect(button).not.toBeDisabled()
+    fireEvent.click(button)
+    expect(onClearRecommendations).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows Refresh and Clear for a non-admin', () => {
+    render(<Account avatarVersion={0} onAvatarChange={() => {}} isAdmin={false} />)
+    expect(screen.getByRole('button', { name: 'Refresh' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Clear' })).toBeInTheDocument()
+  })
+
   it('does not show the role switch by default', () => {
     render(<Account avatarVersion={0} onAvatarChange={() => {}} />)
     expect(screen.queryByRole('switch')).not.toBeInTheDocument()
