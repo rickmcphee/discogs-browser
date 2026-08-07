@@ -1,5 +1,4 @@
 import hashlib
-import re
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Optional
@@ -722,17 +721,24 @@ def compute_item_key(artist: str, title: str, url: str) -> str:
 
 def _title_case_artist(name: str) -> str:
     # str.title() treats any digit/letter boundary as a new word, mangling
-    # names like "13th Floor Elevators" into "13Th Floor Elevators". Only
-    # capitalize a letter run's first character when it isn't glued directly
-    # to a preceding digit.
-    def _cap_word(match: "re.Match") -> str:
-        word = match.group(0)
-        prev_char = match.string[match.start() - 1] if match.start() > 0 else ""
-        if prev_char.isdigit():
-            return word.lower()
-        return word[0].upper() + word[1:].lower()
-
-    return re.sub(r"[A-Za-z]+", _cap_word, name)
+    # names like "13th Floor Elevators" into "13Th Floor Elevators". Walk
+    # runs of Unicode letters (str.isalpha(), not an ASCII-only [A-Za-z]
+    # regex, which would mishandle accented names like "Björk") and only
+    # capitalize a run's first letter when it isn't glued directly to a
+    # preceding digit.
+    result = []
+    in_word = False
+    for i, ch in enumerate(name):
+        if ch.isalpha():
+            if not in_word and not (i > 0 and name[i - 1].isdigit()):
+                ch = ch.upper()
+            else:
+                ch = ch.lower()
+            in_word = True
+        else:
+            in_word = False
+        result.append(ch)
+    return "".join(result)
 
 
 def replace_stock_items(conn, crawler_id: int, items: list[dict]):

@@ -46,6 +46,22 @@ def test_replace_stock_items_title_case_does_not_mangle_leading_digit(admin_conn
     assert rows[0]["artist"] == "13th Floor Elevators"
 
 
+def test_replace_stock_items_title_case_handles_non_ascii_letters(admin_conn):
+    # Regression (raised in PR review): [A-Za-z]+ only matches ASCII letters,
+    # so a non-ASCII letter like "ö" splits "björk" into two word runs and
+    # the second run ("rk") gets wrongly capitalized as a new word.
+    db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "björk", "title": "Homogenic", "url": "https://x/4", "price": 12.0, "currency": "USD"},
+    ])
+    admin_conn.commit()
+    rows = admin_conn.execute("SELECT artist FROM stock_items WHERE crawler_id = %s", [crawler_id]).fetchall()
+    assert rows[0]["artist"] == "Björk"
+
+
 def test_replace_stock_items_item_key_unaffected_by_display_casing_fix(admin_conn):
     # Regression (raised in PR review): item_key must keep hashing the
     # legacy str.title() casing, not the corrected display casing, or
