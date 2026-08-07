@@ -44,7 +44,7 @@ describe('StockBrowser', () => {
     render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     const thumbnail = screen.getByAltText('The Great Satan — Ghostly Black Vinyl') as HTMLImageElement
-    expect(thumbnail.className.split(' ')).toContain('min-w-10')
+    expect(thumbnail).toHaveClass('min-w-10')
   })
 
   it('renders a placeholder box when cover_image_url is null', async () => {
