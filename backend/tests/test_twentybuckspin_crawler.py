@@ -86,6 +86,7 @@ async def test_crawl_catalog_keeps_hyphenated_artist_name_intact(crawler):
     respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(return_value=_page_response([product]))
     respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "2"}).mock(return_value=_page_response([]))
     items = [item async for item in crawler.crawl_catalog()]
+    assert len(items) == 1
     assert items[0]["artist"] == "PAN-AMERIKAN NATIVE FRONT"
     assert items[0]["title"] == "LITTLE TURTLE'S WAR LP — BLACK SMOKE GALAXY"
 
