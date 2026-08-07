@@ -7,6 +7,7 @@ import LogViewer from './views/LogViewer'
 import LoginScreen from './views/LoginScreen'
 import InviteCodeScreen from './views/InviteCodeScreen'
 import Avatar from './components/Avatar'
+import { navButtonClass, primaryButtonClass, secondaryButtonClass, dismissButtonClass } from './styles/buttons'
 import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, clearJudgments, exportRecommendationsCsv, getCrawlers, getUserSettings, getJudgmentStatus, checkHealth, getAuthStatus, setUnauthorizedHandler, hasAvatar } from './api/client'
 import type { CrawlEvent, CrawlStatus, CollectionStatus, Crawler, AuthStatus } from './api/types'
 
@@ -412,31 +413,19 @@ export default function App() {
         <nav className="flex gap-2">
           <button
             onClick={() => setView('collection')}
-            className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
-              view === 'collection'
-                ? 'bg-indigo-600 text-white'
-                : 'text-gray-400 hover:text-white'
-            }`}
+            className={`px-3 py-1.5 text-sm font-medium ${navButtonClass(view === 'collection')}`}
           >
             Collection
           </button>
           <button
             onClick={() => setView('wishlist')}
-            className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
-              view === 'wishlist'
-                ? 'bg-indigo-600 text-white'
-                : 'text-gray-400 hover:text-white'
-            }`}
+            className={`px-3 py-1.5 text-sm font-medium ${navButtonClass(view === 'wishlist')}`}
           >
             Wishlist
           </button>
           <button
             onClick={() => setView('instock')}
-            className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
-              view === 'instock'
-                ? 'bg-indigo-600 text-white'
-                : 'text-gray-400 hover:text-white'
-            }`}
+            className={`px-3 py-1.5 text-sm font-medium ${navButtonClass(view === 'instock')}`}
           >
             Store
           </button>
@@ -445,22 +434,14 @@ export default function App() {
           {showAdminNav && (
             <button
               onClick={() => setView('logs')}
-              className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
-                view === 'logs'
-                  ? 'bg-indigo-600 text-white'
-                  : 'text-gray-400 hover:text-white'
-              }`}
+              className={`px-3 py-1.5 text-sm font-medium ${navButtonClass(view === 'logs')}`}
             >
               Logs
             </button>
           )}
           <button
             onClick={() => setView('settings')}
-            className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
-              view === 'settings'
-                ? 'bg-indigo-600 text-white'
-                : 'text-gray-400 hover:text-white'
-            }`}
+            className={`px-3 py-1.5 text-sm font-medium ${navButtonClass(view === 'settings')}`}
           >
             Settings
           </button>
@@ -468,7 +449,7 @@ export default function App() {
             onClick={() => setView('account')}
             aria-label="Profile"
             className={`w-8 h-8 rounded-full overflow-hidden flex items-center justify-center transition-colors ${
-              view === 'account' ? 'ring-2 ring-indigo-500' : 'hover:ring-2 hover:ring-gray-600'
+              view === 'account' ? 'ring-2 ring-white' : 'hover:ring-2 hover:ring-gray-600'
             }`}
           >
             <Avatar version={avatarVersion} size="sm" />
@@ -553,14 +534,14 @@ export default function App() {
             <div className="flex gap-3">
               <button
                 onClick={() => startRefresh('new')}
-                className="flex-1 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-sm font-medium transition-colors"
+                className={`flex-1 px-4 py-2 text-sm ${primaryButtonClass()}`}
               >
                 Refresh New Only
-                <span className="block text-xs font-normal text-indigo-300">Skip existing records</span>
+                <span className="block text-xs font-normal text-gray-600">Skip existing records</span>
               </button>
               <button
                 onClick={() => startRefresh('all')}
-                className="flex-1 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded text-sm font-medium transition-colors"
+                className={`flex-1 px-4 py-2 text-sm ${secondaryButtonClass()}`}
               >
                 Refresh All
                 <span className="block text-xs font-normal text-gray-400">Re-sync {collectionStatus.total} records</span>
@@ -568,7 +549,7 @@ export default function App() {
             </div>
             <button
               onClick={() => setCollectionStatus(null)}
-              className="mt-3 w-full text-gray-500 hover:text-gray-300 text-sm transition-colors"
+              className={`mt-3 w-full px-4 py-1.5 text-sm ${dismissButtonClass()}`}
             >
               Cancel
             </button>
@@ -593,14 +574,14 @@ export default function App() {
             <div className="flex gap-3">
               <button
                 onClick={() => startCrawl(undefined, 'missing')}
-                className="flex-1 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-sm font-medium transition-colors"
+                className={`flex-1 px-4 py-2 text-sm ${primaryButtonClass()}`}
               >
                 Resume
-                <span className="block text-xs font-normal text-indigo-300">{checkpointStatus.missing} records</span>
+                <span className="block text-xs font-normal text-gray-600">{checkpointStatus.missing} records</span>
               </button>
               <button
                 onClick={() => startCrawl(undefined, 'all')}
-                className="flex-1 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded text-sm font-medium transition-colors"
+                className={`flex-1 px-4 py-2 text-sm ${secondaryButtonClass()}`}
               >
                 Restart
                 <span className="block text-xs font-normal text-gray-400">{checkpointStatus.total} records</span>
@@ -608,7 +589,7 @@ export default function App() {
             </div>
             <button
               onClick={() => setCheckpointStatus(null)}
-              className="mt-3 w-full text-gray-500 hover:text-gray-300 text-sm transition-colors"
+              className={`mt-3 w-full px-4 py-1.5 text-sm ${dismissButtonClass()}`}
             >
               Cancel
             </button>
@@ -619,7 +600,7 @@ export default function App() {
       {/* Server startup overlay */}
       {!serverReady && (
         <div className="fixed inset-0 bg-gray-950/90 flex flex-col items-center justify-center z-50 gap-4">
-          <div className="w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+          <div className="w-8 h-8 border-2 border-white border-t-transparent rounded-full animate-spin" />
         </div>
       )}
 
@@ -630,12 +611,12 @@ export default function App() {
             {syncMessage}
           </span>
           {syncing && (
-            <div className="w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin shrink-0" />
+            <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin shrink-0" />
           )}
           {!syncing && (
             <button
               onClick={dismissSyncMessage}
-              className="ml-auto text-gray-400 hover:text-white text-sm shrink-0"
+              className={`ml-auto px-3 py-1 text-sm shrink-0 ${dismissButtonClass()}`}
             >
               Dismiss
             </button>
@@ -654,13 +635,13 @@ export default function App() {
               {crawlTotal > 0 ? `${crawlCount}/${crawlTotal}: ` : ''}
               <span className="text-gray-200">{crawlCurrent.artist} — {crawlCurrent.release}</span>
               {' '}on{' '}
-              <span className="text-indigo-400">{crawlCurrent.site}</span>
+              <span className="text-gray-400">{crawlCurrent.site}</span>
             </span>
           )}
           {!crawling && (
             <button
               onClick={dismissCrawlBanner}
-              className="ml-auto text-gray-400 hover:text-white text-sm shrink-0"
+              className={`ml-auto px-3 py-1 text-sm shrink-0 ${dismissButtonClass()}`}
             >
               Dismiss
             </button>
