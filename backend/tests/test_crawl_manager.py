@@ -1278,7 +1278,9 @@ async def test_sync_stock_with_unmatched_crawler_id_filters_out_all_crawlers(pg_
         await manager._sync_stock(crawler_id=site_a_id + 1)
 
     assert loaded_rows == []
-    events = manager.recent_events()
+    # recent_events() entries also carry an auto-incrementing "id" from
+    # _broadcast -- project it away rather than asserting exact dicts.
+    events = [{k: v for k, v in e.items() if k != "id"} for e in manager.recent_events()]
     assert events == [
         {"status": "stock_sync_started", "crawler_id": site_a_id + 1},
         {"status": "stock_sync_error", "error": "No enabled catalog crawlers", "crawler_id": site_a_id + 1},
@@ -1901,7 +1903,7 @@ async def test_start_stock_sync_and_start_judgment_only_run_independently(manage
     stock_event = asyncio.Event()
     judgment_event = asyncio.Event()
 
-    async def _fake_sync_stock():
+    async def _fake_sync_stock(crawler_id=None):
         await stock_event.wait()
 
     async def _fake_judgment_phase(user_id):
