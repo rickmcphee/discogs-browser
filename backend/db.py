@@ -742,10 +742,14 @@ def replace_stock_items(conn, crawler_id: int, items: list[dict]):
     rows = []
     for item in items:
         artist = _title_case_artist(item["artist"])
+        # item_key keeps hashing the legacy str.title() casing (not the
+        # corrected `artist` above) so existing stock_item_judgments rows,
+        # which join on item_key, don't orphan for artists whose casing
+        # changed here.
         rows.append((
             crawler_id, artist, item["title"], item.get("format"), item.get("price"),
             item.get("currency"), item["url"], item.get("cover_image_url"),
-            compute_item_key(artist, item["title"], item["url"]),
+            compute_item_key(item["artist"].title(), item["title"], item["url"]),
         ))
     with conn.cursor() as cur:
         cur.executemany(

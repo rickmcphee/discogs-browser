@@ -24,7 +24,7 @@ def _seed_stock_item(conn, artist="Artist A", title="Album A", url="https://x/1"
     db.replace_stock_items(conn, crawler_id, [
         {"artist": artist, "title": title, "url": url, "price": 10.0, "currency": "USD"},
     ])
-    return db.compute_item_key(db._title_case_artist(artist), title, url)
+    return db.compute_item_key(artist.title(), title, url)
 
 
 def test_get_taste_listing_reads_calling_users_library(pg_test_db):
