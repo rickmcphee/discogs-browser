@@ -30,6 +30,8 @@
 **Interfaces:**
 - Produces: `CrawlManager.start_stock_sync(self, crawler_id: Optional[int] = None) -> bool`; `CrawlManager._sync_stock(self, crawler_id: Optional[int] = None)`. Broadcasts `stock_sync_started`/`stock_sync_error`/`stock_sync_complete` now each carry a `"crawler_id"` key (the value passed in, or `None` for a bulk run). `stock_sync_progress` is unchanged (no `crawler_id`).
 
+**Amendment (found during Task 1's task review, corrected before merge):** this task's original text was written from a read of `crawl_manager.py` that predates a separately-merged PR (`store-crawler-angryyoungandpoor`, commit `15ee68b`), which added a `_run_catalog_crawler()` helper (Playwright page handling + one-retry-on-bot-detection for a new `catalog_browser` crawler type) and fetches both `"catalog"` and `"catalog_browser"` enabled crawlers in `_sync_stock`. The original Step 3 code block below deleted both — corrected below to preserve them, filtering the *combined* catalog + catalog_browser list by `crawler_id` rather than replacing `_run_catalog_crawler`'s call with a bare `crawler.crawl_catalog()` loop. Two more corrections folded in below: a fourth pre-existing test (`test_start_stock_sync_and_start_judgment_only_run_independently`, in the "judgment-only task" section of the test file, not the "stock sync task" section) also fakes `_sync_stock` with a zero-arg function and needs the same one-line fix as the three already listed in Step 1; and `test_sync_stock_with_unmatched_crawler_id_filters_out_all_crawlers`'s exact-equality assertion forgot that `_broadcast` attaches an auto-incrementing `"id"` to every event, so it never matched even correct code.
+
 - [ ] **Step 1: Write the failing tests**
 
 Add to `backend/tests/test_crawl_manager.py`, immediately after `test_sync_stock_broadcasts_error_and_continues_when_a_crawler_fails` (currently ending at line 1128, right before the `sweep_enqueue` section comment):
@@ -103,11 +105,27 @@ async def test_sync_stock_with_unmatched_crawler_id_filters_out_all_crawlers(pg_
         await manager._sync_stock(crawler_id=site_a_id + 1)
 
     assert loaded_rows == []
-    events = manager.recent_events()
+    # recent_events() entries also carry an auto-incrementing "id" from
+    # _broadcast -- project it away rather than asserting exact dicts.
+    events = [{k: v for k, v in e.items() if k != "id"} for e in manager.recent_events()]
     assert events == [
         {"status": "stock_sync_started", "crawler_id": site_a_id + 1},
         {"status": "stock_sync_error", "error": "No enabled catalog crawlers", "crawler_id": site_a_id + 1},
     ]
+```
+
+Also update `test_start_stock_sync_and_start_judgment_only_run_independently`, an existing test in the "judgment-only task" section further down the same file (not one of the three already covered above), whose `_fake_sync_stock` is zero-arg. Change:
+
+```python
+    async def _fake_sync_stock():
+        await stock_event.wait()
+```
+
+to:
+
+```python
+    async def _fake_sync_stock(crawler_id=None):
+        await stock_event.wait()
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -117,7 +135,7 @@ Expected: FAIL — `TypeError: CrawlManager._sync_stock() got an unexpected keyw
 
 - [ ] **Step 3: Implement the crawler_id filter**
 
-In `backend/crawl_manager.py`, replace lines 510-582 (from `async def start_stock_sync` through the end of `_sync_stock`) with:
+In `backend/crawl_manager.py`, replace the block from `async def start_stock_sync` through the end of `_sync_stock` — this now spans `start_stock_sync`, `_run_catalog_crawler` (added by `store-crawler-angryyoungandpoor`, kept as-is below), and `_sync_stock` — with:
 
 ```python
     async def start_stock_sync(self, crawler_id: Optional[int] = None) -> bool:
@@ -126,6 +144,26 @@ In `backend/crawl_manager.py`, replace lines 510-582 (from `async def start_stoc
             return False
         self._stock_task = asyncio.create_task(self._sync_stock(crawler_id))
         return True
+
+    async def _run_catalog_crawler(self, crawler) -> list[dict]:
+        """Runs crawler.crawl_catalog(), handling the catalog_browser kind's
+        Playwright page + one-retry-on-BotDetectedError convention (same as
+        the release-crawl path's _paced_search). Plain catalog crawlers keep
+        calling crawl_catalog() zero-arg, unchanged."""
+        from crawler import _new_context, _reset_context, BotDetectedError
+
+        if crawler.crawler_type != "catalog_browser":
+            return [item async for item in crawler.crawl_catalog()]
+
+        context, page = await _new_context(self._browser, self._stealth)
+        try:
+            try:
+                return [item async for item in crawler.crawl_catalog(page)]
+            except BotDetectedError:
+                context, page = await _reset_context(context, self._browser, self._stealth, None)
+                return [item async for item in crawler.crawl_catalog(page)]
+        finally:
+            await context.close()
 
     async def _sync_stock(self, crawler_id: Optional[int] = None):
         import httpx
@@ -136,7 +174,10 @@ In `backend/crawl_manager.py`, replace lines 510-582 (from `async def start_stoc
         log.info("Stock sync started")
         try:
             with get_app_pool().connection() as conn:
-                enabled = get_enabled_crawlers(conn, crawler_type="catalog")
+                enabled = (
+                    get_enabled_crawlers(conn, crawler_type="catalog")
+                    + get_enabled_crawlers(conn, crawler_type="catalog_browser")
+                )
             if crawler_id is not None:
                 enabled = [c for c in enabled if c["id"] == crawler_id]
             crawlers = load_enabled_crawlers(enabled)
@@ -151,10 +192,8 @@ In `backend/crawl_manager.py`, replace lines 510-582 (from `async def start_stoc
             total_synced = 0
             consecutive_429_sites: list[str] = []
             for crawler in crawlers:
-                items = []
                 try:
-                    async for item in crawler.crawl_catalog():
-                        items.append(item)
+                    items = await self._run_catalog_crawler(crawler)
                 except Exception as e:
                     is_rate_limited = isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 429
                     if is_rate_limited:
@@ -202,12 +241,12 @@ In `backend/crawl_manager.py`, replace lines 510-582 (from `async def start_stoc
             await self._broadcast({"status": "stock_sync_error", "error": str(e), "crawler_id": crawler_id})
 ```
 
-(`Optional` is already imported at the top of `crawl_manager.py` — no new import needed.)
+(`Optional` is already imported at the top of `crawl_manager.py` — no new import needed. `_run_catalog_crawler`'s body is unchanged from `store-crawler-angryyoungandpoor` — it's reproduced here only because it sits between the two methods that do change, not because anything about it is new to this task.)
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `cd backend && pytest tests/test_crawl_manager.py -v`
-Expected: PASS (all tests in the file, including the three new ones and every pre-existing stock-sync test — `test_sync_stock_replaces_items_for_each_enabled_catalog_crawler` and `test_sync_stock_broadcasts_error_and_continues_when_a_crawler_fails` call `_sync_stock()` with no arguments, which still works since `crawler_id` defaults to `None`)
+Expected: PASS (the whole file — the three new tests, the pre-existing stock-sync tests that call `_sync_stock()` with no arguments, the four `_run_catalog_crawler` tests, and `test_start_stock_sync_and_start_judgment_only_run_independently`'s now-updated fake)
 
 - [ ] **Step 5: Commit**
 
@@ -606,11 +645,7 @@ Then add these tests inside the `describe('Settings', ...)` block, after the exi
   })
 ```
 
-Add `within` to the existing `@testing-library/react` import at the top of the file (currently `import { render, screen, fireEvent, waitFor } from '@testing-library/react'`):
-
-```tsx
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
-```
+`within` is already imported at the top of this file (a separately-merged PR added a `within`-using test here first) — no import change needed.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
