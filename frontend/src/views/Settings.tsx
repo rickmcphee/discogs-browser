@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, memo } from 'react'
 import { getSettings, saveSettings, setCrawlerEnabled } from '../api/client'
 import type { Settings as SettingsType, Crawler } from '../api/types'
-import { primaryButtonClass } from '../styles/buttons'
+import { navButtonClass, primaryButtonClass } from '../styles/buttons'
 
 interface SettingRow {
   key: keyof SettingsType
@@ -48,6 +48,9 @@ interface Props {
   isAdmin: boolean
   hiddenCrawlerIds: number[]
   onToggleCrawlerView: (crawlerId: number) => void
+  stockSyncBusy: boolean
+  stockSyncCrawlerId: number | null
+  onRefreshStoreCrawler: (crawlerId: number) => void
 }
 
 function toggleButtonClass(on: boolean): string {
@@ -58,6 +61,7 @@ function toggleButtonClass(on: boolean): string {
 
 function Settings({
   crawlers, onCrawlersChange, onRefreshPrices, onRefreshStock, isAdmin, hiddenCrawlerIds, onToggleCrawlerView,
+  stockSyncBusy, stockSyncCrawlerId, onRefreshStoreCrawler,
 }: Props) {
   const [settings, setSettings] = useState<SettingsType>({
     crawl_delay_seconds: 30,
@@ -120,7 +124,7 @@ function Settings({
     )
   }
 
-  function renderCrawlerTable(crawlerList: Crawler[], emptyMessage: string) {
+  function renderCrawlerTable(crawlerList: Crawler[], emptyMessage: string, showRefresh = false) {
     if (crawlerList.length === 0) {
       return <p className="text-gray-500 text-sm text-left mt-4">{emptyMessage}</p>
     }
@@ -131,7 +135,8 @@ function Settings({
             <th className="text-left py-2 pr-4 w-40">Site</th>
             {isAdmin && <th className="text-left py-2 pr-4 w-48">Last run</th>}
             <th className="text-left py-2 pr-4">View</th>
-            {isAdmin && <th className="text-left py-2">Crawl</th>}
+            {isAdmin && <th className="text-left py-2 pr-4">Crawl</th>}
+            {isAdmin && showRefresh && <th className="text-left py-2 w-24">Refresh</th>}
           </tr>
         </thead>
         <tbody>
@@ -157,12 +162,26 @@ function Settings({
                 </button>
               </td>
               {isAdmin && (
-                <td className="py-3 text-left">
+                <td className="py-3 pr-4 text-left">
                   <button
                     onClick={() => handleToggleCrawler(c)}
                     className={toggleButtonClass(c.enabled)}
                   >
                     {c.enabled ? 'Enabled' : 'Disabled'}
+                  </button>
+                </td>
+              )}
+              {isAdmin && showRefresh && (
+                <td className="py-3 text-left">
+                  <button
+                    onClick={() => onRefreshStoreCrawler(c.id)}
+                    disabled={!c.enabled || stockSyncBusy}
+                    title={`Refresh ${c.site_name} catalog now`}
+                    className={`p-1.5 disabled:opacity-30 disabled:cursor-not-allowed ${navButtonClass(false)}`}
+                  >
+                    <span className="block text-base leading-none">
+                      {stockSyncCrawlerId === c.id ? '⟳' : '↻'}
+                    </span>
                   </button>
                 </td>
               )}
@@ -327,7 +346,8 @@ function Settings({
                 <td className="py-3 pr-4 text-left align-top">
                   <button
                     onClick={onRefreshStock}
-                    className={`px-3 py-1 text-xs ${primaryButtonClass()}`}
+                    disabled={stockSyncBusy}
+                    className={`px-3 py-1 text-xs disabled:opacity-50 ${primaryButtonClass()}`}
                   >
                     Refresh
                   </button>
@@ -339,7 +359,7 @@ function Settings({
             </tbody>
           </table>
         )}
-        {renderCrawlerTable(shownCatalogCrawlers, 'No catalog crawlers configured.')}
+        {renderCrawlerTable(shownCatalogCrawlers, 'No catalog crawlers configured.', true)}
       </section>
 
     </div>

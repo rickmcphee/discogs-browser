@@ -1,8 +1,10 @@
 import csv
 import io
-from fastapi import APIRouter, Query, Request, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
+from pydantic import BaseModel
 from typing import Optional
 import db
+from admin import require_admin
 from crawl_manager import crawl_manager
 
 router = APIRouter()
@@ -71,9 +73,13 @@ def get_stock_judgment_status(request: Request):
         return {"any_judged": db.has_any_stock_judgment(conn, user_id)}
 
 
-@router.post("/stock/sync/start")
-async def start_stock_sync():
-    started = await crawl_manager.start_stock_sync()
+class StockSyncStartRequest(BaseModel):
+    crawler_id: Optional[int] = None
+
+
+@router.post("/stock/sync/start", dependencies=[Depends(require_admin)])
+async def start_stock_sync(body: Optional[StockSyncStartRequest] = None):
+    started = await crawl_manager.start_stock_sync(body.crawler_id if body else None)
     return {"started": started, "running": crawl_manager.stock_sync_running}
 
 

@@ -1105,7 +1105,7 @@ async def test_stock_sync_not_running_initially(manager):
 
 
 async def test_start_stock_sync_returns_true_when_idle(manager):
-    async def _fake_sync():
+    async def _fake_sync(crawler_id=None):
         await asyncio.sleep(0)
 
     manager._sync_stock = _fake_sync  # type: ignore
@@ -1117,7 +1117,7 @@ async def test_start_stock_sync_returns_true_when_idle(manager):
 async def test_start_stock_sync_returns_false_when_already_running(manager):
     event = asyncio.Event()
 
-    async def _fake_sync():
+    async def _fake_sync(crawler_id=None):
         await event.wait()
 
     manager._sync_stock = _fake_sync  # type: ignore
@@ -1130,7 +1130,7 @@ async def test_start_stock_sync_returns_false_when_already_running(manager):
 
 
 async def test_stock_sync_running_false_after_completion(manager):
-    async def _instant():
+    async def _instant(crawler_id=None):
         pass
 
     manager._sync_stock = _instant  # type: ignore
@@ -1208,6 +1208,120 @@ async def test_sync_stock_broadcasts_error_and_continues_when_a_crawler_fails(pg
     with db.get_admin_pool().connection() as conn:
         items = conn.execute("SELECT artist FROM stock_items").fetchall()
     assert [i["artist"] for i in items] == ["B"]
+
+
+async def test_start_stock_sync_forwards_crawler_id_to_sync_stock(manager):
+    calls = []
+
+    async def _fake_sync(crawler_id=None):
+        calls.append(crawler_id)
+
+    manager._sync_stock = _fake_sync  # type: ignore
+    await manager.start_stock_sync(42)
+    await asyncio.sleep(0.01)
+    assert calls == [42]
+
+
+async def test_sync_stock_with_crawler_id_filters_to_that_crawler_only(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Site A", "/a.py", crawler_type="catalog")
+        db.register_crawler(conn, "Site B", "/b.py", crawler_type="catalog")
+        conn.commit()
+        site_a_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Site A'").fetchone()["id"]
+
+    loaded_rows = []
+
+    def _fake_load(enabled_crawlers):
+        loaded_rows.extend(enabled_crawlers)
+        plugin = AsyncMock()
+
+        async def _items():
+            yield {"artist": "A", "title": "T", "url": "https://x/1", "price": 5.0, "currency": "USD"}
+
+        plugin.crawl_catalog = lambda: _items()
+        plugin._db_id = enabled_crawlers[0]["id"]
+        plugin._db_site_name = enabled_crawlers[0]["site_name"]
+        return [plugin]
+
+    manager = CrawlManager()
+    with patch("crawler.load_enabled_crawlers", side_effect=_fake_load):
+        await manager._sync_stock(crawler_id=site_a_id)
+
+    # Only Site A's row was ever handed to the loader -- Site B, though
+    # equally enabled, must never be touched by a single-crawler refresh.
+    assert [row["id"] for row in loaded_rows] == [site_a_id]
+
+    events = [(e["status"], e.get("crawler_id")) for e in manager.recent_events()]
+    assert events == [
+        ("stock_sync_started", site_a_id),
+        ("stock_sync_progress", None),
+        ("stock_sync_complete", site_a_id),
+    ]
+
+
+async def test_sync_stock_with_unmatched_crawler_id_filters_out_all_crawlers(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Site A", "/a.py", crawler_type="catalog")
+        conn.commit()
+        site_a_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Site A'").fetchone()["id"]
+
+    loaded_rows = []
+
+    def _fake_load(enabled_crawlers):
+        loaded_rows.extend(enabled_crawlers)
+        return []
+
+    manager = CrawlManager()
+    with patch("crawler.load_enabled_crawlers", side_effect=_fake_load):
+        # Site A is enabled, but this id doesn't match it -- the filter must
+        # exclude Site A rather than falling back to "sync everything."
+        await manager._sync_stock(crawler_id=site_a_id + 1)
+
+    assert loaded_rows == []
+    # recent_events() entries also carry an auto-incrementing "id" from
+    # _broadcast -- project it away rather than asserting exact dicts.
+    events = [{k: v for k, v in e.items() if k != "id"} for e in manager.recent_events()]
+    assert events == [
+        {"status": "stock_sync_started", "crawler_id": site_a_id + 1},
+        {"status": "stock_sync_error", "error": "No enabled catalog crawlers", "crawler_id": site_a_id + 1},
+    ]
+
+
+async def test_sync_stock_with_catalog_browser_crawler_id_filters_to_that_crawler_only(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Browser Site", "/browser.py", crawler_type="catalog_browser")
+        db.register_crawler(conn, "Catalog Site", "/catalog.py", crawler_type="catalog")
+        conn.commit()
+        browser_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Browser Site'").fetchone()["id"]
+
+    loaded_rows = []
+
+    def _fake_load(enabled_crawlers):
+        loaded_rows.extend(enabled_crawlers)
+        plugin = AsyncMock()
+
+        async def _items():
+            yield {"artist": "B", "title": "T", "url": "https://x/2", "price": 15.0, "currency": "USD"}
+
+        plugin.crawl_catalog = lambda: _items()
+        plugin._db_id = enabled_crawlers[0]["id"]
+        plugin._db_site_name = enabled_crawlers[0]["site_name"]
+        return [plugin]
+
+    manager = CrawlManager()
+    with patch("crawler.load_enabled_crawlers", side_effect=_fake_load):
+        await manager._sync_stock(crawler_id=browser_id)
+
+    # Only Browser Site's row was ever handed to the loader -- Catalog Site,
+    # though equally enabled, must never be touched by a single-crawler refresh.
+    assert [row["id"] for row in loaded_rows] == [browser_id]
+
+    events = [(e["status"], e.get("crawler_id")) for e in manager.recent_events()]
+    assert events == [
+        ("stock_sync_started", browser_id),
+        ("stock_sync_progress", None),
+        ("stock_sync_complete", browser_id),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -1826,7 +1940,7 @@ async def test_start_stock_sync_and_start_judgment_only_run_independently(manage
     stock_event = asyncio.Event()
     judgment_event = asyncio.Event()
 
-    async def _fake_sync_stock():
+    async def _fake_sync_stock(crawler_id=None):
         await stock_event.wait()
 
     async def _fake_judgment_phase(user_id):
