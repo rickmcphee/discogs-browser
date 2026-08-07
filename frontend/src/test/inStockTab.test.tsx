@@ -24,6 +24,7 @@ const exportRecommendationsCsv = vi.fn()
 const getSettings = vi.fn()
 const getUserSettings = vi.fn()
 const getJudgmentStatus = vi.fn()
+const getCrawlers = vi.fn()
 
 vi.mock('../api/client', () => ({
   checkHealth: vi.fn().mockResolvedValue(true),
@@ -33,7 +34,7 @@ vi.mock('../api/client', () => ({
   getCollectionStatus: vi.fn().mockResolvedValue({ total: 0, last_synced: null }),
   getCrawlStatus: vi.fn().mockResolvedValue({ total: 0, missing: 0, oldest_checked: null }),
   postCrawlStart: vi.fn().mockResolvedValue({ started: true, running: true }),
-  getCrawlers: vi.fn().mockResolvedValue([]),
+  getCrawlers: (...args: unknown[]) => getCrawlers(...args),
   openCrawlStream: vi.fn(() => new MockEventSource()),
   getReleases: vi.fn().mockResolvedValue({ total: 0, page: 1, per_page: 50, releases: [] }),
   getArtists: vi.fn().mockResolvedValue([]),
@@ -82,6 +83,7 @@ beforeEach(() => {
   getSettings.mockResolvedValue(defaultSettings)
   getUserSettings.mockResolvedValue(defaultUserSettings)
   getJudgmentStatus.mockResolvedValue({ any_judged: false })
+  getCrawlers.mockResolvedValue([])
 })
 
 describe('In Stock tab', () => {
@@ -101,6 +103,50 @@ describe('In Stock tab', () => {
     const row = description.closest('tr') as HTMLElement
     fireEvent.click(within(row).getByText('Refresh'))
     await waitFor(() => expect(postStockSyncStart).toHaveBeenCalled())
+  })
+
+  const CATALOG_CRAWLER = { id: 9, site_name: 'Epitaph', module_path: '', crawler_type: 'catalog', enabled: true, last_run: null, base_url: null }
+
+  it('calls postStockSyncStart with that crawler\'s id when its per-row Refresh button is clicked', async () => {
+    getCrawlers.mockResolvedValue([CATALOG_CRAWLER])
+    render(<App />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    const button = await screen.findByTitle('Refresh Epitaph catalog now')
+    fireEvent.click(button)
+    await waitFor(() => expect(postStockSyncStart).toHaveBeenCalledWith(9))
+  })
+
+  it('disables the bulk Refresh and every per-row Refresh button once a stock sync starts', async () => {
+    getCrawlers.mockResolvedValue([CATALOG_CRAWLER])
+    render(<App />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    const rowButton = await screen.findByTitle('Refresh Epitaph catalog now')
+    const description = await screen.findByText('Scan all enabled catalog crawlers immediately.')
+    const bulkButton = within(description.closest('tr') as HTMLElement).getByText('Refresh')
+
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    getLastCrawlSource().emit({ status: 'stock_sync_started', crawler_id: 9, id: 1 })
+
+    await waitFor(() => expect(rowButton).toBeDisabled())
+    expect(bulkButton).toBeDisabled()
+  })
+
+  it('re-enables the buttons and stops spinning the row once the single-crawler sync completes', async () => {
+    getCrawlers.mockResolvedValue([CATALOG_CRAWLER])
+    render(<App />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    const rowButton = await screen.findByTitle('Refresh Epitaph catalog now')
+
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    const source = getLastCrawlSource()
+    source.emit({ status: 'stock_sync_started', crawler_id: 9, id: 1 })
+    await waitFor(() => expect(rowButton).toBeDisabled())
+
+    source.emit({ status: 'stock_sync_complete', synced: 5, crawler_id: 9, id: 2 })
+    await waitFor(() => expect(rowButton).not.toBeDisabled())
   })
 
   it('surfaces stock_sync_progress events in the bottom status bar', async () => {
