@@ -253,3 +253,10 @@ async def test_crawl_catalog_raises_on_http_error(monkeypatch):
     crawler = Crawler()
     with pytest.raises(httpx.HTTPStatusError):
         [item async for item in crawler.crawl_catalog()]
+
+
+def test_site_metadata():
+    assert Crawler.site_name == "The Sound Garden"
+    assert Crawler.base_url == "https://www.sgrecordshop.com"
+    assert Crawler.crawler_type == "catalog"
+    assert len(Crawler._CATEGORIES) == 14
