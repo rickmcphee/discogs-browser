@@ -7,6 +7,10 @@ This repository is specification-driven. The design spec and implementation plan
 1. [`docs/superpowers/specs/2026-06-27-discogs-browser-design.md`](docs/superpowers/specs/2026-06-27-discogs-browser-design.md) — full architecture, data model, crawler interface, API shapes, UI behaviour
 2. [`docs/superpowers/plans/2026-06-27-discogs-browser.md`](docs/superpowers/plans/2026-06-27-discogs-browser.md) — implementation tasks, file-level detail, code examples
 
+## Workspace isolation
+
+**Always work in a git worktree, never directly on `main` (or any other checked-out branch) in the primary checkout.** This includes spec/plan edits, not just code. Use the harness's native worktree tool (e.g. `EnterWorktree`) when available; fall back to `git worktree add` (conventionally under `.worktrees/`, gitignored) only when no native tool exists. One worktree per unit of work — branch, implement, commit, and open the PR from there, then remove it.
+
 ## Repository layout
 
 ```

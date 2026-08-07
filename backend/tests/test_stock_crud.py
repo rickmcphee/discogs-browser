@@ -31,6 +31,74 @@ def test_replace_stock_items_clears_and_inserts_for_crawler(admin_conn):
     assert rows == []
 
 
+def test_replace_stock_items_leaves_mixed_case_artist_untouched(admin_conn):
+    db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "A-100s", "title": "Untitled", "url": "https://x/1", "price": 20.0, "currency": "USD"},
+        {"artist": "NAILS", "title": "Untitled", "url": "https://x/2", "price": 20.0, "currency": "USD"},
+    ])
+    admin_conn.commit()
+    rows = {
+        r["artist"]
+        for r in admin_conn.execute("SELECT artist FROM stock_items WHERE crawler_id = %s", [crawler_id]).fetchall()
+    }
+    assert rows == {"A-100s", "Nails"}  # mixed-case input left as-is; all-caps still title-cased
+
+
+def test_replace_stock_items_title_case_does_not_mangle_leading_digit(admin_conn):
+    # Regression: str.title() treats the digit/letter boundary in "13th" as a
+    # new word, producing "13Th Floor Elevators".
+    db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "13th floor elevators", "title": "The Psychedelic Sounds Of", "url": "https://x/2", "price": 15.0, "currency": "USD"},
+    ])
+    admin_conn.commit()
+    rows = admin_conn.execute("SELECT artist FROM stock_items WHERE crawler_id = %s", [crawler_id]).fetchall()
+    assert rows[0]["artist"] == "13th Floor Elevators"
+
+
+def test_replace_stock_items_title_case_handles_non_ascii_letters(admin_conn):
+    # Regression (raised in PR review): [A-Za-z]+ only matches ASCII letters,
+    # so a non-ASCII letter like "ö" splits "björk" into two word runs and
+    # the second run ("rk") gets wrongly capitalized as a new word.
+    db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "björk", "title": "Homogenic", "url": "https://x/4", "price": 12.0, "currency": "USD"},
+    ])
+    admin_conn.commit()
+    rows = admin_conn.execute("SELECT artist FROM stock_items WHERE crawler_id = %s", [crawler_id]).fetchall()
+    assert rows[0]["artist"] == "Björk"
+
+
+def test_replace_stock_items_item_key_unaffected_by_display_casing_fix(admin_conn):
+    # Regression (raised in PR review): item_key must keep hashing the
+    # legacy str.title() casing, not the corrected display casing, or
+    # existing stock_item_judgments rows -- which join on item_key -- would
+    # silently orphan for any artist whose casing changed here (e.g.
+    # digit-prefixed names like "13th Floor Elevators").
+    db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "13th floor elevators", "title": "The Psychedelic Sounds Of", "url": "https://x/3", "price": 15.0, "currency": "USD"},
+    ])
+    admin_conn.commit()
+    row = admin_conn.execute("SELECT item_key FROM stock_items WHERE crawler_id = %s", [crawler_id]).fetchone()
+    assert row["item_key"] == db.compute_item_key(
+        "13th floor elevators".title(), "The Psychedelic Sounds Of", "https://x/3"
+    )
+
+
 def test_get_stock_items_recommended_filters_to_calling_users_judgments(admin_conn):
     alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
     bob = db.create_user(admin_conn, discogs_user_id=2, discogs_username="bob")

@@ -40,6 +40,13 @@ describe('StockBrowser', () => {
     expect(thumbnail.getAttribute('src')).toBe('https://cdn.shopify.com/rz-black.png')
   })
 
+  it('gives the list-view thumbnail a min-width so it matches Collection/Wishlist sizing', async () => {
+    render(<StockBrowser />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    const thumbnail = screen.getByAltText('The Great Satan — Ghostly Black Vinyl') as HTMLImageElement
+    expect(thumbnail).toHaveClass('min-w-10')
+  })
+
   it('renders a placeholder box when cover_image_url is null', async () => {
     render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('Every Bridge Burning — Forest Green LP')).toBeTruthy())
