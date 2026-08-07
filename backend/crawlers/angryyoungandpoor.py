@@ -1,6 +1,9 @@
+import random
 import re
+from asyncio import sleep
 from typing import AsyncIterator, Optional
 
+from config import load_config
 from crawler import BotDetectedError
 
 # Same wider vinyl/format regex secretlystore.py uses -- plain \blp\b misses
@@ -50,8 +53,16 @@ class Crawler:
     ]
 
     async def crawl_catalog(self, page) -> AsyncIterator[dict]:
+        # Same crawl_delay_seconds convention as shopify_catalog.iter_products(): sleep
+        # random.uniform(delay * 0.5, delay) before every request, including the first,
+        # not just between them. This site leans on Cloudflare to block anything that
+        # doesn't look like normal browser traffic -- 4 page.goto() calls with no pacing
+        # at all is exactly the kind of scripted-looking burst that gets blocked.
+        cfg = load_config()
+        delay = float(cfg.get("crawl_delay_seconds", 30))
         seen_pids: set[str] = set()
         for category_path in self._CATEGORIES:
+            await sleep(random.uniform(delay * 0.5, delay))
             await page.goto(f"{self.base_url}/{category_path}?viewAll=yes", timeout=120_000)
             if "Cloudflare" in await page.title():
                 raise BotDetectedError("Cloudflare interstitial")

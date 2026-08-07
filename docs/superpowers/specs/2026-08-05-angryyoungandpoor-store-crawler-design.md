@@ -185,8 +185,14 @@ finally:
 One retry on `BotDetectedError`, same convention as `_paced_search` on the
 release-crawl path — if the retry also hits the interstitial, it propagates
 and this crawler's run fails for this sync, same as any other exception
-`_sync_stock` already handles. `crawl_delay_seconds`/`consecutive_failure_limit`
-still apply the same way they do for the existing `catalog` crawlers.
+`_sync_stock` already handles. `crawl_delay_seconds` applies the same way it
+does in `shopify_catalog.iter_products()`: `crawl_catalog()` sleeps
+`random.uniform(delay * 0.5, delay)` before every `page.goto()`, including
+the first — this site leans on Cloudflare to block anything that doesn't
+look like normal browser traffic, so the 4 category-page loads can't fire
+back-to-back. `consecutive_failure_limit` has no equivalent here:
+`crawl_catalog()` has no generic-failure retry loop, only the one-shot
+`BotDetectedError` retry described above.
 
 Plain `catalog` crawlers are untouched — `crawl_catalog()` keeps its current
 zero-arg signature for them; only `catalog_browser` crawlers get a `page`.
