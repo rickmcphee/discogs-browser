@@ -78,8 +78,8 @@ class StockSyncStartRequest(BaseModel):
 
 
 @router.post("/stock/sync/start", dependencies=[Depends(require_admin)])
-async def start_stock_sync(body: StockSyncStartRequest = StockSyncStartRequest()):
-    started = await crawl_manager.start_stock_sync(body.crawler_id)
+async def start_stock_sync(body: Optional[StockSyncStartRequest] = None):
+    started = await crawl_manager.start_stock_sync(body.crawler_id if body else None)
     return {"started": started, "running": crawl_manager.stock_sync_running}
 
 
