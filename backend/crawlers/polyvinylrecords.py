@@ -3,7 +3,12 @@ from typing import AsyncIterator
 from shopify_catalog import iter_products, resolve_cover_image
 
 _COLLECTION_SLUG = "vinyl"
-_TITLE_RE = re.compile(r'^(?P<artist>.+?)\s*-\s*(?P<album>.+)$')
+# Requires whitespace on at least one side of the splitting hyphen, not just
+# any hyphen — confirmed live that 8 real artist names on this store contain
+# an internal hyphen with no surrounding space (e.g. "blink-182",
+# "Sleater-Kinney", "Wu-Tang Clan"), and the plain \s*-\s* form clips them
+# (e.g. "blink-182" -> "blink").
+_TITLE_RE = re.compile(r'^(?P<artist>.+?)(?:\s+-\s*|\s*-\s+)(?P<album>.+)$')
 _VINYL_RE = re.compile(r'\bvinyl\b|\b\d*x?lp\b|\d+\s*"', re.IGNORECASE)
 _PREORDER_RE = re.compile(r'pre-?order', re.IGNORECASE)
 

@@ -4,7 +4,10 @@ from shopify_catalog import iter_products, resolve_cover_image
 
 _COLLECTION_SLUG = "vinyl-shop"
 _DIGITAL_RE = re.compile(r"digital", re.IGNORECASE)
-_TITLE_RE = re.compile(r'^(?P<artist>.+?)\s*-\s*(?P<album>.+)$')
+# Requires whitespace on at least one side of the splitting hyphen, not just
+# any hyphen — confirmed live that "Ultra-Lite" has an internal hyphen with
+# no surrounding space, and the plain \s*-\s* form clips it to "Ultra".
+_TITLE_RE = re.compile(r'^(?P<artist>.+?)(?:\s+-\s*|\s*-\s+)(?P<album>.+)$')
 
 
 class Crawler:

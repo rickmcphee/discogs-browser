@@ -3,7 +3,10 @@ from typing import AsyncIterator
 from shopify_catalog import iter_products, resolve_cover_image
 
 _COLLECTION_SLUG = "vinyl"
-_TITLE_RE = re.compile(r'^(?P<artist>.+?)\s*-\s*(?P<album>.+)$')
+# Requires whitespace on at least one side of the splitting hyphen, not just
+# any hyphen — confirmed live that "PAN-AMERIKAN NATIVE FRONT" has an internal
+# hyphen with no surrounding space, and the plain \s*-\s* form clips it to "PAN".
+_TITLE_RE = re.compile(r'^(?P<artist>.+?)(?:\s+-\s*|\s*-\s+)(?P<album>.+)$')
 # Confirmed live in this collection: a tote bag with product_type "VINYL" —
 # the format field can't be trusted to exclude it, only the title keyword can.
 _MERCH_TITLE_RE = re.compile(r'tote bag|t-shirt|hoodie', re.IGNORECASE)

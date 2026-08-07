@@ -74,6 +74,24 @@ async def test_crawl_catalog_parses_artist_from_title_dash_split_not_vendor(craw
 
 
 @respx.mock
+async def test_crawl_catalog_keeps_hyphenated_artist_name_intact(crawler):
+    # Confirmed live: the old regex (\s*-\s*, no whitespace requirement) splits
+    # on the FIRST hyphen anywhere, clipping "PAN-AMERIKAN NATIVE FRONT" to "PAN".
+    product = {
+        **_PRODUCT,
+        "title": "PAN-AMERIKAN NATIVE FRONT - LITTLE TURTLE'S WAR LP",
+        "vendor": "Nuclear War Now",
+        "handle": "pan-amerikan-native-front-little-turtles-war-lp",
+    }
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(return_value=_page_response([product]))
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "2"}).mock(return_value=_page_response([]))
+    items = [item async for item in crawler.crawl_catalog()]
+    assert len(items) == 1
+    assert items[0]["artist"] == "PAN-AMERIKAN NATIVE FRONT"
+    assert items[0]["title"] == "LITTLE TURTLE'S WAR LP — BLACK SMOKE GALAXY"
+
+
+@respx.mock
 async def test_crawl_catalog_excludes_zero_priced_mystery_lp_promo(crawler):
     respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(return_value=_page_response([_MYSTERY_LP_PROMO]))
     respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "2"}).mock(return_value=_page_response([]))
