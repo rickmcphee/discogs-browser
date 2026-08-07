@@ -45,9 +45,6 @@ interface Props {
   onCrawlersChange: (crawlers: Crawler[]) => void
   onRefreshPrices: (mode: 'missing' | 'all') => void
   onRefreshStock: () => void
-  onRefreshRecommendations: () => void
-  onClearRecommendations: () => void
-  hasJudgedItems: boolean
   isAdmin: boolean
   hiddenCrawlerIds: number[]
   onToggleCrawlerView: (crawlerId: number) => void
@@ -63,8 +60,7 @@ function toggleButtonClass(on: boolean): string {
 }
 
 function Settings({
-  crawlers, onCrawlersChange, onRefreshPrices, onRefreshStock, onRefreshRecommendations,
-  onClearRecommendations, hasJudgedItems, isAdmin, hiddenCrawlerIds, onToggleCrawlerView,
+  crawlers, onCrawlersChange, onRefreshPrices, onRefreshStock, isAdmin, hiddenCrawlerIds, onToggleCrawlerView,
   stockSyncBusy, stockSyncCrawlerId, onRefreshStoreCrawler,
 }: Props) {
   const [settings, setSettings] = useState<SettingsType>({
@@ -365,50 +361,6 @@ function Settings({
         )}
         {renderCrawlerTable(shownCatalogCrawlers, 'No catalog crawlers configured.', true)}
       </section>
-
-      {/* Recommendations Management */}
-      {isAdmin && (
-        <section>
-          <h2 className="text-lg font-semibold text-white mb-1 text-left">Recommendations Management</h2>
-          <p className="text-sm text-gray-500 mb-4 text-left">
-            Judge unprocessed Store items against your collection using Claude, then export or clear the results.
-            Requires each user to configure an Anthropic API key in their Account settings.
-          </p>
-          <table className="w-full text-sm border-collapse">
-            <tbody>
-              <tr className="border-b border-gray-800/50">
-                <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
-                <td className="py-3 pr-4 text-left align-top">
-                  <button
-                    onClick={onRefreshRecommendations}
-                    className={`w-20 text-center px-3 py-1 text-xs disabled:opacity-50 ${primaryButtonClass()}`}
-                  >
-                    Refresh
-                  </button>
-                </td>
-                <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
-                  Evaluate unprocessed Store items for recommendation, without a full catalog re-crawl.
-                </td>
-              </tr>
-              <tr className="border-b border-gray-800/50">
-                <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
-                <td className="py-3 pr-4 text-left align-top">
-                  <button
-                    onClick={onClearRecommendations}
-                    disabled={!hasJudgedItems}
-                    className={`w-20 text-center px-3 py-1 text-xs disabled:opacity-50 ${primaryButtonClass()}`}
-                  >
-                    Clear
-                  </button>
-                </td>
-                <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
-                  Remove all recommendation judgments, recommended and not-recommended, so every Store item is re-evaluated from scratch on the next run.
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </section>
-      )}
 
     </div>
   )
