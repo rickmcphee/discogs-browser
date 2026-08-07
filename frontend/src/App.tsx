@@ -54,6 +54,7 @@ export default function App() {
   const [dismissedSyncId, setDismissedSyncId] = useState(() => Number(localStorage.getItem(DISMISSED_SYNC_KEY) ?? 0))
   const [syncing, setSyncing] = useState(false)
   const [syncGeneration, setSyncGeneration] = useState(0)
+  const [stockSyncTarget, setStockSyncTarget] = useState<number | 'all' | null>(null)
   const [authState, setAuthState] = useState<AuthStatus | null>(null)
   const [viewAsUser, setViewAsUser] = useState(() => localStorage.getItem(VIEW_AS_USER_KEY) === 'true')
   const [signupToken, setSignupToken] = useState<string | null>(() => {
@@ -161,6 +162,7 @@ export default function App() {
       }
       if (event.status === 'stock_sync_started') {
         setSyncing(true)
+        setStockSyncTarget(event.crawler_id ?? 'all')
         setSyncStatus('Syncing in-stock catalog…', event.id ?? null)
         return
       }
@@ -170,16 +172,21 @@ export default function App() {
       }
       if (event.status === 'stock_sync_complete') {
         setSyncing(false)
+        setStockSyncTarget(null)
         setSyncStatus(`In-stock sync complete: ${event.synced} items`, event.id ?? null)
         return
       }
       if (event.status === 'stock_sync_error') {
-        setSyncing(false)
+        if (!event.source) {
+          setSyncing(false)
+          setStockSyncTarget(null)
+        }
         setSyncStatus(`In-stock sync failed: ${event.error}`, event.id ?? null)
         return
       }
       if (event.status === 'stock_sync_aborted') {
         setSyncing(false)
+        setStockSyncTarget(null)
         const sources = event.sources?.length ? ` (${event.sources.join(', ')})` : ''
         setSyncStatus(`In-stock sync stopped: ${event.error}${sources}`, event.id ?? null)
         return
@@ -312,6 +319,14 @@ export default function App() {
   const handleRefreshStock = useCallback(async () => {
     try {
       await postStockSyncStart()
+    } catch (e: any) {
+      setSyncStatus(`In-stock sync failed to start: ${e.message}`)
+    }
+  }, [setSyncStatus])
+
+  const handleRefreshStoreCrawler = useCallback(async (crawlerId: number) => {
+    try {
+      await postStockSyncStart(crawlerId)
     } catch (e: any) {
       setSyncStatus(`In-stock sync failed to start: ${e.message}`)
     }
@@ -502,6 +517,9 @@ export default function App() {
             isAdmin={showAdminNav}
             hiddenCrawlerIds={hiddenCrawlerIds}
             onToggleCrawlerView={toggleCrawlerView}
+            stockSyncBusy={stockSyncTarget !== null}
+            stockSyncCrawlerId={typeof stockSyncTarget === 'number' ? stockSyncTarget : null}
+            onRefreshStoreCrawler={handleRefreshStoreCrawler}
           />
         </div>
         <div className={view === 'account' ? 'h-full overflow-y-auto' : 'hidden'}>
