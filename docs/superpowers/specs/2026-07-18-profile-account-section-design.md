@@ -16,6 +16,8 @@ _2026-07-18_
 
 **Amendment (2026-08-04):** the "Export Recommendations" button — previously in `Settings.tsx`'s "Recommendations Management" section, and gated by `isAdmin` there (see the Amendment 4 section of [`2026-07-06-store-recommended-filter-design.md`](2026-07-06-store-recommended-filter-design.md)) — moved to `Account.tsx`'s "Recommendations" section (added in the 2026-07-31 amendment above), as the last row in that section's table. It is ungated, consistent with the rest of that section being per-user/non-admin-only; `hasJudgedItems` still gates it (disabled until a judgment run has completed). This fixes the 'user' role having no way to export recommendations at all, since the Settings section it lived in was admin-only. `Refresh`/`Clear` remain in `Settings.tsx`, still `isAdmin`-gated.
 
+**Amendment (2026-08-07):** the previous amendment's last sentence no longer holds — `Refresh` and `Clear` also moved from `Settings.tsx`'s "Recommendations Management" section (now deleted entirely) into `Account.tsx`'s "Recommendations" section, as two more rows in that section's table, ordered `Refresh`, `Export`, `Clear`. Both are ungated, same rationale as `Export`'s 2026-08-04 move: `POST /api/stock/judge/start` and `POST /api/stock/judge/clear` (`backend/routers/stock.py`) were already per-user and carried no `require_admin` dependency — the `isAdmin` gate in `Settings.tsx` was UI-only scaffolding left over from before the `crawl-queue-refactor` per-user migration, not a real access boundary. `Refresh` has no `hasJudgedItems` gating (matches its pre-move behavior); `Clear` keeps it, same as `Export`.
+
 ---
 
 ## Overview
