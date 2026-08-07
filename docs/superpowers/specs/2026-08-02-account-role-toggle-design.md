@@ -90,6 +90,15 @@ are unaffected.
   The switch's own `justify-between` row fully specifies its alignment
   regardless, so this doesn't change anything about this spec's own design
   — just removes a now-dangling comparison.
+
+  **Amendment (2026-08-07, branch `monochrome-restyle`):** the "indigo/gray
+  convention" this bullet describes no longer exists — the app-wide
+  monochrome restyle (see
+  [`2026-08-07-monochrome-restyle-design.md`](../../specifications/shaping/2026-08-07-monochrome-restyle-design.md))
+  replaced the indigo accent everywhere. The switch's Admin-view track is
+  now `bg-gray-800`; the User-view track is unchanged (`bg-gray-600`). The
+  two tracks are still distinguished by shade, just both gray instead of
+  indigo/gray.
 - The "Log out" button's `onClick` calls
   `logout().then(() => { localStorage.removeItem('discogs-browser.viewAsUser'); window.location.reload() })`.
   The flag is cleared only after `logout()` resolves, so a failed logout
