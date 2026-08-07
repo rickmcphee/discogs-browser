@@ -267,8 +267,7 @@ class Crawler:
 
                 page, total_pages = 1, 1
                 while page <= total_pages:
-                    if page > 1:
-                        await sleep(random.uniform(delay * 0.5, delay))
+                    await sleep(random.uniform(delay * 0.5, delay))
                     r = await client.get(
                         f"/gsrp/{page}?{qs}&page={page}",
                         headers={"X-Search-Guid": search_id},
