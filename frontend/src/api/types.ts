@@ -34,7 +34,7 @@ export interface Crawler {
   id: number
   site_name: string
   module_path: string
-  crawler_type: 'release' | 'catalog'
+  crawler_type: 'release' | 'catalog' | 'catalog_browser'
   enabled: boolean
   last_run: string | null
   base_url: string | null

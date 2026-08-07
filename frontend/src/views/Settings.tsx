@@ -80,8 +80,8 @@ function Settings({
   // useState defaults above and React would otherwise bail out of re-rendering.
   const [settingsLoaded, setSettingsLoaded] = useState(false)
 
-  const releaseCrawlers = crawlers.filter((c) => c.crawler_type !== 'catalog')
-  const catalogCrawlers = crawlers.filter((c) => c.crawler_type === 'catalog')
+  const releaseCrawlers = crawlers.filter((c) => c.crawler_type === 'release')
+  const catalogCrawlers = crawlers.filter((c) => c.crawler_type === 'catalog' || c.crawler_type === 'catalog_browser')
   const shownReleaseCrawlers = isAdmin ? releaseCrawlers : releaseCrawlers.filter((c) => c.enabled)
   const shownCatalogCrawlers = isAdmin ? catalogCrawlers : catalogCrawlers.filter((c) => c.enabled)
 
