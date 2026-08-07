@@ -635,7 +635,7 @@ export default function App() {
               {crawlTotal > 0 ? `${crawlCount}/${crawlTotal}: ` : ''}
               <span className="text-gray-200">{crawlCurrent.artist} — {crawlCurrent.release}</span>
               {' '}on{' '}
-              <span className="text-gray-200">{crawlCurrent.site}</span>
+              <span className="text-gray-300">{crawlCurrent.site}</span>
             </span>
           )}
           {!crawling && (
