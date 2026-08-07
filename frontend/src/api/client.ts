@@ -182,8 +182,12 @@ export async function getStockArtists(overlapping?: boolean, recommended?: boole
   return data.artists
 }
 
-export async function postStockSyncStart(): Promise<{ started: boolean; running: boolean }> {
-  const r = await apiFetch('/stock/sync/start', { method: 'POST' })
+export async function postStockSyncStart(crawlerId?: number): Promise<{ started: boolean; running: boolean }> {
+  const r = await apiFetch('/stock/sync/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ crawler_id: crawlerId }),
+  })
   if (!r.ok) throw new Error(await r.text())
   return r.json()
 }

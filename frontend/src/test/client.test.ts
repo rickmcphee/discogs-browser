@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { postCrawlStart, getUserSettings, saveUserSettings, logout, getStock, getStockArtists, getReleases, postPlexMatchStart, refreshCollection } from '../api/client'
+import { postCrawlStart, postStockSyncStart, getUserSettings, saveUserSettings, logout, getStock, getStockArtists, getReleases, postPlexMatchStart, refreshCollection } from '../api/client'
 
 describe('crawl/user-settings client functions', () => {
   let fetchMock: ReturnType<typeof vi.fn>
@@ -13,6 +13,20 @@ describe('crawl/user-settings client functions', () => {
     fetchMock.mockResolvedValue({ ok: true, json: async () => ({ enqueued: 3 }) })
     const result = await postCrawlStart('all')
     expect(result.enqueued).toBe(3)
+  })
+
+  it('postStockSyncStart posts an empty crawler_id for a bulk call', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ started: true, running: true }) })
+    await postStockSyncStart()
+    expect(fetchMock.mock.calls[0][0]).toContain('/stock/sync/start')
+    expect(fetchMock.mock.calls[0][1].method).toBe('POST')
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({})
+  })
+
+  it('postStockSyncStart posts the given crawler_id for a single-store call', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ started: true, running: true }) })
+    await postStockSyncStart(7)
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ crawler_id: 7 })
   })
 
   it('getUserSettings fetches /user-settings', async () => {

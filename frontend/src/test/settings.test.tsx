@@ -30,6 +30,11 @@ const CRAWLERS: Crawler[] = [
   { id: 3, site_name: 'Epitaph', module_path: '', crawler_type: 'catalog', enabled: true, last_run: null, base_url: null },
 ]
 
+const CATALOG_CRAWLERS_WITH_DISABLED: Crawler[] = [
+  ...CRAWLERS,
+  { id: 4, site_name: 'Disabled Catalog', module_path: '', crawler_type: 'catalog', enabled: false, last_run: null, base_url: null },
+]
+
 beforeEach(() => {
   vi.clearAllMocks()
 })
@@ -47,6 +52,9 @@ function renderSettings(overrides: Partial<ComponentProps<typeof Settings>> = {}
       isAdmin
       hiddenCrawlerIds={[]}
       onToggleCrawlerView={() => {}}
+      stockSyncBusy={false}
+      stockSyncCrawlerId={null}
+      onRefreshStoreCrawler={() => {}}
       {...overrides}
     />
   )
@@ -149,6 +157,50 @@ describe('Settings', () => {
     const amazonRow = screen.getByText('Amazon').closest('tr') as HTMLElement
     fireEvent.click(screen.getAllByText('Visible').find((el) => amazonRow.contains(el))!)
     expect(onToggleCrawlerView).toHaveBeenCalledWith(1)
+  })
+
+  it('shows a per-row Refresh button only for catalog crawlers, and only to an admin', async () => {
+    renderSettings({ crawlers: CRAWLERS })
+    await waitFor(() => expect(getSettings).toHaveBeenCalled())
+    const amazonRow = screen.getByText('Amazon').closest('tr') as HTMLElement // release crawler
+    const epitaphRow = screen.getByText('Epitaph').closest('tr') as HTMLElement // catalog crawler
+    expect(within(amazonRow).queryByTitle(/Refresh .* catalog now/)).not.toBeInTheDocument()
+    expect(within(epitaphRow).getByTitle('Refresh Epitaph catalog now')).toBeInTheDocument()
+  })
+
+  it('does not show the per-row Refresh button to a non-admin', async () => {
+    renderSettings({ crawlers: CRAWLERS, isAdmin: false })
+    const epitaphRow = screen.getByText('Epitaph').closest('tr') as HTMLElement
+    expect(within(epitaphRow).queryByTitle('Refresh Epitaph catalog now')).not.toBeInTheDocument()
+  })
+
+  it('disables the per-row Refresh button for a disabled catalog crawler', async () => {
+    renderSettings({ crawlers: CATALOG_CRAWLERS_WITH_DISABLED })
+    await waitFor(() => expect(getSettings).toHaveBeenCalled())
+    const disabledRow = screen.getByText('Disabled Catalog').closest('tr') as HTMLElement
+    expect(within(disabledRow).getByTitle('Refresh Disabled Catalog catalog now')).toBeDisabled()
+  })
+
+  it('disables every per-row Refresh button while a stock sync is running', async () => {
+    renderSettings({ crawlers: CATALOG_CRAWLERS_WITH_DISABLED, stockSyncBusy: true })
+    await waitFor(() => expect(getSettings).toHaveBeenCalled())
+    expect(screen.getByTitle('Refresh Epitaph catalog now')).toBeDisabled()
+  })
+
+  it('calls onRefreshStoreCrawler with that crawler\'s id when its Refresh button is clicked', async () => {
+    const onRefreshStoreCrawler = vi.fn()
+    renderSettings({ crawlers: CRAWLERS, onRefreshStoreCrawler })
+    await waitFor(() => expect(getSettings).toHaveBeenCalled())
+    fireEvent.click(screen.getByTitle('Refresh Epitaph catalog now'))
+    expect(onRefreshStoreCrawler).toHaveBeenCalledWith(3)
+  })
+
+  it('disables the bulk Store Management Refresh button while a stock sync is running', async () => {
+    renderSettings({ crawlers: CRAWLERS, stockSyncBusy: true })
+    await waitFor(() => expect(getSettings).toHaveBeenCalled())
+    const description = await screen.findByText('Scan all enabled catalog crawlers immediately.')
+    const row = description.closest('tr') as HTMLElement
+    expect(within(row).getByText('Refresh')).toBeDisabled()
   })
 
   it('buckets a catalog_browser crawler into the Store Catalog Sources table, not the release table', () => {
