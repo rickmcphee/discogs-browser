@@ -29,7 +29,7 @@ const { release } = vi.hoisted(() => ({
     plex_url: null,
     plex_matched_at: null,
     last_synced: '',
-    listings: {},
+    date_added: null,
   } as Release,
 }))
 

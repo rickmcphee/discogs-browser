@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import App from '../App'
 import type { Release } from '../api/types'
 
@@ -28,7 +28,7 @@ const { release, stockSpy, settingsSpy, accountSpy, logViewerSpy } = vi.hoisted(
     plex_url: null,
     plex_matched_at: null,
     last_synced: '',
-    listings: {},
+    date_added: null,
   } as Release,
   stockSpy: vi.fn(() => null),
   settingsSpy: vi.fn(() => null),
@@ -105,10 +105,8 @@ beforeEach(() => {
   localStorage.clear()
 })
 
-async function clickRefreshAndGetSource() {
-  const [button] = await screen.findAllByTitle('Refresh prices for this record')
-  fireEvent.click(button)
-  await waitFor(() => expect(getLastCrawlSource()).toBeDefined())
+async function getCrawlSourceOnMount() {
+  await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
   return getLastCrawlSource()
 }
 
@@ -119,9 +117,11 @@ describe('views unrelated to crawl progress do not re-render on every crawl even
     // in a fresh `crawlers` array, which legitimately re-renders Settings once)
     // before snapshotting, so that unrelated startup settling isn't mistaken
     // for churn caused by the crawl event stream this test actually targets.
-    // Both the Collection and Wishlist RecordBrowser instances render this
-    // column header simultaneously, since App keeps every view mounted.
-    await screen.findAllByText('Amazon')
+    // Settle the post-login poll's one-time crawler fetch (it swaps in a
+    // fresh `crawlers` array, which legitimately re-renders Settings once)
+    // before snapshotting, so that unrelated startup settling isn't mistaken
+    // for churn caused by the crawl event stream this test actually targets.
+    await waitFor(() => expect(settingsSpy).toHaveBeenCalled())
     await waitFor(() => expect(stockSpy).toHaveBeenCalled())
 
     const callsBefore = {
@@ -131,11 +131,11 @@ describe('views unrelated to crawl progress do not re-render on every crawl even
       logs: logViewerSpy.mock.calls.length,
     }
 
-    const src = await clickRefreshAndGetSource()
+    const src = await getCrawlSourceOnMount()
     src.emit({ status: 'started', total: 2, id: 1 })
     src.emit({ status: 'found', discogs_id: 'r1', release: 'The Wall', artist: 'Pink Floyd', site: 'Amazon', price: 24.99 })
     src.emit({ status: 'found', discogs_id: 'r1', release: 'The Wall', artist: 'Pink Floyd', site: 'eBay', price: 19.99 })
-    await waitFor(() => expect(screen.getByText('eBay')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText(/2\/2/)).toBeInTheDocument())
 
     expect(stockSpy.mock.calls.length).toBe(callsBefore.stock)
     expect(settingsSpy.mock.calls.length).toBe(callsBefore.settings)
