@@ -1,12 +1,3 @@
-export interface Listing {
-  url: string
-  price: number | null
-  shipping: number | null
-  currency: string | null
-  condition: string | null
-  last_checked: string
-}
-
 export interface Release {
   discogs_id: string
   artist: string
@@ -20,7 +11,7 @@ export interface Release {
   plex_url: string | null
   plex_matched_at: string | null
   last_synced: string
-  listings: Record<string, Listing | null>
+  date_added: string | null
 }
 
 export interface ReleasesResponse {
@@ -60,7 +51,7 @@ export interface UserSettings {
 
 export type SortField = 'artist' | 'title' | 'year' | 'label' | 'format' | string
 export type SortOrder = 'asc' | 'desc'
-export type RecordScope = 'collection' | 'wishlist'
+export type RecordScope = 'discogs' | 'wishlist'
 
 export interface CrawlEvent {
   id?: number
