@@ -29,10 +29,13 @@ class RedeemInviteRequest(BaseModel):
 
 def _client_key(request: Request) -> str:
     # Cloudflare sits in front of the hosted deployment (see the Fly+Neon+Cloudflare
-    # design doc) and always overwrites this header with the real connecting IP,
-    # stripping any client-supplied value — so it's safe to trust outright, unlike
-    # X-Forwarded-For, which requires trusting every hop between here and the client.
-    # Falls back to the raw peer IP for direct access (local dev, Docker Compose).
+    # design doc) and overwrites this header with the real connecting IP for any
+    # request it proxies, stripping a client-supplied value — unlike X-Forwarded-For,
+    # which requires trusting every hop between here and the client. This assumes
+    # Cloudflare is the only path in; it's spoofable by anyone reaching the app
+    # directly via its Fly hostname, which the current design doesn't yet block
+    # (tracked separately). Falls back to the raw peer IP for direct access
+    # (local dev, Docker Compose, or an unrestricted Fly hostname).
     forwarded = request.headers.get("cf-connecting-ip")
     if forwarded:
         return forwarded
