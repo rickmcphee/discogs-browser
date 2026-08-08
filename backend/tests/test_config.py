@@ -1,7 +1,10 @@
+import importlib
 import json
 from urllib.parse import unquote, urlsplit
 
 import pytest
+
+import config as config_module
 from config import _with_userinfo, load_config, save_config, ensure_dirs
 
 
@@ -37,3 +40,30 @@ def test_with_userinfo_escapes_reserved_characters_in_password():
     username, password = userinfo.split(":", 1)
     assert unquote(username) == "app_user"
     assert unquote(password) == "p@ss:word/1"
+
+
+def test_database_url_preserves_external_credentials_when_no_postgres_password(monkeypatch):
+    monkeypatch.delenv("POSTGRES_PASSWORD", raising=False)
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql://neondb_owner:realsecret@ep-example.us-east-2.aws.neon.tech/discogs_browser?sslmode=require",
+    )
+    try:
+        importlib.reload(config_module)
+        assert config_module.DATABASE_URL == (
+            "postgresql://neondb_owner:realsecret@ep-example.us-east-2.aws.neon.tech/discogs_browser?sslmode=require"
+        )
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config_module)
+
+
+def test_database_url_still_injects_postgres_user_when_postgres_password_set(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://postgres@postgres:5432/discogs_browser")
+    monkeypatch.setenv("POSTGRES_PASSWORD", "s3cret")
+    try:
+        importlib.reload(config_module)
+        assert config_module.DATABASE_URL == "postgresql://postgres:s3cret@postgres:5432/discogs_browser"
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config_module)

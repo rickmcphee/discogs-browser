@@ -23,15 +23,20 @@ def _with_userinfo(url: str, username: str, password: str) -> str:
     return urlunsplit((parts.scheme, f"{userinfo}@{host}", parts.path, parts.query, parts.fragment))
 
 
-# POSTGRES_PASSWORD is injected here (quoted) rather than baked into DATABASE_URL
-# by docker-compose's raw string interpolation -- a password containing URL-reserved
-# characters (%, &, ^, etc, all of which a decent password generator will produce)
-# makes an unquoted DSN unparseable.
-DATABASE_URL = _with_userinfo(
-    os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/discogs_browser"),
-    "postgres",
-    os.environ.get("POSTGRES_PASSWORD", "postgres"),
+_raw_database_url = os.environ.get(
+    "DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/discogs_browser"
 )
+# docker-compose's backend service passes DATABASE_URL without a password
+# (see docker-compose.yml) and the real secret via POSTGRES_PASSWORD instead,
+# since compose's raw YAML interpolation can't safely quote a password
+# containing URL-reserved characters -- Python injects it here instead. A
+# managed-Postgres deployment (e.g. Neon) sets DATABASE_URL to one ready-made
+# connection string with its own role/password already embedded, and must
+# not have that overwritten with a hardcoded "postgres" user.
+if "POSTGRES_PASSWORD" in os.environ:
+    DATABASE_URL = _with_userinfo(_raw_database_url, "postgres", os.environ["POSTGRES_PASSWORD"])
+else:
+    DATABASE_URL = _raw_database_url
 IDENTITY_DB_PASSWORD = os.environ.get("IDENTITY_DB_PASSWORD", "")
 APP_DB_PASSWORD = os.environ.get("APP_DB_PASSWORD", "")
 IDENTITY_DATABASE_URL = os.environ.get(
