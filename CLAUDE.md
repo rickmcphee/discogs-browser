@@ -102,6 +102,10 @@ When making significant changes:
 
 For small iterative fixes, updating the spec after the fact is acceptable.
 
+### Plan execution mode
+
+When a written implementation plan (`docs/superpowers/plans/`) is ready to execute, always use `superpowers:subagent-driven-development` (fresh subagent per task, review between tasks) without asking which execution mode to use. Don't offer the inline-execution alternative by default — only fall back to it if the user explicitly asks for inline/in-session execution instead.
+
 ### Pre-PR spec-drift check (required, every branch)
 
 Before opening a PR — including ad hoc changes that never went through the spec-first steps above — check the diff for drift against every spec, not just the spec for the feature being touched:
