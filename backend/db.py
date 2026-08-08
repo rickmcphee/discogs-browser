@@ -78,6 +78,8 @@ CREATE TABLE IF NOT EXISTS crawlers (
     last_run TIMESTAMP
 );
 
+ALTER TABLE crawlers ADD COLUMN IF NOT EXISTS requires_discogs_release BOOLEAN NOT NULL DEFAULT FALSE;
+
 CREATE TABLE IF NOT EXISTS listings (
     id SERIAL PRIMARY KEY,
     release_id TEXT NOT NULL REFERENCES catalog(discogs_id),
@@ -121,6 +123,22 @@ CREATE TABLE IF NOT EXISTS crawl_queue (
 -- 'done' history instead of growing with the whole table.
 CREATE INDEX IF NOT EXISTS crawl_queue_pending_idx ON crawl_queue (requested_at)
     WHERE status = 'pending';
+
+CREATE TABLE IF NOT EXISTS stock_item_identities (
+    item_key TEXT PRIMARY KEY,
+    artist TEXT NOT NULL,
+    title TEXT NOT NULL,
+    format TEXT,
+    last_seen TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+ALTER TABLE crawl_queue ALTER COLUMN discogs_id DROP NOT NULL;
+ALTER TABLE crawl_queue ADD COLUMN IF NOT EXISTS item_key TEXT REFERENCES stock_item_identities(item_key);
+CREATE UNIQUE INDEX IF NOT EXISTS crawl_queue_item_key_crawler_idx ON crawl_queue (item_key, crawler_id);
+
+ALTER TABLE listings ALTER COLUMN release_id DROP NOT NULL;
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS item_key TEXT REFERENCES stock_item_identities(item_key);
+CREATE UNIQUE INDEX IF NOT EXISTS listings_item_key_crawler_idx ON listings (item_key, crawler_id);
 """
 
 
@@ -314,7 +332,7 @@ def init_tenant_schema():
         # from _sync_stock, deletes a crawler's whole prior batch before
         # reinserting the fresh one.
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON stock_items TO app_user")
-        conn.execute("GRANT SELECT, INSERT, UPDATE ON catalog, listings TO app_user")
+        conn.execute("GRANT SELECT, INSERT, UPDATE ON catalog, listings, stock_item_identities TO app_user")
         conn.execute("GRANT USAGE, SELECT ON SEQUENCE listings_id_seq, stock_items_id_seq TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON library_items TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON stock_item_judgments TO app_user")
