@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, memo } from 'react'
 import Avatar from '../components/Avatar'
 import { deleteAvatar, getUserSettings, logout, postPlexMatchStart, saveUserSettings, uploadAvatar } from '../api/client'
-import { primaryButtonClass, secondaryButtonClass } from '../styles/buttons'
+import { secondaryButtonClass } from '../styles/buttons'
 
 interface Props {
   avatarVersion: number
@@ -270,7 +270,7 @@ function Account({
               <td className="py-3 pr-4 text-left align-top">
                 <button
                   onClick={onRefreshRecommendations}
-                  className={`w-20 text-center px-3 py-1 text-xs disabled:opacity-50 ${primaryButtonClass()}`}
+                  className={`w-20 text-center px-3 py-1 text-xs disabled:opacity-50 ${secondaryButtonClass()}`}
                 >
                   Refresh
                 </button>
@@ -285,7 +285,7 @@ function Account({
                 <button
                   onClick={onExportRecommendations}
                   disabled={!hasJudgedItems}
-                  className={`w-20 text-center px-3 py-1 text-xs disabled:opacity-50 ${primaryButtonClass()}`}
+                  className={`w-20 text-center px-3 py-1 text-xs disabled:opacity-50 ${secondaryButtonClass()}`}
                 >
                   Export
                 </button>
@@ -300,7 +300,7 @@ function Account({
                 <button
                   onClick={onClearRecommendations}
                   disabled={!hasJudgedItems}
-                  className={`w-20 text-center px-3 py-1 text-xs disabled:opacity-50 ${primaryButtonClass()}`}
+                  className={`w-20 text-center px-3 py-1 text-xs disabled:opacity-50 ${secondaryButtonClass()}`}
                 >
                   Clear
                 </button>
@@ -388,7 +388,7 @@ function Account({
                 <button
                   onClick={handleLinkPlexNow}
                   disabled={!plexBaseUrl || !plexToken || plexMatchStarting}
-                  className={`px-3 py-1 text-xs disabled:opacity-50 ${primaryButtonClass()}`}
+                  className={`px-3 py-1 text-xs disabled:opacity-50 ${secondaryButtonClass()}`}
                 >
                   {plexMatchStarting ? 'Starting…' : 'Link Now'}
                 </button>
