@@ -21,12 +21,12 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
   const [sort, setSort] = useState<StockSortField>('artist')
   const [order, setOrder] = useState<SortOrder>('asc')
   const [filter, setFilter] = useState<'all' | 'recommended'>(() => {
-    const stored = localStorage.getItem('stockFilter')
+    const stored = localStorage.getItem(`stockFilter_${scope}`)
     return stored === 'recommended' ? stored : 'all'
   })
   const [loading, setLoading] = useState(false)
   const [viewMode, setViewMode] = useState<'list' | 'tiles'>(
-    () => (localStorage.getItem('collectionViewMode_instock') === 'tiles' ? 'tiles' : 'list')
+    () => (localStorage.getItem(`collectionViewMode_${scope}`) === 'tiles' ? 'tiles' : 'list')
   )
   const PER_PAGE = 250
   const tableScrollRef = useRef<HTMLDivElement>(null)
@@ -45,7 +45,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
         artist: selectedArtist || undefined,
         sort, order, page, per_page: PER_PAGE,
         overlapping: scope === 'collection',
-        recommended: filter === 'recommended',
+        recommended: scope === 'store' && filter === 'recommended',
         hiddenCrawlerIds,
       })
       setItems(result.items)
@@ -62,8 +62,8 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
     }
   }, [recommendedAvailable, filter])
   useEffect(() => { getStockArtists(scope === 'collection', filter === 'recommended', hiddenCrawlerIds).then(setArtists) }, [scope, filter, hiddenCrawlerIds])
-  useEffect(() => { localStorage.setItem('collectionViewMode_instock', viewMode) }, [viewMode])
-  useEffect(() => { localStorage.setItem('stockFilter', filter) }, [filter])
+  useEffect(() => { localStorage.setItem(`collectionViewMode_${scope}`, viewMode) }, [viewMode, scope])
+  useEffect(() => { localStorage.setItem(`stockFilter_${scope}`, filter) }, [filter, scope])
   useEffect(() => { tableScrollRef.current?.scrollTo({ top: 0 }) }, [selectedArtist])
 
   function toggleSort(field: StockSortField) {

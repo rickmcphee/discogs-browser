@@ -125,7 +125,7 @@ describe('StockBrowser', () => {
   })
 
   it('resets filter to All when recommendedAvailable becomes false while Recommended is selected', async () => {
-    localStorage.setItem('stockFilter', 'recommended')
+    localStorage.setItem('stockFilter_store', 'recommended')
     const { rerender } = render(<StockBrowser recommendedAvailable />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('recommended')
@@ -149,7 +149,7 @@ describe('StockBrowser', () => {
   })
 
   it('restores a previously-selected Recommended filter from localStorage', async () => {
-    localStorage.setItem('stockFilter', 'recommended')
+    localStorage.setItem('stockFilter_store', 'recommended')
     render(<StockBrowser recommendedAvailable />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('recommended')
@@ -208,11 +208,11 @@ describe('StockBrowser', () => {
     expect(getStock).toHaveBeenCalledTimes(1)
   })
 
-  it('persists the filter to localStorage under stockFilter and restores it on remount', async () => {
+  it('persists the filter to localStorage under stockFilter_store and restores it on remount', async () => {
     const { unmount } = render(<StockBrowser recommendedAvailable />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'recommended' } })
-    await waitFor(() => expect(localStorage.getItem('stockFilter')).toBe('recommended'))
+    await waitFor(() => expect(localStorage.getItem('stockFilter_store')).toBe('recommended'))
     unmount()
     render(<StockBrowser recommendedAvailable />)
     await waitFor(() => expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('recommended'))
@@ -238,11 +238,32 @@ describe('StockBrowser', () => {
     expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ overlapping: false }))
   })
 
-  it('persists the view mode to localStorage under collectionViewMode_instock', async () => {
+  it('persists the view mode to localStorage under collectionViewMode_store', async () => {
     render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     fireEvent.click(screen.getByTitle('Tile view'))
-    await waitFor(() => expect(localStorage.getItem('collectionViewMode_instock')).toBe('tiles'))
+    await waitFor(() => expect(localStorage.getItem('collectionViewMode_store')).toBe('tiles'))
+  })
+
+  it('keeps Store and Collection filter/view-mode selections independent in localStorage', async () => {
+    const { unmount: unmountStore } = render(<StockBrowser scope="store" recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'recommended' } })
+    fireEvent.click(screen.getByTitle('Tile view'))
+    await waitFor(() => expect(localStorage.getItem('stockFilter_store')).toBe('recommended'))
+    await waitFor(() => expect(localStorage.getItem('collectionViewMode_store')).toBe('tiles'))
+    unmountStore()
+
+    render(<StockBrowser scope="collection" />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByTitle('List view'))
+    await waitFor(() => expect(localStorage.getItem('collectionViewMode_collection')).toBe('list'))
+
+    // Store's keys must be untouched by anything Collection did.
+    expect(localStorage.getItem('stockFilter_store')).toBe('recommended')
+    expect(localStorage.getItem('collectionViewMode_store')).toBe('tiles')
+    // Collection's own key defaults to 'all' -- it never inherited Store's 'recommended'.
+    expect(localStorage.getItem('stockFilter_collection')).toBe('all')
   })
 
   it('shows a spinner alongside Loading… during the initial fetch', async () => {
