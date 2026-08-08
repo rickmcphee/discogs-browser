@@ -124,18 +124,26 @@ flattens it), but routes through a second Cloudflare proxy hop and can
 surface a transient `522`. Either way, allow real time for a freshly-added
 apex record to propagate before concluding something's wrong.
 
-**Redeploys:** pushing to `main` under `backend/` triggers
-`.github/workflows/fly-deploy.yml` automatically (gated behind that
-workflow's own backend/frontend test jobs). The frontend redeploys
-automatically on every push via Cloudflare's own git integration.
+**Redeploys:** every push to `main` triggers `.github/workflows/fly-deploy.yml`,
+which redeploys the backend to Fly.io regardless of which files changed
+(no path filter — a docs-only or frontend-only push still re-deploys the
+unchanged backend), gated behind that same workflow's backend/frontend test
+jobs. The frontend redeploys automatically on every push via Cloudflare's
+own git integration.
 
 **Bootstrapping a fresh instance:** the first invite can't be created
 through the app — the create-invite endpoint requires an existing admin
 user, and a brand-new database has none. Insert it directly (`created_by`
-is nullable for exactly this case):
+is nullable for exactly this case), using a real random code — not a
+literal, guessable string — the same way the app's own invite endpoint
+does (`secrets.token_urlsafe(12)`); the `invites` table has no expiry
+column, so an unredeemed code stays valid indefinitely until redeemed or
+deleted:
 
-```sql
-INSERT INTO invites (code, created_by, created_at) VALUES ('bootstrap-invite', NULL, CURRENT_TIMESTAMP);
+```bash
+CODE="$(python3 -c 'import secrets; print(secrets.token_urlsafe(12))')"
+psql "<connection-string>" -c "INSERT INTO invites (code, created_by, created_at) VALUES ('$CODE', NULL, CURRENT_TIMESTAMP);"
+echo "$CODE"
 ```
 
 After redeeming it and logging in once, promote yourself to admin
