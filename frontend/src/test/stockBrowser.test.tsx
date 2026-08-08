@@ -254,4 +254,32 @@ describe('StockBrowser', () => {
     resolveFetch({ total: 0, page: 1, per_page: 250, items: [] })
     await waitFor(() => expect(screen.queryByText('Loading…')).toBeNull())
   })
+
+  it('renders a row for every item, including comparison rows, in list view', async () => {
+    getStock.mockResolvedValue({
+      total: 1, page: 1, per_page: 250,
+      items: [
+        items[0],
+        { id: 'k1:Amazon', item_key: 'k1', is_own: false, artist: 'Rob Zombie', title: 'The Great Satan — Ghostly Black Vinyl', format: 'Vinyl', price: 29.99, currency: 'USD', url: 'https://amazon/x', cover_image_url: 'https://cdn.shopify.com/rz-black.png', source: 'Amazon', last_seen: '2026-07-05T00:00:00Z', reason: null },
+      ],
+    })
+    render(<StockBrowser />)
+    await waitFor(() => expect(screen.getAllByText('The Great Satan — Ghostly Black Vinyl').length).toBe(2))
+    expect(screen.getByText('$29.99')).toBeTruthy()
+    expect(screen.getByText('Amazon')).toBeTruthy()
+  })
+
+  it('shows only the own row per item in tile view, even when comparison rows are present', async () => {
+    getStock.mockResolvedValue({
+      total: 1, page: 1, per_page: 250,
+      items: [
+        items[0],
+        { id: 'k1:Amazon', item_key: 'k1', is_own: false, artist: 'Rob Zombie', title: 'The Great Satan — Ghostly Black Vinyl', format: 'Vinyl', price: 29.99, currency: 'USD', url: 'https://amazon/x', cover_image_url: null, source: 'Amazon', last_seen: '2026-07-05T00:00:00Z', reason: null },
+      ],
+    })
+    render(<StockBrowser />)
+    await waitFor(() => expect(screen.getAllByText('The Great Satan — Ghostly Black Vinyl').length).toBe(2))
+    fireEvent.click(screen.getByTitle('Tile view'))
+    await waitFor(() => expect(screen.getAllByText('The Great Satan — Ghostly Black Vinyl').length).toBe(1))
+  })
 })

@@ -189,7 +189,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
             )}
             {!loading && items.length > 0 && (
               <div className="grid gap-4 p-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))' }}>
-                {items.map((item) => (
+                {items.filter((item) => item.is_own).map((item) => (
                   <a
                     key={item.id}
                     href={item.url}
