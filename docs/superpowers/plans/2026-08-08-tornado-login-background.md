@@ -25,7 +25,7 @@
 - Test: `frontend/src/test/tornadoBackground.test.tsx`
 
 **Interfaces:**
-- Produces: `export default function TornadoBackground(): JSX.Element` — a zero-prop component rendering a single `<svg>` root with `aria-hidden="true"`, `viewBox="0 0 600 900"`, `preserveAspectRatio="xMidYMid slice"`, `className="w-full h-full"`. Task 2 renders it directly with no props.
+- Produces: `export default function TornadoBackground(): JSX.Element` — a zero-prop component rendering a single `<svg>` root with `aria-hidden="true"`, `viewBox="0 0 600 900"`, `preserveAspectRatio="xMidYMid slice"`, `className="w-full h-full"`. Task 2 renders it directly with no props. Correction: shipped `viewBox` is `"-300 0 1200 900"` — the whole-branch review found the original portrait viewBox got cropped to its middle third by `slice` on landscape/desktop screens; see the design spec's correction note.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -180,7 +180,7 @@ import TornadoBackground from '../components/TornadoBackground'
 export default function LoginScreen() {
   return (
     <div className="relative min-h-screen overflow-hidden flex items-center justify-center bg-gray-950">
-      <div className="absolute inset-0 w-full h-full text-gray-700 opacity-[0.15] pointer-events-none">
+      <div aria-hidden="true" className="absolute inset-0 w-full h-full text-gray-500 opacity-[0.4] pointer-events-none">
         <TornadoBackground />
       </div>
       <div className="relative z-10 bg-gray-900 border border-gray-700 rounded-xl shadow-xl p-8 w-80 space-y-4 text-center">
@@ -196,6 +196,8 @@ export default function LoginScreen() {
   )
 }
 ```
+
+Correction: shipped wrapper is `text-gray-500 opacity-[0.4]` (not `text-gray-700 opacity-[0.15]`, which composited to an effectively invisible ~1.06:1 contrast against `bg-gray-950` — caught by the whole-branch review) and also carries `aria-hidden="true"` directly (added in response to a PR review comment, so the whole decorative layer stays out of the accessibility tree even if non-SVG content is added later, not just the inner `<svg>`).
 
 - [ ] **Step 3: Run the existing test to verify it still passes**
 

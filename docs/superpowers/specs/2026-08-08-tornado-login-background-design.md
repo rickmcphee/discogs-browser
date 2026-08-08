@@ -14,7 +14,7 @@
 ## Non-goals
 
 - No app rename (title, storage keys, headings) — separate future task.
-- No changes to other views, backend, or docs beyond this spec.
+- No other views, and no backend *behavior* changes. (The PR does touch `backend/version.py` for the routine per-PR version bump, and adds this spec plus its implementation plan and a `CLAUDE.md` workflow note — those are process/bookkeeping, not scope creep into backend behavior or other views.)
 
 ## Testing
 
