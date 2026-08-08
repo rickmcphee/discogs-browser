@@ -1001,8 +1001,11 @@ def get_missing_releases(conn, user_id: int) -> list[str]:
 
 
 def get_crawl_status_for_user(conn, user_id: int) -> dict:
+    # Scoped to in_collection = TRUE to match get_missing_releases' mode=missing
+    # candidate set -- otherwise wishlist-only rows could inflate `missing` here
+    # while a mode=missing crawl enqueues nothing for them.
     total = conn.execute(
-        "SELECT COUNT(*) FROM library_items WHERE user_id = %s", [user_id]
+        "SELECT COUNT(*) FROM library_items WHERE user_id = %s AND in_collection = TRUE", [user_id]
     ).fetchone()["count"]
     enabled_count = conn.execute(
         "SELECT COUNT(*) FROM crawlers WHERE enabled = TRUE"
@@ -1018,7 +1021,7 @@ def get_crawl_status_for_user(conn, user_id: int) -> dict:
             FROM library_items li
             JOIN listings l ON l.release_id = li.discogs_id
             JOIN crawlers c ON c.id = l.crawler_id AND c.enabled = TRUE
-            WHERE li.user_id = %(user_id)s AND l.price IS NOT NULL
+            WHERE li.user_id = %(user_id)s AND li.in_collection = TRUE AND l.price IS NOT NULL
             GROUP BY li.discogs_id
             HAVING COUNT(DISTINCT l.crawler_id) = %(enabled_count)s
         ) complete_releases
@@ -1030,7 +1033,7 @@ def get_crawl_status_for_user(conn, user_id: int) -> dict:
         """
         SELECT MIN(l.last_checked) FROM listings l
         JOIN library_items li ON li.discogs_id = l.release_id
-        WHERE li.user_id = %s
+        WHERE li.user_id = %s AND li.in_collection = TRUE
         """,
         [user_id],
     ).fetchone()["min"]
