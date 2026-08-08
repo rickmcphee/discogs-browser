@@ -124,6 +124,8 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
   const enabledCrawlers = crawlers.filter((c) => c.enabled && c.crawler_type === 'release' && !hiddenCrawlerIds.includes(c.id))
   const totalPages = Math.ceil(total / PER_PAGE)
 
+  const sortButtonClass = 'w-full px-3 py-2 cursor-pointer hover:text-white select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/80'
+
   return (
     <div className="flex h-full overflow-hidden">
       {/* Sidebar */}
@@ -269,48 +271,62 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
               <tr>
                 <th className="w-12 px-3 py-2"></th>
                 <th
-                  className="px-3 py-2 text-right cursor-pointer hover:text-white select-none"
-                  onClick={() => toggleSort('artist')}
+                  className="text-right"
+                  aria-sort={sort === 'artist' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}
                 >
-                  Artist {sort === 'artist' ? (order === 'asc' ? '↑' : '↓') : ''}
+                  <button type="button" onClick={() => toggleSort('artist')} className={`${sortButtonClass} text-right`}>
+                    Artist {sort === 'artist' ? (order === 'asc' ? '↑' : '↓') : ''}
+                  </button>
                 </th>
                 <th
-                  className="px-3 py-2 text-left cursor-pointer hover:text-white select-none"
-                  onClick={() => toggleSort('title')}
+                  className="text-left"
+                  aria-sort={sort === 'title' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}
                 >
-                  Title {sort === 'title' ? (order === 'asc' ? '↑' : '↓') : ''}
+                  <button type="button" onClick={() => toggleSort('title')} className={`${sortButtonClass} text-left`}>
+                    Title {sort === 'title' ? (order === 'asc' ? '↑' : '↓') : ''}
+                  </button>
                 </th>
                 <th
-                  className="px-3 py-2 text-center cursor-pointer hover:text-white select-none"
-                  onClick={() => toggleSort('year')}
+                  className="text-center"
+                  aria-sort={sort === 'year' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}
                 >
-                  Year {sort === 'year' ? (order === 'asc' ? '↑' : '↓') : ''}
+                  <button type="button" onClick={() => toggleSort('year')} className={`${sortButtonClass} text-center`}>
+                    Year {sort === 'year' ? (order === 'asc' ? '↑' : '↓') : ''}
+                  </button>
                 </th>
                 <th
-                  className="px-3 py-2 text-center cursor-pointer hover:text-white select-none"
-                  onClick={() => toggleSort('label')}
+                  className="text-center"
+                  aria-sort={sort === 'label' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}
                 >
-                  Label {sort === 'label' ? (order === 'asc' ? '↑' : '↓') : ''}
+                  <button type="button" onClick={() => toggleSort('label')} className={`${sortButtonClass} text-center`}>
+                    Label {sort === 'label' ? (order === 'asc' ? '↑' : '↓') : ''}
+                  </button>
                 </th>
                 <th
-                  className="px-3 py-2 text-center cursor-pointer hover:text-white select-none"
-                  onClick={() => toggleSort('format')}
+                  className="text-center"
+                  aria-sort={sort === 'format' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}
                 >
-                  Format {sort === 'format' ? (order === 'asc' ? '↑' : '↓') : ''}
+                  <button type="button" onClick={() => toggleSort('format')} className={`${sortButtonClass} text-center`}>
+                    Format {sort === 'format' ? (order === 'asc' ? '↑' : '↓') : ''}
+                  </button>
                 </th>
                 <th
-                  className="px-3 py-2 text-center cursor-pointer hover:text-white select-none"
-                  onClick={() => toggleSort('discogs_price')}
+                  className="text-center"
+                  aria-sort={sort === 'discogs_price' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}
                 >
-                  Price {sort === 'discogs_price' ? (order === 'asc' ? '↑' : '↓') : ''}
+                  <button type="button" onClick={() => toggleSort('discogs_price')} className={`${sortButtonClass} text-center`}>
+                    Price {sort === 'discogs_price' ? (order === 'asc' ? '↑' : '↓') : ''}
+                  </button>
                 </th>
                 {enabledCrawlers.map((c) => (
                   <th
                     key={c.id}
-                    className="px-3 py-2 text-center cursor-pointer hover:text-white select-none"
-                    onClick={() => toggleSort(`price_${c.site_name}`)}
+                    className="text-center"
+                    aria-sort={sort === `price_${c.site_name}` ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}
                   >
-                    {c.site_name} {sort === `price_${c.site_name}` ? (order === 'asc' ? '↑' : '↓') : ''}
+                    <button type="button" onClick={() => toggleSort(`price_${c.site_name}`)} className={`${sortButtonClass} text-center`}>
+                      {c.site_name} {sort === `price_${c.site_name}` ? (order === 'asc' ? '↑' : '↓') : ''}
+                    </button>
                   </th>
                 ))}
                 <th className="px-3 py-2"></th>
