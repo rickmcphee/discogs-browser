@@ -100,7 +100,9 @@ describe('In Stock tab', () => {
   it('shows a Collection nav button that switches to a collection-scoped StockBrowser', async () => {
     render(<App />)
     await waitFor(() => expect(screen.getByText('Collection')).toBeInTheDocument())
-    fireEvent.click(screen.getByText('Collection'))
+    const collectionButton = screen.getByText('Collection')
+    fireEvent.click(collectionButton)
+    await waitFor(() => expect(collectionButton.className).toContain('bg-white'))
     await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ overlapping: true })))
   })
 
