@@ -11,7 +11,7 @@ import { navButtonClass, primaryButtonClass, secondaryButtonClass, dismissButton
 import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, clearJudgments, exportRecommendationsCsv, getCrawlers, getUserSettings, getJudgmentStatus, checkHealth, getAuthStatus, setUnauthorizedHandler, hasAvatar } from './api/client'
 import type { CrawlEvent, CrawlStatus, CollectionStatus, Crawler, AuthStatus } from './api/types'
 
-type View = 'discogs' | 'wishlist' | 'instock' | 'settings' | 'logs' | 'account'
+type View = 'discogs' | 'wishlist' | 'instock' | 'collection' | 'settings' | 'logs' | 'account'
 
 // SSE reconnects (including on browser refresh) replay every buffered event from
 // crawl_manager._recent, so a banner's dismissal has to survive across that replay.
@@ -454,6 +454,12 @@ export default function App() {
           >
             Store
           </button>
+          <button
+            onClick={() => setView('collection')}
+            className={`px-3 py-1.5 text-sm font-medium ${navButtonClass(view === 'collection')}`}
+          >
+            Collection
+          </button>
         </nav>
         <nav className="flex items-center gap-2 ml-auto">
           {showAdminNav && (
@@ -502,6 +508,9 @@ export default function App() {
         </div>
         <div className={view === 'instock' ? 'h-full' : 'hidden'}>
           <StockBrowser recommendedAvailable={recommendedAvailable} hiddenCrawlerIds={hiddenCrawlerIds} />
+        </div>
+        <div className={view === 'collection' ? 'h-full' : 'hidden'}>
+          <StockBrowser scope="collection" hiddenCrawlerIds={hiddenCrawlerIds} />
         </div>
         <div className={view === 'settings' ? 'h-full overflow-y-auto' : 'hidden'}>
           <Settings
