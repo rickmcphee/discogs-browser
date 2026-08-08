@@ -9,7 +9,7 @@ def admin_conn(pg_test_db):
     db.init_tenant_schema()
     with db.get_admin_pool().connection() as conn:
         yield conn
-        conn.execute("TRUNCATE catalog, users, crawlers CASCADE")
+        conn.execute("TRUNCATE catalog, users, crawlers, stock_item_identities CASCADE")
         conn.commit()
 
 
@@ -19,6 +19,14 @@ def _make_catalog_and_crawler(conn, discogs_id="r1", site_name="Amazon"):
         "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
         "discogs_url": None,
     })
+    db.register_crawler(conn, site_name, "/x.py")
+    return conn.execute("SELECT id FROM crawlers WHERE site_name = %s", [site_name]).fetchone()["id"]
+
+
+def _make_stock_identity_and_crawler(conn, item_key="key1", site_name="Amazon"):
+    conn.execute(
+        "INSERT INTO stock_item_identities (item_key, artist, title) VALUES (%s, 'A', 'T')", [item_key]
+    )
     db.register_crawler(conn, site_name, "/x.py")
     return conn.execute("SELECT id FROM crawlers WHERE site_name = %s", [site_name]).fetchone()["id"]
 
@@ -141,3 +149,68 @@ def test_count_pending_crawl_queue_for_user_only_counts_their_library(admin_conn
         assert db.count_pending_crawl_queue_for_user(conn, alice["id"]) == 1
     with db.user_scope(bob["id"]) as conn:
         assert db.count_pending_crawl_queue_for_user(conn, bob["id"]) == 0
+
+
+def test_get_stock_item_identity_returns_none_for_unknown_key(admin_conn):
+    assert db.get_stock_item_identity(admin_conn, "missing") is None
+
+
+def test_get_stock_item_identity_returns_the_row(admin_conn):
+    admin_conn.execute(
+        "INSERT INTO stock_item_identities (item_key, artist, title, format) VALUES ('key1', 'A', 'T', 'LP')"
+    )
+    row = db.get_stock_item_identity(admin_conn, "key1")
+    assert row["artist"] == "A"
+    assert row["title"] == "T"
+    assert row["format"] == "LP"
+
+
+def test_enqueue_crawl_queue_for_stock_item_is_idempotent(admin_conn):
+    crawler_id = _make_stock_identity_and_crawler(admin_conn)
+    admin_conn.commit()
+    db.enqueue_crawl_queue_for_stock_item(admin_conn, "key1", crawler_id)
+    db.enqueue_crawl_queue_for_stock_item(admin_conn, "key1", crawler_id)
+    admin_conn.commit()
+    rows = admin_conn.execute("SELECT * FROM crawl_queue WHERE item_key = 'key1'").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["status"] == "pending"
+    assert rows[0]["discogs_id"] is None
+
+
+def test_enqueue_crawl_queue_for_stock_item_resets_done_row_to_pending(admin_conn):
+    crawler_id = _make_stock_identity_and_crawler(admin_conn)
+    admin_conn.commit()
+    db.enqueue_crawl_queue_for_stock_item(admin_conn, "key1", crawler_id)
+    admin_conn.commit()
+    [row] = db.claim_crawl_queue_batch(admin_conn, "worker-1", limit=10)
+    db.mark_crawl_queue_done(admin_conn, row["id"])
+    admin_conn.commit()
+
+    db.enqueue_crawl_queue_for_stock_item(admin_conn, "key1", crawler_id)
+    admin_conn.commit()
+    rows = admin_conn.execute("SELECT * FROM crawl_queue WHERE item_key = 'key1'").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["id"] == row["id"]
+    assert rows[0]["status"] == "pending"
+
+
+def test_claim_crawl_queue_batch_returns_item_key_for_a_stock_item_row(admin_conn):
+    crawler_id = _make_stock_identity_and_crawler(admin_conn)
+    admin_conn.commit()
+    db.enqueue_crawl_queue_for_stock_item(admin_conn, "key1", crawler_id)
+    admin_conn.commit()
+
+    [row] = db.claim_crawl_queue_batch(admin_conn, "worker-1", limit=10)
+    assert row["item_key"] == "key1"
+    assert row["discogs_id"] is None
+
+
+def test_claim_crawl_queue_batch_returns_null_item_key_for_a_release_row(admin_conn):
+    crawler_id = _make_catalog_and_crawler(admin_conn)
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1", crawler_id)
+    admin_conn.commit()
+
+    [row] = db.claim_crawl_queue_batch(admin_conn, "worker-1", limit=10)
+    assert row["discogs_id"] == "r1"
+    assert row["item_key"] is None

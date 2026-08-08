@@ -368,6 +368,12 @@ def get_catalog_release(conn, discogs_id: str) -> Optional[dict]:
     ).fetchone()
 
 
+def get_stock_item_identity(conn, item_key: str) -> Optional[dict]:
+    return conn.execute(
+        "SELECT * FROM stock_item_identities WHERE item_key = %s", [item_key]
+    ).fetchone()
+
+
 def upsert_listing(
     conn,
     release_id: str,
@@ -387,6 +393,28 @@ def upsert_listing(
             currency = EXCLUDED.currency, condition = EXCLUDED.condition, last_checked = CURRENT_TIMESTAMP
         """,
         [release_id, crawler_id, url, price, shipping, currency, condition],
+    )
+
+
+def upsert_stock_item_listing(
+    conn,
+    item_key: str,
+    crawler_id: int,
+    url: str,
+    price: Optional[float],
+    shipping: Optional[float],
+    currency: Optional[str],
+    condition: Optional[str],
+):
+    conn.execute(
+        """
+        INSERT INTO listings (item_key, crawler_id, url, price, shipping, currency, condition, last_checked)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+        ON CONFLICT (item_key, crawler_id) DO UPDATE SET
+            url = EXCLUDED.url, price = EXCLUDED.price, shipping = EXCLUDED.shipping,
+            currency = EXCLUDED.currency, condition = EXCLUDED.condition, last_checked = CURRENT_TIMESTAMP
+        """,
+        [item_key, crawler_id, url, price, shipping, currency, condition],
     )
 
 
@@ -676,6 +704,18 @@ def enqueue_crawl_queue(conn, discogs_id: str, crawler_id: int):
     )
 
 
+def enqueue_crawl_queue_for_stock_item(conn, item_key: str, crawler_id: int):
+    conn.execute(
+        """
+        INSERT INTO crawl_queue (item_key, crawler_id) VALUES (%s, %s)
+        ON CONFLICT (item_key, crawler_id) DO UPDATE SET
+            status = 'pending', requested_at = CURRENT_TIMESTAMP, claimed_by = NULL, claimed_at = NULL
+        WHERE crawl_queue.status = 'done'
+        """,
+        [item_key, crawler_id],
+    )
+
+
 # The row lock taken by the inner SELECT ... FOR UPDATE SKIP LOCKED is held
 # until the caller commits or rolls back the current transaction -- callers
 # must mark_crawl_queue_done() on these rows before/without another worker's
@@ -704,7 +744,7 @@ def claim_crawl_queue_batch(
             LIMIT %(limit)s
             FOR UPDATE SKIP LOCKED
         )
-        RETURNING id, discogs_id, crawler_id
+        RETURNING id, discogs_id, item_key, crawler_id
         """,
         params,
     ).fetchall()
