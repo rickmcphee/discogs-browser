@@ -206,17 +206,25 @@ function StockBrowser({ recommendedAvailable = false, hiddenCrawlerIds = NO_HIDD
             <thead className="sticky top-0 bg-gray-900 text-xs text-gray-400 uppercase">
               <tr>
                 <th className="w-12 px-3 py-2"></th>
-                <th className="px-3 py-2 text-center cursor-pointer hover:text-white select-none" onClick={() => toggleSort('artist')}>
-                  Artist {sort === 'artist' ? (order === 'asc' ? '↑' : '↓') : ''}
+                <th className="px-3 py-2 text-center" aria-sort={sort === 'artist' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                  <button type="button" onClick={() => toggleSort('artist')} className="w-full cursor-pointer hover:text-white select-none">
+                    Artist {sort === 'artist' ? (order === 'asc' ? '↑' : '↓') : ''}
+                  </button>
                 </th>
-                <th className="px-3 py-2 text-center cursor-pointer hover:text-white select-none" onClick={() => toggleSort('title')}>
-                  Title {sort === 'title' ? (order === 'asc' ? '↑' : '↓') : ''}
+                <th className="px-3 py-2 text-center" aria-sort={sort === 'title' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                  <button type="button" onClick={() => toggleSort('title')} className="w-full cursor-pointer hover:text-white select-none">
+                    Title {sort === 'title' ? (order === 'asc' ? '↑' : '↓') : ''}
+                  </button>
                 </th>
-                <th className="px-3 py-2 text-center cursor-pointer hover:text-white select-none" onClick={() => toggleSort('format')}>
-                  Format {sort === 'format' ? (order === 'asc' ? '↑' : '↓') : ''}
+                <th className="px-3 py-2 text-center" aria-sort={sort === 'format' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                  <button type="button" onClick={() => toggleSort('format')} className="w-full cursor-pointer hover:text-white select-none">
+                    Format {sort === 'format' ? (order === 'asc' ? '↑' : '↓') : ''}
+                  </button>
                 </th>
-                <th className="px-3 py-2 text-center cursor-pointer hover:text-white select-none" onClick={() => toggleSort('price')}>
-                  Price {sort === 'price' ? (order === 'asc' ? '↑' : '↓') : ''}
+                <th className="px-3 py-2 text-center" aria-sort={sort === 'price' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                  <button type="button" onClick={() => toggleSort('price')} className="w-full cursor-pointer hover:text-white select-none">
+                    Price {sort === 'price' ? (order === 'asc' ? '↑' : '↓') : ''}
+                  </button>
                 </th>
                 <th className="px-3 py-2 text-center">Source</th>
               </tr>
