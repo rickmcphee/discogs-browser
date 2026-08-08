@@ -636,15 +636,16 @@ def rename_crawler(conn, old_site_name: str, new_site_name: str):
     )
 
 
-def register_crawler(conn, site_name: str, module_path: str, crawler_type: str = "release"):
+def register_crawler(conn, site_name: str, module_path: str, crawler_type: str = "release", requires_discogs_release: bool = False):
     conn.execute(
         """
-        INSERT INTO crawlers (site_name, module_path, crawler_type, enabled)
-        VALUES (%s, %s, %s, TRUE)
+        INSERT INTO crawlers (site_name, module_path, crawler_type, requires_discogs_release, enabled)
+        VALUES (%s, %s, %s, %s, TRUE)
         ON CONFLICT (site_name) DO UPDATE SET
-            module_path = EXCLUDED.module_path, crawler_type = EXCLUDED.crawler_type
+            module_path = EXCLUDED.module_path, crawler_type = EXCLUDED.crawler_type,
+            requires_discogs_release = EXCLUDED.requires_discogs_release
         """,
-        [site_name, module_path, crawler_type],
+        [site_name, module_path, crawler_type, requires_discogs_release],
     )
 
 

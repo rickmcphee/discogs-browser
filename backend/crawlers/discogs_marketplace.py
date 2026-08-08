@@ -19,6 +19,7 @@ def _parse_amount(text: str) -> Optional[float]:
 class Crawler:
     site_name: str = "Discogs"
     base_url: str = "https://www.discogs.com"
+    requires_discogs_release: bool = True
 
     @classmethod
     def search_url(cls, release: dict) -> str:

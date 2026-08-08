@@ -18,11 +18,12 @@ log = get_logger("main")
 BUNDLED_CRAWLERS_DIR = Path(__file__).parent / "crawlers"
 
 
-def _crawler_metadata(path: Path, fallback_site_name: str) -> tuple[str, str]:
+def _crawler_metadata(path: Path, fallback_site_name: str) -> tuple[str, str, bool]:
     crawler = load_crawler_from_path(path)
     site_name = getattr(crawler, "site_name", fallback_site_name)
     crawler_type = getattr(crawler, "crawler_type", "release")
-    return site_name, crawler_type
+    requires_discogs_release = getattr(crawler, "requires_discogs_release", False)
+    return site_name, crawler_type, requires_discogs_release
 
 
 def seed_bundled_crawlers():
@@ -41,8 +42,8 @@ def seed_bundled_crawlers():
             dest = CRAWLERS_DIR / src.name
             shutil.copy2(src, dest)
             log.info("Synced bundled crawler %s -> %s", src.name, dest)
-            site_name, crawler_type = _crawler_metadata(dest, src.stem.replace("_", " ").title())
-            register_crawler(conn, site_name, str(dest), crawler_type)
+            site_name, crawler_type, requires_discogs_release = _crawler_metadata(dest, src.stem.replace("_", " ").title())
+            register_crawler(conn, site_name, str(dest), crawler_type, requires_discogs_release)
             log.info("Registered bundled crawler: %s", site_name)
         conn.commit()
 
