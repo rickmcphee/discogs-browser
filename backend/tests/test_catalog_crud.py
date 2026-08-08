@@ -133,6 +133,40 @@ def test_get_library_releases_returns_only_calling_users_rows(admin_conn):
     assert result["releases"][0]["discogs_id"] == "r1"
 
 
+def test_upsert_library_item_collection_and_wishlist_date_added_are_independent(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+        "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+        "discogs_url": None,
+    })
+    db.upsert_library_item(
+        admin_conn, alice["id"], "r1", in_collection=True,
+        collection_date_added="2024-01-15T00:00:00",
+    )
+    admin_conn.commit()
+    row = admin_conn.execute(
+        "SELECT collection_date_added, wishlist_date_added FROM library_items WHERE user_id = %s AND discogs_id = 'r1'",
+        [alice["id"]],
+    ).fetchone()
+    assert str(row["collection_date_added"]) == "2024-01-15 00:00:00"
+    assert row["wishlist_date_added"] is None
+
+    # A later wishlist-scoped write sets wishlist_date_added without
+    # clobbering the collection_date_added set above.
+    db.upsert_library_item(
+        admin_conn, alice["id"], "r1", in_wishlist=True,
+        wishlist_date_added="2024-02-20T00:00:00",
+    )
+    admin_conn.commit()
+    row = admin_conn.execute(
+        "SELECT collection_date_added, wishlist_date_added FROM library_items WHERE user_id = %s AND discogs_id = 'r1'",
+        [alice["id"]],
+    ).fetchone()
+    assert str(row["collection_date_added"]) == "2024-01-15 00:00:00"
+    assert str(row["wishlist_date_added"]) == "2024-02-20 00:00:00"
+
+
 def test_get_library_releases_search_and_scope_filters(admin_conn):
     alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
     db.upsert_catalog_release(admin_conn, {
@@ -196,90 +230,96 @@ def test_get_library_releases_includes_plex_url_in_default_sort(admin_conn):
     assert result["releases"][0]["plex_matched_at"] is not None
 
 
-def test_get_library_releases_includes_plex_url_when_sorting_by_known_site_price(admin_conn):
-    alice = _seed_three_releases_for_price_sort(admin_conn)
-    db.set_plex_match(admin_conn, alice["id"], "r1", "http://plex.local:32400/web/x")
-    admin_conn.commit()
-
-    with db.user_scope(alice["id"]) as conn:
-        result = db.get_library_releases(conn, alice["id"], sort="price_Amazon", order="asc")
-    r1 = next(r for r in result["releases"] if r["discogs_id"] == "r1")
-    assert r1["plex_url"] == "http://plex.local:32400/web/x"
-
-
-def test_get_library_releases_includes_plex_url_when_sort_falls_back_to_artist(admin_conn):
-    alice = _seed_three_releases_for_price_sort(admin_conn)
-    db.set_plex_match(admin_conn, alice["id"], "r1", "http://plex.local:32400/web/x")
-    admin_conn.commit()
-
-    with db.user_scope(alice["id"]) as conn:
-        result = db.get_library_releases(conn, alice["id"], sort="price_NoSuchSite", order="desc")
-    r1 = next(r for r in result["releases"] if r["discogs_id"] == "r1")
-    assert r1["plex_url"] == "http://plex.local:32400/web/x"
-
-
-def _seed_three_releases_for_price_sort(admin_conn):
-    """r1/r2 have Amazon listings (cheap/expensive), r3 has none, so the
-    NULL-price ordering arm of the price_<site> sort is exercised too."""
+def test_get_library_releases_returns_date_added_for_the_matching_scope(admin_conn):
     alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
-    admin_conn.execute("INSERT INTO crawlers (site_name, module_path) VALUES ('Amazon', '/x.py')")
-    crawler_id = admin_conn.execute(
-        "SELECT id FROM crawlers WHERE site_name = 'Amazon'"
-    ).fetchone()["id"]
-    for rid, artist in [("r1", "Bbb"), ("r2", "Aaa"), ("r3", "Ccc")]:
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+        "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+        "discogs_url": None,
+    })
+    db.upsert_library_item(
+        admin_conn, alice["id"], "r1", in_collection=True, in_wishlist=True,
+        collection_date_added="2024-01-15T00:00:00", wishlist_date_added="2024-02-20T00:00:00",
+    )
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        collection_result = db.get_library_releases(conn, alice["id"], scope="discogs")
+        wishlist_result = db.get_library_releases(conn, alice["id"], scope="wishlist")
+        unscoped_result = db.get_library_releases(conn, alice["id"])
+    # dict_row returns a datetime object for a TIMESTAMP column, same as the
+    # raw-cursor reads in Task 1/2's tests — isoformat() gives back the exact
+    # "T"-separated string the naive datetime was written with above.
+    assert collection_result["releases"][0]["date_added"].isoformat() == "2024-01-15T00:00:00"
+    assert wishlist_result["releases"][0]["date_added"].isoformat() == "2024-02-20T00:00:00"
+    assert unscoped_result["releases"][0]["date_added"] is None
+
+
+def test_get_library_releases_sorts_by_date_added_nulls_last(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    for rid, artist, date_added in [
+        ("r1", "Bbb", "2024-02-01T00:00:00"),
+        ("r2", "Aaa", "2024-01-01T00:00:00"),
+        ("r3", "Ccc", None),
+    ]:
+        db.upsert_catalog_release(admin_conn, {
+            "discogs_id": rid, "artist": artist, "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.upsert_library_item(admin_conn, alice["id"], rid, in_collection=True, collection_date_added=date_added)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], scope="discogs", sort="date_added", order="asc")
+    assert [r["discogs_id"] for r in result["releases"]] == ["r2", "r1", "r3"]
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], scope="discogs", sort="date_added", order="desc")
+    assert [r["discogs_id"] for r in result["releases"]] == ["r1", "r2", "r3"]
+
+
+def test_get_library_releases_date_added_sort_falls_back_to_artist_without_a_scope(admin_conn):
+    # sort="date_added" only has a well-defined column to sort by (and to
+    # return) when scope is "discogs" or "wishlist" -- an unscoped call
+    # doesn't return date_added at all (it's always None), so sorting by it
+    # would order results by a value the response never surfaces. Falls back
+    # to the same artist-sort every other unrecognized `sort` value gets.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    for rid, artist in [("r1", "Bbb"), ("r2", "Aaa")]:
         db.upsert_catalog_release(admin_conn, {
             "discogs_id": rid, "artist": artist, "title": "T", "year": None, "label": None,
             "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
             "discogs_url": None,
         })
         db.upsert_library_item(admin_conn, alice["id"], rid, in_collection=True)
-    db.upsert_listing(admin_conn, "r1", crawler_id, "http://x/1", 5.00, None, "USD", None)
-    db.upsert_listing(admin_conn, "r2", crawler_id, "http://x/2", 25.00, None, "USD", None)
     admin_conn.commit()
-    return alice
-
-
-def test_get_library_releases_sorts_by_price_for_named_site(admin_conn):
-    alice = _seed_three_releases_for_price_sort(admin_conn)
 
     with db.user_scope(alice["id"]) as conn:
-        result = db.get_library_releases(conn, alice["id"], sort="price_Amazon", order="asc")
-    # Cheapest first, then dearer, then the release with no Amazon listing at all.
-    assert [r["discogs_id"] for r in result["releases"]] == ["r1", "r2", "r3"]
-
-    with db.user_scope(alice["id"]) as conn:
-        result = db.get_library_releases(conn, alice["id"], sort="price_Amazon", order="desc")
-    assert result["releases"][0]["discogs_id"] == "r3"
-    assert [r["discogs_id"] for r in result["releases"][1:]] == ["r2", "r1"]
+        result = db.get_library_releases(conn, alice["id"], sort="date_added", order="asc")
+    assert [r["discogs_id"] for r in result["releases"]] == ["r2", "r1"]
+    assert all(r["date_added"] is None for r in result["releases"])
 
 
-def test_get_library_releases_price_sort_for_unknown_site_falls_back_to_artist_asc(admin_conn):
-    # Documents current behaviour rather than endorsing it: an unrecognised
-    # site name silently degrades to artist ASC and ignores `order` entirely,
-    # with no signal to the caller. See the note in the Task 22 review.
-    alice = _seed_three_releases_for_price_sort(admin_conn)
-
-    with db.user_scope(alice["id"]) as conn:
-        result = db.get_library_releases(conn, alice["id"], sort="price_NoSuchSite", order="desc")
-    assert [r["discogs_id"] for r in result["releases"]] == ["r2", "r1", "r3"]
-
-
-def test_get_listings_for_release_joins_crawler_site_name(admin_conn):
-    admin_conn.execute("INSERT INTO crawlers (site_name, module_path) VALUES ('Amazon', '/x.py')")
-    crawler_id = admin_conn.execute(
-        "SELECT id FROM crawlers WHERE site_name = 'Amazon'"
-    ).fetchone()["id"]
+def test_get_distinct_artists_filters_by_discogs_scope(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
     db.upsert_catalog_release(admin_conn, {
-        "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+        "discogs_id": "r1", "artist": "Zzz", "title": "T", "year": None, "label": None,
         "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
         "discogs_url": None,
     })
-    db.upsert_listing(admin_conn, "r1", crawler_id, "https://x", 9.99, 2.0, "USD", "VG+")
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r2", "artist": "Aaa", "title": "T", "year": None, "label": None,
+        "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+        "discogs_url": None,
+    })
+    db.upsert_library_item(admin_conn, alice["id"], "r1", in_collection=True)
+    db.upsert_library_item(admin_conn, alice["id"], "r2", in_wishlist=True)
     admin_conn.commit()
 
-    listings = db.get_listings_for_release(admin_conn, "r1")
-    assert listings["Amazon"]["price"] == 9.99
-    assert listings["Amazon"]["condition"] == "VG+"
+    with db.user_scope(alice["id"]) as conn:
+        artists = db.get_distinct_artists(conn, alice["id"], scope="discogs")
+    assert artists == ["Zzz"]
 
 
 def test_set_plex_match_sets_url_and_timestamp(admin_conn):

@@ -166,6 +166,9 @@ CREATE TABLE IF NOT EXISTS library_items (
     PRIMARY KEY (user_id, discogs_id)
 );
 
+ALTER TABLE library_items ADD COLUMN IF NOT EXISTS collection_date_added TIMESTAMP;
+ALTER TABLE library_items ADD COLUMN IF NOT EXISTS wishlist_date_added TIMESTAMP;
+
 CREATE TABLE IF NOT EXISTS stock_item_judgments (
     user_id INTEGER NOT NULL REFERENCES users(id),
     item_key TEXT NOT NULL,
@@ -412,19 +415,30 @@ def upsert_library_item(
     discogs_id: str,
     in_collection: Optional[bool] = None,
     in_wishlist: Optional[bool] = None,
+    collection_date_added: Optional[str] = None,
+    wishlist_date_added: Optional[str] = None,
 ):
     # COALESCE resolves "unspecified" (None) to the existing row's own column
-    # on update, or FALSE on first insert — in one atomic statement, so two
-    # concurrent partial updates (e.g. collection-sync setting in_collection,
-    # wishlist-sync setting in_wishlist) can't race on a separate read.
+    # on update, or FALSE/NULL on first insert — in one atomic statement, so
+    # two concurrent partial updates (e.g. collection-sync setting
+    # in_collection/collection_date_added, wishlist-sync setting
+    # in_wishlist/wishlist_date_added) can't race on a separate read.
     conn.execute(
         """
-        INSERT INTO library_items (user_id, discogs_id, in_collection, in_wishlist, last_synced)
-        VALUES (%(user_id)s, %(discogs_id)s, COALESCE(%(in_collection)s, FALSE),
-                COALESCE(%(in_wishlist)s, FALSE), CURRENT_TIMESTAMP)
+        INSERT INTO library_items (
+            user_id, discogs_id, in_collection, in_wishlist,
+            collection_date_added, wishlist_date_added, last_synced
+        )
+        VALUES (
+            %(user_id)s, %(discogs_id)s, COALESCE(%(in_collection)s, FALSE),
+            COALESCE(%(in_wishlist)s, FALSE), %(collection_date_added)s,
+            %(wishlist_date_added)s, CURRENT_TIMESTAMP
+        )
         ON CONFLICT (user_id, discogs_id) DO UPDATE SET
             in_collection = COALESCE(%(in_collection)s, library_items.in_collection),
             in_wishlist = COALESCE(%(in_wishlist)s, library_items.in_wishlist),
+            collection_date_added = COALESCE(%(collection_date_added)s, library_items.collection_date_added),
+            wishlist_date_added = COALESCE(%(wishlist_date_added)s, library_items.wishlist_date_added),
             last_synced = CURRENT_TIMESTAMP
         """,
         {
@@ -432,6 +446,8 @@ def upsert_library_item(
             "discogs_id": discogs_id,
             "in_collection": in_collection,
             "in_wishlist": in_wishlist,
+            "collection_date_added": collection_date_added,
+            "wishlist_date_added": wishlist_date_added,
         },
     )
 
@@ -487,7 +503,12 @@ def get_library_releases(
     unmatched: bool = False,
 ) -> dict:
     order_sql = "DESC" if order.lower() == "desc" else "ASC"
-    null_order = "ASC" if order_sql == "ASC" else "DESC"
+    # Always ASC: NULLs sort last for both ASC and DESC. (The pre-existing
+    # `"ASC" if order_sql == "ASC" else "DESC"` formula was a no-op copy of
+    # order_sql, which made NULLs sort first on DESC -- the only place that
+    # was exercised, the price_<site> sort tests, is deleted in this same
+    # change.)
+    null_order = "ASC"
 
     conditions = ["li.user_id = %(user_id)s"]
     params: dict = {"user_id": user_id}
@@ -501,7 +522,7 @@ def get_library_releases(
     if artist:
         conditions.append("c.artist = %(artist)s")
         params["artist"] = artist
-    if scope == "collection":
+    if scope == "discogs":
         conditions.append("li.in_collection = TRUE")
     elif scope == "wishlist":
         conditions.append("li.in_wishlist = TRUE")
@@ -517,69 +538,39 @@ def get_library_releases(
     params["limit"] = per_page
     params["offset"] = offset
 
-    if sort.startswith("price_"):
-        site_name = sort[len("price_"):]
-        crawler_row = conn.execute(
-            "SELECT id FROM crawlers WHERE site_name = %s", [site_name]
-        ).fetchone()
-        if crawler_row:
-            params["crawler_id"] = crawler_row["id"]
-            rows = conn.execute(
-                f"""
-                SELECT c.*, li.plex_url, li.plex_matched_at {base_from}
-                LEFT JOIN listings ls ON ls.release_id = c.discogs_id AND ls.crawler_id = %(crawler_id)s
-                {where}
-                ORDER BY CASE WHEN ls.price IS NULL THEN 1 ELSE 0 END {null_order}, ls.price {order_sql}
-                LIMIT %(limit)s OFFSET %(offset)s
-                """,
-                params,
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                f"SELECT c.*, li.plex_url, li.plex_matched_at {base_from} {where} ORDER BY c.artist ASC LIMIT %(limit)s OFFSET %(offset)s",
-                params,
-            ).fetchall()
+    if sort == "date_added" and scope in ("discogs", "wishlist"):
+        sort_expr = "li." + ("wishlist_date_added" if scope == "wishlist" else "collection_date_added")
     else:
         sort_col = sort if sort in _RELEASE_ALLOWED_SORT else "artist"
-        rows = conn.execute(
-            f"""
-            SELECT c.*, li.plex_url, li.plex_matched_at {base_from} {where}
-            ORDER BY CASE WHEN c.{sort_col} IS NULL THEN 1 ELSE 0 END {null_order}, c.{sort_col} {order_sql}
-            LIMIT %(limit)s OFFSET %(offset)s
-            """,
-            params,
-        ).fetchall()
+        sort_expr = f"c.{sort_col}"
+
+    rows = conn.execute(
+        f"""
+        SELECT c.*, li.plex_url, li.plex_matched_at,
+               li.collection_date_added, li.wishlist_date_added
+        {base_from} {where}
+        ORDER BY CASE WHEN {sort_expr} IS NULL THEN 1 ELSE 0 END {null_order}, {sort_expr} {order_sql}
+        LIMIT %(limit)s OFFSET %(offset)s
+        """,
+        params,
+    ).fetchall()
 
     releases = []
     for row in rows:
         r = dict(row)
-        r["listings"] = get_listings_for_release(conn, r["discogs_id"])
+        if scope == "wishlist":
+            r["date_added"] = r.pop("wishlist_date_added")
+            del r["collection_date_added"]
+        elif scope == "discogs":
+            r["date_added"] = r.pop("collection_date_added")
+            del r["wishlist_date_added"]
+        else:
+            r["date_added"] = None
+            del r["collection_date_added"]
+            del r["wishlist_date_added"]
         releases.append(r)
 
     return {"total": total, "page": page, "per_page": per_page, "releases": releases}
-
-
-def get_listings_for_release(conn, release_id: str) -> dict:
-    rows = conn.execute(
-        """
-        SELECT cr.site_name, l.url, l.price, l.shipping, l.currency, l.condition, l.last_checked
-        FROM listings l
-        JOIN crawlers cr ON l.crawler_id = cr.id
-        WHERE l.release_id = %s
-        """,
-        [release_id],
-    ).fetchall()
-    return {
-        row["site_name"]: {
-            "url": row["url"],
-            "price": row["price"],
-            "shipping": row["shipping"],
-            "currency": row["currency"],
-            "condition": row["condition"],
-            "last_checked": row["last_checked"],
-        }
-        for row in rows
-    }
 
 
 def get_enabled_crawlers(conn, crawler_type: str = "release") -> list[dict]:
@@ -1071,7 +1062,7 @@ def delete_orphaned_releases(conn, user_id: int) -> list[str]:
 
 def get_distinct_artists(conn, user_id: int, scope: Optional[str] = None) -> list[str]:
     conditions = ["li.user_id = %(user_id)s"]
-    if scope == "collection":
+    if scope == "discogs":
         conditions.append("li.in_collection = TRUE")
     elif scope == "wishlist":
         conditions.append("li.in_wishlist = TRUE")

@@ -11,7 +11,7 @@ import { navButtonClass, primaryButtonClass, secondaryButtonClass, dismissButton
 import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, clearJudgments, exportRecommendationsCsv, getCrawlers, getUserSettings, getJudgmentStatus, checkHealth, getAuthStatus, setUnauthorizedHandler, hasAvatar } from './api/client'
 import type { CrawlEvent, CrawlStatus, CollectionStatus, Crawler, AuthStatus } from './api/types'
 
-type View = 'collection' | 'wishlist' | 'instock' | 'settings' | 'logs' | 'account'
+type View = 'discogs' | 'wishlist' | 'instock' | 'settings' | 'logs' | 'account'
 
 // SSE reconnects (including on browser refresh) replay every buffered event from
 // crawl_manager._recent, so a banner's dismissal has to survive across that replay.
@@ -23,8 +23,7 @@ const VIEW_AS_USER_KEY = 'discogs-browser.viewAsUser'
 const HIDDEN_CRAWLER_IDS_KEY = 'discogs-browser.hiddenCrawlerIds'
 
 export default function App() {
-  const [view, setView] = useState<View>('collection')
-  const [crawlEvents, setCrawlEvents] = useState<CrawlEvent[]>([])
+  const [view, setView] = useState<View>('discogs')
   const [crawling, setCrawling] = useState(false)
   const [crawlBannerId, setCrawlBannerId] = useState(0)
   const [dismissedCrawlId, setDismissedCrawlId] = useState(() => Number(localStorage.getItem(DISMISSED_CRAWL_KEY) ?? 0))
@@ -34,7 +33,6 @@ export default function App() {
   const [checkpointStatus, setCheckpointStatus] = useState<CrawlStatus | null>(null)
 
   const [collectionStatus, setCollectionStatus] = useState<CollectionStatus | null>(null)
-  const [crawlingReleaseId, setCrawlingReleaseId] = useState<string | undefined>(undefined)
   const [crawlers, setCrawlers] = useState<Crawler[]>([])
   const [hiddenCrawlerIds, setHiddenCrawlerIds] = useState<number[]>(() => {
     try {
@@ -222,19 +220,16 @@ export default function App() {
         setCrawlTotal(event.total ?? 0)
         setCrawling(true)
         setCrawlBannerId(event.id ?? 0)
-        setCrawlEvents([])
         setCrawlCount(0)
         setCrawlCurrent(null)
       } else if (event.status === 'complete' || event.status === 'stopped') {
         setCrawling(false)
         setCrawlCurrent(null)
-        setCrawlingReleaseId(undefined)
       } else if (event.status === 'error' && !event.release) {
         setCrawling(false)
       } else if (event.release) {
         setCrawlCurrent(event)
         setCrawlCount((n) => n + 1)
-        setCrawlEvents((prev) => [...prev, event])
       }
     }
 
@@ -301,7 +296,6 @@ export default function App() {
 
   const startCrawl = useCallback((releaseId?: string, mode?: 'all' | 'missing') => {
     setCheckpointStatus(null)
-    setCrawlingReleaseId(releaseId)
     postCrawlStart(mode ?? 'all', releaseId).catch((e: any) => {
       alert(`Failed to start crawl: ${e.message}`)
     })
@@ -443,10 +437,10 @@ export default function App() {
       <header className="bg-gray-900 border-b border-gray-800 px-6 py-3 flex items-center gap-4">
         <nav className="flex gap-2">
           <button
-            onClick={() => setView('collection')}
-            className={`px-3 py-1.5 text-sm font-medium ${navButtonClass(view === 'collection')}`}
+            onClick={() => setView('discogs')}
+            className={`px-3 py-1.5 text-sm font-medium ${navButtonClass(view === 'discogs')}`}
           >
-            Collection
+            Discogs
           </button>
           <button
             onClick={() => setView('wishlist')}
@@ -490,15 +484,9 @@ export default function App() {
 
       {/* Main */}
       <main className="flex-1 overflow-hidden">
-        <div className={view === 'collection' ? 'h-full' : 'hidden'}>
+        <div className={view === 'discogs' ? 'h-full' : 'hidden'}>
           <RecordBrowser
-            scope="collection"
-            onRefreshPrices={(id) => handleFindPrices(id)}
-            crawling={crawling}
-            crawlingReleaseId={crawlingReleaseId}
-            crawlEvents={crawlEvents}
-            crawlers={crawlers}
-            hiddenCrawlerIds={hiddenCrawlerIds}
+            scope="discogs"
             syncing={syncing}
             onRefreshCollection={() => handleRefresh()}
             syncGeneration={syncGeneration}
@@ -507,12 +495,6 @@ export default function App() {
         <div className={view === 'wishlist' ? 'h-full' : 'hidden'}>
           <RecordBrowser
             scope="wishlist"
-            onRefreshPrices={(id) => handleFindPrices(id)}
-            crawling={crawling}
-            crawlingReleaseId={crawlingReleaseId}
-            crawlEvents={crawlEvents}
-            crawlers={crawlers}
-            hiddenCrawlerIds={hiddenCrawlerIds}
             syncing={syncing}
             onRefreshCollection={() => handleRefreshWishlist()}
             syncGeneration={syncGeneration}

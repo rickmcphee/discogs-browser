@@ -98,11 +98,17 @@ def test_list_artists_scoped_to_calling_user(pg_test_db, authed_client_factory):
             "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
             "discogs_url": None,
         })
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r2", "artist": "Aaa", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
         db.upsert_library_item(conn, alice["id"], "r1", in_collection=True)
+        db.upsert_library_item(conn, alice["id"], "r2", in_wishlist=True)
         conn.commit()
 
     client = authed_client_factory(alice["id"])
-    r = client.get("/api/artists?scope=collection")
+    r = client.get("/api/artists?scope=discogs")
     assert r.json()["artists"] == ["Zzz"]
 
 

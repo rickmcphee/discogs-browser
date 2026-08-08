@@ -17,7 +17,7 @@ const { matchedRelease, unmatchedRelease } = vi.hoisted(() => ({
     plex_url: 'http://plex.local:32400/web/index.html#!/server/abc/details?key=/library/metadata/500',
     plex_matched_at: '2026-08-01T00:00:00Z',
     last_synced: '',
-    listings: {},
+    date_added: null,
   } as Release,
   unmatchedRelease: {
     discogs_id: 'r2',
@@ -32,7 +32,7 @@ const { matchedRelease, unmatchedRelease } = vi.hoisted(() => ({
     plex_url: null,
     plex_matched_at: null,
     last_synced: '',
-    listings: {},
+    date_added: null,
   } as Release,
 }))
 
@@ -53,13 +53,13 @@ beforeEach(() => {
 
 describe('Plex match hyperlink — list view', () => {
   it('renders a matched title as a link to the Plex album', async () => {
-    render(<RecordBrowser scope="collection" onRefreshPrices={() => {}} />)
+    render(<RecordBrowser scope="discogs" />)
     const link = await screen.findByRole('link', { name: 'Kind of Blue' })
     expect(link).toHaveAttribute('href', matchedRelease.plex_url as string)
   })
 
   it('renders an unmatched title as plain text, not a link', async () => {
-    render(<RecordBrowser scope="collection" onRefreshPrices={() => {}} />)
+    render(<RecordBrowser scope="discogs" />)
     await screen.findByText('Waltz for Debby')
     expect(screen.queryByRole('link', { name: 'Waltz for Debby' })).not.toBeInTheDocument()
   })
@@ -71,7 +71,7 @@ describe('Plex match hyperlink — tile view', () => {
       getItem: (key: string) => (key.startsWith('collectionViewMode') ? 'tiles' : null),
       setItem: () => {},
     })
-    render(<RecordBrowser scope="collection" onRefreshPrices={() => {}} />)
+    render(<RecordBrowser scope="discogs" />)
     const titleLink = await screen.findByRole('link', { name: 'Kind of Blue' })
     expect(titleLink).toHaveAttribute('href', matchedRelease.plex_url as string)
     for (const el of screen.getAllByText('Miles Davis')) {

@@ -1,22 +1,16 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { getReleases, getArtists } from '../api/client'
-import type { Release, Crawler, SortField, SortOrder, CrawlEvent, RecordScope } from '../api/types'
+import type { Release, SortField, SortOrder, RecordScope } from '../api/types'
 import { navButtonClass, dismissButtonClass } from '../styles/buttons'
 
 interface Props {
   scope: RecordScope
-  onRefreshPrices: (releaseId: string) => void
-  crawling?: boolean
-  crawlingReleaseId?: string
-  crawlEvents?: CrawlEvent[]
-  crawlers?: Crawler[]
-  hiddenCrawlerIds?: number[]
   syncing?: boolean
   onRefreshCollection?: () => void
   syncGeneration?: number
 }
 
-export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawlingReleaseId, crawlEvents, crawlers = [], hiddenCrawlerIds = [], syncing, onRefreshCollection, syncGeneration }: Props) {
+export default function RecordBrowser({ scope, syncing, onRefreshCollection, syncGeneration }: Props) {
   const [releases, setReleases] = useState<Release[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -32,45 +26,7 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
   const [unmatched, setUnmatched] = useState(false)
   const PER_PAGE = 250
 
-  const processedCount = useRef(0)
   const tableScrollRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    if (!crawlEvents) return
-    if (crawlEvents.length === 0) { processedCount.current = 0; return }
-    const newEvents = crawlEvents.slice(processedCount.current)
-    if (newEvents.length === 0) return
-    processedCount.current = crawlEvents.length
-
-    const foundEvents = newEvents.filter(e => e.status === 'found' && e.discogs_id && e.site)
-    // The backend clears a release's stale listings before re-searching it (both
-    // for bulk crawls and single-item refreshes), so "not found" means genuinely
-    // not found — the already-loaded client state doesn't know that until we
-    // clear it here too.
-    const notFoundEvents = newEvents.filter(e => e.status === 'not_found' && e.discogs_id && e.site)
-    if (foundEvents.length === 0 && notFoundEvents.length === 0) return
-
-    setReleases(prev => prev.map(r => {
-      const found = foundEvents.filter(e => e.discogs_id === r.discogs_id)
-      const notFound = notFoundEvents.filter(e => e.discogs_id === r.discogs_id)
-      if (found.length === 0 && notFound.length === 0) return r
-      const updatedListings = { ...r.listings }
-      for (const e of found) {
-        updatedListings[e.site!] = {
-          url: updatedListings[e.site!]?.url ?? '',
-          price: e.price ?? null,
-          shipping: updatedListings[e.site!]?.shipping ?? null,
-          currency: updatedListings[e.site!]?.currency ?? null,
-          condition: updatedListings[e.site!]?.condition ?? null,
-          last_checked: updatedListings[e.site!]?.last_checked ?? new Date().toISOString(),
-        }
-      }
-      for (const e of notFound) {
-        delete updatedListings[e.site!]
-      }
-      return { ...r, listings: updatedListings }
-    }))
-  }, [crawlEvents])
 
   useEffect(() => {
     tableScrollRef.current?.scrollTo({ top: 0 })
@@ -87,7 +43,7 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
         page,
         per_page: PER_PAGE,
         scope,
-        unmatched: scope === 'collection' ? unmatched : undefined,
+        unmatched: scope === 'discogs' ? unmatched : undefined,
       })
       setReleases(result.releases)
       setTotal(result.total)
@@ -133,7 +89,6 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
     setPage(1)
   }
 
-  const enabledCrawlers = crawlers.filter((c) => c.enabled && c.crawler_type === 'release' && !hiddenCrawlerIds.includes(c.id))
   const totalPages = Math.ceil(total / PER_PAGE)
 
   const sortButtonClass = 'w-full px-3 py-2 cursor-pointer hover:text-white select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/80'
@@ -183,7 +138,7 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
           </div>
           <span className="ml-3 text-xs text-gray-500">{total} records</span>
           <div className="ml-auto flex items-center gap-1">
-            {scope === 'collection' && (
+            {scope === 'discogs' && (
               <select
                 value={unmatched ? 'unmatched' : 'all'}
                 onChange={(e) => { setUnmatched(e.target.value === 'unmatched'); setPage(1) }}
@@ -237,7 +192,7 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
               <div className="text-center py-8 text-gray-500">
                 {scope === 'wishlist'
                   ? 'No wishlist items yet. Add records to your wantlist on Discogs, then sync.'
-                  : 'No records found. Click "Refresh Collection" to sync from Discogs.'}
+                  : 'No records found. Click the sync icon above to load your collection from Discogs.'}
               </div>
             )}
             {!loading && releases.length > 0 && (
@@ -330,34 +285,30 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
                     Price {sort === 'discogs_price' ? (order === 'asc' ? '↑' : '↓') : ''}
                   </button>
                 </th>
-                {enabledCrawlers.map((c) => (
-                  <th
-                    key={c.id}
-                    className="text-center"
-                    aria-sort={sort === `price_${c.site_name}` ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}
-                  >
-                    <button type="button" onClick={() => toggleSort(`price_${c.site_name}`)} className={`${sortButtonClass} text-center`}>
-                      {c.site_name} {sort === `price_${c.site_name}` ? (order === 'asc' ? '↑' : '↓') : ''}
-                    </button>
-                  </th>
-                ))}
-                <th className="px-3 py-2"></th>
+                <th
+                  className="text-center"
+                  aria-sort={sort === 'date_added' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}
+                >
+                  <button type="button" onClick={() => toggleSort('date_added')} className={`${sortButtonClass} text-center`}>
+                    Date Added {sort === 'date_added' ? (order === 'asc' ? '↑' : '↓') : ''}
+                  </button>
+                </th>
               </tr>
             </thead>
             <tbody>
               {loading && (
                 <tr>
-                  <td colSpan={8 + enabledCrawlers.length} className="text-center py-8 text-gray-500">
+                  <td colSpan={8} className="text-center py-8 text-gray-500">
                     Loading…
                   </td>
                 </tr>
               )}
               {!loading && releases.length === 0 && (
                 <tr>
-                  <td colSpan={8 + enabledCrawlers.length} className="text-center py-8 text-gray-500">
+                  <td colSpan={8} className="text-center py-8 text-gray-500">
                     {scope === 'wishlist'
                       ? 'No wishlist items yet. Add records to your wantlist on Discogs, then sync.'
-                      : 'No records found. Click "Refresh Collection" to sync from Discogs.'}
+                      : 'No records found. Click the sync icon above to load your collection from Discogs.'}
                   </td>
                 </tr>
               )}
@@ -392,36 +343,8 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
                   <td className="px-3 py-2 text-gray-400 truncate max-w-32">{r.label}</td>
                   <td className="px-3 py-2 text-gray-400">{r.format}</td>
                   <td className="px-3 py-2 text-gray-400">{r.discogs_price ?? '—'}</td>
-                  {enabledCrawlers.map((c) => {
-                    const listing = r.listings[c.site_name]
-                    return (
-                      <td key={c.id} className="px-3 py-2">
-                        {listing ? (
-                          <a
-                            href={listing.url}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="text-green-400 hover:text-green-300 font-medium"
-                          >
-                            {listing.price != null
-                              ? `$${listing.price.toFixed(2)}`
-                              : 'View'}
-                          </a>
-                        ) : (
-                          <span className="text-gray-600">—</span>
-                        )}
-                      </td>
-                    )
-                  })}
-                  <td className="px-3 py-2">
-                    <button
-                      onClick={() => onRefreshPrices(r.discogs_id)}
-                      disabled={crawling}
-                      className="text-xs text-gray-500 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                      title="Refresh prices for this record"
-                    >
-                      {crawlingReleaseId === r.discogs_id ? '⟳' : '↻'}
-                    </button>
+                  <td className="px-3 py-2 text-gray-400">
+                    {r.date_added ? new Date(r.date_added).toLocaleDateString() : '—'}
                   </td>
                 </tr>
               ))}

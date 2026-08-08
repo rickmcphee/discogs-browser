@@ -28,7 +28,7 @@ const { release } = vi.hoisted(() => ({
     plex_url: null,
     plex_matched_at: null,
     last_synced: '',
-    listings: {},
+    date_added: null,
   } as Release,
 }))
 
@@ -78,17 +78,15 @@ beforeEach(() => {
   localStorage.clear()
 })
 
-async function clickRefreshAndGetSource() {
-  const [button] = await screen.findAllByTitle('Refresh prices for this record')
-  fireEvent.click(button)
-  await waitFor(() => expect(getLastCrawlSource()).toBeDefined())
+async function getCrawlSourceOnMount() {
+  await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
   return getLastCrawlSource()
 }
 
 describe('crawl status bar', () => {
-  it('shows "Refreshing prices…" after a per-row refresh is clicked', async () => {
+  it('shows "Refreshing prices…" once a crawl starts', async () => {
     render(<App />)
-    const src = await clickRefreshAndGetSource()
+    const src = await getCrawlSourceOnMount()
     src.emit({ status: 'started', total: 1, id: 1 })
     await waitFor(() =>
       expect(screen.getByText(/Refreshing prices/i)).toBeInTheDocument()
@@ -97,7 +95,7 @@ describe('crawl status bar', () => {
 
   it('shows artist, title, and site from the current crawl event', async () => {
     render(<App />)
-    const src = await clickRefreshAndGetSource()
+    const src = await getCrawlSourceOnMount()
     src.emit({ status: 'started', total: 2, id: 1 })
     src.emit({ status: 'found', discogs_id: 'r1', release: 'The Wall', artist: 'Pink Floyd', site: 'Amazon', price: 24.99 })
 
@@ -107,7 +105,7 @@ describe('crawl status bar', () => {
 
   it('shows X/total progress count', async () => {
     render(<App />)
-    const src = await clickRefreshAndGetSource()
+    const src = await getCrawlSourceOnMount()
     src.emit({ status: 'started', total: 4, id: 1 })
     src.emit({ status: 'not_found', discogs_id: 'r1', release: 'Wish You Were Here', artist: 'Pink Floyd', site: 'Amazon' })
 
@@ -116,7 +114,7 @@ describe('crawl status bar', () => {
 
   it('shows Done and Dismiss when complete', async () => {
     render(<App />)
-    const src = await clickRefreshAndGetSource()
+    const src = await getCrawlSourceOnMount()
     src.emit({ status: 'started', total: 1, id: 1 })
     src.emit({ status: 'complete', id: 2 })
 
@@ -126,7 +124,7 @@ describe('crawl status bar', () => {
 
   it('hides the status bar after Dismiss', async () => {
     render(<App />)
-    const src = await clickRefreshAndGetSource()
+    const src = await getCrawlSourceOnMount()
     src.emit({ status: 'started', total: 1, id: 1 })
     src.emit({ status: 'complete', id: 2 })
 
@@ -162,7 +160,7 @@ describe('crawl status bar', () => {
 
   it('does not resurrect a dismissed banner when a refresh replays the same buffered events', async () => {
     const { unmount } = render(<App />)
-    const src = await clickRefreshAndGetSource()
+    const src = await getCrawlSourceOnMount()
     src.emit({ status: 'started', total: 1, id: 1 })
     src.emit({ status: 'complete', id: 2 })
 
@@ -178,7 +176,7 @@ describe('crawl status bar', () => {
     replaySrc.emit({ status: 'started', total: 1, id: 1 })
     replaySrc.emit({ status: 'complete', id: 2 })
 
-    await waitFor(() => expect(screen.getByText('Collection')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('Discogs')).toBeInTheDocument())
     expect(screen.queryByText('Done')).not.toBeInTheDocument()
   })
 })

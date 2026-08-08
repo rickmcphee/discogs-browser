@@ -356,14 +356,14 @@ class CrawlManager:
                     return
                 price_field_id = next((fid for fid, name in fields.items() if name.lower() == "price"), None)
 
-            with get_app_pool().connection() as conn:
-                enabled_crawlers = get_enabled_crawlers(conn)
-
             count = 0
             wishlist_count = 0
             wishlist_seen: set = set()
             with user_scope(user_id) as conn:
                 if scope != "wishlist":
+                    with get_app_pool().connection() as pool_conn:
+                        enabled_crawlers = get_enabled_crawlers(pool_conn)
+
                     existing = None
                     if mode == "new":
                         existing = {row["discogs_id"] for row in conn.execute(
@@ -378,6 +378,10 @@ class CrawlManager:
                         for item in items:
                             rid = f"r{item['basic_information']['id']}"
                             if existing is not None and rid in existing:
+                                upsert_library_item(
+                                    conn, user_id, rid, in_collection=True,
+                                    collection_date_added=item.get("date_added"),
+                                )
                                 continue
                             release = discogs.parse_release(item, price_field_id=price_field_id)
                             existing_row = conn.execute(
@@ -394,7 +398,10 @@ class CrawlManager:
                             else:
                                 release["barcode"] = existing_row["barcode"]
                             upsert_catalog_release(conn, release)
-                            upsert_library_item(conn, user_id, rid, in_collection=True)
+                            upsert_library_item(
+                                conn, user_id, rid, in_collection=True,
+                                collection_date_added=item.get("date_added"),
+                            )
                             for crawler in enabled_crawlers:
                                 enqueue_crawl_queue(conn, rid, crawler["id"])
                             count += 1
@@ -436,9 +443,8 @@ class CrawlManager:
                         upsert_library_item(
                             conn, user_id, rid, in_wishlist=True,
                             in_collection=False if is_new_release else None,
+                            wishlist_date_added=item.get("date_added"),
                         )
-                        for crawler in enabled_crawlers:
-                            enqueue_crawl_queue(conn, rid, crawler["id"])
                         wishlist_count += 1
                     conn.commit()
                     # Same reasoning as the collection-loop commit above: re-scope
