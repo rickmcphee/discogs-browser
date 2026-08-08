@@ -19,7 +19,7 @@ describe('primaryButtonClass', () => {
 
 describe('secondaryButtonClass', () => {
   it('returns the gray pill style', () => {
-    expect(secondaryButtonClass()).toBe('rounded-full bg-gray-700 hover:bg-gray-600 text-white font-medium transition-colors')
+    expect(secondaryButtonClass()).toBe('rounded-full bg-gray-700 hover:bg-gray-600 active:bg-gray-500 text-white font-medium transition-colors')
   })
 })
 
