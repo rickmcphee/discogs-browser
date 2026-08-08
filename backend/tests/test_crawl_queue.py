@@ -214,3 +214,19 @@ def test_claim_crawl_queue_batch_returns_null_item_key_for_a_release_row(admin_c
     [row] = db.claim_crawl_queue_batch(admin_conn, "worker-1", limit=10)
     assert row["discogs_id"] == "r1"
     assert row["item_key"] is None
+
+
+def test_claim_crawl_queue_batch_prioritizes_release_rows_over_stock_item_rows(admin_conn):
+    stock_crawler_id = _make_stock_identity_and_crawler(admin_conn, item_key="key1", site_name="Amazon")
+    admin_conn.commit()
+    db.enqueue_crawl_queue_for_stock_item(admin_conn, "key1", stock_crawler_id)
+    admin_conn.commit()
+
+    release_crawler_id = _make_catalog_and_crawler(admin_conn, discogs_id="r1", site_name="eBay")
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1", release_crawler_id)
+    admin_conn.commit()
+
+    [row] = db.claim_crawl_queue_batch(admin_conn, "worker-1", limit=1)
+    assert row["discogs_id"] == "r1"
+    assert row["item_key"] is None

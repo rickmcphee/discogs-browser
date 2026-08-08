@@ -1064,6 +1064,47 @@ async def test_worker_claims_and_completes_one_stock_item_queue_row(pg_schema):
     assert queue_row["status"] == "done"
 
 
+async def test_worker_dispatches_both_target_kinds_when_claimed_in_one_batch(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1", crawler_id)
+        conn.execute(
+            "INSERT INTO stock_item_identities (item_key, artist, title) VALUES ('key1', 'A', 'T')"
+        )
+        db.enqueue_crawl_queue_for_stock_item(conn, "key1", crawler_id)
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(return_value=[{"url": "https://x", "price": 9.99, "shipping": None, "currency": "USD", "condition": None}])
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        claimed = await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={}, batch_size=5)
+
+    assert claimed == 2
+    with db.get_admin_pool().connection() as conn:
+        release_listing = conn.execute(
+            "SELECT release_id, item_key FROM listings WHERE release_id = 'r1'"
+        ).fetchone()
+        stock_listing = conn.execute(
+            "SELECT release_id, item_key FROM listings WHERE item_key = 'key1'"
+        ).fetchone()
+    assert release_listing is not None
+    assert release_listing["item_key"] is None
+    assert stock_listing is not None
+    assert stock_listing["release_id"] is None
+
+
 async def test_worker_broadcasts_stock_listing_changed_with_no_discogs_id(pg_schema):
     with db.get_admin_pool().connection() as conn:
         db.register_crawler(conn, "Amazon", "/x.py")
@@ -1124,6 +1165,31 @@ async def test_worker_retries_once_on_bot_detection_then_succeeds(pg_schema):
     with db.get_admin_pool().connection() as conn:
         listing = conn.execute("SELECT price FROM listings WHERE release_id = 'r1'").fetchone()
     assert listing["price"] == 5.0
+
+
+async def test_drain_one_batch_excludes_empty_stock_item_result_from_circuit_breaker(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        conn.execute(
+            "INSERT INTO stock_item_identities (item_key, artist, title) VALUES ('key1', 'A', 'T')"
+        )
+        db.enqueue_crawl_queue_for_stock_item(conn, "key1", crawler_id)
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    manager._site_consecutive_failures[crawler_id] = 5
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(return_value=[])  # not_found, no bot detection
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    assert manager._site_consecutive_failures[crawler_id] == 5
 
 
 async def test_run_catalog_crawler_calls_zero_arg_crawl_catalog_for_plain_catalog_type(manager):
@@ -1247,14 +1313,20 @@ async def test_worker_row_commit_is_isolated_from_a_later_rows_failure(pg_schema
     manager._stealth = MagicMock()
     fake_plugin = AsyncMock()
 
-    # r1 and r2 are enqueued in the same transaction, so crawl_queue.requested_at
-    # (DEFAULT CURRENT_TIMESTAMP -- transaction-start time, not statement time)
-    # is identical for both rows; claim_crawl_queue_batch's ORDER BY requested_at
-    # has no tiebreaker, so which row comes back first is not guaranteed. Keying
-    # the side effect off the release actually passed in (not call order) makes
-    # this test's outcome independent of that claim order.
+    # r1 and r2 are both release rows (item_key IS NULL for both) enqueued in
+    # the same transaction, so their requested_at values tie -- which one
+    # claim_crawl_queue_batch's RETURNING lists first is decided by the
+    # query plan, not guaranteed to track either discogs_id or the claim's
+    # own ORDER BY. Tracking call order (not which discogs_id was passed
+    # in) keeps this test's outcome independent of that claim order:
+    # whichever row is searched first succeeds and gets committed, whichever
+    # is searched second raises, proving the first's commit survives the
+    # second's failure regardless of which physical row that turns out to be.
+    processed_ids = []
+
     async def _search(release, page):
-        if release["discogs_id"] == "r1":
+        processed_ids.append(release["discogs_id"])
+        if len(processed_ids) == 1:
             return [{"url": "https://x/1", "price": 9.99, "shipping": None, "currency": "USD", "condition": None}]
         raise asyncio.CancelledError()
 
@@ -1266,9 +1338,10 @@ async def test_worker_row_commit_is_isolated_from_a_later_rows_failure(pg_schema
         with pytest.raises(asyncio.CancelledError):
             await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
 
+    succeeded_id = processed_ids[0]
     with db.get_admin_pool().connection() as conn:
-        listing = conn.execute("SELECT price FROM listings WHERE release_id = 'r1'").fetchone()
-        queue_row1 = conn.execute("SELECT status FROM crawl_queue WHERE discogs_id = 'r1'").fetchone()
+        listing = conn.execute("SELECT price FROM listings WHERE release_id = %s", [succeeded_id]).fetchone()
+        queue_row1 = conn.execute("SELECT status FROM crawl_queue WHERE discogs_id = %s", [succeeded_id]).fetchone()
     assert listing["price"] == 9.99
     assert queue_row1["status"] == "done"
 

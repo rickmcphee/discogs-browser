@@ -213,8 +213,9 @@ class CrawlManager:
         # into a whole-batch one.
         for row in rows:
             plugin = plugins_by_crawler_id.get(row["crawler_id"])
+            is_release = row["discogs_id"] is not None
             with get_app_pool().connection() as conn:
-                if row["discogs_id"] is not None:
+                if is_release:
                     target = get_catalog_release(conn, row["discogs_id"])
                 else:
                     target = get_stock_item_identity(conn, row["item_key"])
@@ -238,12 +239,23 @@ class CrawlManager:
                     conn.commit()
                 continue
 
-            self._record_site_result(row["crawler_id"], succeeded=bool(matches) and not bot_detected)
+            if is_release:
+                self._record_site_result(row["crawler_id"], succeeded=bool(matches) and not bot_detected)
+            elif bot_detected or matches:
+                # A stock item's search failing to find anything carries no
+                # site-health signal -- most small-label stock isn't listed on
+                # Amazon/eBay at all, so an empty result there isn't evidence the
+                # site is broken the way it is for a real Discogs release. Only
+                # a genuine signal (bot detection, or a match that proves the
+                # site currently works) is recorded; a plain empty result is
+                # silently excluded from the circuit breaker rather than counted
+                # as either outcome.
+                self._record_site_result(row["crawler_id"], succeeded=not bot_detected)
 
             with get_app_pool().connection() as conn:
                 if matches:
                     best = matches[0]
-                    if row["discogs_id"] is not None:
+                    if is_release:
                         upsert_listing(
                             conn, row["discogs_id"], row["crawler_id"], best["url"],
                             best.get("price"), best.get("shipping"), best.get("currency"), best.get("condition"),
@@ -257,7 +269,7 @@ class CrawlManager:
                 conn.commit()
 
             status = "found" if matches else "not_found"
-            if row["discogs_id"] is not None:
+            if is_release:
                 await self._broadcast_listing_changed(row["discogs_id"], row["crawler_id"], status)
             else:
                 await self._broadcast_stock_listing_changed(row["item_key"], row["crawler_id"], status)
@@ -565,11 +577,6 @@ class CrawlManager:
         from db import get_app_pool, get_enabled_crawlers, replace_stock_items, update_crawler_last_run, enqueue_crawl_queue_for_stock_item
         from crawler import load_enabled_crawlers
 
-        with get_app_pool().connection() as conn:
-            eligible_price_crawlers = [
-                c for c in get_enabled_crawlers(conn, crawler_type="release") if not c["requires_discogs_release"]
-            ]
-
         await self._broadcast({"status": "stock_sync_started", "crawler_id": crawler_id})
         log.info("Stock sync started")
         try:
@@ -626,6 +633,9 @@ class CrawlManager:
                 with get_app_pool().connection() as conn:
                     item_keys = replace_stock_items(conn, crawler._db_id, items)
                     update_crawler_last_run(conn, crawler._db_id)
+                    eligible_price_crawlers = [
+                        c for c in get_enabled_crawlers(conn, crawler_type="release") if not c["requires_discogs_release"]
+                    ]
                     for item_key in item_keys:
                         for price_crawler in eligible_price_crawlers:
                             enqueue_crawl_queue_for_stock_item(conn, item_key, price_crawler["id"])

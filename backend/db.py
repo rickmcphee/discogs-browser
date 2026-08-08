@@ -740,7 +740,7 @@ def claim_crawl_queue_batch(
         WHERE id IN (
             SELECT id FROM crawl_queue
             WHERE status = 'pending' {exclusion_clause}
-            ORDER BY requested_at, id
+            ORDER BY (item_key IS NOT NULL), requested_at, id
             LIMIT %(limit)s
             FOR UPDATE SKIP LOCKED
         )
@@ -815,6 +815,7 @@ def replace_stock_items(conn, crawler_id: int, items: list[dict]) -> list[str]:
     if not items:
         return []
     rows = []
+    identity_rows = []
     item_keys = []
     for item in items:
         artist = normalize_artist_casing(item["artist"])
@@ -825,11 +826,13 @@ def replace_stock_items(conn, crawler_id: int, items: list[dict]) -> list[str]:
         # changed here.
         item_key = compute_item_key(item["artist"].title(), item["title"], item["url"])
         item_keys.append(item_key)
+        identity_rows.append((item_key, artist, title, item.get("format")))
         rows.append((
             crawler_id, artist, title, item.get("format"), item.get("price"),
             item.get("currency"), item["url"], item.get("cover_image_url"), item_key,
         ))
-        conn.execute(
+    with conn.cursor() as cur:
+        cur.executemany(
             """
             INSERT INTO stock_item_identities (item_key, artist, title, format, last_seen)
             VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
@@ -837,9 +840,8 @@ def replace_stock_items(conn, crawler_id: int, items: list[dict]) -> list[str]:
                 artist = EXCLUDED.artist, title = EXCLUDED.title, format = EXCLUDED.format,
                 last_seen = CURRENT_TIMESTAMP
             """,
-            [item_key, artist, title, item.get("format")],
+            identity_rows,
         )
-    with conn.cursor() as cur:
         cur.executemany(
             """
             INSERT INTO stock_items
