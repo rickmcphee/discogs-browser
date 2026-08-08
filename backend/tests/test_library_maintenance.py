@@ -64,6 +64,27 @@ def test_get_missing_releases_is_scoped_per_user(pg_test_db):
         assert db.get_missing_releases(conn, bob["id"]) == ["r2"]
 
 
+def test_get_missing_releases_excludes_wishlist_only_items(pg_test_db):
+    # Nothing surfaces price data for wishlist items anymore (Discogs tab
+    # rename removed those columns), so the missing-prices crawl shouldn't
+    # spend crawl budget on them -- only in_collection rows are candidates.
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        db.register_crawler(conn, "Amazon", "/x.py")
+        for rid in ("r1", "r2"):
+            db.upsert_catalog_release(conn, {
+                "discogs_id": rid, "artist": "A", "title": "T", "year": None, "label": None,
+                "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+                "discogs_url": None,
+            })
+        db.upsert_library_item(conn, alice["id"], "r1", in_collection=True)
+        db.upsert_library_item(conn, alice["id"], "r2", in_collection=False, in_wishlist=True)
+        conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.get_missing_releases(conn, alice["id"]) == ["r1"]
+
+
 def test_get_crawl_status_for_user(pg_test_db):
     with db.get_admin_pool().connection() as conn:
         alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")

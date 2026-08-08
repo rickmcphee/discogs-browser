@@ -989,7 +989,7 @@ def get_missing_releases(conn, user_id: int) -> list[str]:
     rows = conn.execute(
         """
         SELECT li.discogs_id FROM library_items li
-        WHERE li.user_id = %(user_id)s AND (
+        WHERE li.user_id = %(user_id)s AND li.in_collection = TRUE AND (
             SELECT COUNT(DISTINCT l.crawler_id) FROM listings l
             JOIN crawlers c ON c.id = l.crawler_id AND c.enabled = TRUE
             WHERE l.release_id = li.discogs_id AND l.price IS NOT NULL
