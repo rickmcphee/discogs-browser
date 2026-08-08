@@ -6,14 +6,14 @@
 
 **Architecture:** Three small backend/frontend code changes remove hardcoded assumptions that only held for the Docker Compose/NAS environment (an admin DB role literally named `postgres`, a single hardcoded CORS origin, a same-origin `/api` path). Everything else is configuration: a `fly.toml` + GitHub Actions workflow for the backend, and a manual one-time cloud-provisioning runbook (Neon project, Fly app/secrets/domain, Cloudflare Pages/DNS) that only someone with real Fly/Neon/Cloudflare account credentials can run.
 
-**Tech Stack:** FastAPI (Python 3.11, Poetry), React 19 + Vite + TypeScript (npm), Postgres (psycopg3), Fly.io, Neon, Cloudflare Pages/DNS, GitHub Actions.
+**Tech Stack:** FastAPI (Python 3.11, plain pip/venv), React 19 + Vite + TypeScript (npm), Postgres (psycopg3), Fly.io, Neon, Cloudflare Pages/DNS, GitHub Actions.
 
 ## Global Constraints
 
 - Spec: [`docs/specifications/shaping/2026-08-08-fly-neon-deployment-design.md`](../shaping/2026-08-08-fly-neon-deployment-design.md) — full architecture, component, and migration rationale.
 - No application architecture change: the FastAPI process, in-process crawl worker pool, shared Playwright browser, and Postgres/RLS schema are unchanged. Every task here is either a hardcoded-assumption fix or infrastructure configuration.
 - No `.agents/INPUTS.md`, `.agents/OUTPUTS.md`, or `.agents/INSTRUCTIONS.md` exist in this repo. This work changes *where* the app runs, not its triggers, outputs, or stack — confirmed in the spec's "Docs impact" section. `README.md` **is** affected (new hosted-deployment section, new env var table rows) — that update is folded into Task 5 below, the task whose deliverable it documents, not a trailing catch-all.
-- Backend commands run from `backend/` via Poetry (see `sdlc:poetry-cli` skill): `poetry run pytest`, `poetry run uvicorn main:app --reload`.
+- Backend commands run from `backend/` via a plain pip-installed venv, not Poetry — this repo has no `poetry.lock`/`[tool.poetry]` section; `README.md`'s own documented setup is `pip install -e ".[dev]"`, confirmed by the CI test-gate workflow (`.github/workflows/fly-deploy.yml`) using the same: `pytest`, `uvicorn main:app --reload`.
 - Frontend commands run from `frontend/`: `npm run test` (vitest run), `npm run build` (tsc -b && vite build), `npm run lint` (oxlint).
 - Commit via `commit-with-cleanup.sh`, never `git commit -m` (drops the AI-attribution trailer) — see `CLAUDE.md`.
 - Versioning rule (`CLAUDE.md`): `backend/version.py`'s `VERSION` gets a minor bump as part of this PR — done as the last step of Task 4, not a separate follow-up. Shipped as `2.13` → `2.14` after a rebase onto `main`'s own subsequent version bumps (originally `2.11` → `2.12` at the time this task was implemented).
@@ -71,7 +71,7 @@ def test_database_url_still_injects_postgres_user_when_postgres_password_set(mon
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd backend && poetry run pytest tests/test_config.py -v`
+Run: `cd backend && pytest tests/test_config.py -v`
 Expected: the two new tests FAIL (`test_database_url_preserves_external_credentials_when_no_postgres_password` fails because today's code still substitutes `postgres`/`postgres`).
 
 - [ ] **Step 3: Fix `config.py`**
@@ -107,7 +107,7 @@ else:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd backend && poetry run pytest tests/test_config.py -v`
+Run: `cd backend && pytest tests/test_config.py -v`
 Expected: PASS, all tests including the pre-existing `test_with_userinfo_*` ones.
 
 - [ ] **Step 5: Commit**
@@ -167,7 +167,7 @@ def test_cors_allows_configured_frontend_origin(pg_test_db, monkeypatch):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd backend && poetry run pytest tests/test_main.py -v`
+Run: `cd backend && pytest tests/test_main.py -v`
 Expected: FAIL — today's hardcoded `allow_origins` doesn't include `https://tracktempest.com`, so no `access-control-allow-origin` header is returned for that preflight.
 
 - [ ] **Step 3: Add `FRONTEND_ORIGINS` to `config.py`**
@@ -214,7 +214,7 @@ app.add_middleware(
 
 - [ ] **Step 5: Run test to verify it passes**
 
-Run: `cd backend && poetry run pytest tests/test_main.py -v`
+Run: `cd backend && pytest tests/test_main.py -v`
 Expected: PASS, both existing tests in the file and the new one.
 
 - [ ] **Step 6: Commit**
@@ -475,9 +475,9 @@ cd backend
 DATABASE_URL="<neon-connection-string>" \
 IDENTITY_DB_PASSWORD="<pick-one>" \
 APP_DB_PASSWORD="<pick-one>" \
-TOKEN_ENCRYPTION_KEY="$(poetry run python3 -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')" \
+TOKEN_ENCRYPTION_KEY="$(python3 -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')" \
 DISCOGS_CONSUMER_KEY=placeholder DISCOGS_CONSUMER_SECRET=placeholder \
-poetry run uvicorn main:app --port 8000
+uvicorn main:app --port 8000
 ```
 
 Watch the startup log for `init_global_schema`/`init_tenant_schema` running without error (they run at FastAPI startup — see `main.py`), then Ctrl-C.
