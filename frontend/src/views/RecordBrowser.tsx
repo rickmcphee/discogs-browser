@@ -269,13 +269,13 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
               <tr>
                 <th className="w-12 px-3 py-2"></th>
                 <th
-                  className="px-3 py-2 text-center cursor-pointer hover:text-white select-none"
+                  className="px-3 py-2 text-right cursor-pointer hover:text-white select-none"
                   onClick={() => toggleSort('artist')}
                 >
                   Artist {sort === 'artist' ? (order === 'asc' ? '↑' : '↓') : ''}
                 </th>
                 <th
-                  className="px-3 py-2 text-center cursor-pointer hover:text-white select-none"
+                  className="px-3 py-2 text-left cursor-pointer hover:text-white select-none"
                   onClick={() => toggleSort('title')}
                 >
                   Title {sort === 'title' ? (order === 'asc' ? '↑' : '↓') : ''}
@@ -348,10 +348,10 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
                       )}
                     </a>
                   </td>
-                  <td className="px-3 py-2 text-gray-200">
+                  <td className="px-3 py-2 text-right text-gray-200">
                     {r.artist}
                   </td>
-                  <td className="px-3 py-2 text-gray-300">
+                  <td className="px-3 py-2 text-left text-gray-300">
                     {r.plex_url ? (
                       <a href={r.plex_url} target="_blank" rel="noreferrer" className="hover:text-white">
                         {r.title}
