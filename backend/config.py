@@ -23,15 +23,20 @@ def _with_userinfo(url: str, username: str, password: str) -> str:
     return urlunsplit((parts.scheme, f"{userinfo}@{host}", parts.path, parts.query, parts.fragment))
 
 
-# POSTGRES_PASSWORD is injected here (quoted) rather than baked into DATABASE_URL
-# by docker-compose's raw string interpolation -- a password containing URL-reserved
-# characters (%, &, ^, etc, all of which a decent password generator will produce)
-# makes an unquoted DSN unparseable.
-DATABASE_URL = _with_userinfo(
-    os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/discogs_browser"),
-    "postgres",
-    os.environ.get("POSTGRES_PASSWORD", "postgres"),
+_raw_database_url = os.environ.get(
+    "DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/discogs_browser"
 )
+# docker-compose's backend service passes DATABASE_URL without a password
+# (see docker-compose.yml) and the real secret via POSTGRES_PASSWORD instead,
+# since compose's raw YAML interpolation can't safely quote a password
+# containing URL-reserved characters -- Python injects it here instead. A
+# managed-Postgres deployment (e.g. Neon) sets DATABASE_URL to one ready-made
+# connection string with its own role/password already embedded, and must
+# not have that overwritten with a hardcoded "postgres" user.
+if os.environ.get("POSTGRES_PASSWORD"):
+    DATABASE_URL = _with_userinfo(_raw_database_url, "postgres", os.environ["POSTGRES_PASSWORD"])
+else:
+    DATABASE_URL = _raw_database_url
 IDENTITY_DB_PASSWORD = os.environ.get("IDENTITY_DB_PASSWORD", "")
 APP_DB_PASSWORD = os.environ.get("APP_DB_PASSWORD", "")
 IDENTITY_DATABASE_URL = os.environ.get(
@@ -48,6 +53,20 @@ APP_DATABASE_URL = os.environ.get(
 # http://localhost:5173 for local dev, where the backend (:8000) and the
 # Vite dev server (:5173) are different origins.
 FRONTEND_BASE_URL = os.environ.get("FRONTEND_BASE_URL", "")
+
+# List of origins allowed for CORS (cross-origin XHR/fetch requests from the frontend).
+# In production, the frontend is served from https://tracktempest.com and the backend
+# from https://api.tracktempest.com; Cloudflare Pages has no server-side proxy like
+# Vite dev server or nginx. This list includes both the production origin and localhost
+# for dev (when both frontend and backend run on different local ports).
+FRONTEND_ORIGINS = [
+    o.strip() for o in os.environ.get("FRONTEND_ORIGINS", "http://localhost:5173").split(",") if o.strip()
+]
+if "*" in FRONTEND_ORIGINS:
+    raise RuntimeError(
+        'FRONTEND_ORIGINS must not include "*" -- combined with allow_credentials=True in '
+        "CORSMiddleware, that would let any origin make credentialed requests"
+    )
 
 # The backend's own publicly-reachable base URL, used to build the OAuth
 # callback Discogs redirects back to. Defaults to the local dev backend

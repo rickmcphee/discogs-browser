@@ -3,7 +3,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from logging_config import setup_logging, get_logger
-from config import ensure_dirs, CRAWLERS_DIR, load_config
+from config import ensure_dirs, CRAWLERS_DIR, load_config, FRONTEND_ORIGINS
 from version import VERSION
 from crawler import load_crawler_from_path
 from crawl_manager import crawl_manager
@@ -55,7 +55,7 @@ app.add_middleware(AuthMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=FRONTEND_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

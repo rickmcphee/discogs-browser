@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { postCrawlStart, postStockSyncStart, getUserSettings, saveUserSettings, logout, getStock, getStockArtists, getReleases, postPlexMatchStart, refreshCollection } from '../api/client'
+import { postCrawlStart, postStockSyncStart, getUserSettings, saveUserSettings, logout, getStock, getStockArtists, getReleases, postPlexMatchStart, refreshCollection, openCrawlStream, openLogsStream } from '../api/client'
 
 describe('crawl/user-settings client functions', () => {
   let fetchMock: ReturnType<typeof vi.fn>
@@ -7,6 +7,15 @@ describe('crawl/user-settings client functions', () => {
   beforeEach(() => {
     fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
+    class EventSourceMock {
+      withCredentials: boolean
+      close: () => void
+      constructor(_url: string, options?: { withCredentials?: boolean }) {
+        this.withCredentials = options?.withCredentials ?? false
+        this.close = vi.fn()
+      }
+    }
+    vi.stubGlobal('EventSource', EventSourceMock as any)
   })
 
   it('postCrawlStart returns enqueued count', async () => {
@@ -108,5 +117,45 @@ describe('crawl/user-settings client functions', () => {
     expect(fetchMock.mock.calls[0][0]).toContain('/plex/match/start')
     expect(fetchMock.mock.calls[0][1].method).toBe('POST')
     expect(result.started).toBe(true)
+  })
+
+  it('apiFetch requests include credentials for cross-origin cookie auth', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({}) })
+    await getUserSettings()
+    expect(fetchMock.mock.calls[0][1].credentials).toBe('include')
+  })
+
+  it('openCrawlStream sets withCredentials for cross-origin cookie auth', () => {
+    const es = openCrawlStream()
+    expect(es.withCredentials).toBe(true)
+    es.close()
+  })
+
+  it('openLogsStream sets withCredentials for cross-origin cookie auth', () => {
+    const es = openLogsStream()
+    expect(es.withCredentials).toBe(true)
+    es.close()
+  })
+
+  it('BASE uses VITE_API_BASE_URL when set, for cross-origin API calls', async () => {
+    vi.stubEnv('VITE_API_BASE_URL', 'https://api.tracktempest.com/api')
+    vi.resetModules()
+    const { getUserSettings: getUserSettingsWithBase } = await import('../api/client')
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({}) })
+    await getUserSettingsWithBase()
+    expect(fetchMock.mock.calls[0][0]).toBe('https://api.tracktempest.com/api/user-settings')
+    vi.unstubAllEnvs()
+    vi.resetModules()
+  })
+
+  it('BASE strips a trailing slash from VITE_API_BASE_URL to avoid double slashes', async () => {
+    vi.stubEnv('VITE_API_BASE_URL', 'https://api.tracktempest.com/api/')
+    vi.resetModules()
+    const { getUserSettings: getUserSettingsWithBase } = await import('../api/client')
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({}) })
+    await getUserSettingsWithBase()
+    expect(fetchMock.mock.calls[0][0]).toBe('https://api.tracktempest.com/api/user-settings')
+    vi.unstubAllEnvs()
+    vi.resetModules()
   })
 })

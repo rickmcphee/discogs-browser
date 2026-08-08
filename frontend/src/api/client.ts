@@ -3,7 +3,7 @@ import type {
   AuthStatus, RecordScope, StockResponse, StockSortField,
 } from './types'
 
-const BASE = '/api'
+const BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/+$/, '')
 
 let onUnauthorized: (() => void) | null = null
 export function setUnauthorizedHandler(fn: () => void) { onUnauthorized = fn }
@@ -11,7 +11,7 @@ export function setUnauthorizedHandler(fn: () => void) { onUnauthorized = fn }
 async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers)
   headers.set('X-Requested-With', 'fetch')
-  const r = await fetch(`${BASE}${path}`, { ...init, headers })
+  const r = await fetch(`${BASE}${path}`, { ...init, headers, credentials: 'include' })
   if (r.status === 401) {
     onUnauthorized?.()
   }
@@ -131,7 +131,7 @@ export async function getCrawlStatus(): Promise<CrawlStatus> {
 }
 
 export function openCrawlStream(): EventSource {
-  return new EventSource('/api/crawl/stream')
+  return new EventSource(`${BASE}/crawl/stream`, { withCredentials: true })
 }
 
 export async function postCrawlStart(mode: 'all' | 'missing' = 'all', releaseId?: string): Promise<{ enqueued: number }> {
@@ -226,7 +226,7 @@ export function openLogsStream(levels?: string[]): EventSource {
   const qs = levels && levels.length
     ? `?levels=${encodeURIComponent(levels.join(','))}`
     : ''
-  return new EventSource(`/api/logs/stream${qs}`)
+  return new EventSource(`${BASE}/logs/stream${qs}`, { withCredentials: true })
 }
 
 export async function clearLogs(): Promise<void> {
