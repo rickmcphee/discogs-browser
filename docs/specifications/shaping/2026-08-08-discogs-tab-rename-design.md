@@ -30,7 +30,10 @@ Touches:
   `upsert_library_item` gains two kwargs; `get_library_releases` drops the
   `price_*` sort branch and the per-row listings lookup, and its SELECT/sort
   allowlist gain `date_added`; `get_listings_for_release` is deleted (no
-  remaining caller).
+  remaining caller); `get_library_releases` and `get_distinct_artists` both
+  rename their `scope == "collection"` check to `scope == "discogs"` (see
+  "Internal naming" below — `get_distinct_artists` backs `/api/artists`,
+  the artist sidebar, and carries the exact same check).
 - `backend/discogs.py` — collection/wantlist item parsing captures
   `date_added`.
 - `backend/crawl_manager.py` — `_sync_collection` passes
@@ -51,6 +54,8 @@ Touches:
   scope value.
 - Tests: `backend/tests/test_catalog_crud.py`,
   `backend/tests/test_global_schema.py`, `backend/tests/test_crawl_manager.py`,
+  `backend/tests/test_library_maintenance.py` (its one `get_distinct_artists`
+  test uses the old `scope="collection"` literal),
   `frontend/src/test/recordBrowser.test.tsx`,
   `frontend/src/test/staleListingClear.test.tsx`,
   `frontend/src/test/wishlistRefresh.test.tsx`,
@@ -84,7 +89,9 @@ something specific to the removed UI.
   `library_items.in_collection`/`in_wishlist` independence), and a shared
   column would have one sync's write silently clobber the other's date.
 - **Internal naming moves from `collection` to `discogs` now**, not just the
-  visible label: `RecordScope`, the `/api/releases?scope=` param, the
+  visible label: `RecordScope`, the `/api/releases?scope=` and
+  `/api/artists?scope=` params (and both backend functions that check that
+  value — `get_library_releases` and `get_distinct_artists`), the
   `collectionViewMode_*` localStorage key suffix, and `App.tsx`'s `View`
   union and `view` state. Once the future tab is also called "Collection,"
   leaving today's plumbing as `'collection'` would mean two different
@@ -172,20 +179,28 @@ entirely from this branch. The collection loop's equivalent
 - The response's per-row `date_added` is computed in Python after the query
   (not in SQL, since which column applies depends on `scope`, and `scope`
   is optional/absent for some other theoretical caller): `row["date_added"]
-  = row["collection_date_added"] if scope == "collection" else
+  = row["collection_date_added"] if scope == "discogs" else
   row["wishlist_date_added"] if scope == "wishlist" else None`.
 - `_RELEASE_ALLOWED_SORT` gains `"date_added"`. Because the underlying
   column differs by scope, the sort branch needs the same scope-aware
-  mapping: `sort_col = "collection_date_added" if scope == "collection" else
+  mapping: `sort_col = "collection_date_added" if scope == "discogs" else
   "wishlist_date_added"` when `sort == "date_added"`, else the existing
   `_RELEASE_ALLOWED_SORT` lookup.
 - The `sort.startswith("price_")` branch and its crawler-lookup query are
   deleted — no caller will send that value anymore.
 - `r["listings"] = get_listings_for_release(conn, r["discogs_id"])` is
   deleted — no consumer reads it anymore.
+- Its existing top-of-function `if scope == "collection":` filter (the one
+  gating `li.in_collection = TRUE`) becomes `if scope == "discogs":` — see
+  "Internal naming" above.
 
 `get_listings_for_release` is deleted outright (grep confirms
 `get_library_releases` was its only caller).
+
+`get_distinct_artists` gets the same one-line rename: `if scope ==
+"collection":` becomes `if scope == "discogs":`. It's otherwise untouched —
+no date_added involvement, just the same wire-value rename as
+`get_library_releases`.
 
 ## Frontend design
 
@@ -214,6 +229,12 @@ entirely from this branch. The collection loop's equivalent
   `Settings.tsx:153` uses for `c.last_run`, using `toLocaleDateString()`
   instead of `toLocaleString()` since a collection date has no meaningful
   time-of-day component.
+- The component's two remaining `scope === 'collection'` comparisons
+  (`RecordBrowser.tsx:90`, gating the `unmatched` query param, and
+  `RecordBrowser.tsx:174`, gating the Unmatched `<select>`'s visibility)
+  become `scope === 'discogs'` — same rename as everywhere else in this
+  slice, just easy to miss since neither is in the table markup this
+  section otherwise describes.
 - `colSpan` on the loading/empty rows drops the `+ enabledCrawlers.length`
   term (now a fixed column count).
 
@@ -248,11 +269,16 @@ entirely from this branch. The collection loop's equivalent
   vice versa (COALESCE-on-conflict behavior, mirroring the existing
   `in_collection`/`in_wishlist` independence test); `get_library_releases`
   returns `date_added` sourced from `collection_date_added` when
-  `scope="collection"` and from `wishlist_date_added` when
+  `scope="discogs"` and from `wishlist_date_added` when
   `scope="wishlist"`; sorting by `date_added` orders by the scope-correct
-  column with nulls last, both orders.
+  column with nulls last, both orders; `get_distinct_artists` still filters
+  correctly once its scope literal is `"discogs"`.
 - `backend/tests/test_global_schema.py` — whatever it asserts about
-  `library_items`' column set gets the two new columns added.
+  `library_items`' column set gets the two new columns added (as written
+  today, it doesn't assert on `library_items`' columns at all, only
+  `catalog`'s — so in practice this file needs no change).
+- `backend/tests/test_library_maintenance.py` — its `get_distinct_artists`
+  test's `scope="collection"` literal is renamed to `scope="discogs"`.
 - `backend/tests/test_crawl_manager.py` — collection sync passes
   `collection_date_added` from the API item's `date_added` through to
   `upsert_library_item`; wishlist sync passes `wishlist_date_added` the same
@@ -268,12 +294,30 @@ entirely from this branch. The collection loop's equivalent
   effect it tests no longer exists.
 - `frontend/src/test/wishlistRefresh.test.tsx`,
   `frontend/src/test/syncRefetch.test.tsx`,
-  `frontend/src/test/viewRenderChurn.test.tsx`,
-  `frontend/src/test/plexLink.test.tsx`,
-  `frontend/src/test/crawlStatusBar.test.tsx` — updated wherever they
-  construct a `Release` fixture with `listings` (drop the field) or render
-  `<RecordBrowser scope="collection">` (rename to `"discogs"`); no
-  behavioral assertions in these files target removed functionality.
+  `frontend/src/test/plexLink.test.tsx` — updated wherever they construct a
+  `Release` fixture with `listings` (drop the field, add `date_added`) or
+  render `<RecordBrowser scope="collection">` (rename to `"discogs"`); no
+  behavioral assertions in these three files target removed functionality.
+- `frontend/src/test/crawlStatusBar.test.tsx` and
+  `frontend/src/test/viewRenderChurn.test.tsx` need more than a rename:
+  both drive their scenario by clicking RecordBrowser's now-removed
+  per-row "Refresh prices for this record" button
+  (`clickRefreshAndGetSource()` in both files) to obtain the `MockEventSource`
+  the test then emits on. Since the SSE connection already opens on mount
+  regardless of any click (`App.tsx`'s stream-open effect, already exercised
+  button-free by this same file's last two tests), the fix is to replace
+  that helper with one that just waits for the mount-time connection:
+  `await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0)); return getLastCrawlSource()`.
+  `viewRenderChurn.test.tsx` additionally asserts
+  `screen.getByText('eBay')` (a price-column cell) as its signal that a
+  second crawl event landed — that assertion is replaced with a wait on the
+  App-level crawl banner text instead (e.g. the `X/total` progress count
+  `crawlStatusBar.test.tsx` already uses), and its `await
+  screen.findAllByText('Amazon')` readiness wait (a proxy for "the
+  crawlers-fetch state settled," keyed off RecordBrowser's now-removed
+  crawler-column rendering) is replaced with `await waitFor(() =>
+  expect(settingsSpy).toHaveBeenCalled())`, matching the reasoning already
+  in that test's comment about why a settle-wait is needed there.
 
 Playwright-dependent code is unaffected — this change touches no crawler
 scraping logic.
