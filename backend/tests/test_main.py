@@ -1,3 +1,4 @@
+import importlib
 from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
@@ -37,3 +38,32 @@ def test_startup_seeds_bundled_crawlers(pg_test_db):
             with db.get_admin_pool().connection() as conn:
                 crawlers = db.get_all_crawlers(conn)
     assert len(crawlers) > 0
+
+
+def test_cors_allows_configured_frontend_origin(pg_test_db, monkeypatch):
+    import config
+    import main
+
+    monkeypatch.setenv("FRONTEND_ORIGINS", "https://tracktempest.com,http://localhost:5173")
+    try:
+        importlib.reload(config)
+        importlib.reload(main)
+        with patch("main.crawl_manager.start_worker_pool", new=AsyncMock()), \
+             patch("main.crawl_manager.stop_worker_pool", new=AsyncMock()), \
+             patch("main.init_global_schema"), \
+             patch("main.init_tenant_schema"), \
+             patch("main.seed_bundled_crawlers"), \
+             patch("main.scheduler"):
+            with TestClient(main.app) as client:
+                r = client.options(
+                    "/api/health",
+                    headers={
+                        "Origin": "https://tracktempest.com",
+                        "Access-Control-Request-Method": "GET",
+                    },
+                )
+        assert r.headers["access-control-allow-origin"] == "https://tracktempest.com"
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+        importlib.reload(main)

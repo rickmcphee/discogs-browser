@@ -54,6 +54,15 @@ APP_DATABASE_URL = os.environ.get(
 # Vite dev server (:5173) are different origins.
 FRONTEND_BASE_URL = os.environ.get("FRONTEND_BASE_URL", "")
 
+# List of origins allowed for CORS (cross-origin XHR/fetch requests from the frontend).
+# In production, the frontend is served from https://tracktempest.com and the backend
+# from https://api.tracktempest.com; Cloudflare Pages has no server-side proxy like
+# Vite dev server or nginx. This list includes both the production origin and localhost
+# for dev (when both frontend and backend run on different local ports).
+FRONTEND_ORIGINS = [
+    o.strip() for o in os.environ.get("FRONTEND_ORIGINS", "http://localhost:5173").split(",") if o.strip()
+]
+
 # The backend's own publicly-reachable base URL, used to build the OAuth
 # callback Discogs redirects back to. Defaults to the local dev backend
 # port; must be set to the real public URL in any non-local deployment.
