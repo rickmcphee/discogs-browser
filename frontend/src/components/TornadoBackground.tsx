@@ -15,16 +15,16 @@ interface VinylRecord {
 const CENTER_X = 300
 
 const HOOPS: Hoop[] = [
-  { cy: 860, rx: 210, ry: 42, rotate: -4 },
-  { cy: 800, rx: 185, ry: 40, rotate: 6 },
-  { cy: 740, rx: 160, ry: 38, rotate: -7 },
-  { cy: 680, rx: 135, ry: 34, rotate: 8 },
-  { cy: 620, rx: 112, ry: 30, rotate: -9 },
-  { cy: 560, rx: 90, ry: 26, rotate: 10 },
-  { cy: 505, rx: 70, ry: 22, rotate: -11 },
-  { cy: 455, rx: 52, ry: 18, rotate: 12 },
-  { cy: 410, rx: 36, ry: 14, rotate: -13 },
-  { cy: 370, rx: 22, ry: 10, rotate: 14 },
+  { cy: 860, rx: 22, ry: 10, rotate: -4 },
+  { cy: 841, rx: 36, ry: 14, rotate: 6 },
+  { cy: 816, rx: 52, ry: 18, rotate: -7 },
+  { cy: 785, rx: 70, ry: 22, rotate: 8 },
+  { cy: 747, rx: 90, ry: 26, rotate: -9 },
+  { cy: 702, rx: 112, ry: 30, rotate: 10 },
+  { cy: 606, rx: 135, ry: 34, rotate: -11 },
+  { cy: 519, rx: 160, ry: 38, rotate: 12 },
+  { cy: 440, rx: 185, ry: 40, rotate: -13 },
+  { cy: 370, rx: 210, ry: 42, rotate: 14 },
 ]
 
 const RECORDS: VinylRecord[] = [
