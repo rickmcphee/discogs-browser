@@ -538,7 +538,7 @@ def get_library_releases(
     params["limit"] = per_page
     params["offset"] = offset
 
-    if sort == "date_added":
+    if sort == "date_added" and scope in ("discogs", "wishlist"):
         sort_expr = "li." + ("wishlist_date_added" if scope == "wishlist" else "collection_date_added")
     else:
         sort_col = sort if sort in _RELEASE_ALLOWED_SORT else "artist"

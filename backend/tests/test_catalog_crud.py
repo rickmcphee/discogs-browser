@@ -279,6 +279,28 @@ def test_get_library_releases_sorts_by_date_added_nulls_last(admin_conn):
     assert [r["discogs_id"] for r in result["releases"]] == ["r1", "r2", "r3"]
 
 
+def test_get_library_releases_date_added_sort_falls_back_to_artist_without_a_scope(admin_conn):
+    # sort="date_added" only has a well-defined column to sort by (and to
+    # return) when scope is "discogs" or "wishlist" -- an unscoped call
+    # doesn't return date_added at all (it's always None), so sorting by it
+    # would order results by a value the response never surfaces. Falls back
+    # to the same artist-sort every other unrecognized `sort` value gets.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    for rid, artist in [("r1", "Bbb"), ("r2", "Aaa")]:
+        db.upsert_catalog_release(admin_conn, {
+            "discogs_id": rid, "artist": artist, "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.upsert_library_item(admin_conn, alice["id"], rid, in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], sort="date_added", order="asc")
+    assert [r["discogs_id"] for r in result["releases"]] == ["r2", "r1"]
+    assert all(r["date_added"] is None for r in result["releases"])
+
+
 def test_get_distinct_artists_filters_by_discogs_scope(admin_conn):
     alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
     db.upsert_catalog_release(admin_conn, {
