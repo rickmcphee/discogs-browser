@@ -204,6 +204,20 @@ toggling becomes an admin-only action (see Admin crawler curation).
 `stock_item_judgments` is **not** unchanged — see the 2026-07-27 amendment in
 Migration path below; it moved to per-user/RLS.
 
+**Amendment (2026-08-08, crawl-target-expansion whole-branch review):**
+`crawlers` and `listings` are each no longer "unchanged" as of that branch
+(see
+[`2026-08-08-crawl-target-expansion-design.md`](../../specifications/shaping/2026-08-08-crawl-target-expansion-design.md)).
+`crawlers` gains `requires_discogs_release BOOLEAN NOT NULL DEFAULT FALSE`,
+flagging a release-type crawler (`discogs_marketplace`) that can only search
+a specific Discogs release and must never be treated as eligible for a
+store-crawler stock-item target. `listings`' shape above is also stale:
+`release_id` is now nullable and the table gained a nullable `item_key`
+column (with its own `UNIQUE(item_key, crawler_id)`), so a row can key on
+either a Discogs release or a stock item's stable identity. `stock_items`
+itself is genuinely still unchanged — the new identity anchor
+(`stock_item_identities`) is a separate table, not a change to this one.
+
 **`crawl_queue`** — new; see Crawl scheduling.
 
 ### Per-user (RLS-protected)

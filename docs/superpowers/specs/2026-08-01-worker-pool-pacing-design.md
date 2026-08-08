@@ -53,6 +53,29 @@ did not ship on the first pass and was fixed in this review.
    `claim_crawl_queue_batch`; `db`-level exclusion is covered separately in
    `test_crawl_queue.py`.
 
+**Amendment (2026-08-08, crawl-target-expansion whole-branch review):** two
+more details in this document are now stale, both from the branch that let
+release crawlers search on behalf of store-crawler stock items as well as
+Discogs releases (see `docs/specifications/shaping/2026-08-08-crawl-target-expansion-design.md`).
+
+7. **`_paced_search`'s third parameter is now named `target`, not `release`.**
+   Item 1 above already quotes the signature as
+   `_paced_search(crawler_id, plugin, release, pages)`; it's now `target` —
+   a cosmetic rename (both a Discogs release and a stock item pass the same
+   `{artist, title, format, ...}`-shaped dict), not a behavior change.
+8. **"On `not_found` ... increment" no longer holds unconditionally.** The
+   bullet list above `_drain_one_batch`'s per-search bookkeeping is release-
+   target-only now: a stock-item row's `not_found` result, when no bot
+   detection occurred, records nothing at all (neither a reset nor an
+   increment) — most small-label stock inventory simply isn't listed on
+   Amazon/eBay, so an empty result there carries no site-health signal the
+   way it does for a real Discogs release. A stock-item row still increments
+   the counter on bot detection, and still resets it to 0 on an actual match,
+   exactly as a release row does. Covered by
+   `test_drain_one_batch_excludes_empty_stock_item_result_from_circuit_breaker`,
+   `test_drain_one_batch_counts_bot_detected_stock_item_search_as_a_failure`,
+   and `test_drain_one_batch_resets_failure_count_on_a_found_stock_item_match`.
+
 ---
 
 ## Overview
