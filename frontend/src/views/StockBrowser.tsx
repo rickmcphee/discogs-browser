@@ -4,13 +4,14 @@ import type { StockItem, StockSortField, SortOrder } from '../api/types'
 import { navButtonClass, dismissButtonClass } from '../styles/buttons'
 
 interface Props {
+  scope?: 'store' | 'collection'
   recommendedAvailable?: boolean
   hiddenCrawlerIds?: number[]
 }
 
 const NO_HIDDEN_CRAWLER_IDS: number[] = []
 
-function StockBrowser({ recommendedAvailable = false, hiddenCrawlerIds = NO_HIDDEN_CRAWLER_IDS }: Props) {
+function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCrawlerIds = NO_HIDDEN_CRAWLER_IDS }: Props) {
   const [items, setItems] = useState<StockItem[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -19,9 +20,9 @@ function StockBrowser({ recommendedAvailable = false, hiddenCrawlerIds = NO_HIDD
   const [artists, setArtists] = useState<string[]>([])
   const [sort, setSort] = useState<StockSortField>('artist')
   const [order, setOrder] = useState<SortOrder>('asc')
-  const [filter, setFilter] = useState<'all' | 'overlapping' | 'recommended'>(() => {
+  const [filter, setFilter] = useState<'all' | 'recommended'>(() => {
     const stored = localStorage.getItem('stockFilter')
-    return stored === 'overlapping' || stored === 'recommended' ? stored : 'all'
+    return stored === 'recommended' ? stored : 'all'
   })
   const [loading, setLoading] = useState(false)
   const [viewMode, setViewMode] = useState<'list' | 'tiles'>(
@@ -43,7 +44,7 @@ function StockBrowser({ recommendedAvailable = false, hiddenCrawlerIds = NO_HIDD
         search: search || undefined,
         artist: selectedArtist || undefined,
         sort, order, page, per_page: PER_PAGE,
-        overlapping: filter === 'overlapping',
+        overlapping: scope === 'collection',
         recommended: filter === 'recommended',
         hiddenCrawlerIds,
       })
@@ -52,7 +53,7 @@ function StockBrowser({ recommendedAvailable = false, hiddenCrawlerIds = NO_HIDD
     } finally {
       setLoading(false)
     }
-  }, [search, selectedArtist, sort, order, page, filter, hiddenCrawlerIds])
+  }, [search, selectedArtist, sort, order, page, filter, hiddenCrawlerIds, scope])
 
   useEffect(() => { load() }, [load])
   useEffect(() => {
@@ -60,7 +61,7 @@ function StockBrowser({ recommendedAvailable = false, hiddenCrawlerIds = NO_HIDD
       setFilter('all')
     }
   }, [recommendedAvailable, filter])
-  useEffect(() => { getStockArtists(filter === 'overlapping', filter === 'recommended', hiddenCrawlerIds).then(setArtists) }, [filter, hiddenCrawlerIds])
+  useEffect(() => { getStockArtists(scope === 'collection', filter === 'recommended', hiddenCrawlerIds).then(setArtists) }, [scope, filter, hiddenCrawlerIds])
   useEffect(() => { localStorage.setItem('collectionViewMode_instock', viewMode) }, [viewMode])
   useEffect(() => { localStorage.setItem('stockFilter', filter) }, [filter])
   useEffect(() => { tableScrollRef.current?.scrollTo({ top: 0 }) }, [selectedArtist])
@@ -136,15 +137,16 @@ function StockBrowser({ recommendedAvailable = false, hiddenCrawlerIds = NO_HIDD
           </div>
           <span className="ml-3 text-xs text-gray-500">{total} items</span>
           <div className="ml-auto flex items-center gap-2">
-            <select
-              value={filter}
-              onChange={(e) => { setFilter(e.target.value as 'all' | 'overlapping' | 'recommended'); setPage(1) }}
-              className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-gray-400"
-            >
-              <option value="all">All</option>
-              <option value="overlapping">Overlapping</option>
-              <option value="recommended" disabled={!recommendedAvailable}>Recommended</option>
-            </select>
+            {scope === 'store' && (
+              <select
+                value={filter}
+                onChange={(e) => { setFilter(e.target.value as 'all' | 'recommended'); setPage(1) }}
+                className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-gray-400"
+              >
+                <option value="all">All</option>
+                <option value="recommended" disabled={!recommendedAvailable}>Recommended</option>
+              </select>
+            )}
             <button
               onClick={() => setViewMode('list')}
               title="List view"

@@ -3,8 +3,8 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import StockBrowser from '../views/StockBrowser'
 
 const items = [
-  { id: 1, artist: 'Rob Zombie', title: 'The Great Satan — Ghostly Black Vinyl', format: 'Vinyl', price: 31.99, currency: 'USD', url: 'https://shop.nuclearblast.com/products/rob-zombie', cover_image_url: 'https://cdn.shopify.com/rz-black.png', source: 'Nuclear Blast', last_seen: '2026-07-05T00:00:00Z' },
-  { id: 2, artist: 'NAILS', title: 'Every Bridge Burning — Forest Green LP', format: 'Vinyl', price: 25.99, currency: 'USD', url: 'https://shop.nuclearblast.com/products/nails', cover_image_url: null, source: 'Nuclear Blast', last_seen: '2026-07-05T00:00:00Z' },
+  { id: 1, item_key: 'k1', is_own: true, artist: 'Rob Zombie', title: 'The Great Satan — Ghostly Black Vinyl', format: 'Vinyl', price: 31.99, currency: 'USD', url: 'https://shop.nuclearblast.com/products/rob-zombie', cover_image_url: 'https://cdn.shopify.com/rz-black.png', source: 'Nuclear Blast', last_seen: '2026-07-05T00:00:00Z' },
+  { id: 2, item_key: 'k2', is_own: true, artist: 'NAILS', title: 'Every Bridge Burning — Forest Green LP', format: 'Vinyl', price: 25.99, currency: 'USD', url: 'https://shop.nuclearblast.com/products/nails', cover_image_url: null, source: 'Nuclear Blast', last_seen: '2026-07-05T00:00:00Z' },
 ]
 
 const getStock = vi.fn()
@@ -110,15 +110,12 @@ describe('StockBrowser', () => {
     })
   })
 
-  it('defaults to All, lists options in lexicographic order, and disables Recommended when unavailable', async () => {
+  it('defaults to All, lists only All/Recommended (no Overlapping), and disables Recommended when unavailable', async () => {
     render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     const select = screen.getByRole('combobox') as HTMLSelectElement
     expect(select.value).toBe('all')
-    expect(Array.from(select.options).map((o) => o.text)).toEqual(['All', 'Overlapping', 'Recommended'])
-    expect((screen.getByRole('option', { name: 'All' }) as HTMLOptionElement).disabled).toBe(false)
-    expect((screen.getByRole('option', { name: 'Overlapping' }) as HTMLOptionElement).disabled).toBe(false)
-    expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(true)
+    expect(Array.from(select.options).map((o) => o.text)).toEqual(['All', 'Recommended'])
   })
 
   it('enables Recommended when recommendedAvailable is true', async () => {
@@ -185,13 +182,6 @@ describe('StockBrowser', () => {
     })
   })
 
-  it('filters to overlapping artists when Overlapping is selected', async () => {
-    render(<StockBrowser />)
-    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'overlapping' } })
-    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ overlapping: true })))
-  })
-
   it('passes hiddenCrawlerIds through to getStock', async () => {
     render(<StockBrowser hiddenCrawlerIds={[3, 7]} />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
@@ -218,40 +208,34 @@ describe('StockBrowser', () => {
     expect(getStock).toHaveBeenCalledTimes(1)
   })
 
-  it('turns the filter back off when All is selected after Overlapping', async () => {
-    render(<StockBrowser />)
-    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'overlapping' } })
-    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ overlapping: true })))
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'all' } })
-    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ overlapping: false })))
-  })
-
-  it('combines search with the active Overlapping filter rather than replacing it', async () => {
-    render(<StockBrowser />)
-    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'overlapping' } })
-    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ overlapping: true })))
-    fireEvent.change(screen.getByPlaceholderText('Search artist or title…'), { target: { value: 'nails' } })
-    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ search: 'nails', overlapping: true })))
-  })
-
-  it('refetches the artist sidebar scoped to overlapping when Overlapping is selected', async () => {
-    render(<StockBrowser />)
-    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    expect(getStockArtists).toHaveBeenLastCalledWith(false, false, [])
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'overlapping' } })
-    await waitFor(() => expect(getStockArtists).toHaveBeenLastCalledWith(true, false, []))
-  })
-
   it('persists the filter to localStorage under stockFilter and restores it on remount', async () => {
-    const { unmount } = render(<StockBrowser />)
+    const { unmount } = render(<StockBrowser recommendedAvailable />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'overlapping' } })
-    await waitFor(() => expect(localStorage.getItem('stockFilter')).toBe('overlapping'))
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'recommended' } })
+    await waitFor(() => expect(localStorage.getItem('stockFilter')).toBe('recommended'))
     unmount()
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('recommended'))
+  })
+
+  it('scope="collection" forces overlapping and hides the filter dropdown', async () => {
+    render(<StockBrowser scope="collection" />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    expect(screen.queryByRole('combobox')).toBeNull()
+    expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ overlapping: true }))
+  })
+
+  it('scope="collection" forces overlapping on the artist sidebar fetch too', async () => {
+    render(<StockBrowser scope="collection" />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    expect(getStockArtists).toHaveBeenCalledWith(true, false, [])
+  })
+
+  it('scope="store" (default) keeps the filter dropdown with All/Recommended', async () => {
     render(<StockBrowser />)
-    await waitFor(() => expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('overlapping'))
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    expect(screen.getByRole('combobox')).toBeTruthy()
+    expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ overlapping: false }))
   })
 
   it('persists the view mode to localStorage under collectionViewMode_instock', async () => {
