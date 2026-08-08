@@ -117,10 +117,6 @@ describe('views unrelated to crawl progress do not re-render on every crawl even
     // in a fresh `crawlers` array, which legitimately re-renders Settings once)
     // before snapshotting, so that unrelated startup settling isn't mistaken
     // for churn caused by the crawl event stream this test actually targets.
-    // Settle the post-login poll's one-time crawler fetch (it swaps in a
-    // fresh `crawlers` array, which legitimately re-renders Settings once)
-    // before snapshotting, so that unrelated startup settling isn't mistaken
-    // for churn caused by the crawl event stream this test actually targets.
     await waitFor(() => expect(settingsSpy).toHaveBeenCalled())
     await waitFor(() => expect(stockSpy).toHaveBeenCalled())
 

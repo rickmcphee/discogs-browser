@@ -84,7 +84,7 @@ async function getCrawlSourceOnMount() {
 }
 
 describe('crawl status bar', () => {
-  it('shows "Refreshing prices…" after a per-row refresh is clicked', async () => {
+  it('shows "Refreshing prices…" once a crawl starts', async () => {
     render(<App />)
     const src = await getCrawlSourceOnMount()
     src.emit({ status: 'started', total: 1, id: 1 })

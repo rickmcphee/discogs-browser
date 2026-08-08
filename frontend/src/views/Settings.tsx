@@ -244,12 +244,12 @@ function Settings({
       {/* Crawler Management */}
       <section>
         <h2 className="text-lg font-semibold text-white mb-1 text-left">
-          {isAdmin ? 'Crawler Management' : 'Collection & Wishlist Price Sources'}
+          {isAdmin ? 'Crawler Management' : 'Store Sources'}
         </h2>
         <p className="text-sm text-gray-500 mb-4 text-left">
           {isAdmin
             ? <>Run price crawlers on a schedule. Leave blank to disable. Example: <code className="text-gray-400 font-mono">0 2 * * *</code> = 2 am daily.</>
-            : 'Choose which stores\' prices you want to see in your Collection and Wishlist.'}
+            : 'Choose which stores\' items you want to see in the Store tab.'}
         </p>
         {isAdmin && settingsSaveError && <p className="text-xs text-red-400 mb-3 text-left">{settingsSaveError}</p>}
         {isAdmin && (

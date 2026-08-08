@@ -486,7 +486,7 @@ def get_library_items_for_plex_match(conn, user_id: int) -> list:
     return [dict(row) for row in rows]
 
 
-_RELEASE_ALLOWED_SORT = {"artist", "title", "year", "label", "format", "discogs_price", "date_added"}
+_RELEASE_ALLOWED_SORT = {"artist", "title", "year", "label", "format", "discogs_price"}
 
 
 def get_library_releases(

@@ -288,6 +288,70 @@ async def test_sync_collection_captures_date_added(pg_schema, monkeypatch):
     assert str(row["collection_date_added"]) == "2024-03-15 10:00:00"
 
 
+@respx.mock
+async def test_sync_collection_mode_new_backfills_date_added_for_skipped_item(pg_schema, monkeypatch):
+    # mode="new" skips the expensive per-release work (barcode fetch + sleep)
+    # for releases already known to be in_collection -- but per Fix 3, it
+    # must still backfill collection_date_added for those skipped rows via a
+    # cheap upsert_library_item call, so pre-existing users don't see an
+    # all-dashes Date Added column until they happen to run a full sync.
+    import config
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        conn.commit()
+
+    with db.user_scope(user["id"]) as conn:
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r111", "artist": "Artist", "title": "Album", "year": 2020,
+            "label": None, "format": None, "discogs_price": None, "barcode": None,
+            "cover_image_url": None, "discogs_url": None,
+        })
+        db.upsert_library_item(conn, user["id"], "r111", in_collection=True)
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        return_value=httpx.Response(200, json={
+            "pagination": {"pages": 1},
+            "releases": [{
+                "basic_information": {
+                    "id": 111, "title": "Album", "year": 2020,
+                    "artists": [{"name": "Artist"}], "labels": [], "formats": [],
+                    "cover_image": "",
+                },
+                "date_added": "2024-03-15T10:00:00-08:00",
+            }],
+        })
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    manager = CrawlManager()
+    await manager._sync_collection(user["id"], "new")
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert "sync_complete" in statuses
+    assert "sync_error" not in statuses
+
+    with db.user_scope(user["id"]) as conn:
+        row = conn.execute(
+            "SELECT collection_date_added FROM library_items WHERE user_id = %s AND discogs_id = 'r111'",
+            [user["id"]],
+        ).fetchone()
+    assert str(row["collection_date_added"]) == "2024-03-15 10:00:00"
+
+
 async def test_sync_collection_wishlist_captures_date_added_and_does_not_enqueue(pg_schema, monkeypatch):
     import config
     import crawl_manager as crawl_manager_module

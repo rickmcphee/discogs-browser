@@ -149,7 +149,7 @@ describe('Settings', () => {
     expect(screen.getByText('Amazon')).toBeInTheDocument()
     expect(screen.queryByText('Disabled Site')).not.toBeInTheDocument()
     expect(screen.queryByText('Enabled')).not.toBeInTheDocument()
-    expect(screen.getByText('Collection & Wishlist Price Sources')).toBeInTheDocument()
+    expect(screen.getByText('Store Sources')).toBeInTheDocument()
     expect(screen.getByText('Store Catalog Sources')).toBeInTheDocument()
   })
 
