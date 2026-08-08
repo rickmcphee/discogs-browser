@@ -810,11 +810,12 @@ def normalize_title_casing(title: str) -> str:
     return title
 
 
-def replace_stock_items(conn, crawler_id: int, items: list[dict]):
+def replace_stock_items(conn, crawler_id: int, items: list[dict]) -> list[str]:
     conn.execute("DELETE FROM stock_items WHERE crawler_id = %s", [crawler_id])
     if not items:
-        return
+        return []
     rows = []
+    item_keys = []
     for item in items:
         artist = normalize_artist_casing(item["artist"])
         title = normalize_title_casing(item["title"])
@@ -822,11 +823,22 @@ def replace_stock_items(conn, crawler_id: int, items: list[dict]):
         # corrected `artist`/`title` above) so existing stock_item_judgments
         # rows, which join on item_key, don't orphan for items whose casing
         # changed here.
+        item_key = compute_item_key(item["artist"].title(), item["title"], item["url"])
+        item_keys.append(item_key)
         rows.append((
             crawler_id, artist, title, item.get("format"), item.get("price"),
-            item.get("currency"), item["url"], item.get("cover_image_url"),
-            compute_item_key(item["artist"].title(), item["title"], item["url"]),
+            item.get("currency"), item["url"], item.get("cover_image_url"), item_key,
         ))
+        conn.execute(
+            """
+            INSERT INTO stock_item_identities (item_key, artist, title, format, last_seen)
+            VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (item_key) DO UPDATE SET
+                artist = EXCLUDED.artist, title = EXCLUDED.title, format = EXCLUDED.format,
+                last_seen = CURRENT_TIMESTAMP
+            """,
+            [item_key, artist, title, item.get("format")],
+        )
     with conn.cursor() as cur:
         cur.executemany(
             """
@@ -836,6 +848,7 @@ def replace_stock_items(conn, crawler_id: int, items: list[dict]):
             """,
             rows,
         )
+    return item_keys
 
 
 def _not_owned_clause(user_id_param: str) -> str:

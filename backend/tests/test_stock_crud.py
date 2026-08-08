@@ -9,7 +9,7 @@ def admin_conn(pg_test_db):
     db.init_tenant_schema()
     with db.get_admin_pool().connection() as conn:
         yield conn
-        conn.execute("TRUNCATE catalog, users, crawlers CASCADE")
+        conn.execute("TRUNCATE catalog, users, crawlers, stock_item_identities CASCADE")
         conn.commit()
 
 
@@ -29,6 +29,85 @@ def test_replace_stock_items_clears_and_inserts_for_crawler(admin_conn):
     admin_conn.commit()
     rows = admin_conn.execute("SELECT * FROM stock_items WHERE crawler_id = %s", [crawler_id]).fetchall()
     assert rows == []
+
+
+def test_replace_stock_items_returns_the_written_item_keys(admin_conn):
+    db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+
+    item_keys = db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+        {"artist": "Artist B", "title": "Album B", "url": "https://x/2", "price": 15.0, "currency": "USD"},
+    ])
+    assert item_keys == [
+        db.compute_item_key("Artist A".title(), "Album A", "https://x/1"),
+        db.compute_item_key("Artist B".title(), "Album B", "https://x/2"),
+    ]
+
+
+def test_replace_stock_items_upserts_stock_item_identities(admin_conn):
+    db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "aphex twin", "title": "Selected Ambient Works", "url": "https://x/1", "price": 20.0, "currency": "USD", "format": "LP"},
+    ])
+    admin_conn.commit()
+    item_key = db.compute_item_key("aphex twin".title(), "Selected Ambient Works", "https://x/1")
+    row = admin_conn.execute(
+        "SELECT artist, title, format FROM stock_item_identities WHERE item_key = %s", [item_key]
+    ).fetchone()
+    assert row["artist"] == "Aphex Twin"
+    assert row["title"] == "Selected Ambient Works"
+    assert row["format"] == "LP"
+
+
+def test_replace_stock_items_identity_row_survives_the_items_next_disappearance(admin_conn):
+    # "Never delete" per the design doc: once an item_key stops appearing in
+    # a crawler's items, replace_stock_items still deletes/reinserts
+    # stock_items as usual, but its stock_item_identities row (and, by
+    # extension, any listings/crawl_queue rows keyed on it) is left alone.
+    db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+    ])
+    admin_conn.commit()
+    item_key = db.compute_item_key("Artist A".title(), "Album A", "https://x/1")
+
+    db.replace_stock_items(admin_conn, crawler_id, [])
+    admin_conn.commit()
+
+    assert admin_conn.execute("SELECT * FROM stock_items WHERE crawler_id = %s", [crawler_id]).fetchall() == []
+    row = admin_conn.execute(
+        "SELECT artist FROM stock_item_identities WHERE item_key = %s", [item_key]
+    ).fetchone()
+    assert row["artist"] == "Artist A"
+
+
+def test_replace_stock_items_updates_identity_row_in_place_on_rerun(admin_conn):
+    db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+    item_key = db.compute_item_key("Artist A".title(), "Album A", "https://x/1")
+
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD", "format": "LP"},
+    ])
+    admin_conn.commit()
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 12.0, "currency": "USD", "format": "CD"},
+    ])
+    admin_conn.commit()
+
+    row = admin_conn.execute(
+        "SELECT format FROM stock_item_identities WHERE item_key = %s", [item_key]
+    ).fetchone()
+    assert row["format"] == "CD"
 
 
 def test_replace_stock_items_leaves_mixed_case_artist_untouched(admin_conn):
