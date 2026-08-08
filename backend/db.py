@@ -166,6 +166,9 @@ CREATE TABLE IF NOT EXISTS library_items (
     PRIMARY KEY (user_id, discogs_id)
 );
 
+ALTER TABLE library_items ADD COLUMN IF NOT EXISTS collection_date_added TIMESTAMP;
+ALTER TABLE library_items ADD COLUMN IF NOT EXISTS wishlist_date_added TIMESTAMP;
+
 CREATE TABLE IF NOT EXISTS stock_item_judgments (
     user_id INTEGER NOT NULL REFERENCES users(id),
     item_key TEXT NOT NULL,
@@ -412,19 +415,30 @@ def upsert_library_item(
     discogs_id: str,
     in_collection: Optional[bool] = None,
     in_wishlist: Optional[bool] = None,
+    collection_date_added: Optional[str] = None,
+    wishlist_date_added: Optional[str] = None,
 ):
     # COALESCE resolves "unspecified" (None) to the existing row's own column
-    # on update, or FALSE on first insert — in one atomic statement, so two
-    # concurrent partial updates (e.g. collection-sync setting in_collection,
-    # wishlist-sync setting in_wishlist) can't race on a separate read.
+    # on update, or FALSE/NULL on first insert — in one atomic statement, so
+    # two concurrent partial updates (e.g. collection-sync setting
+    # in_collection/collection_date_added, wishlist-sync setting
+    # in_wishlist/wishlist_date_added) can't race on a separate read.
     conn.execute(
         """
-        INSERT INTO library_items (user_id, discogs_id, in_collection, in_wishlist, last_synced)
-        VALUES (%(user_id)s, %(discogs_id)s, COALESCE(%(in_collection)s, FALSE),
-                COALESCE(%(in_wishlist)s, FALSE), CURRENT_TIMESTAMP)
+        INSERT INTO library_items (
+            user_id, discogs_id, in_collection, in_wishlist,
+            collection_date_added, wishlist_date_added, last_synced
+        )
+        VALUES (
+            %(user_id)s, %(discogs_id)s, COALESCE(%(in_collection)s, FALSE),
+            COALESCE(%(in_wishlist)s, FALSE), %(collection_date_added)s,
+            %(wishlist_date_added)s, CURRENT_TIMESTAMP
+        )
         ON CONFLICT (user_id, discogs_id) DO UPDATE SET
             in_collection = COALESCE(%(in_collection)s, library_items.in_collection),
             in_wishlist = COALESCE(%(in_wishlist)s, library_items.in_wishlist),
+            collection_date_added = COALESCE(%(collection_date_added)s, library_items.collection_date_added),
+            wishlist_date_added = COALESCE(%(wishlist_date_added)s, library_items.wishlist_date_added),
             last_synced = CURRENT_TIMESTAMP
         """,
         {
@@ -432,6 +446,8 @@ def upsert_library_item(
             "discogs_id": discogs_id,
             "in_collection": in_collection,
             "in_wishlist": in_wishlist,
+            "collection_date_added": collection_date_added,
+            "wishlist_date_added": wishlist_date_added,
         },
     )
 

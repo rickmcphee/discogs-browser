@@ -133,6 +133,40 @@ def test_get_library_releases_returns_only_calling_users_rows(admin_conn):
     assert result["releases"][0]["discogs_id"] == "r1"
 
 
+def test_upsert_library_item_collection_and_wishlist_date_added_are_independent(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+        "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+        "discogs_url": None,
+    })
+    db.upsert_library_item(
+        admin_conn, alice["id"], "r1", in_collection=True,
+        collection_date_added="2024-01-15T00:00:00",
+    )
+    admin_conn.commit()
+    row = admin_conn.execute(
+        "SELECT collection_date_added, wishlist_date_added FROM library_items WHERE user_id = %s AND discogs_id = 'r1'",
+        [alice["id"]],
+    ).fetchone()
+    assert str(row["collection_date_added"]) == "2024-01-15 00:00:00"
+    assert row["wishlist_date_added"] is None
+
+    # A later wishlist-scoped write sets wishlist_date_added without
+    # clobbering the collection_date_added set above.
+    db.upsert_library_item(
+        admin_conn, alice["id"], "r1", in_wishlist=True,
+        wishlist_date_added="2024-02-20T00:00:00",
+    )
+    admin_conn.commit()
+    row = admin_conn.execute(
+        "SELECT collection_date_added, wishlist_date_added FROM library_items WHERE user_id = %s AND discogs_id = 'r1'",
+        [alice["id"]],
+    ).fetchone()
+    assert str(row["collection_date_added"]) == "2024-01-15 00:00:00"
+    assert str(row["wishlist_date_added"]) == "2024-02-20 00:00:00"
+
+
 def test_get_library_releases_search_and_scope_filters(admin_conn):
     alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
     db.upsert_catalog_release(admin_conn, {
