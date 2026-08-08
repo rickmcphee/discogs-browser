@@ -9,7 +9,9 @@ interface Props {
   isAdmin?: boolean
   viewingAsUser?: boolean
   onToggleViewAsUser?: () => void
+  onRefreshRecommendations?: () => void
   onExportRecommendations?: () => void
+  onClearRecommendations?: () => void
   hasJudgedItems?: boolean
 }
 
@@ -19,7 +21,9 @@ function Account({
   isAdmin = false,
   viewingAsUser = false,
   onToggleViewAsUser = () => {},
+  onRefreshRecommendations = () => {},
   onExportRecommendations = () => {},
+  onClearRecommendations = () => {},
   hasJudgedItems = false,
 }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -261,7 +265,21 @@ function Account({
                 Maximum number of unprocessed Store items evaluated by Claude for recommendation each time. Extra items are evaluated on a later run. 0 = no limit.
               </td>
             </tr>
-            <tr>
+            <tr className="border-b border-gray-800/50">
+              <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
+              <td className="py-3 pr-4 text-left align-top">
+                <button
+                  onClick={onRefreshRecommendations}
+                  className={`w-20 text-center px-3 py-1 text-xs disabled:opacity-50 ${primaryButtonClass()}`}
+                >
+                  Refresh
+                </button>
+              </td>
+              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                Evaluate unprocessed Store items for recommendation, without a full catalog re-crawl.
+              </td>
+            </tr>
+            <tr className="border-b border-gray-800/50">
               <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
               <td className="py-3 pr-4 text-left align-top">
                 <button
@@ -274,6 +292,21 @@ function Account({
               </td>
               <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
                 Download recommended Store items as CSV (artist, title, format, price, source, link, reason).
+              </td>
+            </tr>
+            <tr>
+              <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
+              <td className="py-3 pr-4 text-left align-top">
+                <button
+                  onClick={onClearRecommendations}
+                  disabled={!hasJudgedItems}
+                  className={`w-20 text-center px-3 py-1 text-xs disabled:opacity-50 ${primaryButtonClass()}`}
+                >
+                  Clear
+                </button>
+              </td>
+              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                Remove all recommendation judgments, recommended and not-recommended, so every Store item is re-evaluated from scratch on the next run.
               </td>
             </tr>
           </tbody>

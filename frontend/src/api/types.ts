@@ -82,11 +82,13 @@ export interface CrawlEvent {
   synced?: number
   wishlist_synced?: number
   username?: string
+  scope?: 'all' | 'wishlist'
   screenshots?: string[]
   source?: string
   sources?: string[]
   judged?: number
   matched?: number
+  crawler_id?: number | null
 }
 
 export interface CollectionStatus {

@@ -275,11 +275,11 @@ class CrawlManager:
         task = self._sync_tasks.get(user_id)
         return task is not None and not task.done()
 
-    async def start_sync(self, user_id: int, mode: str = "all") -> bool:
+    async def start_sync(self, user_id: int, mode: str = "all", scope: str = "all") -> bool:
         if self.sync_running(user_id) or self.plex_match_running(user_id):
             log.warning("Collection sync already running for %s, ignoring start request", self._username_for_log(user_id))
             return False
-        self._sync_tasks[user_id] = asyncio.create_task(self._sync_collection(user_id, mode))
+        self._sync_tasks[user_id] = asyncio.create_task(self._sync_collection(user_id, mode, scope))
         return True
 
     def plex_match_running(self, user_id: int) -> bool:
@@ -303,7 +303,7 @@ class CrawlManager:
         )
         return True
 
-    async def _sync_collection(self, user_id: int, mode: str):
+    async def _sync_collection(self, user_id: int, mode: str, scope: str = "all"):
         # The actual work is a long sequence of blocking httpx/psycopg calls with
         # no natural await points between them (barcode-fetch pacing aside) --
         # run it in a worker thread via run_in_threadpool (same pattern
@@ -312,7 +312,7 @@ class CrawlManager:
         # other user's requests -- for its entire duration, or indefinitely if a
         # single call hangs.
         loop = asyncio.get_running_loop()
-        plex_params = await run_in_threadpool(self._sync_collection_blocking, user_id, mode, loop)
+        plex_params = await run_in_threadpool(self._sync_collection_blocking, user_id, mode, scope, loop)
         if plex_params:
             base_url, token, threshold = plex_params
             await self._run_plex_match(user_id, base_url, token, threshold)
@@ -320,7 +320,7 @@ class CrawlManager:
     def _broadcast_threadsafe(self, event: dict, loop: asyncio.AbstractEventLoop):
         asyncio.run_coroutine_threadsafe(self._broadcast(event), loop)
 
-    def _sync_collection_blocking(self, user_id: int, mode: str, loop: asyncio.AbstractEventLoop):
+    def _sync_collection_blocking(self, user_id: int, mode: str, scope: str, loop: asyncio.AbstractEventLoop):
         import token_encryption
         import discogs
         from db import (
@@ -331,7 +331,7 @@ class CrawlManager:
 
         broadcast = lambda event: self._broadcast_threadsafe(event, loop)
 
-        broadcast({"status": "sync_started"})
+        broadcast({"status": "sync_started", "scope": scope})
         try:
             with get_identity_pool().connection() as conn:
                 user = conn.execute("SELECT * FROM users WHERE id = %s", [user_id]).fetchone()
@@ -347,12 +347,14 @@ class CrawlManager:
             oauth_token = token_encryption.decrypt(user["discogs_oauth_token_encrypted"])
             oauth_secret = token_encryption.decrypt(user["discogs_oauth_secret_encrypted"])
 
-            try:
-                fields = discogs.fetch_collection_fields(oauth_token, oauth_secret, username)
-            except httpx.HTTPStatusError:
-                broadcast({"status": "sync_error", "error": "Discogs request failed"})
-                return
-            price_field_id = next((fid for fid, name in fields.items() if name.lower() == "price"), None)
+            price_field_id = None
+            if scope != "wishlist":
+                try:
+                    fields = discogs.fetch_collection_fields(oauth_token, oauth_secret, username)
+                except httpx.HTTPStatusError:
+                    broadcast({"status": "sync_error", "error": "Discogs request failed"})
+                    return
+                price_field_id = next((fid for fid, name in fields.items() if name.lower() == "price"), None)
 
             with get_app_pool().connection() as conn:
                 enabled_crawlers = get_enabled_crawlers(conn)
@@ -361,51 +363,52 @@ class CrawlManager:
             wishlist_count = 0
             wishlist_seen: set = set()
             with user_scope(user_id) as conn:
-                existing = None
-                if mode == "new":
-                    existing = {row["discogs_id"] for row in conn.execute(
-                        "SELECT discogs_id FROM library_items WHERE user_id = %s AND in_collection = TRUE", [user_id]
-                    ).fetchall()}
+                if scope != "wishlist":
+                    existing = None
+                    if mode == "new":
+                        existing = {row["discogs_id"] for row in conn.execute(
+                            "SELECT discogs_id FROM library_items WHERE user_id = %s AND in_collection = TRUE", [user_id]
+                        ).fetchall()}
 
-                for page, total_pages, items in discogs.iter_collection_pages(oauth_token, oauth_secret, username):
-                    broadcast({
-                        "status": "sync_page_fetched", "page": page, "total_pages": total_pages,
-                        "page_count": len(items),
-                    })
-                    for item in items:
-                        rid = f"r{item['basic_information']['id']}"
-                        if existing is not None and rid in existing:
-                            continue
-                        release = discogs.parse_release(item, price_field_id=price_field_id)
-                        existing_row = conn.execute(
-                            "SELECT barcode FROM catalog WHERE discogs_id = %s", [rid]
-                        ).fetchone()
-                        if existing_row is None or existing_row["barcode"] is None:
-                            try:
-                                release["barcode"] = discogs.fetch_release_barcode(
-                                    oauth_token, oauth_secret, item["basic_information"]["id"]
-                                ) or None
-                            except Exception as e:
-                                log.warning("Barcode fetch failed for release %s: %s", rid, e)
-                            time.sleep(1.1)
-                        else:
-                            release["barcode"] = existing_row["barcode"]
-                        upsert_catalog_release(conn, release)
-                        upsert_library_item(conn, user_id, rid, in_collection=True)
-                        for crawler in enabled_crawlers:
-                            enqueue_crawl_queue(conn, rid, crawler["id"])
-                        count += 1
-                    conn.commit()
-                    # user_scope()'s set_config(..., true) is transaction-local and
-                    # was just reverted by the commit above -- to Postgres's empty-
-                    # string placeholder for a never-set custom GUC, not to NULL, so
-                    # the RLS policy's ::int cast raises InvalidTextRepresentation on
-                    # the very next library_items write, not a quiet no-match. Re-
-                    # issue it so the next page's writes are still RLS-scoped to
-                    # this user.
-                    conn.execute("SELECT set_config('app.user_id', %s, true)", [str(user_id)])
-                    broadcast({"status": "sync_progress", "synced": count, "page": page, "total_pages": total_pages})
-                    log.info("Sync page %d/%d (%d releases) for %s", page, total_pages, count, username)
+                    for page, total_pages, items in discogs.iter_collection_pages(oauth_token, oauth_secret, username):
+                        broadcast({
+                            "status": "sync_page_fetched", "page": page, "total_pages": total_pages,
+                            "page_count": len(items),
+                        })
+                        for item in items:
+                            rid = f"r{item['basic_information']['id']}"
+                            if existing is not None and rid in existing:
+                                continue
+                            release = discogs.parse_release(item, price_field_id=price_field_id)
+                            existing_row = conn.execute(
+                                "SELECT barcode FROM catalog WHERE discogs_id = %s", [rid]
+                            ).fetchone()
+                            if existing_row is None or existing_row["barcode"] is None:
+                                try:
+                                    release["barcode"] = discogs.fetch_release_barcode(
+                                        oauth_token, oauth_secret, item["basic_information"]["id"]
+                                    ) or None
+                                except Exception as e:
+                                    log.warning("Barcode fetch failed for release %s: %s", rid, e)
+                                time.sleep(1.1)
+                            else:
+                                release["barcode"] = existing_row["barcode"]
+                            upsert_catalog_release(conn, release)
+                            upsert_library_item(conn, user_id, rid, in_collection=True)
+                            for crawler in enabled_crawlers:
+                                enqueue_crawl_queue(conn, rid, crawler["id"])
+                            count += 1
+                        conn.commit()
+                        # user_scope()'s set_config(..., true) is transaction-local and
+                        # was just reverted by the commit above -- to Postgres's empty-
+                        # string placeholder for a never-set custom GUC, not to NULL, so
+                        # the RLS policy's ::int cast raises InvalidTextRepresentation on
+                        # the very next library_items write, not a quiet no-match. Re-
+                        # issue it so the next page's writes are still RLS-scoped to
+                        # this user.
+                        conn.execute("SELECT set_config('app.user_id', %s, true)", [str(user_id)])
+                        broadcast({"status": "sync_progress", "synced": count, "page": page, "total_pages": total_pages})
+                        log.info("Sync page %d/%d (%d releases) for %s", page, total_pages, count, username)
 
                 for page, total_pages, items in discogs.iter_wantlist_pages(oauth_token, oauth_secret, username):
                     for item in items:
@@ -457,6 +460,7 @@ class CrawlManager:
                 "synced": count,
                 "wishlist_synced": wishlist_count,
                 "username": username,
+                "scope": scope,
             })
             log.info("Collection sync complete: %d releases, %d wishlist items for %s", count, wishlist_count, username)
 
@@ -507,11 +511,11 @@ class CrawlManager:
     def stock_sync_running(self) -> bool:
         return self._stock_task is not None and not self._stock_task.done()
 
-    async def start_stock_sync(self) -> bool:
+    async def start_stock_sync(self, crawler_id: Optional[int] = None) -> bool:
         if self.stock_sync_running:
             log.warning("Stock sync already running, ignoring start request")
             return False
-        self._stock_task = asyncio.create_task(self._sync_stock())
+        self._stock_task = asyncio.create_task(self._sync_stock(crawler_id))
         return True
 
     async def _run_catalog_crawler(self, crawler) -> list[dict]:
@@ -534,12 +538,12 @@ class CrawlManager:
         finally:
             await context.close()
 
-    async def _sync_stock(self):
+    async def _sync_stock(self, crawler_id: Optional[int] = None):
         import httpx
         from db import get_app_pool, get_enabled_crawlers, replace_stock_items, update_crawler_last_run
         from crawler import load_enabled_crawlers
 
-        await self._broadcast({"status": "stock_sync_started"})
+        await self._broadcast({"status": "stock_sync_started", "crawler_id": crawler_id})
         log.info("Stock sync started")
         try:
             with get_app_pool().connection() as conn:
@@ -547,9 +551,15 @@ class CrawlManager:
                     get_enabled_crawlers(conn, crawler_type="catalog")
                     + get_enabled_crawlers(conn, crawler_type="catalog_browser")
                 )
+            if crawler_id is not None:
+                enabled = [c for c in enabled if c["id"] == crawler_id]
             crawlers = load_enabled_crawlers(enabled)
             if not crawlers:
-                await self._broadcast({"status": "stock_sync_error", "error": "No enabled catalog crawlers"})
+                await self._broadcast({
+                    "status": "stock_sync_error",
+                    "error": "No enabled catalog crawlers",
+                    "crawler_id": crawler_id,
+                })
                 return
 
             total_synced = 0
@@ -568,6 +578,7 @@ class CrawlManager:
                             "status": "stock_sync_error",
                             "error": str(e),
                             "source": crawler._db_site_name,
+                            "crawler_id": crawler_id,
                         })
                         consecutive_429_sites = []
                     if len(consecutive_429_sites) >= 2:
@@ -593,14 +604,14 @@ class CrawlManager:
                 log.info("[%s] Stock sync found %d items", crawler._db_site_name, len(items))
                 await self._broadcast({"status": "stock_sync_progress", "synced": total_synced, "source": crawler._db_site_name})
 
-            await self._broadcast({"status": "stock_sync_complete", "synced": total_synced})
+            await self._broadcast({"status": "stock_sync_complete", "synced": total_synced, "crawler_id": crawler_id})
             log.info("Stock sync complete: %d items", total_synced)
         except asyncio.CancelledError:
             log.info("Stock sync cancelled")
             raise
         except Exception as e:
             log.error("Stock sync failed: %s", e, exc_info=True)
-            await self._broadcast({"status": "stock_sync_error", "error": str(e)})
+            await self._broadcast({"status": "stock_sync_error", "error": str(e), "crawler_id": crawler_id})
 
     def judgment_running(self, user_id: int) -> bool:
         task = self._judgment_tasks.get(user_id)

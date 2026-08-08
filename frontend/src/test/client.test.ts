@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { postCrawlStart, getUserSettings, saveUserSettings, logout, getStock, getStockArtists, getReleases, postPlexMatchStart } from '../api/client'
+import { postCrawlStart, postStockSyncStart, getUserSettings, saveUserSettings, logout, getStock, getStockArtists, getReleases, postPlexMatchStart, refreshCollection } from '../api/client'
 
 describe('crawl/user-settings client functions', () => {
   let fetchMock: ReturnType<typeof vi.fn>
@@ -13,6 +13,20 @@ describe('crawl/user-settings client functions', () => {
     fetchMock.mockResolvedValue({ ok: true, json: async () => ({ enqueued: 3 }) })
     const result = await postCrawlStart('all')
     expect(result.enqueued).toBe(3)
+  })
+
+  it('postStockSyncStart posts an empty crawler_id for a bulk call', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ started: true, running: true }) })
+    await postStockSyncStart()
+    expect(fetchMock.mock.calls[0][0]).toContain('/stock/sync/start')
+    expect(fetchMock.mock.calls[0][1].method).toBe('POST')
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({})
+  })
+
+  it('postStockSyncStart posts the given crawler_id for a single-store call', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ started: true, running: true }) })
+    await postStockSyncStart(7)
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ crawler_id: 7 })
   })
 
   it('getUserSettings fetches /user-settings', async () => {
@@ -66,6 +80,26 @@ describe('crawl/user-settings client functions', () => {
     fetchMock.mockResolvedValue({ ok: true, json: async () => ({ total: 0, page: 1, per_page: 50, releases: [] }) })
     await getReleases({})
     expect(fetchMock.mock.calls[0][0]).not.toContain('unmatched')
+  })
+
+  it('refreshCollection omits query params when called with no args', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ started: true, running: true }) })
+    await refreshCollection()
+    expect(fetchMock.mock.calls[0][0]).not.toContain('?')
+  })
+
+  it('refreshCollection includes scope=wishlist when scope is wishlist', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ started: true, running: true }) })
+    await refreshCollection('all', 'wishlist')
+    expect(fetchMock.mock.calls[0][0]).toContain('scope=wishlist')
+    expect(fetchMock.mock.calls[0][0]).not.toContain('mode=')
+  })
+
+  it('refreshCollection includes both mode=new and scope=wishlist when both given', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ started: true, running: true }) })
+    await refreshCollection('new', 'wishlist')
+    expect(fetchMock.mock.calls[0][0]).toContain('mode=new')
+    expect(fetchMock.mock.calls[0][0]).toContain('scope=wishlist')
   })
 
   it('postPlexMatchStart posts to /plex/match/start', async () => {

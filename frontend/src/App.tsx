@@ -54,6 +54,7 @@ export default function App() {
   const [dismissedSyncId, setDismissedSyncId] = useState(() => Number(localStorage.getItem(DISMISSED_SYNC_KEY) ?? 0))
   const [syncing, setSyncing] = useState(false)
   const [syncGeneration, setSyncGeneration] = useState(0)
+  const [stockSyncTarget, setStockSyncTarget] = useState<number | 'all' | null>(null)
   const [authState, setAuthState] = useState<AuthStatus | null>(null)
   const [viewAsUser, setViewAsUser] = useState(() => localStorage.getItem(VIEW_AS_USER_KEY) === 'true')
   const [signupToken, setSignupToken] = useState<string | null>(() => {
@@ -119,7 +120,7 @@ export default function App() {
       if (event.status === 'ping') return
       if (event.status === 'sync_started') {
         setSyncing(true)
-        setSyncStatus('Syncing collection…', event.id ?? null)
+        setSyncStatus(event.scope === 'wishlist' ? 'Syncing wishlist…' : 'Syncing collection…', event.id ?? null)
         return
       }
       if (event.status === 'sync_page_fetched') {
@@ -133,8 +134,12 @@ export default function App() {
       }
       if (event.status === 'sync_complete') {
         setSyncing(false)
-        const wishlistPart = event.wishlist_synced != null ? `, ${event.wishlist_synced} wishlist items` : ''
-        setSyncStatus(`Synced ${event.synced} records for ${event.username}${wishlistPart}`, event.id ?? null)
+        if (event.scope === 'wishlist') {
+          setSyncStatus(`Synced ${event.wishlist_synced} wishlist items for ${event.username}`, event.id ?? null)
+        } else {
+          const wishlistPart = event.wishlist_synced != null ? `, ${event.wishlist_synced} wishlist items` : ''
+          setSyncStatus(`Synced ${event.synced} records for ${event.username}${wishlistPart}`, event.id ?? null)
+        }
         setSyncGeneration(g => g + 1)
         return
       }
@@ -161,6 +166,7 @@ export default function App() {
       }
       if (event.status === 'stock_sync_started') {
         setSyncing(true)
+        setStockSyncTarget(event.crawler_id ?? 'all')
         setSyncStatus('Syncing in-stock catalog…', event.id ?? null)
         return
       }
@@ -170,16 +176,21 @@ export default function App() {
       }
       if (event.status === 'stock_sync_complete') {
         setSyncing(false)
+        setStockSyncTarget(null)
         setSyncStatus(`In-stock sync complete: ${event.synced} items`, event.id ?? null)
         return
       }
       if (event.status === 'stock_sync_error') {
-        setSyncing(false)
+        if (!event.source) {
+          setSyncing(false)
+          setStockSyncTarget(null)
+        }
         setSyncStatus(`In-stock sync failed: ${event.error}`, event.id ?? null)
         return
       }
       if (event.status === 'stock_sync_aborted') {
         setSyncing(false)
+        setStockSyncTarget(null)
         const sources = event.sources?.length ? ` (${event.sources.join(', ')})` : ''
         setSyncStatus(`In-stock sync stopped: ${event.error}${sources}`, event.id ?? null)
         return
@@ -276,6 +287,18 @@ export default function App() {
     startRefresh('all')
   }, [startRefresh])
 
+  // Wishlist tab's refresh has nothing analogous to the "N records already
+  // loaded, refresh new or all?" choice that collectionStatus's modal offers --
+  // wantlists are small and always fully re-synced -- so this skips straight
+  // to the sync, same as Settings' "Refresh Now" bypassing that modal.
+  const handleRefreshWishlist = useCallback(async () => {
+    try {
+      await refreshCollection('all', 'wishlist')
+    } catch (e: any) {
+      setSyncStatus(`Sync failed: ${e.message}`)
+    }
+  }, [setSyncStatus])
+
   const startCrawl = useCallback((releaseId?: string, mode?: 'all' | 'missing') => {
     setCheckpointStatus(null)
     setCrawlingReleaseId(releaseId)
@@ -312,6 +335,14 @@ export default function App() {
   const handleRefreshStock = useCallback(async () => {
     try {
       await postStockSyncStart()
+    } catch (e: any) {
+      setSyncStatus(`In-stock sync failed to start: ${e.message}`)
+    }
+  }, [setSyncStatus])
+
+  const handleRefreshStoreCrawler = useCallback(async (crawlerId: number) => {
+    try {
+      await postStockSyncStart(crawlerId)
     } catch (e: any) {
       setSyncStatus(`In-stock sync failed to start: ${e.message}`)
     }
@@ -483,7 +514,7 @@ export default function App() {
             crawlers={crawlers}
             hiddenCrawlerIds={hiddenCrawlerIds}
             syncing={syncing}
-            onRefreshCollection={() => handleRefresh()}
+            onRefreshCollection={() => handleRefreshWishlist()}
             syncGeneration={syncGeneration}
           />
         </div>
@@ -496,12 +527,12 @@ export default function App() {
             onCrawlersChange={setCrawlers}
             onRefreshPrices={handleRefreshPricesFromSettings}
             onRefreshStock={handleRefreshStock}
-            onRefreshRecommendations={handleRefreshRecommendations}
-            onClearRecommendations={handleClearRecommendations}
-            hasJudgedItems={hasJudgedItems}
             isAdmin={showAdminNav}
             hiddenCrawlerIds={hiddenCrawlerIds}
             onToggleCrawlerView={toggleCrawlerView}
+            stockSyncBusy={stockSyncTarget !== null}
+            stockSyncCrawlerId={typeof stockSyncTarget === 'number' ? stockSyncTarget : null}
+            onRefreshStoreCrawler={handleRefreshStoreCrawler}
           />
         </div>
         <div className={view === 'account' ? 'h-full overflow-y-auto' : 'hidden'}>
@@ -511,7 +542,9 @@ export default function App() {
             isAdmin={isRealAdmin}
             viewingAsUser={viewAsUser}
             onToggleViewAsUser={toggleViewAsUser}
+            onRefreshRecommendations={handleRefreshRecommendations}
             onExportRecommendations={handleExportRecommendations}
+            onClearRecommendations={handleClearRecommendations}
             hasJudgedItems={hasJudgedItems}
           />
         </div>

@@ -34,8 +34,11 @@ export async function getCollectionStatus(): Promise<CollectionStatus> {
   return r.json()
 }
 
-export async function refreshCollection(mode?: 'all' | 'new'): Promise<{ started: boolean; running: boolean }> {
-  const url = mode === 'new' ? '/collection/refresh?mode=new' : '/collection/refresh'
+export async function refreshCollection(mode?: 'all' | 'new', scope?: 'all' | 'wishlist'): Promise<{ started: boolean; running: boolean }> {
+  const q = new URLSearchParams()
+  if (mode === 'new') q.set('mode', 'new')
+  if (scope === 'wishlist') q.set('scope', 'wishlist')
+  const url = q.toString() ? `/collection/refresh?${q}` : '/collection/refresh'
   const r = await apiFetch(url, { method: 'POST' })
   if (!r.ok) throw new Error(await r.text())
   return r.json()
@@ -179,8 +182,12 @@ export async function getStockArtists(overlapping?: boolean, recommended?: boole
   return data.artists
 }
 
-export async function postStockSyncStart(): Promise<{ started: boolean; running: boolean }> {
-  const r = await apiFetch('/stock/sync/start', { method: 'POST' })
+export async function postStockSyncStart(crawlerId?: number): Promise<{ started: boolean; running: boolean }> {
+  const r = await apiFetch('/stock/sync/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ crawler_id: crawlerId }),
+  })
   if (!r.ok) throw new Error(await r.text())
   return r.json()
 }

@@ -10,6 +10,49 @@ def authed_client_factory(authed_client_factory_builder):
     return authed_client_factory_builder([stock_router.router])
 
 
+def test_post_stock_sync_start_requires_admin(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    client = authed_client_factory(user["id"])
+
+    r = client.post("/api/stock/sync/start", headers={"X-Requested-With": "fetch"})
+    assert r.status_code == 403
+
+    r = client.post("/api/stock/sync/start", json={"crawler_id": 1}, headers={"X-Requested-With": "fetch"})
+    assert r.status_code == 403
+
+
+def test_post_stock_sync_start_forwards_crawler_id_as_admin(pg_test_db, authed_client_factory, monkeypatch):
+    # start_stock_sync is faked rather than driven for real, mirroring
+    # test_stock_judge_start_returns_false_when_already_running_for_calling_user's
+    # rationale: a bare TestClient(app) opens its own event loop per
+    # request, so a real asyncio.Task can't be observed across two
+    # separate client.post() calls here.
+    calls = []
+
+    async def _fake_start_stock_sync(crawler_id=None):
+        calls.append(crawler_id)
+        return True
+
+    monkeypatch.setattr(crawl_manager, "start_stock_sync", _fake_start_stock_sync)
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute("UPDATE users SET is_admin = TRUE WHERE id = %s", [user["id"]])
+        conn.commit()
+    client = authed_client_factory(user["id"])
+
+    r = client.post("/api/stock/sync/start", json={"crawler_id": 42}, headers={"X-Requested-With": "fetch"})
+    assert r.status_code == 200
+    assert r.json() == {"started": True, "running": False}
+
+    r = client.post("/api/stock/sync/start", headers={"X-Requested-With": "fetch"})
+    assert r.status_code == 200
+
+    assert calls == [42, None]
+
+
 @pytest.fixture(autouse=True)
 def reset_crawl_manager():
     crawl_manager._judgment_tasks = {}

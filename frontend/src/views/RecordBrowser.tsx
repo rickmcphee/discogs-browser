@@ -206,7 +206,7 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
               <button
                 onClick={onRefreshCollection}
                 disabled={syncing}
-                title="Sync collection from Discogs"
+                title={scope === 'wishlist' ? 'Sync wishlist from Discogs' : 'Sync collection from Discogs'}
                 className={`p-1.5 disabled:opacity-30 disabled:cursor-not-allowed ${navButtonClass(false)}`}
               >
                 <span className="block text-base leading-none">{syncing ? '⟳' : '↻'}</span>
