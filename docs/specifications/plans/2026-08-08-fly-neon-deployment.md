@@ -16,7 +16,7 @@
 - Backend commands run from `backend/` via Poetry (see `sdlc:poetry-cli` skill): `poetry run pytest`, `poetry run uvicorn main:app --reload`.
 - Frontend commands run from `frontend/`: `npm run test` (vitest run), `npm run build` (tsc -b && vite build), `npm run lint` (oxlint).
 - Commit via `commit-with-cleanup.sh`, never `git commit -m` (drops the AI-attribution trailer) — see `CLAUDE.md`.
-- Versioning rule (`CLAUDE.md`): `backend/version.py`'s `VERSION` gets a minor bump (`2.11` → `2.12`) as part of this PR — done as the last step of Task 4, not a separate follow-up.
+- Versioning rule (`CLAUDE.md`): `backend/version.py`'s `VERSION` gets a minor bump as part of this PR — done as the last step of Task 4, not a separate follow-up. Shipped as `2.13` → `2.14` after a rebase onto `main`'s own subsequent version bumps (originally `2.11` → `2.12` at the time this task was implemented).
 - Task 5 (cloud provisioning) requires real Fly.io, Neon, and Cloudflare account credentials. It cannot be executed inside a sandboxed agent session without those credentials — it's written as an exact, bite-sized runbook for whoever (the repo owner, or an agent handed those credentials) runs it.
 
 ---
@@ -438,15 +438,7 @@ jobs:
 
 - [ ] **Step 3: Bump the app version**
 
-In `backend/version.py`, change:
-```python
-VERSION = "2.11"
-```
-to:
-```python
-VERSION = "2.12"
-```
-per `CLAUDE.md`'s versioning rule (minor bump on every PR merging to `main`).
+In `backend/version.py`, bump the minor version by one from whatever `main` currently has, per `CLAUDE.md`'s versioning rule (minor bump on every PR merging to `main`). This task originally shipped it as `2.11` → `2.12`; a later rebase onto `main` (which had gained its own version bumps from other merged PRs in the meantime) moved the actual shipped value to `2.13` → `2.14` — bump from whatever `main`'s value is at rebase/merge time, not the literal numbers below.
 
 - [ ] **Step 4: Commit**
 
