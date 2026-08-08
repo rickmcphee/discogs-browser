@@ -228,7 +228,7 @@ function StockBrowser({ recommendedAvailable = false, hiddenCrawlerIds = NO_HIDD
                     Price {sort === 'price' ? (order === 'asc' ? '↑' : '↓') : ''}
                   </button>
                 </th>
-                <th className="px-3 py-2 text-center">Source</th>
+                <th className="px-3 py-2 text-center normal-case">Source</th>
               </tr>
             </thead>
             <tbody>

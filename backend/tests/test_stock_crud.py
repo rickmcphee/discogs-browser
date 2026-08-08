@@ -99,6 +99,48 @@ def test_replace_stock_items_item_key_unaffected_by_display_casing_fix(admin_con
     )
 
 
+def test_replace_stock_items_normalizes_all_caps_title(admin_conn):
+    db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "Radiohead", "title": "OK COMPUTER", "url": "https://x/1", "price": 20.0, "currency": "USD"},
+    ])
+    admin_conn.commit()
+    row = admin_conn.execute("SELECT title FROM stock_items WHERE crawler_id = %s", [crawler_id]).fetchone()
+    assert row["title"] == "Ok Computer"
+
+
+def test_replace_stock_items_leaves_mixed_case_title_untouched(admin_conn):
+    db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "Radiohead", "title": "OK Computer", "url": "https://x/1", "price": 20.0, "currency": "USD"},
+    ])
+    admin_conn.commit()
+    row = admin_conn.execute("SELECT title FROM stock_items WHERE crawler_id = %s", [crawler_id]).fetchone()
+    assert row["title"] == "OK Computer"  # already mixed-case, left as-is
+
+
+def test_replace_stock_items_item_key_unaffected_by_title_casing_fix(admin_conn):
+    # Same rationale as the artist-casing item_key regression above, but for
+    # the title casing fix: item_key must keep hashing the raw title, not
+    # the normalized one, or existing stock_item_judgments rows would orphan.
+    db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "Radiohead", "title": "OK COMPUTER", "url": "https://x/5", "price": 20.0, "currency": "USD"},
+    ])
+    admin_conn.commit()
+    row = admin_conn.execute("SELECT item_key FROM stock_items WHERE crawler_id = %s", [crawler_id]).fetchone()
+    assert row["item_key"] == db.compute_item_key("Radiohead".title(), "OK COMPUTER", "https://x/5")
+
+
 def test_get_stock_items_recommended_filters_to_calling_users_judgments(admin_conn):
     alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
     bob = db.create_user(admin_conn, discogs_user_id=2, discogs_username="bob")
