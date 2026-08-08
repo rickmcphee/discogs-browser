@@ -213,6 +213,76 @@ def test_discogs_callback_locks_out_after_repeated_failures(client, monkeypatch)
     assert r.status_code == 429
 
 
+@respx.mock
+def test_client_key_keys_on_forwarded_ip_when_cloudflare_trust_enabled(client, monkeypatch):
+    # Behind Fly/Cloudflare every request shares the same TestClient-simulated
+    # peer IP, so two distinct visitors must still get independent rate-limit
+    # buckets when they present different CF-Connecting-IP values -- but only
+    # once the deployment has opted into trusting that header (see the sibling
+    # test below for the untrusted default).
+    monkeypatch.setattr(config, "TRUST_CF_CONNECTING_IP", True)
+    monkeypatch.setattr(
+        session_router, "discogs_oauth_limiter", RateLimiter(2, config.LOGIN_LOCKOUT_SECONDS)
+    )
+    token_counter = iter(range(1, 10))
+    respx.post("https://api.discogs.com/oauth/request_token").mock(
+        side_effect=lambda request: httpx.Response(
+            200,
+            text=f"oauth_token=req-token-{next(token_counter)}&oauth_token_secret=req-secret",
+            headers={"content-type": "application/x-www-form-urlencoded"},
+        )
+    )
+    visitor_a_headers = {"CF-Connecting-IP": "203.0.113.10"}
+    visitor_b_headers = {"CF-Connecting-IP": "203.0.113.20"}
+
+    for _ in range(2):
+        r = client.get(
+            "/api/auth/discogs/start", headers=visitor_a_headers, follow_redirects=False
+        )
+        assert r.status_code in (302, 307)
+
+    r = client.get("/api/auth/discogs/start", headers=visitor_a_headers, follow_redirects=False)
+    assert r.status_code == 429
+
+    r = client.get("/api/auth/discogs/start", headers=visitor_b_headers, follow_redirects=False)
+    assert r.status_code in (302, 307)
+
+
+@respx.mock
+def test_client_key_ignores_forwarded_ip_when_cloudflare_trust_disabled(client, monkeypatch):
+    # Without an explicit deployment opt-in (the default -- local dev, Docker
+    # Compose, or any self-hosted setup with no Cloudflare in the loop), a
+    # caller must not be able to defeat the limiter just by sending a
+    # different CF-Connecting-IP value per request -- that header is fully
+    # client-controlled unless something in front actually overwrites it.
+    assert config.TRUST_CF_CONNECTING_IP is False
+    monkeypatch.setattr(
+        session_router, "discogs_oauth_limiter", RateLimiter(2, config.LOGIN_LOCKOUT_SECONDS)
+    )
+    token_counter = iter(range(1, 10))
+    respx.post("https://api.discogs.com/oauth/request_token").mock(
+        side_effect=lambda request: httpx.Response(
+            200,
+            text=f"oauth_token=req-token-{next(token_counter)}&oauth_token_secret=req-secret",
+            headers={"content-type": "application/x-www-form-urlencoded"},
+        )
+    )
+    for _ in range(2):
+        r = client.get(
+            "/api/auth/discogs/start",
+            headers={"CF-Connecting-IP": "203.0.113.10"},
+            follow_redirects=False,
+        )
+        assert r.status_code in (302, 307)
+
+    r = client.get(
+        "/api/auth/discogs/start",
+        headers={"CF-Connecting-IP": "203.0.113.20"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 429
+
+
 def test_redeem_invite_creates_user_and_session(client):
     with db.get_admin_pool().connection() as conn:
         admin_user = db.create_user(conn, discogs_user_id=1, discogs_username="admin")

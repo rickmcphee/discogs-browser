@@ -88,3 +88,10 @@ SESSION_IDLE_SECONDS = int(os.environ.get("SESSION_IDLE_SECONDS", 7 * 86400))
 SESSION_MAX_SECONDS = int(os.environ.get("SESSION_MAX_SECONDS", 30 * 86400))
 LOGIN_MAX_FAILURES = int(os.environ.get("LOGIN_MAX_FAILURES", 5))
 LOGIN_LOCKOUT_SECONDS = int(os.environ.get("LOGIN_LOCKOUT_SECONDS", 300))
+
+# Off by default: CF-Connecting-IP is fully client-controlled unless something
+# in front of this app actually overwrites it. Only set to "1" when Cloudflare
+# is confirmed to be the sole path into the deployment (see the Fly+Neon+Cloudflare
+# design doc) -- otherwise a caller could spoof a different value per request to
+# defeat the invite/OAuth rate limiters entirely.
+TRUST_CF_CONNECTING_IP = os.environ.get("TRUST_CF_CONNECTING_IP", "") == "1"

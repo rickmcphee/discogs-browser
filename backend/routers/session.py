@@ -28,6 +28,19 @@ class RedeemInviteRequest(BaseModel):
 
 
 def _client_key(request: Request) -> str:
+    # CF-Connecting-IP is fully client-controlled unless something in front of
+    # this app actually overwrites it, so it's only read when the deployment has
+    # explicitly opted in via TRUST_CF_CONNECTING_IP -- set only once Cloudflare
+    # is confirmed to be the sole path into the deployment (see the Fly+Neon+Cloudflare
+    # design doc; Cloudflare overwrites this header for any request it proxies,
+    # stripping a client-supplied value, unlike X-Forwarded-For, which requires
+    # trusting every hop between here and the client). Without that opt-in
+    # (local dev, Docker Compose, or a self-hosted reverse proxy that doesn't
+    # set this header), the raw peer IP is used, exactly as before.
+    if config.TRUST_CF_CONNECTING_IP:
+        forwarded = request.headers.get("cf-connecting-ip")
+        if forwarded:
+            return forwarded
     return request.client.host if request.client else "unknown"
 
 
