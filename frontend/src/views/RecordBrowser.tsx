@@ -192,7 +192,7 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
               <div className="text-center py-8 text-gray-500">
                 {scope === 'wishlist'
                   ? 'No wishlist items yet. Add records to your wantlist on Discogs, then sync.'
-                  : 'No records found. Click "Refresh Collection" to sync from Discogs.'}
+                  : 'No records found. Click the sync icon above to load your collection from Discogs.'}
               </div>
             )}
             {!loading && releases.length > 0 && (
@@ -308,7 +308,7 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
                   <td colSpan={8} className="text-center py-8 text-gray-500">
                     {scope === 'wishlist'
                       ? 'No wishlist items yet. Add records to your wantlist on Discogs, then sync.'
-                      : 'No records found. Click "Refresh Collection" to sync from Discogs.'}
+                      : 'No records found. Click the sync icon above to load your collection from Discogs.'}
                   </td>
                 </tr>
               )}
