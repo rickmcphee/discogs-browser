@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, memo } from 'react'
 import { getSettings, saveSettings, setCrawlerEnabled } from '../api/client'
 import type { Settings as SettingsType, Crawler } from '../api/types'
-import { navButtonClass, primaryButtonClass } from '../styles/buttons'
+import { navButtonClass, secondaryButtonClass } from '../styles/buttons'
 
 interface SettingRow {
   key: keyof SettingsType
@@ -297,7 +297,7 @@ function Settings({
                   <td className="py-3 pr-4 text-left align-top">
                     <button
                       onClick={() => onRefreshPrices(settings.crawl_schedule_mode as 'missing' | 'all' ?? 'missing')}
-                      className={`px-3 py-1 text-xs ${primaryButtonClass()}`}
+                      className={`px-3 py-1 text-xs ${secondaryButtonClass()}`}
                     >
                       Refresh
                     </button>
@@ -347,7 +347,7 @@ function Settings({
                   <button
                     onClick={onRefreshStock}
                     disabled={stockSyncBusy}
-                    className={`px-3 py-1 text-xs disabled:opacity-50 ${primaryButtonClass()}`}
+                    className={`px-3 py-1 text-xs disabled:opacity-50 ${secondaryButtonClass()}`}
                   >
                     Refresh
                   </button>
