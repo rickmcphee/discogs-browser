@@ -956,6 +956,7 @@ def get_stock_items(
     if exclude_crawler_ids:
         comparison_sql += " AND cr.id != ALL(%(exclude_crawler_ids)s)"
         comparison_params["exclude_crawler_ids"] = exclude_crawler_ids
+    comparison_sql += " ORDER BY l.item_key, cr.site_name"
     comparisons_by_item: dict[str, list[dict]] = {}
     for c in conn.execute(comparison_sql, comparison_params).fetchall():
         comparisons_by_item.setdefault(c["item_key"], []).append(c)
@@ -966,7 +967,7 @@ def get_stock_items(
         items.append({**r, "is_own": True})
         for c in comparisons_by_item.get(r["item_key"], []):
             items.append({
-                "id": f"{r['item_key']}:{c['source']}",
+                "id": f"{r['id']}:{c['source']}",
                 "item_key": r["item_key"], "artist": r["artist"], "title": r["title"],
                 "format": r["format"], "cover_image_url": r["cover_image_url"],
                 "price": c["price"], "currency": c["currency"], "url": c["url"],
