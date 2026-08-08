@@ -236,6 +236,115 @@ async def test_sync_collection_enqueues_crawl_queue_for_missing_listings(pg_sche
     assert [(q["discogs_id"], q["status"]) for q in queued] == [("r111", "pending"), ("r222", "pending")]
 
 
+@respx.mock
+async def test_sync_collection_captures_date_added(pg_schema, monkeypatch):
+    import config
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        return_value=httpx.Response(200, json={
+            "pagination": {"pages": 1},
+            "releases": [{
+                "basic_information": {
+                    "id": 111, "title": "Album", "year": 2020,
+                    "artists": [{"name": "Artist"}], "labels": [], "formats": [],
+                    "cover_image": "",
+                },
+                "date_added": "2024-03-15T10:00:00-08:00",
+            }],
+        })
+    )
+    respx.get(url__regex=r"https://api\.discogs\.com/releases/\d+").mock(
+        return_value=httpx.Response(200, json={"identifiers": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    manager = CrawlManager()
+    await manager._sync_collection(user["id"], "all")
+
+    with db.user_scope(user["id"]) as conn:
+        row = conn.execute(
+            "SELECT collection_date_added FROM library_items WHERE user_id = %s AND discogs_id = 'r111'",
+            [user["id"]],
+        ).fetchone()
+    # collection_date_added is TIMESTAMP (no time zone) — Postgres discards
+    # the "-08:00" offset on input rather than converting by it, so the
+    # stored wall-clock value is the literal "10:00:00" from the API item.
+    assert str(row["collection_date_added"]) == "2024-03-15 10:00:00"
+
+
+async def test_sync_collection_wishlist_captures_date_added_and_does_not_enqueue(pg_schema, monkeypatch):
+    import config
+    import crawl_manager as crawl_manager_module
+    import discogs
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+    monkeypatch.setattr(crawl_manager_module.time, "sleep", lambda *a, **k: None)
+
+    def _must_not_be_called(*a, **k):
+        raise AssertionError("collection loop must not run for scope=wishlist")
+
+    monkeypatch.setattr(discogs, "fetch_collection_fields", _must_not_be_called)
+    monkeypatch.setattr(discogs, "iter_collection_pages", _must_not_be_called)
+
+    def _wants_pages(*a, **k):
+        yield 1, 1, [{
+            "basic_information": {
+                "id": 111, "title": "Album", "year": 2020,
+                "artists": [{"name": "Artist"}], "labels": [], "formats": [],
+                "cover_image": "",
+            },
+            "date_added": "2024-05-01T00:00:00Z",
+        }]
+
+    monkeypatch.setattr(discogs, "iter_wantlist_pages", _wants_pages)
+    monkeypatch.setattr(discogs, "fetch_release_barcode", lambda *a, **k: None)
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        db.register_crawler(conn, "Amazon", "/x.py")
+        conn.commit()
+
+    manager = CrawlManager()
+    await manager._sync_collection(user["id"], "all", "wishlist")
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert "sync_error" not in statuses
+
+    with db.user_scope(user["id"]) as conn:
+        row = conn.execute(
+            "SELECT wishlist_date_added FROM library_items WHERE user_id = %s AND discogs_id = 'r111'",
+            [user["id"]],
+        ).fetchone()
+    # Same TIMESTAMP-without-time-zone reasoning as the collection test above
+    # — the "Z" (UTC) designator on the input is discarded, not converted by.
+    assert str(row["wishlist_date_added"]) == "2024-05-01 00:00:00"
+
+    with db.get_admin_pool().connection() as conn:
+        queued = conn.execute("SELECT discogs_id FROM crawl_queue").fetchall()
+    assert queued == []
+
+
 async def test_sync_collection_wishlist_scope_skips_collection_loop(pg_schema, monkeypatch):
     import config
     import crawl_manager as crawl_manager_module

@@ -394,7 +394,10 @@ class CrawlManager:
                             else:
                                 release["barcode"] = existing_row["barcode"]
                             upsert_catalog_release(conn, release)
-                            upsert_library_item(conn, user_id, rid, in_collection=True)
+                            upsert_library_item(
+                                conn, user_id, rid, in_collection=True,
+                                collection_date_added=item.get("date_added"),
+                            )
                             for crawler in enabled_crawlers:
                                 enqueue_crawl_queue(conn, rid, crawler["id"])
                             count += 1
@@ -436,9 +439,8 @@ class CrawlManager:
                         upsert_library_item(
                             conn, user_id, rid, in_wishlist=True,
                             in_collection=False if is_new_release else None,
+                            wishlist_date_added=item.get("date_added"),
                         )
-                        for crawler in enabled_crawlers:
-                            enqueue_crawl_queue(conn, rid, crawler["id"])
                         wishlist_count += 1
                     conn.commit()
                     # Same reasoning as the collection-loop commit above: re-scope
