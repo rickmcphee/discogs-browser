@@ -710,7 +710,7 @@ def compute_item_key(artist: str, title: str, url: str) -> str:
     return hashlib.sha256(f"{artist}|{title}|{url}".encode()).hexdigest()
 
 
-def _title_case_artist(name: str) -> str:
+def _title_case_words(text: str) -> str:
     # str.title() treats any digit/letter boundary as a new word, mangling
     # names like "13th Floor Elevators" into "13Th Floor Elevators". Walk
     # runs of Unicode letters (str.isalpha(), not an ASCII-only [A-Za-z]
@@ -719,9 +719,9 @@ def _title_case_artist(name: str) -> str:
     # preceding digit.
     result = []
     in_word = False
-    for i, ch in enumerate(name):
+    for i, ch in enumerate(text):
         if ch.isalpha():
-            if not in_word and not (i > 0 and name[i - 1].isdigit()):
+            if not in_word and not (i > 0 and text[i - 1].isdigit()):
                 ch = ch.upper()
             else:
                 ch = ch.lower()
@@ -737,8 +737,18 @@ def normalize_artist_casing(artist: str) -> str:
     # worse than leaving it alone, so only normalize inputs that are all one
     # case to begin with (all-caps "NAILS", all-lowercase "aphex twin").
     if artist.isupper() or artist.islower():
-        return _title_case_artist(artist)
+        return _title_case_words(artist)
     return artist
+
+
+def normalize_title_casing(title: str) -> str:
+    # Same rationale as normalize_artist_casing: some stores return release
+    # titles in ALL CAPS; only normalize inputs that are all one case to
+    # begin with so an already mixed-case title (e.g. "OK Computer") isn't
+    # mangled.
+    if title.isupper() or title.islower():
+        return _title_case_words(title)
+    return title
 
 
 def replace_stock_items(conn, crawler_id: int, items: list[dict]):
@@ -748,12 +758,13 @@ def replace_stock_items(conn, crawler_id: int, items: list[dict]):
     rows = []
     for item in items:
         artist = normalize_artist_casing(item["artist"])
+        title = normalize_title_casing(item["title"])
         # item_key keeps hashing the legacy str.title() casing (not the
-        # corrected `artist` above) so existing stock_item_judgments rows,
-        # which join on item_key, don't orphan for artists whose casing
+        # corrected `artist`/`title` above) so existing stock_item_judgments
+        # rows, which join on item_key, don't orphan for items whose casing
         # changed here.
         rows.append((
-            crawler_id, artist, item["title"], item.get("format"), item.get("price"),
+            crawler_id, artist, title, item.get("format"), item.get("price"),
             item.get("currency"), item["url"], item.get("cover_image_url"),
             compute_item_key(item["artist"].title(), item["title"], item["url"]),
         ))

@@ -128,6 +128,16 @@ describe('RecordBrowser', () => {
     expect(onRefreshCollection).toHaveBeenCalledTimes(1)
   })
 
+  it('defaults sort to title when a specific artist is selected, and back to artist for All', async () => {
+    getArtists.mockResolvedValue(['Pink Floyd'])
+    render(<RecordBrowser scope="discogs" />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Pink Floyd' })).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: 'Pink Floyd' }))
+    await waitFor(() => expect(getReleases).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'title', order: 'asc' })))
+    fireEvent.click(screen.getByRole('button', { name: 'All' }))
+    await waitFor(() => expect(getReleases).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'artist', order: 'asc' })))
+  })
+
   it('refetches the artist nav list on every syncGeneration tick, not just on scope change', async () => {
     const { rerender } = render(<RecordBrowser scope="discogs" syncGeneration={0} />)
     await waitFor(() => expect(getArtists).toHaveBeenCalledTimes(1))
