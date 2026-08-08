@@ -6,6 +6,14 @@ primary_region = "ord"
 [env]
   PLAYWRIGHT_CHANNEL = ""
   DISCOGS_BROWSER_DATA = "/data"
+  # Cloudflare is the deployment's DNS/proxy in front of api.tracktempest.com
+  # (see docs/specifications/shaping/2026-08-08-fly-neon-deployment-design.md),
+  # so CF-Connecting-IP is trustworthy here -- see _client_key in
+  # backend/routers/session.py for what this actually changes and why.
+  # Direct access to the app's own <app>.fly.dev hostname (bypassing
+  # Cloudflare, and therefore this header's guarantee) is a known, tracked
+  # gap, not fixed by this flag -- see the separate follow-up for that.
+  TRUST_CF_CONNECTING_IP = "1"
 
 [[mounts]]
   source = "data"
