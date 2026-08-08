@@ -748,12 +748,15 @@ def claim_crawl_queue_batch(
         WHERE id IN (
             SELECT id FROM crawl_queue
             WHERE status = 'pending' {exclusion_clause}
-            -- (item_key IS NOT NULL) leads the sort so a release row (FALSE)
-            -- is always claimed before a stock-item row (TRUE), regardless
-            -- of which was enqueued first -- a large stock-sync enqueue
-            -- burst must never delay a user's own collection crawl behind
-            -- it. This is priority, not weighting: while any release row is
-            -- pending, no stock-item row is claimed at all, by design.
+            -- (item_key IS NOT NULL) leads the sort so every pending release
+            -- row (FALSE) sorts ahead of every pending stock-item row
+            -- (TRUE), regardless of which was enqueued first -- a large
+            -- stock-sync enqueue burst must never delay a user's own
+            -- collection crawl behind it. This is priority within one
+            -- LIMIT'd batch, not exclusion: a batch with fewer pending
+            -- release rows than %(limit)s still fills its remaining slots
+            -- with stock-item rows, so both kinds can be claimed together
+            -- once release rows are exhausted for that batch.
             ORDER BY (item_key IS NOT NULL), requested_at, id
             LIMIT %(limit)s
             FOR UPDATE SKIP LOCKED

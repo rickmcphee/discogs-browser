@@ -85,12 +85,25 @@ it doesn't show it.
   items follow the same real convention: once written, they persist even
   after an item disappears from every store's current inventory. This is a
   deliberate match to how this codebase actually behaves, not an oversight.
-- **No queue prioritization.** Stock-item and collection price-crawl jobs
-  share the same FIFO `crawl_queue` and the same per-site
-  (`_site_next_allowed_at`) rate limiter, exactly as collection jobs do
-  today. A large stock-item enqueue burst could in principle delay a user's
-  collection crawl behind it; left unaddressed for this slice, revisited
-  only if it's observed to matter in practice.
+- **Release rows are claimed ahead of stock-item rows — added during this
+  PR's whole-branch review, superseding an earlier "no prioritization"
+  decision.** The original plan deferred queue prioritization, on the
+  reasoning that a large stock-item enqueue burst "could in principle
+  delay" a user's collection crawl. A whole-branch review found that
+  premise false at actual scale: with 34 store crawlers able to enqueue on
+  the order of 20,000 stock-item jobs per sync against a shared ~7,700
+  jobs/day drain ceiling, and enqueued-but-undrained rows never advancing
+  their `requested_at` (only a `'done'` row's re-enqueue does), the FIFO
+  queue's backlog grows every sync rather than draining — starvation, not
+  a rare edge case. Fixed by adding `(item_key IS NOT NULL)` as the leading
+  key in `claim_crawl_queue_batch`'s `ORDER BY`: every pending release row
+  sorts ahead of every pending stock-item row, so a batch only includes
+  stock-item rows once pending release rows are exhausted for that batch
+  (a batch with fewer pending release rows than its `LIMIT` still fills
+  its remaining slots with stock-item rows — this is priority ordering
+  within one query, not an exclusion). Stock-item and collection jobs
+  still share one queue and one per-site rate limiter; this changes only
+  claim order, not the rest of the "no new migration tooling" design.
 - **No new migration tooling**, same as slice 1 — every schema change here
   is an idempotent `CREATE TABLE/INDEX IF NOT EXISTS` or `ADD COLUMN IF NOT
   EXISTS`/`ALTER COLUMN ... DROP NOT NULL` (all safe to re-run), consistent
