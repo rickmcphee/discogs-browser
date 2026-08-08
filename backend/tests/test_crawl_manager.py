@@ -1088,7 +1088,8 @@ async def test_worker_dispatches_both_target_kinds_when_claimed_in_one_batch(pg_
     fake_plugin._db_id = crawler_id
     fake_plugin._db_site_name = "Amazon"
 
-    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("config.load_config", return_value={"crawl_delay_seconds": 0}):
         claimed = await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={}, batch_size=5)
 
     assert claimed == 2
@@ -1186,10 +1187,76 @@ async def test_drain_one_batch_excludes_empty_stock_item_result_from_circuit_bre
     fake_plugin._db_id = crawler_id
     fake_plugin._db_site_name = "Amazon"
 
-    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("config.load_config", return_value={"crawl_delay_seconds": 0}):
         await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
 
     assert manager._site_consecutive_failures[crawler_id] == 5
+
+
+async def test_drain_one_batch_counts_bot_detected_stock_item_search_as_a_failure(pg_schema):
+    """The elif branch's other side: a stock-item search that hits a bot
+    interstitial (even if the retry then succeeds) still is a genuine
+    site-health signal, same as it is on the release path -- only a clean
+    empty result is excluded from the breaker, not bot detection."""
+    from crawler import BotDetectedError
+
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        conn.execute(
+            "INSERT INTO stock_item_identities (item_key, artist, title) VALUES ('key1', 'A', 'T')"
+        )
+        db.enqueue_crawl_queue_for_stock_item(conn, "key1", crawler_id)
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    manager._site_consecutive_failures[crawler_id] = 4
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(side_effect=[
+        BotDetectedError(),
+        [{"url": "https://x", "price": 9.99, "shipping": None, "currency": "USD", "condition": None}],
+    ])
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("crawler._reset_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("config.load_config", return_value={"crawl_delay_seconds": 0, "consecutive_failure_limit": 10}):
+        await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    assert manager._site_consecutive_failures[crawler_id] == 5
+
+
+async def test_drain_one_batch_resets_failure_count_on_a_found_stock_item_match(pg_schema):
+    """The elif branch's other trigger: a stock item that IS found is a
+    genuine "the site works" signal and resets the breaker, same as a
+    release match does."""
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        conn.execute(
+            "INSERT INTO stock_item_identities (item_key, artist, title) VALUES ('key1', 'A', 'T')"
+        )
+        db.enqueue_crawl_queue_for_stock_item(conn, "key1", crawler_id)
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    manager._site_consecutive_failures[crawler_id] = 5
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(return_value=[{"url": "https://x", "price": 9.99, "shipping": None, "currency": "USD", "condition": None}])
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("config.load_config", return_value={"crawl_delay_seconds": 0}):
+        await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    assert manager._site_consecutive_failures[crawler_id] == 0
 
 
 async def test_run_catalog_crawler_calls_zero_arg_crawl_catalog_for_plain_catalog_type(manager):
@@ -1334,7 +1401,8 @@ async def test_worker_row_commit_is_isolated_from_a_later_rows_failure(pg_schema
     fake_plugin._db_id = crawler_id
     fake_plugin._db_site_name = "Amazon"
 
-    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("config.load_config", return_value={"crawl_delay_seconds": 0}):
         with pytest.raises(asyncio.CancelledError):
             await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
 

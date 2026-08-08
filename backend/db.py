@@ -118,9 +118,17 @@ CREATE TABLE IF NOT EXISTS crawl_queue (
     UNIQUE(discogs_id, crawler_id)
 );
 
--- Matches claim_crawl_queue_batch's WHERE status = 'pending' ORDER BY
--- requested_at scan; partial so the index stays small as rows accumulate
--- 'done' history instead of growing with the whole table.
+-- Narrows claim_crawl_queue_batch's WHERE status = 'pending' scan; partial
+-- so the index stays small as rows accumulate 'done' history instead of
+-- growing with the whole table. Since that query's ORDER BY leads with
+-- (item_key IS NOT NULL) (release rows claimed before stock-item rows),
+-- not requested_at, this index no longer lets the planner skip a sort --
+-- worth a composite index if that scan ever shows up as a bottleneck, but
+-- not changed here: rewriting an index under an unchanged name via CREATE
+-- INDEX IF NOT EXISTS is a no-op against a database that already has the
+-- old definition, so doing this safely needs an explicit DROP INDEX (or a
+-- new name), which this repo's "no migration tooling" idempotent-DDL-only
+-- convention doesn't yet have a pattern for.
 CREATE INDEX IF NOT EXISTS crawl_queue_pending_idx ON crawl_queue (requested_at)
     WHERE status = 'pending';
 
@@ -740,6 +748,12 @@ def claim_crawl_queue_batch(
         WHERE id IN (
             SELECT id FROM crawl_queue
             WHERE status = 'pending' {exclusion_clause}
+            -- (item_key IS NOT NULL) leads the sort so a release row (FALSE)
+            -- is always claimed before a stock-item row (TRUE), regardless
+            -- of which was enqueued first -- a large stock-sync enqueue
+            -- burst must never delay a user's own collection crawl behind
+            -- it. This is priority, not weighting: while any release row is
+            -- pending, no stock-item row is claimed at all, by design.
             ORDER BY (item_key IS NOT NULL), requested_at, id
             LIMIT %(limit)s
             FOR UPDATE SKIP LOCKED
