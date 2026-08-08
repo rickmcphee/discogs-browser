@@ -213,6 +213,38 @@ def test_discogs_callback_locks_out_after_repeated_failures(client, monkeypatch)
     assert r.status_code == 429
 
 
+@respx.mock
+def test_client_key_keys_on_forwarded_ip_not_shared_proxy_peer(client, monkeypatch):
+    # Behind Fly/Cloudflare every request shares the same TestClient-simulated
+    # peer IP, so two distinct visitors must still get independent rate-limit
+    # buckets when they present different CF-Connecting-IP values.
+    monkeypatch.setattr(
+        session_router, "discogs_oauth_limiter", RateLimiter(2, config.LOGIN_LOCKOUT_SECONDS)
+    )
+    token_counter = iter(range(1, 10))
+    respx.post("https://api.discogs.com/oauth/request_token").mock(
+        side_effect=lambda request: httpx.Response(
+            200,
+            text=f"oauth_token=req-token-{next(token_counter)}&oauth_token_secret=req-secret",
+            headers={"content-type": "application/x-www-form-urlencoded"},
+        )
+    )
+    visitor_a_headers = {"CF-Connecting-IP": "203.0.113.10"}
+    visitor_b_headers = {"CF-Connecting-IP": "203.0.113.20"}
+
+    for _ in range(2):
+        r = client.get(
+            "/api/auth/discogs/start", headers=visitor_a_headers, follow_redirects=False
+        )
+        assert r.status_code in (302, 307)
+
+    r = client.get("/api/auth/discogs/start", headers=visitor_a_headers, follow_redirects=False)
+    assert r.status_code == 429
+
+    r = client.get("/api/auth/discogs/start", headers=visitor_b_headers, follow_redirects=False)
+    assert r.status_code in (302, 307)
+
+
 def test_redeem_invite_creates_user_and_session(client):
     with db.get_admin_pool().connection() as conn:
         admin_user = db.create_user(conn, discogs_user_id=1, discogs_username="admin")
