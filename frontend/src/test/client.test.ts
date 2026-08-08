@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { postCrawlStart, postStockSyncStart, getUserSettings, saveUserSettings, logout, getStock, getStockArtists, getReleases, postPlexMatchStart, refreshCollection, openCrawlStream } from '../api/client'
+import { postCrawlStart, postStockSyncStart, getUserSettings, saveUserSettings, logout, getStock, getStockArtists, getReleases, postPlexMatchStart, refreshCollection, openCrawlStream, openLogsStream } from '../api/client'
 
 describe('crawl/user-settings client functions', () => {
   let fetchMock: ReturnType<typeof vi.fn>
@@ -127,6 +127,12 @@ describe('crawl/user-settings client functions', () => {
 
   it('openCrawlStream sets withCredentials for cross-origin cookie auth', () => {
     const es = openCrawlStream()
+    expect(es.withCredentials).toBe(true)
+    es.close()
+  })
+
+  it('openLogsStream sets withCredentials for cross-origin cookie auth', () => {
+    const es = openLogsStream()
     expect(es.withCredentials).toBe(true)
     es.close()
   })

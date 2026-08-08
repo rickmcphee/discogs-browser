@@ -67,3 +67,32 @@ def test_cors_allows_configured_frontend_origin(pg_test_db, monkeypatch):
         monkeypatch.undo()
         importlib.reload(config)
         importlib.reload(main)
+
+
+def test_cors_rejects_unlisted_origin(pg_test_db, monkeypatch):
+    import config
+    import main
+
+    monkeypatch.setenv("FRONTEND_ORIGINS", "https://tracktempest.com")
+    try:
+        importlib.reload(config)
+        importlib.reload(main)
+        with patch("main.crawl_manager.start_worker_pool", new=AsyncMock()), \
+             patch("main.crawl_manager.stop_worker_pool", new=AsyncMock()), \
+             patch("main.init_global_schema"), \
+             patch("main.init_tenant_schema"), \
+             patch("main.seed_bundled_crawlers"), \
+             patch("main.scheduler"):
+            with TestClient(main.app) as client:
+                r = client.options(
+                    "/api/health",
+                    headers={
+                        "Origin": "https://evil.example.com",
+                        "Access-Control-Request-Method": "GET",
+                    },
+                )
+        assert "access-control-allow-origin" not in r.headers
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+        importlib.reload(main)

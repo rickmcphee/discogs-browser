@@ -226,7 +226,7 @@ export function openLogsStream(levels?: string[]): EventSource {
   const qs = levels && levels.length
     ? `?levels=${encodeURIComponent(levels.join(','))}`
     : ''
-  return new EventSource(`/api/logs/stream${qs}`)
+  return new EventSource(`${BASE}/logs/stream${qs}`, { withCredentials: true })
 }
 
 export async function clearLogs(): Promise<void> {

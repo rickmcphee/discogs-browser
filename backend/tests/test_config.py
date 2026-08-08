@@ -67,3 +67,23 @@ def test_database_url_still_injects_postgres_user_when_postgres_password_set(mon
     finally:
         monkeypatch.undo()
         importlib.reload(config_module)
+
+
+def test_frontend_origins_defaults_to_localhost_5173(monkeypatch):
+    monkeypatch.delenv("FRONTEND_ORIGINS", raising=False)
+    try:
+        importlib.reload(config_module)
+        assert config_module.FRONTEND_ORIGINS == ["http://localhost:5173"]
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config_module)
+
+
+def test_frontend_origins_rejects_wildcard(monkeypatch):
+    monkeypatch.setenv("FRONTEND_ORIGINS", "*")
+    try:
+        with pytest.raises(RuntimeError, match="FRONTEND_ORIGINS"):
+            importlib.reload(config_module)
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config_module)

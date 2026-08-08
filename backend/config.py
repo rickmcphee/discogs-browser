@@ -62,6 +62,11 @@ FRONTEND_BASE_URL = os.environ.get("FRONTEND_BASE_URL", "")
 FRONTEND_ORIGINS = [
     o.strip() for o in os.environ.get("FRONTEND_ORIGINS", "http://localhost:5173").split(",") if o.strip()
 ]
+if "*" in FRONTEND_ORIGINS:
+    raise RuntimeError(
+        'FRONTEND_ORIGINS must not include "*" -- combined with allow_credentials=True in '
+        "CORSMiddleware, that would let any origin make credentialed requests"
+    )
 
 # The backend's own publicly-reachable base URL, used to build the OAuth
 # callback Discogs redirects back to. Defaults to the local dev backend
