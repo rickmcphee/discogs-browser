@@ -194,6 +194,18 @@ All fields live in `DISCOGS_BROWSER_DATA/config.json`.
 - `crawl_delay_seconds` and `consecutive_failure_limit` **are read by the release-crawl path again**, no longer only by `shopify_catalog.py`. Both are now enforced **per site** (per `crawler_id`) rather than per crawl run, since the worker pool has no "one crawl run" to pace or abort: `CrawlManager._paced_search` holds a per-site `asyncio.Lock` across each `plugin.search()` call and its bot-detection retry, sleeping until `crawl_delay_seconds × random.uniform(0.5, 1.0)` has elapsed since that site's last request, so only one request per site is ever in flight pool-wide while different sites stay fully parallel. `_record_site_result` counts consecutive failures (`not_found`, any exception, or a bot detection that was recovered by retry) per site and, on reaching `consecutive_failure_limit`, sets a fixed 30-minute cooldown; `db.claim_crawl_queue_batch`'s `excluded_crawler_ids` then keeps that site's rows unclaimed until it expires. So the row below reading "Stop crawl after N consecutive failures" is wrong twice over — nothing stops, and the scope is one site, not the crawl. Read it as "pause this one site for 30 minutes after N consecutive failures; 0 = disabled".
 - `debug_screenshot_interval` and `shuffle_crawl_order` **no longer exist as settings at all** — removed from `SettingsUpdate`, `GET`/`POST /api/settings`, `frontend/src/api/types.ts`'s `Settings`, and the Settings UI table. Neither had a reader after `crawl_releases()` was deleted, and reviving them was rejected rather than deferred: shuffling doesn't map onto a claimed-queue model (enqueue order across many users' syncs already supplies more entropy than one shuffled batch did), and per-search debug screenshots were tied to the per-batch session concept the worker pool dropped, so rebuilding them needs its own design. The two table rows below are retained as historical record only. Any stale keys still sitting in an existing `config.json` on disk are inert.
 
+**Amendment (2026-08-08, crawl-target-expansion whole-branch review):** the
+bullet above states `_record_site_result` counts consecutive failures on
+`not_found` "per site," unconditionally. That's no longer quite right: it's
+unconditional only for a crawl-queue row targeting a Discogs release. A row
+targeting a store-crawler stock item (see
+[`2026-08-08-crawl-target-expansion-design.md`](../../specifications/shaping/2026-08-08-crawl-target-expansion-design.md))
+that comes back `not_found` with no bot detection records nothing at all —
+most small-label stock inventory simply isn't listed on Amazon/eBay, so an
+empty result there isn't evidence the site itself is broken the way it is
+for a real release. Bot detection and an actual match still behave exactly
+as described, for both kinds of target.
+
 | Field | Default | Description |
 |---|---|---|
 | `debug_screenshot_interval` | `20` | Screenshot interval: 0 = off, 1 = every search, N = every Nth search |

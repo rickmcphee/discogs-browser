@@ -63,6 +63,34 @@ def test_register_crawler_preserves_enabled_flag(admin_conn):
     assert row["module_path"] == "/new/path.py"
 
 
+def test_register_crawler_sets_and_preserves_requires_discogs_release(admin_conn):
+    db.register_crawler(admin_conn, "Discogs", "/x.py", requires_discogs_release=True)
+    admin_conn.commit()
+    row = admin_conn.execute(
+        "SELECT requires_discogs_release FROM crawlers WHERE site_name = 'Discogs'"
+    ).fetchone()
+    assert row["requires_discogs_release"] is True
+
+    # main.py's seed_bundled_crawlers() calls register_crawler unconditionally
+    # on every startup, passing the plugin's current requires_discogs_release
+    # value each time -- re-registering with the same value must leave it set.
+    db.register_crawler(admin_conn, "Discogs", "/x.py", requires_discogs_release=True)
+    admin_conn.commit()
+    row = admin_conn.execute(
+        "SELECT requires_discogs_release FROM crawlers WHERE site_name = 'Discogs'"
+    ).fetchone()
+    assert row["requires_discogs_release"] is True
+
+
+def test_register_crawler_defaults_requires_discogs_release_to_false(admin_conn):
+    db.register_crawler(admin_conn, "Amazon", "/x.py")
+    admin_conn.commit()
+    row = admin_conn.execute(
+        "SELECT requires_discogs_release FROM crawlers WHERE site_name = 'Amazon'"
+    ).fetchone()
+    assert row["requires_discogs_release"] is False
+
+
 def test_rename_crawler_preserves_id_and_history(admin_conn):
     db.register_crawler(admin_conn, "CC Music/eBay", "/path/ebay.py")
     admin_conn.commit()

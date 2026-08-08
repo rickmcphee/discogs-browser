@@ -140,7 +140,7 @@ class CrawlManager:
                 crawler_id, count,
             )
 
-    async def _paced_search(self, crawler_id: int, plugin, release: dict, pages: dict) -> tuple:
+    async def _paced_search(self, crawler_id: int, plugin, target: dict, pages: dict) -> tuple:
         """Runs plugin.search() for one crawler_id under that site's lock,
         enforcing the minimum inter-request delay and covering the existing
         bot-detection retry -- the lock spans both attempts so a second
@@ -175,12 +175,12 @@ class CrawlManager:
             bot_detected = False
             try:
                 try:
-                    matches = await plugin.search(release, page)
+                    matches = await plugin.search(target, page)
                 except BotDetectedError:
                     bot_detected = True
                     context, page = await _reset_context(context, self._browser, self._stealth, None)
                     pages[crawler_id] = (context, page)
-                    matches = await plugin.search(release, page)
+                    matches = await plugin.search(target, page)
                 return matches, bot_detected
             finally:
                 # Recorded on every exit path, success or exception -- if only
@@ -193,7 +193,7 @@ class CrawlManager:
 
     async def _drain_one_batch(self, worker_id: str, plugins_by_crawler_id: dict, pages: dict, batch_size: int = 5) -> int:
         from crawler import _new_context
-        from db import get_app_pool, claim_crawl_queue_batch, mark_crawl_queue_done, upsert_listing, get_catalog_release
+        from db import get_app_pool, claim_crawl_queue_batch, mark_crawl_queue_done, upsert_listing, get_catalog_release, get_stock_item_identity, upsert_stock_item_listing
 
         excluded = self._cooling_down_crawler_ids()
         with get_app_pool().connection() as conn:
@@ -213,10 +213,14 @@ class CrawlManager:
         # into a whole-batch one.
         for row in rows:
             plugin = plugins_by_crawler_id.get(row["crawler_id"])
+            is_release = row["discogs_id"] is not None
             with get_app_pool().connection() as conn:
-                release = get_catalog_release(conn, row["discogs_id"])
+                if is_release:
+                    target = get_catalog_release(conn, row["discogs_id"])
+                else:
+                    target = get_stock_item_identity(conn, row["item_key"])
 
-            if plugin is None or release is None:
+            if plugin is None or target is None:
                 with get_app_pool().connection() as conn:
                     mark_crawl_queue_done(conn, row["id"])
                     conn.commit()
@@ -226,37 +230,61 @@ class CrawlManager:
                 pages[row["crawler_id"]] = await _new_context(self._browser, self._stealth)
 
             try:
-                matches, bot_detected = await self._paced_search(row["crawler_id"], plugin, release, pages)
+                matches, bot_detected = await self._paced_search(row["crawler_id"], plugin, target, pages)
             except Exception as e:
-                log.error("[%s] Crawl failed for %s: %s", plugin._db_site_name, row["discogs_id"], e)
+                log.error("[%s] Crawl failed for %s: %s", plugin._db_site_name, row["discogs_id"] or row["item_key"], e)
                 self._record_site_result(row["crawler_id"], succeeded=False)
                 with get_app_pool().connection() as conn:
                     mark_crawl_queue_done(conn, row["id"])
                     conn.commit()
                 continue
 
-            self._record_site_result(row["crawler_id"], succeeded=bool(matches) and not bot_detected)
+            if is_release:
+                self._record_site_result(row["crawler_id"], succeeded=bool(matches) and not bot_detected)
+            elif bot_detected or matches:
+                # A stock item's search failing to find anything carries no
+                # site-health signal -- most small-label stock isn't listed on
+                # Amazon/eBay at all, so an empty result there isn't evidence the
+                # site is broken the way it is for a real Discogs release. Only
+                # a genuine signal (bot detection, or a match that proves the
+                # site currently works) is recorded; a plain empty result is
+                # silently excluded from the circuit breaker rather than counted
+                # as either outcome.
+                self._record_site_result(row["crawler_id"], succeeded=not bot_detected)
 
             with get_app_pool().connection() as conn:
                 if matches:
                     best = matches[0]
-                    upsert_listing(
-                        conn, row["discogs_id"], row["crawler_id"], best["url"],
-                        best.get("price"), best.get("shipping"), best.get("currency"), best.get("condition"),
-                    )
+                    if is_release:
+                        upsert_listing(
+                            conn, row["discogs_id"], row["crawler_id"], best["url"],
+                            best.get("price"), best.get("shipping"), best.get("currency"), best.get("condition"),
+                        )
+                    else:
+                        upsert_stock_item_listing(
+                            conn, row["item_key"], row["crawler_id"], best["url"],
+                            best.get("price"), best.get("shipping"), best.get("currency"), best.get("condition"),
+                        )
                 mark_crawl_queue_done(conn, row["id"])
                 conn.commit()
 
-            if matches:
-                await self._broadcast_listing_changed(row["discogs_id"], row["crawler_id"], "found")
+            status = "found" if matches else "not_found"
+            if is_release:
+                await self._broadcast_listing_changed(row["discogs_id"], row["crawler_id"], status)
             else:
-                await self._broadcast_listing_changed(row["discogs_id"], row["crawler_id"], "not_found")
+                await self._broadcast_stock_listing_changed(row["item_key"], row["crawler_id"], status)
 
         return len(rows)
 
     async def _broadcast_listing_changed(self, discogs_id: str, crawler_id: int, status: str):
         self._seq += 1
         event = {"id": self._seq, "type": "listing_changed", "discogs_id": discogs_id, "crawler_id": crawler_id, "status": status}
+        for q in list(self._subscribers):
+            await q.put(event)
+
+    async def _broadcast_stock_listing_changed(self, item_key: str, crawler_id: int, status: str):
+        self._seq += 1
+        event = {"id": self._seq, "type": "listing_changed", "item_key": item_key, "crawler_id": crawler_id, "status": status}
         for q in list(self._subscribers):
             await q.put(event)
 
@@ -546,7 +574,7 @@ class CrawlManager:
 
     async def _sync_stock(self, crawler_id: Optional[int] = None):
         import httpx
-        from db import get_app_pool, get_enabled_crawlers, replace_stock_items, update_crawler_last_run
+        from db import get_app_pool, get_enabled_crawlers, replace_stock_items, update_crawler_last_run, enqueue_crawl_queue_for_stock_item
         from crawler import load_enabled_crawlers
 
         await self._broadcast({"status": "stock_sync_started", "crawler_id": crawler_id})
@@ -603,8 +631,14 @@ class CrawlManager:
 
                 consecutive_429_sites = []
                 with get_app_pool().connection() as conn:
-                    replace_stock_items(conn, crawler._db_id, items)
+                    item_keys = replace_stock_items(conn, crawler._db_id, items)
                     update_crawler_last_run(conn, crawler._db_id)
+                    eligible_price_crawlers = [
+                        c for c in get_enabled_crawlers(conn, crawler_type="release") if not c["requires_discogs_release"]
+                    ]
+                    for item_key in item_keys:
+                        for price_crawler in eligible_price_crawlers:
+                            enqueue_crawl_queue_for_stock_item(conn, item_key, price_crawler["id"])
                     conn.commit()
                 total_synced += len(items)
                 log.info("[%s] Stock sync found %d items", crawler._db_site_name, len(items))

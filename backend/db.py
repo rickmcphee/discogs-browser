@@ -78,6 +78,8 @@ CREATE TABLE IF NOT EXISTS crawlers (
     last_run TIMESTAMP
 );
 
+ALTER TABLE crawlers ADD COLUMN IF NOT EXISTS requires_discogs_release BOOLEAN NOT NULL DEFAULT FALSE;
+
 CREATE TABLE IF NOT EXISTS listings (
     id SERIAL PRIMARY KEY,
     release_id TEXT NOT NULL REFERENCES catalog(discogs_id),
@@ -116,11 +118,35 @@ CREATE TABLE IF NOT EXISTS crawl_queue (
     UNIQUE(discogs_id, crawler_id)
 );
 
--- Matches claim_crawl_queue_batch's WHERE status = 'pending' ORDER BY
--- requested_at scan; partial so the index stays small as rows accumulate
--- 'done' history instead of growing with the whole table.
+-- Narrows claim_crawl_queue_batch's WHERE status = 'pending' scan; partial
+-- so the index stays small as rows accumulate 'done' history instead of
+-- growing with the whole table. Since that query's ORDER BY leads with
+-- (item_key IS NOT NULL) (release rows claimed before stock-item rows),
+-- not requested_at, this index no longer lets the planner skip a sort --
+-- worth a composite index if that scan ever shows up as a bottleneck, but
+-- not changed here: rewriting an index under an unchanged name via CREATE
+-- INDEX IF NOT EXISTS is a no-op against a database that already has the
+-- old definition, so doing this safely needs an explicit DROP INDEX (or a
+-- new name), which this repo's "no migration tooling" idempotent-DDL-only
+-- convention doesn't yet have a pattern for.
 CREATE INDEX IF NOT EXISTS crawl_queue_pending_idx ON crawl_queue (requested_at)
     WHERE status = 'pending';
+
+CREATE TABLE IF NOT EXISTS stock_item_identities (
+    item_key TEXT PRIMARY KEY,
+    artist TEXT NOT NULL,
+    title TEXT NOT NULL,
+    format TEXT,
+    last_seen TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+ALTER TABLE crawl_queue ALTER COLUMN discogs_id DROP NOT NULL;
+ALTER TABLE crawl_queue ADD COLUMN IF NOT EXISTS item_key TEXT REFERENCES stock_item_identities(item_key);
+CREATE UNIQUE INDEX IF NOT EXISTS crawl_queue_item_key_crawler_idx ON crawl_queue (item_key, crawler_id);
+
+ALTER TABLE listings ALTER COLUMN release_id DROP NOT NULL;
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS item_key TEXT REFERENCES stock_item_identities(item_key);
+CREATE UNIQUE INDEX IF NOT EXISTS listings_item_key_crawler_idx ON listings (item_key, crawler_id);
 """
 
 
@@ -314,7 +340,7 @@ def init_tenant_schema():
         # from _sync_stock, deletes a crawler's whole prior batch before
         # reinserting the fresh one.
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON stock_items TO app_user")
-        conn.execute("GRANT SELECT, INSERT, UPDATE ON catalog, listings TO app_user")
+        conn.execute("GRANT SELECT, INSERT, UPDATE ON catalog, listings, stock_item_identities TO app_user")
         conn.execute("GRANT USAGE, SELECT ON SEQUENCE listings_id_seq, stock_items_id_seq TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON library_items TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON stock_item_judgments TO app_user")
@@ -350,6 +376,12 @@ def get_catalog_release(conn, discogs_id: str) -> Optional[dict]:
     ).fetchone()
 
 
+def get_stock_item_identity(conn, item_key: str) -> Optional[dict]:
+    return conn.execute(
+        "SELECT * FROM stock_item_identities WHERE item_key = %s", [item_key]
+    ).fetchone()
+
+
 def upsert_listing(
     conn,
     release_id: str,
@@ -369,6 +401,28 @@ def upsert_listing(
             currency = EXCLUDED.currency, condition = EXCLUDED.condition, last_checked = CURRENT_TIMESTAMP
         """,
         [release_id, crawler_id, url, price, shipping, currency, condition],
+    )
+
+
+def upsert_stock_item_listing(
+    conn,
+    item_key: str,
+    crawler_id: int,
+    url: str,
+    price: Optional[float],
+    shipping: Optional[float],
+    currency: Optional[str],
+    condition: Optional[str],
+):
+    conn.execute(
+        """
+        INSERT INTO listings (item_key, crawler_id, url, price, shipping, currency, condition, last_checked)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+        ON CONFLICT (item_key, crawler_id) DO UPDATE SET
+            url = EXCLUDED.url, price = EXCLUDED.price, shipping = EXCLUDED.shipping,
+            currency = EXCLUDED.currency, condition = EXCLUDED.condition, last_checked = CURRENT_TIMESTAMP
+        """,
+        [item_key, crawler_id, url, price, shipping, currency, condition],
     )
 
 
@@ -618,15 +672,16 @@ def rename_crawler(conn, old_site_name: str, new_site_name: str):
     )
 
 
-def register_crawler(conn, site_name: str, module_path: str, crawler_type: str = "release"):
+def register_crawler(conn, site_name: str, module_path: str, crawler_type: str = "release", requires_discogs_release: bool = False):
     conn.execute(
         """
-        INSERT INTO crawlers (site_name, module_path, crawler_type, enabled)
-        VALUES (%s, %s, %s, TRUE)
+        INSERT INTO crawlers (site_name, module_path, crawler_type, requires_discogs_release, enabled)
+        VALUES (%s, %s, %s, %s, TRUE)
         ON CONFLICT (site_name) DO UPDATE SET
-            module_path = EXCLUDED.module_path, crawler_type = EXCLUDED.crawler_type
+            module_path = EXCLUDED.module_path, crawler_type = EXCLUDED.crawler_type,
+            requires_discogs_release = EXCLUDED.requires_discogs_release
         """,
-        [site_name, module_path, crawler_type],
+        [site_name, module_path, crawler_type, requires_discogs_release],
     )
 
 
@@ -657,6 +712,18 @@ def enqueue_crawl_queue(conn, discogs_id: str, crawler_id: int):
     )
 
 
+def enqueue_crawl_queue_for_stock_item(conn, item_key: str, crawler_id: int):
+    conn.execute(
+        """
+        INSERT INTO crawl_queue (item_key, crawler_id) VALUES (%s, %s)
+        ON CONFLICT (item_key, crawler_id) DO UPDATE SET
+            status = 'pending', requested_at = CURRENT_TIMESTAMP, claimed_by = NULL, claimed_at = NULL
+        WHERE crawl_queue.status = 'done'
+        """,
+        [item_key, crawler_id],
+    )
+
+
 # The row lock taken by the inner SELECT ... FOR UPDATE SKIP LOCKED is held
 # until the caller commits or rolls back the current transaction -- callers
 # must mark_crawl_queue_done() on these rows before/without another worker's
@@ -681,11 +748,20 @@ def claim_crawl_queue_batch(
         WHERE id IN (
             SELECT id FROM crawl_queue
             WHERE status = 'pending' {exclusion_clause}
-            ORDER BY requested_at, id
+            -- (item_key IS NOT NULL) leads the sort so every pending release
+            -- row (FALSE) sorts ahead of every pending stock-item row
+            -- (TRUE), regardless of which was enqueued first -- a large
+            -- stock-sync enqueue burst must never delay a user's own
+            -- collection crawl behind it. This is priority within one
+            -- LIMIT'd batch, not exclusion: a batch with fewer pending
+            -- release rows than %(limit)s still fills its remaining slots
+            -- with stock-item rows, so both kinds can be claimed together
+            -- once release rows are exhausted for that batch.
+            ORDER BY (item_key IS NOT NULL), requested_at, id
             LIMIT %(limit)s
             FOR UPDATE SKIP LOCKED
         )
-        RETURNING id, discogs_id, crawler_id
+        RETURNING id, discogs_id, item_key, crawler_id
         """,
         params,
     ).fetchall()
@@ -751,11 +827,13 @@ def normalize_title_casing(title: str) -> str:
     return title
 
 
-def replace_stock_items(conn, crawler_id: int, items: list[dict]):
+def replace_stock_items(conn, crawler_id: int, items: list[dict]) -> list[str]:
     conn.execute("DELETE FROM stock_items WHERE crawler_id = %s", [crawler_id])
     if not items:
-        return
+        return []
     rows = []
+    identity_rows = []
+    item_keys = []
     for item in items:
         artist = normalize_artist_casing(item["artist"])
         title = normalize_title_casing(item["title"])
@@ -763,12 +841,24 @@ def replace_stock_items(conn, crawler_id: int, items: list[dict]):
         # corrected `artist`/`title` above) so existing stock_item_judgments
         # rows, which join on item_key, don't orphan for items whose casing
         # changed here.
+        item_key = compute_item_key(item["artist"].title(), item["title"], item["url"])
+        item_keys.append(item_key)
+        identity_rows.append((item_key, artist, title, item.get("format")))
         rows.append((
             crawler_id, artist, title, item.get("format"), item.get("price"),
-            item.get("currency"), item["url"], item.get("cover_image_url"),
-            compute_item_key(item["artist"].title(), item["title"], item["url"]),
+            item.get("currency"), item["url"], item.get("cover_image_url"), item_key,
         ))
     with conn.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO stock_item_identities (item_key, artist, title, format, last_seen)
+            VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (item_key) DO UPDATE SET
+                artist = EXCLUDED.artist, title = EXCLUDED.title, format = EXCLUDED.format,
+                last_seen = CURRENT_TIMESTAMP
+            """,
+            identity_rows,
+        )
         cur.executemany(
             """
             INSERT INTO stock_items
@@ -777,6 +867,7 @@ def replace_stock_items(conn, crawler_id: int, items: list[dict]):
             """,
             rows,
         )
+    return item_keys
 
 
 def _not_owned_clause(user_id_param: str) -> str:

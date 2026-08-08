@@ -192,6 +192,13 @@ def test_event_touches_user_is_scoped_to_the_calling_users_own_library(pg_test_d
     assert crawl_router._event_touches_user(event_for_r2, bob["id"]) is True
 
 
+def test_event_touches_user_returns_true_for_a_stock_item_event_with_no_discogs_id(pg_test_db, authed_client_factory):
+    alice, bob, crawler_id = _setup_two_users_each_with_a_different_release()
+    event = {"type": "listing_changed", "item_key": "key1", "crawler_id": crawler_id, "status": "found"}
+    assert crawl_router._event_touches_user(event, alice["id"]) is True
+    assert crawl_router._event_touches_user(event, bob["id"]) is True
+
+
 def test_crawl_stream_replay_only_includes_events_relevant_to_calling_user(pg_test_db, authed_client_factory):
     alice, bob, crawler_id = _setup_two_users_each_with_a_different_release()
 
