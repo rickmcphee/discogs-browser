@@ -3,7 +3,7 @@ import type {
   AuthStatus, RecordScope, StockResponse, StockSortField,
 } from './types'
 
-const BASE = import.meta.env.VITE_API_BASE_URL || '/api'
+const BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/+$/, '')
 
 let onUnauthorized: (() => void) | null = null
 export function setUnauthorizedHandler(fn: () => void) { onUnauthorized = fn }

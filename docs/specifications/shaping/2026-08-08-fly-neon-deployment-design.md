@@ -43,8 +43,10 @@ decided on the merits below.
   `track-tempest`/"TrackTempest". Tracked separately; this spec only wires up
   the domain for the existing app.
 - Billing, CI/CD beyond a basic deploy-on-push workflow, and any application
-  code changes. Out of scope per the multi-tenant spec's own non-goals, still
-  out of scope here.
+  *architecture* changes. Out of scope per the multi-tenant spec's own
+  non-goals, still out of scope here — this spec's own small hardcoded-
+  assumption fixes (`DATABASE_URL` handling, CORS origins, cross-origin API
+  base) are config/deployment-target adaptations, not architecture changes.
 - Multi-region or multi-machine scaling. Single always-on machine is
   sufficient at this scale; the worker pool's existing `SELECT ... FOR UPDATE
   SKIP LOCKED` claiming logic already tolerates adding more later without a

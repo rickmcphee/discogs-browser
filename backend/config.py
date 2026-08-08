@@ -33,7 +33,7 @@ _raw_database_url = os.environ.get(
 # managed-Postgres deployment (e.g. Neon) sets DATABASE_URL to one ready-made
 # connection string with its own role/password already embedded, and must
 # not have that overwritten with a hardcoded "postgres" user.
-if "POSTGRES_PASSWORD" in os.environ:
+if os.environ.get("POSTGRES_PASSWORD"):
     DATABASE_URL = _with_userinfo(_raw_database_url, "postgres", os.environ["POSTGRES_PASSWORD"])
 else:
     DATABASE_URL = _raw_database_url

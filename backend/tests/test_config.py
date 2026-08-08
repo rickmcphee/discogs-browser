@@ -69,6 +69,22 @@ def test_database_url_still_injects_postgres_user_when_postgres_password_set(mon
         importlib.reload(config_module)
 
 
+def test_database_url_preserves_external_credentials_when_postgres_password_is_empty_string(monkeypatch):
+    monkeypatch.setenv("POSTGRES_PASSWORD", "")
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql://neondb_owner:realsecret@ep-example.us-east-2.aws.neon.tech/discogs_browser?sslmode=require",
+    )
+    try:
+        importlib.reload(config_module)
+        assert config_module.DATABASE_URL == (
+            "postgresql://neondb_owner:realsecret@ep-example.us-east-2.aws.neon.tech/discogs_browser?sslmode=require"
+        )
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config_module)
+
+
 def test_frontend_origins_defaults_to_localhost_5173(monkeypatch):
     monkeypatch.delenv("FRONTEND_ORIGINS", raising=False)
     try:

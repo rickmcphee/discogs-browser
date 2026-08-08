@@ -147,4 +147,15 @@ describe('crawl/user-settings client functions', () => {
     vi.unstubAllEnvs()
     vi.resetModules()
   })
+
+  it('BASE strips a trailing slash from VITE_API_BASE_URL to avoid double slashes', async () => {
+    vi.stubEnv('VITE_API_BASE_URL', 'https://api.tracktempest.com/api/')
+    vi.resetModules()
+    const { getUserSettings: getUserSettingsWithBase } = await import('../api/client')
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({}) })
+    await getUserSettingsWithBase()
+    expect(fetchMock.mock.calls[0][0]).toBe('https://api.tracktempest.com/api/user-settings')
+    vi.unstubAllEnvs()
+    vi.resetModules()
+  })
 })
