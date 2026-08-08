@@ -1034,6 +1034,64 @@ async def test_worker_claims_and_completes_one_queue_row(pg_schema):
     assert queue_row["status"] == "done"
 
 
+async def test_worker_claims_and_completes_one_stock_item_queue_row(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        conn.execute(
+            "INSERT INTO stock_item_identities (item_key, artist, title) VALUES ('key1', 'A', 'T')"
+        )
+        db.enqueue_crawl_queue_for_stock_item(conn, "key1", crawler_id)
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(return_value=[{"url": "https://x", "price": 9.99, "shipping": None, "currency": "USD", "condition": None}])
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        claimed = await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    assert claimed == 1
+    with db.get_admin_pool().connection() as conn:
+        listing = conn.execute("SELECT price, release_id FROM listings WHERE item_key = 'key1'").fetchone()
+        queue_row = conn.execute("SELECT status FROM crawl_queue WHERE item_key = 'key1'").fetchone()
+    assert listing["price"] == 9.99
+    assert listing["release_id"] is None
+    assert queue_row["status"] == "done"
+
+
+async def test_worker_broadcasts_stock_listing_changed_with_no_discogs_id(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        conn.execute(
+            "INSERT INTO stock_item_identities (item_key, artist, title) VALUES ('key1', 'A', 'T')"
+        )
+        db.enqueue_crawl_queue_for_stock_item(conn, "key1", crawler_id)
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(return_value=[{"url": "https://x", "price": 9.99, "shipping": None, "currency": "USD", "condition": None}])
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    q = manager.subscribe()
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    event = q.get_nowait()
+    assert event["type"] == "listing_changed"
+    assert event["item_key"] == "key1"
+    assert "discogs_id" not in event
+
+
 async def test_worker_retries_once_on_bot_detection_then_succeeds(pg_schema):
     from crawler import BotDetectedError
     with db.get_admin_pool().connection() as conn:
