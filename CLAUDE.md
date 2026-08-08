@@ -118,6 +118,10 @@ Before opening a PR — including ad hoc changes that never went through the spe
 
 Plans (`docs/superpowers/plans/`) are historical per-feature task logs, not living reference — they don't need backporting for this check.
 
+### Pull requests
+
+Always open PRs as ready for review, not as drafts — pass `--draft=false` (or omit `--draft` and don't add `Draft PR` state) whenever creating a PR via `gh`, the GitHub API, or `sdlc:pr-review-prep`. Don't ask which mode to use.
+
 ## Tests
 
 - `pytest-asyncio` with `asyncio_mode = "auto"` (all async tests run automatically)
