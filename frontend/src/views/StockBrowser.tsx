@@ -206,12 +206,12 @@ function StockBrowser({ recommendedAvailable = false, hiddenCrawlerIds = NO_HIDD
             <thead className="sticky top-0 bg-gray-900 text-xs text-gray-400 uppercase">
               <tr>
                 <th className="w-12 px-3 py-2"></th>
-                <th className="px-3 py-2 text-center" aria-sort={sort === 'artist' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                <th className="px-3 py-2 text-right" aria-sort={sort === 'artist' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}>
                   <button type="button" onClick={() => toggleSort('artist')} className="w-full cursor-pointer hover:text-white select-none">
                     Artist {sort === 'artist' ? (order === 'asc' ? '↑' : '↓') : ''}
                   </button>
                 </th>
-                <th className="px-3 py-2 text-center" aria-sort={sort === 'title' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                <th className="px-3 py-2 text-left" aria-sort={sort === 'title' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}>
                   <button type="button" onClick={() => toggleSort('title')} className="w-full cursor-pointer hover:text-white select-none">
                     Title {sort === 'title' ? (order === 'asc' ? '↑' : '↓') : ''}
                   </button>
@@ -254,8 +254,8 @@ function StockBrowser({ recommendedAvailable = false, hiddenCrawlerIds = NO_HIDD
                       <div className="w-10 h-10 bg-gray-800 rounded" />
                     )}
                   </td>
-                  <td className="px-3 py-2 text-gray-200" title={item.reason ?? undefined}>{item.artist}</td>
-                  <td className="px-3 py-2 text-gray-300" title={item.reason ?? undefined}>{item.title}</td>
+                  <td className="px-3 py-2 text-right text-gray-200" title={item.reason ?? undefined}>{item.artist}</td>
+                  <td className="px-3 py-2 text-left text-gray-300" title={item.reason ?? undefined}>{item.title}</td>
                   <td className="px-3 py-2 text-gray-400">{item.format ?? '—'}</td>
                   <td className="px-3 py-2">
                     <a href={item.url} target="_blank" rel="noreferrer" className="text-green-400 hover:text-green-300 font-medium">
