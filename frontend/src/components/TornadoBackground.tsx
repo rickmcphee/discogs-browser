@@ -40,10 +40,10 @@ const RECORDS: VinylRecord[] = [
 function RecordGlyph({ cx, cy, r, rotate }: VinylRecord) {
   return (
     <g transform={`rotate(${rotate} ${cx} ${cy})`}>
-      <circle cx={cx} cy={cy} r={r} fill="none" stroke="currentColor" strokeWidth={1.5} />
-      <circle cx={cx} cy={cy} r={r * 0.65} fill="none" stroke="currentColor" strokeWidth={1} />
-      <circle cx={cx} cy={cy} r={r * 0.4} fill="none" stroke="currentColor" strokeWidth={1} />
-      <circle cx={cx} cy={cy} r={r * 0.12} fill="none" stroke="currentColor" strokeWidth={1} />
+      <circle cx={cx} cy={cy} r={r} strokeWidth={1.5} />
+      <circle cx={cx} cy={cy} r={r * 0.65} strokeWidth={1} />
+      <circle cx={cx} cy={cy} r={r * 0.4} strokeWidth={1} />
+      <circle cx={cx} cy={cy} r={r * 0.12} strokeWidth={1} />
     </g>
   )
 }
@@ -52,9 +52,11 @@ export default function TornadoBackground() {
   return (
     <svg
       aria-hidden="true"
-      viewBox="0 0 600 900"
+      viewBox="-300 0 1200 900"
       preserveAspectRatio="xMidYMid slice"
       className="w-full h-full"
+      fill="none"
+      stroke="currentColor"
     >
       {HOOPS.map((hoop, i) => (
         <ellipse
@@ -63,8 +65,6 @@ export default function TornadoBackground() {
           cy={hoop.cy}
           rx={hoop.rx}
           ry={hoop.ry}
-          fill="none"
-          stroke="currentColor"
           strokeWidth={1.5}
           transform={`rotate(${hoop.rotate} ${CENTER_X} ${hoop.cy})`}
         />

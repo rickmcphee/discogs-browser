@@ -10,9 +10,17 @@ describe('TornadoBackground', () => {
     expect(svg).toHaveAttribute('aria-hidden', 'true')
   })
 
-  it('renders no fills, only strokes, so it composites as line art', () => {
+  it('renders line art only: fill/stroke set once on the svg root, never overridden by a shape', () => {
     const { container } = render(<TornadoBackground />)
-    const filledShapes = container.querySelectorAll('[fill]:not([fill="none"])')
-    expect(filledShapes.length).toBe(0)
+    const svg = container.querySelector('svg')
+    expect(svg).toHaveAttribute('fill', 'none')
+    expect(svg).toHaveAttribute('stroke', 'currentColor')
+
+    const shapes = container.querySelectorAll('circle, ellipse, path, rect, polygon')
+    expect(shapes.length).toBeGreaterThan(0)
+    shapes.forEach((shape) => {
+      expect(shape).not.toHaveAttribute('fill')
+      expect(shape).not.toHaveAttribute('stroke')
+    })
   })
 })
