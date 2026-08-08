@@ -9,7 +9,7 @@ export default function LoginScreen() {
         <TornadoBackground />
       </div>
       <div className="relative z-10 bg-gray-900 border border-gray-700 rounded-xl shadow-xl p-8 w-80 space-y-4 text-center">
-        <h1 className="text-base font-semibold text-white">Sign In</h1>
+        <h1 className="text-base font-semibold text-white">Track Tempest</h1>
         <a
           href={discogsLoginUrl()}
           className={`block w-full py-2 text-sm ${primaryButtonClass()}`}
