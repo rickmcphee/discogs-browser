@@ -95,6 +95,57 @@ bash bootstrap.sh
 docker-compose up -d
 ```
 
+## Deployment (Fly.io + Neon)
+
+The hosted multi-tenant deployment runs on Fly.io (backend, app `tracktempest-api`)
++ Neon (Postgres) + Cloudflare (frontend), live at `tracktempest.com`. See
+[`docs/specifications/shaping/2026-08-08-fly-neon-deployment-design.md`](docs/specifications/shaping/2026-08-08-fly-neon-deployment-design.md)
+for the architecture and
+[`docs/specifications/plans/2026-08-08-fly-neon-deployment.md`](docs/specifications/plans/2026-08-08-fly-neon-deployment.md)
+for the full provisioning runbook.
+
+The frontend is a static Vite build. It's served via a Cloudflare Worker with
+static assets — Cloudflare folded Pages into Workers in 2026, so a new
+"Create application" project deploys this way by default now rather than as
+a classic Pages project; functionally equivalent for a static SPA. Build
+settings: root directory `frontend`, build command `npm run build`, output
+directory `dist`, with `VITE_API_BASE_URL=https://api.tracktempest.com/api`
+set as a build-time environment variable (unset/empty means same-origin
+`/api`, i.e. local dev and Docker).
+
+**DNS:** `api.tracktempest.com` is a proxied CNAME to the Fly app's hostname;
+the zone's SSL/TLS mode must be **Full (strict)**, and Fly's certificate
+needs an `_fly-ownership` TXT record to verify ownership through Cloudflare's
+proxy (`fly certs setup <hostname>` prints the exact value to add). For the
+apex `tracktempest.com`, prefer Cloudflare's **Custom Domain** binding
+(Worker settings → Domains & Routes → Custom Domains) over a manual CNAME to
+the Worker's own `*.workers.dev` hostname — a manual CNAME works too (Cloudflare
+flattens it), but routes through a second Cloudflare proxy hop and can
+surface a transient `522`. Either way, allow real time for a freshly-added
+apex record to propagate before concluding something's wrong.
+
+**Redeploys:** pushing to `main` under `backend/` triggers
+`.github/workflows/fly-deploy.yml` automatically (gated behind that
+workflow's own backend/frontend test jobs). The frontend redeploys
+automatically on every push via Cloudflare's own git integration.
+
+**Bootstrapping a fresh instance:** the first invite can't be created
+through the app — the create-invite endpoint requires an existing admin
+user, and a brand-new database has none. Insert it directly (`created_by`
+is nullable for exactly this case):
+
+```sql
+INSERT INTO invites (code, created_by, created_at) VALUES ('bootstrap-invite', NULL, CURRENT_TIMESTAMP);
+```
+
+After redeeming it and logging in once, promote yourself to admin
+(`is_admin` defaults to `false`) so future invites can be minted through the
+app instead of raw SQL:
+
+```sql
+UPDATE users SET is_admin = true WHERE discogs_username = '<your-discogs-username>';
+```
+
 ## Environment variables
 
 | Variable | Default | Description |
@@ -107,6 +158,8 @@ docker-compose up -d
 | `DISCOGS_CONSUMER_KEY` / `DISCOGS_CONSUMER_SECRET` | _(none, required)_ | This app's own registered Discogs OAuth consumer credentials |
 | `BACKEND_BASE_URL` | `http://localhost:8000` | This backend's own publicly-reachable base URL, used to build the Discogs OAuth callback |
 | `FRONTEND_BASE_URL` | `""` (relative, same-origin) | Where the backend redirects the browser after login; set for local dev where frontend/backend are different origins |
+| `FRONTEND_ORIGINS` | `http://localhost:5173` | Comma-separated list of origins allowed to make cross-origin credentialed requests (CORS) |
+| `TRUST_CF_CONNECTING_IP` | `""` (unset) | Set to `1` only once Cloudflare is confirmed to be the sole path into the deployment; see "Deployment / rate-limit keying" above |
 | `SESSION_IDLE_SECONDS` | 7 days | Session idle timeout |
 | `SESSION_MAX_SECONDS` | 30 days | Session absolute max lifetime |
 | `LOGIN_MAX_FAILURES` | `5` | Failure threshold shared by the invite-redemption and Discogs-OAuth rate limiters before a temporary lockout |
