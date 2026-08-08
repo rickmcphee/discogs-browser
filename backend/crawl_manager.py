@@ -546,8 +546,13 @@ class CrawlManager:
 
     async def _sync_stock(self, crawler_id: Optional[int] = None):
         import httpx
-        from db import get_app_pool, get_enabled_crawlers, replace_stock_items, update_crawler_last_run
+        from db import get_app_pool, get_enabled_crawlers, replace_stock_items, update_crawler_last_run, enqueue_crawl_queue_for_stock_item
         from crawler import load_enabled_crawlers
+
+        with get_app_pool().connection() as conn:
+            eligible_price_crawlers = [
+                c for c in get_enabled_crawlers(conn, crawler_type="release") if not c["requires_discogs_release"]
+            ]
 
         await self._broadcast({"status": "stock_sync_started", "crawler_id": crawler_id})
         log.info("Stock sync started")
@@ -603,8 +608,11 @@ class CrawlManager:
 
                 consecutive_429_sites = []
                 with get_app_pool().connection() as conn:
-                    replace_stock_items(conn, crawler._db_id, items)
+                    item_keys = replace_stock_items(conn, crawler._db_id, items)
                     update_crawler_last_run(conn, crawler._db_id)
+                    for item_key in item_keys:
+                        for price_crawler in eligible_price_crawlers:
+                            enqueue_crawl_queue_for_stock_item(conn, item_key, price_crawler["id"])
                     conn.commit()
                 total_synced += len(items)
                 log.info("[%s] Stock sync found %d items", crawler._db_site_name, len(items))

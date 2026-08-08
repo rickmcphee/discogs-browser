@@ -50,7 +50,7 @@ def pg_schema(pg_test_db, monkeypatch):
     # this fixture body runs, and nothing in between touches it.
     yield
     with db.get_admin_pool().connection() as conn:
-        conn.execute("TRUNCATE catalog, users, crawlers CASCADE")
+        conn.execute("TRUNCATE catalog, users, crawlers, stock_item_identities CASCADE")
         conn.commit()
 
 
@@ -1412,6 +1412,62 @@ async def test_sync_stock_replaces_items_for_each_enabled_catalog_crawler(pg_sch
 
     statuses = [e["status"] for e in manager.recent_events()]
     assert statuses == ["stock_sync_started", "stock_sync_progress", "stock_sync_complete"]
+
+
+async def test_sync_stock_enqueues_crawl_queue_for_eligible_price_crawlers(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Stock Site", "/x.py", crawler_type="catalog")
+        db.register_crawler(conn, "Amazon", "/amazon.py", crawler_type="release")
+        db.register_crawler(conn, "eBay", "/ebay.py", crawler_type="release")
+        conn.commit()
+        amazon_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        ebay_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'eBay'").fetchone()["id"]
+
+    fake_plugin = AsyncMock()
+
+    async def _items():
+        yield {"artist": "A", "title": "T", "url": "https://x/1", "price": 5.0, "currency": "USD"}
+
+    fake_plugin.crawl_catalog = lambda: _items()
+    fake_plugin._db_site_name = "Stock Site"
+    with db.get_admin_pool().connection() as conn:
+        fake_plugin._db_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Stock Site'").fetchone()["id"]
+
+    manager = CrawlManager()
+    with patch("crawler.load_enabled_crawlers", return_value=[fake_plugin]):
+        await manager._sync_stock()
+
+    item_key = db.compute_item_key("A".title(), "T", "https://x/1")
+    with db.get_admin_pool().connection() as conn:
+        queued = conn.execute(
+            "SELECT crawler_id FROM crawl_queue WHERE item_key = %s ORDER BY crawler_id", [item_key]
+        ).fetchall()
+    assert sorted(q["crawler_id"] for q in queued) == sorted([amazon_id, ebay_id])
+
+
+async def test_sync_stock_does_not_enqueue_for_a_crawler_requiring_discogs_release(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Stock Site", "/x.py", crawler_type="catalog")
+        db.register_crawler(conn, "Discogs", "/discogs.py", crawler_type="release", requires_discogs_release=True)
+        conn.commit()
+
+    fake_plugin = AsyncMock()
+
+    async def _items():
+        yield {"artist": "A", "title": "T", "url": "https://x/1", "price": 5.0, "currency": "USD"}
+
+    fake_plugin.crawl_catalog = lambda: _items()
+    fake_plugin._db_site_name = "Stock Site"
+    with db.get_admin_pool().connection() as conn:
+        fake_plugin._db_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Stock Site'").fetchone()["id"]
+
+    manager = CrawlManager()
+    with patch("crawler.load_enabled_crawlers", return_value=[fake_plugin]):
+        await manager._sync_stock()
+
+    with db.get_admin_pool().connection() as conn:
+        queued = conn.execute("SELECT * FROM crawl_queue").fetchall()
+    assert queued == []
 
 
 async def test_sync_stock_broadcasts_error_and_continues_when_a_crawler_fails(pg_schema):
