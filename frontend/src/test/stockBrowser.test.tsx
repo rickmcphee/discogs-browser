@@ -91,6 +91,15 @@ describe('StockBrowser', () => {
     await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ artist: 'NAILS' })))
   })
 
+  it('defaults sort to title when a specific artist is selected, and back to artist for All', async () => {
+    render(<StockBrowser />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'All' })).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: 'NAILS' }))
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'title', order: 'asc' })))
+    fireEvent.click(screen.getByRole('button', { name: 'All' }))
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'artist', order: 'asc' })))
+  })
+
   it('switches to tile view and links tiles to the product page', async () => {
     render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())

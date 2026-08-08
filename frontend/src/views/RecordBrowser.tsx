@@ -121,6 +121,18 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
     setPage(1)
   }
 
+  // Sorting by artist is meaningless once the list is filtered down to a
+  // single artist, so switching the artist filter resets to the sort that
+  // makes sense for the new context: artist for "All", title for a specific
+  // artist. A later manual toggleSort still overrides this until the artist
+  // filter changes again.
+  function selectArtist(artist: string) {
+    setSelectedArtist(artist)
+    setSort(artist ? 'title' : 'artist')
+    setOrder('asc')
+    setPage(1)
+  }
+
   const enabledCrawlers = crawlers.filter((c) => c.enabled && c.crawler_type === 'release' && !hiddenCrawlerIds.includes(c.id))
   const totalPages = Math.ceil(total / PER_PAGE)
 
@@ -133,7 +145,7 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
         <div className="px-3 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider border-b border-gray-800 shrink-0">Artist</div>
         <div className="flex flex-col gap-2 overflow-y-auto p-3">
           <button
-            onClick={() => { setSelectedArtist(''); setPage(1) }}
+            onClick={() => selectArtist('')}
             className={`shrink-0 text-left text-sm px-2 py-1 ${navButtonClass(!selectedArtist)}`}
           >
             All
@@ -141,7 +153,7 @@ export default function RecordBrowser({ scope, onRefreshPrices, crawling, crawli
           {artists.map((a) => (
             <button
               key={a}
-              onClick={() => { setSelectedArtist(a); setPage(1) }}
+              onClick={() => selectArtist(a)}
               className={`shrink-0 text-left text-sm px-2 py-1 truncate ${navButtonClass(selectedArtist === a)}`}
             >
               {a}
