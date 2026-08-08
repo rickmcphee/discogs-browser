@@ -167,5 +167,5 @@ def test_get_distinct_artists_for_user_scope(pg_test_db):
         conn.commit()
 
     with db.user_scope(alice["id"]) as conn:
-        artists = db.get_distinct_artists(conn, alice["id"], scope="collection")
+        artists = db.get_distinct_artists(conn, alice["id"], scope="discogs")
     assert artists == ["Zzz"]
