@@ -87,7 +87,7 @@ class Crawler:
                     page += 1
 
     @classmethod
-    def _parse_items(cls, fragment_html: str) -> list:
+    def _parse_items(cls, fragment_html: str) -> list[dict]:
         items = []
         for block in _BLOCK_RE.findall(fragment_html):
             if _UNAVAILABLE_RE.search(block):
@@ -97,9 +97,12 @@ class Crawler:
                 continue
 
             artist_m = _PRODUCT_TITLE_RE.search(block)
-            artist = _norm(artist_m.group(1)) if artist_m else ""
             title_attr_m = _TITLE_ATTR_RE.search(block)
-            full = _norm(title_attr_m.group(1)) if title_attr_m else ""
+            if not (artist_m and title_attr_m):
+                continue  # markup drift -- no artist/title source, skip rather than yield blanks
+
+            artist = _norm(artist_m.group(1))
+            full = _norm(title_attr_m.group(1))
             prefix = artist + "/"
             if full.startswith(prefix):
                 remainder = full[len(prefix):]

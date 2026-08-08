@@ -1,6 +1,10 @@
 import json
 from pathlib import Path
 
+import httpx
+import pytest
+import respx
+from config import save_config
 from crawlers.sgrecordshop import Crawler
 
 FIXTURES = Path(__file__).parent / "fixtures" / "crawlers" / "sgrecordshop"
@@ -54,10 +58,19 @@ def test_parse_items_excludes_unavailable_item():
     assert not any(i["pid"] == "26427979" for i in items)
 
 
-import httpx
-import pytest
-import respx
-from config import save_config
+def test_parse_items_skips_block_missing_artist_or_title_source():
+    # Synthetic markup-drift case: has a real pid and price (passes the
+    # earlier availability gate) but is missing both the product-title span
+    # and the anchor title attribute this crawler recovers artist/title
+    # from -- must be skipped rather than yielding a blank-artist/title item.
+    block = (
+        '<div class="producttitlelink product-grid-variant">'
+        '<a href="/p/12345/some-slug">'
+        '<span class="see-more-format">Vinyl LP</span>'
+        '<span itemprop="price">19.99</span>'
+        "</a></div>"
+    )
+    assert Crawler._parse_items(block) == []
 
 
 _METAL_HTML = """
