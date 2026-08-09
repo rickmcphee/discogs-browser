@@ -40,9 +40,8 @@ _USED_PRICE_RE = re.compile(r"\bUsed\s+(?:for|from)\s+\$(\d[\d,]*(?:\.\d{1,2})?)
 # is the only real source.
 _FORMAT_SUFFIX_RE = re.compile(r'\((LP|7"|10"|12"|78)\)\s*$')
 
-_ALBUM_ID_RE = re.compile(r"/albums/(\d+)/")
+_ALBUM_ID_RE = re.compile(r"/albums/(\d+)")
 
-# One page.evaluate() round trip per listing page: fetch, parse, return rows.
 # The fragment is wrapped in <table> so the HTML parser builds real <tr>/<td>
 # structure -- parsing bare <tr> markup drops the cells.
 _FETCH_AND_EXTRACT_JS = """
@@ -50,18 +49,18 @@ async (args) => {
   const response = await fetch(args.url, {headers: {'X-Requested-With': 'XMLHttpRequest'}});
   if (response.status !== 200) return {status: response.status, rows: []};
   const payload = await response.json();
+  if (typeof payload.data !== 'string') throw new Error('unexpected cds_and_vinyl.php payload shape');
   const doc = new DOMParser().parseFromString('<table>' + payload.data + '</table>', 'text/html');
   const rows = Array.from(doc.querySelectorAll('tr')).map(tr => {
-    const cells = tr.querySelectorAll('td');
     const titleEl = tr.querySelector('.search-deets a');
-    const artistEl = cells[1] ? cells[1].querySelector('a') : null;
+    const artistEl = tr.querySelector('a[href*="/artist/"]');
     const priceEl = tr.querySelector('.price');
     const usedEl = tr.querySelector('a.red-link');
     const imgEl = tr.querySelector('.search-thumb img');
     return {
       href: titleEl ? titleEl.getAttribute('href') : null,
-      title: titleEl ? titleEl.textContent.trim() : null,
-      artist: artistEl ? artistEl.textContent.trim() : null,
+      title: titleEl ? titleEl.textContent.replace(/\\s+/g, ' ').trim() : null,
+      artist: artistEl ? artistEl.textContent.replace(/\\s+/g, ' ').trim() : null,
       newPrice: priceEl ? priceEl.textContent.trim() : null,
       used: usedEl ? usedEl.textContent.trim() : null,
       image: imgEl ? imgEl.getAttribute('src') : null,
@@ -129,6 +128,9 @@ class Crawler:
         await page.goto(f"{self.base_url}/music/cd-and-vinyl", timeout=120_000)
 
         for page_num in range(1, _WINDOW_PAGES + 1):
+            # The first sleep is the load-bearing one: it's the gap that lets
+            # Cloudflare's JSD challenge script finish after goto() before the
+            # AJAX call, not just pacing.
             await sleep(random.uniform(delay * 0.5, delay))
             result = await page.evaluate(
                 _FETCH_AND_EXTRACT_JS, {"url": self._listing_url(page_num)}
