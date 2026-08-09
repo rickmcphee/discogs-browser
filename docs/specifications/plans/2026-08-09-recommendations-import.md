@@ -17,14 +17,15 @@
 **Before starting:** confirm the baseline is green so any later failure is attributable to this plan.
 
 ```bash
-cd backend && TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/discogs_browser_test pytest
+cd backend && TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/discogs_browser_test \
+  IDENTITY_DB_PASSWORD=ci-test-identity-password APP_DB_PASSWORD=ci-test-app-password pytest
 ```
 
 ```bash
 cd frontend && npm test
 ```
 
-Both must pass. `pytest` needs a running Postgres and `TEST_DATABASE_URL` set — see `README.md`'s environment-variable table. If no Postgres is running:
+Both must pass. `pytest` needs a running Postgres and all three of `TEST_DATABASE_URL`, `IDENTITY_DB_PASSWORD`, `APP_DB_PASSWORD` set (values above match `.github/workflows/fly-deploy.yml`) — without the latter two, `init_tenant_schema()` raises `RuntimeError` and every DB test errors at setup. See `README.md`'s environment-variable table. If no Postgres is running:
 
 ```bash
 docker run -d --name discogs-pg -e POSTGRES_PASSWORD=postgres -p 5432:5432 postgres:16

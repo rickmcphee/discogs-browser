@@ -134,6 +134,18 @@ answer. Independently of that, the request body is capped — this is a hosted
 multi-tenant app and an uncapped upload endpoint is a memory-exhaustion
 vector.
 
+**`frontend/nginx.conf` also needed a cap raised, not just the backend's.**
+The Docker/nginx frontend proxies `/api/` to the backend with no
+`client_max_body_size` set, so nginx's 1 MiB default applied ahead of the
+backend's own 10 MB check. The design spec's own worked example — a
+9000-item catalog, roughly 1.6 MB at ~183 bytes/row — would have been
+rejected by nginx with a generic 413 before ever reaching
+`recommendations_import.MAX_UPLOAD_BYTES`, silently breaking the feature
+for exactly the users with the most judgments to preserve. Fixed by adding
+`client_max_body_size 12m;` to the `location /api/` block — slightly above
+the backend's 10 MB so the backend's own, more specific 413 fires instead
+of nginx's.
+
 **Accepted risk: CSV formula injection.** `reason` is model-authored text.
 A value beginning `=`, `+`, `-`, or `@` is interpreted as a formula by
 Excel/Sheets. This is already true of today's export and is not introduced
@@ -174,9 +186,15 @@ artist,title,format,price,source,link,reason,item_key,recommended,judged_at
 - `judged_at` — ISO-8601, naive UTC as stored (`2026-08-09T14:03:22.481923`).
 
 Rows: **every** judgment for the calling user. No `recommended` filter, no
-`_not_owned_clause` filter. Ordered by artist (nulls last), title,
-`item_key` — so the readable rows sort naturally and import-only rows
-collect at the end.
+`_not_owned_clause` filter. **Correction:** the shipped query orders by
+`COALESCE(i.artist, ''), COALESCE(i.title, ''), j.item_key`, which sorts
+import-only rows (no identity row, so empty-string artist) *first*, not
+last as originally stated here. This was deliberate, not an oversight:
+sorting on the raw nullable column while projecting the `COALESCE`d value
+would let a genuinely empty artist sort first while a NULL artist sorted
+last, even though both render as the same blank cell — an inconsistency
+that's also a hazard for the byte-for-byte round-trip test, since the two
+cases would order differently despite being indistinguishable in the file.
 
 On import, only `item_key`, `recommended`, `judged_at`, and `reason` are
 read. The other six columns exist for humans.
@@ -202,12 +220,25 @@ LEFT JOIN LATERAL (
     FROM stock_items s
     JOIN crawlers cr ON cr.id = s.crawler_id
     WHERE s.item_key = j.item_key
-    ORDER BY s.last_seen DESC
+    ORDER BY s.last_seen DESC, cr.site_name
     LIMIT 1
 ) d ON TRUE
 WHERE j.user_id = %(user_id)s
-ORDER BY i.artist ASC NULLS LAST, i.title, j.item_key
+ORDER BY COALESCE(i.artist, ''), COALESCE(i.title, ''), j.item_key
 ```
+
+**Correction:** the lateral's `ORDER BY` originally shipped as
+`s.last_seen DESC` alone, matching what's written above; it's now
+`s.last_seen DESC, cr.site_name`. `replace_stock_items` stamps
+`last_seen = CURRENT_TIMESTAMP` once per transaction, so two crawlers that
+saw the same `item_key` in the same sync carry identical timestamps, and
+`LIMIT 1` with no tiebreaker picked whichever row insertion order happened
+to put first — non-deterministic across otherwise-identical runs, observed
+as `price`/`source`/`link` flipping between two crawlers' values run to
+run. `cr.site_name` is a load-bearing tiebreaker, not decoration.
+`get_recommended_stock_items` has the identical gap in its own
+`DISTINCT ON (s.item_key)` ordering — deliberately left alone here; worth a
+separate fix.
 
 `LEFT JOIN LATERAL ... LIMIT 1` replaces the old
 `DISTINCT ON (s.item_key)` subquery. Same purpose — `item_key` is not unique
@@ -306,12 +337,20 @@ SELECT COUNT(DISTINCT item_key) FROM stock_items WHERE item_key = ANY(%(keys)s)
 
 ```python
 @router.post("/stock/import")
-async def import_recommendations(request: Request, file: UploadFile = File(...)):
+async def import_stock_judgments_endpoint(request: Request, file: UploadFile = File(...)):
 ```
 
-- Scoped to `request.state.user_id`; runs under `db.user_scope(user_id)`, so
-  RLS is the backstop against writing another tenant's rows even if the
-  parameter were wrong.
+- Scoped to `request.state.user_id`; runs under `db.user_scope(user_id)`. In
+  production this connection is a non-superuser `app_user` with RLS active,
+  so RLS is the backstop against writing another tenant's rows even if the
+  parameter were wrong. **Correction:** the test suite does not exercise
+  this backstop — `pg_test_db` (`backend/tests/conftest.py`) points all
+  three connection pools at one `TEST_DATABASE_URL` authenticating as the
+  Postgres superuser, which unconditionally bypasses RLS. Deleting the
+  explicit `WHERE j.user_id` filter and rerunning the two-user test made it
+  *fail*, proving the explicit filter — not the policy — is what the test
+  verifies. Pre-existing property of the test harness, not introduced by
+  this feature.
 - Busy guard mirroring `clear_stock_judgment` exactly — if
   `crawl_manager.judgment_running(user_id)` or
   `crawl_manager.stock_sync_running`, return `200` with
@@ -426,8 +465,11 @@ Backend, `test_stock_router.py`:
   nothing while a judgment run is active; `413`/`422` on oversize and on a
   bad header.
 - two-user case: user A imports a file containing user B's `item_key`s;
-  B's judgments are unchanged and A gains its own rows. This is the
-  tenant-isolation assertion.
+  B's judgments are unchanged and A gains its own rows. **Correction:** the
+  test suite connects as the Postgres superuser (see the Endpoint section's
+  correction above), so this does not exercise RLS — it verifies the
+  explicit `user_id` bind parameter in `import_stock_judgments`'s SQL, not
+  the policy.
 
 Frontend, `account.test.tsx`:
 

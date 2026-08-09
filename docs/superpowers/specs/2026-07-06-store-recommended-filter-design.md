@@ -395,6 +395,21 @@ Recommendations cost real Anthropic API spend to generate. Since the only way to
 - Settings gains an "Export Recommendations" button, between "Refresh Recommendations" and "Clear Recommendations" — export before destroy. Disabled until `hasJudgedItems` is true. **Correction (2026-08-04):** the Export button was moved out of `Settings.tsx` (whose "Recommendations Management" section is `isAdmin`-gated, leaving no way for a 'user'-role account to export) into `Account.tsx`'s ungated "Recommendations" section, as the last row in that section. "Refresh Recommendations" and "Clear Recommendations" remain in Settings as described. See the 2026-08-04 amendment in [`2026-07-18-profile-account-section-design.md`](2026-07-18-profile-account-section-design.md). **Further correction (2026-08-07):** the last sentence above no longer holds — `Refresh` and `Clear` also moved into `Account.tsx`'s "Recommendations" section (the `Settings.tsx` "Recommendations Management" section is deleted entirely), ordered `Refresh`, `Export`, `Clear`, both ungated like `Export`. See the 2026-08-07 amendment in [`2026-07-18-profile-account-section-design.md`](2026-07-18-profile-account-section-design.md).
 - The frontend fetches the CSV as a `Blob` and triggers a client-side download via a temporary `<a download>` element, rather than a plain `<a href>` link — `AuthMiddleware` requires the `X-Requested-With` header that `apiFetch` sets on every request, which a normal browser navigation doesn't send (it would 403).
 
+**Amendment (2026-08-09, branch `recommendations-import`):** this section's
+CSV shape and its "rows exactly match the current `Recommended` filter
+results" acceptance criterion no longer hold. `GET /api/stock/export` now
+emits ten columns —
+`artist,title,format,price,source,link,reason,item_key,recommended,judged_at`
+— and every judgment for the calling user, recommended and not, with no
+`_not_owned_clause` filter. It is a portable backup consumed by the new
+`POST /api/stock/import`, not a view of the Recommended tab. The query moved
+from `get_recommended_stock_items` (unchanged, still used elsewhere) to
+`get_all_stock_judgments`, which drives from `stock_item_judgments` so
+judgments with no live stock row still export. The endpoint function was
+renamed `export_recommended_stock` → `export_stock_judgments`; the route
+path is unchanged. See
+[`2026-08-09-recommendations-import-design.md`](../../specifications/shaping/2026-08-09-recommendations-import-design.md).
+
 ### Testing additions
 
 - `_run_judgment_phase` stays responsive during a slow `judge_batch` call: a monkeypatched synchronous sleep inside `judge_batch`, alongside a concurrent heartbeat coroutine that must keep ticking throughout — fails against the un-fixed blocking call, passes once wrapped in `asyncio.to_thread`.
