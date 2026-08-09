@@ -53,13 +53,13 @@ beforeEach(() => {
 
 describe('Plex match hyperlink — list view', () => {
   it('renders a matched title as a link to the Plex album', async () => {
-    render(<RecordBrowser scope="discogs" />)
+    render(<RecordBrowser scope="collection" />)
     const link = await screen.findByRole('link', { name: 'Kind of Blue' })
     expect(link).toHaveAttribute('href', matchedRelease.plex_url as string)
   })
 
   it('renders an unmatched title as plain text, not a link', async () => {
-    render(<RecordBrowser scope="discogs" />)
+    render(<RecordBrowser scope="collection" />)
     await screen.findByText('Waltz for Debby')
     expect(screen.queryByRole('link', { name: 'Waltz for Debby' })).not.toBeInTheDocument()
   })
@@ -71,7 +71,7 @@ describe('Plex match hyperlink — tile view', () => {
       getItem: (key: string) => (key.startsWith('collectionViewMode') ? 'tiles' : null),
       setItem: () => {},
     })
-    render(<RecordBrowser scope="discogs" />)
+    render(<RecordBrowser scope="collection" />)
     const titleLink = await screen.findByRole('link', { name: 'Kind of Blue' })
     expect(titleLink).toHaveAttribute('href', matchedRelease.plex_url as string)
     for (const el of screen.getAllByText('Miles Davis')) {

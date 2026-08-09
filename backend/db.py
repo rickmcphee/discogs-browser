@@ -353,16 +353,26 @@ def init_tenant_schema():
         conn.commit()
 
 
-def upsert_catalog_release(conn, data: dict):
+def upsert_catalog_release(conn, data: dict, preserve_price: bool = False):
+    # catalog is global (no user_id), and discogs_price comes from a per-user
+    # custom collection field. A caller that never read that field -- the
+    # wantlist sync -- must leave the stored value alone rather than write its
+    # own None over another sync's (or another user's) real price. This is a
+    # per-call-site decision, not a blanket COALESCE: a collection sync writing
+    # None means the user genuinely cleared the field, and must still clear it.
+    # The flag narrows the cross-tenant overwrite without closing it -- see the
+    # catalog data dictionary in
+    # docs/superpowers/specs/2026-07-26-multi-tenant-architecture-design.md.
+    price_assignment = "" if preserve_price else "discogs_price = EXCLUDED.discogs_price,"
     conn.execute(
-        """
+        f"""
         INSERT INTO catalog (discogs_id, artist, title, year, label, format, discogs_price,
                               barcode, cover_image_url, discogs_url, last_synced)
         VALUES (%(discogs_id)s, %(artist)s, %(title)s, %(year)s, %(label)s, %(format)s,
                 %(discogs_price)s, %(barcode)s, %(cover_image_url)s, %(discogs_url)s, CURRENT_TIMESTAMP)
         ON CONFLICT (discogs_id) DO UPDATE SET
             artist = EXCLUDED.artist, title = EXCLUDED.title, year = EXCLUDED.year,
-            label = EXCLUDED.label, format = EXCLUDED.format, discogs_price = EXCLUDED.discogs_price,
+            label = EXCLUDED.label, format = EXCLUDED.format, {price_assignment}
             barcode = EXCLUDED.barcode, cover_image_url = EXCLUDED.cover_image_url,
             discogs_url = EXCLUDED.discogs_url, last_synced = CURRENT_TIMESTAMP
         """,
@@ -870,19 +880,49 @@ def replace_stock_items(conn, crawler_id: int, items: list[dict]) -> list[str]:
     return item_keys
 
 
-def _not_owned_clause(user_id_param: str) -> str:
+_LIBRARY_MEMBERSHIP = {
+    "collection": ("in_collection",),
+    "wishlist": ("in_wishlist",),
+    "all": ("in_collection", "in_wishlist"),
+}
+
+
+def _library_match_fragment(user_id_param: str, library_scope: str) -> str:
+    # Callers pass a literal scope; this raises KeyError on an unmapped one.
+    # Request-derived scopes go through _in_library_clause instead.
+    #
+    # The parens around the OR are load-bearing: AND binds tighter, so an
+    # unparenthesized multi-column membership would leave the first branch
+    # uncorrelated from the stock row and make EXISTS true for every row, and
+    # the second branch would drop the li.user_id correlation entirely, so
+    # another user's wantlist could match -- RLS on the user_scope connection
+    # this always runs under is the only backstop against that.
+    membership = " OR ".join(f"li.{col} = TRUE" for col in _LIBRARY_MEMBERSHIP[library_scope])
     # Exact-or-prefix-with-space title match, not exact-only: stock listings
     # often append edition/format qualifiers the catalog title doesn't have
     # (e.g. catalog "Kid A" vs. stock listing "Kid A (Deluxe Reissue)"), so a
     # strict equality would treat an already-owned release as still unowned.
-    return f"""NOT EXISTS (
-        SELECT 1 FROM library_items li
+    return f"""FROM library_items li
         JOIN catalog c ON c.discogs_id = li.discogs_id
         WHERE li.user_id = {user_id_param}
-          AND li.in_collection = TRUE
+          AND ({membership})
           AND LOWER(c.artist) = LOWER(s.artist)
-          AND (LOWER(s.title) = LOWER(c.title) OR LOWER(s.title) LIKE LOWER(c.title) || ' %%')
-    )"""
+          AND (LOWER(s.title) = LOWER(c.title) OR LOWER(s.title) LIKE LOWER(c.title) || ' %%')"""
+
+
+def _in_library_clause(user_id_param: str, library_scope: Optional[str]) -> Optional[str]:
+    """EXISTS clause for 'this stock row is in the user's library at the given
+    scope', or None when the scope doesn't filter. Normalizing here rather than
+    per-caller keeps the allow-set gate in one place."""
+    if library_scope not in _LIBRARY_MEMBERSHIP:
+        return None
+    return f"EXISTS (SELECT 1 {_library_match_fragment(user_id_param, library_scope)})"
+
+
+# Recommended items are defined as ones the user doesn't already own. A release
+# merely on the wantlist stays recommendable, so this stays collection-scoped.
+def _not_owned_clause(user_id_param: str) -> str:
+    return f"NOT EXISTS (SELECT 1 {_library_match_fragment(user_id_param, 'collection')})"
 
 
 _STOCK_ALLOWED_SORT = {"artist", "title", "format", "price"}
@@ -897,12 +937,25 @@ def get_stock_items(
     order: str = "asc",
     page: int = 1,
     per_page: int = 50,
-    overlapping: bool = False,
+    library_scope: Optional[str] = None,
     recommended: bool = False,
     exclude_crawler_ids: Optional[list[int]] = None,
 ) -> dict:
     order_sql = "DESC" if order.lower() == "desc" else "ASC"
-    sort_col = sort if sort in _STOCK_ALLOWED_SORT else "artist"
+    # The sort expression is collection-pinned, so it only applies to a scope
+    # that can contain rows carrying a collection price. Under wishlist scope
+    # every key would be NULL, leaving all rows tied and pagination unstable.
+    # The lookup's default covers None and any unmapped scope.
+    if sort == "discogs_price" and "in_collection" in _LIBRARY_MEMBERSHIP.get(library_scope, ()):
+        sort_expr = """(SELECT (regexp_match(c.discogs_price, '\\d+\\.?\\d*'))[1]::numeric
+                        {match} LIMIT 1)""".format(
+            match=_library_match_fragment("%(user_id)s", "collection")
+        )
+    elif sort == "source":
+        sort_expr = "cr.site_name"
+    else:
+        sort_col = sort if sort in _STOCK_ALLOWED_SORT else "artist"
+        sort_expr = f"s.{sort_col}"
 
     conditions = []
     params: dict = {"user_id": user_id}
@@ -912,8 +965,9 @@ def get_stock_items(
     if artist:
         conditions.append("s.artist = %(artist)s")
         params["artist"] = artist
-    if overlapping:
-        conditions.append(_not_owned_clause("%(user_id)s").replace("NOT EXISTS", "EXISTS"))
+    in_library = _in_library_clause("%(user_id)s", library_scope)
+    if in_library:
+        conditions.append(in_library)
     if recommended:
         conditions.append(
             "s.item_key IN (SELECT item_key FROM stock_item_judgments "
@@ -934,12 +988,13 @@ def get_stock_items(
     rows = conn.execute(
         f"""
         SELECT s.id, s.artist, s.title, s.format, s.price, s.currency, s.url, s.cover_image_url, s.last_seen,
-               s.item_key, cr.site_name AS source, j.reason AS reason
+               s.item_key, cr.site_name AS source, j.reason AS reason,
+               (SELECT c.discogs_price {_library_match_fragment('%(user_id)s', 'collection')} LIMIT 1) AS discogs_price
         FROM stock_items s
         JOIN crawlers cr ON cr.id = s.crawler_id
         LEFT JOIN stock_item_judgments j ON j.item_key = s.item_key AND j.user_id = %(user_id)s
         {where}
-        ORDER BY CASE WHEN s.{sort_col} IS NULL THEN 1 ELSE 0 END {null_order}, s.{sort_col} {order_sql}
+        ORDER BY CASE WHEN {sort_expr} IS NULL THEN 1 ELSE 0 END {null_order}, {sort_expr} {order_sql}, s.id
         LIMIT %(limit)s OFFSET %(offset)s
         """,
         params,
@@ -970,6 +1025,7 @@ def get_stock_items(
                 "id": f"{r['id']}:{c['source']}",
                 "item_key": r["item_key"], "artist": r["artist"], "title": r["title"],
                 "format": r["format"], "cover_image_url": r["cover_image_url"],
+                "discogs_price": r["discogs_price"],
                 "price": c["price"], "currency": c["currency"], "url": c["url"],
                 "source": c["source"], "reason": r["reason"], "last_seen": c["last_checked"],
                 "is_own": False,
@@ -978,13 +1034,14 @@ def get_stock_items(
     return {"total": total, "page": page, "per_page": per_page, "items": items}
 
 
-def get_distinct_stock_artists(conn, user_id: int, overlapping: bool = False, recommended: bool = False,
+def get_distinct_stock_artists(conn, user_id: int, library_scope: Optional[str] = None, recommended: bool = False,
     exclude_crawler_ids: Optional[list[int]] = None,
 ) -> list[str]:
     conditions = []
     params: dict = {"user_id": user_id}
-    if overlapping:
-        conditions.append(_not_owned_clause("%(user_id)s").replace("NOT EXISTS", "EXISTS"))
+    in_library = _in_library_clause("%(user_id)s", library_scope)
+    if in_library:
+        conditions.append(in_library)
     if recommended:
         conditions.append(
             "s.item_key IN (SELECT item_key FROM stock_item_judgments "

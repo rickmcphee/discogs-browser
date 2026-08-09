@@ -51,7 +51,9 @@ export interface UserSettings {
 
 export type SortField = 'artist' | 'title' | 'year' | 'label' | 'format' | string
 export type SortOrder = 'asc' | 'desc'
-export type RecordScope = 'discogs' | 'wishlist'
+export type RecordScope = 'collection' | 'wantlist'
+export type StockScope = 'store' | 'track'
+export type LibraryScope = 'collection' | 'wantlist' | 'all'
 
 export interface CrawlEvent {
   id?: number
@@ -123,6 +125,7 @@ export interface StockItem {
   last_seen: string
   reason: string | null
   is_own: boolean
+  discogs_price: string | null
 }
 
 export interface StockResponse {
@@ -132,4 +135,4 @@ export interface StockResponse {
   items: StockItem[]
 }
 
-export type StockSortField = 'artist' | 'title' | 'format' | 'price'
+export type StockSortField = 'artist' | 'title' | 'format' | 'price' | 'discogs_price' | 'source'

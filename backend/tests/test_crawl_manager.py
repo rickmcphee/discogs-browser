@@ -409,6 +409,139 @@ async def test_sync_collection_wishlist_captures_date_added_and_does_not_enqueue
     assert queued == []
 
 
+async def test_sync_collection_wishlist_does_not_wipe_a_collection_discogs_price(pg_schema, monkeypatch):
+    import config
+    import crawl_manager as crawl_manager_module
+    import discogs
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+    monkeypatch.setattr(crawl_manager_module.time, "sleep", lambda *a, **k: None)
+
+    def _wants_pages(*a, **k):
+        yield 1, 1, [{
+            "basic_information": {
+                "id": 111, "title": "Album", "year": 2020,
+                "artists": [{"name": "Artist"}], "labels": [], "formats": [],
+                "cover_image": "",
+            },
+            "date_added": "2024-05-01T00:00:00Z",
+        }]
+
+    monkeypatch.setattr(discogs, "iter_wantlist_pages", _wants_pages)
+    monkeypatch.setattr(discogs, "fetch_release_barcode", lambda *a, **k: None)
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        db.register_crawler(conn, "Amazon", "/x.py")
+        # An earlier collection sync already recorded what she paid.
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r111", "artist": "Artist", "title": "Album", "year": 2020,
+            "label": None, "format": None, "discogs_price": "42.50", "barcode": None,
+            "cover_image_url": None, "discogs_url": None,
+        })
+        conn.commit()
+
+    manager = CrawlManager()
+    await manager._sync_collection(user["id"], "all", "wishlist")
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert "sync_error" not in statuses
+
+    with db.get_admin_pool().connection() as conn:
+        assert db.get_catalog_release(conn, "r111")["discogs_price"] == "42.50"
+
+
+@respx.mock
+async def test_sync_all_scope_keeps_the_collection_price_through_the_wantlist_loop(pg_schema, monkeypatch):
+    # The bug's original mechanism: on a full sync both loops run, wantlist
+    # second, over a release in both lists. Pins which call site gets
+    # preserve_price -- the collection loop must still update the price it read
+    # from the custom field, and the wantlist loop must then leave it alone.
+    import config
+    import crawl_manager as crawl_manager_module
+    import discogs
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+    monkeypatch.setattr(crawl_manager_module.time, "sleep", lambda *a, **k: None)
+    monkeypatch.setattr(discogs, "fetch_release_barcode", lambda *a, **k: None)
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        db.register_crawler(conn, "Amazon", "/x.py")
+        # Pre-seeded so the collection loop's upsert takes DO UPDATE, not
+        # INSERT -- preserve_price only affects the update branch, so an
+        # insert would not distinguish the two call sites. A non-null stale
+        # value also tells the two mutations apart: mis-flagging the
+        # collection loop leaves "1.00", dropping the wantlist flag leaves None.
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r111", "artist": "Artist", "title": "Album", "year": 2020,
+            "label": None, "format": None, "discogs_price": "1.00", "barcode": None,
+            "cover_image_url": None, "discogs_url": None,
+        })
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": [{"id": 3, "name": "Price"}]})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        return_value=httpx.Response(200, json={
+            "pagination": {"pages": 1},
+            "releases": [{
+                "basic_information": {
+                    "id": 111, "title": "Album", "year": 2020,
+                    "artists": [{"name": "Artist"}], "labels": [], "formats": [],
+                    "cover_image": "",
+                },
+                "date_added": "2024-03-15T10:00:00Z",
+                "notes": [{"field_id": 3, "value": "42.50"}],
+            }],
+        })
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={
+            "pagination": {"pages": 1},
+            "wants": [{
+                "basic_information": {
+                    "id": 111, "title": "Album", "year": 2020,
+                    "artists": [{"name": "Artist"}], "labels": [], "formats": [],
+                    "cover_image": "",
+                },
+                "date_added": "2024-05-01T00:00:00Z",
+            }],
+        })
+    )
+
+    manager = CrawlManager()
+    await manager._sync_collection(user["id"], "all")
+
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert "sync_complete" in statuses
+    assert "sync_error" not in statuses
+
+    # Both loops must actually have processed r111 -- otherwise the price
+    # assertion below could pass without the wantlist loop ever touching it.
+    with db.user_scope(user["id"]) as conn:
+        row = conn.execute(
+            "SELECT in_collection, in_wishlist FROM library_items WHERE user_id = %s AND discogs_id = 'r111'",
+            [user["id"]],
+        ).fetchone()
+    assert row["in_collection"] is True
+    assert row["in_wishlist"] is True
+
+    with db.get_admin_pool().connection() as conn:
+        assert db.get_catalog_release(conn, "r111")["discogs_price"] == "42.50"
+
+
 async def test_sync_collection_wishlist_scope_skips_collection_loop(pg_schema, monkeypatch):
     import config
     import crawl_manager as crawl_manager_module

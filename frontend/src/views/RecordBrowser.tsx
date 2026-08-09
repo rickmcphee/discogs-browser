@@ -10,6 +10,11 @@ interface Props {
   syncGeneration?: number
 }
 
+// Rendered from both the tile and table branches below, which would otherwise
+// hold identical copies that drift apart.
+const WANTLIST_EMPTY = 'No wantlist items yet. Add records to your wantlist on Discogs, then sync.'
+const COLLECTION_EMPTY = 'No records found. Click the sync icon above to load your collection from Discogs.'
+
 export default function RecordBrowser({ scope, syncing, onRefreshCollection, syncGeneration }: Props) {
   const [releases, setReleases] = useState<Release[]>([])
   const [total, setTotal] = useState(0)
@@ -43,7 +48,7 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
         page,
         per_page: PER_PAGE,
         scope,
-        unmatched: scope === 'discogs' ? unmatched : undefined,
+        unmatched: scope === 'collection' ? unmatched : undefined,
       })
       setReleases(result.releases)
       setTotal(result.total)
@@ -54,7 +59,7 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
 
   useEffect(() => { load() }, [load])
   // syncGeneration ticks on every sync_progress/sync_complete SSE event so the
-  // collection/wishlist tables fill in as pages land, not just once the whole
+  // collection/wantlist tables fill in as pages land, not just once the whole
   // sync finishes. Guarded on truthy (not just changed) so the initial render's
   // generation of 0 doesn't trigger a redundant second load alongside the
   // mount effect above.
@@ -138,7 +143,7 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
           </div>
           <span className="ml-3 text-xs text-gray-500">{total} records</span>
           <div className="ml-auto flex items-center gap-1">
-            {scope === 'discogs' && (
+            {scope === 'collection' && (
               <select
                 value={unmatched ? 'unmatched' : 'all'}
                 onChange={(e) => { setUnmatched(e.target.value === 'unmatched'); setPage(1) }}
@@ -175,7 +180,7 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
               <button
                 onClick={onRefreshCollection}
                 disabled={syncing}
-                title={scope === 'wishlist' ? 'Sync wishlist from Discogs' : 'Sync collection from Discogs'}
+                title={scope === 'wantlist' ? 'Sync wantlist from Discogs' : 'Sync collection from Discogs'}
                 className={`p-1.5 disabled:opacity-30 disabled:cursor-not-allowed ${navButtonClass(false)}`}
               >
                 <span className="block text-base leading-none">{syncing ? '⟳' : '↻'}</span>
@@ -190,9 +195,7 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
             {loading && <div className="text-center py-8 text-gray-500">Loading…</div>}
             {!loading && releases.length === 0 && (
               <div className="text-center py-8 text-gray-500">
-                {scope === 'wishlist'
-                  ? 'No wishlist items yet. Add records to your wantlist on Discogs, then sync.'
-                  : 'No records found. Click the sync icon above to load your collection from Discogs.'}
+                {scope === 'wantlist' ? WANTLIST_EMPTY : COLLECTION_EMPTY}
               </div>
             )}
             {!loading && releases.length > 0 && (
@@ -306,9 +309,7 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
               {!loading && releases.length === 0 && (
                 <tr>
                   <td colSpan={8} className="text-center py-8 text-gray-500">
-                    {scope === 'wishlist'
-                      ? 'No wishlist items yet. Add records to your wantlist on Discogs, then sync.'
-                      : 'No records found. Click the sync icon above to load your collection from Discogs.'}
+                    {scope === 'wantlist' ? WANTLIST_EMPTY : COLLECTION_EMPTY}
                   </td>
                 </tr>
               )}

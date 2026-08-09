@@ -29,8 +29,8 @@ describe('RecordBrowser', () => {
         last_synced: '', date_added: null,
       }],
     })
-    localStorage.setItem('collectionViewMode_discogs', 'tiles')
-    render(<RecordBrowser scope="discogs" />)
+    localStorage.setItem('collectionViewMode_collection', 'tiles')
+    render(<RecordBrowser scope="collection" />)
     const icon = await screen.findByAltText('The Wall')
     expect(icon.closest('a')?.getAttribute('href')).toBe('https://discogs.com/r1')
     const artistText = screen.getByText('Pink Floyd')
@@ -47,7 +47,7 @@ describe('RecordBrowser', () => {
         last_synced: '', date_added: null,
       }],
     })
-    render(<RecordBrowser scope="discogs" />)
+    render(<RecordBrowser scope="collection" />)
     const icon = await screen.findByAltText('The Wall')
     expect(icon.closest('a')?.getAttribute('href')).toBe('https://discogs.com/r1')
     const artistText = screen.getByText('Pink Floyd')
@@ -64,8 +64,8 @@ describe('RecordBrowser', () => {
         last_synced: '', date_added: null,
       }],
     })
-    localStorage.setItem('collectionViewMode_discogs', 'tiles')
-    render(<RecordBrowser scope="discogs" />)
+    localStorage.setItem('collectionViewMode_collection', 'tiles')
+    render(<RecordBrowser scope="collection" />)
     const link = await screen.findByRole('link', { name: 'View Pink Floyd – The Wall on Discogs' })
     expect(link).toHaveAttribute('href', 'https://discogs.com/r1')
   })
@@ -80,57 +80,62 @@ describe('RecordBrowser', () => {
         last_synced: '', date_added: null,
       }],
     })
-    render(<RecordBrowser scope="discogs" />)
+    render(<RecordBrowser scope="collection" />)
     const link = await screen.findByRole('link', { name: 'View Pink Floyd – The Wall on Discogs' })
     expect(link).toHaveAttribute('href', 'https://discogs.com/r1')
   })
 
-  it('shows the Unmatched filter dropdown for the discogs scope but not wishlist', async () => {
-    const { rerender } = render(<RecordBrowser scope="discogs" />)
+  it('shows the Unmatched filter dropdown for the collection scope but not wantlist', async () => {
+    const { rerender } = render(<RecordBrowser scope="collection" />)
     await waitFor(() => expect(getReleases).toHaveBeenCalled())
     expect(screen.getByRole('combobox')).toBeInTheDocument()
-    rerender(<RecordBrowser scope="wishlist" />)
+    rerender(<RecordBrowser scope="wantlist" />)
     await waitFor(() => expect(screen.queryByRole('combobox')).not.toBeInTheDocument())
   })
 
   it('passes unmatched to getReleases when the filter is set to Unmatched', async () => {
-    render(<RecordBrowser scope="discogs" />)
+    render(<RecordBrowser scope="collection" />)
     await waitFor(() => expect(getReleases).toHaveBeenCalled())
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'unmatched' } })
     await waitFor(() => expect(getReleases).toHaveBeenLastCalledWith(expect.objectContaining({ unmatched: true })))
   })
 
   it('does not render a sync button when onRefreshCollection is not provided', async () => {
-    render(<RecordBrowser scope="discogs" />)
+    render(<RecordBrowser scope="collection" />)
     await waitFor(() => expect(getReleases).toHaveBeenCalled())
     expect(screen.queryByTitle('Sync collection from Discogs')).toBeNull()
   })
 
   it('calls onRefreshCollection when the sync button is clicked', async () => {
     const onRefreshCollection = vi.fn()
-    render(<RecordBrowser scope="discogs" onRefreshCollection={onRefreshCollection} />)
+    render(<RecordBrowser scope="collection" onRefreshCollection={onRefreshCollection} />)
     await waitFor(() => expect(getReleases).toHaveBeenCalled())
     screen.getByTitle('Sync collection from Discogs').click()
     expect(onRefreshCollection).toHaveBeenCalledTimes(1)
   })
 
   it('disables the sync button while syncing', async () => {
-    render(<RecordBrowser scope="discogs" onRefreshCollection={() => {}} syncing />)
+    render(<RecordBrowser scope="collection" onRefreshCollection={() => {}} syncing />)
     await waitFor(() => expect(getReleases).toHaveBeenCalled())
     expect(screen.getByTitle('Sync collection from Discogs')).toBeDisabled()
   })
 
-  it('labels the wishlist sync button distinctly from the collection one', async () => {
+  it('labels the wantlist sync button distinctly from the collection one', async () => {
     const onRefreshCollection = vi.fn()
-    render(<RecordBrowser scope="wishlist" onRefreshCollection={onRefreshCollection} />)
+    render(<RecordBrowser scope="wantlist" onRefreshCollection={onRefreshCollection} />)
     await waitFor(() => expect(getReleases).toHaveBeenCalled())
-    screen.getByTitle('Sync wishlist from Discogs').click()
+    screen.getByTitle('Sync wantlist from Discogs').click()
     expect(onRefreshCollection).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows a wantlist-specific empty state', async () => {
+    render(<RecordBrowser scope="wantlist" />)
+    expect(await screen.findByText('No wantlist items yet. Add records to your wantlist on Discogs, then sync.')).toBeInTheDocument()
   })
 
   it('defaults sort to title when a specific artist is selected, and back to artist for All', async () => {
     getArtists.mockResolvedValue(['Pink Floyd'])
-    render(<RecordBrowser scope="discogs" />)
+    render(<RecordBrowser scope="collection" />)
     await waitFor(() => expect(screen.getByRole('button', { name: 'Pink Floyd' })).toBeTruthy())
     fireEvent.click(screen.getByRole('button', { name: 'Pink Floyd' }))
     await waitFor(() => expect(getReleases).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'title', order: 'asc' })))
@@ -139,11 +144,11 @@ describe('RecordBrowser', () => {
   })
 
   it('refetches the artist nav list on every syncGeneration tick, not just on scope change', async () => {
-    const { rerender } = render(<RecordBrowser scope="discogs" syncGeneration={0} />)
+    const { rerender } = render(<RecordBrowser scope="collection" syncGeneration={0} />)
     await waitFor(() => expect(getArtists).toHaveBeenCalledTimes(1))
-    rerender(<RecordBrowser scope="discogs" syncGeneration={1} />)
+    rerender(<RecordBrowser scope="collection" syncGeneration={1} />)
     await waitFor(() => expect(getArtists).toHaveBeenCalledTimes(2))
-    rerender(<RecordBrowser scope="discogs" syncGeneration={2} />)
+    rerender(<RecordBrowser scope="collection" syncGeneration={2} />)
     await waitFor(() => expect(getArtists).toHaveBeenCalledTimes(3))
   })
 
@@ -163,14 +168,14 @@ describe('RecordBrowser', () => {
         },
       ],
     })
-    render(<RecordBrowser scope="discogs" />)
+    render(<RecordBrowser scope="collection" />)
     expect(await screen.findByText(new Date('2024-03-15T10:00:00Z').toLocaleDateString())).toBeInTheDocument()
     const row = (await screen.findByText('Radiohead')).closest('tr')!
     expect(within(row).getByText('—')).toBeInTheDocument()
   })
 
   it('sorts by Date Added when its header is clicked', async () => {
-    render(<RecordBrowser scope="discogs" />)
+    render(<RecordBrowser scope="collection" />)
     await waitFor(() => expect(getReleases).toHaveBeenCalled())
     fireEvent.click(screen.getByText(/Date Added/))
     await waitFor(() => expect(getReleases).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'date_added', order: 'asc' })))
