@@ -1,9 +1,10 @@
 import csv
 import io
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from pydantic import BaseModel
 from typing import Optional
 import db
+import recommendations_import
 from admin import require_admin
 from crawl_manager import crawl_manager
 
@@ -101,18 +102,78 @@ def clear_stock_judgment(request: Request):
     return {"cleared": True, "count": count}
 
 
+EXPORT_COLUMNS = [
+    "artist", "title", "format", "price", "source", "link", "reason",
+    "item_key", "recommended", "judged_at",
+]
+
+
 @router.get("/stock/export")
-def export_recommended_stock(request: Request):
+def export_stock_judgments(request: Request):
     user_id = request.state.user_id
     with db.user_scope(user_id) as conn:
-        items = db.get_recommended_stock_items(conn, user_id)
+        rows = db.get_all_stock_judgments(conn, user_id)
     buffer = io.StringIO()
     writer = csv.writer(buffer)
-    writer.writerow(["artist", "title", "format", "price", "source", "link", "reason"])
-    for item in items:
-        writer.writerow([item["artist"], item["title"], item["format"], item["price"], item["source"], item["url"], item["reason"]])
+    writer.writerow(EXPORT_COLUMNS)
+    for row in rows:
+        writer.writerow([
+            row["artist"], row["title"], row["format"], row["price"],
+            row["source"], row["url"], row["reason"], row["item_key"],
+            # An explicit lowercase literal: csv.writer would render the
+            # boolean as Python's "True"/"False", which is not the documented
+            # format even though the importer would still accept it.
+            "true" if row["recommended"] else "false",
+            row["judged_at"].isoformat(),
+        ])
     return Response(
         content=buffer.getvalue(),
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=recommendations.csv"},
     )
+
+
+@router.post("/stock/import")
+async def import_stock_judgments_endpoint(request: Request, file: UploadFile = File(...)):
+    user_id = request.state.user_id
+    empty = {
+        "imported": 0, "updated": 0, "unchanged": 0, "skipped": 0,
+        "errors": [], "matched_stock_items": 0,
+    }
+    # A concurrent judgment run would race this upsert on the same rows.
+    # Mirrors clear_stock_judgment's guard, including its 200-with-a-flag
+    # shape rather than an error status.
+    if crawl_manager.judgment_running(user_id) or crawl_manager.stock_sync_running:
+        return {**empty, "running": True}
+
+    # Read cap+1, not the whole body, so an oversized upload isn't buffered
+    # in full -- same pattern as upload_avatar in routers/session.py.
+    data = await file.read(recommendations_import.MAX_UPLOAD_BYTES + 1)
+    if len(data) > recommendations_import.MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File is larger than {recommendations_import.MAX_UPLOAD_BYTES} bytes.",
+        )
+    # utf-8-sig strips a BOM that spreadsheet round-trips add; errors are
+    # replaced rather than fatal so one bad byte doesn't reject the file.
+    text = data.decode("utf-8-sig", errors="replace")
+
+    try:
+        judgments, errors, skipped = recommendations_import.parse_judgment_csv(text)
+    except recommendations_import.InvalidImportError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    with db.user_scope(user_id) as conn:
+        imported, updated = db.import_stock_judgments(conn, user_id, judgments)
+        matched = db.count_matching_stock_items(conn, [j["item_key"] for j in judgments])
+        conn.commit()
+
+    return {
+        "imported": imported,
+        "updated": updated,
+        "unchanged": len(judgments) - imported - updated,
+        "skipped": skipped,
+        "errors": errors,
+        "matched_stock_items": matched,
+        "running": False,
+    }
