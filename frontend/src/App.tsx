@@ -173,8 +173,9 @@ export default function App() {
         return
       }
       if (event.status === 'stock_sync_page_fetched') {
+        const products = event.page_count === 1 ? 'product' : 'products'
         setSyncStatus(
-          `Syncing in-stock catalog… ${event.source} fetched page ${event.page}, ${event.page_count} products`,
+          `Syncing in-stock catalog… ${event.source} fetched page ${event.page}, ${event.page_count} ${products}`,
           event.id ?? null,
         )
         return

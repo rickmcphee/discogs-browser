@@ -188,6 +188,16 @@ describe('In Stock tab', () => {
     )
   })
 
+  it('says "1 product", not "1 products", on a single-product page', async () => {
+    render(<App />)
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    const source = getLastCrawlSource()
+    source.emit({ status: 'stock_sync_page_fetched', source: 'Relapse', page: 9, page_count: 1, id: 1 })
+    await waitFor(() =>
+      expect(screen.getByText(/Relapse fetched page 9, 1 product$/)).toBeInTheDocument()
+    )
+  })
+
   it('surfaces stock_sync_complete events in the bottom status bar', async () => {
     render(<App />)
     await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
