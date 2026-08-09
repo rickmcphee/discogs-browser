@@ -82,6 +82,13 @@ describe('StockBrowser', () => {
     await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ sort: 'format', order: 'asc' })))
   })
 
+  it('sorts by source when the Source column header is clicked', async () => {
+    render(<StockBrowser />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByText(/^Source/))
+    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ sort: 'source', order: 'asc' })))
+  })
+
   it('renders an artist sidebar with All plus each distinct artist, and filters on click', async () => {
     render(<StockBrowser />)
     await waitFor(() => expect(screen.getByRole('button', { name: 'All' })).toBeTruthy())

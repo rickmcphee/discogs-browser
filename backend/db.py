@@ -907,6 +907,8 @@ def get_stock_items(
     if sort == "discogs_price" and overlapping:
         sort_expr = """(SELECT (regexp_match(c.discogs_price, '\\d+\\.?\\d*'))[1]::numeric
                         {match} LIMIT 1)""".format(match=_owned_match_fragment("%(user_id)s"))
+    elif sort == "source":
+        sort_expr = "cr.site_name"
     else:
         sort_col = sort if sort in _STOCK_ALLOWED_SORT else "artist"
         sort_expr = f"s.{sort_col}"

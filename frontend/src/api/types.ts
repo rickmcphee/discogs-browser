@@ -133,4 +133,4 @@ export interface StockResponse {
   items: StockItem[]
 }
 
-export type StockSortField = 'artist' | 'title' | 'format' | 'price' | 'discogs_price'
+export type StockSortField = 'artist' | 'title' | 'format' | 'price' | 'discogs_price' | 'source'

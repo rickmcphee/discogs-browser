@@ -250,7 +250,11 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
                     Cost {sort === 'price' ? (order === 'asc' ? '↑' : '↓') : ''}
                   </button>
                 </th>
-                <th className="px-3 py-2 text-center normal-case">Source</th>
+                <th className="text-center" aria-sort={sort === 'source' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                  <button type="button" onClick={() => toggleSort('source')} className={`${sortButtonClass} text-center`}>
+                    Source {sort === 'source' ? (order === 'asc' ? '↑' : '↓') : ''}
+                  </button>
+                </th>
               </tr>
             </thead>
             <tbody>

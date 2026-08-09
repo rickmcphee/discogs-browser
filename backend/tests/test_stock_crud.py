@@ -608,6 +608,30 @@ def test_get_stock_items_sort_by_discogs_price_falls_back_to_artist_when_not_ove
     assert [r["artist"] for r in result["items"]] == ["Alpha", "Bravo"]
 
 
+def test_get_stock_items_sort_by_source(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    db.register_crawler(admin_conn, "Zebra Records", "/x.py", crawler_type="catalog")
+    db.register_crawler(admin_conn, "Alpha Records", "/y.py", crawler_type="catalog")
+    admin_conn.commit()
+    zebra_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Zebra Records'").fetchone()["id"]
+    alpha_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Alpha Records'").fetchone()["id"]
+    db.replace_stock_items(admin_conn, zebra_id, [
+        {"artist": "Artist Z", "title": "Album Z", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+    ])
+    db.replace_stock_items(admin_conn, alpha_id, [
+        {"artist": "Artist A", "title": "Album A", "url": "https://x/2", "price": 10.0, "currency": "USD"},
+    ])
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], sort="source", order="asc")
+    assert [r["source"] for r in result["items"]] == ["Alpha Records", "Zebra Records"]
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], sort="source", order="desc")
+    assert [r["source"] for r in result["items"]] == ["Zebra Records", "Alpha Records"]
+
+
 def test_get_stock_items_comparison_row_id_unique_when_item_key_collides(admin_conn):
     # item_key is not unique in stock_items (see comment near
     # get_recommended_stock_items) -- two crawlers can report the identical
