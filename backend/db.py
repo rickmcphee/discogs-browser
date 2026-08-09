@@ -1216,14 +1216,18 @@ def get_all_stock_judgments(conn, user_id: int) -> list[dict]:
     # all, having arrived by import -- still comes out. That's the whole
     # point: the file is a backup of what was paid for, not a shopping list.
     #
-    # stock_item_identities is the durable artist/title source (only ever
-    # upserted); stock_items is deleted and reinserted per crawler on every
-    # sync, so it can only supply the live price/source/link.
+    # stock_item_identities is the durable artist/title/format source (only
+    # ever upserted); stock_items is deleted and reinserted per crawler on
+    # every sync, so it can only supply the live price/source/link.
     #
     # LEFT JOIN LATERAL ... LIMIT 1 replaces the DISTINCT ON that
     # get_recommended_stock_items needs: item_key is not unique in
     # stock_items, so an unguarded join would emit one row per crawler that
-    # saw the item.
+    # saw the item. last_seen alone doesn't break ties deterministically --
+    # replace_stock_items stamps it as CURRENT_TIMESTAMP per transaction, so
+    # two crawlers' rows for the same item_key can carry the same value --
+    # so site_name is added as a tiebreaker to keep the export byte-for-byte
+    # stable across runs, which matters for a file whose job is round-trip.
     return conn.execute(
         """
         SELECT
@@ -1239,11 +1243,11 @@ def get_all_stock_judgments(conn, user_id: int) -> list[dict]:
             FROM stock_items s
             JOIN crawlers cr ON cr.id = s.crawler_id
             WHERE s.item_key = j.item_key
-            ORDER BY s.last_seen DESC
+            ORDER BY s.last_seen DESC, cr.site_name
             LIMIT 1
         ) d ON TRUE
         WHERE j.user_id = %(user_id)s
-        ORDER BY i.artist ASC NULLS LAST, i.title, j.item_key
+        ORDER BY COALESCE(i.artist, ''), COALESCE(i.title, ''), j.item_key
         """,
         {"user_id": user_id},
     ).fetchall()

@@ -255,3 +255,60 @@ def test_all_judgments_scoped_to_calling_user(pg_test_db):
 
     with db.user_scope(alice["id"]) as conn:
         assert db.get_all_stock_judgments(conn, alice["id"]) == []
+
+
+def test_all_judgments_orders_by_artist_then_title_with_import_only_rows_first(pg_test_db):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        db.register_crawler(conn, "Amazon", "/a.py", crawler_type="catalog")
+        conn.commit()
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.replace_stock_items(conn, crawler_id, [
+            {"artist": "Bravo", "title": "Album B", "url": "https://x/bravo", "price": 10.0, "currency": "USD"},
+            {"artist": "Alpha", "title": "Album A", "url": "https://x/alpha", "price": 20.0, "currency": "USD"},
+        ])
+        conn.commit()
+    bravo_key = db.compute_item_key("Bravo", "Album B", "https://x/bravo")
+    alpha_key = db.compute_item_key("Alpha", "Album A", "https://x/alpha")
+    orphan_key = "b" * 64  # import-only judgment with no stock_item_identities row at all
+
+    with db.user_scope(alice["id"]) as conn:
+        db.upsert_stock_judgments(conn, alice["id"], [
+            {"item_key": bravo_key, "recommended": True, "reason": "r"},
+            {"item_key": alpha_key, "recommended": True, "reason": "r"},
+            {"item_key": orphan_key, "recommended": True, "reason": "r"},
+        ])
+        conn.commit()
+        rows = db.get_all_stock_judgments(conn, alice["id"])
+
+    # Import-only (NULL identity, coalesced to '') sorts before any real
+    # artist name, matching the projected '' value rather than NULL.
+    assert [r["item_key"] for r in rows] == [orphan_key, alpha_key, bravo_key]
+
+
+def test_all_judgments_multi_crawler_tie_break_is_deterministic(pg_test_db):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        db.register_crawler(conn, "Amazon", "/a.py", crawler_type="catalog")
+        db.register_crawler(conn, "CCMusic", "/c.py", crawler_type="catalog")
+        conn.commit()
+        amazon_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        cc_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'CCMusic'").fetchone()["id"]
+        item = {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"}
+        # Both replace_stock_items calls run inside the same open transaction,
+        # so CURRENT_TIMESTAMP (and therefore last_seen) ties for both rows --
+        # this is what makes the tiebreaker in the lateral load-bearing.
+        db.replace_stock_items(conn, amazon_id, [item])
+        db.replace_stock_items(conn, cc_id, [item])
+        conn.commit()
+    item_key = db.compute_item_key("Artist A", "Album A", "https://x/1")
+
+    with db.user_scope(alice["id"]) as conn:
+        db.upsert_stock_judgments(conn, alice["id"], [
+            {"item_key": item_key, "recommended": True, "reason": "r"},
+        ])
+        conn.commit()
+        rows = db.get_all_stock_judgments(conn, alice["id"])
+
+    assert len(rows) == 1
+    assert rows[0]["source"] == "Amazon"
