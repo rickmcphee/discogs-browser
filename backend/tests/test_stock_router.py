@@ -266,11 +266,11 @@ def test_list_stock_includes_discogs_price_for_matched_collection_item(pg_test_d
         ])
         db.upsert_catalog_release(conn, {
             "discogs_id": "r1", "artist": "Rob Zombie", "title": "The Great Satan", "year": None, "label": None,
-            "format": None, "discogs_price": "20.00", "barcode": None, "cover_image_url": None,
+            "format": None, "price_paid": None, "barcode": None, "cover_image_url": None,
             "discogs_url": None,
         })
         user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
-        db.upsert_library_item(conn, user["id"], "r1", in_collection=True)
+        db.upsert_library_item(conn, user["id"], "r1", in_collection=True, price_paid="20.00")
         conn.commit()
 
     client = authed_client_factory(user["id"])
@@ -288,11 +288,11 @@ def test_list_stock_library_scope_wishlist_matches_wantlist_items(pg_test_db, au
         ])
         db.upsert_catalog_release(conn, {
             "discogs_id": "r1", "artist": "Rob Zombie", "title": "The Great Satan", "year": None, "label": None,
-            "format": None, "discogs_price": "20.00", "barcode": None, "cover_image_url": None,
+            "format": None, "price_paid": None, "barcode": None, "cover_image_url": None,
             "discogs_url": None,
         })
         user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
-        db.upsert_library_item(conn, user["id"], "r1", in_wishlist=True)
+        db.upsert_library_item(conn, user["id"], "r1", in_wishlist=True, price_paid="20.00")
         conn.commit()
 
     client = authed_client_factory(user["id"])

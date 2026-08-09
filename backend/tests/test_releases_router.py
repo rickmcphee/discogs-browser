@@ -121,3 +121,47 @@ def test_list_crawlers_unscoped(pg_test_db, authed_client_factory):
     client = authed_client_factory(user["id"])
     r = client.get("/api/crawlers")
     assert r.json()["crawlers"][0]["site_name"] == "Amazon"
+
+
+def test_list_releases_price_is_the_calling_users_own_price_paid(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        bob = db.create_user(conn, discogs_user_id=2, discogs_username="bob")
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "Artist", "title": "Album", "year": None,
+            "label": None, "format": None, "price_paid": None, "barcode": None,
+            "cover_image_url": None, "discogs_url": None,
+        })
+        db.upsert_library_item(conn, alice["id"], "r1", in_collection=True, price_paid="42.50")
+        db.upsert_library_item(conn, bob["id"], "r1", in_collection=True, price_paid="9.99")
+        conn.commit()
+
+    body = authed_client_factory(alice["id"]).get(
+        "/api/releases", params={"scope": "discogs"}
+    ).json()
+    assert body["releases"][0]["discogs_price"] == "42.50"
+
+    body = authed_client_factory(bob["id"]).get(
+        "/api/releases", params={"scope": "discogs"}
+    ).json()
+    assert body["releases"][0]["discogs_price"] == "9.99"
+
+
+def test_list_releases_sorts_by_the_users_own_price(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        for rid, artist, price in (("r1", "Zed", "5.00"), ("r2", "Abe", "50.00")):
+            db.upsert_catalog_release(conn, {
+                "discogs_id": rid, "artist": artist, "title": "Album", "year": None,
+                "label": None, "format": None, "price_paid": None, "barcode": None,
+                "cover_image_url": None, "discogs_url": None,
+            })
+            db.upsert_library_item(conn, alice["id"], rid, in_collection=True, price_paid=price)
+        conn.commit()
+
+    body = authed_client_factory(alice["id"]).get(
+        "/api/releases", params={"scope": "discogs", "sort": "discogs_price", "order": "asc"}
+    ).json()
+    # Seeded so price order and artist order disagree -- otherwise a silent
+    # fallback to the default artist sort would pass this.
+    assert [r["discogs_price"] for r in body["releases"]] == ["5.00", "50.00"]

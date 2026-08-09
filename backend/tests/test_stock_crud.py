@@ -509,10 +509,10 @@ def test_get_stock_items_returns_matched_discogs_price_for_owned_item(admin_conn
     ])
     db.upsert_catalog_release(admin_conn, {
         "discogs_id": "r1", "artist": "Artist A", "title": "Album A", "year": None, "label": None,
-        "format": None, "discogs_price": "25.00", "barcode": None, "cover_image_url": None,
+        "format": None, "price_paid": None, "barcode": None, "cover_image_url": None,
         "discogs_url": None,
     })
-    db.upsert_library_item(admin_conn, alice["id"], "r1", in_collection=True)
+    db.upsert_library_item(admin_conn, alice["id"], "r1", in_collection=True, price_paid="25.00")
     admin_conn.commit()
 
     with db.user_scope(alice["id"]) as conn:
@@ -549,10 +549,10 @@ def test_get_stock_items_comparison_rows_carry_owns_discogs_price(admin_conn):
     db.upsert_stock_item_listing(admin_conn, item_key, amazon_id, "https://amazon/1", 12.5, None, "USD", "New")
     db.upsert_catalog_release(admin_conn, {
         "discogs_id": "r1", "artist": "Artist A", "title": "Album A", "year": None, "label": None,
-        "format": None, "discogs_price": "25.00", "barcode": None, "cover_image_url": None,
+        "format": None, "price_paid": None, "barcode": None, "cover_image_url": None,
         "discogs_url": None,
     })
-    db.upsert_library_item(admin_conn, alice["id"], "r1", in_collection=True)
+    db.upsert_library_item(admin_conn, alice["id"], "r1", in_collection=True, price_paid="25.00")
     admin_conn.commit()
 
     with db.user_scope(alice["id"]) as conn:
@@ -579,11 +579,10 @@ def test_get_stock_items_sort_by_discogs_price_orders_numerically_nulls_last(adm
     ]:
         db.upsert_catalog_release(admin_conn, {
             "discogs_id": discogs_id, "artist": artist, "title": title, "year": None, "label": None,
-            "format": None, "discogs_price": price, "barcode": None, "cover_image_url": None,
+            "format": None, "price_paid": None, "barcode": None, "cover_image_url": None,
             "discogs_url": None,
         })
-    for discogs_id in ("r1", "r2", "r3"):
-        db.upsert_library_item(admin_conn, alice["id"], discogs_id, in_collection=True)
+        db.upsert_library_item(admin_conn, alice["id"], discogs_id, in_collection=True, price_paid=price)
     admin_conn.commit()
 
     with db.user_scope(alice["id"]) as conn:
@@ -634,7 +633,8 @@ def test_get_stock_items_sort_by_source(admin_conn):
 
 def _seed_collection_and_wantlist(admin_conn):
     """Alice owns Artist A / Album A (paid 20.00) and wants Artist B / Album B
-    (catalog price 30.00, which she has not paid). Both are in stock."""
+    (which carries a price on her wantlist row that must never be shown, since
+    the price subquery is pinned to collection scope). Both are in stock."""
     alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
     db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")
     admin_conn.commit()
@@ -643,18 +643,14 @@ def _seed_collection_and_wantlist(admin_conn):
         {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
         {"artist": "Artist B", "title": "Album B", "url": "https://x/2", "price": 15.0, "currency": "USD"},
     ])
-    db.upsert_catalog_release(admin_conn, {
-        "discogs_id": "r1", "artist": "Artist A", "title": "Album A", "year": None, "label": None,
-        "format": None, "discogs_price": "20.00", "barcode": None, "cover_image_url": None,
-        "discogs_url": None,
-    })
-    db.upsert_catalog_release(admin_conn, {
-        "discogs_id": "r2", "artist": "Artist B", "title": "Album B", "year": None, "label": None,
-        "format": None, "discogs_price": "30.00", "barcode": None, "cover_image_url": None,
-        "discogs_url": None,
-    })
-    db.upsert_library_item(admin_conn, alice["id"], "r1", in_collection=True)
-    db.upsert_library_item(admin_conn, alice["id"], "r2", in_wishlist=True)
+    for rid, artist, title in (("r1", "Artist A", "Album A"), ("r2", "Artist B", "Album B")):
+        db.upsert_catalog_release(admin_conn, {
+            "discogs_id": rid, "artist": artist, "title": title, "year": None, "label": None,
+            "format": None, "price_paid": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+    db.upsert_library_item(admin_conn, alice["id"], "r1", in_collection=True, price_paid="20.00")
+    db.upsert_library_item(admin_conn, alice["id"], "r2", in_wishlist=True, price_paid="30.00")
     admin_conn.commit()
     return alice
 
@@ -753,15 +749,17 @@ def test_get_stock_items_library_scope_all_does_not_duplicate_a_release_in_both_
     ])
     db.upsert_catalog_release(admin_conn, {
         "discogs_id": "r1", "artist": "Artist A", "title": "Album A", "year": None, "label": None,
-        "format": None, "discogs_price": "20.00", "barcode": None, "cover_image_url": None,
+        "format": None, "price_paid": None, "barcode": None, "cover_image_url": None,
         "discogs_url": None,
     })
     db.upsert_catalog_release(admin_conn, {
         "discogs_id": "r9", "artist": "Artist Z", "title": "Album Z", "year": None, "label": None,
-        "format": None, "discogs_price": "99.00", "barcode": None, "cover_image_url": None,
+        "format": None, "price_paid": None, "barcode": None, "cover_image_url": None,
         "discogs_url": None,
     })
-    db.upsert_library_item(admin_conn, alice["id"], "r1", in_collection=True, in_wishlist=True)
+    db.upsert_library_item(
+        admin_conn, alice["id"], "r1", in_collection=True, in_wishlist=True, price_paid="20.00"
+    )
     admin_conn.commit()
 
     with db.user_scope(alice["id"]) as conn:
@@ -778,8 +776,8 @@ def test_get_stock_items_discogs_price_is_null_for_a_wantlist_only_match(admin_c
 
     with db.user_scope(alice["id"]) as conn:
         result = db.get_stock_items(conn, alice["id"], library_scope="wishlist")
-        # catalog.discogs_price for r2 is "30.00", but the price subquery is
-        # pinned to collection scope: she has not bought this one.
+        # r2's library_items row carries price_paid "30.00", but the price
+        # subquery is pinned to collection scope: she has not bought this one.
         assert result["items"][0]["discogs_price"] is None
 
         result = db.get_stock_items(conn, alice["id"], library_scope="all")
@@ -804,10 +802,12 @@ def test_get_stock_items_sort_by_discogs_price_under_wishlist_scope_falls_back_t
     ]:
         db.upsert_catalog_release(admin_conn, {
             "discogs_id": discogs_id, "artist": artist, "title": title, "year": None, "label": None,
-            "format": None, "discogs_price": price, "barcode": None, "cover_image_url": None,
+            "format": None, "price_paid": None, "barcode": None, "cover_image_url": None,
             "discogs_url": None,
         })
-        db.upsert_library_item(admin_conn, alice["id"], discogs_id, in_wishlist=True)
+        db.upsert_library_item(
+            admin_conn, alice["id"], discogs_id, in_wishlist=True, price_paid=price
+        )
     admin_conn.commit()
 
     with db.user_scope(alice["id"]) as conn:

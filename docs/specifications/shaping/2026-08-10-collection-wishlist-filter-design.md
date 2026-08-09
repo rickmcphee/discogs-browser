@@ -5,6 +5,19 @@ Branch: `worktree-collection-wishlist-filter` (stacked on
 `worktree-collection-price-paid`, PR #76, which is itself stacked on
 `worktree-store-collection-split`, PR #75 — neither merged yet)
 
+> **Storage superseded (2026-08-09, branch `worktree-library-price-paid`).**
+> This spec's "Sync price preservation" design — `upsert_catalog_release`'s
+> `preserve_price` flag, and every reference below to `catalog.discogs_price` —
+> has been replaced. The column was global while holding a per-user value, so
+> it moved to `library_items.price_paid` and `catalog.discogs_price` was
+> dropped; `preserve_price` is retired, because with no price on `catalog` it
+> guarded nothing. This branch's *filtering* design (`_library_match_fragment`,
+> `library_scope`, the wantlist gating) all still ships as written, and
+> `discogs_price` remains the wire/JSON field name. Only the storage and the
+> flag changed. See
+> [`2026-08-09-library-price-paid-design.md`](2026-08-09-library-price-paid-design.md)
+> and the "Resolved" note under Known limitations.
+
 ## Problem
 
 The Collection tab (`StockBrowser` with `scope="collection"`, added by PR
@@ -519,6 +532,15 @@ so the effect is cosmetic.
   *collection* sync still overwrites it for a release both users hold,
   because `catalog` has no `user_id`. Fixing that means moving the column
   to a per-user table — a separate, larger change.
+
+  **Resolved (2026-08-09, branch `worktree-library-price-paid`):** that
+  separate change has landed. The value moved to `library_items.price_paid`
+  and `catalog.discogs_price` was dropped, so this limitation and the
+  `preserve_price` flag that partially mitigated it are both gone —
+  `upsert_catalog_release` no longer takes the flag or writes any price. The
+  scope exclusion above ("Moving `catalog.discogs_price` per-user") was
+  correct for this branch and is simply no longer outstanding. See
+  [`2026-08-09-library-price-paid-design.md`](2026-08-09-library-price-paid-design.md).
 - **`—` in the Price column remains ambiguous.** It means any of: not on
   the wantlist filter's owned side, no custom `Price` field configured on
   Discogs, or the field left blank. This slice doesn't distinguish them.

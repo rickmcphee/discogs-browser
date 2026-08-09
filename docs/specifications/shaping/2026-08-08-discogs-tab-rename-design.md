@@ -201,6 +201,14 @@ entirely from this branch. The collection loop's equivalent
     consequence the bullet above doesn't cover: `sort="date_added"` without
     a scope has no column to sort by, so it falls back to the artist sort
     like any other unrecognized value.
+  - **Amendment (2026-08-09, branch `worktree-library-price-paid`):** there
+    are now **two** such branches ahead of the lookup, for the same
+    underlying reason. `"discogs_price"` was also removed from
+    `_RELEASE_ALLOWED_SORT`, because the price moved to
+    `library_items.price_paid` and its sort expression is therefore
+    `li.price_paid`, which likewise cannot go through a `f"c.{sort_col}"`
+    lookup. The set now holds only genuine `catalog` columns: `artist`,
+    `title`, `year`, `label`, `format`.
 - The ORDER BY ends with a deterministic `c.discogs_id` term (catalog's
   primary key; `library_items` is filtered to one user, so it is unique
   across the result set). Without it, sorting by a column that is NULL for
@@ -208,6 +216,12 @@ entirely from this branch. The collection loop's equivalent
   custom field — ties every row, and LIMIT/OFFSET pages then repeat and
   drop rows. `get_stock_items` had the identical hazard and carries the
   equivalent `s.id` term, landed separately via PR #77.
+  - **Amendment (2026-08-09, branch `worktree-library-price-paid`):** this
+    term became load-bearing for more collections, not fewer. The price is
+    now per-user (`library_items.price_paid`), so it is NULL for *every* row
+    until each user re-syncs, and the backfill off the old global column
+    deliberately left contested releases NULL — so a Price sort ties nearly
+    every user's whole collection, not just those who never set the field.
 - The `sort.startswith("price_")` branch and its crawler-lookup query are
   deleted — no caller will send that value anymore.
 - `r["listings"] = get_listings_for_release(conn, r["discogs_id"])` is

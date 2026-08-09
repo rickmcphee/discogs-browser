@@ -177,7 +177,46 @@ UPDATE users SET is_admin = true WHERE discogs_username = '<your-discogs-usernam
 
 ```bash
 cd backend
+TEST_DATABASE_URL="postgresql://postgres:postgres@localhost:5432/discogs_browser_test" \
+IDENTITY_DB_PASSWORD=test \
+APP_DB_PASSWORD=test \
 pytest
 ```
+
+The passwords are arbitrary local test values, not real secrets. The database
+named in `TEST_DATABASE_URL` is never itself read from or written to —
+each pytest session provisions its own `<base>_run_<hex>` database from
+`TEMPLATE template0`, runs entirely inside that database, and drops it on
+teardown. `TEST_DATABASE_URL` only supplies connection details (host, port,
+credentials), so its role needs `CREATEDB` and access to the `postgres`
+maintenance database to create and drop the per-run database.
+
+`CREATEDB` alone is not sufficient, though. Whenever the `app_user` /
+`app_identity` roles already exist in the cluster, the harness also runs
+`ALTER ROLE` against them (see the role-poisoning paragraph below), which needs
+a superuser — setting `BYPASSRLS` requires one, or a role holding `BYPASSRLS`
+itself — and `CREATEROLE` to change a password. The local Docker `postgres`
+superuser and CI's `postgres` user both qualify. A `CREATEDB`-only role gets as
+far as creating the per-run database and then fails with an explicit error
+naming this requirement. On a cluster where those two roles don't exist yet —
+CI's fresh Postgres service, for instance — there is nothing to poison, the
+`ALTER ROLE` calls are skipped, and `CREATEDB` really is enough.
+
+Test files that don't touch Postgres need none of this: with
+`TEST_DATABASE_URL` unset, no per-run database is provisioned and only the
+Postgres-backed files fail.
+
+Each session also inverts the `BYPASSRLS` attribute on the cluster's
+`app_user`/`app_identity` roles and rotates their passwords, so that the tests
+asserting on those roles genuinely depend on `init_tenant_schema()` running.
+Teardown restores both attributes; the passwords are left as the next run will
+overwrite them anyway.
+
+If a run crashes before teardown, its per-run database and the inverted role
+attributes can be left behind — run `make test-db-clean` (with
+`TEST_DATABASE_URL` set) to drop leaked `<base>_run_*` databases and repair
+both roles. Pass `--dry-run` to the script to see what it would do first.
+Never run it while a suite is in flight: pools are closed between tests, so a
+live run's database momentarily has no connections and would be dropped.
 
 HTML fixtures for the Amazon price extraction regression tests live in `backend/tests/fixtures/crawlers/amazon/`. New fixtures can be captured using `backend/scripts/capture_fixture.py`.
