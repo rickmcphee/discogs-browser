@@ -35,7 +35,7 @@ def list_stock(
     order: str = Query("asc"),
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=500),
-    overlapping: bool = Query(False),
+    library_scope: Optional[str] = Query(None),
     recommended: bool = Query(False),
     hidden_crawler_ids: Optional[str] = Query(None),
 ):
@@ -44,7 +44,7 @@ def list_stock(
     with db.user_scope(user_id) as conn:
         return db.get_stock_items(
             conn, user_id, search=search, artist=artist, sort=sort, order=order,
-            page=page, per_page=per_page, overlapping=overlapping, recommended=recommended,
+            page=page, per_page=per_page, library_scope=library_scope, recommended=recommended,
             exclude_crawler_ids=exclude_crawler_ids,
         )
 
@@ -52,7 +52,7 @@ def list_stock(
 @router.get("/stock/artists")
 def list_stock_artists(
     request: Request,
-    overlapping: bool = Query(False),
+    library_scope: Optional[str] = Query(None),
     recommended: bool = Query(False),
     hidden_crawler_ids: Optional[str] = Query(None),
 ):
@@ -60,7 +60,7 @@ def list_stock_artists(
     exclude_crawler_ids = _parse_crawler_ids(hidden_crawler_ids)
     with db.user_scope(user_id) as conn:
         artists = db.get_distinct_stock_artists(
-            conn, user_id, overlapping=overlapping, recommended=recommended,
+            conn, user_id, library_scope=library_scope, recommended=recommended,
             exclude_crawler_ids=exclude_crawler_ids,
         )
         return {"artists": artists}

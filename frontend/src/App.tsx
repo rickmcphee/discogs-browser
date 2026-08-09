@@ -11,7 +11,7 @@ import { navButtonClass, primaryButtonClass, secondaryButtonClass, dismissButton
 import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, clearJudgments, exportRecommendationsCsv, getCrawlers, getUserSettings, getJudgmentStatus, checkHealth, getAuthStatus, setUnauthorizedHandler, hasAvatar } from './api/client'
 import type { CrawlEvent, CrawlStatus, CollectionStatus, Crawler, AuthStatus } from './api/types'
 
-type View = 'discogs' | 'wishlist' | 'instock' | 'collection' | 'settings' | 'logs' | 'account'
+type View = 'collection' | 'wantlist' | 'store' | 'track' | 'settings' | 'logs' | 'account'
 
 // SSE reconnects (including on browser refresh) replay every buffered event from
 // crawl_manager._recent, so a banner's dismissal has to survive across that replay.
@@ -23,7 +23,7 @@ const VIEW_AS_USER_KEY = 'discogs-browser.viewAsUser'
 const HIDDEN_CRAWLER_IDS_KEY = 'discogs-browser.hiddenCrawlerIds'
 
 export default function App() {
-  const [view, setView] = useState<View>('discogs')
+  const [view, setView] = useState<View>('collection')
   const [crawling, setCrawling] = useState(false)
   const [crawlBannerId, setCrawlBannerId] = useState(0)
   const [dismissedCrawlId, setDismissedCrawlId] = useState(() => Number(localStorage.getItem(DISMISSED_CRAWL_KEY) ?? 0))
@@ -118,7 +118,7 @@ export default function App() {
       if (event.status === 'ping') return
       if (event.status === 'sync_started') {
         setSyncing(true)
-        setSyncStatus(event.scope === 'wishlist' ? 'Syncing wishlist…' : 'Syncing collection…', event.id ?? null)
+        setSyncStatus(event.scope === 'wishlist' ? 'Syncing wantlist…' : 'Syncing collection…', event.id ?? null)
         return
       }
       if (event.status === 'sync_page_fetched') {
@@ -133,10 +133,10 @@ export default function App() {
       if (event.status === 'sync_complete') {
         setSyncing(false)
         if (event.scope === 'wishlist') {
-          setSyncStatus(`Synced ${event.wishlist_synced} wishlist items for ${event.username}`, event.id ?? null)
+          setSyncStatus(`Synced ${event.wishlist_synced} wantlist items for ${event.username}`, event.id ?? null)
         } else {
-          const wishlistPart = event.wishlist_synced != null ? `, ${event.wishlist_synced} wishlist items` : ''
-          setSyncStatus(`Synced ${event.synced} records for ${event.username}${wishlistPart}`, event.id ?? null)
+          const wantlistPart = event.wishlist_synced != null ? `, ${event.wishlist_synced} wantlist items` : ''
+          setSyncStatus(`Synced ${event.synced} records for ${event.username}${wantlistPart}`, event.id ?? null)
         }
         setSyncGeneration(g => g + 1)
         return
@@ -282,13 +282,13 @@ export default function App() {
     startRefresh('all')
   }, [startRefresh])
 
-  // Wishlist tab's refresh has nothing analogous to the "N records already
+  // Wantlist tab's refresh has nothing analogous to the "N records already
   // loaded, refresh new or all?" choice that collectionStatus's modal offers --
   // wantlists are small and always fully re-synced -- so this skips straight
   // to the sync, same as Settings' "Refresh Now" bypassing that modal.
-  const handleRefreshWishlist = useCallback(async () => {
+  const handleRefreshWantlist = useCallback(async () => {
     try {
-      await refreshCollection('all', 'wishlist')
+      await refreshCollection('all', 'wantlist')
     } catch (e: any) {
       setSyncStatus(`Sync failed: ${e.message}`)
     }
@@ -437,28 +437,28 @@ export default function App() {
       <header className="bg-gray-900 border-b border-gray-800 px-6 py-3 flex items-center gap-4">
         <nav className="flex gap-2">
           <button
-            onClick={() => setView('discogs')}
-            className={`px-3 py-1.5 text-sm font-medium ${navButtonClass(view === 'discogs')}`}
-          >
-            Discogs
-          </button>
-          <button
-            onClick={() => setView('wishlist')}
-            className={`px-3 py-1.5 text-sm font-medium ${navButtonClass(view === 'wishlist')}`}
-          >
-            Wishlist
-          </button>
-          <button
-            onClick={() => setView('instock')}
-            className={`px-3 py-1.5 text-sm font-medium ${navButtonClass(view === 'instock')}`}
-          >
-            Store
-          </button>
-          <button
             onClick={() => setView('collection')}
             className={`px-3 py-1.5 text-sm font-medium ${navButtonClass(view === 'collection')}`}
           >
             Collection
+          </button>
+          <button
+            onClick={() => setView('wantlist')}
+            className={`px-3 py-1.5 text-sm font-medium ${navButtonClass(view === 'wantlist')}`}
+          >
+            Wantlist
+          </button>
+          <button
+            onClick={() => setView('store')}
+            className={`px-3 py-1.5 text-sm font-medium ${navButtonClass(view === 'store')}`}
+          >
+            Store
+          </button>
+          <button
+            onClick={() => setView('track')}
+            className={`px-3 py-1.5 text-sm font-medium ${navButtonClass(view === 'track')}`}
+          >
+            Track
           </button>
         </nav>
         <nav className="flex items-center gap-2 ml-auto">
@@ -490,27 +490,27 @@ export default function App() {
 
       {/* Main */}
       <main className="flex-1 overflow-hidden">
-        <div className={view === 'discogs' ? 'h-full' : 'hidden'}>
+        <div className={view === 'collection' ? 'h-full' : 'hidden'}>
           <RecordBrowser
-            scope="discogs"
+            scope="collection"
             syncing={syncing}
             onRefreshCollection={() => handleRefresh()}
             syncGeneration={syncGeneration}
           />
         </div>
-        <div className={view === 'wishlist' ? 'h-full' : 'hidden'}>
+        <div className={view === 'wantlist' ? 'h-full' : 'hidden'}>
           <RecordBrowser
-            scope="wishlist"
+            scope="wantlist"
             syncing={syncing}
-            onRefreshCollection={() => handleRefreshWishlist()}
+            onRefreshCollection={() => handleRefreshWantlist()}
             syncGeneration={syncGeneration}
           />
         </div>
-        <div className={view === 'instock' ? 'h-full' : 'hidden'}>
+        <div className={view === 'store' ? 'h-full' : 'hidden'}>
           <StockBrowser recommendedAvailable={recommendedAvailable} hiddenCrawlerIds={hiddenCrawlerIds} />
         </div>
-        <div className={view === 'collection' ? 'h-full' : 'hidden'}>
-          <StockBrowser scope="collection" hiddenCrawlerIds={hiddenCrawlerIds} />
+        <div className={view === 'track' ? 'h-full' : 'hidden'}>
+          <StockBrowser scope="track" hiddenCrawlerIds={hiddenCrawlerIds} />
         </div>
         <div className={view === 'settings' ? 'h-full overflow-y-auto' : 'hidden'}>
           <Settings

@@ -79,6 +79,15 @@ excluded via `requires_discogs_release`).
   itself is the filter, always sending `overlapping=true`, never
   `recommended=true` (recommended items are defined to exclude owned items,
   so within Collection that filter could only ever return empty).
+
+  **Amendment (2026-08-10):** "Collection has no filter dropdown at all —
+  the tab itself is the filter" no longer holds. That tab is now **Track**
+  and carries an All/Collection/Wantlist dropdown; see
+  `2026-08-10-collection-wishlist-filter-design.md` for why the reversal
+  was judged cheaper than a fifth tab. The `overlapping` parameter this
+  spec documents throughout was also replaced by `library_scope`
+  (`'collection'`/`'wishlist'`/`'all'`/`None`), and the `View` union values
+  were renamed with the tabs.
 - **Collection reuses `StockBrowser`'s full shell** (artist sidebar, search,
   pagination, tile/list toggle) rather than being a new plain sortable
   table like `RecordBrowser`. It's the same `stock_items` data source, just

@@ -5,6 +5,16 @@ Branch: `worktree-crawl-target-expansion`
 
 ## Problem
 
+**Amendment (2026-08-10):** tab-label pointer only — this slice is
+backend-only and nothing it builds changes. Unlike the other specs of this
+era, "Collection" in this document means the **store/library intersection
+tab** that slice 3 was going to add ("the new intersection Collection tab",
+"Store/Collection tab split"), *not* the Discogs-collection tab. That
+intersection tab shipped as **Track**, and the name "Collection" now belongs
+to the Discogs-collection tab instead — so read every "Collection tab"
+below as **Track**. See
+`2026-08-10-collection-wishlist-filter-design.md`.
+
 This is the second slice of the v3.0 redesign (see
 `2026-08-08-discogs-tab-rename-design.md` for the first). Release crawlers
 (`crawler_type='release'`: amazon, discogs_marketplace, ebay) only ever

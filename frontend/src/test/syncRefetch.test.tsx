@@ -23,34 +23,34 @@ beforeEach(() => {
 describe('refetch on sync progress', () => {
   it('reloads releases each time syncGeneration increments', async () => {
     const { rerender } = render(
-      <RecordBrowser scope="discogs" syncGeneration={0} />
+      <RecordBrowser scope="collection" syncGeneration={0} />
     )
     await waitFor(() => expect(getReleases).toHaveBeenCalledTimes(1))
 
     rerender(
-      <RecordBrowser scope="discogs" syncGeneration={1} />
+      <RecordBrowser scope="collection" syncGeneration={1} />
     )
     await waitFor(() => expect(getReleases).toHaveBeenCalledTimes(2))
 
     rerender(
-      <RecordBrowser scope="discogs" syncGeneration={2} />
+      <RecordBrowser scope="collection" syncGeneration={2} />
     )
     await waitFor(() => expect(getReleases).toHaveBeenCalledTimes(3))
   })
 
   it('does not reload again when syncGeneration stays the same', async () => {
     const { rerender } = render(
-      <RecordBrowser scope="discogs" syncGeneration={0} />
+      <RecordBrowser scope="collection" syncGeneration={0} />
     )
     await waitFor(() => expect(getReleases).toHaveBeenCalledTimes(1))
 
     rerender(
-      <RecordBrowser scope="discogs" syncGeneration={1} />
+      <RecordBrowser scope="collection" syncGeneration={1} />
     )
     await waitFor(() => expect(getReleases).toHaveBeenCalledTimes(2))
 
     rerender(
-      <RecordBrowser scope="discogs" syncGeneration={1} />
+      <RecordBrowser scope="collection" syncGeneration={1} />
     )
     await waitFor(() => expect(getReleases).toHaveBeenCalledTimes(2))
   })
