@@ -85,7 +85,6 @@ def test_upsert_listing_inserts_then_updates(admin_conn):
     assert row["year"] is None
     assert row["label"] is None
     assert row["format"] is None
-    assert row["discogs_price"] is None
     assert row["barcode"] is None
     assert row["cover_image_url"] is None
     assert row["discogs_url"] is None

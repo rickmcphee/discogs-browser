@@ -67,7 +67,6 @@ CREATE TABLE IF NOT EXISTS catalog (
     year INTEGER,
     label TEXT,
     format TEXT,
-    discogs_price TEXT,
     barcode TEXT,
     cover_image_url TEXT,
     discogs_url TEXT,
@@ -200,6 +199,35 @@ CREATE TABLE IF NOT EXISTS library_items (
 ALTER TABLE library_items ADD COLUMN IF NOT EXISTS collection_date_added TIMESTAMP;
 ALTER TABLE library_items ADD COLUMN IF NOT EXISTS wishlist_date_added TIMESTAMP;
 ALTER TABLE library_items ADD COLUMN IF NOT EXISTS price_paid TEXT;
+
+-- One-shot, self-retiring migration off the global catalog.discogs_price.
+-- The guard is what makes it safe to leave in a schema string that re-runs on
+-- every boot: once the source column is gone this whole block is a no-op, so
+-- it can neither error nor resurrect a price a user deliberately cleared.
+--
+-- Only a release with exactly one collection owner is backfilled. The stored
+-- global value is whichever user synced last, so with two owners it cannot be
+-- attributed to either; copying it to both would be the same cross-tenant leak
+-- in reverse. Contested rows stay NULL and self-heal on the owner's next
+-- mode="all" sync.
+--
+-- Must live in TENANT_SCHEMA, not GLOBAL_SCHEMA: GLOBAL_SCHEMA runs first
+-- (main.py), before library_items.price_paid exists.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+             WHERE table_name = 'catalog' AND column_name = 'discogs_price') THEN
+    UPDATE library_items li SET price_paid = c.discogs_price
+    FROM catalog c
+    WHERE c.discogs_id = li.discogs_id
+      AND li.in_collection = TRUE
+      AND c.discogs_price IS NOT NULL
+      AND (SELECT COUNT(*) FROM library_items x
+           WHERE x.discogs_id = li.discogs_id AND x.in_collection = TRUE) = 1;
+
+    ALTER TABLE catalog DROP COLUMN discogs_price;
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS stock_item_judgments (
     user_id INTEGER NOT NULL REFERENCES users(id),

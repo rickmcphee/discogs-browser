@@ -14,7 +14,10 @@ def admin_conn(pg_test_db):
     db.init_tenant_schema()
     with db.get_admin_pool().connection() as conn:
         yield conn
-        conn.execute("TRUNCATE users, sessions, library_items, invites CASCADE")
+        # catalog is truncated too: the migration tests below seed a catalog
+        # row per test, and catalog has no FK back to any of the others, so
+        # CASCADE alone would leave it behind for the next test's duplicate key.
+        conn.execute("TRUNCATE catalog, users, sessions, library_items, invites CASCADE")
         conn.commit()
 
 
@@ -225,3 +228,122 @@ def test_library_items_has_price_paid_column(admin_conn):
     ).fetchone()
     assert row is not None
     assert row["data_type"] == "text"
+
+
+def _readd_legacy_catalog_price(admin_conn):
+    """Recreate the pre-migration shape: init_tenant_schema() has already
+    dropped the column by the time the fixture yields, so a migration test
+    has to put it back before it has anything to migrate."""
+    admin_conn.execute("ALTER TABLE catalog ADD COLUMN IF NOT EXISTS discogs_price TEXT")
+    admin_conn.commit()
+
+
+def test_backfill_copies_the_global_price_to_a_sole_collection_owner(admin_conn):
+    _readd_legacy_catalog_price(admin_conn)
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.execute(
+        "INSERT INTO catalog (discogs_id, artist, title, discogs_price) "
+        "VALUES ('r1', 'A', 'T', '42.50')"
+    )
+    admin_conn.execute(
+        "INSERT INTO library_items (user_id, discogs_id, in_collection) VALUES (%s, 'r1', TRUE)",
+        [alice["id"]],
+    )
+    admin_conn.commit()
+
+    db.init_tenant_schema()
+
+    assert admin_conn.execute(
+        "SELECT price_paid FROM library_items WHERE user_id = %s AND discogs_id = 'r1'",
+        [alice["id"]],
+    ).fetchone()["price_paid"] == "42.50"
+
+
+def test_backfill_leaves_a_contested_release_null_for_everyone(admin_conn):
+    # The global value is whichever user synced last, so with two owners it
+    # cannot be attributed. Copying it to both would be the same cross-tenant
+    # leak in reverse.
+    _readd_legacy_catalog_price(admin_conn)
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    bob = db.create_user(admin_conn, discogs_user_id=2, discogs_username="bob")
+    admin_conn.execute(
+        "INSERT INTO catalog (discogs_id, artist, title, discogs_price) "
+        "VALUES ('r1', 'A', 'T', '42.50')"
+    )
+    for user in (alice, bob):
+        admin_conn.execute(
+            "INSERT INTO library_items (user_id, discogs_id, in_collection) VALUES (%s, 'r1', TRUE)",
+            [user["id"]],
+        )
+    admin_conn.commit()
+
+    db.init_tenant_schema()
+
+    prices = [
+        r["price_paid"] for r in admin_conn.execute(
+            "SELECT price_paid FROM library_items WHERE discogs_id = 'r1'"
+        ).fetchall()
+    ]
+    assert prices == [None, None]
+
+
+def test_backfill_skips_a_wantlist_only_holder(admin_conn):
+    # A sole holder who only wants the release never paid this price.
+    _readd_legacy_catalog_price(admin_conn)
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.execute(
+        "INSERT INTO catalog (discogs_id, artist, title, discogs_price) "
+        "VALUES ('r1', 'A', 'T', '42.50')"
+    )
+    admin_conn.execute(
+        "INSERT INTO library_items (user_id, discogs_id, in_wishlist) VALUES (%s, 'r1', TRUE)",
+        [alice["id"]],
+    )
+    admin_conn.commit()
+
+    db.init_tenant_schema()
+
+    assert admin_conn.execute(
+        "SELECT price_paid FROM library_items WHERE user_id = %s AND discogs_id = 'r1'",
+        [alice["id"]],
+    ).fetchone()["price_paid"] is None
+
+
+def test_migration_drops_the_global_catalog_price_column(admin_conn):
+    _readd_legacy_catalog_price(admin_conn)
+    db.init_tenant_schema()
+    assert admin_conn.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = 'catalog' AND column_name = 'discogs_price'"
+    ).fetchone() is None
+
+
+def test_migration_is_idempotent_and_does_not_refill_a_cleared_price(admin_conn):
+    """TENANT_SCHEMA re-runs on every boot. Once the source column is gone the
+    guard must make the whole block a no-op -- otherwise a second boot either
+    errors or resurrects a value the user deliberately cleared."""
+    _readd_legacy_catalog_price(admin_conn)
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.execute(
+        "INSERT INTO catalog (discogs_id, artist, title, discogs_price) "
+        "VALUES ('r1', 'A', 'T', '42.50')"
+    )
+    admin_conn.execute(
+        "INSERT INTO library_items (user_id, discogs_id, in_collection) VALUES (%s, 'r1', TRUE)",
+        [alice["id"]],
+    )
+    admin_conn.commit()
+
+    db.init_tenant_schema()
+    admin_conn.execute(
+        "UPDATE library_items SET price_paid = NULL WHERE user_id = %s AND discogs_id = 'r1'",
+        [alice["id"]],
+    )
+    admin_conn.commit()
+
+    db.init_tenant_schema()
+
+    assert admin_conn.execute(
+        "SELECT price_paid FROM library_items WHERE user_id = %s AND discogs_id = 'r1'",
+        [alice["id"]],
+    ).fetchone()["price_paid"] is None
