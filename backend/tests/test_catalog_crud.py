@@ -301,6 +301,41 @@ def test_get_library_releases_date_added_sort_falls_back_to_artist_without_a_sco
     assert all(r["date_added"] is None for r in result["releases"])
 
 
+def test_get_library_releases_paginates_without_overlap_when_every_sort_key_is_null(admin_conn):
+    # discogs_price is a Discogs custom field most collections never set, so
+    # sorting by it leaves every row's sort key NULL and every row tied. A
+    # fully tied ORDER BY lets Postgres return the tied rows in any order --
+    # and it does: the bounded top-N sort it picks for LIMIT/OFFSET produces a
+    # different arbitrary order per page, so page 2 repeats rows page 1
+    # already returned and silently drops others. Verified: without the
+    # deterministic final ORDER BY term, 100 rows at 10 per page overlap on
+    # every run. c.discogs_id is catalog's primary key, and library_items is
+    # filtered to one user, so it's unique across the result set.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    for i in range(100):
+        rid = f"r{i:03d}"
+        db.upsert_catalog_release(admin_conn, {
+            "discogs_id": rid, "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.upsert_library_item(admin_conn, alice["id"], rid, in_collection=True)
+    admin_conn.commit()
+
+    pages = []
+    for page in (1, 2):
+        with db.user_scope(alice["id"]) as conn:
+            result = db.get_library_releases(
+                conn, alice["id"], sort="discogs_price", page=page, per_page=10
+            )
+        assert result["total"] == 100
+        pages.append([r["discogs_id"] for r in result["releases"]])
+
+    assert [len(p) for p in pages] == [10, 10]
+    assert not set(pages[0]) & set(pages[1]), f"pages overlap: {pages}"
+    assert len(set(pages[0] + pages[1])) == 20
+
+
 def test_get_distinct_artists_filters_by_discogs_scope(admin_conn):
     alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
     db.upsert_catalog_release(admin_conn, {
