@@ -199,7 +199,10 @@ entirely from this branch. The collection loop's equivalent
   across the result set). Without it, sorting by a column that is NULL for
   every row — `discogs_price` in any collection that never set that Discogs
   custom field — ties every row, and LIMIT/OFFSET pages then repeat and
-  drop rows. `get_stock_items` carries the same term as `s.id`.
+  drop rows. `get_stock_items` has the identical hazard and is still
+  unfixed on `main`; its equivalent `s.id` term lives on
+  `worktree-collection-wishlist-filter` (PR #77) and arrives when that
+  merges.
 - The `sort.startswith("price_")` branch and its crawler-lookup query are
   deleted — no caller will send that value anymore.
 - `r["listings"] = get_listings_for_release(conn, r["discogs_id"])` is
