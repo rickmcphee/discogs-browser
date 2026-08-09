@@ -24,6 +24,7 @@ class CrawlManager:
         self._site_next_allowed_at: dict[int, float] = {}
         self._site_consecutive_failures: dict[int, int] = {}
         self._site_cooldown_until: dict[int, float] = {}
+        self._failure_domains: dict[int, str] = {}
 
     @property
     def any_job_running(self) -> bool:
@@ -73,6 +74,7 @@ class CrawlManager:
             enabled = get_enabled_crawlers(conn)
         plugins = load_enabled_crawlers(enabled)
         plugins_by_crawler_id = {p._db_id: p for p in plugins}
+        self._set_failure_domains(plugins_by_crawler_id)
 
         self._stealth = Stealth()
         self._playwright = await async_playwright().start()
@@ -123,22 +125,53 @@ class CrawlManager:
         now = time.monotonic()
         return [cid for cid, until in self._site_cooldown_until.items() if now < until]
 
+    def _set_failure_domains(self, plugins_by_crawler_id: dict):
+        """Group crawlers that share one upstream for circuit-breaker purposes.
+
+        A plugin may declare `failure_domain: str`; every crawler declaring the
+        same one counts as a single site to the breaker. The two eBay plugins
+        are separate `crawlers` rows but one eBay app, one OAuth token and one
+        API, so a 409 storm answering one of them is answering both -- with a
+        counter each, the storm had to reach `consecutive_failure_limit` twice
+        over before both stopped calling. Undeclared (the normal case) means a
+        crawler is its own domain. The `isinstance` guard is the plugin
+        contract, not defensiveness: plugins are arbitrary files loaded at
+        runtime, and a non-string here would silently become a distinct
+        domain key rather than an error."""
+        self._failure_domains = {
+            crawler_id: plugin.failure_domain
+            for crawler_id, plugin in plugins_by_crawler_id.items()
+            if isinstance(getattr(plugin, "failure_domain", None), str)
+        }
+
+    def _domain_peers(self, crawler_id: int) -> list[int]:
+        domain = self._failure_domains.get(crawler_id)
+        if domain is None:
+            return [crawler_id]
+        return [cid for cid, d in self._failure_domains.items() if d == domain]
+
     def _record_site_result(self, crawler_id: int, succeeded: bool):
         import time
         from config import load_config
-        if succeeded:
-            self._site_consecutive_failures[crawler_id] = 0
-            return
-        count = self._site_consecutive_failures.get(crawler_id, 0) + 1
-        self._site_consecutive_failures[crawler_id] = count
+        # Applied to every crawler in the domain rather than to one shared
+        # counter so that _site_consecutive_failures/_site_cooldown_until stay
+        # keyed by crawler_id -- which is what claim_crawl_queue_batch's
+        # excluded_crawler_ids needs, and what a crawler with no declared
+        # domain (every crawler but the two eBay ones) already was.
         limit = int(load_config().get("consecutive_failure_limit", 10))
-        if limit and count >= limit:
-            self._site_cooldown_until[crawler_id] = time.monotonic() + 1800
-            self._site_consecutive_failures[crawler_id] = 0
-            log.warning(
-                "Crawler %d hit %d consecutive failures, cooling down for 30 minutes",
-                crawler_id, count,
-            )
+        for cid in self._domain_peers(crawler_id):
+            if succeeded:
+                self._site_consecutive_failures[cid] = 0
+                continue
+            count = self._site_consecutive_failures.get(cid, 0) + 1
+            self._site_consecutive_failures[cid] = count
+            if limit and count >= limit:
+                self._site_cooldown_until[cid] = time.monotonic() + 1800
+                self._site_consecutive_failures[cid] = 0
+                log.warning(
+                    "Crawler %d hit %d consecutive failures, cooling down for 30 minutes",
+                    cid, count,
+                )
 
     async def _paced_search(self, crawler_id: int, plugin, target: dict, pages: dict) -> tuple:
         """Runs plugin.search() for one crawler_id under that site's lock,

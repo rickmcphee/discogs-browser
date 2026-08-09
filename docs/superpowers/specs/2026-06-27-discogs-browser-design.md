@@ -138,7 +138,8 @@ Each plugin is a Python module defining a `Crawler` class with:
 - `base_url: str` — site root
 - `login_url: str` — URL opened for manual session auth
 - `classmethod search_url(release: dict) -> str` — returns a pre-built search URL for the release
-- `async def search(self, release: dict, page) -> dict` — navigates or queries the source, returns `{url, price, shipping, currency, condition}`. Playwright-based crawlers receive a `playwright.Page`; API-based crawlers receive `None` and manage their own HTTP client. Raises `BotDetectedError` on bot interstitials (Playwright crawlers only).
+- `async def search(self, release: dict, page) -> dict` — navigates or queries the source, returns `{url, price, shipping, currency, condition}`. Playwright-based crawlers receive a `playwright.Page`; API-based crawlers receive `None` and manage their own HTTP client. Raises `BotDetectedError` on bot interstitials (Playwright crawlers only). **(2026-08-09:** returning `[]` means "the site answered and has nothing" — an error must raise, or the consecutive-failure circuit breaker cannot see it. See item 9 of [`2026-08-01-worker-pool-pacing-design.md`](2026-08-01-worker-pool-pacing-design.md).**)**
+- `failure_domain: str` — *optional*, added 2026-08-09. Crawlers declaring the same value count as one site to the consecutive-failure circuit breaker; both eBay plugins declare `"ebay-browse-api"` because they share an app, a token and an API. Omitted means the crawler is its own domain. See item 10 of [`2026-08-01-worker-pool-pacing-design.md`](2026-08-01-worker-pool-pacing-design.md).
 
 Plugins are stored in `DISCOGS_BROWSER_DATA/crawlers/`. Bundled plugins in `backend/crawlers/` are copied there on every startup, so they always reflect the latest shipped version.
 

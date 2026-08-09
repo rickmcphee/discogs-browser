@@ -1691,6 +1691,99 @@ async def test_successive_ebay_api_errors_cool_down_the_site(pg_schema):
     assert manager._site_cooldown_until.get(crawler_id, 0) > time.monotonic()
 
 
+async def test_failures_pool_across_crawlers_sharing_a_failure_domain(pg_schema):
+    """The two eBay plugins are separate crawler rows but one eBay app, one
+    token, and one API. Counting their failures separately meant a 409 storm
+    had to hit consecutive_failure_limit twice over -- once per crawler --
+    before both stopped calling the API."""
+    import ebay_api
+    from crawlers.ebay import Crawler as EbayCCMusic
+    from crawlers.ebay_general import Crawler as EbayGeneral
+
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "eBay/CCmusic", "/ebay.py")
+        db.register_crawler(conn, "eBay", "/ebay_general.py")
+        ccmusic_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'eBay/CCmusic'").fetchone()["id"]
+        general_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'eBay'").fetchone()["id"]
+        conn.execute("INSERT INTO stock_item_identities (item_key, artist, title) VALUES ('key1', 'A', 'T')")
+        db.enqueue_crawl_queue_for_stock_item(conn, "key1", ccmusic_id)
+        db.enqueue_crawl_queue_for_stock_item(conn, "key1", general_id)
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    plugins = {}
+    for crawler_id, cls, name in [(ccmusic_id, EbayCCMusic, "eBay/CCmusic"), (general_id, EbayGeneral, "eBay")]:
+        plugin = cls()
+        plugin._db_id = crawler_id
+        plugin._db_site_name = name
+        plugins[crawler_id] = plugin
+    manager._set_failure_domains(plugins)
+
+    ebay_api._token = None
+    ebay_api._token_expires_at = 0.0
+    try:
+        with respx.mock:
+            respx.post("https://api.ebay.com/identity/v1/oauth2/token").mock(
+                return_value=httpx.Response(200, json={"access_token": "t", "expires_in": 7200})
+            )
+            respx.get("https://api.ebay.com/buy/browse/v1/item_summary/search").mock(
+                return_value=httpx.Response(409, json={})
+            )
+            ebay_cfg = {"ebay_app_id": "a", "ebay_cert_id": "c"}
+            with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+                 patch("crawlers.ebay.load_config", return_value=ebay_cfg), \
+                 patch("crawlers.ebay_general.load_config", return_value=ebay_cfg), \
+                 patch("config.load_config", return_value={"crawl_delay_seconds": 0, "consecutive_failure_limit": 2}):
+                await manager._drain_one_batch("worker-test", plugins, pages={})
+    finally:
+        ebay_api._token = None
+        ebay_api._token_expires_at = 0.0
+
+    # One failure each: pooled that's 2, which is the limit, so both stop.
+    assert manager._site_cooldown_until.get(ccmusic_id, 0) > time.monotonic()
+    assert manager._site_cooldown_until.get(general_id, 0) > time.monotonic()
+
+
+async def test_a_crawler_with_no_failure_domain_keeps_its_own_counter(pg_schema):
+    """The pooling must not leak across unrelated sites: Amazon failing has
+    no bearing on eBay's counter."""
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        db.register_crawler(conn, "eBay", "/ebay_general.py")
+        amazon_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        ebay_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'eBay'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1", amazon_id)
+        conn.commit()
+
+    from crawlers.ebay_general import Crawler as EbayGeneral
+    ebay_plugin = EbayGeneral()
+    ebay_plugin._db_id = ebay_id
+    ebay_plugin._db_site_name = "eBay"
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_amazon = AsyncMock()
+    fake_amazon.search = AsyncMock(return_value=[])
+    fake_amazon._db_id = amazon_id
+    fake_amazon._db_site_name = "Amazon"
+    manager._set_failure_domains({amazon_id: fake_amazon, ebay_id: ebay_plugin})
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("config.load_config", return_value={"crawl_delay_seconds": 0, "consecutive_failure_limit": 10}):
+        await manager._drain_one_batch("worker-test", {amazon_id: fake_amazon}, pages={})
+
+    assert manager._site_consecutive_failures[amazon_id] == 1
+    assert manager._site_consecutive_failures.get(ebay_id, 0) == 0
+
+
 async def test_drain_one_batch_excludes_cooling_down_crawler_from_claim(pg_schema):
     with db.get_admin_pool().connection() as conn:
         db.register_crawler(conn, "Amazon", "/x.py")
