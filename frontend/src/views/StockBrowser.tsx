@@ -81,6 +81,18 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
 
   function changeFilter(value: string) {
     setFilter(value)
+    setPage(1)
+    // A narrower filter can drop the selected artist out of the sidebar
+    // entirely, which would leave artist= still going out with nothing in the
+    // sidebar highlighted -- an invisible filter the user has no way to
+    // attribute. Clearing it is exactly the "back to all artists" transition
+    // selectArtist('') already models, sort derivation included, so it
+    // delegates rather than repeating it. That path also lands on 'artist',
+    // so it subsumes the discogs_price reset below.
+    if (selectedArtist) {
+      selectArtist('')
+      return
+    }
     // The backend's discogs_price sort key is pinned to collection scope -- a
     // wantlist row has no paid price -- so under Wantlist it silently degrades
     // to artist order. Resetting the sort keeps the visible sort indicator
@@ -89,7 +101,6 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
       setSort('artist')
       setOrder('asc')
     }
-    setPage(1)
   }
 
   function toggleSort(field: StockSortField) {

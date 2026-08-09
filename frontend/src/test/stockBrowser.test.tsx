@@ -256,6 +256,32 @@ describe('StockBrowser', () => {
     await waitFor(() => expect(getStockArtists).toHaveBeenLastCalledWith('collection', false, []))
   })
 
+  it('clears a selected artist when the Track filter changes, and re-highlights All', async () => {
+    render(<StockBrowser scope="track" />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'NAILS' })).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: 'NAILS' }))
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ artist: 'NAILS' })))
+    // The narrower filter may not list NAILS at all, so the selection has to go
+    // with it -- otherwise artist= keeps going out with nothing highlighted.
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'wantlist' } })
+    await waitFor(() =>
+      expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ libraryScope: 'wantlist', artist: undefined, sort: 'artist', order: 'asc' }))
+    )
+    expect(screen.getByRole('button', { name: 'All' }).className).toContain('bg-white')
+  })
+
+  it('clears a selected artist when the Store filter changes too', async () => {
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'NAILS' })).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: 'NAILS' }))
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ artist: 'NAILS' })))
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'recommended' } })
+    await waitFor(() =>
+      expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ recommended: true, artist: undefined }))
+    )
+    expect(screen.getByRole('button', { name: 'All' }).className).toContain('bg-white')
+  })
+
   it('resets to page 1 when the Track filter changes', async () => {
     getStock.mockResolvedValue({ total: 500, page: 1, per_page: 250, items })
     render(<StockBrowser scope="track" />)
