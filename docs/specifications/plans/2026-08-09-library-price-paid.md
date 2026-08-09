@@ -843,12 +843,18 @@ Add a `sort_expr` case ahead of the existing `date_added` one, and select the ne
         SELECT c.*, li.price_paid AS discogs_price, li.plex_url, li.plex_matched_at,
                li.collection_date_added, li.wishlist_date_added
         {base_from} {where}
-        ORDER BY CASE WHEN {sort_expr} IS NULL THEN 1 ELSE 0 END {null_order}, {sort_expr} {order_sql}
+        ORDER BY CASE WHEN {sort_expr} IS NULL THEN 1 ELSE 0 END {null_order}, {sort_expr} {order_sql}, c.discogs_id
         LIMIT %(limit)s OFFSET %(offset)s
         """,
         params,
     ).fetchall()
 ```
+
+**The trailing `, c.discogs_id` is required, and is not cosmetic.** Without a unique final term, a sort column that is NULL for *every* row ties all rows, the `ORDER BY` is unspecified, and Postgres' bounded top-N sort returns a different arbitrary order per page — so `LIMIT`/`OFFSET` pages repeat and drop rows. `c.discogs_id` is `catalog`'s primary key and `library_items` is filtered to a single `user_id`, so it is unique across this result set. `get_stock_items` already carries the equivalent as `, s.id` (`db.py:997`).
+
+This change makes that hazard *more* likely, not less: immediately after deploy `price_paid` is NULL for every row until each user re-syncs, and the backfill deliberately leaves contested rows NULL — so a Price sort ties every row for nearly every user, not just those who never set the field.
+
+**Provenance and conflict warning.** This term is the fix in PR #79 (`worktree-library-releases-pagination-tiebreak`, based on `main`), which measured 20/20 overlapping pages without it and 0/20 with it. It is reproduced here because this task rewrites the same line, so the two branches *will* conflict on it. **Resolving that conflict by taking this branch's side is only safe because the term is present here — do not drop it.** The regression test that would catch its loss (`test_get_library_releases_paginates_without_overlap_when_every_sort_key_is_null`, in `backend/tests/test_catalog_crud.py`) exists only on #79, so nothing on this branch fails if the term silently disappears. After merging, confirm the term survived and that #79's test passes against the merged result.
 
 **Transient duplicate column, resolved in Task 4.** Until `catalog.discogs_price` is dropped, `c.*` also yields a `discogs_price` key. psycopg's `dict_row` is last-wins, and the alias is listed after `c.*`, so the per-user value wins — which is why the first test above seeds two different users and asserts each sees their own. Task 4 removes the ambiguity entirely. (Nothing writes the catalog column as of step 1 of this task, so in practice the stale side is always NULL — but do not rely on that; the alias ordering is what makes it correct.)
 
@@ -1276,7 +1282,9 @@ For each match, confirm the text still describes what shipped. Two known cases t
 
 Plans (`docs/superpowers/plans/`, `docs/specifications/plans/`) are historical task logs and are explicitly out of scope for this check.
 
-Note in the eventual PR description what drift was found and fixed.
+**Expect a second conflict with PR #79 here.** `docs/specifications/shaping/2026-08-08-discogs-tab-rename-design.md` contains a `discogs_price` reference (`:15`) so it will surface in the sweep above, and #79 also amends that file — recording its new `ORDER BY` term and correcting a pre-existing drift in the spec's `_RELEASE_ALLOWED_SORT` bullet (the allow-list never gained `"date_added"`; that became a scope-gated branch ahead of the lookup, which builds an `li.`-prefixed `sort_expr`). That correction is independent of this change and is also *compounded* by it, since Task 3 adds a second such branch for `discogs_price`. When resolving, keep both edits: #79's `date_added` correction and this branch's `discogs_price` one. Do not rewrite the bullet from scratch from either side alone.
+
+Note in the eventual PR description what drift was found and fixed, and that the `ORDER BY` tiebreaker from #79 was preserved.
 
 - [ ] **Step 6: Commit**
 
@@ -1341,3 +1349,4 @@ chore: bump version to 3.3
 - Re-running `init_tenant_schema()` neither errors nor resurrects a cleared price.
 - Backend and frontend suites pass, with output pasted into the PR.
 - Both spec data dictionaries describe the column correctly, and the drift sweep is recorded in the PR description.
+- `get_library_releases`' `ORDER BY` still ends in `c.discogs_id`, and PR #79's `date_added` spec correction survived the merge alongside this branch's `discogs_price` one.

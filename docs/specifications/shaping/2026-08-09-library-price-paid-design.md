@@ -104,6 +104,8 @@ Both queries keep `discogs_price` as the wire/JSON field name, so `frontend/src/
 SELECT c.*, li.price_paid AS discogs_price, li.plex_url, ...
 ```
 
+The query must also keep a unique final `ORDER BY` term (`c.discogs_id`). This change sharpens an existing pagination hazard rather than creating it: a sort key that is NULL for every row leaves all rows tied, the `ORDER BY` unspecified, and Postgres' bounded top-N sort free to return a different arbitrary order per page, so `LIMIT`/`OFFSET` pages repeat and drop rows. After this change `price_paid` is NULL for every row until each user re-syncs, and the backfill deliberately leaves contested rows NULL, so a Price sort ties nearly every user's whole collection. The term is the fix in PR #79, which this branch conflicts with on that exact line — see the plan for the resolution rule. `get_stock_items` already carries the equivalent as `s.id`.
+
 `discogs_price` moves out of `_RELEASE_ALLOWED_SORT` (it can no longer take the `f"c.{sort_col}"` path, since it is no longer a `c.` column) into a `sort_expr` special case, structurally like the existing `date_added` case:
 
 ```python
