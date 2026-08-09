@@ -188,9 +188,28 @@ sql.Literal(...))`, the same composition `_ensure_role` uses at
 `backend/db.py:296` — role names and passwords are never interpolated as raw
 strings.
 
-Teardown returns `app_user` to `NOBYPASSRLS` so a normal exit cannot leave a
-cluster role holding an elevated bit. A hard crash between poison and
-correction can, and `make test-db-clean` (below) normalizes it.
+Teardown returns **both** roles' `BYPASSRLS` bits to what `_ensure_role` sets,
+in a `finally` block and before the `DROP DATABASE`, so a normal exit — or a
+setup failure after `CREATE DATABASE`, or a failing drop — cannot leave a
+cluster role holding an attribute it should not.
+
+(Amended after implementation review: an earlier draft of this section restored
+only `app_user`. That left `app_identity` permanently inverted for any session
+that never reached `init_tenant_schema()` — a run of only crawler-parsing tests,
+say — with no repair path at all. Passwords are still deliberately not restored:
+this run's random values are unknowable and the next `init_tenant_schema()`
+rewrites both from the environment. That rotation is now called out in
+`README.md` and `CLAUDE.md` rather than left implicit.)
+
+A hard crash between poison and correction can still leave the bits inverted,
+and `make test-db-clean` (below) normalizes them.
+
+Because the fixture is session-scoped and autouse, it must also stay out of the
+way of the 56 test files that never touch Postgres: with `TEST_DATABASE_URL`
+unset it provisions nothing and yields `None`, leaving `pg_test_db` to raise for
+the files that do need a database, exactly as before this fixture existed. The
+guard test skips in that case — safe, because the same unset variable makes all
+28 Postgres-backed files fail loudly, so a run that lost it cannot look green.
 
 ### Guard test
 
@@ -221,11 +240,29 @@ leftovers from a concurrent run's live database, and getting that wrong
 reintroduces the collision this design removes.
 
 Instead `backend/scripts/drop_leaked_test_dbs.py`, following the existing
-`backend/scripts/` dev-utility convention (`capture_fixture.py`), drops every
-`%_run_%` database with no backend in `pg_stat_activity` and normalizes
-`app_user` to `NOBYPASSRLS`. The `_run_` infix keeps it clear of the
-hand-made `discogs_browser_test_pricepaid` / `_wishlist` databases, which it
-must not touch. A `make test-db-clean` target invokes it.
+`backend/scripts/` dev-utility convention (`capture_fixture.py`), drops
+`<base>_run_<8 hex>` databases — for the exact base named in
+`TEST_DATABASE_URL` — that have no backend in `pg_stat_activity`, and restores
+both roles' `BYPASSRLS` bits. A `make test-db-clean` target invokes it, and
+`--dry-run` reports without dropping.
+
+(Amended after implementation review, which found two real problems here.
+First, the pattern shipped as a bare `LIKE '%\_run\_%'`, which is cluster-wide:
+it matched any database with a `_run_` infix — `job_run_history` — not just this
+project's. It is now matched in Python against
+`re.escape(base) + r"_run_[0-9a-f]{8}"`, which both scopes it to the configured
+base database and avoids `LIKE`-escaping subtleties. Verified: it drops
+`discogs_browser_test_run_deadbeef` while sparing `job_run_history`,
+`discogs_browser_test_pricepaid` and `discogs_browser_test_run_notahexx`.
+
+Second, the docstring claimed a concurrently-running session's database was "out
+of reach by construction." That was false. `pg_test_db` closes every pool at the
+end of each test, so a live run's own database sits with zero backends in the
+gaps between tests; `DROP DATABASE ... WITH (FORCE)` would kill it mid-suite.
+The `pg_stat_activity` check narrows that window and cannot close it. So the
+rule is now stated plainly in the script, `README.md` and `CLAUDE.md`: do not
+run `make test-db-clean` while a suite is in flight. Verified that a run
+database holding a live connection is skipped, not dropped.)
 
 ### Requirements this adds
 
