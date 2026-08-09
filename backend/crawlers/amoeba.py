@@ -28,8 +28,16 @@ _PAGE_SIZE = 200
 # Raising either constant on its own breaks that relationship -- not a cheap win.
 _WINDOW_PAGES = 5
 
-_NEW_PRICE_RE = re.compile(r"\$([\d,]+\.?\d*)")
-_USED_PRICE_RE = re.compile(r"\bUsed\s+(?:for|from)\s+\$([\d,]+\.?\d*)")
+_NEW_PRICE_RE = re.compile(r"\$(\d[\d,]*(?:\.\d{1,2})?)")
+
+# "from" means the lowest of several used copies, not an exact price -- the
+# yielded price undershoots what any single copy actually costs for these
+# rows (about 1 in 1,000 live).
+_USED_PRICE_RE = re.compile(r"\bUsed\s+(?:for|from)\s+\$(\d[\d,]*(?:\.\d{1,2})?)")
+
+# The format icon's alt is always "Vinyl" here (its src is even misleadingly
+# CD.png), so it carries no per-format signal -- the title's trailing token
+# is the only real source.
 _FORMAT_SUFFIX_RE = re.compile(r'\((LP|7"|10"|12"|78)\)\s*$')
 
 
@@ -47,8 +55,8 @@ class Crawler:
         )
 
     @staticmethod
-    def _extract_price(new_price: Optional[str], used: Optional[str]) -> Optional[float]:
-        for pattern, text in ((_NEW_PRICE_RE, new_price), (_USED_PRICE_RE, used)):
+    def _extract_price(new_price: Optional[str], used_label: Optional[str]) -> Optional[float]:
+        for pattern, text in ((_NEW_PRICE_RE, new_price), (_USED_PRICE_RE, used_label)):
             if not text:
                 continue
             match = pattern.search(text)

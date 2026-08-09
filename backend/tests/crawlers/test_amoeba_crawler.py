@@ -69,6 +69,15 @@ def test_extract_price_returns_none_when_no_price_anywhere():
     assert Crawler._extract_price("", "") is None
 
 
+def test_extract_price_falls_through_when_new_price_has_no_amount():
+    assert Crawler._extract_price("Out of stock", "1 Used for $6.99") == 6.99
+
+
+def test_extract_price_returns_none_for_a_malformed_amount():
+    assert Crawler._extract_price("$,", None) is None
+    assert Crawler._extract_price("$", None) is None
+
+
 def test_extract_format_reads_trailing_token():
     assert Crawler._extract_format("Sound Signal Serenades (LP)") == "LP"
     assert Crawler._extract_format('Split Single (7")') == '7"'
@@ -89,17 +98,22 @@ def test_extract_format_defaults_to_vinyl_without_a_known_token():
     assert Crawler._extract_format("Loosen Up (CD)") == "Vinyl"
 
 
-def _row(**overrides):
-    row = {
-        "href": "/sound-signal-serenades-lp-son-volt/albums/4495703/",
-        "title": "Sound Signal Serenades (LP)",
-        "artist": "Son Volt",
-        "newPrice": "$29.98",
-        "used": None,
-        "image": "https://www.amoeba.com/sized-images/crop/50/50/uploads/a.jpg",
+def test_extract_format_only_reads_a_trailing_token():
+    assert Crawler._extract_format("Reissue (LP) (Remastered)") == "Vinyl"
+
+
+def _row(
+    href="/sound-signal-serenades-lp-son-volt/albums/4495703/",
+    title="Sound Signal Serenades (LP)",
+    artist="Son Volt",
+    newPrice="$29.98",
+    used=None,
+    image="https://www.amoeba.com/sized-images/crop/50/50/uploads/a.jpg",
+):
+    return {
+        "href": href, "title": title, "artist": artist,
+        "newPrice": newPrice, "used": used, "image": image,
     }
-    row.update(overrides)
-    return row
 
 
 def test_parse_row_builds_the_plugin_contract():
@@ -123,6 +137,12 @@ def test_parse_row_skips_row_with_no_artist():
 
 def test_parse_row_skips_row_with_no_title():
     assert Crawler._parse_row(_row(title=None)) is None
+    assert Crawler._parse_row(_row(title="   ")) is None
+
+
+def test_parse_row_skips_row_with_no_href():
+    assert Crawler._parse_row(_row(href=None)) is None
+    assert Crawler._parse_row(_row(href="")) is None
 
 
 def test_parse_row_skips_row_with_no_price():
