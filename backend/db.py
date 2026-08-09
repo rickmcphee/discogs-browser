@@ -360,10 +360,9 @@ def upsert_catalog_release(conn, data: dict, preserve_price: bool = False):
     # own None over another sync's (or another user's) real price. This is a
     # per-call-site decision, not a blanket COALESCE: a collection sync writing
     # None means the user genuinely cleared the field, and must still clear it.
-    # That reasoning holds for the syncing user but not for the shared row, and
-    # the flag does not close the gap: a collection sync by a user with no field
-    # named "Price" also yields None, and still erases the price recorded by a
-    # user who has one. Fixing that means storing the value per user.
+    # The flag narrows the cross-tenant overwrite without closing it -- see the
+    # catalog data dictionary in
+    # docs/superpowers/specs/2026-07-26-multi-tenant-architecture-design.md.
     price_assignment = "" if preserve_price else "discogs_price = EXCLUDED.discogs_price,"
     conn.execute(
         f"""

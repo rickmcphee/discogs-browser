@@ -422,6 +422,33 @@ recommended: scope === 'store' && filter === 'recommended',
 `getStockArtists` receives the same `libraryScope`/`recommended` pair, as
 it does today.
 
+**Amendment (2026-08-10, as implemented):** the cast above became a
+validating helper, used at both call sites:
+
+```ts
+const TRACK_FILTERS = ['all', 'collection', 'wantlist'] as const satisfies readonly LibraryScope[]
+
+function trackLibraryScope(value: string): LibraryScope | undefined {
+  return (TRACK_FILTERS as readonly string[]).includes(value) ? (value as LibraryScope) : undefined
+}
+```
+
+`filter as LibraryScope` asserts something only the allow-set makes true,
+and asserts it in two places away from the check; an out-of-range value
+would be forwarded to the API as a bogus `library_scope`. The helper keeps
+the one remaining cast inside its own guard, and the `satisfies` clause
+makes a typo in `TRACK_FILTERS` (`'wishlist'` for `'wantlist'`) a `tsc`
+error rather than a runtime bug.
+
+**Amendment (2026-08-10, as implemented):** `changeFilter` also clears
+`selectedArtist`, by delegating to `selectArtist('')`. Narrowing the
+library scope refetches the artist sidebar, which can drop the selected
+artist from it entirely while `load()` keeps sending `artist=`, leaving an
+invisible filter with no sidebar button highlighted (`All` highlights on
+`!selectedArtist`) and an empty table blaming the library scope. The Store
+tab's `All`/`Recommended` switch had the same latent bug and is fixed by
+the same shared path.
+
 The dropdown renders for both scopes now, with scope-dependent options —
 `All`/`Recommended` for Store (unchanged, `Recommended` still disabled when
 `!recommendedAvailable`), `All`/`Collection`/`Wantlist` for Track. The
@@ -441,6 +468,12 @@ for a Track view where stock exists but nothing in the library matched it:
 - Track / `all` — "Nothing you're tracking is in stock right now."
 - Track / `collection` — "Nothing in your collection is in stock right now."
 - Track / `wantlist` — "Nothing on your wantlist is in stock right now."
+
+**Amendment (2026-08-10, as implemented):** Store is not unchanged after
+all. Its `Recommended` filter has the same defect this section describes —
+stock exists, nothing matched — and the generic copy tells a user whose
+stock is fine to go refresh stock, so it gets "Nothing recommended is in
+stock right now." Store / `all` keeps the original string.
 
 ### Nav labels that double as dropdown options are ambiguous in App-level tests
 
