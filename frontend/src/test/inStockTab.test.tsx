@@ -25,6 +25,7 @@ const getSettings = vi.fn()
 const getUserSettings = vi.fn()
 const getJudgmentStatus = vi.fn()
 const getCrawlers = vi.fn()
+const getStock = vi.fn()
 
 vi.mock('../api/client', () => ({
   checkHealth: vi.fn().mockResolvedValue(true),
@@ -51,7 +52,7 @@ vi.mock('../api/client', () => ({
   openLogsStream: vi.fn(() => new MockEventSource()),
   screenshotUrl: vi.fn((path: string) => `/api/screenshots/${path}`),
   clearLogs: vi.fn(),
-  getStock: vi.fn().mockResolvedValue({ total: 0, page: 1, per_page: 250, items: [] }),
+  getStock: (...args: unknown[]) => getStock(...args),
   getStockArtists: vi.fn().mockResolvedValue([]),
   postStockSyncStart: (...args: unknown[]) => postStockSyncStart(...args),
   postJudgmentStart: (...args: unknown[]) => postJudgmentStart(...args),
@@ -84,6 +85,7 @@ beforeEach(() => {
   getUserSettings.mockResolvedValue(defaultUserSettings)
   getJudgmentStatus.mockResolvedValue({ any_judged: false })
   getCrawlers.mockResolvedValue([])
+  getStock.mockResolvedValue({ total: 0, page: 1, per_page: 250, items: [] })
 })
 
 describe('In Stock tab', () => {
@@ -93,6 +95,15 @@ describe('In Stock tab', () => {
     const storeButton = screen.getByText('Store')
     fireEvent.click(storeButton)
     await waitFor(() => expect(storeButton.className).toContain('bg-white'))
+  })
+
+  it('shows a Collection nav button that switches to a collection-scoped StockBrowser', async () => {
+    render(<App />)
+    await waitFor(() => expect(screen.getByText('Collection')).toBeInTheDocument())
+    const collectionButton = screen.getByText('Collection')
+    fireEvent.click(collectionButton)
+    await waitFor(() => expect(collectionButton.className).toContain('bg-white'))
+    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ overlapping: true })))
   })
 
   it('calls postStockSyncStart when Refresh is clicked in Settings', async () => {

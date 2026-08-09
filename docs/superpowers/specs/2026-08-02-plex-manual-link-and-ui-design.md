@@ -45,7 +45,7 @@ Plex hyperlink (title) is unchanged in both views — already correct.
 
 **Backend:** `db.get_library_releases` gains `unmatched: bool = False`. When true, appends `"li.plex_url IS NULL"` to its existing `conditions` list (same pattern as `get_stock_items`'s `overlapping`/`recommended` flags). `GET /releases` (`routers/releases.py`) gains a matching `unmatched: bool = Query(False)` param, only meaningful when `scope=collection` (harmless no-op if sent with `scope=wishlist`, but the frontend never will).
 
-**Frontend:** `RecordBrowser.tsx` gains a filter `<select>` next to the search box, visible only when `scope === 'collection'`, with options "All" / "Unmatched" — same UI pattern as `StockBrowser.tsx`'s existing Overlapping/Recommended dropdown. Selecting "Unmatched" passes `unmatched: true` to `getReleases`.
+**Frontend:** `RecordBrowser.tsx` gains a filter `<select>` next to the search box, visible only when `scope === 'collection'`, with options "All" / "Unmatched" — same UI pattern as `StockBrowser.tsx`'s existing Overlapping/Recommended dropdown (Overlapping since removed from that dropdown and promoted to its own Collection tab — see [`2026-08-08-store-collection-split-design.md`](../../specifications/shaping/2026-08-08-store-collection-split-design.md) — this comparison otherwise still holds for Recommended). Selecting "Unmatched" passes `unmatched: true` to `getReleases`.
 
 ## Testing
 

@@ -236,6 +236,28 @@ def test_list_stock_returns_items(pg_test_db, authed_client_factory):
     assert body["items"][0]["source"] == "Nuclear Blast"
 
 
+def test_list_stock_includes_comparison_rows(pg_test_db, authed_client_factory):
+    store_id = _make_crawler("Nuclear Blast")
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/y.py", crawler_type="release")
+        conn.commit()
+        amazon_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        item_key = db.replace_stock_items(conn, store_id, [
+            {"artist": "Rob Zombie", "title": "The Great Satan", "price": 31.99, "currency": "USD", "url": "https://x/1"},
+        ])[0]
+        db.upsert_stock_item_listing(conn, item_key, amazon_id, "https://amazon/1", 29.99, None, "USD", "New")
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+
+    client = authed_client_factory(user["id"])
+    r = client.get("/api/stock")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["total"] == 1
+    assert [row["source"] for row in body["items"]] == ["Nuclear Blast", "Amazon"]
+    assert body["items"][1]["is_own"] is False
+
+
 def test_list_stock_search_and_artist_params(pg_test_db, authed_client_factory):
     crawler_id = _make_crawler()
     with db.get_admin_pool().connection() as conn:

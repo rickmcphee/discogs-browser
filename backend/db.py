@@ -934,7 +934,7 @@ def get_stock_items(
     rows = conn.execute(
         f"""
         SELECT s.id, s.artist, s.title, s.format, s.price, s.currency, s.url, s.cover_image_url, s.last_seen,
-               cr.site_name AS source, j.reason AS reason
+               s.item_key, cr.site_name AS source, j.reason AS reason
         FROM stock_items s
         JOIN crawlers cr ON cr.id = s.crawler_id
         LEFT JOIN stock_item_judgments j ON j.item_key = s.item_key AND j.user_id = %(user_id)s
@@ -945,7 +945,37 @@ def get_stock_items(
         params,
     ).fetchall()
 
-    return {"total": total, "page": page, "per_page": per_page, "items": rows}
+    item_keys = [r["item_key"] for r in rows]
+    comparison_sql = """
+        SELECT l.item_key, l.price, l.currency, l.url, l.condition, l.last_checked, cr.site_name AS source
+        FROM listings l
+        JOIN crawlers cr ON cr.id = l.crawler_id
+        WHERE l.item_key = ANY(%(item_keys)s) AND l.price IS NOT NULL
+    """
+    comparison_params = {"item_keys": item_keys}
+    if exclude_crawler_ids:
+        comparison_sql += " AND cr.id != ALL(%(exclude_crawler_ids)s)"
+        comparison_params["exclude_crawler_ids"] = exclude_crawler_ids
+    comparison_sql += " ORDER BY l.item_key, cr.site_name"
+    comparisons_by_item: dict[str, list[dict]] = {}
+    for c in conn.execute(comparison_sql, comparison_params).fetchall():
+        comparisons_by_item.setdefault(c["item_key"], []).append(c)
+
+    items = []
+    for row in rows:
+        r = dict(row)
+        items.append({**r, "is_own": True})
+        for c in comparisons_by_item.get(r["item_key"], []):
+            items.append({
+                "id": f"{r['id']}:{c['source']}",
+                "item_key": r["item_key"], "artist": r["artist"], "title": r["title"],
+                "format": r["format"], "cover_image_url": r["cover_image_url"],
+                "price": c["price"], "currency": c["currency"], "url": c["url"],
+                "source": c["source"], "reason": r["reason"], "last_seen": c["last_checked"],
+                "is_own": False,
+            })
+
+    return {"total": total, "page": page, "per_page": per_page, "items": items}
 
 
 def get_distinct_stock_artists(conn, user_id: int, overlapping: bool = False, recommended: bool = False,
