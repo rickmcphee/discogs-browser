@@ -1210,6 +1210,45 @@ def get_recommended_stock_items(conn, user_id: int) -> list[dict]:
     ).fetchall()
 
 
+def get_all_stock_judgments(conn, user_id: int) -> list[dict]:
+    # Drives FROM the judgments table, not from stock_items, so a judgment
+    # whose item isn't currently in stock -- or was never crawled here at
+    # all, having arrived by import -- still comes out. That's the whole
+    # point: the file is a backup of what was paid for, not a shopping list.
+    #
+    # stock_item_identities is the durable artist/title source (only ever
+    # upserted); stock_items is deleted and reinserted per crawler on every
+    # sync, so it can only supply the live price/source/link.
+    #
+    # LEFT JOIN LATERAL ... LIMIT 1 replaces the DISTINCT ON that
+    # get_recommended_stock_items needs: item_key is not unique in
+    # stock_items, so an unguarded join would emit one row per crawler that
+    # saw the item.
+    return conn.execute(
+        """
+        SELECT
+            COALESCE(i.artist, '') AS artist,
+            COALESCE(i.title, '')  AS title,
+            COALESCE(i.format, '') AS format,
+            d.price, d.source, d.url,
+            j.reason, j.item_key, j.recommended, j.judged_at
+        FROM stock_item_judgments j
+        LEFT JOIN stock_item_identities i ON i.item_key = j.item_key
+        LEFT JOIN LATERAL (
+            SELECT s.price, cr.site_name AS source, s.url
+            FROM stock_items s
+            JOIN crawlers cr ON cr.id = s.crawler_id
+            WHERE s.item_key = j.item_key
+            ORDER BY s.last_seen DESC
+            LIMIT 1
+        ) d ON TRUE
+        WHERE j.user_id = %(user_id)s
+        ORDER BY i.artist ASC NULLS LAST, i.title, j.item_key
+        """,
+        {"user_id": user_id},
+    ).fetchall()
+
+
 def get_missing_releases(conn, user_id: int) -> list[str]:
     enabled_count = conn.execute(
         "SELECT COUNT(*) FROM crawlers WHERE enabled = TRUE"

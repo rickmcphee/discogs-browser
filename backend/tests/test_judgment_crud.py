@@ -137,3 +137,121 @@ def test_upsert_stock_judgments_overwrites_existing_judgment(pg_test_db):
         ).fetchone()
     assert row["recommended"] is False
     assert row["reason"] == "changed mind"
+
+
+def test_all_judgments_includes_not_recommended_and_owned_rows(pg_test_db):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        yes_key = _seed_stock_item(conn, artist="Artist A", title="Album A", url="https://x/1")
+        conn.commit()
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.replace_stock_items(conn, crawler_id, [
+            {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+            {"artist": "Artist B", "title": "Album B", "url": "https://x/2", "price": 20.0, "currency": "USD"},
+        ])
+        conn.commit()
+    no_key = db.compute_item_key("Artist B", "Album B", "https://x/2")
+
+    with db.user_scope(alice["id"]) as conn:
+        db.upsert_stock_judgments(conn, alice["id"], [
+            {"item_key": yes_key, "recommended": True, "reason": "yes please"},
+            {"item_key": no_key, "recommended": False, "reason": "no thanks"},
+        ])
+        conn.commit()
+        rows = db.get_all_stock_judgments(conn, alice["id"])
+
+    by_key = {r["item_key"]: r for r in rows}
+    assert set(by_key) == {yes_key, no_key}
+    assert by_key[no_key]["recommended"] is False
+    assert by_key[no_key]["reason"] == "no thanks"
+    assert by_key[yes_key]["artist"] == "Artist A"
+    assert by_key[yes_key]["source"] == "Amazon"
+    assert by_key[yes_key]["price"] == 10.0
+    assert by_key[yes_key]["judged_at"] is not None
+
+
+def test_all_judgments_returns_one_row_per_judgment_when_two_crawlers_share_an_item(pg_test_db):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        db.register_crawler(conn, "Amazon", "/a.py", crawler_type="catalog")
+        db.register_crawler(conn, "CCMusic", "/c.py", crawler_type="catalog")
+        conn.commit()
+        amazon_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        cc_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'CCMusic'").fetchone()["id"]
+        item = {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"}
+        db.replace_stock_items(conn, amazon_id, [item])
+        db.replace_stock_items(conn, cc_id, [item])
+        conn.commit()
+    item_key = db.compute_item_key("Artist A", "Album A", "https://x/1")
+
+    with db.user_scope(alice["id"]) as conn:
+        db.upsert_stock_judgments(conn, alice["id"], [
+            {"item_key": item_key, "recommended": True, "reason": "r"},
+        ])
+        conn.commit()
+        rows = db.get_all_stock_judgments(conn, alice["id"])
+
+    assert len(rows) == 1
+
+
+def test_all_judgments_returns_rows_with_no_live_stock_but_an_identity(pg_test_db):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        item_key = _seed_stock_item(conn, artist="Artist A", title="Album A", url="https://x/1")
+        conn.commit()
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        # A later sync that no longer carries the item: stock_items rows for
+        # this crawler are deleted, stock_item_identities keeps its row.
+        db.replace_stock_items(conn, crawler_id, [])
+        conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        db.upsert_stock_judgments(conn, alice["id"], [
+            {"item_key": item_key, "recommended": True, "reason": "r"},
+        ])
+        conn.commit()
+        rows = db.get_all_stock_judgments(conn, alice["id"])
+
+    assert len(rows) == 1
+    assert rows[0]["artist"] == "Artist A"
+    assert rows[0]["title"] == "Album A"
+    assert rows[0]["price"] is None
+    assert rows[0]["source"] is None
+    assert rows[0]["url"] is None
+
+
+def test_all_judgments_returns_imported_only_rows_with_blank_artist(pg_test_db):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    orphan_key = "a" * 64
+
+    with db.user_scope(alice["id"]) as conn:
+        db.upsert_stock_judgments(conn, alice["id"], [
+            {"item_key": orphan_key, "recommended": True, "reason": "from another instance"},
+        ])
+        conn.commit()
+        rows = db.get_all_stock_judgments(conn, alice["id"])
+
+    assert len(rows) == 1
+    assert rows[0]["item_key"] == orphan_key
+    assert rows[0]["artist"] == ""
+    assert rows[0]["title"] == ""
+    assert rows[0]["reason"] == "from another instance"
+
+
+def test_all_judgments_scoped_to_calling_user(pg_test_db):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        bob = db.create_user(conn, discogs_user_id=2, discogs_username="bob")
+        item_key = _seed_stock_item(conn)
+        conn.commit()
+
+    with db.user_scope(bob["id"]) as conn:
+        db.upsert_stock_judgments(conn, bob["id"], [
+            {"item_key": item_key, "recommended": True, "reason": "bob's"},
+        ])
+        conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.get_all_stock_judgments(conn, alice["id"]) == []
