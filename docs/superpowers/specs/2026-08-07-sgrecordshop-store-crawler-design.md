@@ -195,6 +195,12 @@ which categories turn out to overlap.
 
 ## Design
 
+**Amendment (2026-08-09, branch `in-stock-sync-progress`):** the paging loop below also
+calls `await report_page(pages_fetched, len(items))` once per `/gsrp/` page — a
+run-wide page counter, not the per-category `page` — so the stock-sync status bar can
+show "The Sound Garden fetched page 1, 250 products". See the 2026-08-09 amendment in
+[`2026-07-05-in-stock-crawler-design.md`](2026-07-05-in-stock-crawler-design.md).
+
 ```python
 import html
 import random

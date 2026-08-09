@@ -4,6 +4,7 @@ from asyncio import sleep
 from typing import AsyncIterator, Optional
 
 from config import load_config
+from crawl_progress import report_page
 from crawler import BotDetectedError
 
 # Same wider vinyl/format regex secretlystore.py uses -- plain \blp\b misses
@@ -61,12 +62,14 @@ class Crawler:
         cfg = load_config()
         delay = float(cfg.get("crawl_delay_seconds", 30))
         seen_pids: set[str] = set()
-        for category_path in self._CATEGORIES:
+        for page_num, category_path in enumerate(self._CATEGORIES, start=1):
             await sleep(random.uniform(delay * 0.5, delay))
             await page.goto(f"{self.base_url}/{category_path}?viewAll=yes", timeout=120_000)
             if "Cloudflare" in await page.title():
                 raise BotDetectedError("Cloudflare interstitial")
             raw_products = await page.evaluate(_EXTRACT_JS)
+            # One viewAll= request per category, so a category is this site's page.
+            await report_page(page_num, len(raw_products))
             for product in raw_products:
                 pid = product["pid"]
                 if pid in seen_pids:

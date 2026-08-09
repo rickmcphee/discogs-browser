@@ -154,3 +154,35 @@ async def test_iter_products_logs_429_response_headers_at_debug_level(tmp_config
     assert "retry-after" in debug_records[0].message.lower()
     assert "5" in debug_records[0].message
     assert "x-shopify-shop-api-call-limit" in debug_records[0].message.lower()
+
+
+@respx.mock
+async def test_iter_products_reports_each_fetched_page_to_the_installed_reporter(tmp_config_dir):
+    from crawl_progress import set_page_reporter, reset_page_reporter
+
+    save_config({"crawl_delay_seconds": 0})
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(return_value=_page_response([{"id": 1}, {"id": 2}]))
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "2"}).mock(return_value=_page_response([{"id": 3}]))
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "3"}).mock(return_value=_page_response([]))
+
+    reported = []
+
+    async def _report(page, count):
+        reported.append((page, count))
+
+    token = set_page_reporter(_report)
+    try:
+        [p async for p in iter_products("https://example.myshopify.test", "vinyl")]
+    finally:
+        reset_page_reporter(token)
+
+    assert reported == [(1, 2), (2, 1)]
+
+
+@respx.mock
+async def test_iter_products_works_with_no_page_reporter_installed(tmp_config_dir):
+    save_config({"crawl_delay_seconds": 0})
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(return_value=_page_response([{"id": 1}]))
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "2"}).mock(return_value=_page_response([]))
+    products = [p async for p in iter_products("https://example.myshopify.test", "vinyl")]
+    assert [p["id"] for p in products] == [1]

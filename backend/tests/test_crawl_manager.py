@@ -1410,6 +1410,68 @@ async def test_run_catalog_crawler_calls_zero_arg_crawl_catalog_for_plain_catalo
     assert items == [{"artist": "A", "title": "T", "url": "https://x"}]
 
 
+async def test_run_catalog_crawler_broadcasts_a_page_fetched_event_per_reported_page(manager):
+    from crawl_progress import report_page
+
+    fake_plugin = MagicMock()
+    fake_plugin.crawler_type = "catalog"
+    fake_plugin._db_site_name = "The Sound Garden"
+
+    async def fake_crawl_catalog():
+        await report_page(1, 250)
+        yield {"artist": "A", "title": "T", "url": "https://x"}
+        await report_page(2, 17)
+    fake_plugin.crawl_catalog = fake_crawl_catalog
+
+    await manager._run_catalog_crawler(fake_plugin)
+
+    pages = [e for e in manager.recent_events() if e["status"] == "stock_sync_page_fetched"]
+    assert [(e["source"], e["page"], e["page_count"]) for e in pages] == [
+        ("The Sound Garden", 1, 250),
+        ("The Sound Garden", 2, 17),
+    ]
+
+
+async def test_run_catalog_crawler_clears_the_page_reporter_when_the_crawl_ends(manager):
+    from crawl_progress import report_page
+
+    fake_plugin = MagicMock()
+    fake_plugin.crawler_type = "catalog"
+    fake_plugin._db_site_name = "Site"
+
+    async def fake_crawl_catalog():
+        yield {"artist": "A", "title": "T", "url": "https://x"}
+    fake_plugin.crawl_catalog = fake_crawl_catalog
+
+    await manager._run_catalog_crawler(fake_plugin)
+    await report_page(1, 5)
+
+    assert [e for e in manager.recent_events() if e["status"] == "stock_sync_page_fetched"] == []
+
+
+async def test_sync_stock_broadcasts_the_store_name_before_crawling_it(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Stock Site", "/x.py", crawler_type="catalog")
+        conn.commit()
+
+    fake_plugin = AsyncMock()
+
+    async def _items():
+        yield {"artist": "A", "title": "T", "url": "https://x/1", "price": 5.0, "currency": "USD"}
+
+    fake_plugin.crawl_catalog = lambda: _items()
+    fake_plugin._db_site_name = "Stock Site"
+    with db.get_admin_pool().connection() as conn:
+        fake_plugin._db_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Stock Site'").fetchone()["id"]
+
+    manager = CrawlManager()
+    with patch("crawler.load_enabled_crawlers", return_value=[fake_plugin]):
+        await manager._sync_stock()
+
+    started = [e for e in manager.recent_events() if e["status"] == "stock_sync_source_started"]
+    assert [e["source"] for e in started] == ["Stock Site"]
+
+
 async def test_run_catalog_crawler_opens_a_page_and_closes_it_for_catalog_browser_type(manager):
     manager._browser = MagicMock()
     manager._stealth = MagicMock()
@@ -1749,7 +1811,12 @@ async def test_sync_stock_replaces_items_for_each_enabled_catalog_crawler(pg_sch
     assert last_run is not None
 
     statuses = [e["status"] for e in manager.recent_events()]
-    assert statuses == ["stock_sync_started", "stock_sync_progress", "stock_sync_complete"]
+    assert statuses == [
+        "stock_sync_started",
+        "stock_sync_source_started",
+        "stock_sync_progress",
+        "stock_sync_complete",
+    ]
 
 
 async def test_sync_stock_enqueues_crawl_queue_for_eligible_price_crawlers(pg_schema):
@@ -1891,6 +1958,7 @@ async def test_sync_stock_with_crawler_id_filters_to_that_crawler_only(pg_schema
     events = [(e["status"], e.get("crawler_id")) for e in manager.recent_events()]
     assert events == [
         ("stock_sync_started", site_a_id),
+        ("stock_sync_source_started", None),
         ("stock_sync_progress", None),
         ("stock_sync_complete", site_a_id),
     ]
@@ -1956,6 +2024,7 @@ async def test_sync_stock_with_catalog_browser_crawler_id_filters_to_that_crawle
     events = [(e["status"], e.get("crawler_id")) for e in manager.recent_events()]
     assert events == [
         ("stock_sync_started", browser_id),
+        ("stock_sync_source_started", None),
         ("stock_sync_progress", None),
         ("stock_sync_complete", browser_id),
     ]

@@ -4,6 +4,7 @@ from asyncio import sleep
 from typing import AsyncIterator, Optional
 
 from config import load_config
+from crawl_progress import report_page
 from crawler import BotDetectedError
 from logging_config import get_logger
 
@@ -149,6 +150,7 @@ class Crawler:
                     "clamped or the format filter stopped applying; the window is short",
                     page_num, len(rows), _PAGE_SIZE,
                 )
+            await report_page(page_num, len(rows))
             for row in rows:
                 album_id = _ALBUM_ID_RE.search(row.get("href") or "")
                 if not album_id or album_id.group(1) in seen_album_ids:

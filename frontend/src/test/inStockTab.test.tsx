@@ -168,6 +168,26 @@ describe('In Stock tab', () => {
     await waitFor(() => expect(screen.getByText(/Syncing in-stock catalog… 3 items \(Nuclear Blast\)/)).toBeInTheDocument())
   })
 
+  it('names the store in the bottom status bar when its crawl starts', async () => {
+    render(<App />)
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    const source = getLastCrawlSource()
+    source.emit({ status: 'stock_sync_source_started', source: 'The Sound Garden', id: 1 })
+    await waitFor(() => expect(screen.getByText(/Syncing in-stock catalog… The Sound Garden/)).toBeInTheDocument())
+  })
+
+  it('surfaces per-page stock_sync_page_fetched progress in the bottom status bar', async () => {
+    render(<App />)
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    const source = getLastCrawlSource()
+    source.emit({ status: 'stock_sync_page_fetched', source: 'The Sound Garden', page: 1, page_count: 250, id: 1 })
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Syncing in-stock catalog… The Sound Garden fetched page 1, 250 products/)
+      ).toBeInTheDocument()
+    )
+  })
+
   it('surfaces stock_sync_complete events in the bottom status bar', async () => {
     render(<App />)
     await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))

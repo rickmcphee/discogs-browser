@@ -3,6 +3,7 @@ from asyncio import sleep
 from typing import AsyncIterator, Optional
 import httpx
 from config import load_config
+from crawl_progress import report_page
 from logging_config import get_logger
 
 log = get_logger("shopify_catalog")
@@ -58,6 +59,7 @@ async def iter_products(base_url: str, collection_slug: str) -> AsyncIterator[di
             if not products:
                 break
             log.info("[%s] Fetched page %d: %d products", base_url, page, len(products))
+            await report_page(page, len(products))
             for product in products:
                 yield product
             page += 1

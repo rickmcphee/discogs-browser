@@ -168,6 +168,17 @@ export default function App() {
         setSyncStatus('Syncing in-stock catalog…', event.id ?? null)
         return
       }
+      if (event.status === 'stock_sync_source_started') {
+        setSyncStatus(`Syncing in-stock catalog… ${event.source}`, event.id ?? null)
+        return
+      }
+      if (event.status === 'stock_sync_page_fetched') {
+        setSyncStatus(
+          `Syncing in-stock catalog… ${event.source} fetched page ${event.page}, ${event.page_count} products`,
+          event.id ?? null,
+        )
+        return
+      }
       if (event.status === 'stock_sync_progress') {
         setSyncStatus(`Syncing in-stock catalog… ${event.synced} items (${event.source})`, event.id ?? null)
         return
