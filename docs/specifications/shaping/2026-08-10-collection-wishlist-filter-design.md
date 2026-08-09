@@ -58,15 +58,20 @@ Touches:
   `frontend/src/test/stockBrowser.test.tsx`,
   `frontend/src/test/inStockTab.test.tsx`,
   `frontend/src/test/recordBrowser.test.tsx`,
-  `frontend/src/test/wishlistRefresh.test.tsx`,
+  `frontend/src/test/wishlistRefresh.test.tsx` (renamed to
+  `wantlistRefresh.test.tsx`),
   `frontend/src/test/syncRefetch.test.tsx`,
-  `frontend/src/test/viewRenderChurn.test.tsx`,
   `frontend/src/test/plexLink.test.tsx`,
   `frontend/src/test/crawlStatusBar.test.tsx`,
-  `frontend/src/test/accountNav.test.tsx`,
+  `frontend/src/test/staleSignupLink.test.tsx`,
   `frontend/src/test/client.test.ts`.
-- Spec drift amendments in three prior shaping specs (see "Spec drift"
-  below).
+  (Corrected 2026-08-10: `accountNav.test.tsx` and
+  `viewRenderChurn.test.tsx` were listed here and needed no change —
+  `accountNav` asserts only the `Logs`/`Settings`/`Hidden` buttons and
+  `viewRenderChurn` never names a tab. `staleSignupLink.test.tsx` asserts a
+  nav button named `Discogs` and did need changing.)
+- Spec drift amendments in ten prior specs — three shaping specs known up
+  front, plus seven more found by the pre-PR grep (see "Spec drift" below).
 
 Out of scope:
 
@@ -165,6 +170,25 @@ if library_scope not in _LIBRARY_MEMBERSHIP:
     library_scope = None
 ```
 
+**Amendment (2026-08-10, as implemented):** that per-caller guard was
+replaced by a shared helper, because two callers repeating the same
+normalization is two places for it to be forgotten:
+
+```python
+def _in_library_clause(user_id_param: str, library_scope: Optional[str]) -> Optional[str]:
+    if library_scope not in _LIBRARY_MEMBERSHIP:
+        return None
+    return f"EXISTS (SELECT 1 {_library_match_fragment(user_id_param, library_scope)})"
+```
+
+It returns the whole `EXISTS` clause, or `None` when the scope doesn't
+filter, and both `get_stock_items` and `get_distinct_stock_artists` call it
+— so normalization and clause construction can't drift apart, and the
+allow-set gate lives in exactly one place. This also removed the
+`.replace("NOT EXISTS", "EXISTS")` string hack, which existed at *both*
+call sites pre-branch (`get_stock_items` and `get_distinct_stock_artists`),
+not just the one the next section describes.
+
 `routers/stock.py` performs no validation of its own — it passes query
 params straight through, exactly as it does for `sort` — so this is the
 only gate, and a hand-crafted query string must not be able to produce a
@@ -205,6 +229,30 @@ The `all` form matches the predicate already used at `backend/db.py:1049`.
 Because the fragment sits inside an `EXISTS`/scalar subquery with `LIMIT
 1`, the union form can't duplicate a row for a record that is in both the
 collection and the wantlist.
+
+**Amendment (2026-08-10, as implemented):** `_LIBRARY_MEMBERSHIP` holds
+column-name tuples rather than the pre-composed predicate strings above,
+and the fragment composes and parenthesizes them itself:
+
+```python
+_LIBRARY_MEMBERSHIP = {
+    "collection": ("in_collection",),
+    "wishlist": ("in_wishlist",),
+    "all": ("in_collection", "in_wishlist"),
+}
+
+membership = " OR ".join(f"li.{col} = TRUE" for col in _LIBRARY_MEMBERSHIP[library_scope])
+# ... AND ({membership}) ...
+```
+
+The reason is the parens: `AND` binds tighter than `OR`, so an
+unparenthesized multi-column membership would leave the first branch
+uncorrelated from the stock row — making `EXISTS` true for every row — and
+would drop the `li.user_id` correlation from the second branch. In the
+table-above form those parens are data, correct only in the `all` entry and
+only as long as whoever adds a fourth scope remembers them; wrapping at the
+single interpolation site makes them structural, which removes the failure
+mode instead of documenting it.
 
 ### Three call sites, deliberately not all the same scope
 
@@ -267,6 +315,14 @@ still deliberately excludes `"discogs_price"`, for the reason given in
 `2026-08-09-collection-price-paid-design.md`: it's what makes a Store-tab
 request for that sort fall back to `artist` instead of resolving to a
 nonexistent `s.discogs_price`.
+
+**Amendment (2026-08-10, as implemented):** "all rows tie" is only harmless
+once the `ORDER BY` is total, which it wasn't. `get_stock_items` gained a
+final `, s.id` tiebreaker: with an all-NULL sort column every row ties,
+Postgres is then free to return them in any order per query, and
+`LIMIT`/`OFFSET` pagination can repeat a row on one page and skip it on the
+next. The tiebreaker is unconditional, so every sort column benefits, not
+just this one.
 
 ### Router
 
@@ -386,6 +442,30 @@ for a Track view where stock exists but nothing in the library matched it:
 - Track / `collection` — "Nothing in your collection is in stock right now."
 - Track / `wantlist` — "Nothing on your wantlist is in stock right now."
 
+### Nav labels that double as dropdown options are ambiguous in App-level tests
+
+`App.tsx` keeps every view mounted and toggles visibility with a class
+(`className={view === 'x' ? 'h-full' : 'hidden'}`), so the Track dropdown's
+`<option>` elements are in the DOM no matter which tab is active. Any label
+used both as a nav button and as a dropdown option therefore matches more
+than once in a test that renders `App`. Measured counts, rendering `App`
+with all views mounted:
+
+| `getByText` | matches | where |
+|---|---|---|
+| `Collection` | 2 | nav button + Track option |
+| `Wantlist` | 2 | nav button + Track option |
+| `All` | 7 | four sidebar "All" buttons + three dropdown options |
+| `Store` / `Track` | 1 | nav button only |
+
+`crawlStatusBar.test.tsx` broke on exactly this — its
+`getByText('Discogs')` became an ambiguous `getByText('Collection')` — and
+was fixed by narrowing to `getByRole('button', { name: 'Collection' })`.
+`Wantlist` is the same trap with no test on it yet; `All` was already
+ambiguous before this change. App-level tests must use
+`getByRole('button', { name })` for these labels. Component-level tests that
+render `StockBrowser` or `RecordBrowser` alone are unaffected.
+
 ### localStorage
 
 Keys are derived from scope values, so they move with the rename:
@@ -409,6 +489,18 @@ so the effect is cosmetic.
 - **`—` in the Price column remains ambiguous.** It means any of: not on
   the wantlist filter's owned side, no custom `Price` field configured on
   Discogs, or the field left blank. This slice doesn't distinguish them.
+- **Every user's stored per-tab view-mode and filter preference resets
+  once**, on the first load after deploy, because the `localStorage` key
+  namespace is derived from the renamed scope values. Mechanics and the
+  one key that carries across two different tabs are in "localStorage"
+  above; the user-visible effect is a single unexplained reset to
+  list-view/`All`, which is worth knowing before it gets reported as a bug.
+- **`filter` persists per scope but `sort` does not.** A user whose stored
+  Track filter is `Wantlist` reloads into a table with no sort control on
+  the Price column at all — correct, since the column is collection-pinned
+  (see "Sort"), but it reads as a missing feature to anyone who doesn't
+  know that. Switching the filter to `All` or `Collection` brings the
+  control back.
 
 ## Testing
 
@@ -453,12 +545,16 @@ Frontend:
   values; filter-aware empty-state copy.
 - `client.test.ts` — scope translation in both directions for
   `getReleases`/`getArtists`/`refreshCollection`/`getStock`.
-- `inStockTab.test.tsx`, `accountNav.test.tsx` — the four nav labels and
-  the `View` values they set.
-- `recordBrowser.test.tsx`, `wishlistRefresh.test.tsx`,
-  `syncRefetch.test.tsx`, `viewRenderChurn.test.tsx`, `plexLink.test.tsx`,
-  `crawlStatusBar.test.tsx` — updated for the renamed scope values and
-  strings.
+- `inStockTab.test.tsx` — the four nav labels and the `View` values they
+  set.
+- `recordBrowser.test.tsx`, `wantlistRefresh.test.tsx` (renamed from
+  `wishlistRefresh.test.tsx`), `syncRefetch.test.tsx`,
+  `plexLink.test.tsx`, `crawlStatusBar.test.tsx`,
+  `staleSignupLink.test.tsx` — updated for the renamed scope values, nav
+  labels, and strings.
+- Not `accountNav.test.tsx` or `viewRenderChurn.test.tsx`, both of which
+  this spec originally listed: neither names a tab (see the correction in
+  Scope).
 
 Playwright-dependent code is unaffected; nothing here changes crawling.
 
@@ -481,6 +577,47 @@ this branch before the PR opens:
   "no change to wishlist items (they never carry a `discogs_price` today
   and this doesn't change that)" both need amending, as does the
   `overlapping`-based sort gate.
+
+The pre-PR grep found three more, all in `docs/superpowers/specs/`, amended
+on this branch as well:
+
+- `2026-07-05-in-stock-crawler-design.md` — its 2026-08-08 amendment calls
+  the intersection tab "Collection", says it sends `overlapping=true` with
+  no dropdown, and calls the `overlapping` param and its backend logic
+  "unchanged"; its 2026-08-09 amendment calls the `Price` column
+  Collection-only. All four statements are now wrong.
+- `2026-07-26-multi-tenant-architecture-design.md` — its data dictionary
+  described `catalog.discogs_price` as "Discogs' own marketplace figure —
+  global". This is drift this branch exposed rather than caused, and it is
+  causally implicated in the clobbering bug fixed here: describing a
+  per-user value as global marketplace data makes an unconditional global
+  overwrite look correct. Corrected in place, with the residual
+  cross-tenant overwrite recorded.
+- `2026-07-06-store-recommended-filter-design.md` — describes `overlapping`
+  as `Recommended`'s sibling API param in four places. One-line amendment:
+  the param is gone; `Recommended` itself is unaffected.
+
+Four more specs carry label-only staleness — stale tab names, with no
+API-level claim wrong. These are amended too, with a single pointer note per
+file rather than an edit to each of the eleven in-line mentions:
+
+- `2026-07-09-collection-plex-filter-design.md`,
+  `2026-07-04-wishlist-design.md`,
+  `2026-08-02-plex-manual-link-and-ui-design.md` — all three use
+  "Collection"/"Wishlist" for the two `RecordBrowser` tabs, now **Collection**
+  and **Wantlist**.
+- `2026-08-08-crawl-target-expansion-design.md` — uses "Collection" in the
+  *opposite* sense: the store/library intersection tab slice 3 was to add,
+  now **Track**. Each note therefore says which tab that document's usage
+  refers to under the new names, because the two senses invert between
+  these files and getting it backwards would be worse than the staleness.
+
+So ten specs in total are amended on this branch: six substantive
+corrections (three shaping specs above, plus `in-stock-crawler`,
+`multi-tenant-architecture`, and `store-recommended-filter`), and four
+label-only pointer notes. The distinction is about how each was amended, not
+whether: a pointer note fixes a stale name, while a substantive correction
+fixes a claim about behavior or API shape.
 
 Plans (`docs/specifications/plans/`) are historical per-feature task logs
 and are not backported.

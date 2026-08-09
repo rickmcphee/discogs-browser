@@ -18,6 +18,8 @@
 
 **Amendment 8 (2026-08-08, branch `worktree-store-collection-split`):** `Overlapping`, referenced throughout below as `Recommended`'s sibling dropdown option, is removed from the Store tab's filter dropdown (now just All/Recommended) — promoted to its own "Collection" nav tab instead. `Recommended` itself, and everything below describing it, is unaffected. See [`2026-08-08-store-collection-split-design.md`](../../specifications/shaping/2026-08-08-store-collection-split-design.md).
 
+**Amendment 9 (2026-08-10, branch `worktree-collection-wishlist-filter`):** the `overlapping` boolean param that `Recommended` is described below as sitting "alongside" no longer exists on `get_stock_items`/`get_distinct_stock_artists` or on `/api/stock`/`/api/stock/artists` — it is now `library_scope: Optional[str]` (`'collection'`/`'wishlist'`/`'all'`/`None`), and the tab that sends it is labeled **Track**. `Recommended` is again unaffected: it stays a separate boolean, still ANDed with `_not_owned_clause`, which stays gated on `in_collection` only, so a wantlist item remains recommendable. See [`2026-08-10-collection-wishlist-filter-design.md`](../../specifications/shaping/2026-08-10-collection-wishlist-filter-design.md).
+
 ---
 
 ## Overview

@@ -2,6 +2,8 @@
 
 _2026-08-02_
 
+**Amendment (2026-08-10, branch `worktree-collection-wishlist-filter`):** tab-label pointer only. This document's "Collections view", "Collection tab", and "Collections/Wishlist" all mean the two `RecordBrowser` tabs over the Discogs collection and the wantlist; under the current names those are **Collection** (the label round-tripped: renamed to "Discogs" on 2026-08-08, back on 2026-08-10) and **Wantlist**. The frontend gate `scope === 'collection'` is therefore accurate again as written, while the *backend* `scope=collection` query value became `scope=discogs` under [`2026-08-08-discogs-tab-rename-design.md`](../../specifications/shaping/2026-08-08-discogs-tab-rename-design.md). One substantive correction: the Unmatched-filter section's parenthetical says Overlapping was "promoted to its own Collection tab" — that tab is now **Track**, and the `overlapping` param it names was replaced by `library_scope`. See [`2026-08-10-collection-wishlist-filter-design.md`](../../specifications/shaping/2026-08-10-collection-wishlist-filter-design.md).
+
 ## Overview
 
 Three independent UI/backend fixes to the Collections view and Plex integration, bundled together since they were requested together and are each small:

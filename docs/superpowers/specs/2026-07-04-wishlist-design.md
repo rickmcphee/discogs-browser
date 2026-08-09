@@ -2,6 +2,8 @@
 
 _2026-07-04_
 
+**Amendment (2026-08-10, branch `worktree-collection-wishlist-filter`):** tab-label pointer only — the feature below is unchanged. The **Wishlist** pane this spec adds is labeled **Wantlist** today, and the collection pane it mirrors is labeled **Collection** (that label round-tripped: renamed to "Discogs" on 2026-08-08, back on 2026-08-10). Neither refers to the store/library intersection tab, which is now called **Track**. Two consequences for the code shown below: the frontend prop is now `<RecordBrowser scope="wantlist" .../>`, and the *backend* scope value in `get_releases(scope="collection")` became `"discogs"` under [`2026-08-08-discogs-tab-rename-design.md`](../../specifications/shaping/2026-08-08-discogs-tab-rename-design.md) — the backend's `"wishlist"` value is deliberately untouched. (`get_releases` itself is now `db.get_library_releases`, renamed by earlier multi-tenant work, not by either tab rename.) See [`2026-08-10-collection-wishlist-filter-design.md`](../../specifications/shaping/2026-08-10-collection-wishlist-filter-design.md) for the label/scope mapping.
+
 ---
 
 ## Overview

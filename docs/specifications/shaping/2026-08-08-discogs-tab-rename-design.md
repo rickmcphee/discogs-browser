@@ -5,6 +5,13 @@ Branch: `worktree-discogs-tab-rename`
 
 ## Problem
 
+**Amendment (2026-08-10):** the rename this spec describes was reversed by
+`2026-08-10-collection-wishlist-filter-design.md`. The intersection tab it
+anticipated is now called **Track**, and this tab went back to
+**Collection**; the wantlist tab is now **Wantlist**. The frontend scope
+values changed with the labels (`'discogs'` → `'collection'`), though the
+backend `scope="discogs"` value this spec introduced is unchanged.
+
 This is the first slice of a v3.0 redesign that eventually splits the app's
 tabs along two use cases: tracking the value of a Discogs collection, and
 comparing prices for in-stock inventory across ecommerce sites (including a

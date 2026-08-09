@@ -188,11 +188,33 @@ missing a `WHERE` clause fails closed instead of leaking data.
 | `year`             | INTEGER   |                                           |
 | `label`            | TEXT      |                                           |
 | `format`           | TEXT      |                                           |
-| `discogs_price`    | TEXT      | Discogs' own marketplace figure — global  |
+| `discogs_price`    | TEXT      | **Not** a marketplace figure: a per-user value (the user's own purchase price, from a Discogs custom collection field) stored in a global table — see the correction below |
 | `barcode`          | TEXT      |                                           |
 | `cover_image_url`  | TEXT      |                                           |
 | `discogs_url`      | TEXT      |                                           |
 | `last_synced`      | TIMESTAMP | refreshed by whichever user's sync first touches this `discogs_id` |
+
+**Correction (2026-08-10, branch `worktree-collection-wishlist-filter`):**
+`discogs_price`'s note above previously read "Discogs' own marketplace figure
+— global," which is wrong and was causally implicated in a bug: it holds
+whatever the syncing user typed into a custom Discogs collection field named
+"price" (case-insensitive; `backend/crawl_manager.py`'s `price_field_id`
+lookup, passed to `discogs.parse_release`), so it is per-user data sitting in
+a table with no `user_id`. Describing it as global marketplace data makes an
+unconditional global overwrite look correct, which is exactly what
+`upsert_catalog_release` did. Three points to carry forward:
+
+- A cross-tenant overwrite remains. `upsert_catalog_release(preserve_price=True)`
+  (added on that branch) stops *wantlist* syncs from nulling the column, but a
+  user syncing a collection with no "price" field yields `None` for the whole
+  sync and still writes that over another user's recorded price.
+- `backend/db.py`'s `upsert_catalog_release` comment now describes this
+  accurately and contradicts the old wording — trust the code comment.
+- The real repair is per-user storage for this column, tracked separately;
+  `2026-08-10-collection-wishlist-filter-design.md` scopes it out explicitly.
+  The other two specs that describe the column
+  (`2026-07-08-collection-price-crawlers-design.md`,
+  `2026-06-27-discogs-browser-design.md`) already had it right.
 
 **`listings`** — unchanged shape from today (`release_id → discogs_id, crawler_id,
 url, price, shipping, currency, condition, last_checked`, unique on

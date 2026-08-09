@@ -63,6 +63,19 @@ change that).
   match anything in the user's collection, so the column would be blank for
   most rows there; Collection's whole premise is "these are all owned," so
   every row has a real chance of a match.
+
+  **Amendment (2026-08-10):** `_owned_match_fragment` is now
+  `_library_match_fragment(user_id_param, library_scope)`, and the tab is
+  now **Track**. The Price column renders under all three of its filter
+  values, not just the collection one — the price subquery is pinned to
+  `'collection'` scope, so a wantlist-only row returns NULL and renders
+  `—` with no conditional rendering. "Out of scope: any change to wishlist
+  items (they never carry a `discogs_price` today and this doesn't change
+  that)" is superseded: wantlist items are now matched, and still never
+  carry a `discogs_price`, deliberately. The `sort == "discogs_price" and
+  overlapping` gate is now membership-based —
+  `"in_collection" in _LIBRARY_MEMBERSHIP.get(library_scope, ())` — so
+  `all` sorts and `wishlist` falls back to artist order.
 - **Computed unconditionally in the backend, gated only in rendering and
   sort-validity.** The subquery runs once per already-paginated row (≤250
   per page regardless of scope), so there's no reason to branch the SQL by
