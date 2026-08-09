@@ -239,15 +239,22 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
                 </th>
                 <th className="text-center" aria-sort={sort === 'price' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}>
                   <button type="button" onClick={() => toggleSort('price')} className={`${sortButtonClass} text-center`}>
-                    Price {sort === 'price' ? (order === 'asc' ? '↑' : '↓') : ''}
+                    Cost {sort === 'price' ? (order === 'asc' ? '↑' : '↓') : ''}
                   </button>
                 </th>
+                {scope === 'collection' && (
+                  <th className="text-center" aria-sort={sort === 'discogs_price' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                    <button type="button" onClick={() => toggleSort('discogs_price')} className={`${sortButtonClass} text-center`}>
+                      Price {sort === 'discogs_price' ? (order === 'asc' ? '↑' : '↓') : ''}
+                    </button>
+                  </th>
+                )}
                 <th className="px-3 py-2 text-center normal-case">Source</th>
               </tr>
             </thead>
             <tbody>
               {loading && (
-                <tr><td colSpan={6} className="py-8 text-gray-500">
+                <tr><td colSpan={scope === 'collection' ? 7 : 6} className="py-8 text-gray-500">
                   <div className="flex items-center justify-center gap-2">
                     <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
                     Loading…
@@ -255,7 +262,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
                 </td></tr>
               )}
               {!loading && items.length === 0 && (
-                <tr><td colSpan={6} className="text-center py-8 text-gray-500">No in-stock items yet. Click "Refresh Stock Now" in Settings.</td></tr>
+                <tr><td colSpan={scope === 'collection' ? 7 : 6} className="text-center py-8 text-gray-500">No in-stock items yet. Click "Refresh Stock Now" in Settings.</td></tr>
               )}
               {items.map((item) => (
                 <tr key={item.id} className="border-t border-gray-800 hover:bg-gray-900/50">
@@ -278,6 +285,9 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
                       {item.price != null ? `$${item.price.toFixed(2)}` : 'View'}
                     </a>
                   </td>
+                  {scope === 'collection' && (
+                    <td className="px-3 py-2 text-gray-400">{item.discogs_price ?? '—'}</td>
+                  )}
                   <td className="px-3 py-2 text-gray-400">{item.source}</td>
                 </tr>
               ))}
