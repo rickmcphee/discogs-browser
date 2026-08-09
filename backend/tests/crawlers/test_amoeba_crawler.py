@@ -189,8 +189,10 @@ class _FakePage:
         self._real_page = real_page
         self._pages = pages
         self._title = title
+        self.goto_url = None
 
     async def goto(self, url, timeout=None):
+        self.goto_url = url
         await self._real_page.set_content(
             "<html><head></head><body></body></html>", wait_until="domcontentloaded"
         )
@@ -219,10 +221,12 @@ def fake_page(browser_page, window_pages):
 async def test_crawl_catalog_yields_parsable_rows_and_dedupes_across_pages(fake_page):
     items = [item async for item in Crawler().crawl_catalog(fake_page)]
 
-    # Page 1 has 8 rows; the no-artist and no-price rows are skipped -> 6.
+    # Page 1 has 9 rows; the no-artist and two no-price rows are skipped -> 6.
     # Page 2's only row repeats page 1's first album id -> 0.
-    # Pages 3 and 4 are empty. Page 5 adds 1. Total 7.
-    assert len(items) == 7
+    # Pages 3 and 4 are empty. Page 5 adds the Kevin Morby row plus the
+    # Encore row that recurs from page 1's no-price skip, now priced -> 2.
+    # Total 8.
+    assert len(items) == 8
     titles = {item["title"] for item in items}
     assert "Mystery Record (LP)" not in titles
     assert "Priceless Pressing (LP)" not in titles
@@ -230,6 +234,15 @@ async def test_crawl_catalog_yields_parsable_rows_and_dedupes_across_pages(fake_
     louder_now = [i for i in items if i["title"].startswith("Louder Now")]
     assert len(louder_now) == 1
     assert louder_now[0]["price"] == 36.98
+
+
+async def test_crawl_catalog_yields_a_skipped_row_when_it_recurs_with_a_price(fake_page):
+    # A row skipped on page 1 for having no price must still be eligible when the
+    # same album recurs later with one -- a failed parse must not reserve the id.
+    items = [item async for item in Crawler().crawl_catalog(fake_page)]
+    encore = [i for i in items if i["artist"] == "Encore"]
+    assert len(encore) == 1
+    assert encore[0]["price"] == 21.98
 
 
 async def test_crawl_catalog_requests_every_page_in_the_window(fake_page):
@@ -275,3 +288,21 @@ async def test_crawl_catalog_sets_format_from_the_title_suffix(fake_page):
     assert by_artist["The Army, The Navy"]["format"] == '7"'
     assert by_artist["Kevin Morby"]["format"] == '12"'
     assert by_artist["Neu!"]["format"] == "Vinyl"
+
+
+async def test_crawl_catalog_paces_every_request(fake_page, monkeypatch):
+    calls = []
+
+    async def counting_sleep(seconds):
+        calls.append(seconds)
+
+    monkeypatch.setattr("amoeba.sleep", counting_sleep)
+    [item async for item in Crawler().crawl_catalog(fake_page)]
+
+    assert len(calls) == 5
+    assert all(seconds > 0 for seconds in calls)
+
+
+async def test_crawl_catalog_navigates_to_the_category_page_first(fake_page):
+    [item async for item in Crawler().crawl_catalog(fake_page)]
+    assert fake_page.goto_url == "https://www.amoeba.com/music/cd-and-vinyl"
