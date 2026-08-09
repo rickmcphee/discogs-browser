@@ -51,7 +51,8 @@ export interface UserSettings {
 
 export type SortField = 'artist' | 'title' | 'year' | 'label' | 'format' | string
 export type SortOrder = 'asc' | 'desc'
-export type RecordScope = 'discogs' | 'wishlist'
+export type RecordScope = 'collection' | 'wantlist'
+export type StockScope = 'store' | 'track'
 
 export interface CrawlEvent {
   id?: number

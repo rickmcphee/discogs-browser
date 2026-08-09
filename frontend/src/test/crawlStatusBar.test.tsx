@@ -158,6 +158,25 @@ describe('crawl status bar', () => {
     )
   })
 
+  it('says "wantlist" for a wantlist-scoped sync, though the event says wishlist', async () => {
+    render(<App />)
+    const source = await getCrawlSourceOnMount()
+    source.emit({ status: 'sync_started', scope: 'wishlist', id: 1 })
+    await waitFor(() => expect(screen.getByText('Syncing wantlist…')).toBeInTheDocument())
+
+    source.emit({ status: 'sync_complete', scope: 'wishlist', wishlist_synced: 7, username: 'alice', id: 2 })
+    await waitFor(() => expect(screen.getByText('Synced 7 wantlist items for alice')).toBeInTheDocument())
+  })
+
+  it('appends the wantlist count to a full collection sync', async () => {
+    render(<App />)
+    const source = await getCrawlSourceOnMount()
+    source.emit({ status: 'sync_complete', synced: 42, wishlist_synced: 7, username: 'alice', id: 1 })
+    await waitFor(() =>
+      expect(screen.getByText('Synced 42 records for alice, 7 wantlist items')).toBeInTheDocument()
+    )
+  })
+
   it('does not resurrect a dismissed banner when a refresh replays the same buffered events', async () => {
     const { unmount } = render(<App />)
     const src = await getCrawlSourceOnMount()
@@ -176,7 +195,7 @@ describe('crawl status bar', () => {
     replaySrc.emit({ status: 'started', total: 1, id: 1 })
     replaySrc.emit({ status: 'complete', id: 2 })
 
-    await waitFor(() => expect(screen.getByText('Discogs')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('Collection')).toBeInTheDocument())
     expect(screen.queryByText('Done')).not.toBeInTheDocument()
   })
 })

@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback, useRef, memo } from 'react'
 import { getStock, getStockArtists } from '../api/client'
-import type { StockItem, StockSortField, SortOrder } from '../api/types'
+import type { StockItem, StockSortField, SortOrder, StockScope } from '../api/types'
 import { navButtonClass, dismissButtonClass } from '../styles/buttons'
 
 interface Props {
-  scope?: 'store' | 'collection'
+  scope?: StockScope
   recommendedAvailable?: boolean
   hiddenCrawlerIds?: number[]
 }
@@ -44,7 +44,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
         search: search || undefined,
         artist: selectedArtist || undefined,
         sort, order, page, per_page: PER_PAGE,
-        overlapping: scope === 'collection',
+        overlapping: scope === 'track',
         recommended: scope === 'store' && filter === 'recommended',
         hiddenCrawlerIds,
       })
@@ -61,7 +61,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
       setFilter('all')
     }
   }, [recommendedAvailable, filter])
-  useEffect(() => { getStockArtists(scope === 'collection', scope === 'store' && filter === 'recommended', hiddenCrawlerIds).then(setArtists) }, [scope, filter, hiddenCrawlerIds])
+  useEffect(() => { getStockArtists(scope === 'track', scope === 'store' && filter === 'recommended', hiddenCrawlerIds).then(setArtists) }, [scope, filter, hiddenCrawlerIds])
   useEffect(() => { localStorage.setItem(`collectionViewMode_${scope}`, viewMode) }, [viewMode, scope])
   useEffect(() => { localStorage.setItem(`stockFilter_${scope}`, filter) }, [filter, scope])
   useEffect(() => { tableScrollRef.current?.scrollTo({ top: 0 }) }, [selectedArtist])
@@ -89,7 +89,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
   }
 
   const totalPages = Math.ceil(total / PER_PAGE)
-  const colCount = scope === 'collection' ? 7 : 6
+  const colCount = scope === 'track' ? 7 : 6
 
   const sortButtonClass = 'w-full px-3 py-2 cursor-pointer hover:text-white select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/80'
 
@@ -238,7 +238,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
                     Format {sort === 'format' ? (order === 'asc' ? '↑' : '↓') : ''}
                   </button>
                 </th>
-                {scope === 'collection' && (
+                {scope === 'track' && (
                   <th className="text-center" aria-sort={sort === 'discogs_price' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}>
                     <button type="button" onClick={() => toggleSort('discogs_price')} className={`${sortButtonClass} text-center`}>
                       Price {sort === 'discogs_price' ? (order === 'asc' ? '↑' : '↓') : ''}
@@ -285,7 +285,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
                   <td className="px-3 py-2 text-right text-gray-200" title={item.reason ?? undefined}>{item.artist}</td>
                   <td className="px-3 py-2 text-left text-gray-300" title={item.reason ?? undefined}>{item.title}</td>
                   <td className="px-3 py-2 text-gray-400">{item.format ?? '—'}</td>
-                  {scope === 'collection' && (
+                  {scope === 'track' && (
                     <td className="px-3 py-2 text-gray-400">{item.discogs_price ?? '—'}</td>
                   )}
                   <td className="px-3 py-2">

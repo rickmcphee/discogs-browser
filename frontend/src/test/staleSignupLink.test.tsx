@@ -52,7 +52,7 @@ beforeEach(() => {
 describe('stale signup_pending link', () => {
   it('renders the main app, not the invite-code screen, for an already-authenticated user', async () => {
     render(<App />)
-    expect(await screen.findByRole('button', { name: 'Discogs' })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Collection' })).toBeInTheDocument()
     expect(screen.queryByText(/enter your invite code/i)).not.toBeInTheDocument()
   })
 })

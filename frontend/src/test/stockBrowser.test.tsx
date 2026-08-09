@@ -40,7 +40,7 @@ describe('StockBrowser', () => {
     expect(thumbnail.getAttribute('src')).toBe('https://cdn.shopify.com/rz-black.png')
   })
 
-  it('gives the list-view thumbnail a min-width so it matches Collection/Wishlist sizing', async () => {
+  it('gives the list-view thumbnail a min-width so it matches Collection/Wantlist sizing', async () => {
     render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     const thumbnail = screen.getByAltText('The Great Satan — Ghostly Black Vinyl') as HTMLImageElement
@@ -227,15 +227,15 @@ describe('StockBrowser', () => {
     await waitFor(() => expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('recommended'))
   })
 
-  it('scope="collection" forces overlapping and hides the filter dropdown', async () => {
-    render(<StockBrowser scope="collection" />)
+  it('scope="track" forces overlapping and hides the filter dropdown', async () => {
+    render(<StockBrowser scope="track" />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     expect(screen.queryByRole('combobox')).toBeNull()
     expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ overlapping: true }))
   })
 
-  it('scope="collection" forces overlapping on the artist sidebar fetch too', async () => {
-    render(<StockBrowser scope="collection" />)
+  it('scope="track" forces overlapping on the artist sidebar fetch too', async () => {
+    render(<StockBrowser scope="track" />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     expect(getStockArtists).toHaveBeenCalledWith(true, false, [])
   })
@@ -253,16 +253,16 @@ describe('StockBrowser', () => {
     expect(screen.queryByText(/Price/)).toBeNull()
   })
 
-  it('renders a Price column in Collection scope showing the matched discogs_price, or — when missing', async () => {
-    render(<StockBrowser scope="collection" />)
+  it('renders a Price column in Track scope showing the matched discogs_price, or — when missing', async () => {
+    render(<StockBrowser scope="track" />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     expect(screen.getByText(/Price/)).toBeTruthy()
     expect(screen.getByText('—')).toBeTruthy()
     expect(screen.getByText('42.50')).toBeTruthy()
   })
 
-  it('sorts by discogs_price when the Price column header is clicked in Collection scope', async () => {
-    render(<StockBrowser scope="collection" />)
+  it('sorts by discogs_price when the Price column header is clicked in Track scope', async () => {
+    render(<StockBrowser scope="track" />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     fireEvent.click(screen.getByText(/Price/))
     await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ sort: 'discogs_price', order: 'asc' })))
@@ -275,7 +275,7 @@ describe('StockBrowser', () => {
     await waitFor(() => expect(localStorage.getItem('collectionViewMode_store')).toBe('tiles'))
   })
 
-  it('keeps Store and Collection filter/view-mode selections independent in localStorage', async () => {
+  it('keeps Store and Track filter/view-mode selections independent in localStorage', async () => {
     const { unmount: unmountStore } = render(<StockBrowser scope="store" recommendedAvailable />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'recommended' } })
@@ -284,16 +284,16 @@ describe('StockBrowser', () => {
     await waitFor(() => expect(localStorage.getItem('collectionViewMode_store')).toBe('tiles'))
     unmountStore()
 
-    render(<StockBrowser scope="collection" />)
+    render(<StockBrowser scope="track" />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     fireEvent.click(screen.getByTitle('List view'))
-    await waitFor(() => expect(localStorage.getItem('collectionViewMode_collection')).toBe('list'))
+    await waitFor(() => expect(localStorage.getItem('collectionViewMode_track')).toBe('list'))
 
-    // Store's keys must be untouched by anything Collection did.
+    // Store's keys must be untouched by anything Track did.
     expect(localStorage.getItem('stockFilter_store')).toBe('recommended')
     expect(localStorage.getItem('collectionViewMode_store')).toBe('tiles')
-    // Collection's own key defaults to 'all' -- it never inherited Store's 'recommended'.
-    expect(localStorage.getItem('stockFilter_collection')).toBe('all')
+    // Track's own key defaults to 'all' -- it never inherited Store's 'recommended'.
+    expect(localStorage.getItem('stockFilter_track')).toBe('all')
   })
 
   it('shows a spinner alongside Loading… during the initial fetch', async () => {

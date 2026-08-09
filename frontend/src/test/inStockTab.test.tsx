@@ -97,12 +97,12 @@ describe('In Stock tab', () => {
     await waitFor(() => expect(storeButton.className).toContain('bg-white'))
   })
 
-  it('shows a Collection nav button that switches to a collection-scoped StockBrowser', async () => {
+  it('shows a Track nav button that switches to a track-scoped StockBrowser', async () => {
     render(<App />)
-    await waitFor(() => expect(screen.getByText('Collection')).toBeInTheDocument())
-    const collectionButton = screen.getByText('Collection')
-    fireEvent.click(collectionButton)
-    await waitFor(() => expect(collectionButton.className).toContain('bg-white'))
+    await waitFor(() => expect(screen.getByText('Track')).toBeInTheDocument())
+    const trackButton = screen.getByText('Track')
+    fireEvent.click(trackButton)
+    await waitFor(() => expect(trackButton.className).toContain('bg-white'))
     await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ overlapping: true })))
   })
 

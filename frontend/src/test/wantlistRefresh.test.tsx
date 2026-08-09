@@ -75,14 +75,14 @@ beforeEach(() => {
   localStorage.clear()
 })
 
-describe('wishlist tab refresh', () => {
-  it('syncs only the wishlist, bypassing the collection-status modal', async () => {
+describe('wantlist tab refresh', () => {
+  it('syncs only the wantlist, bypassing the collection-status modal', async () => {
     render(<App />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Wishlist' }))
-    const button = await screen.findByTitle('Sync wishlist from Discogs')
+    fireEvent.click(await screen.findByRole('button', { name: 'Wantlist' }))
+    const button = await screen.findByTitle('Sync wantlist from Discogs')
     fireEvent.click(button)
 
-    await waitFor(() => expect(refreshCollection).toHaveBeenCalledWith('all', 'wishlist'))
+    await waitFor(() => expect(refreshCollection).toHaveBeenCalledWith('all', 'wantlist'))
     expect(getCollectionStatus).not.toHaveBeenCalled()
     expect(screen.queryByText('Collection already loaded')).toBeNull()
   })

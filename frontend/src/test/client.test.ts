@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { postCrawlStart, postStockSyncStart, getUserSettings, saveUserSettings, logout, getStock, getStockArtists, getReleases, postPlexMatchStart, refreshCollection, openCrawlStream, openLogsStream } from '../api/client'
+import { postCrawlStart, postStockSyncStart, getUserSettings, saveUserSettings, logout, getStock, getStockArtists, getReleases, getArtists, postPlexMatchStart, refreshCollection, openCrawlStream, openLogsStream } from '../api/client'
 
 describe('crawl/user-settings client functions', () => {
   let fetchMock: ReturnType<typeof vi.fn>
@@ -97,17 +97,32 @@ describe('crawl/user-settings client functions', () => {
     expect(fetchMock.mock.calls[0][0]).not.toContain('?')
   })
 
-  it('refreshCollection includes scope=wishlist when scope is wishlist', async () => {
+  it('refreshCollection includes scope=wishlist when scope is wantlist', async () => {
     fetchMock.mockResolvedValue({ ok: true, json: async () => ({ started: true, running: true }) })
-    await refreshCollection('all', 'wishlist')
+    await refreshCollection('all', 'wantlist')
     expect(fetchMock.mock.calls[0][0]).toContain('scope=wishlist')
     expect(fetchMock.mock.calls[0][0]).not.toContain('mode=')
   })
 
-  it('refreshCollection includes both mode=new and scope=wishlist when both given', async () => {
+  it('refreshCollection includes both mode=new and scope=wishlist when scope is wantlist', async () => {
     fetchMock.mockResolvedValue({ ok: true, json: async () => ({ started: true, running: true }) })
-    await refreshCollection('new', 'wishlist')
+    await refreshCollection('new', 'wantlist')
     expect(fetchMock.mock.calls[0][0]).toContain('mode=new')
+    expect(fetchMock.mock.calls[0][0]).toContain('scope=wishlist')
+  })
+
+  it('translates RecordScope values to the backend scope vocabulary', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ total: 0, page: 1, per_page: 50, releases: [] }) })
+    await getReleases({ scope: 'collection' })
+    expect(fetchMock.mock.calls[0][0]).toContain('scope=discogs')
+
+    await getReleases({ scope: 'wantlist' })
+    expect(fetchMock.mock.calls[1][0]).toContain('scope=wishlist')
+  })
+
+  it('getArtists translates the wantlist scope to the backend value', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ artists: [] }) })
+    await getArtists('wantlist')
     expect(fetchMock.mock.calls[0][0]).toContain('scope=wishlist')
   })
 
