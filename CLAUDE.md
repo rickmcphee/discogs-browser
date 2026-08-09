@@ -110,13 +110,13 @@ When a written implementation plan (`docs/superpowers/plans/`) is ready to execu
 
 Before opening a PR — including ad hoc changes that never went through the spec-first steps above — check the diff for drift against every spec, not just the spec for the feature being touched:
 
-1. `grep -rl` across `docs/superpowers/specs/` for the files, symbols, section/label names, and UI strings touched by the diff.
+1. `grep -rl` across **both** `docs/superpowers/specs/` and `docs/specifications/shaping/` for the files, symbols, section/label names, and UI strings touched by the diff. Specs live in two trees — the older ones under `docs/superpowers/specs/`, the newer under `docs/specifications/shaping/` — and a grep over only one of them under-finds drift.
 2. For each match, confirm the spec text still describes what actually shipped on this branch.
 3. If any spec has drifted, amend it — with a short note or inline correction, not a full rewrite of history — as its own commit on this branch, and push it before opening or merging the PR. A PR should not merge with known spec drift, even drift it didn't cause but exposed.
 4. This applies even when the current change itself has no spec/plan of its own (e.g., a small reorg with no new behavior) — the check is about what the diff broke in other docs, not about whether this change needed a spec.
 5. Note in the PR description what drift was found and fixed (or that none was found).
 
-Plans (`docs/superpowers/plans/`) are historical per-feature task logs, not living reference — they don't need backporting for this check.
+Plans (`docs/superpowers/plans/` and `docs/specifications/plans/`) are historical per-feature task logs, not living reference — they don't need backporting for this check.
 
 ### Pull requests
 
