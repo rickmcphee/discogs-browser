@@ -870,7 +870,21 @@ def replace_stock_items(conn, crawler_id: int, items: list[dict]) -> list[str]:
     return item_keys
 
 
-def _owned_match_fragment(user_id_param: str) -> str:
+_LIBRARY_MEMBERSHIP = {
+    "collection": ("in_collection",),
+    "wishlist": ("in_wishlist",),
+    "all": ("in_collection", "in_wishlist"),
+}
+
+
+def _library_match_fragment(user_id_param: str, library_scope: str) -> str:
+    # The parens around the OR are load-bearing: AND binds tighter, so an
+    # unparenthesized multi-column membership would leave the first branch
+    # uncorrelated from the stock row and make EXISTS true for every row, and
+    # the second branch would drop the li.user_id correlation entirely, so
+    # another user's wantlist could match -- RLS on the user_scope connection
+    # this always runs under is the only backstop against that.
+    membership = " OR ".join(f"li.{col} = TRUE" for col in _LIBRARY_MEMBERSHIP[library_scope])
     # Exact-or-prefix-with-space title match, not exact-only: stock listings
     # often append edition/format qualifiers the catalog title doesn't have
     # (e.g. catalog "Kid A" vs. stock listing "Kid A (Deluxe Reissue)"), so a
@@ -878,13 +892,15 @@ def _owned_match_fragment(user_id_param: str) -> str:
     return f"""FROM library_items li
         JOIN catalog c ON c.discogs_id = li.discogs_id
         WHERE li.user_id = {user_id_param}
-          AND li.in_collection = TRUE
+          AND ({membership})
           AND LOWER(c.artist) = LOWER(s.artist)
           AND (LOWER(s.title) = LOWER(c.title) OR LOWER(s.title) LIKE LOWER(c.title) || ' %%')"""
 
 
+# Recommended items are defined as ones the user doesn't already own. A release
+# merely on the wantlist stays recommendable, so this stays collection-scoped.
 def _not_owned_clause(user_id_param: str) -> str:
-    return f"NOT EXISTS (SELECT 1 {_owned_match_fragment(user_id_param)})"
+    return f"NOT EXISTS (SELECT 1 {_library_match_fragment(user_id_param, 'collection')})"
 
 
 _STOCK_ALLOWED_SORT = {"artist", "title", "format", "price"}
@@ -899,14 +915,25 @@ def get_stock_items(
     order: str = "asc",
     page: int = 1,
     per_page: int = 50,
-    overlapping: bool = False,
+    library_scope: Optional[str] = None,
     recommended: bool = False,
     exclude_crawler_ids: Optional[list[int]] = None,
 ) -> dict:
+    if library_scope not in _LIBRARY_MEMBERSHIP:
+        library_scope = None
     order_sql = "DESC" if order.lower() == "desc" else "ASC"
-    if sort == "discogs_price" and overlapping:
+    # The sort expression is collection-pinned, so it only applies to a scope
+    # that can contain rows carrying a collection price. Under wishlist scope
+    # every key would be NULL, leaving all rows tied and pagination unstable.
+    if (
+        sort == "discogs_price"
+        and library_scope is not None
+        and "in_collection" in _LIBRARY_MEMBERSHIP[library_scope]
+    ):
         sort_expr = """(SELECT (regexp_match(c.discogs_price, '\\d+\\.?\\d*'))[1]::numeric
-                        {match} LIMIT 1)""".format(match=_owned_match_fragment("%(user_id)s"))
+                        {match} LIMIT 1)""".format(
+            match=_library_match_fragment("%(user_id)s", "collection")
+        )
     elif sort == "source":
         sort_expr = "cr.site_name"
     else:
@@ -921,8 +948,8 @@ def get_stock_items(
     if artist:
         conditions.append("s.artist = %(artist)s")
         params["artist"] = artist
-    if overlapping:
-        conditions.append(_not_owned_clause("%(user_id)s").replace("NOT EXISTS", "EXISTS"))
+    if library_scope is not None:
+        conditions.append(f"EXISTS (SELECT 1 {_library_match_fragment('%(user_id)s', library_scope)})")
     if recommended:
         conditions.append(
             "s.item_key IN (SELECT item_key FROM stock_item_judgments "
@@ -944,12 +971,12 @@ def get_stock_items(
         f"""
         SELECT s.id, s.artist, s.title, s.format, s.price, s.currency, s.url, s.cover_image_url, s.last_seen,
                s.item_key, cr.site_name AS source, j.reason AS reason,
-               (SELECT c.discogs_price {_owned_match_fragment('%(user_id)s')} LIMIT 1) AS discogs_price
+               (SELECT c.discogs_price {_library_match_fragment('%(user_id)s', 'collection')} LIMIT 1) AS discogs_price
         FROM stock_items s
         JOIN crawlers cr ON cr.id = s.crawler_id
         LEFT JOIN stock_item_judgments j ON j.item_key = s.item_key AND j.user_id = %(user_id)s
         {where}
-        ORDER BY CASE WHEN {sort_expr} IS NULL THEN 1 ELSE 0 END {null_order}, {sort_expr} {order_sql}
+        ORDER BY CASE WHEN {sort_expr} IS NULL THEN 1 ELSE 0 END {null_order}, {sort_expr} {order_sql}, s.id
         LIMIT %(limit)s OFFSET %(offset)s
         """,
         params,

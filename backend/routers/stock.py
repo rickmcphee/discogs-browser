@@ -35,7 +35,7 @@ def list_stock(
     order: str = Query("asc"),
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=500),
-    overlapping: bool = Query(False),
+    library_scope: Optional[str] = Query(None),
     recommended: bool = Query(False),
     hidden_crawler_ids: Optional[str] = Query(None),
 ):
@@ -44,7 +44,7 @@ def list_stock(
     with db.user_scope(user_id) as conn:
         return db.get_stock_items(
             conn, user_id, search=search, artist=artist, sort=sort, order=order,
-            page=page, per_page=per_page, overlapping=overlapping, recommended=recommended,
+            page=page, per_page=per_page, library_scope=library_scope, recommended=recommended,
             exclude_crawler_ids=exclude_crawler_ids,
         )
 

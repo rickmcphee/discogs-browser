@@ -274,10 +274,36 @@ def test_list_stock_includes_discogs_price_for_matched_collection_item(pg_test_d
         conn.commit()
 
     client = authed_client_factory(user["id"])
-    r = client.get("/api/stock", params={"overlapping": "true"})
+    r = client.get("/api/stock", params={"library_scope": "collection"})
     assert r.status_code == 200
     body = r.json()
     assert body["items"][0]["discogs_price"] == "20.00"
+
+
+def test_list_stock_library_scope_wishlist_matches_wantlist_items(pg_test_db, authed_client_factory):
+    crawler_id = _make_crawler()
+    with db.get_admin_pool().connection() as conn:
+        db.replace_stock_items(conn, crawler_id, [
+            {"artist": "Rob Zombie", "title": "The Great Satan", "price": 31.99, "currency": "USD", "url": "https://x/1"},
+        ])
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "Rob Zombie", "title": "The Great Satan", "year": None, "label": None,
+            "format": None, "discogs_price": "20.00", "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        db.upsert_library_item(conn, user["id"], "r1", in_wishlist=True)
+        conn.commit()
+
+    client = authed_client_factory(user["id"])
+    r = client.get("/api/stock", params={"library_scope": "wishlist"})
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["items"]) == 1
+    assert body["items"][0]["discogs_price"] is None
+
+    r = client.get("/api/stock", params={"library_scope": "collection"})
+    assert r.json()["items"] == []
 
 
 def test_list_stock_search_and_artist_params(pg_test_db, authed_client_factory):
