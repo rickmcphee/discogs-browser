@@ -2,7 +2,7 @@ BACKEND_DIR := backend
 FRONTEND_DIR := frontend
 PID_FILE     := /tmp/discogs-uvicorn.pid
 
-.PHONY: dev backend frontend restart-backend stop-backend
+.PHONY: dev backend frontend restart-backend stop-backend test-db-clean
 
 dev:
 	@$(MAKE) -j2 backend frontend
@@ -27,3 +27,6 @@ restart-backend:
 stop-backend:
 	@pkill -f "uvicorn main:app" 2>/dev/null || true
 	@rm -f $(PID_FILE)
+
+test-db-clean:
+	cd $(BACKEND_DIR) && python scripts/drop_leaked_test_dbs.py

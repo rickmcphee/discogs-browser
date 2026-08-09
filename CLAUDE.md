@@ -69,8 +69,9 @@ cd backend && pip install -e ".[dev]" && uvicorn main:app --reload --port 8000
 cd frontend && npm install && npm run dev
 # → http://localhost:5173
 
-# Tests
-cd backend && pytest
+# Tests (Postgres-backed tests need all three vars; see "Tests" below)
+cd backend && TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/discogs_browser_test \
+  IDENTITY_DB_PASSWORD=test APP_DB_PASSWORD=test pytest
 ```
 
 ## Crawler plugin interface
@@ -128,6 +129,10 @@ Always open PRs as ready for review, not as drafts — pass `--draft=false` (or 
 - HTML fixtures for Amazon price regression tests: `backend/tests/fixtures/crawlers/amazon/`
 - To capture a new fixture: `python backend/scripts/capture_fixture.py amazon <url> "Artist - Title"`
 - Playwright-dependent code (live crawl, browser launch) is not unit-tested; integration testing is manual
+- **A test may never assume pre-existing schema or role state.** The session-scoped `pg_run_database` fixture (`backend/tests/conftest.py`) builds each pytest session a fresh `<base>_run_<hex>` database from `TEMPLATE template0` and poisons `app_user`/`app_identity`'s `BYPASSRLS` attributes (inverted from what `_ensure_role` sets) before the run's first `init_tenant_schema()`. Anything a test asserts on must therefore be constructed by the code under test during that run, not inherited from a prior run or a hand-provisioned local database. See `docs/specifications/shaping/2026-08-09-test-database-freshness-design.md`.
+- Poisoning also rotates both roles' passwords to random values; `init_tenant_schema()` rewrites them from `IDENTITY_DB_PASSWORD`/`APP_DB_PASSWORD`. Teardown restores both `BYPASSRLS` bits but *not* the passwords — they are unknowable after the fact, and the next run sets them again. A crashed run can therefore leave the cluster's roles holding random passwords until something re-runs `init_tenant_schema()`; `make test-db-clean` repairs the bits only.
+- Sharp edge: roles are cluster-level, not per-database, so two suites running concurrently against one Postgres cluster still interfere at the role level for up to one test (the next `init_tenant_schema()` in each session repairs it). Give each worktree its own Postgres container if running suites in parallel. For the same reason, never run `make test-db-clean` while a suite is in flight — pools close between tests, so a live run's database momentarily has zero backends.
+- Tests that don't touch Postgres run with no database at all: with `TEST_DATABASE_URL` unset, `pg_run_database` no-ops and only the Postgres-backed files fail.
 
 ## Commits — AI attribution trailers (required, every commit)
 
