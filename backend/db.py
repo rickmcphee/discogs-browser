@@ -16,6 +16,11 @@ _admin_pool: Optional[ConnectionPool] = None
 _identity_pool: Optional[ConnectionPool] = None
 _app_pool: Optional[ConnectionPool] = None
 
+# price_paid's "unspecified" needs to be distinct from None: None means the
+# user's custom "Price" field is genuinely empty and the stored value must be
+# cleared, so it can't double as "this caller never looked."
+_UNSET = object()
+
 
 def get_admin_pool() -> ConnectionPool:
     global _admin_pool
@@ -482,28 +487,31 @@ def upsert_library_item(
     in_wishlist: Optional[bool] = None,
     collection_date_added: Optional[str] = None,
     wishlist_date_added: Optional[str] = None,
+    price_paid=_UNSET,
 ):
     # COALESCE resolves "unspecified" (None) to the existing row's own column
     # on update, or FALSE/NULL on first insert — in one atomic statement, so
     # two concurrent partial updates (e.g. collection-sync setting
     # in_collection/collection_date_added, wishlist-sync setting
     # in_wishlist/wishlist_date_added) can't race on a separate read.
+    price_set = "" if price_paid is _UNSET else "price_paid = %(price_paid)s,"
     conn.execute(
-        """
+        f"""
         INSERT INTO library_items (
             user_id, discogs_id, in_collection, in_wishlist,
-            collection_date_added, wishlist_date_added, last_synced
+            collection_date_added, wishlist_date_added, price_paid, last_synced
         )
         VALUES (
             %(user_id)s, %(discogs_id)s, COALESCE(%(in_collection)s, FALSE),
             COALESCE(%(in_wishlist)s, FALSE), %(collection_date_added)s,
-            %(wishlist_date_added)s, CURRENT_TIMESTAMP
+            %(wishlist_date_added)s, %(price_paid)s, CURRENT_TIMESTAMP
         )
         ON CONFLICT (user_id, discogs_id) DO UPDATE SET
             in_collection = COALESCE(%(in_collection)s, library_items.in_collection),
             in_wishlist = COALESCE(%(in_wishlist)s, library_items.in_wishlist),
             collection_date_added = COALESCE(%(collection_date_added)s, library_items.collection_date_added),
             wishlist_date_added = COALESCE(%(wishlist_date_added)s, library_items.wishlist_date_added),
+            {price_set}
             last_synced = CURRENT_TIMESTAMP
         """,
         {
@@ -513,6 +521,7 @@ def upsert_library_item(
             "in_wishlist": in_wishlist,
             "collection_date_added": collection_date_added,
             "wishlist_date_added": wishlist_date_added,
+            "price_paid": None if price_paid is _UNSET else price_paid,
         },
     )
 

@@ -482,3 +482,101 @@ def test_get_library_items_for_plex_match_only_returns_in_collection(admin_conn)
 
     items = db.get_library_items_for_plex_match(admin_conn, alice["id"])
     assert items == [{"discogs_id": "r1", "artist": "Miles Davis", "title": "Kind of Blue"}]
+
+
+def _seed_user_and_release(admin_conn):
+    user = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "d1", "artist": "A", "title": "T", "year": None, "label": None,
+        "format": None, "discogs_price": None, "barcode": None,
+        "cover_image_url": None, "discogs_url": None,
+    })
+    admin_conn.commit()
+    return user
+
+
+def _price_paid(admin_conn, user_id, discogs_id="d1"):
+    return admin_conn.execute(
+        "SELECT price_paid FROM library_items WHERE user_id = %s AND discogs_id = %s",
+        [user_id, discogs_id],
+    ).fetchone()["price_paid"]
+
+
+def test_upsert_library_item_writes_price_paid(admin_conn):
+    user = _seed_user_and_release(admin_conn)
+    db.upsert_library_item(admin_conn, user["id"], "d1", in_collection=True, price_paid="$10")
+    admin_conn.commit()
+    assert _price_paid(admin_conn, user["id"]) == "$10"
+
+
+def test_upsert_library_item_omitting_price_paid_preserves_the_stored_value(admin_conn):
+    # The mode="new" sync path never calls parse_release, so it has no price to
+    # pass. Omitting it must inherit, not blank the row out.
+    user = _seed_user_and_release(admin_conn)
+    db.upsert_library_item(admin_conn, user["id"], "d1", in_collection=True, price_paid="$10")
+    admin_conn.commit()
+
+    db.upsert_library_item(admin_conn, user["id"], "d1", in_collection=True)
+    admin_conn.commit()
+    assert _price_paid(admin_conn, user["id"]) == "$10"
+
+
+def test_upsert_library_item_explicit_none_price_paid_clears_it(admin_conn):
+    # The other half of the sentinel contract, and the reason price_paid cannot
+    # use the COALESCE pattern its neighbours use: parse_release yields None for
+    # a user who cleared their Discogs "Price" field, so None has to mean
+    # "authoritatively empty". Under COALESCE this test fails and a price
+    # becomes permanently unclearable.
+    user = _seed_user_and_release(admin_conn)
+    db.upsert_library_item(admin_conn, user["id"], "d1", in_collection=True, price_paid="$10")
+    admin_conn.commit()
+
+    db.upsert_library_item(admin_conn, user["id"], "d1", in_collection=True, price_paid=None)
+    admin_conn.commit()
+    assert _price_paid(admin_conn, user["id"]) is None
+
+
+def test_upsert_library_item_clearing_does_not_disturb_other_columns(admin_conn):
+    user = _seed_user_and_release(admin_conn)
+    db.upsert_library_item(
+        admin_conn, user["id"], "d1", in_collection=True,
+        collection_date_added="2024-03-15T10:00:00Z", price_paid="$10",
+    )
+    admin_conn.commit()
+
+    db.upsert_library_item(admin_conn, user["id"], "d1", in_collection=True, price_paid=None)
+    admin_conn.commit()
+
+    row = admin_conn.execute(
+        "SELECT in_collection, collection_date_added, price_paid FROM library_items "
+        "WHERE user_id = %s AND discogs_id = 'd1'",
+        [user["id"]],
+    ).fetchone()
+    assert row["price_paid"] is None
+    assert row["in_collection"] is True
+    assert row["collection_date_added"] is not None
+
+
+def test_upsert_library_item_price_paid_is_null_on_insert_when_omitted(admin_conn):
+    user = _seed_user_and_release(admin_conn)
+    db.upsert_library_item(admin_conn, user["id"], "d1", in_collection=True)
+    admin_conn.commit()
+    assert _price_paid(admin_conn, user["id"]) is None
+
+
+def test_upsert_library_item_price_paid_is_per_user(admin_conn):
+    # The whole point of the change: two users, one shared release, independent
+    # prices. On catalog this was one row and one value.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    bob = db.create_user(admin_conn, discogs_user_id=2, discogs_username="bob")
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "d1", "artist": "A", "title": "T", "year": None, "label": None,
+        "format": None, "discogs_price": None, "barcode": None,
+        "cover_image_url": None, "discogs_url": None,
+    })
+    db.upsert_library_item(admin_conn, alice["id"], "d1", in_collection=True, price_paid="$10")
+    db.upsert_library_item(admin_conn, bob["id"], "d1", in_collection=True, price_paid=None)
+    admin_conn.commit()
+
+    assert _price_paid(admin_conn, alice["id"]) == "$10"
+    assert _price_paid(admin_conn, bob["id"]) is None
