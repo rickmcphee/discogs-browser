@@ -6,7 +6,7 @@
 
 **Design:** [`docs/specifications/shaping/2026-08-09-test-database-freshness-design.md`](../shaping/2026-08-09-test-database-freshness-design.md)
 
-**Architecture:** One session-scoped autouse fixture in `backend/tests/conftest.py` creates `<base>_run_<8 hex>` with `TEMPLATE template0`, rewrites `os.environ["TEST_DATABASE_URL"]` in place so all six existing read sites follow with no edits, poisons `app_user`/`app_identity`, and drops the database at teardown. A new `backend/tests/test_pg_fixtures.py` asserts on facts the fixture *measured* (not hard-coded), so a silent revert to a reused database is a failure rather than a return to invisible vacuity.
+**Architecture:** One session-scoped autouse fixture in `backend/tests/conftest.py` creates `<base>_run_<8 hex>` with `TEMPLATE template0`, rewrites `os.environ["TEST_DATABASE_URL"]` in place so all nine existing read sites follow with no edits, poisons `app_user`/`app_identity`, and drops the database at teardown. A new `backend/tests/test_pg_fixtures.py` asserts on facts the fixture *measured* (not hard-coded), so a silent revert to a reused database is a failure rather than a return to invisible vacuity.
 
 **Tech Stack:** pytest, psycopg 3 (`psycopg.sql` composition), PostgreSQL 16.
 
@@ -23,10 +23,19 @@
 **Standard test invocation** used by every Run line below (the suite does not run without all three variables — see Task 6):
 
 ```bash
-cd backend && TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/discogs_browser_test IDENTITY_DB_PASSWORD=ci-test-identity-password APP_DB_PASSWORD=ci-test-app-password pytest -q
+cd backend && TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:55433/discogs_browser_test IDENTITY_DB_PASSWORD=ci-test-identity-password APP_DB_PASSWORD=ci-test-app-password pytest -q
 ```
 
 Referred to below as `$PYTEST`.
+
+**Execution environment — port 55433, not 5432.** This branch is being built while another worktree runs the suite against the shared `discogs-browser-pg` container on 5432. Because `app_user`/`app_identity` are cluster-level, a private *database* name is not enough to isolate from that; the whole cluster has to be separate. So this execution uses a dedicated container:
+
+```bash
+docker run -d --name dbtest-freshness -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=discogs_browser_test -p 55433:5432 postgres:16
+```
+
+Every `docker exec discogs-browser-pg ...` verification command below therefore reads `docker exec dbtest-freshness ...` instead. This is the same per-worktree-container practice Task 6 documents. Remove the container when the branch is done.
 
 ---
 
@@ -208,7 +217,7 @@ pristine-cluster baseline rather than the 86–147s contaminated figures.
 
 - [ ] **Step 4: Confirm the database is actually dropped**
 
-Run: `docker exec discogs-browser-pg psql -U postgres -Atc "SELECT count(*) FROM pg_database WHERE datname LIKE '%\_run\_%'"`
+Run: `docker exec dbtest-freshness psql -U postgres -Atc "SELECT count(*) FROM pg_database WHERE datname LIKE '%\_run\_%'"`
 
 Expect `0`.
 
@@ -281,7 +290,7 @@ Expect **741 passed**. Measured blast radius of poisoning is zero — every fixt
 
 - [ ] **Step 4: Confirm teardown left the cluster clean**
 
-Run: `docker exec discogs-browser-pg psql -U postgres -Atc "SELECT rolname, rolbypassrls FROM pg_roles WHERE rolname IN ('app_user','app_identity')"`
+Run: `docker exec dbtest-freshness psql -U postgres -Atc "SELECT rolname, rolbypassrls FROM pg_roles WHERE rolname IN ('app_user','app_identity')"`
 
 Expect `app_user|f`.
 
@@ -369,7 +378,7 @@ WHERE d.datname LIKE '%\_run\_%'
 Create one by hand, confirm the script drops it, and confirm a second run reports nothing to do:
 
 ```bash
-docker exec discogs-browser-pg psql -U postgres -c 'CREATE DATABASE discogs_browser_test_run_deadbeef'
+docker exec dbtest-freshness psql -U postgres -c 'CREATE DATABASE discogs_browser_test_run_deadbeef'
 ```
 
 Run: `cd backend && TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/discogs_browser_test python scripts/drop_leaked_test_dbs.py`
@@ -378,7 +387,7 @@ Run: `cd backend && TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5
 
 Confirm `discogs_browser_test`, `discogs_browser_test_pricepaid` and `discogs_browser_test_wishlist` all still exist afterwards:
 
-Run: `docker exec discogs-browser-pg psql -U postgres -Atc "SELECT datname FROM pg_database WHERE datname LIKE 'discogs_browser_test%'"`
+Run: `docker exec dbtest-freshness psql -U postgres -Atc "SELECT datname FROM pg_database WHERE datname LIKE 'discogs_browser_test%'"`
 
 - [ ] **Step 4: Add the Makefile target**
 
@@ -425,7 +434,7 @@ Run: `$PYTEST` — expect **741 passed** both times, with the second run proving
 
 - [ ] **Step 3: Confirm the cluster is left clean**
 
-Run: `docker exec discogs-browser-pg psql -U postgres -Atc "SELECT datname FROM pg_database WHERE datname LIKE '%\_run\_%'"` — expect empty.
+Run: `docker exec dbtest-freshness psql -U postgres -Atc "SELECT datname FROM pg_database WHERE datname LIKE '%\_run\_%'"` — expect empty.
 
 - [ ] **Step 4: Frontend suite unaffected**
 
