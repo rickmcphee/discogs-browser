@@ -25,6 +25,35 @@ def _with_database(url, dbname):
     return urlunsplit((parts.scheme, parts.netloc, f"/{dbname}", parts.query, parts.fragment))
 
 
+# Inverted relative to what db._ensure_role sets, so every assertion about
+# these roles — and every connection made as either — depends on _ensure_role
+# running in this process. Roles are cluster-level, so nothing else in the
+# suite ever resets them: without this, app_user/app_identity are leftovers
+# from whenever the multi-tenant work first ran locally, and
+# test_app_identity_role_has_bypassrls passes with the ALTER ROLE deleted.
+_POISONED_BYPASSRLS = {"app_user": "BYPASSRLS", "app_identity": "NOBYPASSRLS"}
+
+
+def _poison_app_roles(conn):
+    """Invert the attributes db._ensure_role owns. Returns each role's
+    rolbypassrls as actually read back after poisoning, or None for a role
+    absent from the cluster (a fresh CI cluster has nothing to poison)."""
+    observed = {}
+    for role, bypass in _POISONED_BYPASSRLS.items():
+        if conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", [role]).fetchone() is None:
+            observed[role] = None
+            continue
+        conn.execute(
+            sql.SQL("ALTER ROLE {} PASSWORD {} {}").format(
+                sql.Identifier(role), sql.Literal(uuid.uuid4().hex), sql.SQL(bypass)
+            )
+        )
+        observed[role] = conn.execute(
+            "SELECT rolbypassrls FROM pg_roles WHERE rolname = %s", [role]
+        ).fetchone()[0]
+    return observed
+
+
 @pytest.fixture(scope="session", autouse=True)
 def pg_run_database():
     """Every pytest session gets its own empty database.
@@ -58,6 +87,7 @@ def pg_run_database():
                 "the role in TEST_DATABASE_URL needs CREATEDB to provision the "
                 f"per-run test database {run_name}"
             ) from exc
+        roles = _poison_app_roles(conn)
 
     run_url = _with_database(base_url, run_name)
     os.environ["TEST_DATABASE_URL"] = run_url
@@ -70,8 +100,8 @@ def pg_run_database():
         "database": run_name,
         "base_database": base_name,
         "tables_at_start": tables_at_start,
-        "app_user_bypassrls_at_start": None,
-        "app_identity_bypassrls_at_start": None,
+        "app_user_bypassrls_at_start": roles["app_user"],
+        "app_identity_bypassrls_at_start": roles["app_identity"],
     }
 
     for attr in ("_admin_pool", "_identity_pool", "_app_pool"):
@@ -88,6 +118,11 @@ def pg_run_database():
                 sql.Identifier(run_name)
             )
         )
+        # A crash between poisoning and _ensure_role's correction would
+        # otherwise leave a cluster role holding BYPASSRLS. scripts/
+        # drop_leaked_test_dbs.py repairs that case; this covers normal exits.
+        if roles["app_user"] is not None:
+            conn.execute(sql.SQL("ALTER ROLE {} NOBYPASSRLS").format(sql.Identifier("app_user")))
 
 
 @pytest.fixture
