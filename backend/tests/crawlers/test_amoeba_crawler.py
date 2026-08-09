@@ -35,6 +35,9 @@ def test_listing_url_requests_newest_vinyl_only():
     # Filter params are top-level and URL-encoded, not nested under filter=.
     for format_id in (3, 4, 17, 19, 21):
         assert f"format%5B{format_id}%5D={format_id}" in url
+    # Exactly these 5 -- guards against a spurious extra format id that would
+    # otherwise pass every assertion above.
+    assert url.count("format%5B") == 5
     assert "filter=" not in url
     # CD and cassette are explicitly out of scope.
     assert "format%5B1%5D" not in url
