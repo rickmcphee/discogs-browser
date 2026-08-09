@@ -441,9 +441,10 @@ async def test_sync_collection_wishlist_does_not_wipe_a_collection_discogs_price
         # An earlier collection sync already recorded what she paid.
         db.upsert_catalog_release(conn, {
             "discogs_id": "r111", "artist": "Artist", "title": "Album", "year": 2020,
-            "label": None, "format": None, "discogs_price": "42.50", "barcode": None,
+            "label": None, "format": None, "price_paid": None, "barcode": None,
             "cover_image_url": None, "discogs_url": None,
         })
+        db.upsert_library_item(conn, user["id"], "r111", in_collection=True, price_paid="42.50")
         conn.commit()
 
     manager = CrawlManager()
@@ -453,15 +454,18 @@ async def test_sync_collection_wishlist_does_not_wipe_a_collection_discogs_price
     assert "sync_error" not in statuses
 
     with db.get_admin_pool().connection() as conn:
-        assert db.get_catalog_release(conn, "r111")["discogs_price"] == "42.50"
+        assert conn.execute(
+            "SELECT price_paid FROM library_items WHERE user_id = %s AND discogs_id = 'r111'",
+            [user["id"]],
+        ).fetchone()["price_paid"] == "42.50"
 
 
 @respx.mock
 async def test_sync_all_scope_keeps_the_collection_price_through_the_wantlist_loop(pg_schema, monkeypatch):
     # The bug's original mechanism: on a full sync both loops run, wantlist
-    # second, over a release in both lists. Pins which call site gets
-    # preserve_price -- the collection loop must still update the price it read
-    # from the custom field, and the wantlist loop must then leave it alone.
+    # second, over a release in both lists. The collection loop must write the
+    # price it read from the custom field, and the wantlist loop's own
+    # upsert_library_item must then leave it alone by omitting price_paid.
     import config
     import crawl_manager as crawl_manager_module
     import discogs
@@ -478,16 +482,15 @@ async def test_sync_all_scope_keeps_the_collection_price_through_the_wantlist_lo
             [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
         )
         db.register_crawler(conn, "Amazon", "/x.py")
-        # Pre-seeded so the collection loop's upsert takes DO UPDATE, not
-        # INSERT -- preserve_price only affects the update branch, so an
-        # insert would not distinguish the two call sites. A non-null stale
-        # value also tells the two mutations apart: mis-flagging the
-        # collection loop leaves "1.00", dropping the wantlist flag leaves None.
+        # Pre-seeded with a stale non-null price so the two mutations stay
+        # distinguishable: a collection loop that never writes leaves "1.00",
+        # and a wantlist loop that stops omitting price_paid leaves None.
         db.upsert_catalog_release(conn, {
             "discogs_id": "r111", "artist": "Artist", "title": "Album", "year": 2020,
-            "label": None, "format": None, "discogs_price": "1.00", "barcode": None,
+            "label": None, "format": None, "price_paid": None, "barcode": None,
             "cover_image_url": None, "discogs_url": None,
         })
+        db.upsert_library_item(conn, user["id"], "r111", in_collection=True, price_paid="1.00")
         conn.commit()
 
     respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
@@ -539,7 +542,10 @@ async def test_sync_all_scope_keeps_the_collection_price_through_the_wantlist_lo
     assert row["in_wishlist"] is True
 
     with db.get_admin_pool().connection() as conn:
-        assert db.get_catalog_release(conn, "r111")["discogs_price"] == "42.50"
+        assert conn.execute(
+            "SELECT price_paid FROM library_items WHERE user_id = %s AND discogs_id = 'r111'",
+            [user["id"]],
+        ).fetchone()["price_paid"] == "42.50"
 
 
 async def test_sync_collection_wishlist_scope_skips_collection_loop(pg_schema, monkeypatch):
@@ -2694,3 +2700,256 @@ async def test_paced_search_records_backoff_even_when_retry_also_fails():
     next_allowed = manager._site_next_allowed_at[1]
     assert next_allowed > before
     assert next_allowed > after
+
+
+@respx.mock
+async def test_collection_sync_without_a_price_field_keeps_another_users_price(pg_schema, monkeypatch):
+    """The live cross-tenant bug: bob has no custom field named "Price", so
+    parse_release yields no price for him. That must not erase alice's price
+    for the same release. Under the old global catalog.discogs_price this
+    assertion failed on every one of bob's syncs, and recurred forever."""
+    import config
+    import crawl_manager as crawl_manager_module
+    import discogs
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+    monkeypatch.setattr(crawl_manager_module.time, "sleep", lambda *a, **k: None)
+    monkeypatch.setattr(discogs, "fetch_release_barcode", lambda *a, **k: None)
+
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        bob = db.create_user(conn, discogs_user_id=2, discogs_username="bob")
+        for user in (alice, bob):
+            conn.execute(
+                "UPDATE users SET discogs_oauth_token_encrypted = %s, "
+                "discogs_oauth_secret_encrypted = %s WHERE id = %s",
+                [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+            )
+        db.register_crawler(conn, "Amazon", "/x.py")
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r111", "artist": "Artist", "title": "Album", "year": 2020,
+            "label": None, "format": None, "price_paid": None, "barcode": None,
+            "cover_image_url": None, "discogs_url": None,
+        })
+        # Alice already recorded what she paid.
+        db.upsert_library_item(conn, alice["id"], "r111", in_collection=True, price_paid="42.50")
+        conn.commit()
+
+    _release = {
+        "basic_information": {
+            "id": 111, "title": "Album", "year": 2020,
+            "artists": [{"name": "Artist"}], "labels": [], "formats": [],
+            "cover_image": "",
+        },
+        "date_added": "2024-03-15T10:00:00Z",
+    }
+    # Bob has custom fields, but none named "Price" -- so price_field_id is None.
+    respx.get("https://api.discogs.com/users/bob/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": [{"id": 9, "name": "Notes"}]})
+    )
+    respx.get("https://api.discogs.com/users/bob/collection/folders/0/releases").mock(
+        return_value=httpx.Response(200, json={
+            "pagination": {"pages": 1}, "releases": [_release],
+        })
+    )
+    respx.get("https://api.discogs.com/users/bob/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    manager = CrawlManager()
+    await manager._sync_collection(bob["id"], "all")
+    assert "sync_error" not in [e["status"] for e in manager.recent_events()]
+
+    with db.get_admin_pool().connection() as conn:
+        # Bob's sync really did process the release -- otherwise the assertion
+        # below could pass without his write path ever running.
+        assert conn.execute(
+            "SELECT in_collection FROM library_items WHERE user_id = %s AND discogs_id = 'r111'",
+            [bob["id"]],
+        ).fetchone()["in_collection"] is True
+        prices = {
+            r["user_id"]: r["price_paid"]
+            for r in conn.execute(
+                "SELECT user_id, price_paid FROM library_items WHERE discogs_id = 'r111'"
+            ).fetchall()
+        }
+    assert prices[alice["id"]] == "42.50"
+    assert prices[bob["id"]] is None
+
+
+@respx.mock
+async def test_collection_sync_writes_the_matched_price_field_to_price_paid(pg_schema, monkeypatch):
+    import config
+    import crawl_manager as crawl_manager_module
+    import discogs
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+    monkeypatch.setattr(crawl_manager_module.time, "sleep", lambda *a, **k: None)
+    monkeypatch.setattr(discogs, "fetch_release_barcode", lambda *a, **k: None)
+
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, "
+            "discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), alice["id"]],
+        )
+        db.register_crawler(conn, "Amazon", "/x.py")
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": [{"id": 3, "name": "Price"}]})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        return_value=httpx.Response(200, json={
+            "pagination": {"pages": 1},
+            "releases": [{
+                "basic_information": {
+                    "id": 111, "title": "Album", "year": 2020,
+                    "artists": [{"name": "Artist"}], "labels": [], "formats": [],
+                    "cover_image": "",
+                },
+                "date_added": "2024-03-15T10:00:00Z",
+                "notes": [{"field_id": 3, "value": "42.50"}],
+            }],
+        })
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    manager = CrawlManager()
+    await manager._sync_collection(alice["id"], "all")
+    assert "sync_error" not in [e["status"] for e in manager.recent_events()]
+
+    with db.get_admin_pool().connection() as conn:
+        assert conn.execute(
+            "SELECT price_paid FROM library_items WHERE user_id = %s AND discogs_id = 'r111'",
+            [alice["id"]],
+        ).fetchone()["price_paid"] == "42.50"
+
+
+@respx.mock
+async def test_mode_new_sync_leaves_an_existing_price_paid_intact(pg_schema, monkeypatch):
+    """mode="new" takes the early-continue path for known releases, which never
+    calls parse_release and so has no price in scope. It must inherit, not blank."""
+    import config
+    import crawl_manager as crawl_manager_module
+    import discogs
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+    monkeypatch.setattr(crawl_manager_module.time, "sleep", lambda *a, **k: None)
+    monkeypatch.setattr(discogs, "fetch_release_barcode", lambda *a, **k: None)
+
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, "
+            "discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), alice["id"]],
+        )
+        db.register_crawler(conn, "Amazon", "/x.py")
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r111", "artist": "Artist", "title": "Album", "year": 2020,
+            "label": None, "format": None, "price_paid": None, "barcode": None,
+            "cover_image_url": None, "discogs_url": None,
+        })
+        db.upsert_library_item(conn, alice["id"], "r111", in_collection=True, price_paid="42.50")
+        conn.commit()
+
+    # No "Price" field, so even the full-parse path would yield None here --
+    # which is what makes the skip path's inheritance observable.
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        return_value=httpx.Response(200, json={
+            "pagination": {"pages": 1},
+            "releases": [{
+                "basic_information": {
+                    "id": 111, "title": "Album", "year": 2020,
+                    "artists": [{"name": "Artist"}], "labels": [], "formats": [],
+                    "cover_image": "",
+                },
+                "date_added": "2024-03-15T10:00:00Z",
+            }],
+        })
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    manager = CrawlManager()
+    await manager._sync_collection(alice["id"], "new")
+    assert "sync_error" not in [e["status"] for e in manager.recent_events()]
+
+    with db.get_admin_pool().connection() as conn:
+        assert conn.execute(
+            "SELECT price_paid FROM library_items WHERE user_id = %s AND discogs_id = 'r111'",
+            [alice["id"]],
+        ).fetchone()["price_paid"] == "42.50"
+
+
+@respx.mock
+async def test_mode_all_sync_clears_a_price_the_user_removed(pg_schema, monkeypatch):
+    """The counterpart to the mode="new" test above, and the reason price_paid
+    uses a sentinel rather than COALESCE. Same starting state and the same
+    absent "Price" field -- only the mode differs, so a COALESCE implementation
+    passes the mode="new" test and fails this one."""
+    import config
+    import crawl_manager as crawl_manager_module
+    import discogs
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+    monkeypatch.setattr(crawl_manager_module.time, "sleep", lambda *a, **k: None)
+    monkeypatch.setattr(discogs, "fetch_release_barcode", lambda *a, **k: None)
+
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, "
+            "discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), alice["id"]],
+        )
+        db.register_crawler(conn, "Amazon", "/x.py")
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r111", "artist": "Artist", "title": "Album", "year": 2020,
+            "label": None, "format": None, "price_paid": None, "barcode": None,
+            "cover_image_url": None, "discogs_url": None,
+        })
+        db.upsert_library_item(conn, alice["id"], "r111", in_collection=True, price_paid="42.50")
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        return_value=httpx.Response(200, json={
+            "pagination": {"pages": 1},
+            "releases": [{
+                "basic_information": {
+                    "id": 111, "title": "Album", "year": 2020,
+                    "artists": [{"name": "Artist"}], "labels": [], "formats": [],
+                    "cover_image": "",
+                },
+                "date_added": "2024-03-15T10:00:00Z",
+            }],
+        })
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    manager = CrawlManager()
+    await manager._sync_collection(alice["id"], "all")
+    assert "sync_error" not in [e["status"] for e in manager.recent_events()]
+
+    with db.get_admin_pool().connection() as conn:
+        assert conn.execute(
+            "SELECT price_paid FROM library_items WHERE user_id = %s AND discogs_id = 'r111'",
+            [alice["id"]],
+        ).fetchone()["price_paid"] is None

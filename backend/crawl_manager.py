@@ -429,6 +429,7 @@ class CrawlManager:
                             upsert_library_item(
                                 conn, user_id, rid, in_collection=True,
                                 collection_date_added=item.get("date_added"),
+                                price_paid=release["price_paid"],
                             )
                             for crawler in enabled_crawlers:
                                 enqueue_crawl_queue(conn, rid, crawler["id"])
@@ -467,7 +468,7 @@ class CrawlManager:
                             time.sleep(1.1)
                         else:
                             release["barcode"] = existing_row["barcode"]
-                        upsert_catalog_release(conn, release, preserve_price=True)
+                        upsert_catalog_release(conn, release)
                         upsert_library_item(
                             conn, user_id, rid, in_wishlist=True,
                             in_collection=False if is_new_release else None,

@@ -19,7 +19,7 @@ def admin_conn(pg_test_db):
 def test_upsert_catalog_release_inserts_then_updates(admin_conn):
     db.upsert_catalog_release(admin_conn, {
         "discogs_id": "d1", "artist": "A", "title": "T", "year": 1999,
-        "label": "L", "format": "LP", "discogs_price": "$10", "barcode": "123",
+        "label": "L", "format": "LP", "price_paid": None, "barcode": "123",
         "cover_image_url": "http://x/cover.jpg", "discogs_url": "http://x/release/d1",
     })
     admin_conn.commit()
@@ -29,14 +29,13 @@ def test_upsert_catalog_release_inserts_then_updates(admin_conn):
     assert row["year"] == 1999
     assert row["label"] == "L"
     assert row["format"] == "LP"
-    assert row["discogs_price"] == "$10"
     assert row["barcode"] == "123"
     assert row["cover_image_url"] == "http://x/cover.jpg"
     assert row["discogs_url"] == "http://x/release/d1"
 
     db.upsert_catalog_release(admin_conn, {
         "discogs_id": "d1", "artist": "A2", "title": "T (Reissue)", "year": 2005,
-        "label": "L2", "format": "12\"", "discogs_price": "$15", "barcode": "456",
+        "label": "L2", "format": "12\"", "price_paid": None, "barcode": "456",
         "cover_image_url": "http://x/cover2.jpg", "discogs_url": "http://x/release/d1-reissue",
     })
     admin_conn.commit()
@@ -46,76 +45,9 @@ def test_upsert_catalog_release_inserts_then_updates(admin_conn):
     assert row["year"] == 2005
     assert row["label"] == "L2"
     assert row["format"] == '12"'
-    assert row["discogs_price"] == "$15"
     assert row["barcode"] == "456"
     assert row["cover_image_url"] == "http://x/cover2.jpg"
     assert row["discogs_url"] == "http://x/release/d1-reissue"
-
-
-def test_upsert_catalog_release_preserve_price_keeps_the_stored_price(admin_conn):
-    db.upsert_catalog_release(admin_conn, {
-        "discogs_id": "d1", "artist": "A", "title": "T", "year": 1999,
-        "label": "L", "format": "LP", "discogs_price": "$10", "barcode": "123",
-        "cover_image_url": "http://x/cover.jpg", "discogs_url": "http://x/release/d1",
-    })
-    admin_conn.commit()
-
-    # The wantlist sync path can't know the price -- it never reads the custom
-    # field -- so it must not overwrite what a collection sync stored. The
-    # incoming "$99" is deliberately non-null: preserve_price means "ignore the
-    # incoming price entirely", not "fall back when it happens to be null", so
-    # a COALESCE(EXCLUDED.discogs_price, catalog.discogs_price) implementation
-    # must fail here.
-    db.upsert_catalog_release(admin_conn, {
-        "discogs_id": "d1", "artist": "A2", "title": "T2", "year": 2005,
-        "label": "L2", "format": "CD", "discogs_price": "$99", "barcode": "456",
-        "cover_image_url": "http://x/cover2.jpg", "discogs_url": "http://x/release/d1b",
-    }, preserve_price=True)
-    admin_conn.commit()
-
-    row = db.get_catalog_release(admin_conn, "d1")
-    assert row["discogs_price"] == "$10"
-    # Every other column still updates.
-    assert row["artist"] == "A2"
-    assert row["title"] == "T2"
-    assert row["format"] == "CD"
-    assert row["year"] == 2005
-    assert row["label"] == "L2"
-    assert row["barcode"] == "456"
-    assert row["cover_image_url"] == "http://x/cover2.jpg"
-    assert row["discogs_url"] == "http://x/release/d1b"
-
-
-def test_upsert_catalog_release_preserve_price_still_writes_price_on_insert(admin_conn):
-    db.upsert_catalog_release(admin_conn, {
-        "discogs_id": "d1", "artist": "A", "title": "T", "year": 1999,
-        "label": "L", "format": "LP", "discogs_price": "$10", "barcode": "123",
-        "cover_image_url": "http://x/cover.jpg", "discogs_url": "http://x/release/d1",
-    }, preserve_price=True)
-    admin_conn.commit()
-
-    assert db.get_catalog_release(admin_conn, "d1")["discogs_price"] == "$10"
-
-
-def test_upsert_catalog_release_default_still_overwrites_price_with_none(admin_conn):
-    db.upsert_catalog_release(admin_conn, {
-        "discogs_id": "d1", "artist": "A", "title": "T", "year": 1999,
-        "label": "L", "format": "LP", "discogs_price": "$10", "barcode": "123",
-        "cover_image_url": "http://x/cover.jpg", "discogs_url": "http://x/release/d1",
-    })
-    admin_conn.commit()
-
-    # A collection sync legitimately writes None when the user cleared the
-    # custom field on Discogs, or has no field named "Price" at all -- so the
-    # default must stay a plain overwrite, not a COALESCE.
-    db.upsert_catalog_release(admin_conn, {
-        "discogs_id": "d1", "artist": "A", "title": "T", "year": 1999,
-        "label": "L", "format": "LP", "discogs_price": None, "barcode": "123",
-        "cover_image_url": "http://x/cover.jpg", "discogs_url": "http://x/release/d1",
-    })
-    admin_conn.commit()
-
-    assert db.get_catalog_release(admin_conn, "d1")["discogs_price"] is None
 
 
 def test_get_catalog_release_returns_none_when_missing(admin_conn):

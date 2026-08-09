@@ -359,26 +359,16 @@ def init_tenant_schema():
         conn.commit()
 
 
-def upsert_catalog_release(conn, data: dict, preserve_price: bool = False):
-    # catalog is global (no user_id), and discogs_price comes from a per-user
-    # custom collection field. A caller that never read that field -- the
-    # wantlist sync -- must leave the stored value alone rather than write its
-    # own None over another sync's (or another user's) real price. This is a
-    # per-call-site decision, not a blanket COALESCE: a collection sync writing
-    # None means the user genuinely cleared the field, and must still clear it.
-    # The flag narrows the cross-tenant overwrite without closing it -- see the
-    # catalog data dictionary in
-    # docs/superpowers/specs/2026-07-26-multi-tenant-architecture-design.md.
-    price_assignment = "" if preserve_price else "discogs_price = EXCLUDED.discogs_price,"
+def upsert_catalog_release(conn, data: dict):
     conn.execute(
-        f"""
-        INSERT INTO catalog (discogs_id, artist, title, year, label, format, discogs_price,
+        """
+        INSERT INTO catalog (discogs_id, artist, title, year, label, format,
                               barcode, cover_image_url, discogs_url, last_synced)
         VALUES (%(discogs_id)s, %(artist)s, %(title)s, %(year)s, %(label)s, %(format)s,
-                %(discogs_price)s, %(barcode)s, %(cover_image_url)s, %(discogs_url)s, CURRENT_TIMESTAMP)
+                %(barcode)s, %(cover_image_url)s, %(discogs_url)s, CURRENT_TIMESTAMP)
         ON CONFLICT (discogs_id) DO UPDATE SET
             artist = EXCLUDED.artist, title = EXCLUDED.title, year = EXCLUDED.year,
-            label = EXCLUDED.label, format = EXCLUDED.format, {price_assignment}
+            label = EXCLUDED.label, format = EXCLUDED.format,
             barcode = EXCLUDED.barcode, cover_image_url = EXCLUDED.cover_image_url,
             discogs_url = EXCLUDED.discogs_url, last_synced = CURRENT_TIMESTAMP
         """,
@@ -560,7 +550,7 @@ def get_library_items_for_plex_match(conn, user_id: int) -> list:
     return [dict(row) for row in rows]
 
 
-_RELEASE_ALLOWED_SORT = {"artist", "title", "year", "label", "format", "discogs_price"}
+_RELEASE_ALLOWED_SORT = {"artist", "title", "year", "label", "format"}
 
 
 def get_library_releases(
@@ -612,7 +602,9 @@ def get_library_releases(
     params["limit"] = per_page
     params["offset"] = offset
 
-    if sort == "date_added" and scope in ("discogs", "wishlist"):
+    if sort == "discogs_price":
+        sort_expr = "li.price_paid"
+    elif sort == "date_added" and scope in ("discogs", "wishlist"):
         sort_expr = "li." + ("wishlist_date_added" if scope == "wishlist" else "collection_date_added")
     else:
         sort_col = sort if sort in _RELEASE_ALLOWED_SORT else "artist"
@@ -620,7 +612,7 @@ def get_library_releases(
 
     rows = conn.execute(
         f"""
-        SELECT c.*, li.plex_url, li.plex_matched_at,
+        SELECT c.*, li.price_paid AS discogs_price, li.plex_url, li.plex_matched_at,
                li.collection_date_added, li.wishlist_date_added
         {base_from} {where}
         ORDER BY CASE WHEN {sort_expr} IS NULL THEN 1 ELSE 0 END {null_order}, {sort_expr} {order_sql}, c.discogs_id
@@ -957,7 +949,7 @@ def get_stock_items(
     # every key would be NULL, leaving all rows tied and pagination unstable.
     # The lookup's default covers None and any unmapped scope.
     if sort == "discogs_price" and "in_collection" in _LIBRARY_MEMBERSHIP.get(library_scope, ()):
-        sort_expr = """(SELECT (regexp_match(c.discogs_price, '\\d+\\.?\\d*'))[1]::numeric
+        sort_expr = """(SELECT (regexp_match(li.price_paid, '\\d+\\.?\\d*'))[1]::numeric
                         {match} LIMIT 1)""".format(
             match=_library_match_fragment("%(user_id)s", "collection")
         )
@@ -999,7 +991,7 @@ def get_stock_items(
         f"""
         SELECT s.id, s.artist, s.title, s.format, s.price, s.currency, s.url, s.cover_image_url, s.last_seen,
                s.item_key, cr.site_name AS source, j.reason AS reason,
-               (SELECT c.discogs_price {_library_match_fragment('%(user_id)s', 'collection')} LIMIT 1) AS discogs_price
+               (SELECT li.price_paid {_library_match_fragment('%(user_id)s', 'collection')} LIMIT 1) AS discogs_price
         FROM stock_items s
         JOIN crawlers cr ON cr.id = s.crawler_id
         LEFT JOIN stock_item_judgments j ON j.item_key = s.item_key AND j.user_id = %(user_id)s

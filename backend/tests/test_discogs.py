@@ -186,6 +186,37 @@ def test_parse_release():
     assert parsed["format"] == "Vinyl"
     assert parsed["discogs_url"] == "https://www.discogs.com/release/456"
     assert parsed["barcode"] is None
+    # Named for what it is. No discogs_price key remains -- that name read as a
+    # marketplace figure, and the misreading is what put it on a global column.
+    assert parsed["price_paid"] is None
+    assert "discogs_price" not in parsed
+
+
+def _item_with_note(field_id, value):
+    return {
+        "basic_information": {
+            "id": 456, "title": "Kind of Blue", "year": 1959,
+            "artists": [{"name": "Miles Davis"}], "labels": [{"name": "Columbia"}],
+            "formats": [{"name": "Vinyl"}], "cover_image": "",
+        },
+        "notes": [{"field_id": field_id, "value": value}],
+    }
+
+
+def test_parse_release_reads_the_matched_custom_field_into_price_paid():
+    assert parse_release(_item_with_note(7, "42.50"), price_field_id=7)["price_paid"] == "42.50"
+
+
+def test_parse_release_price_paid_is_none_when_the_user_has_no_price_field():
+    # The exact condition that caused the data loss: no field named "Price", so
+    # price_field_id is None and nothing is read.
+    assert parse_release(_item_with_note(7, "42.50"), price_field_id=None)["price_paid"] is None
+
+
+def test_parse_release_price_paid_is_none_when_the_field_is_empty():
+    # An empty custom field is a cleared price, not a missing one -- the
+    # collection-sync call site passes this None through as an authoritative clear.
+    assert parse_release(_item_with_note(7, ""), price_field_id=7)["price_paid"] is None
 
 
 @respx.mock
