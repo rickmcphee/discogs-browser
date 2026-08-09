@@ -30,6 +30,7 @@ _WINDOW_PAGES = 5
 
 _NEW_PRICE_RE = re.compile(r"\$([\d,]+\.?\d*)")
 _USED_PRICE_RE = re.compile(r"\bUsed\s+(?:for|from)\s+\$([\d,]+\.?\d*)")
+_FORMAT_SUFFIX_RE = re.compile(r'\((LP|7"|10"|12"|78)\)\s*$')
 
 
 class Crawler:
@@ -54,3 +55,8 @@ class Crawler:
             if match:
                 return float(match.group(1).replace(",", ""))
         return None
+
+    @staticmethod
+    def _extract_format(title: str) -> str:
+        match = _FORMAT_SUFFIX_RE.search(title)
+        return match.group(1) if match else "Vinyl"

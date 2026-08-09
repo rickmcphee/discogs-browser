@@ -67,3 +67,23 @@ def test_extract_price_handles_thousands_separator():
 def test_extract_price_returns_none_when_no_price_anywhere():
     assert Crawler._extract_price(None, None) is None
     assert Crawler._extract_price("", "") is None
+
+
+def test_extract_format_reads_trailing_token():
+    assert Crawler._extract_format("Sound Signal Serenades (LP)") == "LP"
+    assert Crawler._extract_format('Split Single (7")') == '7"'
+    assert Crawler._extract_format('Deep Cut (12")') == '12"'
+    assert Crawler._extract_format('Rarity (10")') == '10"'
+    assert Crawler._extract_format("Old Shellac (78)") == "78"
+
+
+def test_extract_format_keeps_bracketed_variant_before_token():
+    assert Crawler._extract_format('Louder Now [Coke Bottle Clear + 7"] (LP)') == "LP"
+
+
+def test_extract_format_defaults_to_vinyl_without_a_known_token():
+    assert Crawler._extract_format("Untitled") == "Vinyl"
+    assert Crawler._extract_format("Some Record (Deluxe)") == "Vinyl"
+    # A CD-suffixed title should never reach here (the request filters CD out),
+    # but it must not be reported as a CD if it does.
+    assert Crawler._extract_format("Loosen Up (CD)") == "Vinyl"
