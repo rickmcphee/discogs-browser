@@ -337,3 +337,47 @@ async def test_crawl_catalog_warns_when_a_page_comes_back_short(fake_page, caplo
     # in the window and is not expected to be full.
     assert len(short_page_warnings) == 4
     assert "page 1" in short_page_warnings[0].getMessage()
+
+
+async def test_crawl_catalog_raises_on_unexpected_payload_shape(browser_page, window_pages):
+    # A renamed or missing "data" key must fail loudly. Silently yielding zero rows
+    # would let replace_stock_items() DELETE the whole prior batch and replace it
+    # with nothing.
+    broken = dict(window_pages)
+    broken["1"] = {"total": 150}
+    page = _FakePage(browser_page, broken)
+
+    with pytest.raises(Exception, match="unexpected cds_and_vinyl.php payload shape"):
+        [item async for item in Crawler().crawl_catalog(page)]
+
+
+async def test_crawl_catalog_collapses_whitespace_in_title_and_artist(browser_page):
+    spaced_row = (
+        '<tr><td class="track-title-cell group">'
+        '<div class="search-thumb"><a href="/spaced-out-lp-someone/albums/8888001/">'
+        '<img src="https://www.amoeba.com/sized-images/so.jpg" alt="" /></a></div>'
+        '<div class="search-deets"><p>'
+        '<a href="/spaced-out-lp-someone/albums/8888001/" class="table_bold">'
+        "\n   Spaced   Out\n   (LP)\n"
+        "</a></p></div></td>"
+        '<td><p><a href="/someone/artist/9999" class="table_bold">'
+        "\n   Some   One\n"
+        "</a></p></td>"
+        "<td><p>08/07/2026</p></td>"
+        '<td><img src="https://www.amoeba.com/uploads/format-icons/CD.png" alt="Vinyl" /></td>'
+        '<td><span class="price"><span class="small mr5">$9.99</span></span></td></tr>'
+    )
+    pages = {
+        "1": {"total": 150, "data": spaced_row},
+        "2": {"total": 150, "data": ""},
+        "3": {"total": 150, "data": ""},
+        "4": {"total": 150, "data": ""},
+        "5": {"total": 150, "data": ""},
+    }
+    page = _FakePage(browser_page, pages)
+
+    items = [item async for item in Crawler().crawl_catalog(page)]
+
+    assert len(items) == 1
+    assert items[0]["title"] == "Spaced Out (LP)"
+    assert items[0]["artist"] == "Some One"
