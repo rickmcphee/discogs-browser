@@ -177,7 +177,23 @@ UPDATE users SET is_admin = true WHERE discogs_username = '<your-discogs-usernam
 
 ```bash
 cd backend
+TEST_DATABASE_URL="postgresql://postgres:postgres@localhost:5432/discogs_browser_test" \
+IDENTITY_DB_PASSWORD=test \
+APP_DB_PASSWORD=test \
 pytest
 ```
+
+The passwords are arbitrary local test values, not real secrets. The database
+named in `TEST_DATABASE_URL` is never itself read from or written to —
+each pytest session provisions its own `<base>_run_<hex>` database from
+`TEMPLATE template0`, runs entirely inside that database, and drops it on
+teardown. `TEST_DATABASE_URL` only supplies connection details (host, port,
+credentials), so its role needs `CREATEDB` and access to the `postgres`
+maintenance database to create and drop the per-run database; the local
+Docker `postgres` superuser and CI's `postgres` user both already qualify.
+
+If a run crashes before teardown, its per-run database (and possibly a
+poisoned `app_user` role) can be left behind — run `make test-db-clean` to
+drop leaked `_run_*` databases and repair the role.
 
 HTML fixtures for the Amazon price extraction regression tests live in `backend/tests/fixtures/crawlers/amazon/`. New fixtures can be captured using `backend/scripts/capture_fixture.py`.
