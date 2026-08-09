@@ -20,8 +20,9 @@ _VINYL_FORMAT_IDS = (3, 4, 17, 19, 21)
 # values are honoured server-side but are outside that contract -- if one were
 # ever clamped, a single show=1000 request would silently yield 200 items
 # instead of 1000 rather than failing. Capping at 200 keeps a short page
-# detectable: Task 7's len(rows) < _PAGE_SIZE warning relies on that gap to
-# fail loudly instead of silently under-collecting.
+# detectable: crawl_catalog() warns when a page yields fewer than _PAGE_SIZE
+# rows, which only distinguishes a clamped show= from a genuinely short page
+# while a full page is expected to be exactly this size.
 _PAGE_SIZE = 200
 
 # _PAGE_SIZE * _WINDOW_PAGES == 1000, the window size the design spec chose.
