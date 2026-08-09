@@ -12,6 +12,7 @@ interface Props {
   onToggleViewAsUser?: () => void
   onRefreshRecommendations?: () => void
   onExportRecommendations?: () => void
+  onImportRecommendations?: (file: File) => void
   onClearRecommendations?: () => void
   hasJudgedItems?: boolean
 }
@@ -24,10 +25,12 @@ function Account({
   onToggleViewAsUser = () => {},
   onRefreshRecommendations = () => {},
   onExportRecommendations = () => {},
+  onImportRecommendations = () => {},
   onClearRecommendations = () => {},
   hasJudgedItems = false,
 }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const importInputRef = useRef<HTMLInputElement>(null)
   const skipNextAutoSave = useRef(true)
   const saveChainRef = useRef<Promise<void>>(Promise.resolve())
   const latestSaveSeq = useRef(0)
@@ -128,6 +131,14 @@ function Account({
     } finally {
       setAvatarBusy(false)
     }
+  }
+
+  const handleImportFileSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    // Reset before handing the file off, so selecting the same file twice in
+    // a row still fires a change event.
+    e.target.value = ''
+    if (file) onImportRecommendations(file)
   }
 
   async function handleRemovePhoto() {
@@ -292,7 +303,37 @@ function Account({
                 </button>
               </td>
               <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
-                Download recommended Store items as CSV (artist, title, format, price, source, link, reason).
+                Download every judgment — recommended and not — as CSV (artist, title, format,
+                price, source, link, reason, item_key, recommended, judged_at). Keep it as a
+                backup: it can be imported here or into another instance without paying to
+                re-evaluate.
+              </td>
+            </tr>
+            <tr className="border-b border-gray-800/50">
+              <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
+              <td className="py-3 pr-4 text-left align-top">
+                <input
+                  ref={importInputRef}
+                  data-testid="recommendations-import-input"
+                  type="file"
+                  accept=".csv,text/csv"
+                  className="hidden"
+                  onChange={handleImportFileSelected}
+                />
+                <button
+                  onClick={() => importInputRef.current?.click()}
+                  className={`w-20 text-center px-3 py-1 text-xs disabled:opacity-50 ${secondaryButtonClass()}`}
+                >
+                  Import
+                </button>
+              </td>
+              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                Load a recommendations CSV exported from this or another instance, so judgments
+                you already paid for aren't re-evaluated. Each item keeps whichever verdict was
+                judged most recently. Imported items that aren't in stock right now take effect
+                the next time a Store sync sees them. Judgments reflect the taste of the
+                collection they were made against, so a file from someone else carries their
+                preferences, not yours.
               </td>
             </tr>
             <tr>

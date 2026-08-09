@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import App from '../App'
+import { importRecommendationsCsv } from '../api/client'
 import type { Release } from '../api/types'
 
 class MockEventSource {
@@ -66,6 +67,7 @@ vi.mock('../api/client', () => ({
   postStockSyncStart: vi.fn().mockResolvedValue({ started: true, running: true }),
   postJudgmentStart: vi.fn().mockResolvedValue({ started: true, running: true }),
   getJudgmentStatus: vi.fn().mockResolvedValue({ any_judged: false }),
+  importRecommendationsCsv: vi.fn(),
 }))
 
 function getLastCrawlSource() {
@@ -197,5 +199,23 @@ describe('crawl status bar', () => {
 
     await waitFor(() => expect(screen.getByRole('button', { name: 'Collection' })).toBeInTheDocument())
     expect(screen.queryByText('Done')).not.toBeInTheDocument()
+  })
+})
+
+describe('recommendations import', () => {
+  it('shows a clean error message (not raw JSON) when the import fails', async () => {
+    vi.mocked(importRecommendationsCsv).mockRejectedValueOnce(
+      new Error(JSON.stringify({ detail: 'Missing required column(s): item_key.' }))
+    )
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Profile' }))
+    const file = new File(['artist,title\n'], 'recommendations.csv', { type: 'text/csv' })
+    const input = screen.getByTestId('recommendations-import-input') as HTMLInputElement
+    fireEvent.change(input, { target: { files: [file] } })
+
+    await waitFor(() =>
+      expect(screen.getByText('Import recommendations failed: Missing required column(s): item_key.')).toBeInTheDocument()
+    )
+    expect(screen.queryByText(/"detail"/)).not.toBeInTheDocument()
   })
 })

@@ -404,4 +404,35 @@ describe('Account', () => {
     await waitFor(() => expect(saveUserSettings).toHaveBeenCalledTimes(2), { timeout: 2000 })
     expect(screen.queryByText('stale save failed')).not.toBeInTheDocument()
   })
+
+  it('renders Import between Export and Clear', async () => {
+    render(<Account avatarVersion={0} onAvatarChange={() => {}} hasJudgedItems={true} />)
+    await screen.findByRole('button', { name: 'Export' })
+    const labels = screen.getAllByRole('button')
+      .map((b) => b.textContent)
+      .filter((t) => t === 'Refresh' || t === 'Export' || t === 'Import' || t === 'Clear')
+    expect(labels).toEqual(['Refresh', 'Export', 'Import', 'Clear'])
+  })
+
+  it('enables Import even when nothing has been judged yet', () => {
+    render(<Account avatarVersion={0} onAvatarChange={() => {}} hasJudgedItems={false} />)
+    expect(screen.getByRole('button', { name: 'Import' })).toBeEnabled()
+  })
+
+  it('passes the selected file to onImportRecommendations and clears the input', async () => {
+    const onImportRecommendations = vi.fn()
+    render(
+      <Account
+        avatarVersion={0}
+        onAvatarChange={() => {}}
+        onImportRecommendations={onImportRecommendations}
+      />,
+    )
+    const file = new File(['artist,title\n'], 'recommendations.csv', { type: 'text/csv' })
+    const input = screen.getByTestId('recommendations-import-input') as HTMLInputElement
+    fireEvent.change(input, { target: { files: [file] } })
+    await waitFor(() => expect(onImportRecommendations).toHaveBeenCalledWith(file))
+    // Cleared so re-picking the same file fires change again.
+    expect(input.value).toBe('')
+  })
 })

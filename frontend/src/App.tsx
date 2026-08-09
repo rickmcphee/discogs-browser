@@ -8,7 +8,7 @@ import LoginScreen from './views/LoginScreen'
 import InviteCodeScreen from './views/InviteCodeScreen'
 import Avatar from './components/Avatar'
 import { navButtonClass, primaryButtonClass, secondaryButtonClass, dismissButtonClass } from './styles/buttons'
-import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, clearJudgments, exportRecommendationsCsv, getCrawlers, getUserSettings, getJudgmentStatus, checkHealth, getAuthStatus, setUnauthorizedHandler, hasAvatar } from './api/client'
+import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, clearJudgments, exportRecommendationsCsv, importRecommendationsCsv, getCrawlers, getUserSettings, getJudgmentStatus, checkHealth, getAuthStatus, setUnauthorizedHandler, hasAvatar } from './api/client'
 import type { CrawlEvent, CrawlStatus, CollectionStatus, Crawler, AuthStatus } from './api/types'
 
 type View = 'collection' | 'wantlist' | 'store' | 'track' | 'settings' | 'logs' | 'account'
@@ -364,6 +364,35 @@ export default function App() {
     }
   }, [setSyncStatus])
 
+  const handleImportRecommendations = useCallback(async (file: File) => {
+    try {
+      const r = await importRecommendationsCsv(file)
+      if (r.running) {
+        setSyncStatus('Cannot import recommendations while a sync or recommendation run is in progress')
+        return
+      }
+      const applied = r.imported + r.updated
+      const parts = [
+        `Imported ${applied} judgment${applied === 1 ? '' : 's'}`,
+        `${r.unchanged} already current`,
+        `${r.matched_stock_items} match items in stock now — the rest apply as items appear`,
+      ]
+      if (r.skipped > 0) parts.push(`${r.skipped} row${r.skipped === 1 ? '' : 's'} skipped`)
+      setSyncStatus(`${parts.join('; ')}.`)
+      const status = await getJudgmentStatus()
+      setHasJudgedItems(status.any_judged)
+    } catch (e: any) {
+      let message = e.message || 'Import failed'
+      try {
+        const parsed = JSON.parse(e.message)
+        if (parsed.detail) message = parsed.detail
+      } catch {
+        // not JSON, use raw message
+      }
+      setSyncStatus(`Import recommendations failed: ${message}`)
+    }
+  }, [setSyncStatus])
+
   const handleClearRecommendations = useCallback(async () => {
     if (!window.confirm('Clear all recommendations? This removes every recommended and not-recommended judgment from the database — every Store item will need to be re-evaluated from scratch, which costs Anthropic API calls to redo.')) {
       return
@@ -535,6 +564,7 @@ export default function App() {
             onToggleViewAsUser={toggleViewAsUser}
             onRefreshRecommendations={handleRefreshRecommendations}
             onExportRecommendations={handleExportRecommendations}
+            onImportRecommendations={handleImportRecommendations}
             onClearRecommendations={handleClearRecommendations}
             hasJudgedItems={hasJudgedItems}
           />
