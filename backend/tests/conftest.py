@@ -33,12 +33,31 @@ def _with_database(url, dbname):
 # test_app_identity_role_has_bypassrls passes with the ALTER ROLE deleted.
 _POISONED_BYPASSRLS = {"app_user": "BYPASSRLS", "app_identity": "NOBYPASSRLS"}
 
+# What db._ensure_role sets, i.e. what teardown puts back. Both roles, not just
+# app_user: a session that never reaches init_tenant_schema() (running only
+# crawler-parsing tests, say) would otherwise leave app_identity inverted in the
+# cluster with no repair path. Passwords are deliberately not restored -- the
+# correct value is whatever IDENTITY_DB_PASSWORD/APP_DB_PASSWORD held, and the
+# next init_tenant_schema() rewrites them anyway.
+_CORRECT_BYPASSRLS = {"app_user": "NOBYPASSRLS", "app_identity": "BYPASSRLS"}
 
-def _poison_app_roles(conn):
-    """Invert the attributes db._ensure_role owns. Returns each role's
+
+def _set_bypassrls(conn, roles, wanted):
+    for role, bypass in wanted.items():
+        if roles.get(role) is None:
+            continue
+        conn.execute(
+            sql.SQL("ALTER ROLE {} {}").format(sql.Identifier(role), sql.SQL(bypass))
+        )
+
+
+def _poison_app_roles(conn, observed):
+    """Invert the attributes db._ensure_role owns, recording each role's
     rolbypassrls as actually read back after poisoning, or None for a role
-    absent from the cluster (a fresh CI cluster has nothing to poison)."""
-    observed = {}
+    absent from the cluster (a fresh CI cluster has nothing to poison).
+
+    Fills a dict the caller owns rather than returning one, so that a failure
+    partway through still leaves the caller able to un-poison what did land."""
     for role, bypass in _POISONED_BYPASSRLS.items():
         if conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", [role]).fetchone() is None:
             observed[role] = None
@@ -51,7 +70,6 @@ def _poison_app_roles(conn):
         observed[role] = conn.execute(
             "SELECT rolbypassrls FROM pg_roles WHERE rolname = %s", [role]
         ).fetchone()[0]
-    return observed
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -70,7 +88,16 @@ def pg_run_database():
     TENANT_SCHEMA silently relies on, which fails ~88 tests. See
     docs/specifications/shaping/2026-08-09-test-database-freshness-design.md.
     """
-    base_url = os.environ["TEST_DATABASE_URL"]
+    base_url = os.environ.get("TEST_DATABASE_URL")
+    if not base_url:
+        # Most test files never touch Postgres, and this fixture is autouse --
+        # provisioning unconditionally would make a running database with
+        # CREATEDB a precondition for the crawler-parsing tests too. Yield None
+        # instead and let pg_test_db raise for the files that genuinely need it,
+        # exactly as it did before this fixture existed.
+        yield None
+        return
+
     base_name = urlsplit(base_url).path.lstrip("/")
     run_name = f"{base_name}_run_{uuid.uuid4().hex[:8]}"
     maintenance_url = _with_database(base_url, "postgres")
@@ -87,42 +114,47 @@ def pg_run_database():
                 "the role in TEST_DATABASE_URL needs CREATEDB to provision the "
                 f"per-run test database {run_name}"
             ) from exc
-        roles = _poison_app_roles(conn)
 
     run_url = _with_database(base_url, run_name)
-    os.environ["TEST_DATABASE_URL"] = run_url
-    with psycopg.connect(run_url) as conn:
-        tables_at_start = conn.execute(
-            "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'"
-        ).fetchone()[0]
+    roles = {}
+    try:
+        with psycopg.connect(maintenance_url, autocommit=True) as conn:
+            _poison_app_roles(conn, roles)
+        os.environ["TEST_DATABASE_URL"] = run_url
+        with psycopg.connect(run_url) as conn:
+            tables_at_start = conn.execute(
+                "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'"
+            ).fetchone()[0]
 
-    yield {
-        "database": run_name,
-        "base_database": base_name,
-        "tables_at_start": tables_at_start,
-        "app_user_bypassrls_at_start": roles["app_user"],
-        "app_identity_bypassrls_at_start": roles["app_identity"],
-    }
-
-    for attr in ("_admin_pool", "_identity_pool", "_app_pool"):
-        pool = getattr(db, attr)
-        if pool is not None:
-            pool.close()
-        setattr(db, attr, None)
-    os.environ["TEST_DATABASE_URL"] = base_url
-    with psycopg.connect(maintenance_url, autocommit=True) as conn:
-        # FORCE so a pool connection that outlived the loop above cannot
-        # block the drop and leak the database.
-        conn.execute(
-            sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(
-                sql.Identifier(run_name)
+        yield {
+            "database": run_name,
+            "base_database": base_name,
+            "tables_at_start": tables_at_start,
+            "app_user_bypassrls_at_start": roles.get("app_user"),
+            "app_identity_bypassrls_at_start": roles.get("app_identity"),
+        }
+    finally:
+        # finally, not straight-line code: poisoning needs undoing and the
+        # database needs dropping even when setup raised between CREATE DATABASE
+        # and yield (ALTER ROLE ... BYPASSRLS needs superuser, so a CREATEDB-only
+        # admin role fails there -- see db.py's note above init_tenant_schema).
+        for attr in ("_admin_pool", "_identity_pool", "_app_pool"):
+            pool = getattr(db, attr)
+            if pool is not None:
+                pool.close()
+            setattr(db, attr, None)
+        os.environ["TEST_DATABASE_URL"] = base_url
+        with psycopg.connect(maintenance_url, autocommit=True) as conn:
+            # Roles first: a failing DROP must not skip un-poisoning, or a
+            # cluster role is left holding an attribute it should never keep.
+            _set_bypassrls(conn, roles, _CORRECT_BYPASSRLS)
+            # FORCE so a pool connection that outlived the loop above cannot
+            # block the drop and leak the database.
+            conn.execute(
+                sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(
+                    sql.Identifier(run_name)
+                )
             )
-        )
-        # A crash between poisoning and _ensure_role's correction would
-        # otherwise leave a cluster role holding BYPASSRLS. scripts/
-        # drop_leaked_test_dbs.py repairs that case; this covers normal exits.
-        if roles["app_user"] is not None:
-            conn.execute(sql.SQL("ALTER ROLE {} NOBYPASSRLS").format(sql.Identifier("app_user")))
 
 
 @pytest.fixture

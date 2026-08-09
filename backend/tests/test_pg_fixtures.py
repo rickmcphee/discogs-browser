@@ -11,7 +11,18 @@ exactly the vacuity being fixed.
 """
 import re
 
+import pytest
+
 import db
+
+
+# Skipping rather than passing when TEST_DATABASE_URL is unset is safe here: in
+# that case pg_test_db raises for all 28 Postgres-backed test files, so a run
+# that lost the variable can never look green.
+@pytest.fixture(autouse=True)
+def _require_run_database(pg_run_database):
+    if pg_run_database is None:
+        pytest.skip("TEST_DATABASE_URL unset; no per-run database was provisioned")
 
 
 def test_session_runs_against_its_own_database(pg_run_database, pg_test_db):
