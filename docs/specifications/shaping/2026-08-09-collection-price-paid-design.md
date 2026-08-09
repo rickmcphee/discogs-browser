@@ -55,8 +55,10 @@ change that).
 - **`Cost`/`Price` naming.** `Cost` = what the store or comparison site
   charges now (the renamed existing column). `Price` = what the Discogs
   custom field says the user paid, matching the Discogs tab's existing
-  label for the same underlying value. Column order: `Format → Cost →
-  Price → Source`, so the "costs now" and "paid" numbers sit adjacent.
+  label for the same underlying value. Column order: `Format → Price →
+  Cost → Source` (amended after initial implementation — `Price` sits
+  before `Cost` so `Cost` reads adjacent to `Source`, which visually
+  reads better than the reverse).
 - **`Price` column is Collection-only.** Store items aren't guaranteed to
   match anything in the user's collection, so the column would be blank for
   most rows there; Collection's whole premise is "these are all owned," so
@@ -169,8 +171,9 @@ arbitrary strings validated server-side.
 
 - The existing `Price` header/cell (currently sortable on `'price'`)
   becomes `Cost`, no behavior change beyond the label.
-- A new `Price` column, header + cell, inserted between `Cost` and
-  `Source`, rendered only when `scope === 'collection'`:
+- A new `Price` column, header + cell, inserted between `Format` and
+  `Cost` (amended post-implementation — see Decisions above), rendered
+  only when `scope === 'collection'`:
   ```tsx
   {scope === 'collection' && (
     <th className="text-center" aria-sort={sort === 'discogs_price' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}>

@@ -238,11 +238,6 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
                     Format {sort === 'format' ? (order === 'asc' ? '↑' : '↓') : ''}
                   </button>
                 </th>
-                <th className="text-center" aria-sort={sort === 'price' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}>
-                  <button type="button" onClick={() => toggleSort('price')} className={`${sortButtonClass} text-center`}>
-                    Cost {sort === 'price' ? (order === 'asc' ? '↑' : '↓') : ''}
-                  </button>
-                </th>
                 {scope === 'collection' && (
                   <th className="text-center" aria-sort={sort === 'discogs_price' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}>
                     <button type="button" onClick={() => toggleSort('discogs_price')} className={`${sortButtonClass} text-center`}>
@@ -250,6 +245,11 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
                     </button>
                   </th>
                 )}
+                <th className="text-center" aria-sort={sort === 'price' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                  <button type="button" onClick={() => toggleSort('price')} className={`${sortButtonClass} text-center`}>
+                    Cost {sort === 'price' ? (order === 'asc' ? '↑' : '↓') : ''}
+                  </button>
+                </th>
                 <th className="px-3 py-2 text-center normal-case">Source</th>
               </tr>
             </thead>
@@ -281,14 +281,14 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
                   <td className="px-3 py-2 text-right text-gray-200" title={item.reason ?? undefined}>{item.artist}</td>
                   <td className="px-3 py-2 text-left text-gray-300" title={item.reason ?? undefined}>{item.title}</td>
                   <td className="px-3 py-2 text-gray-400">{item.format ?? '—'}</td>
+                  {scope === 'collection' && (
+                    <td className="px-3 py-2 text-gray-400">{item.discogs_price ?? '—'}</td>
+                  )}
                   <td className="px-3 py-2">
                     <a href={item.url} target="_blank" rel="noreferrer" className="text-green-400 hover:text-green-300 font-medium">
                       {item.price != null ? `$${item.price.toFixed(2)}` : 'View'}
                     </a>
                   </td>
-                  {scope === 'collection' && (
-                    <td className="px-3 py-2 text-gray-400">{item.discogs_price ?? '—'}</td>
-                  )}
                   <td className="px-3 py-2 text-gray-400">{item.source}</td>
                 </tr>
               ))}
