@@ -299,7 +299,7 @@ full count.
 ### Import upsert
 
 ```python
-def import_stock_judgments(conn, user_id, judgments) -> tuple[int, int]:
+def import_stock_judgments(conn, user_id, judgments) -> tuple[int, int, list[str]]:
 ```
 
 One statement over parallel arrays, so the whole import is a single
@@ -317,17 +317,23 @@ ON CONFLICT (user_id, item_key) DO UPDATE SET
     reason      = EXCLUDED.reason,
     judged_at   = EXCLUDED.judged_at
 WHERE EXCLUDED.judged_at > stock_item_judgments.judged_at
-RETURNING (xmax = 0) AS inserted
+RETURNING (xmax = 0) AS inserted, item_key
 ```
 
 `xmax = 0` distinguishes a fresh insert from an update, giving
 `imported` / `updated` from one pass. Rows filtered out by the `WHERE` —
 those whose local judgment is already at least as new — return nothing, so
-`unchanged = len(judgments) - len(returned)`.
+`unchanged = len(judgments) - len(returned)`. The returned `item_key`s
+become `applied_keys`.
 
-`matched_stock_items` is a separate count of how many of the file's valid
-keys exist in local stock, which is what determines whether the user sees
-anything change:
+`matched_stock_items` counts how many of `applied_keys` — not the whole
+file's keys — exist in local stock. **Correction:** it originally counted
+across every parsed row, including `unchanged` ones. That double-counted
+already-current judgments whose item happened to be in stock, so a file of
+mostly-unchanged rows could report `matched_stock_items` exceeding what the
+import just applied — the opposite of what the count exists to tell the
+user. Scoping to `applied_keys` fixes it; on a fresh instance, where nothing
+is `unchanged`, the count is unaffected.
 
 ```sql
 SELECT COUNT(DISTINCT item_key) FROM stock_items WHERE item_key = ANY(%(keys)s)

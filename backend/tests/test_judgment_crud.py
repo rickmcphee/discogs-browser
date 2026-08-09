@@ -322,7 +322,7 @@ def test_import_counts_inserts_and_updates_separately(pg_test_db):
         conn.commit()
 
     with db.user_scope(alice["id"]) as conn:
-        imported, updated = db.import_stock_judgments(conn, alice["id"], [
+        imported, updated, applied_keys = db.import_stock_judgments(conn, alice["id"], [
             {"item_key": "a" * 64, "recommended": True, "reason": "r1",
              "judged_at": datetime(2026, 8, 1)},
             {"item_key": "b" * 64, "recommended": False, "reason": "r2",
@@ -330,13 +330,15 @@ def test_import_counts_inserts_and_updates_separately(pg_test_db):
         ])
         conn.commit()
         assert (imported, updated) == (2, 0)
+        assert sorted(applied_keys) == sorted(["a" * 64, "b" * 64])
 
-        imported, updated = db.import_stock_judgments(conn, alice["id"], [
+        imported, updated, applied_keys = db.import_stock_judgments(conn, alice["id"], [
             {"item_key": "a" * 64, "recommended": False, "reason": "newer",
              "judged_at": datetime(2026, 8, 9)},
         ])
         conn.commit()
         assert (imported, updated) == (0, 1)
+        assert applied_keys == ["a" * 64]
         row = conn.execute(
             "SELECT recommended, reason, judged_at FROM stock_item_judgments WHERE item_key = %s",
             ["a" * 64],
@@ -376,12 +378,13 @@ def test_import_leaves_a_newer_local_judgment_untouched(pg_test_db):
         ])
         conn.commit()
 
-        imported, updated = db.import_stock_judgments(conn, alice["id"], [
+        imported, updated, applied_keys = db.import_stock_judgments(conn, alice["id"], [
             {"item_key": "a" * 64, "recommended": False, "reason": "older file",
              "judged_at": datetime(2026, 8, 1)},
         ])
         conn.commit()
         assert (imported, updated) == (0, 0)
+        assert applied_keys == []
         row = conn.execute(
             "SELECT recommended, reason FROM stock_item_judgments WHERE item_key = %s",
             ["a" * 64],
@@ -398,9 +401,9 @@ def test_import_of_an_identical_timestamp_is_a_no_op(pg_test_db):
                 "judged_at": datetime(2026, 8, 9)}]
 
     with db.user_scope(alice["id"]) as conn:
-        assert db.import_stock_judgments(conn, alice["id"], payload) == (1, 0)
+        assert db.import_stock_judgments(conn, alice["id"], payload) == (1, 0, ["a" * 64])
         conn.commit()
-        assert db.import_stock_judgments(conn, alice["id"], payload) == (0, 0)
+        assert db.import_stock_judgments(conn, alice["id"], payload) == (0, 0, [])
         conn.commit()
 
 
@@ -409,7 +412,7 @@ def test_import_of_an_empty_payload_is_a_no_op(pg_test_db):
         alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
         conn.commit()
     with db.user_scope(alice["id"]) as conn:
-        assert db.import_stock_judgments(conn, alice["id"], []) == (0, 0)
+        assert db.import_stock_judgments(conn, alice["id"], []) == (0, 0, [])
 
 
 def test_import_does_not_touch_another_users_judgment_for_the_same_key(pg_test_db):
@@ -430,7 +433,7 @@ def test_import_does_not_touch_another_users_judgment_for_the_same_key(pg_test_d
         assert db.import_stock_judgments(conn, alice["id"], [
             {"item_key": shared_key, "recommended": False, "reason": "alice's",
              "judged_at": datetime(2026, 8, 9)},
-        ]) == (1, 0)
+        ]) == (1, 0, [shared_key])
         conn.commit()
 
     with db.get_admin_pool().connection() as conn:
@@ -453,3 +456,31 @@ def test_count_matching_stock_items_counts_only_keys_present_in_stock(pg_test_db
         assert db.count_matching_stock_items(conn, [item_key, "a" * 64]) == 1
         assert db.count_matching_stock_items(conn, ["a" * 64]) == 0
         assert db.count_matching_stock_items(conn, []) == 0
+
+
+def test_applied_keys_excludes_unchanged_rows_even_when_they_are_in_stock(pg_test_db):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        in_stock_key = _seed_stock_item(conn)
+        conn.commit()
+    new_key = "a" * 64
+
+    with db.user_scope(alice["id"]) as conn:
+        db.import_stock_judgments(conn, alice["id"], [
+            {"item_key": in_stock_key, "recommended": True, "reason": "local, newer",
+             "judged_at": datetime(2026, 8, 9)},
+        ])
+        conn.commit()
+
+        imported, updated, applied_keys = db.import_stock_judgments(conn, alice["id"], [
+            {"item_key": in_stock_key, "recommended": False, "reason": "older file",
+             "judged_at": datetime(2026, 8, 1)},
+            {"item_key": new_key, "recommended": True, "reason": "new",
+             "judged_at": datetime(2026, 8, 1)},
+        ])
+        conn.commit()
+
+        assert (imported, updated) == (1, 0)
+        assert applied_keys == [new_key]
+        assert db.count_matching_stock_items(conn, applied_keys) == 0
+        assert db.count_matching_stock_items(conn, [in_stock_key, new_key]) == 1

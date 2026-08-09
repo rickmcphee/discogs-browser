@@ -164,8 +164,8 @@ async def import_stock_judgments_endpoint(request: Request, file: UploadFile = F
         raise HTTPException(status_code=422, detail=str(e))
 
     with db.user_scope(user_id) as conn:
-        imported, updated = db.import_stock_judgments(conn, user_id, judgments)
-        matched = db.count_matching_stock_items(conn, [j["item_key"] for j in judgments])
+        imported, updated, applied_keys = db.import_stock_judgments(conn, user_id, judgments)
+        matched = db.count_matching_stock_items(conn, applied_keys)
         conn.commit()
 
     return {

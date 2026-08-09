@@ -1253,10 +1253,11 @@ def get_all_stock_judgments(conn, user_id: int) -> list[dict]:
     ).fetchall()
 
 
-def import_stock_judgments(conn, user_id: int, judgments: list[dict]) -> tuple[int, int]:
+def import_stock_judgments(conn, user_id: int, judgments: list[dict]) -> tuple[int, int, list[str]]:
     """Upsert imported judgments, newest judged_at winning. Returns
-    (inserted, updated); rows whose local judgment is already at least as new
-    are neither, and are the caller's `unchanged`.
+    (inserted, updated, applied_keys); rows whose local judgment is already
+    at least as new are neither, are the caller's `unchanged`, and their
+    keys are excluded from applied_keys.
 
     Deliberately not upsert_stock_judgments: that one stamps
     judged_at = CURRENT_TIMESTAMP, which would erase the imported timestamps,
@@ -1267,7 +1268,7 @@ def import_stock_judgments(conn, user_id: int, judgments: list[dict]) -> tuple[i
     a statement whose ON CONFLICT target appears twice.
     """
     if not judgments:
-        return (0, 0)
+        return (0, 0, [])
     rows = conn.execute(
         """
         INSERT INTO stock_item_judgments (user_id, item_key, recommended, reason, judged_at)
@@ -1281,7 +1282,7 @@ def import_stock_judgments(conn, user_id: int, judgments: list[dict]) -> tuple[i
             reason      = EXCLUDED.reason,
             judged_at   = EXCLUDED.judged_at
         WHERE EXCLUDED.judged_at > stock_item_judgments.judged_at
-        RETURNING (xmax = 0) AS inserted
+        RETURNING (xmax = 0) AS inserted, item_key
         """,
         {
             "user_id": user_id,
@@ -1293,13 +1294,15 @@ def import_stock_judgments(conn, user_id: int, judgments: list[dict]) -> tuple[i
     ).fetchall()
     # xmax = 0 marks a row this statement inserted rather than updated.
     inserted = sum(1 for r in rows if r["inserted"])
-    return (inserted, len(rows) - inserted)
+    applied_keys = [r["item_key"] for r in rows]
+    return (inserted, len(rows) - inserted, applied_keys)
 
 
 def count_matching_stock_items(conn, item_keys: list[str]) -> int:
-    """How many of these keys are in stock right now. The Recommended filter
-    inner-joins stock_items, so this is what decides whether an import
-    changes anything the user can see yet.
+    """How many of these keys are in stock right now. Callers must pass only
+    the keys an import actually applied, not the whole parsed file -- the
+    Recommended filter inner-joins stock_items, so this is what decides
+    whether an import changes anything the user can see yet.
     """
     if not item_keys:
         return 0

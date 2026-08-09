@@ -589,6 +589,34 @@ def test_import_reports_counts_and_stock_matches(pg_test_db, authed_client_facto
     }
 
 
+def test_import_reports_zero_matches_when_only_unchanged_rows_are_in_stock(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    # _seed_judged_item stamps the local judgment at CURRENT_TIMESTAMP, so a
+    # file dated 2020 is strictly older and the row is left unchanged.
+    in_stock_key = _seed_judged_item(alice["id"])
+    new_key = "c" * 64
+
+    header = "artist,title,format,price,source,link,reason,item_key,recommended,judged_at"
+    csv_text = "\n".join([
+        header,
+        f"A,B,,,,,already current,{in_stock_key},true,2020-01-01T00:00:00",
+        f"C,D,,,,,never seen here,{new_key},false,2020-01-01T00:00:00",
+    ]) + "\n"
+
+    client = authed_client_factory(alice["id"])
+    r = client.post(
+        "/api/stock/import",
+        files={"file": ("recommendations.csv", csv_text, "text/csv")},
+        headers={"X-Requested-With": "fetch"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert (body["imported"], body["updated"], body["unchanged"]) == (1, 0, 1)
+    assert body["matched_stock_items"] == 0
+
+
 def test_import_rejects_a_bad_header_with_422(pg_test_db, authed_client_factory):
     with db.get_admin_pool().connection() as conn:
         alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
