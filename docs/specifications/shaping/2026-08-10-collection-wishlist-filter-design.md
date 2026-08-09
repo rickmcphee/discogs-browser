@@ -124,7 +124,13 @@ Out of scope:
   there's no conditional column rendering and no filter-dependent
   `colCount`. Hiding the column under the Wantlist filter was considered
   and rejected: it would make the header row shift as the filter changes,
-  for a cosmetic gain.
+  for a cosmetic gain. Its *sort header*, however, goes plain text under
+  the Wantlist filter — no button, no `aria-sort`, no handler — because the
+  collection-pinned sort expression degrades to artist order there (see
+  "Sort"), and a control that silently reorders by something other than
+  what it names is worse than no control. Switching to Wantlist while
+  already sorted by `discogs_price` resets the sort to `artist`/`asc`
+  rather than keeping a sort the backend will ignore.
 - **The price lookup is not widened to wantlist matches.** `catalog` is
   global — keyed on `discogs_id` alone, no `user_id` (`backend/db.py:58`)
   — so a wantlist row's `catalog.discogs_price` may hold *another user's*
@@ -250,7 +256,13 @@ else:
 
 Under the Wantlist filter every value the expression produces is `NULL`,
 so the sort is a harmless no-op (all rows tie and fall to the NULL-last
-branch) rather than a case needing its own gate. `_STOCK_ALLOWED_SORT`
+branch) rather than a case needing its own gate. Harmless on the wire, but
+not something to offer as a control: the frontend hides the Price sort
+header under that filter instead (see "Frontend design"). As implemented,
+the backend gate is membership-based rather than the `is not None` above —
+`library_scope=all` includes `in_collection`, so it sorts; `wishlist`
+does not — which is why the frontend gate keys on the Wantlist filter
+specifically rather than on "any library scope." `_STOCK_ALLOWED_SORT`
 still deliberately excludes `"discogs_price"`, for the reason given in
 `2026-08-09-collection-price-paid-design.md`: it's what makes a Store-tab
 request for that sort fall back to `artist` instead of resolving to a
