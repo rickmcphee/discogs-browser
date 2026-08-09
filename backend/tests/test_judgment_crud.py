@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import pytest
 
 import db
@@ -312,3 +314,142 @@ def test_all_judgments_multi_crawler_tie_break_is_deterministic(pg_test_db):
 
     assert len(rows) == 1
     assert rows[0]["source"] == "Amazon"
+
+
+def test_import_counts_inserts_and_updates_separately(pg_test_db):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        imported, updated = db.import_stock_judgments(conn, alice["id"], [
+            {"item_key": "a" * 64, "recommended": True, "reason": "r1",
+             "judged_at": datetime(2026, 8, 1)},
+            {"item_key": "b" * 64, "recommended": False, "reason": "r2",
+             "judged_at": datetime(2026, 8, 1)},
+        ])
+        conn.commit()
+        assert (imported, updated) == (2, 0)
+
+        imported, updated = db.import_stock_judgments(conn, alice["id"], [
+            {"item_key": "a" * 64, "recommended": False, "reason": "newer",
+             "judged_at": datetime(2026, 8, 9)},
+        ])
+        conn.commit()
+        assert (imported, updated) == (0, 1)
+        row = conn.execute(
+            "SELECT recommended, reason, judged_at FROM stock_item_judgments WHERE item_key = %s",
+            ["a" * 64],
+        ).fetchone()
+    assert row["recommended"] is False
+    assert row["reason"] == "newer"
+    assert row["judged_at"] == datetime(2026, 8, 9)
+
+
+def test_import_preserves_the_files_judged_at_rather_than_stamping_now(pg_test_db):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        db.import_stock_judgments(conn, alice["id"], [
+            {"item_key": "a" * 64, "recommended": True, "reason": None,
+             "judged_at": datetime(2020, 1, 2, 3, 4, 5)},
+        ])
+        conn.commit()
+        row = conn.execute(
+            "SELECT judged_at, reason FROM stock_item_judgments WHERE item_key = %s", ["a" * 64]
+        ).fetchone()
+    assert row["judged_at"] == datetime(2020, 1, 2, 3, 4, 5)
+    assert row["reason"] is None
+
+
+def test_import_leaves_a_newer_local_judgment_untouched(pg_test_db):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        db.import_stock_judgments(conn, alice["id"], [
+            {"item_key": "a" * 64, "recommended": True, "reason": "local",
+             "judged_at": datetime(2026, 8, 9)},
+        ])
+        conn.commit()
+
+        imported, updated = db.import_stock_judgments(conn, alice["id"], [
+            {"item_key": "a" * 64, "recommended": False, "reason": "older file",
+             "judged_at": datetime(2026, 8, 1)},
+        ])
+        conn.commit()
+        assert (imported, updated) == (0, 0)
+        row = conn.execute(
+            "SELECT recommended, reason FROM stock_item_judgments WHERE item_key = %s",
+            ["a" * 64],
+        ).fetchone()
+    assert row["recommended"] is True
+    assert row["reason"] == "local"
+
+
+def test_import_of_an_identical_timestamp_is_a_no_op(pg_test_db):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    payload = [{"item_key": "a" * 64, "recommended": True, "reason": "r",
+                "judged_at": datetime(2026, 8, 9)}]
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.import_stock_judgments(conn, alice["id"], payload) == (1, 0)
+        conn.commit()
+        assert db.import_stock_judgments(conn, alice["id"], payload) == (0, 0)
+        conn.commit()
+
+
+def test_import_of_an_empty_payload_is_a_no_op(pg_test_db):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    with db.user_scope(alice["id"]) as conn:
+        assert db.import_stock_judgments(conn, alice["id"], []) == (0, 0)
+
+
+def test_import_does_not_touch_another_users_judgment_for_the_same_key(pg_test_db):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        bob = db.create_user(conn, discogs_user_id=2, discogs_username="bob")
+        conn.commit()
+    shared_key = "a" * 64
+
+    with db.user_scope(bob["id"]) as conn:
+        db.import_stock_judgments(conn, bob["id"], [
+            {"item_key": shared_key, "recommended": True, "reason": "bob's",
+             "judged_at": datetime(2026, 8, 1)},
+        ])
+        conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.import_stock_judgments(conn, alice["id"], [
+            {"item_key": shared_key, "recommended": False, "reason": "alice's",
+             "judged_at": datetime(2026, 8, 9)},
+        ]) == (1, 0)
+        conn.commit()
+
+    with db.get_admin_pool().connection() as conn:
+        rows = conn.execute(
+            "SELECT user_id, reason FROM stock_item_judgments WHERE item_key = %s ORDER BY user_id",
+            [shared_key],
+        ).fetchall()
+    assert [(r["user_id"], r["reason"]) for r in rows] == [
+        (alice["id"], "alice's"), (bob["id"], "bob's"),
+    ]
+
+
+def test_count_matching_stock_items_counts_only_keys_present_in_stock(pg_test_db):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        item_key = _seed_stock_item(conn)
+        conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.count_matching_stock_items(conn, [item_key, "a" * 64]) == 1
+        assert db.count_matching_stock_items(conn, ["a" * 64]) == 0
+        assert db.count_matching_stock_items(conn, []) == 0

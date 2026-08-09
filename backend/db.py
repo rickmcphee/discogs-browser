@@ -1253,6 +1253,62 @@ def get_all_stock_judgments(conn, user_id: int) -> list[dict]:
     ).fetchall()
 
 
+def import_stock_judgments(conn, user_id: int, judgments: list[dict]) -> tuple[int, int]:
+    """Upsert imported judgments, newest judged_at winning. Returns
+    (inserted, updated); rows whose local judgment is already at least as new
+    are neither, and are the caller's `unchanged`.
+
+    Deliberately not upsert_stock_judgments: that one stamps
+    judged_at = CURRENT_TIMESTAMP, which would erase the imported timestamps,
+    break newest-wins on the next round-trip, and make every imported row
+    look freshly judged.
+
+    Callers must have collapsed duplicate item_keys first -- Postgres rejects
+    a statement whose ON CONFLICT target appears twice.
+    """
+    if not judgments:
+        return (0, 0)
+    rows = conn.execute(
+        """
+        INSERT INTO stock_item_judgments (user_id, item_key, recommended, reason, judged_at)
+        SELECT %(user_id)s, k, r, rs, ja
+        FROM unnest(
+            %(keys)s::text[], %(recommended)s::boolean[],
+            %(reasons)s::text[], %(judged_at)s::timestamp[]
+        ) AS t(k, r, rs, ja)
+        ON CONFLICT (user_id, item_key) DO UPDATE SET
+            recommended = EXCLUDED.recommended,
+            reason      = EXCLUDED.reason,
+            judged_at   = EXCLUDED.judged_at
+        WHERE EXCLUDED.judged_at > stock_item_judgments.judged_at
+        RETURNING (xmax = 0) AS inserted
+        """,
+        {
+            "user_id": user_id,
+            "keys": [j["item_key"] for j in judgments],
+            "recommended": [j["recommended"] for j in judgments],
+            "reasons": [j.get("reason") for j in judgments],
+            "judged_at": [j["judged_at"] for j in judgments],
+        },
+    ).fetchall()
+    # xmax = 0 marks a row this statement inserted rather than updated.
+    inserted = sum(1 for r in rows if r["inserted"])
+    return (inserted, len(rows) - inserted)
+
+
+def count_matching_stock_items(conn, item_keys: list[str]) -> int:
+    """How many of these keys are in stock right now. The Recommended filter
+    inner-joins stock_items, so this is what decides whether an import
+    changes anything the user can see yet.
+    """
+    if not item_keys:
+        return 0
+    return conn.execute(
+        "SELECT COUNT(DISTINCT item_key) FROM stock_items WHERE item_key = ANY(%(keys)s)",
+        {"keys": item_keys},
+    ).fetchone()["count"]
+
+
 def get_missing_releases(conn, user_id: int) -> list[str]:
     enabled_count = conn.execute(
         "SELECT COUNT(*) FROM crawlers WHERE enabled = TRUE"
