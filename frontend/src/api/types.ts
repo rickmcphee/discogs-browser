@@ -110,7 +110,8 @@ export type AuthStatus =
   | { state: 'authenticated'; user: { discogs_username: string; is_admin: boolean } }
 
 export interface StockItem {
-  id: number
+  id: number | string
+  item_key: string
   artist: string
   title: string
   format: string | null
@@ -121,6 +122,7 @@ export interface StockItem {
   source: string
   last_seen: string
   reason: string | null
+  is_own: boolean
 }
 
 export interface StockResponse {
