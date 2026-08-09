@@ -39,6 +39,10 @@ ai-surface: cli
 ai-executor: local-agent
 ```
 
+**Known pre-existing suite flakiness — do not chase it.** The full suite fails intermittently, observed once in ten runs during Task 2 (`9 failed, 761 passed, 4 errors`), with failures scattered across unrelated files including `test_session_crud.py`. Ruled out: connection exhaustion (`pg_stat_activity` peaked at 13 against `max_connections` 100) and test-order randomization (neither `pytest-randomly` nor `pytest-xdist` is installed, so order is deterministic). No traceback has been captured; the working hypothesis is per-test connection-pool churn racing the `TRUNCATE ... CASCADE` fixture teardown, since `psycopg_pool.ConnectionPool.close()` does not wait for in-use connections.
+
+It is not caused by this branch: a diff to `upsert_library_item`'s SQL cannot make `test_session_crud.py::create_session` fail, and the implementer reproduced comparable failures at the pre-branch baseline. **At any green gate below, if failures appear in files this branch does not touch, re-run before investigating; treat a clean run as the true result.** Do not "fix" unrelated tests to make a gate pass, and do not let this mask a real failure — a failure inside a file this branch *does* touch is yours until proven otherwise.
+
 **Task ordering is load-bearing, and Task 3 is deliberately large.** The write path, both read paths, and the test seeding all reference the price together, so moving any one of them alone leaves the suite red — there is no smaller green step. Task 3 is therefore a single atomic cutover with one green gate at its end; its sub-steps are individually small, but do not commit partway through. Task 4 then drops the column, which is only safe once Task 3 has stopped both writing and reading it.
 
 **One psycopg detail that dictates the above:** psycopg raises `query parameter missing` when a named placeholder in the statement is absent from the params dict (extra keys, by contrast, are ignored harmlessly). So `upsert_catalog_release` cannot reference a renamed price key while ~40 existing fixtures still pass the old one — the reference has to be deleted, not repointed.
