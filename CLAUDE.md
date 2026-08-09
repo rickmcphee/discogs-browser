@@ -24,7 +24,7 @@ discogs-browser/
 │   ├── db.py              # SQLite schema and all DB helpers
 │   ├── discogs.py         # Discogs API client (httpx)
 │   ├── screenshots.py     # CrawlScreenshotter
-│   ├── crawlers/          # bundled crawler plugins (amazon.py, ccmusic.py)
+│   ├── crawlers/          # bundled crawler plugins (amazon.py, sgrecordshop.py)
 │   ├── routers/           # FastAPI routers (one per domain)
 │   ├── scripts/           # dev utilities (capture_fixture.py)
 │   └── tests/             # pytest test suite
