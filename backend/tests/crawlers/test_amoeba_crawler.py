@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "crawlers"))
 
 from amoeba import Crawler
+from crawler import BotDetectedError
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "crawlers" / "amoeba"
 
@@ -28,7 +29,7 @@ _INSTALL_FETCH_STUB_JS = """
     window.__fetched.push(url);
     const match = url.match(/[?&]page=(\\d+)/);
     const payload = match ? pages[match[1]] : null;
-    if (!payload) return {status: 404, json: async () => ({})};
+    if (!payload) return {status: 403, json: async () => ({})};
     return {status: 200, json: async () => payload};
   };
 }
@@ -306,3 +307,20 @@ async def test_crawl_catalog_paces_every_request(fake_page, monkeypatch):
 async def test_crawl_catalog_navigates_to_the_category_page_first(fake_page):
     [item async for item in Crawler().crawl_catalog(fake_page)]
     assert fake_page.goto_url == "https://www.amoeba.com/music/cd-and-vinyl"
+
+
+async def test_crawl_catalog_raises_on_cloudflare_block_page(browser_page, window_pages):
+    blocked = _FakePage(
+        browser_page, window_pages, title="Attention Required! | Cloudflare"
+    )
+
+    with pytest.raises(BotDetectedError):
+        [item async for item in Crawler().crawl_catalog(blocked)]
+
+
+async def test_crawl_catalog_raises_when_the_ajax_endpoint_is_blocked(browser_page):
+    # No payload for any page number -> the stub returns 403.
+    blocked_ajax = _FakePage(browser_page, {})
+
+    with pytest.raises(BotDetectedError):
+        [item async for item in Crawler().crawl_catalog(blocked_ajax)]

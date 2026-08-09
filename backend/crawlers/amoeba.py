@@ -126,6 +126,8 @@ class Crawler:
         seen_album_ids = set()
 
         await page.goto(f"{self.base_url}/music/cd-and-vinyl", timeout=120_000)
+        if "Attention Required" in await page.title():
+            raise BotDetectedError("Cloudflare block page")
 
         for page_num in range(1, _WINDOW_PAGES + 1):
             # The first sleep is the load-bearing one: it's the gap that lets
@@ -135,6 +137,10 @@ class Crawler:
             result = await page.evaluate(
                 _FETCH_AND_EXTRACT_JS, {"url": self._listing_url(page_num)}
             )
+            if result["status"] != 200:
+                raise BotDetectedError(
+                    f"cds_and_vinyl.php returned HTTP {result['status']} on page {page_num}"
+                )
             for row in result["rows"]:
                 album_id = _ALBUM_ID_RE.search(row.get("href") or "")
                 if not album_id or album_id.group(1) in seen_album_ids:
