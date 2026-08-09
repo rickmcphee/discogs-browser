@@ -613,7 +613,7 @@ def get_library_releases(
         SELECT c.*, li.plex_url, li.plex_matched_at,
                li.collection_date_added, li.wishlist_date_added
         {base_from} {where}
-        ORDER BY CASE WHEN {sort_expr} IS NULL THEN 1 ELSE 0 END {null_order}, {sort_expr} {order_sql}
+        ORDER BY CASE WHEN {sort_expr} IS NULL THEN 1 ELSE 0 END {null_order}, {sort_expr} {order_sql}, c.discogs_id
         LIMIT %(limit)s OFFSET %(offset)s
         """,
         params,

@@ -193,6 +193,21 @@ entirely from this branch. The collection loop's equivalent
   mapping: `sort_col = "collection_date_added" if scope == "discogs" else
   "wishlist_date_added"` when `sort == "date_added"`, else the existing
   `_RELEASE_ALLOWED_SORT` lookup.
+  - As implemented, `_RELEASE_ALLOWED_SORT` did **not** gain `"date_added"`.
+    The scope-aware mapping became a branch ahead of the allow-list lookup,
+    gated on `sort == "date_added" and scope in ("discogs", "wishlist")`,
+    building an `li.`-prefixed `sort_expr` directly; everything else falls
+    through to the `c.`-prefixed `_RELEASE_ALLOWED_SORT` lookup. A
+    consequence the bullet above doesn't cover: `sort="date_added"` without
+    a scope has no column to sort by, so it falls back to the artist sort
+    like any other unrecognized value.
+- The ORDER BY ends with a deterministic `c.discogs_id` term (catalog's
+  primary key; `library_items` is filtered to one user, so it is unique
+  across the result set). Without it, sorting by a column that is NULL for
+  every row — `discogs_price` in any collection that never set that Discogs
+  custom field — ties every row, and LIMIT/OFFSET pages then repeat and
+  drop rows. `get_stock_items` had the identical hazard and carries the
+  equivalent `s.id` term, landed separately via PR #77.
 - The `sort.startswith("price_")` branch and its crawler-lookup query are
   deleted — no caller will send that value anymore.
 - `r["listings"] = get_listings_for_release(conn, r["discogs_id"])` is
