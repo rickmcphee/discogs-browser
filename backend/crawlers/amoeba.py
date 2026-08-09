@@ -141,7 +141,14 @@ class Crawler:
                 raise BotDetectedError(
                     f"cds_and_vinyl.php returned HTTP {result['status']} on page {page_num}"
                 )
-            for row in result["rows"]:
+            rows = result["rows"]
+            if len(rows) < _PAGE_SIZE and page_num < _WINDOW_PAGES:
+                log.warning(
+                    "[amoeba] page %d returned %d rows, expected %d -- show= may be "
+                    "clamped or the format filter stopped applying; the window is short",
+                    page_num, len(rows), _PAGE_SIZE,
+                )
+            for row in rows:
                 album_id = _ALBUM_ID_RE.search(row.get("href") or "")
                 if not album_id or album_id.group(1) in seen_album_ids:
                     continue

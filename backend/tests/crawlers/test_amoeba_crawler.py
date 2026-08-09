@@ -324,3 +324,16 @@ async def test_crawl_catalog_raises_when_the_ajax_endpoint_is_blocked(browser_pa
 
     with pytest.raises(BotDetectedError):
         [item async for item in Crawler().crawl_catalog(blocked_ajax)]
+
+
+async def test_crawl_catalog_warns_when_a_page_comes_back_short(fake_page, caplog):
+    with caplog.at_level("WARNING", logger="amoeba"):
+        [item async for item in Crawler().crawl_catalog(fake_page)]
+
+    short_page_warnings = [
+        r for r in caplog.records if "expected 200" in r.getMessage()
+    ]
+    # Fixture pages 1-4 all hold fewer than 200 rows; page 5 is the last page
+    # in the window and is not expected to be full.
+    assert len(short_page_warnings) == 4
+    assert "page 1" in short_page_warnings[0].getMessage()
