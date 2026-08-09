@@ -84,11 +84,22 @@ Namespace note: `/api/auth/*` (`routers/session.py`) is *app* authentication —
 | `year` | INTEGER | Nullable |
 | `label` | TEXT | |
 | `format` | TEXT | e.g. "Vinyl", "CD" |
-| `discogs_price` | TEXT | User's purchase price from Discogs collection field |
+| `discogs_price` | TEXT | User's purchase price from Discogs collection field. **Moved 2026-08-09:** now `library_items.price_paid` — see the note below this table |
 | `barcode` | TEXT | Digits-only barcode from Discogs release detail API; NULL if none found |
 | `cover_image_url` | TEXT | |
 | `discogs_url` | TEXT | |
 | `last_synced` | TIMESTAMP | |
+
+**Correction (2026-08-09, branch `worktree-library-price-paid`):** the
+`discogs_price` description above was always accurate — it is the user's own
+purchase price from a custom Discogs collection field, never a marketplace
+figure — and it was unproblematic here, because this design has exactly one
+user and one `releases` table. It became a bug when multi-tenancy split
+`releases` into a global `catalog` and a per-user `library_items`, and the
+price went to the global side: a user with no such custom field then wrote
+`None` over every other user's recorded price on each sync. The value now
+lives on `library_items.price_paid`, and `catalog.discogs_price` is dropped.
+See [`2026-08-09-library-price-paid-design.md`](../../specifications/shaping/2026-08-09-library-price-paid-design.md).
 
 ### crawlers
 

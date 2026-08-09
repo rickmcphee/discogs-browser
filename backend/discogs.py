@@ -104,11 +104,11 @@ def parse_release(item: dict, price_field_id=None) -> dict:
     label = info["labels"][0]["name"] if info.get("labels") else ""
     fmt = info["formats"][0]["name"] if info.get("formats") else ""
     release_id = info["id"]
-    discogs_price = None
+    price_paid = None
     if price_field_id is not None:
         for note in item.get("notes", []):
             if note.get("field_id") == price_field_id:
-                discogs_price = note.get("value") or None
+                price_paid = note.get("value") or None
                 break
     return {
         "discogs_id": f"r{release_id}",
@@ -119,6 +119,6 @@ def parse_release(item: dict, price_field_id=None) -> dict:
         "format": fmt,
         "cover_image_url": info.get("cover_image", ""),
         "discogs_url": f"https://www.discogs.com/release/{release_id}",
-        "discogs_price": discogs_price,
+        "price_paid": price_paid,
         "barcode": None,
     }

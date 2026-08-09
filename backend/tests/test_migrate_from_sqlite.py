@@ -81,6 +81,12 @@ def test_migrate_creates_user_catalog_library_item_and_listing(pg_test_db, sqlit
             "SELECT * FROM library_items WHERE user_id = %s AND discogs_id = 'd1'", [user_id]
         ).fetchone()
         assert library_item["in_collection"] is True
+        # The source SQLite database is single-user by construction, so its
+        # releases.discogs_price provably belongs to this one user. Nothing
+        # errors if this is dropped -- upsert_catalog_release no longer binds a
+        # price, and psycopg ignores the extra dict key -- so the price would
+        # vanish silently without this assertion.
+        assert library_item["price_paid"] == "$10"
 
         # Look up the migrated crawler's actual (new, Postgres-assigned) id rather
         # than assuming it equals the source SQLite id of 1 — that assumption

@@ -16,6 +16,11 @@ _admin_pool: Optional[ConnectionPool] = None
 _identity_pool: Optional[ConnectionPool] = None
 _app_pool: Optional[ConnectionPool] = None
 
+# price_paid's "unspecified" needs to be distinct from None: None means the
+# user's custom "Price" field is genuinely empty and the stored value must be
+# cleared, so it can't double as "this caller never looked."
+_UNSET = object()
+
 
 def get_admin_pool() -> ConnectionPool:
     global _admin_pool
@@ -62,7 +67,6 @@ CREATE TABLE IF NOT EXISTS catalog (
     year INTEGER,
     label TEXT,
     format TEXT,
-    discogs_price TEXT,
     barcode TEXT,
     cover_image_url TEXT,
     discogs_url TEXT,
@@ -194,6 +198,61 @@ CREATE TABLE IF NOT EXISTS library_items (
 
 ALTER TABLE library_items ADD COLUMN IF NOT EXISTS collection_date_added TIMESTAMP;
 ALTER TABLE library_items ADD COLUMN IF NOT EXISTS wishlist_date_added TIMESTAMP;
+ALTER TABLE library_items ADD COLUMN IF NOT EXISTS price_paid TEXT;
+
+-- One-shot, self-retiring migration off the global catalog.discogs_price.
+-- The guard is what makes it safe to leave in a schema string that re-runs on
+-- every boot: once the source column is gone this whole block is a no-op, so
+-- it can neither error nor resurrect a price a user deliberately cleared.
+--
+-- Only a release with exactly one collection owner is backfilled. The stored
+-- global value is whichever user synced last, so with two owners it cannot be
+-- attributed to either; copying it to both would be the same cross-tenant leak
+-- in reverse. Contested rows stay NULL and self-heal on the owner's next
+-- mode="all" sync.
+--
+-- Must live in TENANT_SCHEMA, not GLOBAL_SCHEMA: GLOBAL_SCHEMA runs first
+-- (main.py), before library_items.price_paid exists.
+DO $$
+BEGIN
+  -- Double-checked locking, and the order matters. The outer check is an
+  -- unlocked catalog lookup, so once the column is gone -- which is the state
+  -- on every boot after the one that migrates -- this block costs one cheap
+  -- read and takes no lock at all. Taking the advisory lock unconditionally
+  -- ahead of the check instead serializes every init_tenant_schema() call
+  -- forever, for a migration that can never run again; that measurably slowed
+  -- the test suite and starved its event-loop timing tests.
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+             WHERE table_name = 'catalog' AND column_name = 'discogs_price') THEN
+    -- Serialize the migration itself across concurrently booting instances.
+    -- Today there is only one (uvicorn with no --workers, fly.toml
+    -- min_machines_running = 1), but without this two sessions could both pass
+    -- the outer check and the loser would then UPDATE or DROP against a column
+    -- the winner had already removed, failing the boot. The deployment spec
+    -- claims multi-machine scaling needs no design change; this keeps that true.
+    PERFORM pg_advisory_xact_lock(2026080901);
+
+    -- Re-check under the lock: the winner may have finished while we waited.
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_name = 'catalog' AND column_name = 'discogs_price') THEN
+      -- price_paid IS NULL is redundant on the real one-shot run, since the
+      -- column is created empty in this same schema application. It matters if
+      -- the source column is ever reintroduced -- a restore, or a rollback
+      -- experiment -- where re-running must not clobber prices users have since
+      -- recorded. A backfill fills blanks; it does not overwrite.
+      UPDATE library_items li SET price_paid = c.discogs_price
+      FROM catalog c
+      WHERE c.discogs_id = li.discogs_id
+        AND li.in_collection = TRUE
+        AND c.discogs_price IS NOT NULL
+        AND li.price_paid IS NULL
+        AND (SELECT COUNT(*) FROM library_items x
+             WHERE x.discogs_id = li.discogs_id AND x.in_collection = TRUE) = 1;
+
+      ALTER TABLE catalog DROP COLUMN IF EXISTS discogs_price;
+    END IF;
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS stock_item_judgments (
     user_id INTEGER NOT NULL REFERENCES users(id),
@@ -353,26 +412,16 @@ def init_tenant_schema():
         conn.commit()
 
 
-def upsert_catalog_release(conn, data: dict, preserve_price: bool = False):
-    # catalog is global (no user_id), and discogs_price comes from a per-user
-    # custom collection field. A caller that never read that field -- the
-    # wantlist sync -- must leave the stored value alone rather than write its
-    # own None over another sync's (or another user's) real price. This is a
-    # per-call-site decision, not a blanket COALESCE: a collection sync writing
-    # None means the user genuinely cleared the field, and must still clear it.
-    # The flag narrows the cross-tenant overwrite without closing it -- see the
-    # catalog data dictionary in
-    # docs/superpowers/specs/2026-07-26-multi-tenant-architecture-design.md.
-    price_assignment = "" if preserve_price else "discogs_price = EXCLUDED.discogs_price,"
+def upsert_catalog_release(conn, data: dict):
     conn.execute(
-        f"""
-        INSERT INTO catalog (discogs_id, artist, title, year, label, format, discogs_price,
+        """
+        INSERT INTO catalog (discogs_id, artist, title, year, label, format,
                               barcode, cover_image_url, discogs_url, last_synced)
         VALUES (%(discogs_id)s, %(artist)s, %(title)s, %(year)s, %(label)s, %(format)s,
-                %(discogs_price)s, %(barcode)s, %(cover_image_url)s, %(discogs_url)s, CURRENT_TIMESTAMP)
+                %(barcode)s, %(cover_image_url)s, %(discogs_url)s, CURRENT_TIMESTAMP)
         ON CONFLICT (discogs_id) DO UPDATE SET
             artist = EXCLUDED.artist, title = EXCLUDED.title, year = EXCLUDED.year,
-            label = EXCLUDED.label, format = EXCLUDED.format, {price_assignment}
+            label = EXCLUDED.label, format = EXCLUDED.format,
             barcode = EXCLUDED.barcode, cover_image_url = EXCLUDED.cover_image_url,
             discogs_url = EXCLUDED.discogs_url, last_synced = CURRENT_TIMESTAMP
         """,
@@ -481,28 +530,31 @@ def upsert_library_item(
     in_wishlist: Optional[bool] = None,
     collection_date_added: Optional[str] = None,
     wishlist_date_added: Optional[str] = None,
+    price_paid=_UNSET,
 ):
     # COALESCE resolves "unspecified" (None) to the existing row's own column
     # on update, or FALSE/NULL on first insert — in one atomic statement, so
     # two concurrent partial updates (e.g. collection-sync setting
     # in_collection/collection_date_added, wishlist-sync setting
     # in_wishlist/wishlist_date_added) can't race on a separate read.
+    price_set = "" if price_paid is _UNSET else "price_paid = %(price_paid)s,"
     conn.execute(
-        """
+        f"""
         INSERT INTO library_items (
             user_id, discogs_id, in_collection, in_wishlist,
-            collection_date_added, wishlist_date_added, last_synced
+            collection_date_added, wishlist_date_added, price_paid, last_synced
         )
         VALUES (
             %(user_id)s, %(discogs_id)s, COALESCE(%(in_collection)s, FALSE),
             COALESCE(%(in_wishlist)s, FALSE), %(collection_date_added)s,
-            %(wishlist_date_added)s, CURRENT_TIMESTAMP
+            %(wishlist_date_added)s, %(price_paid)s, CURRENT_TIMESTAMP
         )
         ON CONFLICT (user_id, discogs_id) DO UPDATE SET
             in_collection = COALESCE(%(in_collection)s, library_items.in_collection),
             in_wishlist = COALESCE(%(in_wishlist)s, library_items.in_wishlist),
             collection_date_added = COALESCE(%(collection_date_added)s, library_items.collection_date_added),
             wishlist_date_added = COALESCE(%(wishlist_date_added)s, library_items.wishlist_date_added),
+            {price_set}
             last_synced = CURRENT_TIMESTAMP
         """,
         {
@@ -512,6 +564,7 @@ def upsert_library_item(
             "in_wishlist": in_wishlist,
             "collection_date_added": collection_date_added,
             "wishlist_date_added": wishlist_date_added,
+            "price_paid": None if price_paid is _UNSET else price_paid,
         },
     )
 
@@ -550,7 +603,7 @@ def get_library_items_for_plex_match(conn, user_id: int) -> list:
     return [dict(row) for row in rows]
 
 
-_RELEASE_ALLOWED_SORT = {"artist", "title", "year", "label", "format", "discogs_price"}
+_RELEASE_ALLOWED_SORT = {"artist", "title", "year", "label", "format"}
 
 
 def get_library_releases(
@@ -602,7 +655,9 @@ def get_library_releases(
     params["limit"] = per_page
     params["offset"] = offset
 
-    if sort == "date_added" and scope in ("discogs", "wishlist"):
+    if sort == "discogs_price":
+        sort_expr = "li.price_paid"
+    elif sort == "date_added" and scope in ("discogs", "wishlist"):
         sort_expr = "li." + ("wishlist_date_added" if scope == "wishlist" else "collection_date_added")
     else:
         sort_col = sort if sort in _RELEASE_ALLOWED_SORT else "artist"
@@ -610,7 +665,7 @@ def get_library_releases(
 
     rows = conn.execute(
         f"""
-        SELECT c.*, li.plex_url, li.plex_matched_at,
+        SELECT c.*, li.price_paid AS discogs_price, li.plex_url, li.plex_matched_at,
                li.collection_date_added, li.wishlist_date_added
         {base_from} {where}
         ORDER BY CASE WHEN {sort_expr} IS NULL THEN 1 ELSE 0 END {null_order}, {sort_expr} {order_sql}, c.discogs_id
@@ -947,7 +1002,7 @@ def get_stock_items(
     # every key would be NULL, leaving all rows tied and pagination unstable.
     # The lookup's default covers None and any unmapped scope.
     if sort == "discogs_price" and "in_collection" in _LIBRARY_MEMBERSHIP.get(library_scope, ()):
-        sort_expr = """(SELECT (regexp_match(c.discogs_price, '\\d+\\.?\\d*'))[1]::numeric
+        sort_expr = """(SELECT (regexp_match(li.price_paid, '\\d+\\.?\\d*'))[1]::numeric
                         {match} LIMIT 1)""".format(
             match=_library_match_fragment("%(user_id)s", "collection")
         )
@@ -989,7 +1044,7 @@ def get_stock_items(
         f"""
         SELECT s.id, s.artist, s.title, s.format, s.price, s.currency, s.url, s.cover_image_url, s.last_seen,
                s.item_key, cr.site_name AS source, j.reason AS reason,
-               (SELECT c.discogs_price {_library_match_fragment('%(user_id)s', 'collection')} LIMIT 1) AS discogs_price
+               (SELECT li.price_paid {_library_match_fragment('%(user_id)s', 'collection')} LIMIT 1) AS discogs_price
         FROM stock_items s
         JOIN crawlers cr ON cr.id = s.crawler_id
         LEFT JOIN stock_item_judgments j ON j.item_key = s.item_key AND j.user_id = %(user_id)s

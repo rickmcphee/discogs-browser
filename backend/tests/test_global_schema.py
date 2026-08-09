@@ -22,7 +22,7 @@ def test_catalog_table_exists_with_expected_columns(admin_conn):
     }
     assert cols == {
         "discogs_id", "artist", "title", "year", "label", "format",
-        "discogs_price", "barcode", "cover_image_url", "discogs_url", "last_synced",
+        "barcode", "cover_image_url", "discogs_url", "last_synced",
     }
 
 

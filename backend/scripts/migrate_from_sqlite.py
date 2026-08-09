@@ -73,12 +73,16 @@ def migrate(
             db.upsert_catalog_release(pconn, {
                 "discogs_id": r["discogs_id"], "artist": r["artist"], "title": r["title"],
                 "year": r["year"], "label": r["label"], "format": r["format"],
-                "discogs_price": r["discogs_price"], "barcode": r["barcode"],
+                "barcode": r["barcode"],
                 "cover_image_url": r["cover_image_url"], "discogs_url": r["discogs_url"],
             })
+            # The source database is single-user, so its releases.discogs_price
+            # belongs to this one user -- it lands on their library_items row,
+            # not on the shared catalog row it came from.
             db.upsert_library_item(
                 pconn, user_id=user_id, discogs_id=r["discogs_id"],
                 in_collection=bool(r["in_collection"]), in_wishlist=bool(r["in_wishlist"]),
+                price_paid=r["discogs_price"],
             )
 
         crawler_id_map = {}

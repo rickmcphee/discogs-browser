@@ -15,6 +15,17 @@ collection field the user has to name exactly `"Price"` on discogs.com —
 see `backend/discogs.py`'s `parse_release()`/`price_field_id` handling) but
 nowhere else does.
 
+**Storage correction (2026-08-09, branch `worktree-library-price-paid`):**
+everything this spec describes still ships, but the value's home changed
+underneath it. Storing a per-user custom field on the global `catalog` row
+caused recurring cross-tenant data loss, so it moved to
+`library_items.price_paid` and `catalog.discogs_price` was dropped. Read every
+`catalog.discogs_price` reference below as `library_items.price_paid`, scoped
+to the calling user. The `discogs_price` wire/JSON field name and the
+`sort=discogs_price` key are unchanged, so this spec's API and frontend
+sections remain accurate as written. See
+[`2026-08-09-library-price-paid-design.md`](2026-08-09-library-price-paid-design.md).
+
 This slice: (1) renames `StockBrowser`'s existing `Price` column to `Cost`
 in both Store and Collection, freeing the name and reducing ambiguity with
 what's being added; (2) adds a new `Price` column to the Collection tab
