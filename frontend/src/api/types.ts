@@ -53,6 +53,7 @@ export type SortField = 'artist' | 'title' | 'year' | 'label' | 'format' | strin
 export type SortOrder = 'asc' | 'desc'
 export type RecordScope = 'collection' | 'wantlist'
 export type StockScope = 'store' | 'track'
+export type LibraryScope = 'collection' | 'wantlist' | 'all'
 
 export interface CrawlEvent {
   id?: number

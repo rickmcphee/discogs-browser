@@ -1,6 +1,6 @@
 import type {
   ReleasesResponse, Crawler, Settings, UserSettings, SortField, SortOrder, CrawlStatus, CollectionStatus, ScreenshotSession,
-  AuthStatus, RecordScope, StockResponse, StockSortField,
+  AuthStatus, RecordScope, StockResponse, StockSortField, LibraryScope,
 } from './types'
 
 const BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/+$/, '')
@@ -12,6 +12,12 @@ const BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/+$/, '')
 const RECORD_SCOPE_PARAM: Record<RecordScope, 'discogs' | 'wishlist'> = {
   collection: 'discogs',
   wantlist: 'wishlist',
+}
+
+const LIBRARY_SCOPE_PARAM: Record<LibraryScope, 'collection' | 'wishlist' | 'all'> = {
+  collection: 'collection',
+  wantlist: 'wishlist',
+  all: 'all',
 }
 
 let onUnauthorized: (() => void) | null = null
@@ -160,7 +166,7 @@ export async function getStock(params: {
   order?: SortOrder
   page?: number
   per_page?: number
-  overlapping?: boolean
+  libraryScope?: LibraryScope
   recommended?: boolean
   hiddenCrawlerIds?: number[]
 }): Promise<StockResponse> {
@@ -171,7 +177,7 @@ export async function getStock(params: {
   if (params.order) q.set('order', params.order)
   if (params.page) q.set('page', String(params.page))
   if (params.per_page) q.set('per_page', String(params.per_page))
-  if (params.overlapping) q.set('overlapping', 'true')
+  if (params.libraryScope) q.set('library_scope', LIBRARY_SCOPE_PARAM[params.libraryScope])
   if (params.recommended) q.set('recommended', 'true')
   if (params.hiddenCrawlerIds?.length) q.set('hidden_crawler_ids', params.hiddenCrawlerIds.join(','))
   const r = await apiFetch(`/stock?${q}`)
@@ -179,9 +185,9 @@ export async function getStock(params: {
   return r.json()
 }
 
-export async function getStockArtists(overlapping?: boolean, recommended?: boolean, hiddenCrawlerIds?: number[]): Promise<string[]> {
+export async function getStockArtists(libraryScope?: LibraryScope, recommended?: boolean, hiddenCrawlerIds?: number[]): Promise<string[]> {
   const q = new URLSearchParams()
-  if (overlapping) q.set('overlapping', 'true')
+  if (libraryScope) q.set('library_scope', LIBRARY_SCOPE_PARAM[libraryScope])
   if (recommended) q.set('recommended', 'true')
   if (hiddenCrawlerIds?.length) q.set('hidden_crawler_ids', hiddenCrawlerIds.join(','))
   const qs = q.toString() ? `?${q}` : ''

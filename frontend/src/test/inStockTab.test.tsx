@@ -103,7 +103,7 @@ describe('In Stock tab', () => {
     const trackButton = screen.getByText('Track')
     fireEvent.click(trackButton)
     await waitFor(() => expect(trackButton.className).toContain('bg-white'))
-    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ overlapping: true })))
+    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ libraryScope: 'all' })))
   })
 
   it('calls postStockSyncStart when Refresh is clicked in Settings', async () => {

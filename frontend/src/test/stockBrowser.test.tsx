@@ -152,9 +152,9 @@ describe('StockBrowser', () => {
   it('refetches the artist sidebar scoped to recommended when Recommended is selected', async () => {
     render(<StockBrowser recommendedAvailable />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    expect(getStockArtists).toHaveBeenLastCalledWith(false, false, [])
+    expect(getStockArtists).toHaveBeenLastCalledWith(undefined, false, [])
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'recommended' } })
-    await waitFor(() => expect(getStockArtists).toHaveBeenLastCalledWith(false, true, []))
+    await waitFor(() => expect(getStockArtists).toHaveBeenLastCalledWith(undefined, true, []))
   })
 
   it('restores a previously-selected Recommended filter from localStorage', async () => {
@@ -202,7 +202,7 @@ describe('StockBrowser', () => {
     await waitFor(() => expect(getStock).toHaveBeenCalledTimes(1))
     rerender(<StockBrowser hiddenCrawlerIds={[3]} />)
     await waitFor(() => expect(getStock).toHaveBeenCalledTimes(2))
-    expect(getStockArtists).toHaveBeenLastCalledWith(false, false, [3])
+    expect(getStockArtists).toHaveBeenLastCalledWith(undefined, false, [3])
   })
 
   it('resets to page 1 when hiddenCrawlerIds changes, with a single fetch (not stale-page-then-corrected)', async () => {
@@ -227,24 +227,186 @@ describe('StockBrowser', () => {
     await waitFor(() => expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('recommended'))
   })
 
-  it('scope="track" forces overlapping and hides the filter dropdown', async () => {
+  it('scope="track" sends libraryScope and shows an All/Collection/Wantlist dropdown', async () => {
     render(<StockBrowser scope="track" />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    expect(screen.queryByRole('combobox')).toBeNull()
-    expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ overlapping: true }))
+    const select = screen.getByRole('combobox') as HTMLSelectElement
+    expect([...select.options].map((o) => o.value)).toEqual(['all', 'collection', 'wantlist'])
+    expect(select.value).toBe('all')
+    expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ libraryScope: 'all' }))
   })
 
-  it('scope="track" forces overlapping on the artist sidebar fetch too', async () => {
+  it('scope="track" sends libraryScope on the artist sidebar fetch too', async () => {
     render(<StockBrowser scope="track" />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    expect(getStockArtists).toHaveBeenCalledWith(true, false, [])
+    expect(getStockArtists).toHaveBeenCalledWith('all', false, [])
   })
 
-  it('scope="store" (default) keeps the filter dropdown with All/Recommended', async () => {
+  it('changing the Track filter refetches both the items and the artist sidebar with the new libraryScope', async () => {
+    render(<StockBrowser scope="track" />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'wantlist' } })
+    await waitFor(() =>
+      expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ libraryScope: 'wantlist' }))
+    )
+    // The sidebar has to narrow with the table, or clicking a collection-only
+    // artist under Wantlist lands on an empty table.
+    await waitFor(() => expect(getStockArtists).toHaveBeenLastCalledWith('wantlist', false, []))
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'collection' } })
+    await waitFor(() => expect(getStockArtists).toHaveBeenLastCalledWith('collection', false, []))
+  })
+
+  it('resets to page 1 when the Track filter changes', async () => {
+    getStock.mockResolvedValue({ total: 500, page: 1, per_page: 250, items })
+    render(<StockBrowser scope="track" />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByText('Next →'))
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2 })))
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'wantlist' } })
+    await waitFor(() =>
+      expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ libraryScope: 'wantlist', page: 1 }))
+    )
+  })
+
+  it('persists the Track filter under stockFilter_track and restores it on remount', async () => {
+    const { unmount } = render(<StockBrowser scope="track" />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'collection' } })
+    await waitFor(() => expect(localStorage.getItem('stockFilter_track')).toBe('collection'))
+    unmount()
+    render(<StockBrowser scope="track" />)
+    await waitFor(() => expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('collection'))
+  })
+
+  // A select whose value matches no option falls back to its first option, so
+  // the rendered value alone can't tell a rejected stored value from an
+  // accepted one -- the fetch and the rewritten key are what actually pin it.
+  it('ignores a stored filter value that is not valid for the scope', async () => {
+    // 'wishlist' is the backend spelling and never a valid filter value. Unlike
+    // 'recommended' it isn't also swept up by the recommendedAvailable reset
+    // effect, so the allow-set is the only thing that can reject it.
+    localStorage.setItem('stockFilter_track', 'wishlist')
+    render(<StockBrowser scope="track" />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('all')
+    expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ libraryScope: 'all' }))
+    expect(getStockArtists).toHaveBeenCalledWith('all', false, [])
+    expect(localStorage.getItem('stockFilter_track')).toBe('all')
+  })
+
+  it('ignores a Store filter value stored under the Track key', async () => {
+    localStorage.setItem('stockFilter_track', 'recommended')
+    render(<StockBrowser scope="track" />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('all')
+    expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ libraryScope: 'all' }))
+  })
+
+  it('ignores a stored Track filter value on the Store tab', async () => {
+    localStorage.setItem('stockFilter_store', 'wantlist')
     render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    expect(screen.getByRole('combobox')).toBeTruthy()
-    expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ overlapping: false }))
+    expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('all')
+    expect(localStorage.getItem('stockFilter_store')).toBe('all')
+  })
+
+  it('scope="store" (default) keeps the All/Recommended dropdown and sends no libraryScope', async () => {
+    render(<StockBrowser />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    const select = screen.getByRole('combobox') as HTMLSelectElement
+    expect([...select.options].map((o) => o.value)).toEqual(['all', 'recommended'])
+    expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ libraryScope: undefined }))
+  })
+
+  it('renders the Price column under every Track filter value', async () => {
+    render(<StockBrowser scope="track" />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    expect(screen.getByText(/Price/)).toBeTruthy()
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'wantlist' } })
+    await waitFor(() => expect(screen.getByText(/Price/)).toBeTruthy())
+  })
+
+  it('shows a filter-specific empty state on the Track tab', async () => {
+    getStock.mockResolvedValue({ total: 0, page: 1, per_page: 250, items: [] })
+    render(<StockBrowser scope="track" />)
+    await waitFor(() => expect(screen.getByText(/Nothing you're tracking is in stock/)).toBeTruthy())
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'wantlist' } })
+    await waitFor(() => expect(screen.getByText(/Nothing on your wantlist is in stock/)).toBeTruthy())
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'collection' } })
+    await waitFor(() => expect(screen.getByText(/Nothing in your collection is in stock/)).toBeTruthy())
+  })
+
+  it('shows a Recommended-specific empty state on the Store tab', async () => {
+    getStock.mockResolvedValue({ total: 0, page: 1, per_page: 250, items: [] })
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText(/No in-stock items yet/)).toBeTruthy())
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'recommended' } })
+    await waitFor(() => expect(screen.getByText(/Nothing recommended is in stock/)).toBeTruthy())
+  })
+
+  it('shows the filter-specific Track empty state in tile view too', async () => {
+    getStock.mockResolvedValue({ total: 0, page: 1, per_page: 250, items: [] })
+    render(<StockBrowser scope="track" />)
+    await waitFor(() => expect(screen.getByText(/Nothing you're tracking is in stock/)).toBeTruthy())
+    fireEvent.click(screen.getByTitle('Tile view'))
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'wantlist' } })
+    await waitFor(() => expect(screen.getByText(/Nothing on your wantlist is in stock/)).toBeTruthy())
+  })
+
+  // The backend pins the discogs_price sort subquery to collection scope, so
+  // under Wantlist the column is all — and the sort silently degrades to artist
+  // order. A dead control is worse than no control, so the header goes plain.
+  it('renders the Price header as a sort control under All and Collection but plain text under Wantlist', async () => {
+    render(<StockBrowser scope="track" />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    const priceHeader = () => screen.getByText(/Price/).closest('th') as HTMLTableCellElement
+    expect(priceHeader().querySelector('button')).toBeTruthy()
+
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'wantlist' } })
+    await waitFor(() => expect(priceHeader().querySelector('button')).toBeNull())
+    expect(priceHeader().getAttribute('aria-sort')).toBeNull()
+
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'collection' } })
+    await waitFor(() => expect(priceHeader().querySelector('button')).toBeTruthy())
+  })
+
+  it('does not sort by discogs_price when the plain Wantlist Price header is clicked', async () => {
+    render(<StockBrowser scope="track" />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'wantlist' } })
+    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ libraryScope: 'wantlist' })))
+    getStock.mockClear()
+    fireEvent.click(screen.getByText(/Price/))
+    await new Promise((r) => setTimeout(r, 0))
+    expect(getStock).not.toHaveBeenCalled()
+  })
+
+  it('resets a discogs_price sort to artist when switching to the Wantlist filter', async () => {
+    render(<StockBrowser scope="track" />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByText(/Price/))
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'discogs_price' })))
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'wantlist' } })
+    await waitFor(() =>
+      expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ libraryScope: 'wantlist', sort: 'artist', order: 'asc' }))
+    )
+    // Deliberately not restored -- the reset is a real state change, not a
+    // suppressed view of a sort that survives underneath.
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'all' } })
+    await waitFor(() =>
+      expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ libraryScope: 'all', sort: 'artist' }))
+    )
+  })
+
+  it('keeps a non-price sort intact when switching to the Wantlist filter', async () => {
+    render(<StockBrowser scope="track" />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByText(/^Title/))
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'title' })))
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'wantlist' } })
+    await waitFor(() =>
+      expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ libraryScope: 'wantlist', sort: 'title' }))
+    )
   })
 
   it('does not render a Price column in Store scope', async () => {

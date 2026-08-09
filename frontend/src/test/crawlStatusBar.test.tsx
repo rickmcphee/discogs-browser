@@ -195,7 +195,7 @@ describe('crawl status bar', () => {
     replaySrc.emit({ status: 'started', total: 1, id: 1 })
     replaySrc.emit({ status: 'complete', id: 2 })
 
-    await waitFor(() => expect(screen.getByText('Collection')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Collection' })).toBeInTheDocument())
     expect(screen.queryByText('Done')).not.toBeInTheDocument()
   })
 })

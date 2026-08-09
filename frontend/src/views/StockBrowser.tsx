@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, memo } from 'react'
 import { getStock, getStockArtists } from '../api/client'
-import type { StockItem, StockSortField, SortOrder, StockScope } from '../api/types'
+import type { StockItem, StockSortField, SortOrder, StockScope, LibraryScope } from '../api/types'
 import { navButtonClass, dismissButtonClass } from '../styles/buttons'
 
 interface Props {
@@ -10,6 +10,12 @@ interface Props {
 }
 
 const NO_HIDDEN_CRAWLER_IDS: number[] = []
+const STORE_FILTERS = ['all', 'recommended'] as const
+const TRACK_FILTERS = ['all', 'collection', 'wantlist'] as const satisfies readonly LibraryScope[]
+
+function trackLibraryScope(value: string): LibraryScope | undefined {
+  return (TRACK_FILTERS as readonly string[]).includes(value) ? (value as LibraryScope) : undefined
+}
 
 function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCrawlerIds = NO_HIDDEN_CRAWLER_IDS }: Props) {
   const [items, setItems] = useState<StockItem[]>([])
@@ -20,9 +26,10 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
   const [artists, setArtists] = useState<string[]>([])
   const [sort, setSort] = useState<StockSortField>('artist')
   const [order, setOrder] = useState<SortOrder>('asc')
-  const [filter, setFilter] = useState<'all' | 'recommended'>(() => {
+  const [filter, setFilter] = useState<string>(() => {
+    const allowed: readonly string[] = scope === 'track' ? TRACK_FILTERS : STORE_FILTERS
     const stored = localStorage.getItem(`stockFilter_${scope}`)
-    return stored === 'recommended' ? stored : 'all'
+    return stored && allowed.includes(stored) ? stored : 'all'
   })
   const [loading, setLoading] = useState(false)
   const [viewMode, setViewMode] = useState<'list' | 'tiles'>(
@@ -44,7 +51,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
         search: search || undefined,
         artist: selectedArtist || undefined,
         sort, order, page, per_page: PER_PAGE,
-        overlapping: scope === 'track',
+        libraryScope: scope === 'track' ? trackLibraryScope(filter) : undefined,
         recommended: scope === 'store' && filter === 'recommended',
         hiddenCrawlerIds,
       })
@@ -61,10 +68,29 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
       setFilter('all')
     }
   }, [recommendedAvailable, filter])
-  useEffect(() => { getStockArtists(scope === 'track', scope === 'store' && filter === 'recommended', hiddenCrawlerIds).then(setArtists) }, [scope, filter, hiddenCrawlerIds])
+  useEffect(() => {
+    getStockArtists(
+      scope === 'track' ? trackLibraryScope(filter) : undefined,
+      scope === 'store' && filter === 'recommended',
+      hiddenCrawlerIds,
+    ).then(setArtists)
+  }, [scope, filter, hiddenCrawlerIds])
   useEffect(() => { localStorage.setItem(`collectionViewMode_${scope}`, viewMode) }, [viewMode, scope])
   useEffect(() => { localStorage.setItem(`stockFilter_${scope}`, filter) }, [filter, scope])
   useEffect(() => { tableScrollRef.current?.scrollTo({ top: 0 }) }, [selectedArtist])
+
+  function changeFilter(value: string) {
+    setFilter(value)
+    // The backend's discogs_price sort key is pinned to collection scope -- a
+    // wantlist row has no paid price -- so under Wantlist it silently degrades
+    // to artist order. Resetting the sort keeps the visible sort indicator
+    // honest instead of leaving state claiming an order the rows aren't in.
+    if (value === 'wantlist' && sort === 'discogs_price') {
+      setSort('artist')
+      setOrder('asc')
+    }
+    setPage(1)
+  }
 
   function toggleSort(field: StockSortField) {
     if (sort === field) {
@@ -90,6 +116,13 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
 
   const totalPages = Math.ceil(total / PER_PAGE)
   const colCount = scope === 'track' ? 7 : 6
+  const priceSortable = scope === 'track' && filter !== 'wantlist'
+  const emptyMessage =
+    scope === 'store' && filter === 'recommended' ? 'Nothing recommended is in stock right now.'
+    : scope === 'store' ? 'No in-stock items yet. Click "Refresh Stock Now" in Settings.'
+    : filter === 'collection' ? 'Nothing in your collection is in stock right now.'
+    : filter === 'wantlist' ? 'Nothing on your wantlist is in stock right now.'
+    : "Nothing you're tracking is in stock right now."
 
   const sortButtonClass = 'w-full px-3 py-2 cursor-pointer hover:text-white select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/80'
 
@@ -138,16 +171,24 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
           </div>
           <span className="ml-3 text-xs text-gray-500">{total} items</span>
           <div className="ml-auto flex items-center gap-2">
-            {scope === 'store' && (
-              <select
-                value={filter}
-                onChange={(e) => { setFilter(e.target.value as 'all' | 'recommended'); setPage(1) }}
-                className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-gray-400"
-              >
-                <option value="all">All</option>
-                <option value="recommended" disabled={!recommendedAvailable}>Recommended</option>
-              </select>
-            )}
+            <select
+              value={filter}
+              onChange={(e) => changeFilter(e.target.value)}
+              className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-gray-400"
+            >
+              {scope === 'track' ? (
+                <>
+                  <option value="all">All</option>
+                  <option value="collection">Collection</option>
+                  <option value="wantlist">Wantlist</option>
+                </>
+              ) : (
+                <>
+                  <option value="all">All</option>
+                  <option value="recommended" disabled={!recommendedAvailable}>Recommended</option>
+                </>
+              )}
+            </select>
             <button
               onClick={() => setViewMode('list')}
               title="List view"
@@ -185,7 +226,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
             )}
             {!loading && items.length === 0 && (
               <div className="text-center py-8 text-gray-500">
-                No in-stock items yet. Click "Refresh Stock Now" in Settings.
+                {emptyMessage}
               </div>
             )}
             {!loading && items.length > 0 && (
@@ -239,11 +280,15 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
                   </button>
                 </th>
                 {scope === 'track' && (
-                  <th className="text-center" aria-sort={sort === 'discogs_price' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}>
-                    <button type="button" onClick={() => toggleSort('discogs_price')} className={`${sortButtonClass} text-center`}>
-                      Price {sort === 'discogs_price' ? (order === 'asc' ? '↑' : '↓') : ''}
-                    </button>
-                  </th>
+                  priceSortable ? (
+                    <th className="text-center" aria-sort={sort === 'discogs_price' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                      <button type="button" onClick={() => toggleSort('discogs_price')} className={`${sortButtonClass} text-center`}>
+                        Price {sort === 'discogs_price' ? (order === 'asc' ? '↑' : '↓') : ''}
+                      </button>
+                    </th>
+                  ) : (
+                    <th className="text-center px-3 py-2">Price</th>
+                  )
                 )}
                 <th className="text-center" aria-sort={sort === 'price' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}>
                   <button type="button" onClick={() => toggleSort('price')} className={`${sortButtonClass} text-center`}>
@@ -267,7 +312,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
                 </td></tr>
               )}
               {!loading && items.length === 0 && (
-                <tr><td colSpan={colCount} className="text-center py-8 text-gray-500">No in-stock items yet. Click "Refresh Stock Now" in Settings.</td></tr>
+                <tr><td colSpan={colCount} className="text-center py-8 text-gray-500">{emptyMessage}</td></tr>
               )}
               {items.map((item) => (
                 <tr key={item.id} className="border-t border-gray-800 hover:bg-gray-900/50">
