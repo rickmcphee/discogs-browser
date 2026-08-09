@@ -141,8 +141,10 @@ describe('Account', () => {
       plex_base_url: 'https://plex.local:32400', plex_token: 'tok', plex_match_threshold: 90,
     })
     render(<Account avatarVersion={0} onAvatarChange={() => {}} />)
+    // The button renders with this name before settings load, so findByRole
+    // matches the still-disabled render — wait for it to enable, don't assert.
     const button = await screen.findByRole('button', { name: 'Link Now' })
-    expect(button).not.toBeDisabled()
+    await waitFor(() => expect(button).not.toBeDisabled())
     fireEvent.click(button)
     await waitFor(() => expect(postPlexMatchStart).toHaveBeenCalledTimes(1))
   })
@@ -155,6 +157,7 @@ describe('Account', () => {
     })
     render(<Account avatarVersion={0} onAvatarChange={() => {}} />)
     const button = await screen.findByRole('button', { name: 'Link Now' })
+    await waitFor(() => expect(button).not.toBeDisabled())
     fireEvent.click(button)
     await waitFor(() => expect(screen.getByText('Plex address not reachable')).toBeInTheDocument())
     expect(screen.queryByText(/"detail"/)).not.toBeInTheDocument()
