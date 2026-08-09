@@ -467,7 +467,7 @@ class CrawlManager:
                             time.sleep(1.1)
                         else:
                             release["barcode"] = existing_row["barcode"]
-                        upsert_catalog_release(conn, release)
+                        upsert_catalog_release(conn, release, preserve_price=True)
                         upsert_library_item(
                             conn, user_id, rid, in_wishlist=True,
                             in_collection=False if is_new_release else None,

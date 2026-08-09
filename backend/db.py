@@ -353,16 +353,27 @@ def init_tenant_schema():
         conn.commit()
 
 
-def upsert_catalog_release(conn, data: dict):
+def upsert_catalog_release(conn, data: dict, preserve_price: bool = False):
+    # catalog is global (no user_id), and discogs_price comes from a per-user
+    # custom collection field. A caller that never read that field -- the
+    # wantlist sync -- must leave the stored value alone rather than write its
+    # own None over another sync's (or another user's) real price. This is a
+    # per-call-site decision, not a blanket COALESCE: a collection sync writing
+    # None means the user genuinely cleared the field, and must still clear it.
+    # That reasoning holds for the syncing user but not for the shared row, and
+    # the flag does not close the gap: a collection sync by a user with no field
+    # named "Price" also yields None, and still erases the price recorded by a
+    # user who has one. Fixing that means storing the value per user.
+    price_assignment = "" if preserve_price else "discogs_price = EXCLUDED.discogs_price,"
     conn.execute(
-        """
+        f"""
         INSERT INTO catalog (discogs_id, artist, title, year, label, format, discogs_price,
                               barcode, cover_image_url, discogs_url, last_synced)
         VALUES (%(discogs_id)s, %(artist)s, %(title)s, %(year)s, %(label)s, %(format)s,
                 %(discogs_price)s, %(barcode)s, %(cover_image_url)s, %(discogs_url)s, CURRENT_TIMESTAMP)
         ON CONFLICT (discogs_id) DO UPDATE SET
             artist = EXCLUDED.artist, title = EXCLUDED.title, year = EXCLUDED.year,
-            label = EXCLUDED.label, format = EXCLUDED.format, discogs_price = EXCLUDED.discogs_price,
+            label = EXCLUDED.label, format = EXCLUDED.format, {price_assignment}
             barcode = EXCLUDED.barcode, cover_image_url = EXCLUDED.cover_image_url,
             discogs_url = EXCLUDED.discogs_url, last_synced = CURRENT_TIMESTAMP
         """,
