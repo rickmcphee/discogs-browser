@@ -870,19 +870,21 @@ def replace_stock_items(conn, crawler_id: int, items: list[dict]) -> list[str]:
     return item_keys
 
 
-def _not_owned_clause(user_id_param: str) -> str:
+def _owned_match_fragment(user_id_param: str) -> str:
     # Exact-or-prefix-with-space title match, not exact-only: stock listings
     # often append edition/format qualifiers the catalog title doesn't have
     # (e.g. catalog "Kid A" vs. stock listing "Kid A (Deluxe Reissue)"), so a
     # strict equality would treat an already-owned release as still unowned.
-    return f"""NOT EXISTS (
-        SELECT 1 FROM library_items li
+    return f"""FROM library_items li
         JOIN catalog c ON c.discogs_id = li.discogs_id
         WHERE li.user_id = {user_id_param}
           AND li.in_collection = TRUE
           AND LOWER(c.artist) = LOWER(s.artist)
-          AND (LOWER(s.title) = LOWER(c.title) OR LOWER(s.title) LIKE LOWER(c.title) || ' %%')
-    )"""
+          AND (LOWER(s.title) = LOWER(c.title) OR LOWER(s.title) LIKE LOWER(c.title) || ' %%')"""
+
+
+def _not_owned_clause(user_id_param: str) -> str:
+    return f"NOT EXISTS (SELECT 1 {_owned_match_fragment(user_id_param)})"
 
 
 _STOCK_ALLOWED_SORT = {"artist", "title", "format", "price"}
@@ -902,7 +904,12 @@ def get_stock_items(
     exclude_crawler_ids: Optional[list[int]] = None,
 ) -> dict:
     order_sql = "DESC" if order.lower() == "desc" else "ASC"
-    sort_col = sort if sort in _STOCK_ALLOWED_SORT else "artist"
+    if sort == "discogs_price" and overlapping:
+        sort_expr = """(SELECT (regexp_match(c.discogs_price, '\\d+\\.?\\d*'))[1]::numeric
+                        {match} LIMIT 1)""".format(match=_owned_match_fragment("%(user_id)s"))
+    else:
+        sort_col = sort if sort in _STOCK_ALLOWED_SORT else "artist"
+        sort_expr = f"s.{sort_col}"
 
     conditions = []
     params: dict = {"user_id": user_id}
@@ -934,12 +941,13 @@ def get_stock_items(
     rows = conn.execute(
         f"""
         SELECT s.id, s.artist, s.title, s.format, s.price, s.currency, s.url, s.cover_image_url, s.last_seen,
-               s.item_key, cr.site_name AS source, j.reason AS reason
+               s.item_key, cr.site_name AS source, j.reason AS reason,
+               (SELECT c.discogs_price {_owned_match_fragment('%(user_id)s')} LIMIT 1) AS discogs_price
         FROM stock_items s
         JOIN crawlers cr ON cr.id = s.crawler_id
         LEFT JOIN stock_item_judgments j ON j.item_key = s.item_key AND j.user_id = %(user_id)s
         {where}
-        ORDER BY CASE WHEN s.{sort_col} IS NULL THEN 1 ELSE 0 END {null_order}, s.{sort_col} {order_sql}
+        ORDER BY CASE WHEN {sort_expr} IS NULL THEN 1 ELSE 0 END {null_order}, {sort_expr} {order_sql}
         LIMIT %(limit)s OFFSET %(offset)s
         """,
         params,
@@ -970,6 +978,7 @@ def get_stock_items(
                 "id": f"{r['id']}:{c['source']}",
                 "item_key": r["item_key"], "artist": r["artist"], "title": r["title"],
                 "format": r["format"], "cover_image_url": r["cover_image_url"],
+                "discogs_price": r["discogs_price"],
                 "price": c["price"], "currency": c["currency"], "url": c["url"],
                 "source": c["source"], "reason": r["reason"], "last_seen": c["last_checked"],
                 "is_own": False,
