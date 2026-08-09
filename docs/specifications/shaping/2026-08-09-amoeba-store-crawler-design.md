@@ -302,13 +302,14 @@ Registration is automatic: `main.py`'s startup copy/registration loop reads
 browser plus a `_FakePage` wrapper, so no live site and no bot-detection
 risk:
 
-- `_FakePage.goto()` sets a minimal stub document instead of navigating;
-  `evaluate()` delegates to the real page, with the in-page `fetch` stubbed
-  to return a saved fixture payload. This exercises the real extraction JS
-  and the real `DOMParser` path, not a reimplementation.
-- Fixture: `backend/tests/fixtures/crawlers/amoeba/vinyl_page1.json` — a
-  saved `{"data": …, "total": …}` response, trimmed to a handful of rows
-  covering each case below.
+- `_FakePage.goto()` sets a minimal stub document instead of navigating,
+  then installs a `window.fetch` stub that serves the fixture payload by
+  page number; `evaluate()` just delegates straight to the real page. This
+  exercises the real extraction JS and the real `DOMParser` path, not a
+  reimplementation.
+- Fixture: `backend/tests/fixtures/crawlers/amoeba/vinyl_window.json` — saved
+  `{"1": {"data": …, "total": …}, …, "5": {…}}` responses keyed by page
+  number, covering pages 1–5 of the window and every case below.
 - Direct classmethod tests for the parse rules:
   - a row with a new price
   - a used-only row, `"N Used for $X"`

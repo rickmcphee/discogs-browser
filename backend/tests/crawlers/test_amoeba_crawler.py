@@ -7,15 +7,32 @@ for real, but a _FakePage stubs window.fetch to serve the fixture instead of
 hitting the live site (no navigation, no bot-detection risk).
 """
 
+import json
 import sys
 from pathlib import Path
 
 import pytest
+from playwright.async_api import async_playwright
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "crawlers"))
 
 from amoeba import Crawler
+
+FIXTURES = Path(__file__).parent.parent / "fixtures" / "crawlers" / "amoeba"
+
+_INSTALL_FETCH_STUB_JS = """
+(pages) => {
+  window.__fetched = [];
+  window.fetch = async (url) => {
+    window.__fetched.push(url);
+    const match = url.match(/[?&]page=(\\d+)/);
+    const payload = match ? pages[match[1]] : null;
+    if (!payload) return {status: 404, json: async () => ({})};
+    return {status: 200, json: async () => payload};
+  };
+}
+"""
 
 
 def test_site_metadata():
@@ -154,3 +171,107 @@ def test_parse_row_does_not_normalise_casing():
     item = Crawler._parse_row(_row(artist="AC/DC", title="BACK IN BLACK (LP)"))
     assert item["artist"] == "AC/DC"
     assert item["title"] == "BACK IN BLACK (LP)"
+
+
+@pytest.fixture
+async def browser_page():
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch()
+        page = await browser.new_page()
+        yield page
+        await browser.close()
+
+
+class _FakePage:
+    """Serves the saved AJAX payloads to the crawler's real extraction JS."""
+
+    def __init__(self, real_page, pages, title="Vinyl & CD - Free U.S. Shipping"):
+        self._real_page = real_page
+        self._pages = pages
+        self._title = title
+
+    async def goto(self, url, timeout=None):
+        await self._real_page.set_content(
+            "<html><head></head><body></body></html>", wait_until="domcontentloaded"
+        )
+        await self._real_page.evaluate(_INSTALL_FETCH_STUB_JS, self._pages)
+
+    async def title(self):
+        return self._title
+
+    async def evaluate(self, script, arg=None):
+        return await self._real_page.evaluate(script, arg)
+
+    async def fetched_urls(self):
+        return await self._real_page.evaluate("() => window.__fetched")
+
+
+@pytest.fixture
+def window_pages():
+    return json.loads((FIXTURES / "vinyl_window.json").read_text(encoding="utf-8"))
+
+
+@pytest.fixture
+def fake_page(browser_page, window_pages):
+    return _FakePage(browser_page, window_pages)
+
+
+async def test_crawl_catalog_yields_parsable_rows_and_dedupes_across_pages(fake_page):
+    items = [item async for item in Crawler().crawl_catalog(fake_page)]
+
+    # Page 1 has 8 rows; the no-artist and no-price rows are skipped -> 6.
+    # Page 2's only row repeats page 1's first album id -> 0.
+    # Pages 3 and 4 are empty. Page 5 adds 1. Total 7.
+    assert len(items) == 7
+    titles = {item["title"] for item in items}
+    assert "Mystery Record (LP)" not in titles
+    assert "Priceless Pressing (LP)" not in titles
+    # The duplicate on page 2 must not overwrite page 1's price.
+    louder_now = [i for i in items if i["title"].startswith("Louder Now")]
+    assert len(louder_now) == 1
+    assert louder_now[0]["price"] == 36.98
+
+
+async def test_crawl_catalog_requests_every_page_in_the_window(fake_page):
+    [item async for item in Crawler().crawl_catalog(fake_page)]
+
+    fetched = await fake_page.fetched_urls()
+    assert len(fetched) == 5
+    for page_num in range(1, 6):
+        assert any(f"page={page_num}&" in url for url in fetched)
+
+
+async def test_crawl_catalog_builds_the_full_item_contract(fake_page):
+    items = [item async for item in Crawler().crawl_catalog(fake_page)]
+    item = next(i for i in items if i["artist"] == "Son Volt")
+
+    assert item["title"] == "Sound Signal Serenades (LP)"
+    assert item["format"] == "LP"
+    assert item["price"] == 3.99
+    assert item["currency"] == "USD"
+    assert item["url"] == (
+        "https://www.amoeba.com/sound-signal-serenades-lp-son-volt/albums/4495703/"
+    )
+    assert item["cover_image_url"] == "https://www.amoeba.com/sized-images/sv.jpg"
+
+
+async def test_crawl_catalog_reads_both_used_label_wordings(fake_page):
+    items = [item async for item in Crawler().crawl_catalog(fake_page)]
+
+    assert next(i for i in items if i["artist"] == "Son Volt")["price"] == 3.99
+    assert next(i for i in items if i["artist"] == "Arca")["price"] == 5.99
+
+
+async def test_crawl_catalog_prefers_new_price_when_a_row_has_both(fake_page):
+    items = [item async for item in Crawler().crawl_catalog(fake_page)]
+    item = next(i for i in items if i["artist"] == "Lady Antebellum")
+    assert item["price"] == 16.98
+
+
+async def test_crawl_catalog_sets_format_from_the_title_suffix(fake_page):
+    items = [item async for item in Crawler().crawl_catalog(fake_page)]
+    by_artist = {i["artist"]: i for i in items}
+
+    assert by_artist["The Army, The Navy"]["format"] == '7"'
+    assert by_artist["Kevin Morby"]["format"] == '12"'
+    assert by_artist["Neu!"]["format"] == "Vinyl"

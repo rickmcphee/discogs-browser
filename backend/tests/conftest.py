@@ -98,10 +98,12 @@ def _fast_catalog_crawl_sleep(request, monkeypatch):
             pass
 
         monkeypatch.setattr("shopify_catalog.sleep", fake_sleep)
-        # angryyoungandpoor.py paces its own page.goto() calls rather than going through
-        # shopify_catalog.iter_products() (it's a Playwright catalog_browser crawler, not
-        # an httpx one) -- patch its module-local `sleep` binding too, when importable.
-        try:
-            monkeypatch.setattr("angryyoungandpoor.sleep", fake_sleep)
-        except (ModuleNotFoundError, AttributeError):
-            pass
+        # angryyoungandpoor.py and amoeba.py pace their own Playwright calls rather
+        # than going through shopify_catalog.iter_products() (they're catalog_browser
+        # crawlers, not httpx ones) -- patch their module-local `sleep` bindings too,
+        # when importable.
+        for module_name in ("angryyoungandpoor", "amoeba"):
+            try:
+                monkeypatch.setattr(f"{module_name}.sleep", fake_sleep)
+            except (ModuleNotFoundError, AttributeError):
+                pass
