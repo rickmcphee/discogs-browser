@@ -1,8 +1,18 @@
+import csv
+import io
+from datetime import datetime
+
 import pytest
 
 import db
 from crawl_manager import crawl_manager
 from routers import stock as stock_router
+
+
+EXPORTED_HEADER = [
+    "artist", "title", "format", "price", "source", "link", "reason",
+    "item_key", "recommended", "judged_at",
+]
 
 
 @pytest.fixture
@@ -445,10 +455,13 @@ def test_export_recommended_stock_returns_csv(pg_test_db, authed_client_factory)
         user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
         conn.commit()
 
+    # The reason carries a comma and a quote on purpose: it's model-authored
+    # free text, so the export has to quote it and a reader has to honour that.
+    reason = 'similar genre, and a "favourite"'
     with db.user_scope(user["id"]) as conn:
         db.upsert_stock_judgments(conn, user["id"], [{
             "item_key": db.compute_item_key("Rob Zombie", "T1", "https://x/1"),
-            "recommended": True, "reason": "similar genre",
+            "recommended": True, "reason": reason,
         }])
         conn.commit()
 
@@ -458,16 +471,16 @@ def test_export_recommended_stock_returns_csv(pg_test_db, authed_client_factory)
     assert r.headers["content-type"].startswith("text/csv")
     assert "attachment" in r.headers["content-disposition"]
     assert "recommendations.csv" in r.headers["content-disposition"]
-    lines = r.text.strip().splitlines()
-    assert lines[0] == "artist,title,format,price,source,link,reason,item_key,recommended,judged_at"
-    assert len(lines) == 2
-    fields = lines[1].split(",")
-    assert fields[:9] == [
+    # csv.reader, not splitlines()/split(','): a quoted field may contain both
+    # commas and newlines, which naive splitting would misalign.
+    rows = list(csv.reader(io.StringIO(r.text)))
+    assert rows[0] == EXPORTED_HEADER
+    assert len(rows) == 2
+    assert rows[1][:9] == [
         "Rob Zombie", "T1", "Vinyl", "1.0", "Nuclear Blast", "https://x/1",
-        "similar genre", db.compute_item_key("Rob Zombie", "T1", "https://x/1"), "true",
+        reason, db.compute_item_key("Rob Zombie", "T1", "https://x/1"), "true",
     ]
-    from datetime import datetime
-    datetime.fromisoformat(fields[9])
+    datetime.fromisoformat(rows[1][9])
 
 
 def test_list_stock_recommended_is_isolated_per_user(pg_test_db, authed_client_factory):
@@ -531,10 +544,11 @@ def test_export_emits_the_ten_column_header_and_not_recommended_rows(pg_test_db,
     r = client.get("/api/stock/export")
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/csv")
-    lines = r.text.strip().splitlines()
-    assert lines[0] == "artist,title,format,price,source,link,reason,item_key,recommended,judged_at"
-    assert any(",true," in ln and yes_key in ln for ln in lines[1:])
-    assert any(",false," in ln and "b" * 64 in ln for ln in lines[1:])
+    rows = list(csv.reader(io.StringIO(r.text)))
+    assert rows[0] == EXPORTED_HEADER
+    by_key = {row[7]: row for row in rows[1:]}
+    assert by_key[yes_key][8] == "true"
+    assert by_key["b" * 64][8] == "false"
 
 
 def test_export_import_export_round_trips_byte_identically(pg_test_db, authed_client_factory):
