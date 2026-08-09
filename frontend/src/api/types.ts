@@ -123,6 +123,7 @@ export interface StockItem {
   last_seen: string
   reason: string | null
   is_own: boolean
+  discogs_price: string | null
 }
 
 export interface StockResponse {
@@ -132,4 +133,4 @@ export interface StockResponse {
   items: StockItem[]
 }
 
-export type StockSortField = 'artist' | 'title' | 'format' | 'price'
+export type StockSortField = 'artist' | 'title' | 'format' | 'price' | 'discogs_price' | 'source'

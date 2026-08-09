@@ -499,6 +499,139 @@ def test_get_stock_items_pagination_total_stays_item_counted_with_comparison_row
     assert len(result["items"]) == 4  # but 4 rows render on this page
 
 
+def test_get_stock_items_returns_matched_discogs_price_for_owned_item(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+    ])
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r1", "artist": "Artist A", "title": "Album A", "year": None, "label": None,
+        "format": None, "discogs_price": "25.00", "barcode": None, "cover_image_url": None,
+        "discogs_url": None,
+    })
+    db.upsert_library_item(admin_conn, alice["id"], "r1", in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], overlapping=True)
+    assert result["items"][0]["discogs_price"] == "25.00"
+
+
+def test_get_stock_items_discogs_price_is_none_when_unmatched(admin_conn):
+    db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+    ])
+    admin_conn.commit()
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"])
+    assert result["items"][0]["discogs_price"] is None
+
+
+def test_get_stock_items_comparison_rows_carry_owns_discogs_price(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    db.register_crawler(admin_conn, "Nuclear Blast", "/x.py", crawler_type="catalog")
+    db.register_crawler(admin_conn, "Amazon", "/y.py", crawler_type="release")
+    admin_conn.commit()
+    store_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()["id"]
+    amazon_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+    item_key = db.replace_stock_items(admin_conn, store_id, [
+        {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+    ])[0]
+    db.upsert_stock_item_listing(admin_conn, item_key, amazon_id, "https://amazon/1", 12.5, None, "USD", "New")
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r1", "artist": "Artist A", "title": "Album A", "year": None, "label": None,
+        "format": None, "discogs_price": "25.00", "barcode": None, "cover_image_url": None,
+        "discogs_url": None,
+    })
+    db.upsert_library_item(admin_conn, alice["id"], "r1", in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], overlapping=True)
+    assert len(result["items"]) == 2
+    assert result["items"][0]["discogs_price"] == "25.00"
+    assert result["items"][1]["discogs_price"] == "25.00"
+
+
+def test_get_stock_items_sort_by_discogs_price_orders_numerically_nulls_last(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+        {"artist": "Artist B", "title": "Album B", "url": "https://x/2", "price": 10.0, "currency": "USD"},
+        {"artist": "Artist C", "title": "Album C", "url": "https://x/3", "price": 10.0, "currency": "USD"},
+    ])
+    for discogs_id, artist, title, price in [
+        ("r1", "Artist A", "Album A", "$30.00"),
+        ("r2", "Artist B", "Album B", "10"),
+        ("r3", "Artist C", "Album C", "N/A"),
+    ]:
+        db.upsert_catalog_release(admin_conn, {
+            "discogs_id": discogs_id, "artist": artist, "title": title, "year": None, "label": None,
+            "format": None, "discogs_price": price, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+    for discogs_id in ("r1", "r2", "r3"):
+        db.upsert_library_item(admin_conn, alice["id"], discogs_id, in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], overlapping=True, sort="discogs_price", order="asc")
+    assert [r["artist"] for r in result["items"]] == ["Artist B", "Artist A", "Artist C"]
+
+
+def test_get_stock_items_sort_by_discogs_price_falls_back_to_artist_when_not_overlapping(admin_conn):
+    db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "Bravo", "title": "Album B", "url": "https://x/2", "price": 10.0, "currency": "USD"},
+        {"artist": "Alpha", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+    ])
+    admin_conn.commit()
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], overlapping=False, sort="discogs_price", order="asc")
+    assert [r["artist"] for r in result["items"]] == ["Alpha", "Bravo"]
+
+
+def test_get_stock_items_sort_by_source(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    db.register_crawler(admin_conn, "Zebra Records", "/x.py", crawler_type="catalog")
+    db.register_crawler(admin_conn, "Alpha Records", "/y.py", crawler_type="catalog")
+    admin_conn.commit()
+    zebra_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Zebra Records'").fetchone()["id"]
+    alpha_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Alpha Records'").fetchone()["id"]
+    db.replace_stock_items(admin_conn, zebra_id, [
+        {"artist": "Artist Z", "title": "Album Z", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+    ])
+    db.replace_stock_items(admin_conn, alpha_id, [
+        {"artist": "Artist A", "title": "Album A", "url": "https://x/2", "price": 10.0, "currency": "USD"},
+    ])
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], sort="source", order="asc")
+    assert [r["source"] for r in result["items"]] == ["Alpha Records", "Zebra Records"]
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], sort="source", order="desc")
+    assert [r["source"] for r in result["items"]] == ["Zebra Records", "Alpha Records"]
+
+
 def test_get_stock_items_comparison_row_id_unique_when_item_key_collides(admin_conn):
     # item_key is not unique in stock_items (see comment near
     # get_recommended_stock_items) -- two crawlers can report the identical

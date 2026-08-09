@@ -3,8 +3,8 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import StockBrowser from '../views/StockBrowser'
 
 const items = [
-  { id: 1, item_key: 'k1', is_own: true, artist: 'Rob Zombie', title: 'The Great Satan — Ghostly Black Vinyl', format: 'Vinyl', price: 31.99, currency: 'USD', url: 'https://shop.nuclearblast.com/products/rob-zombie', cover_image_url: 'https://cdn.shopify.com/rz-black.png', source: 'Nuclear Blast', last_seen: '2026-07-05T00:00:00Z' },
-  { id: 2, item_key: 'k2', is_own: true, artist: 'NAILS', title: 'Every Bridge Burning — Forest Green LP', format: 'Vinyl', price: 25.99, currency: 'USD', url: 'https://shop.nuclearblast.com/products/nails', cover_image_url: null, source: 'Nuclear Blast', last_seen: '2026-07-05T00:00:00Z' },
+  { id: 1, item_key: 'k1', is_own: true, artist: 'Rob Zombie', title: 'The Great Satan — Ghostly Black Vinyl', format: 'Vinyl', price: 31.99, currency: 'USD', url: 'https://shop.nuclearblast.com/products/rob-zombie', cover_image_url: 'https://cdn.shopify.com/rz-black.png', source: 'Nuclear Blast', last_seen: '2026-07-05T00:00:00Z', discogs_price: null },
+  { id: 2, item_key: 'k2', is_own: true, artist: 'NAILS', title: 'Every Bridge Burning — Forest Green LP', format: 'Vinyl', price: 25.99, currency: 'USD', url: 'https://shop.nuclearblast.com/products/nails', cover_image_url: null, source: 'Nuclear Blast', last_seen: '2026-07-05T00:00:00Z', discogs_price: '42.50' },
 ]
 
 const getStock = vi.fn()
@@ -69,9 +69,9 @@ describe('StockBrowser', () => {
   it('toggles sort order when a column header is clicked twice', async () => {
     render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    fireEvent.click(screen.getByText(/Price/))
+    fireEvent.click(screen.getByText(/Cost/))
     await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ sort: 'price', order: 'asc' })))
-    fireEvent.click(screen.getByText(/Price/))
+    fireEvent.click(screen.getByText(/Cost/))
     await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ sort: 'price', order: 'desc' })))
   })
 
@@ -80,6 +80,13 @@ describe('StockBrowser', () => {
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     fireEvent.click(screen.getByText(/Format/))
     await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ sort: 'format', order: 'asc' })))
+  })
+
+  it('sorts by source when the Source column header is clicked', async () => {
+    render(<StockBrowser />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByText(/^Source/))
+    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ sort: 'source', order: 'asc' })))
   })
 
   it('renders an artist sidebar with All plus each distinct artist, and filters on click', async () => {
@@ -238,6 +245,27 @@ describe('StockBrowser', () => {
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     expect(screen.getByRole('combobox')).toBeTruthy()
     expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ overlapping: false }))
+  })
+
+  it('does not render a Price column in Store scope', async () => {
+    render(<StockBrowser />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    expect(screen.queryByText(/Price/)).toBeNull()
+  })
+
+  it('renders a Price column in Collection scope showing the matched discogs_price, or — when missing', async () => {
+    render(<StockBrowser scope="collection" />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    expect(screen.getByText(/Price/)).toBeTruthy()
+    expect(screen.getByText('—')).toBeTruthy()
+    expect(screen.getByText('42.50')).toBeTruthy()
+  })
+
+  it('sorts by discogs_price when the Price column header is clicked in Collection scope', async () => {
+    render(<StockBrowser scope="collection" />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByText(/Price/))
+    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ sort: 'discogs_price', order: 'asc' })))
   })
 
   it('persists the view mode to localStorage under collectionViewMode_store', async () => {

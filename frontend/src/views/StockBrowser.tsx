@@ -89,6 +89,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
   }
 
   const totalPages = Math.ceil(total / PER_PAGE)
+  const colCount = scope === 'collection' ? 7 : 6
 
   const sortButtonClass = 'w-full px-3 py-2 cursor-pointer hover:text-white select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/80'
 
@@ -237,17 +238,28 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
                     Format {sort === 'format' ? (order === 'asc' ? '↑' : '↓') : ''}
                   </button>
                 </th>
+                {scope === 'collection' && (
+                  <th className="text-center" aria-sort={sort === 'discogs_price' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                    <button type="button" onClick={() => toggleSort('discogs_price')} className={`${sortButtonClass} text-center`}>
+                      Price {sort === 'discogs_price' ? (order === 'asc' ? '↑' : '↓') : ''}
+                    </button>
+                  </th>
+                )}
                 <th className="text-center" aria-sort={sort === 'price' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}>
                   <button type="button" onClick={() => toggleSort('price')} className={`${sortButtonClass} text-center`}>
-                    Price {sort === 'price' ? (order === 'asc' ? '↑' : '↓') : ''}
+                    Cost {sort === 'price' ? (order === 'asc' ? '↑' : '↓') : ''}
                   </button>
                 </th>
-                <th className="px-3 py-2 text-center normal-case">Source</th>
+                <th className="text-center" aria-sort={sort === 'source' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                  <button type="button" onClick={() => toggleSort('source')} className={`${sortButtonClass} text-center`}>
+                    Source {sort === 'source' ? (order === 'asc' ? '↑' : '↓') : ''}
+                  </button>
+                </th>
               </tr>
             </thead>
             <tbody>
               {loading && (
-                <tr><td colSpan={6} className="py-8 text-gray-500">
+                <tr><td colSpan={colCount} className="py-8 text-gray-500">
                   <div className="flex items-center justify-center gap-2">
                     <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
                     Loading…
@@ -255,7 +267,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
                 </td></tr>
               )}
               {!loading && items.length === 0 && (
-                <tr><td colSpan={6} className="text-center py-8 text-gray-500">No in-stock items yet. Click "Refresh Stock Now" in Settings.</td></tr>
+                <tr><td colSpan={colCount} className="text-center py-8 text-gray-500">No in-stock items yet. Click "Refresh Stock Now" in Settings.</td></tr>
               )}
               {items.map((item) => (
                 <tr key={item.id} className="border-t border-gray-800 hover:bg-gray-900/50">
@@ -273,6 +285,9 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
                   <td className="px-3 py-2 text-right text-gray-200" title={item.reason ?? undefined}>{item.artist}</td>
                   <td className="px-3 py-2 text-left text-gray-300" title={item.reason ?? undefined}>{item.title}</td>
                   <td className="px-3 py-2 text-gray-400">{item.format ?? '—'}</td>
+                  {scope === 'collection' && (
+                    <td className="px-3 py-2 text-gray-400">{item.discogs_price ?? '—'}</td>
+                  )}
                   <td className="px-3 py-2">
                     <a href={item.url} target="_blank" rel="noreferrer" className="text-green-400 hover:text-green-300 font-medium">
                       {item.price != null ? `$${item.price.toFixed(2)}` : 'View'}
