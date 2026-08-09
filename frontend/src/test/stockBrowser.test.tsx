@@ -116,6 +116,8 @@ describe('StockBrowser', () => {
     const select = screen.getByRole('combobox') as HTMLSelectElement
     expect(select.value).toBe('all')
     expect(Array.from(select.options).map((o) => o.text)).toEqual(['All', 'Recommended'])
+    expect((screen.getByRole('option', { name: 'All' }) as HTMLOptionElement).disabled).toBe(false)
+    expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(true)
   })
 
   it('enables Recommended when recommendedAvailable is true', async () => {

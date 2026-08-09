@@ -151,6 +151,13 @@ fetches and returns `rows`. What's added, after that fetch:
     return {"total": total, "page": page, "per_page": per_page, "items": flattened}
 ```
 
+**Amendment (2026-08-09):** the synthesized comparison-row `"id"` above is
+built from `r['id']` (the own row's `stock_items.id`), not `r['item_key']`
+as shown — `item_key` isn't unique per `stock_items` row (two rows can
+share one), so keying off it collided. The comparison query also carries
+an `ORDER BY l.item_key, cr.site_name` for deterministic multi-crawler
+ordering, omitted above.
+
 `l.price IS NOT NULL` mirrors the existing defensive filter in
 `get_missing_releases` — under the current invariant `upsert_listing`/
 `upsert_stock_item_listing` only ever write a row on a match, so this is

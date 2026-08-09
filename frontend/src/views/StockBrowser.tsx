@@ -61,7 +61,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
       setFilter('all')
     }
   }, [recommendedAvailable, filter])
-  useEffect(() => { getStockArtists(scope === 'collection', filter === 'recommended', hiddenCrawlerIds).then(setArtists) }, [scope, filter, hiddenCrawlerIds])
+  useEffect(() => { getStockArtists(scope === 'collection', scope === 'store' && filter === 'recommended', hiddenCrawlerIds).then(setArtists) }, [scope, filter, hiddenCrawlerIds])
   useEffect(() => { localStorage.setItem(`collectionViewMode_${scope}`, viewMode) }, [viewMode, scope])
   useEffect(() => { localStorage.setItem(`stockFilter_${scope}`, filter) }, [filter, scope])
   useEffect(() => { tableScrollRef.current?.scrollTo({ top: 0 }) }, [selectedArtist])
