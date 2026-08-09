@@ -372,13 +372,27 @@ export default function App() {
         return
       }
       const applied = r.imported + r.updated
-      const parts = [
-        `Imported ${applied} judgment${applied === 1 ? '' : 's'}`,
-        `${r.unchanged} already current`,
-        `${r.matched_stock_items} match items in stock now — the rest apply as items appear`,
-      ]
-      if (r.skipped > 0) parts.push(`${r.skipped} row${r.skipped === 1 ? '' : 's'} skipped`)
-      setSyncStatus(`${parts.join('; ')}.`)
+      const skippedClause = r.skipped > 0
+        ? `. ${r.skipped} row${r.skipped === 1 ? '' : 's'} skipped`
+        : ''
+      if (applied === 0) {
+        const base = r.unchanged > 0
+          ? `Nothing new to import — ${r.unchanged} judgment${r.unchanged === 1 ? '' : 's'} already up to date`
+          : 'No judgments imported'
+        setSyncStatus(`${base}${skippedClause}.`)
+      } else {
+        let message = `Imported ${applied} judgment${applied === 1 ? '' : 's'}`
+        if (r.unchanged > 0) message += `, ${r.unchanged} already current`
+        // Nothing visibly changes in the Recommended filter until a store sync
+        // surfaces these items, so say which ones are live now and which aren't.
+        if (r.matched_stock_items === 0) {
+          message += '. None in stock yet — they apply as items appear'
+        } else {
+          message += `. ${r.matched_stock_items} in stock now`
+          if (r.matched_stock_items < applied) message += '; the rest apply as items appear'
+        }
+        setSyncStatus(`${message}${skippedClause}.`)
+      }
       const status = await getJudgmentStatus()
       setHasJudgedItems(status.any_judged)
     } catch (e: any) {

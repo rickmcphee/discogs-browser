@@ -322,7 +322,7 @@ function Account({
                 />
                 <button
                   onClick={() => importInputRef.current?.click()}
-                  className={`w-20 text-center px-3 py-1 text-xs disabled:opacity-50 ${secondaryButtonClass()}`}
+                  className={`w-20 text-center px-3 py-1 text-xs ${secondaryButtonClass()}`}
                 >
                   Import
                 </button>
