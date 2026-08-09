@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { redeemInvite } from '../api/client'
 import { primaryButtonClass } from '../styles/buttons'
+import { textInputClass } from '../styles/inputs'
 
 export default function InviteCodeScreen({
   signupToken,
@@ -34,7 +35,7 @@ export default function InviteCodeScreen({
         <input
           type="text" placeholder="Invite code" value={code}
           onChange={e => setCode(e.target.value)}
-          className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white placeholder-gray-500 focus:outline-none focus:border-gray-400"
+          className={`w-full px-4 py-2 ${textInputClass()}`}
           autoFocus
         />
         {error && <p className="text-red-400 text-sm">{error}</p>}

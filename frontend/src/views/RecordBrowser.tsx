@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { getReleases, getArtists } from '../api/client'
 import type { Release, SortField, SortOrder, RecordScope } from '../api/types'
 import { navButtonClass, dismissButtonClass } from '../styles/buttons'
+import { textInputClass, selectClass } from '../styles/inputs'
 
 interface Props {
   scope: RecordScope
@@ -132,11 +133,11 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
               placeholder="Search artist or title…"
               value={search}
               onChange={(e) => { setSearch(e.target.value); setPage(1) }}
-              className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-1.5 pr-7 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-gray-400"
+              className={`w-full px-3 py-1.5 pr-8 text-sm ${textInputClass()}`}
             />
             <button
               onClick={() => { setSearch(''); setPage(1) }}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
             >
               ✕
             </button>
@@ -147,7 +148,7 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
               <select
                 value={unmatched ? 'unmatched' : 'all'}
                 onChange={(e) => { setUnmatched(e.target.value === 'unmatched'); setPage(1) }}
-                className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-gray-400"
+                className={`px-3 py-1 text-sm ${selectClass()}`}
               >
                 <option value="all">All</option>
                 <option value="unmatched">Unmatched</option>

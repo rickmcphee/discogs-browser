@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useMemo, memo } from 'react'
 import { openLogsStream, screenshotUrl, clearLogs } from '../api/client'
+import { textInputClass } from '../styles/inputs'
 
 type Level = 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR' | 'OTHER'
 
@@ -140,13 +141,11 @@ function LogViewer() {
             value={msgFilter}
             onChange={(e) => setMsgFilter(e.target.value)}
             placeholder="Filter message (regexp)…"
-            className={`w-full bg-gray-800 border rounded px-2 py-0.5 pr-6 text-gray-200 placeholder-gray-600 outline-none focus:border-gray-400 ${
-              regexError ? 'border-red-500' : 'border-gray-700'
-            }`}
+            className={`w-full px-3 py-0.5 pr-7 ${textInputClass(regexError)}`}
           />
           <button
             onClick={() => setMsgFilter('')}
-            className="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
+            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
           >
             ✕
           </button>
