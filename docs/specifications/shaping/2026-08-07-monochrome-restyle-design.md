@@ -109,3 +109,17 @@ references to update. No agent-facing documentation changes are needed.
   is Account.tsx's admin/user role switch, which shipped as `bg-gray-800`
   (admin) / `bg-gray-600` (user) — two grays, not white/gray as the table
   stated.
+
+## Amendment (2026-08-09, superseded input shape)
+
+- The previous amendment's "plain `<input>`/`<select>` elements were
+  intentionally left at the smaller `rounded`" no longer describes the app.
+  Every text/password/number input and every `<select>` is now `rounded-full`,
+  matching the button pills — not the `rounded-xl` the original shape mapping
+  proposed. Modals and cards stay `rounded-xl`.
+- The shared style now lives in `frontend/src/styles/inputs.ts`
+  (`textInputClass(isInvalid)`, `selectClass()`), mirroring the
+  `styles/buttons.ts` approach, with unit tests in
+  `frontend/src/test/inputs.test.ts`. Placeholder color is unified to
+  `placeholder-gray-500` and input text to `text-white` (LogViewer's filter
+  was previously `text-gray-200`/`placeholder-gray-600`).

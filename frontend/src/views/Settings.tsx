@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, memo } from 'react'
 import { getSettings, saveSettings, setCrawlerEnabled } from '../api/client'
 import type { Settings as SettingsType, Crawler } from '../api/types'
 import { navButtonClass, secondaryButtonClass } from '../styles/buttons'
+import { textInputClass, selectClass } from '../styles/inputs'
 
 interface SettingRow {
   key: keyof SettingsType
@@ -102,7 +103,7 @@ function Settings({
               onChange={(e) =>
                 setSettings({ ...settings, [row.key]: parseInt(e.target.value) || 0 })
               }
-              className="w-24 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-gray-400"
+              className={`w-24 px-3 py-1 ${textInputClass()}`}
             />
           ) : (
             <input
@@ -113,7 +114,7 @@ function Settings({
               onChange={(e) =>
                 setSettings({ ...settings, [row.key]: e.target.value })
               }
-              className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white placeholder-gray-600 focus:outline-none focus:border-gray-400"
+              className={`w-full px-3 py-1 ${textInputClass()}`}
             />
           )}
         </td>
@@ -269,7 +270,7 @@ function Settings({
                       value={settings.crawl_schedule ?? ''}
                       placeholder="0 2 * * *"
                       onChange={(e) => setSettings({ ...settings, crawl_schedule: e.target.value })}
-                      className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white placeholder-gray-600 focus:outline-none focus:border-gray-400 font-mono text-xs"
+                      className={`w-full px-3 py-1 font-mono text-xs ${textInputClass()}`}
                     />
                   </td>
                   <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
@@ -282,7 +283,7 @@ function Settings({
                     <select
                       value={settings.crawl_schedule_mode ?? 'missing'}
                       onChange={(e) => setSettings({ ...settings, crawl_schedule_mode: e.target.value as 'missing' | 'all' })}
-                      className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-gray-400"
+                      className={`w-full px-3 py-1 ${selectClass()}`}
                     >
                       <option value="missing">Missing only</option>
                       <option value="all">All records</option>
@@ -334,7 +335,7 @@ function Settings({
                     value={settings.stock_schedule ?? ''}
                     placeholder="0 3 * * *"
                     onChange={(e) => setSettings({ ...settings, stock_schedule: e.target.value })}
-                    className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white placeholder-gray-600 focus:outline-none focus:border-gray-400 font-mono text-xs"
+                    className={`w-full px-3 py-1 font-mono text-xs ${textInputClass()}`}
                   />
                 </td>
                 <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">

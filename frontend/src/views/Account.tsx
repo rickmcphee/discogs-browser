@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, memo } from 'react'
 import Avatar from '../components/Avatar'
 import { deleteAvatar, getUserSettings, logout, postPlexMatchStart, saveUserSettings, uploadAvatar } from '../api/client'
 import { secondaryButtonClass } from '../styles/buttons'
+import { textInputClass } from '../styles/inputs'
 
 interface Props {
   avatarVersion: number
@@ -240,7 +241,7 @@ function Account({
                   value={anthropicApiKey}
                   placeholder="sk-ant-..."
                   onChange={(e) => setAnthropicApiKey(e.target.value)}
-                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white placeholder-gray-600 focus:outline-none focus:border-gray-400"
+                  className={`w-full px-3 py-1 ${textInputClass()}`}
                 />
               </td>
               <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
@@ -258,7 +259,7 @@ function Account({
                   aria-label="Recommendation item limit"
                   value={recommendationItemLimit}
                   onChange={(e) => setRecommendationItemLimit(Math.max(0, parseInt(e.target.value) || 0))}
-                  className="w-24 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-gray-400"
+                  className={`w-24 px-3 py-1 ${textInputClass()}`}
                 />
               </td>
               <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
@@ -333,7 +334,7 @@ function Account({
                   value={plexBaseUrl}
                   placeholder="https://1-2-3-4.abcd1234.plex.direct:32400"
                   onChange={(e) => setPlexBaseUrl(e.target.value)}
-                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white placeholder-gray-600 focus:outline-none focus:border-gray-400"
+                  className={`w-full px-3 py-1 ${textInputClass()}`}
                 />
               </td>
               <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
@@ -356,7 +357,7 @@ function Account({
                   value={plexToken}
                   placeholder="your Plex token"
                   onChange={(e) => setPlexToken(e.target.value)}
-                  className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white placeholder-gray-600 focus:outline-none focus:border-gray-400"
+                  className={`w-full px-3 py-1 ${textInputClass()}`}
                 />
               </td>
               <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
@@ -375,7 +376,7 @@ function Account({
                   aria-label="Match threshold"
                   value={plexMatchThreshold}
                   onChange={(e) => setPlexMatchThreshold(Math.max(0, Math.min(100, parseInt(e.target.value) || 0)))}
-                  className="w-24 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white focus:outline-none focus:border-gray-400"
+                  className={`w-24 px-3 py-1 ${textInputClass()}`}
                 />
               </td>
               <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
