@@ -28,6 +28,9 @@ _PAGE_SIZE = 200
 # Raising either constant on its own breaks that relationship -- not a cheap win.
 _WINDOW_PAGES = 5
 
+_NEW_PRICE_RE = re.compile(r"\$([\d,]+\.?\d*)")
+_USED_PRICE_RE = re.compile(r"\bUsed\s+(?:for|from)\s+\$([\d,]+\.?\d*)")
+
 
 class Crawler:
     site_name: str = "Amoeba Music"
@@ -41,3 +44,13 @@ class Crawler:
             f"/ajax/cds_and_vinyl.php?page={page_num}&show={_PAGE_SIZE}"
             f"&order=date&direction=desc{formats}"
         )
+
+    @staticmethod
+    def _extract_price(new_price: Optional[str], used: Optional[str]) -> Optional[float]:
+        for pattern, text in ((_NEW_PRICE_RE, new_price), (_USED_PRICE_RE, used)):
+            if not text:
+                continue
+            match = pattern.search(text)
+            if match:
+                return float(match.group(1).replace(",", ""))
+        return None

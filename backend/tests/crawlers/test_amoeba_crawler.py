@@ -42,3 +42,28 @@ def test_listing_url_requests_newest_vinyl_only():
     # CD and cassette are explicitly out of scope.
     assert "format%5B1%5D" not in url
     assert "format%5B24%5D" not in url
+
+
+def test_extract_price_uses_new_price_when_present():
+    assert Crawler._extract_price("$36.98", None) == 36.98
+
+
+def test_extract_price_falls_back_to_used_for_wording():
+    assert Crawler._extract_price(None, "1 Used for $3.99") == 3.99
+
+
+def test_extract_price_falls_back_to_used_from_wording():
+    assert Crawler._extract_price(None, "3 Used from $5.99") == 5.99
+
+
+def test_extract_price_prefers_new_over_used():
+    assert Crawler._extract_price("$16.98", "1 Used for $6.99") == 16.98
+
+
+def test_extract_price_handles_thousands_separator():
+    assert Crawler._extract_price("$1,234.56", None) == 1234.56
+
+
+def test_extract_price_returns_none_when_no_price_anywhere():
+    assert Crawler._extract_price(None, None) is None
+    assert Crawler._extract_price("", "") is None
