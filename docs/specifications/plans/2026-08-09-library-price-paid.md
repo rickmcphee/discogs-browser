@@ -373,10 +373,12 @@ In `backend/crawl_manager.py:470`:
                         upsert_catalog_release(conn, release)
 ```
 
-- [ ] **Step 3: Confirm the flag is gone**
+- [ ] **Step 3: Confirm the flag is gone from application code**
 
-Run: `cd backend && grep -rn "preserve_price" . ; echo "exit=$?"`
+Run: `cd backend && grep -rn "preserve_price" . --include="*.py" | grep -v "/tests/" ; echo "exit=$?"`
 Expected: no matches, `exit=1`
+
+**Correction (found during execution):** an earlier draft of this step grepped all of `backend/` and expected zero matches here. That gate cannot pass at this point — three test files still reference the flag until Steps 10 and 20 clean them up. The repo-wide check belongs at Step 21, where it now lives.
 
 ---
 
@@ -896,6 +898,14 @@ And the projection:
 - [ ] **Step 16: Repoint the test seeding in `test_stock_crud.py`**
 
 In each case below the price moves from the `upsert_catalog_release` dict to the matching `upsert_library_item` call. Change `"discogs_price": "<value>"` to `"price_paid": None` in the catalog dict, and add `price_paid="<value>"` to the `upsert_library_item` call for that release.
+
+**Do not treat the list below as exhaustive — an earlier draft of it was not.** Before editing, enumerate the real set yourself:
+
+```bash
+cd backend && grep -n '"discogs_price": [^N]' tests/test_stock_crud.py
+```
+
+Two sites the original list missed both seed through a loop variable (`"discogs_price": price`) rather than a literal, so a grep for quoted values skips them: `test_get_stock_items_sort_by_discogs_price_orders_numerically_nulls_last` and `test_get_stock_items_sort_by_discogs_price_under_wishlist_scope_falls_back_to_artist_order`. Both need `price_paid=price` on their `upsert_library_item` calls. Missing them does **not** turn the tests red — their assertions are about row *order*, and with every key NULL the sort silently falls back and the order still happens to satisfy them. They go vacuous instead, which is worse. The wishlist-scope one must keep its prices on the wantlist rows for the same reason as Step 17.
 
 - `:512` / `:518` — `test_get_stock_items_returns_matched_discogs_price_for_owned_item`, `"25.00"` → `db.upsert_library_item(admin_conn, alice["id"], "r1", in_collection=True, price_paid="25.00")`
 - `:552` / `:558` — `test_get_stock_items_comparison_rows_carry_owns_discogs_price`, `"25.00"` → same form
