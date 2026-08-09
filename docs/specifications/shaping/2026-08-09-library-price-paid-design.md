@@ -58,11 +58,23 @@ ALTER TABLE library_items ADD COLUMN IF NOT EXISTS price_paid TEXT;
 
 ### 2. Write path
 
-`upsert_library_item` gains `price_paid: Optional[str] = None`, resolved the same way as its existing partial-update parameters:
+`upsert_library_item` gains a `price_paid` parameter defaulting to a module-level `_UNSET` sentinel, **not** to `None`.
 
-```sql
-price_paid = COALESCE(%(price_paid)s, library_items.price_paid)
+The sentinel is load-bearing, and the reason is worth stating because the obvious alternative is wrong. The neighbouring parameters use `COALESCE(%(param)s, library_items.param)`, where `None` means "unspecified, inherit". Price cannot use that pattern: `parse_release` legitimately yields `None` for a user who has cleared their Discogs `"Price"` field, so under `COALESCE` a price would inherit forever and become permanently unclearable through the app. `None` therefore has to mean "authoritatively empty", which leaves nothing to mean "unspecified" — hence the sentinel.
+
+The `SET` clause for the column is included only when the caller passed something:
+
+```python
+    price_set = "" if price_paid is _UNSET else "price_paid = %(price_paid)s,"
 ```
+
+giving three distinct behaviours from one parameter:
+
+| Caller | Effect |
+|---|---|
+| Omits `price_paid` | Column absent from `SET`; existing value inherited. `NULL` on first insert. |
+| Passes a value | Written. |
+| Passes `None` explicitly | Written as `NULL` — a genuine clear. |
 
 Call sites:
 
@@ -72,9 +84,11 @@ Call sites:
 | Collection loop, `mode="new"` skip path (`:409`) | No | Never calls `parse_release`; no price is in scope |
 | Wantlist loop (`:471`) | No | Wantlist items carry no collection price field |
 
-**On `mode="new"` and clearing semantics.** The `mode="new"` early-continue path calls `upsert_library_item` without ever calling `parse_release`, so it has no price to pass. `COALESCE` makes that a no-op that inherits the stored value — consistent with the fact that this path also declines to refresh `artist`, `title`, and `barcode` for already-known releases. Clearing still works: a user who empties their Discogs `"Price"` field gets `None` written on their next `mode="all"` sync.
+**On `mode="new"` and clearing semantics.** The `mode="new"` early-continue path calls `upsert_library_item` without ever calling `parse_release`, so it has no price to pass. Omitting the parameter inherits the stored value — consistent with the fact that this path also declines to refresh `artist`, `title`, and `barcode` for already-known releases.
 
-The accepted cost is that a cleared field persists until a full sync. This is deliberately *not* solved with a second explicit "I looked, and it is genuinely empty" flag. Such a flag is exactly the shape of `preserve_price`, which step 5 retires; and the failure it would prevent is now confined to one user's own data, not leaked across tenants.
+Clearing works on any `mode="all"` sync, because the full-parse path always passes the parameter and `None` there means the field really is empty.
+
+This is deliberately *not* done with a `price_paid_known: bool` companion flag. That would be the shape of `preserve_price`, which step 5 retires. The sentinel expresses the same distinction through the parameter's own absence, so there is no second argument for a caller to get out of step with the first.
 
 **`parse_release` renames its output key** `discogs_price` → `price_paid`. This is what allows `preserve_price` to die: once `upsert_catalog_release` has no price to write, the flag guards nothing.
 
@@ -164,7 +178,7 @@ With no price on `catalog`, `upsert_catalog_release` drops both the `discogs_pri
 
 Backend tests need Postgres running and `TEST_DATABASE_URL` in `backend/.env`.
 
-- `upsert_library_item` writes `price_paid`; omitting it preserves the stored value (the `COALESCE` contract, mirroring the existing `in_collection`/`date_added` tests).
+- `upsert_library_item` writes `price_paid`; omitting it preserves the stored value; passing `None` explicitly clears it. All three sentinel behaviours need a test — the omit-vs-explicit-`None` pair is the whole point of the sentinel, and a `COALESCE` implementation would pass the first and fail the second.
 - **Cross-tenant regression, the bug this fixes:** user A syncs with a `"Price"` field and user B syncs the same release without one; A's `price_paid` survives B's sync. This is the test whose absence allowed the bug.
 - `mode="new"` sync over an existing release leaves `price_paid` intact.
 - A `mode="all"` sync with `price_field_id=None` clears the syncing user's own `price_paid` and no one else's.
