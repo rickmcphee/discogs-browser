@@ -76,6 +76,27 @@ Discogs releases (see `docs/specifications/shaping/2026-08-08-crawl-target-expan
    `test_drain_one_batch_counts_bot_detected_stock_item_search_as_a_failure`,
    and `test_drain_one_batch_resets_failure_count_on_a_found_stock_item_match`.
 
+**Amendment (2026-08-09, branch `claude/ebay-409-cooloff`):** item 8's exclusion
+had a consequence nobody spotted when it landed.
+
+9. **A crawler that answers an API failure with `[]` is invisible to the
+   breaker.** `ebay_api.search_ebay()` caught every `httpx.HTTPStatusError` /
+   `httpx.RequestError`, logged it, and returned `[]` — the same value it
+   returns for "no matching listing." Combined with item 8, that meant
+   successive eBay API errors on a stock-item row recorded nothing at all: the
+   counter never moved, `consecutive_failure_limit` was never reached, and the
+   site never cooled off no matter how many errors came back in a row. (Reported
+   against eBay 409s.) `search_ebay()` now re-raises after logging, so
+   `_drain_one_batch`'s existing `except Exception` path records the failure —
+   for release and stock-item rows alike, since that path runs before the
+   target-kind branch. Nothing in `CrawlManager` changed. The general rule this
+   makes explicit for any future crawler: **`[]` means "the site answered and
+   has nothing"; anything else must raise**, because the breaker cannot
+   distinguish the two otherwise. Covered by
+   `test_successive_ebay_api_errors_cool_down_the_site` (real `crawlers/ebay.py`
+   plugin against a mocked 409, asserting the cooldown trips) and
+   `test_search_raises_on_http_error` / `test_search_raises_on_request_error`.
+
 ---
 
 ## Overview

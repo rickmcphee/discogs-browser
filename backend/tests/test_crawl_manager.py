@@ -1643,6 +1643,54 @@ async def test_drain_one_batch_records_failure_and_cools_down_after_limit(pg_sch
     assert manager._site_consecutive_failures.get(crawler_id, 0) == 0  # reset after tripping
 
 
+async def test_successive_ebay_api_errors_cool_down_the_site(pg_schema):
+    """End-to-end for the reported bug: eBay answering every request with an
+    HTTP error must trip the configured consecutive-failure limit. Runs the
+    real crawlers.ebay plugin against a mocked eBay API rather than a stub
+    plugin, because the defect was in the plugin's own error handling --
+    a stubbed search() would have hidden it."""
+    import ebay_api
+    from crawlers.ebay import Crawler as EbayCrawler
+
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "eBay/CCmusic", "/ebay.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'eBay/CCmusic'").fetchone()["id"]
+        for i in range(3):
+            conn.execute(
+                "INSERT INTO stock_item_identities (item_key, artist, title) VALUES (%s, 'A', 'T')",
+                [f"key{i}"],
+            )
+            db.enqueue_crawl_queue_for_stock_item(conn, f"key{i}", crawler_id)
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    plugin = EbayCrawler()
+    plugin._db_id = crawler_id
+    plugin._db_site_name = "eBay/CCmusic"
+
+    ebay_api._token = None
+    ebay_api._token_expires_at = 0.0
+    try:
+        with respx.mock:
+            respx.post("https://api.ebay.com/identity/v1/oauth2/token").mock(
+                return_value=httpx.Response(200, json={"access_token": "t", "expires_in": 7200})
+            )
+            respx.get("https://api.ebay.com/buy/browse/v1/item_summary/search").mock(
+                return_value=httpx.Response(409, json={})
+            )
+            with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+                 patch("crawlers.ebay.load_config", return_value={"ebay_app_id": "a", "ebay_cert_id": "c"}), \
+                 patch("config.load_config", return_value={"crawl_delay_seconds": 0, "consecutive_failure_limit": 3}):
+                await manager._drain_one_batch("worker-test", {crawler_id: plugin}, pages={})
+    finally:
+        ebay_api._token = None
+        ebay_api._token_expires_at = 0.0
+
+    assert manager._site_cooldown_until.get(crawler_id, 0) > time.monotonic()
+
+
 async def test_drain_one_batch_excludes_cooling_down_crawler_from_claim(pg_schema):
     with db.get_admin_pool().connection() as conn:
         db.register_crawler(conn, "Amazon", "/x.py")
