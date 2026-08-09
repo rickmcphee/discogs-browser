@@ -151,6 +151,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS crawl_queue_item_key_crawler_idx ON crawl_queu
 ALTER TABLE listings ALTER COLUMN release_id DROP NOT NULL;
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS item_key TEXT REFERENCES stock_item_identities(item_key);
 CREATE UNIQUE INDEX IF NOT EXISTS listings_item_key_crawler_idx ON listings (item_key, crawler_id);
+
+-- stock_items.item_key is not unique (the same artist/title/url can be seen
+-- by several crawlers) so this is a plain index, not a unique one. Needed by
+-- get_all_stock_judgments' LEFT JOIN LATERAL, and it also serves the
+-- existing get_stock_items / get_unjudged_stock_items joins on s.item_key.
+CREATE INDEX IF NOT EXISTS stock_items_item_key_idx ON stock_items (item_key);
 """
 
 
