@@ -87,3 +87,50 @@ def test_extract_format_defaults_to_vinyl_without_a_known_token():
     # A CD-suffixed title should never reach here (the request filters CD out),
     # but it must not be reported as a CD if it does.
     assert Crawler._extract_format("Loosen Up (CD)") == "Vinyl"
+
+
+def _row(**overrides):
+    row = {
+        "href": "/sound-signal-serenades-lp-son-volt/albums/4495703/",
+        "title": "Sound Signal Serenades (LP)",
+        "artist": "Son Volt",
+        "newPrice": "$29.98",
+        "used": None,
+        "image": "https://www.amoeba.com/sized-images/crop/50/50/uploads/a.jpg",
+    }
+    row.update(overrides)
+    return row
+
+
+def test_parse_row_builds_the_plugin_contract():
+    item = Crawler._parse_row(_row())
+
+    assert item == {
+        "artist": "Son Volt",
+        "title": "Sound Signal Serenades (LP)",
+        "format": "LP",
+        "price": 29.98,
+        "currency": "USD",
+        "url": "https://www.amoeba.com/sound-signal-serenades-lp-son-volt/albums/4495703/",
+        "cover_image_url": "https://www.amoeba.com/sized-images/crop/50/50/uploads/a.jpg",
+    }
+
+
+def test_parse_row_skips_row_with_no_artist():
+    assert Crawler._parse_row(_row(artist=None)) is None
+    assert Crawler._parse_row(_row(artist="   ")) is None
+
+
+def test_parse_row_skips_row_with_no_title():
+    assert Crawler._parse_row(_row(title=None)) is None
+
+
+def test_parse_row_skips_row_with_no_price():
+    assert Crawler._parse_row(_row(newPrice=None, used=None)) is None
+
+
+def test_parse_row_does_not_normalise_casing():
+    # db.replace_stock_items() owns casing normalisation downstream.
+    item = Crawler._parse_row(_row(artist="AC/DC", title="BACK IN BLACK (LP)"))
+    assert item["artist"] == "AC/DC"
+    assert item["title"] == "BACK IN BLACK (LP)"

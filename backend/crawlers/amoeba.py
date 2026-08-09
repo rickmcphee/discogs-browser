@@ -60,3 +60,25 @@ class Crawler:
     def _extract_format(title: str) -> str:
         match = _FORMAT_SUFFIX_RE.search(title)
         return match.group(1) if match else "Vinyl"
+
+    @classmethod
+    def _parse_row(cls, row: dict) -> Optional[dict]:
+        artist = (row.get("artist") or "").strip()
+        title = (row.get("title") or "").strip()
+        href = row.get("href") or ""
+        if not (artist and title and href):
+            return None
+
+        price = cls._extract_price(row.get("newPrice"), row.get("used"))
+        if price is None:
+            return None
+
+        return {
+            "artist": artist,
+            "title": title,
+            "format": cls._extract_format(title),
+            "price": price,
+            "currency": "USD",
+            "url": f"{cls.base_url}{href}",
+            "cover_image_url": row.get("image"),
+        }
