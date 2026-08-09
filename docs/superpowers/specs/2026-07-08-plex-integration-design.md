@@ -47,6 +47,8 @@ Discogs and Plex share no common ID, so matching is done on normalized artist+ti
 
 **Storage: two columns on `releases`, not a join table.** A release has at most one Plex match — this is `discogs_price`/`cover_image_url` cardinality, not `listings` cardinality (which is legitimately one row per crawler per release). `plex_url` and `plex_matched_at` follow the existing column pattern directly.
 
+**Note (2026-08-09):** the argument above still holds, and the analogy got better. `discogs_price` moved to `library_items.price_paid` because it is per-user data, which is where `plex_url`/`plex_matched_at` already sit for the same reason — so the cited precedent is now a per-user column alongside these two, rather than a global one. `catalog.discogs_price` no longer exists; read that reference as `library_items.price_paid`.
+
 **Recomputed fully on every sync, not sticky.** Like `listings`, a Plex match is re-derived from scratch each sync rather than preserved once set — the local Plex library can change (a rip gets replaced, re-encoded, or removed) independently of Discogs, and a stale link would be actively misleading. This mirrors the "backend clears a release's stale listings before re-searching it" invariant documented in the repo's `CLAUDE.md`.
 
 **Match score is logged, not persisted.** Useful for tuning the threshold during and after implementation, but the UI only ever needs the boolean linked/not-linked outcome (Decision made during brainstorming: two-tier, no in-between state). No schema column for it.

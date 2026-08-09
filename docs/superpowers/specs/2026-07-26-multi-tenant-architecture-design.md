@@ -188,7 +188,6 @@ missing a `WHERE` clause fails closed instead of leaking data.
 | `year`             | INTEGER   |                                           |
 | `label`            | TEXT      |                                           |
 | `format`           | TEXT      |                                           |
-| `discogs_price`    | TEXT      | **Not** a marketplace figure: a per-user value (the user's own purchase price, from a Discogs custom collection field) stored in a global table — see the correction below |
 | `barcode`          | TEXT      |                                           |
 | `cover_image_url`  | TEXT      |                                           |
 | `discogs_url`      | TEXT      |                                           |
@@ -215,6 +214,29 @@ unconditional global overwrite look correct, which is exactly what
   The other two specs that describe the column
   (`2026-07-08-collection-price-crawlers-design.md`,
   `2026-06-27-discogs-browser-design.md`) already had it right.
+
+**Superseded (2026-08-09, branch `worktree-library-price-paid`):** the repair
+anticipated by the third point above has landed, so the correction block just
+above is now historical. `catalog.discogs_price` no longer exists — its row is
+gone from the dictionary above, and the value lives on `library_items.price_paid`
+(see that table's dictionary below). Concretely:
+
+- The cross-tenant overwrite is **closed**, not narrowed. The column the two
+  tenants shared is gone, so there is nothing left to overwrite; isolation now
+  comes from `library_items`' existing `(user_id, discogs_id)` key and its
+  `library_items_isolation` RLS policy rather than from any caller remembering
+  to pass a flag.
+- `preserve_price` has been **retired**. With no price on `catalog`, the flag
+  guarded nothing. `upsert_catalog_release` no longer takes it and no longer
+  writes any price.
+- A one-shot guarded `DO` block in `TENANT_SCHEMA` backfilled the old global
+  values and dropped the column. Backfill was restricted to releases with
+  **exactly one** `in_collection` holder — the only case where the stored value
+  provably belonged to a specific user, since it was whichever user synced last.
+  Contested releases were left `NULL` and self-heal on the owner's next
+  `mode="all"` sync.
+
+See [`2026-08-09-library-price-paid-design.md`](../../specifications/shaping/2026-08-09-library-price-paid-design.md).
 
 **`listings`** — unchanged shape from today (`release_id → discogs_id, crawler_id,
 url, price, shipping, currency, condition, last_checked`, unique on
@@ -271,6 +293,7 @@ itself is genuinely still unchanged — the new identity anchor
 | `in_wishlist`     | BOOLEAN   |                                                      |
 | `plex_url`        | TEXT      | personal — matched against *this user's* Plex library |
 | `plex_matched_at` | TIMESTAMP |                                                      |
+| `price_paid`      | TEXT      | personal — contents of *this user's* own custom Discogs collection field named "Price" (case-insensitive). Free text, not a marketplace figure and not numeric. Added 2026-08-09; previously `catalog.discogs_price`, where being global made it cross-tenant-writable |
 | `last_synced`     | TIMESTAMP |                                                      |
 
 Primary key `(user_id, discogs_id)`.
@@ -415,9 +438,12 @@ other self-hosted deployments being carried forward. One-time migration script:
 
 1. Export the existing single-owner SQLite `releases` table.
 2. Split each row: global fields (`artist, title, year, label, format,
-   discogs_price, barcode, cover_image_url, discogs_url`) → `catalog`; `in_collection,
+   barcode, cover_image_url, discogs_url`) → `catalog`; `in_collection,
    in_wishlist` → one `library_items` row under the maintainer's new `user_id`, minted via
-   their own first Discogs OAuth login.
+   their own first Discogs OAuth login. As of 2026-08-09 the source
+   `releases.discogs_price` goes to that same `library_items` row's `price_paid`,
+   **not** to `catalog` — the source database is single-user, so the value
+   provably belongs to that one user.
 3. Copy `listings` as-is — already global-shaped, no transformation needed.
 4. `crawlers`, `stock_items` copy as-is. `stock_item_judgments` is **not**
    copied — see the 2026-07-27 amendment below.
