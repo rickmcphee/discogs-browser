@@ -178,7 +178,9 @@ With no price on `catalog`, `upsert_catalog_release` drops both the `discogs_pri
 
 ## Testing
 
-Backend tests need Postgres running and `TEST_DATABASE_URL` in `backend/.env`.
+Backend tests need Postgres running and `TEST_DATABASE_URL`, `IDENTITY_DB_PASSWORD`, and `APP_DB_PASSWORD` in `backend/.env` (all three, per the test-database-freshness work that landed in #81 — each pytest session now builds its own database and rewrites both app roles' passwords).
+
+That harness also removes a caveat this spec's migration tests were written around. Previously the local test database persisted across runs and its fixtures only truncated rows, never dropped columns, so a schema assertion could pass on a stale column even if its migration were reverted. Each session now starts from `TEMPLATE template0`, so the tests below genuinely exercise the migration. The `_readd_legacy_catalog_price` helper is still required — it constructs the pre-migration shape deliberately, rather than inheriting it.
 
 - `upsert_library_item` writes `price_paid`; omitting it preserves the stored value; passing `None` explicitly clears it. All three sentinel behaviours need a test — the omit-vs-explicit-`None` pair is the whole point of the sentinel, and a `COALESCE` implementation would pass the first and fail the second.
 - **Cross-tenant regression, the bug this fixes:** user A syncs with a `"Price"` field and user B syncs the same release without one; A's `price_paid` survives B's sync. This is the test whose absence allowed the bug.
