@@ -259,6 +259,32 @@ def test_backfill_copies_the_global_price_to_a_sole_collection_owner(admin_conn)
     ).fetchone()["price_paid"] == "42.50"
 
 
+def test_backfill_does_not_overwrite_an_already_recorded_price(admin_conn):
+    """Redundant on the real one-shot run -- price_paid is created empty in the
+    same schema application -- but it is the contract if the source column is
+    ever reintroduced by a restore or a rollback experiment. Re-running must
+    not clobber a price the user has recorded since."""
+    _readd_legacy_catalog_price(admin_conn)
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.execute(
+        "INSERT INTO catalog (discogs_id, artist, title, discogs_price) "
+        "VALUES ('r1', 'A', 'T', '42.50')"
+    )
+    admin_conn.execute(
+        "INSERT INTO library_items (user_id, discogs_id, in_collection, price_paid) "
+        "VALUES (%s, 'r1', TRUE, '99.99')",
+        [alice["id"]],
+    )
+    admin_conn.commit()
+
+    db.init_tenant_schema()
+
+    assert admin_conn.execute(
+        "SELECT price_paid FROM library_items WHERE user_id = %s AND discogs_id = 'r1'",
+        [alice["id"]],
+    ).fetchone()["price_paid"] == "99.99"
+
+
 def test_backfill_leaves_a_contested_release_null_for_everyone(admin_conn):
     # The global value is whichever user synced last, so with two owners it
     # cannot be attributed. Copying it to both would be the same cross-tenant

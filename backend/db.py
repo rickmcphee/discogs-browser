@@ -215,17 +215,42 @@ ALTER TABLE library_items ADD COLUMN IF NOT EXISTS price_paid TEXT;
 -- (main.py), before library_items.price_paid exists.
 DO $$
 BEGIN
+  -- Double-checked locking, and the order matters. The outer check is an
+  -- unlocked catalog lookup, so once the column is gone -- which is the state
+  -- on every boot after the one that migrates -- this block costs one cheap
+  -- read and takes no lock at all. Taking the advisory lock unconditionally
+  -- ahead of the check instead serializes every init_tenant_schema() call
+  -- forever, for a migration that can never run again; that measurably slowed
+  -- the test suite and starved its event-loop timing tests.
   IF EXISTS (SELECT 1 FROM information_schema.columns
              WHERE table_name = 'catalog' AND column_name = 'discogs_price') THEN
-    UPDATE library_items li SET price_paid = c.discogs_price
-    FROM catalog c
-    WHERE c.discogs_id = li.discogs_id
-      AND li.in_collection = TRUE
-      AND c.discogs_price IS NOT NULL
-      AND (SELECT COUNT(*) FROM library_items x
-           WHERE x.discogs_id = li.discogs_id AND x.in_collection = TRUE) = 1;
+    -- Serialize the migration itself across concurrently booting instances.
+    -- Today there is only one (uvicorn with no --workers, fly.toml
+    -- min_machines_running = 1), but without this two sessions could both pass
+    -- the outer check and the loser would then UPDATE or DROP against a column
+    -- the winner had already removed, failing the boot. The deployment spec
+    -- claims multi-machine scaling needs no design change; this keeps that true.
+    PERFORM pg_advisory_xact_lock(2026080901);
 
-    ALTER TABLE catalog DROP COLUMN discogs_price;
+    -- Re-check under the lock: the winner may have finished while we waited.
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_name = 'catalog' AND column_name = 'discogs_price') THEN
+      -- price_paid IS NULL is redundant on the real one-shot run, since the
+      -- column is created empty in this same schema application. It matters if
+      -- the source column is ever reintroduced -- a restore, or a rollback
+      -- experiment -- where re-running must not clobber prices users have since
+      -- recorded. A backfill fills blanks; it does not overwrite.
+      UPDATE library_items li SET price_paid = c.discogs_price
+      FROM catalog c
+      WHERE c.discogs_id = li.discogs_id
+        AND li.in_collection = TRUE
+        AND c.discogs_price IS NOT NULL
+        AND li.price_paid IS NULL
+        AND (SELECT COUNT(*) FROM library_items x
+             WHERE x.discogs_id = li.discogs_id AND x.in_collection = TRUE) = 1;
+
+      ALTER TABLE catalog DROP COLUMN IF EXISTS discogs_price;
+    END IF;
   END IF;
 END $$;
 
