@@ -7,6 +7,7 @@ from typing import AsyncIterator
 import httpx
 
 from config import load_config
+from crawl_progress import report_page
 from logging_config import get_logger
 
 log = get_logger("sgrecordshop")
@@ -56,6 +57,7 @@ class Crawler:
         cfg = load_config()
         delay = float(cfg.get("crawl_delay_seconds", 30))
         seen_pids = set()
+        pages_fetched = 0
 
         async with httpx.AsyncClient(base_url=self.base_url, follow_redirects=True) as client:
             for category_qs in self._CATEGORIES:
@@ -79,7 +81,10 @@ class Crawler:
                     r.raise_for_status()
                     payload = r.json()["data"]
                     total_pages = int(payload["totalPages"])
-                    for item in self._parse_items(payload["data"]):
+                    items = self._parse_items(payload["data"])
+                    pages_fetched += 1
+                    await report_page(pages_fetched, len(items))
+                    for item in items:
                         if item["pid"] in seen_pids:
                             continue
                         seen_pids.add(item["pid"])

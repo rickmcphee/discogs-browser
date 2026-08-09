@@ -199,6 +199,12 @@ zero-arg signature for them; only `catalog_browser` crawlers get a `page`.
 
 ### `backend/crawlers/angryyoungandpoor.py`
 
+**Amendment (2026-08-09, branch `in-stock-sync-progress`):** the category loop below
+also calls `await report_page(page_num, len(raw_products))` per category — this site
+fetches each category in one `viewAll=` request, so a category *is* its page — feeding
+the stock-sync status bar. See the 2026-08-09 amendment in
+[`2026-07-05-in-stock-crawler-design.md`](2026-07-05-in-stock-crawler-design.md).
+
 ```python
 class Crawler:
     site_name: str = "Angry Young and Poor"

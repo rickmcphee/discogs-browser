@@ -557,21 +557,37 @@ class CrawlManager:
         """Runs crawler.crawl_catalog(), handling the catalog_browser kind's
         Playwright page + one-retry-on-BotDetectedError convention (same as
         the release-crawl path's _paced_search). Plain catalog crawlers keep
-        calling crawl_catalog() zero-arg, unchanged."""
+        calling crawl_catalog() zero-arg, unchanged.
+
+        Also installs the page reporter crawlers call from their paging loops,
+        turning each fetched listing page into an SSE event."""
         from crawler import _new_context, _reset_context, BotDetectedError
+        from crawl_progress import set_page_reporter, reset_page_reporter
 
-        if crawler.crawler_type != "catalog_browser":
-            return [item async for item in crawler.crawl_catalog()]
+        async def _report(page_num: int, count: int):
+            await self._broadcast({
+                "status": "stock_sync_page_fetched",
+                "source": crawler._db_site_name,
+                "page": page_num,
+                "page_count": count,
+            })
 
-        context, page = await _new_context(self._browser, self._stealth)
+        token = set_page_reporter(_report)
         try:
+            if crawler.crawler_type != "catalog_browser":
+                return [item async for item in crawler.crawl_catalog()]
+
+            context, page = await _new_context(self._browser, self._stealth)
             try:
-                return [item async for item in crawler.crawl_catalog(page)]
-            except BotDetectedError:
-                context, page = await _reset_context(context, self._browser, self._stealth, None)
-                return [item async for item in crawler.crawl_catalog(page)]
+                try:
+                    return [item async for item in crawler.crawl_catalog(page)]
+                except BotDetectedError:
+                    context, page = await _reset_context(context, self._browser, self._stealth, None)
+                    return [item async for item in crawler.crawl_catalog(page)]
+            finally:
+                await context.close()
         finally:
-            await context.close()
+            reset_page_reporter(token)
 
     async def _sync_stock(self, crawler_id: Optional[int] = None):
         import httpx
@@ -600,6 +616,7 @@ class CrawlManager:
             total_synced = 0
             consecutive_429_sites: list[str] = []
             for crawler in crawlers:
+                await self._broadcast({"status": "stock_sync_source_started", "source": crawler._db_site_name})
                 try:
                     items = await self._run_catalog_crawler(crawler)
                 except Exception as e:
