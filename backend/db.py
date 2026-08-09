@@ -878,6 +878,9 @@ _LIBRARY_MEMBERSHIP = {
 
 
 def _library_match_fragment(user_id_param: str, library_scope: str) -> str:
+    # Callers pass a literal scope; this raises KeyError on an unmapped one.
+    # Request-derived scopes go through _in_library_clause instead.
+    #
     # The parens around the OR are load-bearing: AND binds tighter, so an
     # unparenthesized multi-column membership would leave the first branch
     # uncorrelated from the stock row and make EXISTS true for every row, and
@@ -895,6 +898,15 @@ def _library_match_fragment(user_id_param: str, library_scope: str) -> str:
           AND ({membership})
           AND LOWER(c.artist) = LOWER(s.artist)
           AND (LOWER(s.title) = LOWER(c.title) OR LOWER(s.title) LIKE LOWER(c.title) || ' %%')"""
+
+
+def _in_library_clause(user_id_param: str, library_scope: Optional[str]) -> Optional[str]:
+    """EXISTS clause for 'this stock row is in the user's library at the given
+    scope', or None when the scope doesn't filter. Normalizing here rather than
+    per-caller keeps the allow-set gate in one place."""
+    if library_scope not in _LIBRARY_MEMBERSHIP:
+        return None
+    return f"EXISTS (SELECT 1 {_library_match_fragment(user_id_param, library_scope)})"
 
 
 # Recommended items are defined as ones the user doesn't already own. A release
@@ -919,17 +931,12 @@ def get_stock_items(
     recommended: bool = False,
     exclude_crawler_ids: Optional[list[int]] = None,
 ) -> dict:
-    if library_scope not in _LIBRARY_MEMBERSHIP:
-        library_scope = None
     order_sql = "DESC" if order.lower() == "desc" else "ASC"
     # The sort expression is collection-pinned, so it only applies to a scope
     # that can contain rows carrying a collection price. Under wishlist scope
     # every key would be NULL, leaving all rows tied and pagination unstable.
-    if (
-        sort == "discogs_price"
-        and library_scope is not None
-        and "in_collection" in _LIBRARY_MEMBERSHIP[library_scope]
-    ):
+    # The lookup's default covers None and any unmapped scope.
+    if sort == "discogs_price" and "in_collection" in _LIBRARY_MEMBERSHIP.get(library_scope, ()):
         sort_expr = """(SELECT (regexp_match(c.discogs_price, '\\d+\\.?\\d*'))[1]::numeric
                         {match} LIMIT 1)""".format(
             match=_library_match_fragment("%(user_id)s", "collection")
@@ -948,8 +955,9 @@ def get_stock_items(
     if artist:
         conditions.append("s.artist = %(artist)s")
         params["artist"] = artist
-    if library_scope is not None:
-        conditions.append(f"EXISTS (SELECT 1 {_library_match_fragment('%(user_id)s', library_scope)})")
+    in_library = _in_library_clause("%(user_id)s", library_scope)
+    if in_library:
+        conditions.append(in_library)
     if recommended:
         conditions.append(
             "s.item_key IN (SELECT item_key FROM stock_item_judgments "
@@ -1016,13 +1024,14 @@ def get_stock_items(
     return {"total": total, "page": page, "per_page": per_page, "items": items}
 
 
-def get_distinct_stock_artists(conn, user_id: int, overlapping: bool = False, recommended: bool = False,
+def get_distinct_stock_artists(conn, user_id: int, library_scope: Optional[str] = None, recommended: bool = False,
     exclude_crawler_ids: Optional[list[int]] = None,
 ) -> list[str]:
     conditions = []
     params: dict = {"user_id": user_id}
-    if overlapping:
-        conditions.append(_not_owned_clause("%(user_id)s").replace("NOT EXISTS", "EXISTS"))
+    in_library = _in_library_clause("%(user_id)s", library_scope)
+    if in_library:
+        conditions.append(in_library)
     if recommended:
         conditions.append(
             "s.item_key IN (SELECT item_key FROM stock_item_judgments "

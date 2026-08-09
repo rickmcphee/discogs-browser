@@ -694,6 +694,48 @@ def test_get_stock_items_library_scope_none_and_unrecognized_do_not_filter(admin
         # A hand-crafted query string must not be able to raise -- the router
         # does no validation of its own, so this normalization is the only gate.
         assert db.get_stock_items(conn, alice["id"], library_scope="bogus")["total"] == 2
+        # Same for the sort gate, which reads the membership map a second time.
+        assert db.get_stock_items(
+            conn, alice["id"], library_scope="bogus", sort="discogs_price"
+        )["total"] == 2
+
+
+def _judge_recommended(conn, user_id: int, items: list[tuple]):
+    db.upsert_stock_judgments(conn, user_id, [
+        {"item_key": db.compute_item_key(artist, title, url), "recommended": True, "reason": "y"}
+        for artist, title, url in items
+    ])
+
+
+def _seed_recommended_but_unlibraried(admin_conn):
+    """A judged-recommended stock item in neither of Alice's lists, on a second
+    crawler so the shared fixture's rows survive replace_stock_items. Only the
+    library_scope condition can exclude it: the recommended conditions cover
+    judged-and-not-owned, which it satisfies. Without it, both conditions pick
+    out the same single row and neither test can tell them apart."""
+    db.register_crawler(admin_conn, "Nuclear Blast", "/y.py", crawler_type="catalog")
+    admin_conn.commit()
+    nb_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()["id"]
+    db.replace_stock_items(admin_conn, nb_id, [
+        {"artist": "Artist C", "title": "Album C", "url": "https://x/3", "price": 12.0, "currency": "USD"},
+    ])
+    admin_conn.commit()
+
+
+def test_get_stock_items_wishlist_scope_and_recommended_intersect(admin_conn):
+    alice = _seed_collection_and_wantlist(admin_conn)
+    _seed_recommended_but_unlibraried(admin_conn)
+
+    with db.user_scope(alice["id"]) as conn:
+        _judge_recommended(conn, alice["id"], [
+            ("Artist B", "Album B", "https://x/2"),
+            ("Artist C", "Album C", "https://x/3"),
+        ])
+        result = db.get_stock_items(conn, alice["id"], library_scope="wishlist", recommended=True)
+        assert [i["artist"] for i in result["items"]] == ["Artist B"]
+        # Both conditions apply, so each alone would admit a row the other rejects.
+        assert db.get_stock_items(conn, alice["id"], recommended=True)["total"] == 2
+        assert db.get_stock_items(conn, alice["id"], library_scope="wishlist")["total"] == 1
 
 
 def test_get_stock_items_library_scope_all_does_not_duplicate_a_release_in_both_lists(admin_conn):
@@ -873,7 +915,7 @@ def test_get_distinct_stock_artists_plain_browse(admin_conn):
     assert artists == ["Artist A", "Artist B"]  # distinct and sorted
 
 
-def test_get_distinct_stock_artists_overlapping_filters_to_owned_artists(admin_conn):
+def test_get_distinct_stock_artists_library_scope_collection_filters_to_owned_artists(admin_conn):
     alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
     db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")
     admin_conn.commit()
@@ -891,5 +933,31 @@ def test_get_distinct_stock_artists_overlapping_filters_to_owned_artists(admin_c
     admin_conn.commit()
 
     with db.user_scope(alice["id"]) as conn:
-        artists = db.get_distinct_stock_artists(conn, alice["id"], overlapping=True)
+        artists = db.get_distinct_stock_artists(conn, alice["id"], library_scope="collection")
     assert artists == ["Artist A"]
+
+
+def test_get_distinct_stock_artists_library_scope_wishlist_filters_to_wanted_artists(admin_conn):
+    alice = _seed_collection_and_wantlist(admin_conn)
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.get_distinct_stock_artists(conn, alice["id"], library_scope="wishlist") == ["Artist B"]
+        assert db.get_distinct_stock_artists(conn, alice["id"], library_scope="collection") == ["Artist A"]
+        assert db.get_distinct_stock_artists(conn, alice["id"], library_scope="all") == ["Artist A", "Artist B"]
+        assert db.get_distinct_stock_artists(conn, alice["id"], library_scope=None) == ["Artist A", "Artist B"]
+        assert db.get_distinct_stock_artists(conn, alice["id"], library_scope="bogus") == ["Artist A", "Artist B"]
+
+
+def test_get_distinct_stock_artists_wishlist_scope_and_recommended_intersect(admin_conn):
+    alice = _seed_collection_and_wantlist(admin_conn)
+    _seed_recommended_but_unlibraried(admin_conn)
+
+    with db.user_scope(alice["id"]) as conn:
+        _judge_recommended(conn, alice["id"], [
+            ("Artist B", "Album B", "https://x/2"),
+            ("Artist C", "Album C", "https://x/3"),
+        ])
+        assert db.get_distinct_stock_artists(
+            conn, alice["id"], library_scope="wishlist", recommended=True
+        ) == ["Artist B"]
+        assert db.get_distinct_stock_artists(conn, alice["id"], recommended=True) == ["Artist B", "Artist C"]
