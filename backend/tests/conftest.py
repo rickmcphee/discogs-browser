@@ -119,7 +119,20 @@ def pg_run_database():
     roles = {}
     try:
         with psycopg.connect(maintenance_url, autocommit=True) as conn:
-            _poison_app_roles(conn, roles)
+            try:
+                _poison_app_roles(conn, roles)
+            except psycopg.errors.InsufficientPrivilege as exc:
+                # CREATEDB alone gets as far as the CREATE DATABASE above, so
+                # without this the failure looks like a bare permission error on
+                # a role the reader never asked to touch.
+                raise RuntimeError(
+                    "the role in TEST_DATABASE_URL cannot ALTER ROLE app_user/"
+                    "app_identity, which this fixture does to stop the "
+                    "tenant-schema role assertions passing vacuously. Setting "
+                    "BYPASSRLS needs a superuser (or a role that has BYPASSRLS "
+                    "itself) and changing a password needs CREATEROLE -- see the "
+                    "note above db.init_tenant_schema. CREATEDB is not enough."
+                ) from exc
         os.environ["TEST_DATABASE_URL"] = run_url
         with psycopg.connect(run_url) as conn:
             tables_at_start = conn.execute(

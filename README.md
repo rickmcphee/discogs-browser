@@ -189,8 +189,18 @@ each pytest session provisions its own `<base>_run_<hex>` database from
 `TEMPLATE template0`, runs entirely inside that database, and drops it on
 teardown. `TEST_DATABASE_URL` only supplies connection details (host, port,
 credentials), so its role needs `CREATEDB` and access to the `postgres`
-maintenance database to create and drop the per-run database; the local
-Docker `postgres` superuser and CI's `postgres` user both already qualify.
+maintenance database to create and drop the per-run database.
+
+`CREATEDB` alone is not sufficient, though. Whenever the `app_user` /
+`app_identity` roles already exist in the cluster, the harness also runs
+`ALTER ROLE` against them (see the role-poisoning paragraph below), which needs
+a superuser — setting `BYPASSRLS` requires one, or a role holding `BYPASSRLS`
+itself — and `CREATEROLE` to change a password. The local Docker `postgres`
+superuser and CI's `postgres` user both qualify. A `CREATEDB`-only role gets as
+far as creating the per-run database and then fails with an explicit error
+naming this requirement. On a cluster where those two roles don't exist yet —
+CI's fresh Postgres service, for instance — there is nothing to poison, the
+`ALTER ROLE` calls are skipped, and `CREATEDB` really is enough.
 
 Test files that don't touch Postgres need none of this: with
 `TEST_DATABASE_URL` unset, no per-run database is provisioned and only the

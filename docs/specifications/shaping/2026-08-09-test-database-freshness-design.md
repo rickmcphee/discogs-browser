@@ -273,6 +273,18 @@ superuser and by CI's `postgres` user; a developer pointing
 would not be, and the fixture should fail with a clear message naming
 `CREATEDB` rather than a bare `InsufficientPrivilege`.
 
+(Amended after PR review, which pointed out that `CREATEDB` is not the whole
+requirement and that stating only it is actively misleading. When `app_user` /
+`app_identity` already exist, poisoning runs `ALTER ROLE` against them, which
+needs a superuser — or a role holding `BYPASSRLS` — to set `BYPASSRLS`, and
+`CREATEROLE` to change a password. That is the same constraint `db.py` already
+flags above `init_tenant_schema`. A `CREATEDB`-only role therefore gets past
+`CREATE DATABASE` and fails on the poison step, so that path now raises its own
+`RuntimeError` naming the privilege rather than surfacing a bare
+`InsufficientPrivilege` about roles the reader never asked to touch. Where the
+two roles do not exist — CI's fresh service — nothing is poisoned and `CREATEDB`
+is genuinely sufficient.)
+
 ## Scope
 
 Touches:
