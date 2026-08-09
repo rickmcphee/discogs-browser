@@ -136,3 +136,18 @@ export interface StockResponse {
 }
 
 export type StockSortField = 'artist' | 'title' | 'format' | 'price' | 'discogs_price' | 'source'
+
+export interface RecommendationImportError {
+  line: number
+  error: string
+}
+
+export interface RecommendationImportResult {
+  imported: number
+  updated: number
+  unchanged: number
+  skipped: number
+  errors: RecommendationImportError[]
+  matched_stock_items: number
+  running: boolean
+}
