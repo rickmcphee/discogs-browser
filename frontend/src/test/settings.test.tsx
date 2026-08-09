@@ -1,6 +1,6 @@
 import type { ComponentProps } from 'react'
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import Settings from '../views/Settings'
 import type { Crawler } from '../api/types'
 
@@ -39,6 +39,18 @@ beforeEach(() => {
   vi.clearAllMocks()
 })
 
+afterEach(() => {
+  vi.useRealTimers()
+})
+
+// The auto-save debounce is a real 800ms timer, so every test that waits it
+// out calls vi.useFakeTimers() and advances the clock instead of sleeping:
+// deterministic (a stalled CI worker fires a real timer late, which is what
+// made these flake) and instant. waitFor is unusable once the clock is faked
+// — its polling runs on that clock — so waits are act flushes instead.
+const settle = () => act(async () => {})
+const advanceBy = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms) })
+
 function renderSettings(overrides: Partial<ComponentProps<typeof Settings>> = {}) {
   return render(
     <Settings
@@ -66,40 +78,45 @@ describe('Settings', () => {
   })
 
   it('auto-saves a settings field after editing, with no Save button', async () => {
+    vi.useFakeTimers()
     renderSettings()
-    await waitFor(() => expect(getSettings).toHaveBeenCalled())
+    await settle()
+    expect(getSettings).toHaveBeenCalled()
     const input = screen.getByLabelText('eBay Client ID')
     fireEvent.change(input, { target: { value: 'new-app-id' } })
-    await waitFor(
-      () => expect(saveSettings).toHaveBeenCalledWith(expect.objectContaining({ ebay_app_id: 'new-app-id' })),
-      { timeout: 2000 }
-    )
+    await advanceBy(800)
+    expect(saveSettings).toHaveBeenCalledWith(expect.objectContaining({ ebay_app_id: 'new-app-id' }))
   })
 
   it('does not save immediately on edit — only after the debounce settles', async () => {
+    vi.useFakeTimers()
     renderSettings()
-    await waitFor(() => expect(getSettings).toHaveBeenCalled())
+    await settle()
     fireEvent.change(screen.getByLabelText('eBay Client ID'), { target: { value: 'new-app-id' } })
     expect(saveSettings).not.toHaveBeenCalled()
-    await waitFor(() => expect(saveSettings).toHaveBeenCalled(), { timeout: 2000 })
+    await advanceBy(799)
+    expect(saveSettings).not.toHaveBeenCalled()
+    await advanceBy(1)
+    expect(saveSettings).toHaveBeenCalled()
   })
 
   it('does not auto-save on initial load when nothing was edited', async () => {
+    vi.useFakeTimers()
     renderSettings()
-    await waitFor(() => expect(getSettings).toHaveBeenCalled())
-    await new Promise((resolve) => setTimeout(resolve, 1200))
+    await settle()
+    expect(getSettings).toHaveBeenCalled()
+    await advanceBy(1200)
     expect(saveSettings).not.toHaveBeenCalled()
   })
 
   it('shows a clean error message (not raw JSON) when an auto-save fails', async () => {
+    vi.useFakeTimers()
     saveSettings.mockRejectedValueOnce(new Error(JSON.stringify({ detail: 'Invalid cron expression' })))
     renderSettings()
-    await waitFor(() => expect(getSettings).toHaveBeenCalled())
+    await settle()
     fireEvent.change(screen.getByLabelText('eBay Client ID'), { target: { value: 'new-app-id' } })
-    await waitFor(
-      () => expect(screen.getByText('Invalid cron expression')).toBeInTheDocument(),
-      { timeout: 2000 }
-    )
+    await advanceBy(800)
+    expect(screen.getByText('Invalid cron expression')).toBeInTheDocument()
     expect(screen.queryByText(/"detail"/)).not.toBeInTheDocument()
   })
 

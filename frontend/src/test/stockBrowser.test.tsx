@@ -91,8 +91,10 @@ describe('StockBrowser', () => {
 
   it('renders an artist sidebar with All plus each distinct artist, and filters on click', async () => {
     render(<StockBrowser />)
-    await waitFor(() => expect(screen.getByRole('button', { name: 'All' })).toBeTruthy())
-    expect(screen.getByRole('button', { name: 'NAILS' })).toBeTruthy()
+    // Wait on a fetched artist, not on All -- All renders before the artist
+    // fetch lands, so waiting on it proves nothing about the sidebar.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'NAILS' })).toBeTruthy())
+    expect(screen.getByRole('button', { name: 'All' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Rob Zombie' })).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'NAILS' }))
     await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ artist: 'NAILS' })))
@@ -100,7 +102,7 @@ describe('StockBrowser', () => {
 
   it('defaults sort to title when a specific artist is selected, and back to artist for All', async () => {
     render(<StockBrowser />)
-    await waitFor(() => expect(screen.getByRole('button', { name: 'All' })).toBeTruthy())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'NAILS' })).toBeTruthy())
     fireEvent.click(screen.getByRole('button', { name: 'NAILS' }))
     await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'title', order: 'asc' })))
     fireEvent.click(screen.getByRole('button', { name: 'All' }))
