@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import Account from '../views/Account'
 
 const { uploadAvatar, deleteAvatar, logout, getUserSettings, saveUserSettings, postPlexMatchStart } = vi.hoisted(() => ({
@@ -369,43 +369,55 @@ describe('Account', () => {
     resolveSecondSave()
   })
 
+  // Fake timers, not sleeps: this test needs save #2's debounce to have
+  // fired -- claiming sequence #2 -- before save #1 rejects, or the guard
+  // has nothing to suppress and the stale error legitimately renders.
+  // Sleeping past the 800ms debounce only makes that likely; a stalled
+  // worker fires the timer late and the test fails. Advancing the clock
+  // makes it certain. waitFor is unusable here (its polling runs on the
+  // faked clock), so every wait below is an explicit act flush.
   it('suppresses a stale error from a save already superseded by a newer edit', async () => {
-    let rejectFirstSave: (err: Error) => void = () => {}
-    let resolveSecondSave: () => void = () => {}
-    const firstSave = new Promise<void>((_resolve, reject) => { rejectFirstSave = reject })
-    const secondSave = new Promise<void>((resolve) => { resolveSecondSave = resolve })
-    saveUserSettings.mockImplementationOnce(() => firstSave)
-    saveUserSettings.mockImplementationOnce(() => secondSave)
+    vi.useFakeTimers()
+    try {
+      let rejectFirstSave: (err: Error) => void = () => {}
+      let resolveSecondSave: () => void = () => {}
+      const firstSave = new Promise<void>((_resolve, reject) => { rejectFirstSave = reject })
+      const secondSave = new Promise<void>((resolve) => { resolveSecondSave = resolve })
+      saveUserSettings.mockImplementationOnce(() => firstSave)
+      saveUserSettings.mockImplementationOnce(() => secondSave)
 
-    render(<Account avatarVersion={0} onAvatarChange={() => {}} />)
-    await waitFor(() => expect(getUserSettings).toHaveBeenCalled())
+      render(<Account avatarVersion={0} onAvatarChange={() => {}} />)
+      await act(async () => {})
+      expect(getUserSettings).toHaveBeenCalled()
 
-    const input = screen.getByLabelText('Anthropic API key')
-    fireEvent.change(input, { target: { value: 'first-edit' } })
-    await waitFor(() => expect(saveUserSettings).toHaveBeenCalledTimes(1), { timeout: 2000 })
+      const input = screen.getByLabelText('Anthropic API key')
+      fireEvent.change(input, { target: { value: 'first-edit' } })
+      await act(async () => { await vi.advanceTimersByTimeAsync(800) })
+      expect(saveUserSettings).toHaveBeenCalledTimes(1)
 
-    // Trigger a second debounced save while the first request is still in
-    // flight -- it's queued behind the first in the chain but hasn't
-    // started yet. Wait out the real 800ms debounce so saveUserSettingsNow
-    // actually runs and claims sequence #2 before save #1 rejects below --
-    // otherwise save #1 would still be the latest sequence and the guard
-    // would have nothing to suppress.
-    fireEvent.change(input, { target: { value: 'second-edit' } })
-    await new Promise((resolve) => setTimeout(resolve, 1000))
-    expect(saveUserSettings).toHaveBeenCalledTimes(1) // save #2 is queued, not yet fired
+      // Trigger a second debounced save while the first request is still in
+      // flight -- once its debounce fires it claims sequence #2 and queues
+      // behind the first in the chain, without firing a request of its own.
+      fireEvent.change(input, { target: { value: 'second-edit' } })
+      await act(async () => { await vi.advanceTimersByTimeAsync(800) })
+      expect(saveUserSettings).toHaveBeenCalledTimes(1)
 
-    // Reject the now-superseded first save and let its catch block and
-    // save #2's handoff run to completion.
-    rejectFirstSave(new Error('stale save failed'))
-    await new Promise((resolve) => setTimeout(resolve, 100))
+      // Reject the now-superseded first save and let its catch block and
+      // save #2's handoff run to completion.
+      rejectFirstSave(new Error('stale save failed'))
+      await act(async () => {})
 
-    // The first save's error must never reach the screen -- a newer save
-    // (#2) has already superseded it.
-    expect(screen.queryByText('stale save failed')).not.toBeInTheDocument()
+      // The first save's error must never reach the screen -- a newer save
+      // (#2) has already superseded it.
+      expect(screen.queryByText('stale save failed')).not.toBeInTheDocument()
+      expect(saveUserSettings).toHaveBeenCalledTimes(2)
 
-    resolveSecondSave()
-    await waitFor(() => expect(saveUserSettings).toHaveBeenCalledTimes(2), { timeout: 2000 })
-    expect(screen.queryByText('stale save failed')).not.toBeInTheDocument()
+      resolveSecondSave()
+      await act(async () => {})
+      expect(screen.queryByText('stale save failed')).not.toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('renders Import between Export and Clear', async () => {
