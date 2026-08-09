@@ -58,6 +58,38 @@ New accounts require a valid, unredeemed invite code, entered once right after y
 
 **Deployment / rate-limit keying:** the invite-redemption and Discogs-OAuth rate limiters key on the caller's IP (`_client_key` in `backend/routers/session.py`). Behind a reverse proxy every request shares the proxy's own peer IP, collapsing all callers into one shared limiter bucket unless the real client IP is recovered from a header. `CF-Connecting-IP` (set, and any client-supplied value overwritten, by Cloudflare for traffic it proxies) is only read when `TRUST_CF_CONNECTING_IP=1` is set — that header is fully client-controlled otherwise, so trusting it unconditionally would let a caller defeat its own rate limit by sending a different value per request. Set `TRUST_CF_CONNECTING_IP=1` only for the hosted deployment, once Cloudflare is confirmed to be the sole path in (still spoofable by anyone reaching the app directly via its Fly hostname, which isn't yet blocked — tracked separately). Leave it unset for local dev, Docker Compose, or any self-hosted reverse proxy that doesn't set this header; `_client_key` falls back to the raw peer IP.
 
+## Recommendations export and import
+
+Recommendation judgments are produced by Claude and cost money per item, so
+they're exportable and importable — Profile → Recommendations → Export /
+Import.
+
+The export (`recommendations.csv`) is a complete ledger, not a shopping
+list: every judgment, recommended and not, including items you already own.
+Withholding the not-recommended verdicts would be false economy — a "no"
+costs exactly as much to obtain as a "yes", and it's what stops an item
+being re-evaluated on the next run.
+
+Import merges by `item_key`, keeping whichever verdict has the later
+`judged_at`, so re-importing the same file changes nothing and importing
+from a more current instance wins. Rows that fail validation are skipped and
+reported by line number; the rest still import.
+
+Two things to know:
+
+- `item_key` is a hash of the store listing's artist, title, and URL, and it
+  cannot be recomputed from the file's other columns. A file only matches an
+  instance running the same crawlers against the same stores. The response's
+  "in stock now" count is how you tell whether it lined up.
+- Judgments are relative to the collection and wantlist they were judged
+  against. A file from someone else imports their taste, not just their
+  spend.
+
+Imported verdicts for items not currently in stock are kept, and take effect
+the next time a Store sync surfaces the item — so a fresh instance can
+import thousands of judgments and see no immediate change in the Recommended
+filter. That's expected.
+
 ## Deployment (Synology NAS) — describes the retired single-owner mode
 
 The instructions below describe the single-owner, SQLite-backed deployment mode that predates the multi-tenant pivot. That mode is retired, not maintained alongside the new one — the last commit in that shape is tagged `last-self-hosted-single-owner`. These NAS instructions will be replaced once the hosted multi-tenant deployment story (Postgres, hosting provider, etc. — deliberately not yet decided, per the architecture spec's own non-goals) is worked out in a later plan. Kept here for now rather than deleted, since it's still the accurate way to run the last single-owner release.
@@ -174,6 +206,11 @@ UPDATE users SET is_admin = true WHERE discogs_username = '<your-discogs-usernam
 | `LOGIN_LOCKOUT_SECONDS` | `300` | Lockout duration after `LOGIN_MAX_FAILURES` is hit |
 
 ## Running tests
+
+Postgres-backed tests need `TEST_DATABASE_URL`, `IDENTITY_DB_PASSWORD`, and
+`APP_DB_PASSWORD` all set, or `init_tenant_schema()` raises `RuntimeError`
+and every DB test errors at setup. Example values, from
+`.github/workflows/fly-deploy.yml`:
 
 ```bash
 cd backend

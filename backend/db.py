@@ -151,6 +151,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS crawl_queue_item_key_crawler_idx ON crawl_queu
 ALTER TABLE listings ALTER COLUMN release_id DROP NOT NULL;
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS item_key TEXT REFERENCES stock_item_identities(item_key);
 CREATE UNIQUE INDEX IF NOT EXISTS listings_item_key_crawler_idx ON listings (item_key, crawler_id);
+
+-- stock_items.item_key is not unique (the same artist/title/url can be seen
+-- by several crawlers) so this is a plain index, not a unique one. Needed by
+-- get_all_stock_judgments' LEFT JOIN LATERAL, and it also serves the
+-- existing get_stock_items / get_unjudged_stock_items joins on s.item_key.
+CREATE INDEX IF NOT EXISTS stock_items_item_key_idx ON stock_items (item_key);
 """
 
 
@@ -1202,6 +1208,108 @@ def get_recommended_stock_items(conn, user_id: int) -> list[dict]:
         """,
         {"user_id": user_id},
     ).fetchall()
+
+
+def get_all_stock_judgments(conn, user_id: int) -> list[dict]:
+    # Drives FROM the judgments table, not from stock_items, so a judgment
+    # whose item isn't currently in stock -- or was never crawled here at
+    # all, having arrived by import -- still comes out. That's the whole
+    # point: the file is a backup of what was paid for, not a shopping list.
+    #
+    # stock_item_identities is the durable artist/title/format source (only
+    # ever upserted); stock_items is deleted and reinserted per crawler on
+    # every sync, so it can only supply the live price/source/link.
+    #
+    # LEFT JOIN LATERAL ... LIMIT 1 replaces the DISTINCT ON that
+    # get_recommended_stock_items needs: item_key is not unique in
+    # stock_items, so an unguarded join would emit one row per crawler that
+    # saw the item. last_seen alone doesn't break ties deterministically --
+    # replace_stock_items stamps it as CURRENT_TIMESTAMP per transaction, so
+    # two crawlers' rows for the same item_key can carry the same value --
+    # so site_name is added as a tiebreaker to keep the export byte-for-byte
+    # stable across runs, which matters for a file whose job is round-trip.
+    return conn.execute(
+        """
+        SELECT
+            COALESCE(i.artist, '') AS artist,
+            COALESCE(i.title, '')  AS title,
+            COALESCE(i.format, '') AS format,
+            d.price, d.source, d.url,
+            j.reason, j.item_key, j.recommended, j.judged_at
+        FROM stock_item_judgments j
+        LEFT JOIN stock_item_identities i ON i.item_key = j.item_key
+        LEFT JOIN LATERAL (
+            SELECT s.price, cr.site_name AS source, s.url
+            FROM stock_items s
+            JOIN crawlers cr ON cr.id = s.crawler_id
+            WHERE s.item_key = j.item_key
+            ORDER BY s.last_seen DESC, cr.site_name
+            LIMIT 1
+        ) d ON TRUE
+        WHERE j.user_id = %(user_id)s
+        ORDER BY COALESCE(i.artist, ''), COALESCE(i.title, ''), j.item_key
+        """,
+        {"user_id": user_id},
+    ).fetchall()
+
+
+def import_stock_judgments(conn, user_id: int, judgments: list[dict]) -> tuple[int, int, list[str]]:
+    """Upsert imported judgments, newest judged_at winning. Returns
+    (inserted, updated, applied_keys); rows whose local judgment is already
+    at least as new are neither, are the caller's `unchanged`, and their
+    keys are excluded from applied_keys.
+
+    Deliberately not upsert_stock_judgments: that one stamps
+    judged_at = CURRENT_TIMESTAMP, which would erase the imported timestamps,
+    break newest-wins on the next round-trip, and make every imported row
+    look freshly judged.
+
+    Callers must have collapsed duplicate item_keys first -- Postgres rejects
+    a statement whose ON CONFLICT target appears twice.
+    """
+    if not judgments:
+        return (0, 0, [])
+    rows = conn.execute(
+        """
+        INSERT INTO stock_item_judgments (user_id, item_key, recommended, reason, judged_at)
+        SELECT %(user_id)s, k, r, rs, ja
+        FROM unnest(
+            %(keys)s::text[], %(recommended)s::boolean[],
+            %(reasons)s::text[], %(judged_at)s::timestamp[]
+        ) AS t(k, r, rs, ja)
+        ON CONFLICT (user_id, item_key) DO UPDATE SET
+            recommended = EXCLUDED.recommended,
+            reason      = EXCLUDED.reason,
+            judged_at   = EXCLUDED.judged_at
+        WHERE EXCLUDED.judged_at > stock_item_judgments.judged_at
+        RETURNING (xmax = 0) AS inserted, item_key
+        """,
+        {
+            "user_id": user_id,
+            "keys": [j["item_key"] for j in judgments],
+            "recommended": [j["recommended"] for j in judgments],
+            "reasons": [j.get("reason") for j in judgments],
+            "judged_at": [j["judged_at"] for j in judgments],
+        },
+    ).fetchall()
+    # xmax = 0 marks a row this statement inserted rather than updated.
+    inserted = sum(1 for r in rows if r["inserted"])
+    applied_keys = [r["item_key"] for r in rows]
+    return (inserted, len(rows) - inserted, applied_keys)
+
+
+def count_matching_stock_items(conn, item_keys: list[str]) -> int:
+    """How many of these keys are in stock right now. Callers must pass only
+    the keys an import actually applied, not the whole parsed file -- the
+    Recommended filter inner-joins stock_items, so this is what decides
+    whether an import changes anything the user can see yet.
+    """
+    if not item_keys:
+        return 0
+    return conn.execute(
+        "SELECT COUNT(DISTINCT item_key) FROM stock_items WHERE item_key = ANY(%(keys)s)",
+        {"keys": item_keys},
+    ).fetchone()["count"]
 
 
 def get_missing_releases(conn, user_id: int) -> list[str]:

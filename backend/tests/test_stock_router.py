@@ -1,8 +1,18 @@
+import csv
+import io
+from datetime import datetime
+
 import pytest
 
 import db
 from crawl_manager import crawl_manager
 from routers import stock as stock_router
+
+
+EXPORTED_HEADER = [
+    "artist", "title", "format", "price", "source", "link", "reason",
+    "item_key", "recommended", "judged_at",
+]
 
 
 @pytest.fixture
@@ -445,10 +455,13 @@ def test_export_recommended_stock_returns_csv(pg_test_db, authed_client_factory)
         user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
         conn.commit()
 
+    # The reason carries a comma and a quote on purpose: it's model-authored
+    # free text, so the export has to quote it and a reader has to honour that.
+    reason = 'similar genre, and a "favourite"'
     with db.user_scope(user["id"]) as conn:
         db.upsert_stock_judgments(conn, user["id"], [{
             "item_key": db.compute_item_key("Rob Zombie", "T1", "https://x/1"),
-            "recommended": True, "reason": "similar genre",
+            "recommended": True, "reason": reason,
         }])
         conn.commit()
 
@@ -458,11 +471,16 @@ def test_export_recommended_stock_returns_csv(pg_test_db, authed_client_factory)
     assert r.headers["content-type"].startswith("text/csv")
     assert "attachment" in r.headers["content-disposition"]
     assert "recommendations.csv" in r.headers["content-disposition"]
-    lines = r.text.strip().splitlines()
-    assert lines == [
-        "artist,title,format,price,source,link,reason",
-        "Rob Zombie,T1,Vinyl,1.0,Nuclear Blast,https://x/1,similar genre",
+    # csv.reader, not splitlines()/split(','): a quoted field may contain both
+    # commas and newlines, which naive splitting would misalign.
+    rows = list(csv.reader(io.StringIO(r.text)))
+    assert rows[0] == EXPORTED_HEADER
+    assert len(rows) == 2
+    assert rows[1][:9] == [
+        "Rob Zombie", "T1", "Vinyl", "1.0", "Nuclear Blast", "https://x/1",
+        reason, db.compute_item_key("Rob Zombie", "T1", "https://x/1"), "true",
     ]
+    datetime.fromisoformat(rows[1][9])
 
 
 def test_list_stock_recommended_is_isolated_per_user(pg_test_db, authed_client_factory):
@@ -491,3 +509,212 @@ def test_list_stock_recommended_is_isolated_per_user(pg_test_db, authed_client_f
     bob_client = authed_client_factory(bob["id"])
     r = bob_client.get("/api/stock?recommended=true")
     assert r.json()["total"] == 0
+
+
+def _seed_judged_item(user_id, artist="Artist A", title="Album A", url="https://x/1"):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py", crawler_type="catalog")
+        conn.commit()
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.replace_stock_items(conn, crawler_id, [
+            {"artist": artist, "title": title, "url": url, "price": 10.0, "currency": "USD"},
+        ])
+        conn.commit()
+    item_key = db.compute_item_key(artist.title(), title, url)
+    with db.user_scope(user_id) as conn:
+        db.upsert_stock_judgments(conn, user_id, [
+            {"item_key": item_key, "recommended": True, "reason": "yes"},
+        ])
+        conn.commit()
+    return item_key
+
+
+def test_export_emits_the_ten_column_header_and_not_recommended_rows(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    yes_key = _seed_judged_item(alice["id"])
+    with db.user_scope(alice["id"]) as conn:
+        db.upsert_stock_judgments(conn, alice["id"], [
+            {"item_key": "b" * 64, "recommended": False, "reason": "no"},
+        ])
+        conn.commit()
+
+    client = authed_client_factory(alice["id"])
+    r = client.get("/api/stock/export")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/csv")
+    rows = list(csv.reader(io.StringIO(r.text)))
+    assert rows[0] == EXPORTED_HEADER
+    by_key = {row[7]: row for row in rows[1:]}
+    assert by_key[yes_key][8] == "true"
+    assert by_key["b" * 64][8] == "false"
+
+
+def test_export_import_export_round_trips_byte_identically(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    _seed_judged_item(alice["id"])
+    client = authed_client_factory(alice["id"])
+
+    first = client.get("/api/stock/export").text
+    r = client.post(
+        "/api/stock/import",
+        files={"file": ("recommendations.csv", first, "text/csv")},
+        headers={"X-Requested-With": "fetch"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    # Same instance, same timestamps: strict > means nothing applies.
+    assert (body["imported"], body["updated"]) == (0, 0)
+    assert body["unchanged"] == 1
+    assert client.get("/api/stock/export").text == first
+
+
+def test_import_reports_counts_and_stock_matches(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    in_stock_key = _seed_judged_item(alice["id"])
+    with db.user_scope(alice["id"]) as conn:
+        db.clear_stock_judgments(conn, alice["id"])
+        conn.commit()
+
+    header = "artist,title,format,price,source,link,reason,item_key,recommended,judged_at"
+    csv_text = "\n".join([
+        header,
+        f"A,B,,,,,in stock,{in_stock_key},true,2026-08-09T00:00:00",
+        f"C,D,,,,,never seen here,{'c' * 64},false,2026-08-09T00:00:00",
+        f"E,F,,,,,bad key,nothex,true,2026-08-09T00:00:00",
+    ]) + "\n"
+
+    client = authed_client_factory(alice["id"])
+    r = client.post(
+        "/api/stock/import",
+        files={"file": ("recommendations.csv", csv_text, "text/csv")},
+        headers={"X-Requested-With": "fetch"},
+    )
+    assert r.status_code == 200
+    assert r.json() == {
+        "imported": 2, "updated": 0, "unchanged": 0, "skipped": 1,
+        "errors": [{"line": 4, "error": "item_key must be 64 lowercase hex characters"}],
+        "matched_stock_items": 1, "running": False,
+    }
+
+
+def test_import_reports_zero_matches_when_only_unchanged_rows_are_in_stock(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    # _seed_judged_item stamps the local judgment at CURRENT_TIMESTAMP, so a
+    # file dated 2020 is strictly older and the row is left unchanged.
+    in_stock_key = _seed_judged_item(alice["id"])
+    new_key = "c" * 64
+
+    header = "artist,title,format,price,source,link,reason,item_key,recommended,judged_at"
+    csv_text = "\n".join([
+        header,
+        f"A,B,,,,,already current,{in_stock_key},true,2020-01-01T00:00:00",
+        f"C,D,,,,,never seen here,{new_key},false,2020-01-01T00:00:00",
+    ]) + "\n"
+
+    client = authed_client_factory(alice["id"])
+    r = client.post(
+        "/api/stock/import",
+        files={"file": ("recommendations.csv", csv_text, "text/csv")},
+        headers={"X-Requested-With": "fetch"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert (body["imported"], body["updated"], body["unchanged"]) == (1, 0, 1)
+    assert body["matched_stock_items"] == 0
+
+
+def test_import_rejects_a_bad_header_with_422(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    client = authed_client_factory(alice["id"])
+
+    r = client.post(
+        "/api/stock/import",
+        files={"file": ("x.csv", "artist,title\nA,B\n", "text/csv")},
+        headers={"X-Requested-With": "fetch"},
+    )
+    assert r.status_code == 422
+    assert "item_key" in r.json()["detail"]
+
+
+def test_import_rejects_an_oversized_body_with_413(pg_test_db, authed_client_factory, monkeypatch):
+    import recommendations_import as ri
+
+    monkeypatch.setattr(ri, "MAX_UPLOAD_BYTES", 32)
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    client = authed_client_factory(alice["id"])
+
+    r = client.post(
+        "/api/stock/import",
+        files={"file": ("x.csv", "a" * 200, "text/csv")},
+        headers={"X-Requested-With": "fetch"},
+    )
+    assert r.status_code == 413
+
+
+def test_import_refuses_while_a_judgment_run_is_active(pg_test_db, authed_client_factory, monkeypatch):
+    # judgment_running is faked rather than driven for real, mirroring the
+    # rationale on test_stock_judge_start_returns_false_when_already_running_for_calling_user
+    # above: a bare TestClient opens its own event loop per request, so a real
+    # asyncio.Task can't be observed across requests here.
+    monkeypatch.setattr(crawl_manager, "judgment_running", lambda uid: True)
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    client = authed_client_factory(alice["id"])
+
+    header = "artist,title,format,price,source,link,reason,item_key,recommended,judged_at"
+    csv_text = f"{header}\nA,B,,,,,r,{'a' * 64},true,2026-08-09T00:00:00\n"
+    r = client.post(
+        "/api/stock/import",
+        files={"file": ("x.csv", csv_text, "text/csv")},
+        headers={"X-Requested-With": "fetch"},
+    )
+    assert r.status_code == 200
+    assert r.json()["running"] is True
+    assert r.json()["imported"] == 0
+    with db.user_scope(alice["id"]) as conn:
+        assert db.has_any_stock_judgment(conn, alice["id"]) is False
+
+
+def test_import_does_not_write_another_users_judgments(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        bob = db.create_user(conn, discogs_user_id=2, discogs_username="bob")
+        conn.commit()
+    shared_key = "a" * 64
+    with db.user_scope(bob["id"]) as conn:
+        db.upsert_stock_judgments(conn, bob["id"], [
+            {"item_key": shared_key, "recommended": True, "reason": "bob's"},
+        ])
+        conn.commit()
+
+    header = "artist,title,format,price,source,link,reason,item_key,recommended,judged_at"
+    csv_text = f"{header}\nA,B,,,,,alice's,{shared_key},false,2036-01-01T00:00:00\n"
+    r = authed_client_factory(alice["id"]).post(
+        "/api/stock/import",
+        files={"file": ("x.csv", csv_text, "text/csv")},
+        headers={"X-Requested-With": "fetch"},
+    )
+    assert r.status_code == 200
+    assert r.json()["imported"] == 1
+
+    with db.get_admin_pool().connection() as conn:
+        rows = conn.execute(
+            "SELECT user_id, reason FROM stock_item_judgments WHERE item_key = %s ORDER BY user_id",
+            [shared_key],
+        ).fetchall()
+    assert [(r["user_id"], r["reason"]) for r in rows] == [
+        (alice["id"], "alice's"), (bob["id"], "bob's"),
+    ]

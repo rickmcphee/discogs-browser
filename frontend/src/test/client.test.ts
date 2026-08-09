@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { postCrawlStart, postStockSyncStart, getUserSettings, saveUserSettings, logout, getStock, getStockArtists, getReleases, getArtists, postPlexMatchStart, refreshCollection, openCrawlStream, openLogsStream } from '../api/client'
+import { postCrawlStart, postStockSyncStart, getUserSettings, saveUserSettings, logout, getStock, getStockArtists, getReleases, getArtists, postPlexMatchStart, refreshCollection, openCrawlStream, openLogsStream, importRecommendationsCsv } from '../api/client'
 
 describe('crawl/user-settings client functions', () => {
   let fetchMock: ReturnType<typeof vi.fn>
@@ -193,5 +193,28 @@ describe('crawl/user-settings client functions', () => {
     expect(fetchMock.mock.calls[0][0]).toBe('https://api.tracktempest.com/api/user-settings')
     vi.unstubAllEnvs()
     vi.resetModules()
+  })
+
+  it('importRecommendationsCsv posts the file as multipart without setting Content-Type', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        imported: 2, updated: 0, unchanged: 0, skipped: 0,
+        errors: [], matched_stock_items: 1, running: false,
+      }),
+    })
+    const file = new File(['artist,title\n'], 'recommendations.csv', { type: 'text/csv' })
+
+    const result = await importRecommendationsCsv(file)
+
+    expect(result.imported).toBe(2)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toContain('/stock/import')
+    expect(init.method).toBe('POST')
+    expect(init.body).toBeInstanceOf(FormData)
+    expect((init.body as FormData).get('file')).toBe(file)
+    // The browser must supply the multipart boundary; setting Content-Type by
+    // hand omits it and the request fails to parse server-side.
+    expect(new Headers(init.headers).has('Content-Type')).toBe(false)
   })
 })

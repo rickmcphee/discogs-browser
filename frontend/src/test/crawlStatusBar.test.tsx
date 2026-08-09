@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import App from '../App'
+import { importRecommendationsCsv } from '../api/client'
 import type { Release } from '../api/types'
 
 class MockEventSource {
@@ -66,6 +67,7 @@ vi.mock('../api/client', () => ({
   postStockSyncStart: vi.fn().mockResolvedValue({ started: true, running: true }),
   postJudgmentStart: vi.fn().mockResolvedValue({ started: true, running: true }),
   getJudgmentStatus: vi.fn().mockResolvedValue({ any_judged: false }),
+  importRecommendationsCsv: vi.fn(),
 }))
 
 function getLastCrawlSource() {
@@ -197,5 +199,71 @@ describe('crawl status bar', () => {
 
     await waitFor(() => expect(screen.getByRole('button', { name: 'Collection' })).toBeInTheDocument())
     expect(screen.queryByText('Done')).not.toBeInTheDocument()
+  })
+})
+
+describe('recommendations import', () => {
+  async function importFile() {
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Profile' }))
+    const file = new File(['artist,title\n'], 'recommendations.csv', { type: 'text/csv' })
+    const input = screen.getByTestId('recommendations-import-input') as HTMLInputElement
+    fireEvent.change(input, { target: { files: [file] } })
+  }
+
+  it('shows a clean error message (not raw JSON) when the import fails', async () => {
+    vi.mocked(importRecommendationsCsv).mockRejectedValueOnce(
+      new Error(JSON.stringify({ detail: 'Missing required column(s): item_key.' }))
+    )
+    await importFile()
+
+    await waitFor(() =>
+      expect(screen.getByText('Import recommendations failed: Missing required column(s): item_key.')).toBeInTheDocument()
+    )
+    expect(screen.queryByText(/"detail"/)).not.toBeInTheDocument()
+  })
+
+  it('says nothing new to import when a re-import finds every row already current', async () => {
+    vi.mocked(importRecommendationsCsv).mockResolvedValueOnce({
+      imported: 0, updated: 0, unchanged: 1, skipped: 0, errors: [], matched_stock_items: 0, running: false,
+    })
+    await importFile()
+    await waitFor(() =>
+      expect(screen.getByText('Nothing new to import — 1 judgment already up to date.')).toBeInTheDocument()
+    )
+  })
+
+  it('reports a partial stock match and skipped rows on a large import', async () => {
+    vi.mocked(importRecommendationsCsv).mockResolvedValueOnce({
+      imported: 1200, updated: 0, unchanged: 0, skipped: 3, errors: [], matched_stock_items: 87, running: false,
+    })
+    await importFile()
+    await waitFor(() =>
+      expect(
+        screen.getByText('Imported 1200 judgments. 87 in stock now; the rest apply as items appear. 3 rows skipped.')
+      ).toBeInTheDocument()
+    )
+  })
+
+  it('says none are in stock yet when nothing imported matches a current stock item', async () => {
+    vi.mocked(importRecommendationsCsv).mockResolvedValueOnce({
+      imported: 1200, updated: 0, unchanged: 0, skipped: 0, errors: [], matched_stock_items: 0, running: false,
+    })
+    await importFile()
+    await waitFor(() =>
+      expect(
+        screen.getByText('Imported 1200 judgments. None in stock yet — they apply as items appear.')
+      ).toBeInTheDocument()
+    )
+  })
+
+  it('omits the "rest apply" clause when every imported item is already in stock', async () => {
+    vi.mocked(importRecommendationsCsv).mockResolvedValueOnce({
+      imported: 1, updated: 0, unchanged: 0, skipped: 0, errors: [], matched_stock_items: 1, running: false,
+    })
+    await importFile()
+    await waitFor(() =>
+      expect(screen.getByText('Imported 1 judgment. 1 in stock now.')).toBeInTheDocument()
+    )
   })
 })

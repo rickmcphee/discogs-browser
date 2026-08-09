@@ -1,6 +1,6 @@
 import type {
   ReleasesResponse, Crawler, Settings, UserSettings, SortField, SortOrder, CrawlStatus, CollectionStatus, ScreenshotSession,
-  AuthStatus, RecordScope, StockResponse, StockSortField, LibraryScope,
+  AuthStatus, RecordScope, StockResponse, StockSortField, LibraryScope, RecommendationImportResult,
 } from './types'
 
 const BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/+$/, '')
@@ -235,6 +235,16 @@ export async function exportRecommendationsCsv(): Promise<Blob> {
   const r = await apiFetch('/stock/export')
   if (!r.ok) throw new Error(await r.text())
   return r.blob()
+}
+
+export async function importRecommendationsCsv(file: File): Promise<RecommendationImportResult> {
+  const body = new FormData()
+  body.append('file', file)
+  // Content-Type is deliberately unset: the browser adds it with the
+  // multipart boundary, which a hand-set header would omit.
+  const r = await apiFetch('/stock/import', { method: 'POST', body })
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
 }
 
 export function openLogsStream(levels?: string[]): EventSource {

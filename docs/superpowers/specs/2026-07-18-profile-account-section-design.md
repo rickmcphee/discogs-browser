@@ -18,6 +18,8 @@ _2026-07-18_
 
 **Amendment (2026-08-07):** the previous amendment's last sentence no longer holds — `Refresh` and `Clear` also moved from `Settings.tsx`'s "Recommendations Management" section (now deleted entirely) into `Account.tsx`'s "Recommendations" section, as two more rows in that section's table, ordered `Refresh`, `Export`, `Clear`. Both are ungated, same rationale as `Export`'s 2026-08-04 move: `POST /api/stock/judge/start` and `POST /api/stock/judge/clear` (`backend/routers/stock.py`) were already per-user and carried no `require_admin` dependency — the `isAdmin` gate in `Settings.tsx` was UI-only scaffolding left over from before the `crawl-queue-refactor` per-user migration, not a real access boundary. `Refresh` has no `hasJudgedItems` gating (matches its pre-move behavior); `Clear` keeps it, same as `Export`.
 
+**Amendment (2026-08-09, branch `recommendations-import`):** the 2026-08-04 amendment's description of `Export` as "the last row in that section's table" no longer holds — a new "Import" row was inserted between `Export` and `Clear`, so the order is now `Refresh`, `Export`, `Import`, `Clear`, with `Import` the last row. `Import` is ungated, unlike its three siblings — having no judgments is the main reason to import. See [`2026-08-09-recommendations-import-design.md`](../../specifications/shaping/2026-08-09-recommendations-import-design.md).
+
 ---
 
 ## Overview
