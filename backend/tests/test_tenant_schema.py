@@ -216,3 +216,12 @@ def test_stock_item_judgments_insert_with_mismatched_user_id_is_rejected(pg_test
             conn.execute("DELETE FROM stock_item_judgments WHERE user_id IN (%s, %s)", [alice["id"], bob["id"]])
             conn.execute("DELETE FROM users WHERE id IN (%s, %s)", [alice["id"], bob["id"]])
             conn.commit()
+
+
+def test_library_items_has_price_paid_column(admin_conn):
+    row = admin_conn.execute(
+        "SELECT data_type FROM information_schema.columns "
+        "WHERE table_name = 'library_items' AND column_name = 'price_paid'"
+    ).fetchone()
+    assert row is not None
+    assert row["data_type"] == "text"

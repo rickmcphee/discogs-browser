@@ -194,6 +194,7 @@ CREATE TABLE IF NOT EXISTS library_items (
 
 ALTER TABLE library_items ADD COLUMN IF NOT EXISTS collection_date_added TIMESTAMP;
 ALTER TABLE library_items ADD COLUMN IF NOT EXISTS wishlist_date_added TIMESTAMP;
+ALTER TABLE library_items ADD COLUMN IF NOT EXISTS price_paid TEXT;
 
 CREATE TABLE IF NOT EXISTS stock_item_judgments (
     user_id INTEGER NOT NULL REFERENCES users(id),
