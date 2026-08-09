@@ -76,6 +76,49 @@ Discogs releases (see `docs/specifications/shaping/2026-08-08-crawl-target-expan
    `test_drain_one_batch_counts_bot_detected_stock_item_search_as_a_failure`,
    and `test_drain_one_batch_resets_failure_count_on_a_found_stock_item_match`.
 
+**Amendment (2026-08-09, branch `claude/ebay-409-cooloff`):** item 8's exclusion
+had a consequence nobody spotted when it landed.
+
+9. **A crawler that answers an API failure with `[]` is invisible to the
+   breaker.** `ebay_api.search_ebay()` caught every `httpx.HTTPStatusError` /
+   `httpx.RequestError`, logged it, and returned `[]` — the same value it
+   returns for "no matching listing." Combined with item 8, that meant
+   successive eBay API errors on a stock-item row recorded nothing at all: the
+   counter never moved, `consecutive_failure_limit` was never reached, and the
+   site never cooled off no matter how many errors came back in a row. (Reported
+   against eBay 409s.) `search_ebay()` now re-raises after logging, so
+   `_drain_one_batch`'s existing `except Exception` path records the failure —
+   for release and stock-item rows alike, since that path runs before the
+   target-kind branch. Nothing in `CrawlManager` changed. The general rule this
+   makes explicit for any future crawler: **`[]` means "the site answered and
+   has nothing"; anything else must raise**, because the breaker cannot
+   distinguish the two otherwise. Covered by
+   `test_successive_ebay_api_errors_cool_down_the_site` (real `crawlers/ebay.py`
+   plugin against a mocked 409, asserting the cooldown trips) and
+   `test_search_raises_on_http_error` / `test_search_raises_on_request_error`.
+10. **The breaker's unit is now a failure domain, not always a crawler.** One
+    `crawlers` row was assumed to mean one upstream; the two eBay plugins
+    (`eBay/CCmusic` and `eBay`) break that — separate rows, but one eBay app,
+    one cached OAuth token and one API, so an error storm answering one
+    answers both. With a counter each, a storm had to reach
+    `consecutive_failure_limit` twice over before both stopped calling. A
+    plugin may now declare `failure_domain: str` (both eBay plugins declare
+    `"ebay-browse-api"`); `CrawlManager._set_failure_domains`, called from
+    `start_worker_pool`, collects those declarations, and
+    `_record_site_result` applies each result to every crawler in the domain.
+    Undeclared — every other crawler — means the crawler is its own domain,
+    unchanged. The counters and `_site_cooldown_until` stay keyed by
+    `crawler_id` rather than by domain, because that is what
+    `claim_crawl_queue_batch`'s `excluded_crawler_ids` consumes. **Pacing was
+    deliberately left per-crawler**: `_site_locks` / `_site_next_allowed_at`
+    still give each eBay crawler its own `crawl_delay_seconds` slot, so the
+    two together can issue requests twice as fast as one site's configured
+    rate. That is a politeness question with a throughput cost on a
+    5000-calls/day API quota, separate from the health question this item
+    fixes, and no observed problem to act on. Covered by
+    `test_failures_pool_across_crawlers_sharing_a_failure_domain` and
+    `test_a_crawler_with_no_failure_domain_keeps_its_own_counter`.
+
 ---
 
 ## Overview

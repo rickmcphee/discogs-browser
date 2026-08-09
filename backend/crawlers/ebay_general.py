@@ -7,6 +7,7 @@ from ebay_api import search_ebay
 class Crawler:
     site_name: str = "eBay"
     base_url: str = "https://www.ebay.com"
+    failure_domain: str = "ebay-browse-api"
 
     @classmethod
     def search_url(cls, release: dict) -> str:

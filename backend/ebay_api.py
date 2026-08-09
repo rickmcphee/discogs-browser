@@ -131,11 +131,20 @@ async def search_ebay(
             r.raise_for_status()
             data = r.json()
     except httpx.HTTPStatusError as e:
+        # Raised, not swallowed into []: an empty list means "eBay has no
+        # matching listing", and the crawl manager reads it that way -- on the
+        # stock-item path an empty result is deliberately excluded from the
+        # consecutive-failure circuit breaker. Returning [] here therefore hid
+        # every eBay API error (409s in particular) from the breaker, so the
+        # site never cooled off no matter how many errors came back in a row.
+        # Every status is raised, not just 409: eBay doesn't document a
+        # per-status meaning for Browse search failures, and any of them is
+        # equally "the API isn't answering", which is what the breaker counts.
         log.error("[%s] search HTTP error %s: %s", log_prefix, e.response.status_code, e)
-        return []
+        raise
     except httpx.RequestError as e:
         log.error("[%s] search request error: %s", log_prefix, e)
-        return []
+        raise
 
     items = data.get("itemSummaries")
     if not items:

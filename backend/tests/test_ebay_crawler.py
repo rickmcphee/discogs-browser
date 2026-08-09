@@ -89,12 +89,27 @@ async def test_search_returns_empty_when_missing_config(tmp_config_dir):
     assert not respx.calls
 
 
-async def test_search_returns_empty_on_http_error(crawler):
+@pytest.mark.parametrize("status", [403, 409, 429, 500])
+async def test_search_raises_on_http_error(crawler, status):
+    """An API error is not the same answer as "this release isn't listed".
+
+    Returning [] here made the two indistinguishable to the crawl manager,
+    so an eBay error never reached the consecutive-failure circuit breaker
+    on the stock-item path (where an empty result is deliberately excluded
+    from the breaker) and the site never cooled off."""
     with respx.mock:
         respx.post(_TOKEN_URL).mock(return_value=httpx.Response(200, json=_TOKEN_RESP))
-        respx.get(_SEARCH_URL).mock(return_value=httpx.Response(403, json={}))
-        results = await crawler.search(_RELEASE, page=None)
-        assert results == []
+        respx.get(_SEARCH_URL).mock(return_value=httpx.Response(status, json={}))
+        with pytest.raises(httpx.HTTPStatusError):
+            await crawler.search(_RELEASE, page=None)
+
+
+async def test_search_raises_on_request_error(crawler):
+    with respx.mock:
+        respx.post(_TOKEN_URL).mock(return_value=httpx.Response(200, json=_TOKEN_RESP))
+        respx.get(_SEARCH_URL).mock(side_effect=httpx.ConnectError("connection refused"))
+        with pytest.raises(httpx.RequestError):
+            await crawler.search(_RELEASE, page=None)
 
 
 @respx.mock
