@@ -121,7 +121,7 @@ Plans (`docs/superpowers/plans/` and `docs/specifications/plans/`) are historica
 
 ### Pull requests
 
-Always open PRs as ready for review, not as drafts — pass `--draft=false` (or omit `--draft` and don't add `Draft PR` state) whenever creating a PR via `gh`, the GitHub API, or `sdlc:pr-review-prep`. Don't ask which mode to use.
+Always open PRs as ready for review, not as drafts — pass `--draft=false` (or omit `--draft` and don't add `Draft PR` state) whenever creating a PR via `gh`, the GitHub API, or any PR-opening skill. Don't ask which mode to use.
 
 ## Tests
 
@@ -136,7 +136,7 @@ Always open PRs as ready for review, not as drafts — pass `--draft=false` (or 
 
 ## Commits — AI attribution trailers (required, every commit)
 
-Every commit made by an AI agent on this repo must carry AI-attribution git trailers, even a plain `git commit -m` one-liner. This exists because `pr-review-prep`'s content-attribution table classifies a commit as `Human-attributed` whenever the `ai-generated: true` trailer is absent — a commit with no trailers silently misattributes AI work as human work, no error, no warning. (Found and fixed the hard way: seven commits landed on `metal-catalog-crawlers` with no trailers at all before this rule existed, requiring a `git filter-branch` rewrite + force-push to correct after the fact.)
+Every commit made by an AI agent on this repo must carry AI-attribution git trailers, even a plain `git commit -m` one-liner. The rule originated with a `pr-review-prep` tool whose content-attribution table classified a commit as `Human-attributed` whenever the `ai-generated: true` trailer was absent — a commit with no trailers silently misattributed AI work as human work, no error, no warning. (Found and fixed the hard way: seven commits landed on `metal-catalog-crawlers` with no trailers at all before this rule existed, requiring a `git filter-branch` rewrite + force-push to correct after the fact.) That tool is no longer installed, but the trailers remain required — they're the only record of provenance in this repo's history.
 
 Required trailer block, appended as the last paragraph of the commit message (blank line before it):
 
@@ -144,12 +144,20 @@ Required trailer block, appended as the last paragraph of the commit message (bl
 Note: This commit message was created by AI
 ai-generated: true
 ai-model: <actual model identifier for this session>
-ai-tool: <actual tool — see upside-sdlc:commit's known-value table; introduce a new value rather than mislabeling as an existing one if none fits>
+ai-tool: <actual tool — see known values below; introduce a new value rather than mislabeling as an existing one if none fits>
 ai-surface: <actual surface, same rule>
 ai-executor: local-agent | remote-agent — local-agent only when the agent process is verified to run alongside the developer's own machine; when in doubt (e.g. a generic sandboxed path like `/home/agent/...` rather than the developer's real home directory), use remote-agent rather than assuming local
 ```
 
-Create the commit via `git commit -F <message-file>`, not `git commit -m` — trailers are easy to drop with `-m` due to shell quoting, and `-F` makes them mechanically part of the message. The `upside-sdlc:commit` skill's packaged helper (`commit-with-cleanup.sh`) does exactly this and should be preferred when available.
+Known values, in kebab-case, as used on this repo's history:
+
+- `ai-tool`: `claude-code`, `claude-agent-sdk`
+- `ai-surface`: `claude-code-cli`, `claude-code-desktop`, `fleetview`
+- `ai-model`: the exact model id (e.g. `claude-opus-5`, `claude-sonnet-5`, `claude-haiku-4-5`), never a family name
+
+Older commits carry unnormalized variants (`Claude Code`, `Claude Agent SDK`, bare `cli`). Match the kebab-case forms above for new commits; don't rewrite history to match.
+
+Create the commit via `git commit -F <message-file>`, not `git commit -m` — trailers are easy to drop with `-m` due to shell quoting, and `-F` makes them mechanically part of the message.
 
 ## Versioning
 
