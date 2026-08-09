@@ -30,10 +30,10 @@ const { release, stockSpy, settingsSpy, accountSpy, logViewerSpy } = vi.hoisted(
     last_synced: '',
     date_added: null,
   } as Release,
-  stockSpy: vi.fn(() => null),
-  settingsSpy: vi.fn(() => null),
-  accountSpy: vi.fn(() => null),
-  logViewerSpy: vi.fn(() => null),
+  stockSpy: vi.fn((_props: any) => null),
+  settingsSpy: vi.fn((_props: any) => null),
+  accountSpy: vi.fn((_props: any) => null),
+  logViewerSpy: vi.fn((_props: any) => null),
 }))
 
 // These stand-ins are wrapped in memo the same way the real views are
@@ -117,7 +117,12 @@ describe('views unrelated to crawl progress do not re-render on every crawl even
     // in a fresh `crawlers` array, which legitimately re-renders Settings once)
     // before snapshotting, so that unrelated startup settling isn't mistaken
     // for churn caused by the crawl event stream this test actually targets.
-    await waitFor(() => expect(settingsSpy).toHaveBeenCalled())
+    // Waiting for the first Settings render isn't enough — that one happens
+    // with the empty initial array, and the swap can then land inside the
+    // measured window.
+    await waitFor(() =>
+      expect(settingsSpy.mock.calls.some(([props]) => props.crawlers.length > 0)).toBe(true)
+    )
     await waitFor(() => expect(stockSpy).toHaveBeenCalled())
 
     const callsBefore = {

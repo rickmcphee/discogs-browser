@@ -89,6 +89,8 @@ This spec replaces both buttons with a single debounced auto-save: any edit to a
 
 ## Testing
 
+**Amendment (2026-08-09, branch `claude/discogs-main-branch-failure-f622bd`):** the "real timers; 2000ms comfortably clears the 800ms debounce" approach below did not survive CI. Sleeping past a real debounce is only probably long enough — a contended runner fires the timer late, and both this file's and `settings.test.tsx`'s auto-save tests flaked on `main` because of it. Every debounce-dependent test in `account.test.tsx` and `settings.test.tsx` now calls `vi.useFakeTimers()` and advances the clock (`vi.advanceTimersByTimeAsync(800)` inside `act`) instead. `waitFor` is unusable once the clock is faked — its polling runs on that clock and never advances it — so those tests use explicit `act` flushes. The assertions themselves are unchanged from what this section describes.
+
 - `frontend/src/test/account.test.tsx`:
   - `'renders anthropic API key field and saves it'`: replace the `fireEvent.click(screen.getByRole('button', { name: 'Save Recommendations settings' }))` step with nothing — after `fireEvent.change` on the Anthropic API key input, `waitFor(() => expect(saveUserSettings).toHaveBeenCalledWith(expect.objectContaining({ anthropic_api_key: 'sk-ant-new-key' })), { timeout: 2000 })` (real timers; 2000ms comfortably clears the 800ms debounce).
   - `'shows a clean error message (not raw JSON) when saving Plex settings fails'`: replace the `fireEvent.click(screen.getByRole('button', { name: 'Save Plex settings' }))` step with a `fireEvent.change` on any Plex field (e.g. Plex server address) to trigger the debounced save, then `waitFor` the error text with the same extended timeout.
