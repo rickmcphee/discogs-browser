@@ -30,10 +30,14 @@ Touches:
   (extracted into a shared join fragment so the two can't drift), returning
   each row's matched `catalog.discogs_price` as `discogs_price`. Comparison
   rows copy it from their own row, same as `cover_image_url` today.
-  `_STOCK_ALLOWED_SORT` gains `"discogs_price"`, valid only when
-  `overlapping=True`; its `ORDER BY` uses a best-effort numeric cast instead
-  of a plain column reference, following the existing `sort_expr`-override
-  pattern already used in `get_library_releases` for `date_added`.
+  `sort == "discogs_price"` is special-cased *before* the `_STOCK_ALLOWED_SORT`
+  membership check, not added to that set — it's deliberately absent from
+  it, so a `discogs_price` sort request with `overlapping=False` falls
+  through to the existing "not in the allow-set" fallback (`artist`) rather
+  than resolving to a nonexistent `s.discogs_price` column. When it does
+  apply, `ORDER BY` uses a best-effort numeric cast instead of a plain
+  column reference, following the existing `sort_expr`-override pattern
+  already used in `get_library_releases` for `date_added`.
 - `frontend/src/api/types.ts` — `StockItem` gains `discogs_price: string | null`.
 - `frontend/src/views/StockBrowser.tsx` — header `Price` → `Cost`; new
   `Price` column (header + cell), rendered only when `scope === 'collection'`.
@@ -66,12 +70,17 @@ change that).
   fallback, since the field is meaningless there.
 - **Best-effort numeric sort.** `discogs_price` is unstructured free text
   (whatever the user typed into a Discogs custom field — `"25"`, `"$25.00"`,
-  blank, `"N/A"`, etc.). Sorting strips everything but digits and `.`,
-  casts to numeric, and treats anything that doesn't parse as NULL —
-  sorting last, consistent with the existing NULL-last convention for
-  missing prices. No validation or normalization of the underlying
-  free-text value itself; this only affects sort order, never what's
-  displayed.
+  blank, `"N/A"`, etc.). Sorting extracts the first digit run (with at most
+  one decimal point) via `regexp_match(..., '\d+\.?\d*')` and casts that to
+  numeric; anything with no digit run at all (`"N/A"`, blank, NULL) matches
+  nothing and sorts as NULL, last, consistent with the existing NULL-last
+  convention for missing prices. This is deliberately not a blanket
+  strip-non-digits-then-cast: a value with two decimal points (e.g. a typo
+  like `"25.00.00"`) would survive a strip to `"25.00.00"`, which fails the
+  `::numeric` cast outright and would error the whole query — extracting a
+  single well-formed numeric substring first avoids that. No validation or
+  normalization of the underlying free-text value itself; this only affects
+  sort order, never what's displayed.
 - **Missing value renders as `—`**, matching `Format`'s existing convention
   in the same table.
 - **Shared match logic, not duplicated.** `_not_owned_clause`'s
@@ -92,6 +101,10 @@ the new price lookup:
 
 ```python
 def _owned_match_fragment(user_id_param: str) -> str:
+    # Exact-or-prefix-with-space title match, not exact-only: stock listings
+    # often append edition/format qualifiers the catalog title doesn't have
+    # (e.g. catalog "Kid A" vs. stock listing "Kid A (Deluxe Reissue)"), so a
+    # strict equality would treat an already-owned release as still unowned.
     return f"""FROM library_items li
         JOIN catalog c ON c.discogs_id = li.discogs_id
         WHERE li.user_id = {user_id_param}
@@ -125,17 +138,19 @@ Sort handling follows `get_library_releases`'s existing override pattern
 
 ```python
 if sort == "discogs_price" and overlapping:
-    sort_expr = """(SELECT NULLIF(regexp_replace(c.discogs_price, '[^0-9.]', '', 'g'), '')::numeric
+    sort_expr = """(SELECT (regexp_match(c.discogs_price, '\\d+\\.?\\d*'))[1]::numeric
                     {match} LIMIT 1)""".format(match=_owned_match_fragment("%(user_id)s"))
 else:
     sort_col = sort if sort in _STOCK_ALLOWED_SORT else "artist"
     sort_expr = f"s.{sort_col}"
 ```
 
-`_STOCK_ALLOWED_SORT` gains `"discogs_price"` so the router's validation
-accepts it as a request value; the `overlapping` guard above is what
-actually decides whether it takes effect, falling back to `artist`
-otherwise.
+`_STOCK_ALLOWED_SORT` is left unchanged — `"discogs_price"` is deliberately
+*not* a member. `routers/stock.py` passes `sort` straight through to
+`get_stock_items` with no validation of its own, so `_STOCK_ALLOWED_SORT`
+membership is the only gate; keeping `"discogs_price"` out of it is what
+makes the `else` branch above resolve an invalid/inapplicable request
+(`overlapping=False`) to `artist` instead of the nonexistent `s.discogs_price`.
 
 The flatten step (comparison-row synthesis, `backend/db.py:964-976`) copies
 `discogs_price` from the own row onto each comparison row it generates,
@@ -168,8 +183,8 @@ arbitrary strings validated server-side.
   Cell: `{scope === 'collection' && <td className="px-3 py-2 text-gray-400">{item.discogs_price ?? '—'}</td>}`
 - `colSpan` on the loading/empty rows goes from `6` to `7` when
   `scope === 'collection'` (computed, not hardcoded).
-- `StockSortField` type (wherever `toggleSort`'s parameter is typed) gains
-  `'discogs_price'`.
+- `StockSortField` (`frontend/src/api/types.ts:135`, currently `'artist' |
+  'title' | 'format' | 'price'`) gains `'discogs_price'`.
 
 Tile view is unaffected — it doesn't render price at all today, per the
 Store/Collection split design, and this slice doesn't change that.
