@@ -134,15 +134,18 @@ class CrawlManager:
         API, so a 409 storm answering one of them is answering both -- with a
         counter each, the storm had to reach `consecutive_failure_limit` twice
         over before both stopped calling. Undeclared (the normal case) means a
-        crawler is its own domain. The `isinstance` guard is the plugin
+        crawler is its own domain. The non-empty-string guard is the plugin
         contract, not defensiveness: plugins are arbitrary files loaded at
-        runtime, and a non-string here would silently become a distinct
-        domain key rather than an error."""
-        self._failure_domains = {
-            crawler_id: plugin.failure_domain
-            for crawler_id, plugin in plugins_by_crawler_id.items()
-            if isinstance(getattr(plugin, "failure_domain", None), str)
-        }
+        runtime, and neither a non-string nor an empty `failure_domain = ""`
+        should become a domain pooling every crawler that fumbled the
+        declaration -- one site's outage would then cool off unrelated
+        sites."""
+        domains = {}
+        for crawler_id, plugin in plugins_by_crawler_id.items():
+            domain = getattr(plugin, "failure_domain", None)
+            if isinstance(domain, str) and domain:
+                domains[crawler_id] = domain
+        self._failure_domains = domains
 
     def _domain_peers(self, crawler_id: int) -> list[int]:
         domain = self._failure_domains.get(crawler_id)

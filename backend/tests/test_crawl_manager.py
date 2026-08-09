@@ -1784,6 +1784,20 @@ async def test_a_crawler_with_no_failure_domain_keeps_its_own_counter(pg_schema)
     assert manager._site_consecutive_failures.get(ebay_id, 0) == 0
 
 
+def test_empty_failure_domain_does_not_pool_crawlers():
+    """An empty string is an unset domain, not a domain every crawler that
+    fumbled the declaration shares -- pooling two unrelated sites' failures
+    would cool both off for one site's outage."""
+    class Blank:
+        failure_domain = ""
+
+    manager = CrawlManager()
+    manager._set_failure_domains({1: Blank(), 2: Blank()})
+
+    assert manager._domain_peers(1) == [1]
+    assert manager._domain_peers(2) == [2]
+
+
 async def test_drain_one_batch_excludes_cooling_down_crawler_from_claim(pg_schema):
     with db.get_admin_pool().connection() as conn:
         db.register_crawler(conn, "Amazon", "/x.py")
