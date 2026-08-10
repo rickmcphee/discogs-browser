@@ -1,5 +1,7 @@
 import re
 
+from shopify_catalog import resolve_cover_image
+
 _COLLECTION_SLUG = "vinyl-1"
 
 # En-dash and em-dash are in the class because 34 live titles separate with
@@ -10,11 +12,53 @@ _COLLECTION_SLUG = "vinyl-1"
 _TITLE_RE = re.compile(r'^(?P<artist>.+?)(?:\s+[-–—]\s*|\s*[-–—]\s+)(?P<album>.+)$')
 _TRAILING_PARENS_RE = re.compile(r'\s*\([^()]*\)\s*$')
 
+# Confirmed live in this collection: BND shirt bundles, BK books, PS/PO
+# posters, CD/DVD/BR discs, TB tote bags.
+_NON_VINYL_TYPES = {"BND", "BK", "PS", "PO", "DVD", "BR", "TB", "CD"}
+# product_type is correct on today's data, but 20 Buck Spin hit a tote bag
+# typed "VINYL" live, so the title keyword check backs it up.
+_MERCH_TITLE_RE = re.compile(
+    r'poster|hardback book|tote bag|\bshirt\b|hoodie|sweater|bundle', re.IGNORECASE)
+_DEFAULT_VARIANT_TITLE = "Default Title"
+
 
 class Crawler:
     site_name: str = "Cleopatra Records"
     base_url: str = "https://cleorecs.com"
     crawler_type: str = "catalog"
+
+    @classmethod
+    def _items(cls, product: dict) -> list[dict]:
+        raw_title = product.get("title", "")
+        if product.get("product_type") in _NON_VINYL_TYPES:
+            return []
+        if _MERCH_TITLE_RE.search(raw_title):
+            return []
+
+        artist, album = cls._parse_artist_title(raw_title)
+        url = f"{cls.base_url}/products/{product.get('handle', '')}"
+
+        items = []
+        for variant in product.get("variants") or []:
+            if not variant.get("available"):
+                continue
+            try:
+                price = float(variant["price"])
+            except (KeyError, TypeError, ValueError):
+                price = None
+            variant_title = (variant.get("title") or "").strip()
+            title = album if variant_title in ("", _DEFAULT_VARIANT_TITLE) \
+                else f"{album} — {variant_title}"
+            items.append({
+                "artist": artist,
+                "title": title,
+                "format": "Vinyl",
+                "price": price,
+                "currency": "USD",
+                "url": url,
+                "cover_image_url": resolve_cover_image(product, variant),
+            })
+        return items
 
     @classmethod
     def _parse_artist_title(cls, title: str):
