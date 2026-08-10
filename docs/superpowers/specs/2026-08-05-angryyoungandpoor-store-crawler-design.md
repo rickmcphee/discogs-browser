@@ -16,14 +16,21 @@ The rest of this section (the concrete regex/split rule) is written below alread
 hardcoded V/A artist is **`"Various"`**, not `"Various Artists"`. Both mentions
 below are updated in place.
 
-Discogs' own various-artists entity is named `Various`, and three consumers key
-off that exact string: `amazon.py`'s `Crawler._artist()` only special-cases the
-literal `"various"` (case-insensitively) to search by title alone,
+Discogs' own various-artists entity is named `Various`, and two consumers compare
+against that exact string: `amazon.py`'s `Crawler._artist()` only special-cases
+the literal `"various"` (case-insensitively) to search by title alone, and
 `db.py`'s `_library_match_fragment` does an exact `LOWER()` equality against the
-catalog artist, and `ebay_api.pick_matching_item` requires ≥50% word overlap with
-the listing title. `"Various Artists"` satisfies none of the three, so every item
-in `V-A-Compilation-LPs-c397` was invisible to library matching and effectively
-unmatchable on eBay. Surfaced while specifying the Cleopatra Records crawler,
+catalog artist. `"Various Artists"` satisfies neither, so every item in
+`V-A-Compilation-LPs-c397` was invisible to library matching and searched Amazon
+with a junk artist term instead of by title.
+
+`ebay_api.pick_matching_item` is *not* a third such consumer: it is a word-overlap
+ratio (`len(artist_words & listing_words) / len(artist_words) < 0.5`), not an
+exact-string check. Measured, it does not discriminate between the two spellings
+here — a listing naming neither word rejects both, and one naming `"various"`
+passes both (`"Various Artists"` scores exactly 0.50, which clears the gate). It
+is sensitive to the artist text in general, but it is not a reason to prefer
+either string. Surfaced while specifying the Cleopatra Records crawler,
 which hit the same question and originally made the same mistake — see
 `docs/specifications/shaping/2026-08-09-cleorecs-store-crawler-design.md`.
 

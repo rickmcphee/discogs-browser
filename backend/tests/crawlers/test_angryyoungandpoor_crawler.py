@@ -98,8 +98,7 @@ async def test_crawl_catalog_marks_used_condition_suffix(fake_page):
 
 async def test_crawl_catalog_uses_various_for_va_compilation(fake_page):
     # "Various", not "Various Artists" -- the exact string amazon.py's
-    # _artist(), db.py's _library_match_fragment and ebay_api's
-    # pick_matching_item all key on.
+    # _artist() and db.py's _library_match_fragment both compare against.
     crawler = Crawler()
     items = [item async for item in crawler.crawl_catalog(fake_page)]
     assert not [i for i in items if i["artist"] == "Various Artists"]
