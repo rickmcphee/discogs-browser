@@ -333,3 +333,34 @@ def test_enqueue_crawl_queue_still_leaves_an_in_progress_row_alone(admin_conn):
     rows = admin_conn.execute("SELECT status FROM crawl_queue").fetchall()
     assert len(rows) == 1
     assert rows[0]["status"] == "in_progress"
+
+
+def test_delete_pending_crawl_queue_for_crawler_only_deletes_that_crawlers_pending_rows(admin_conn):
+    target_id = _make_catalog_and_crawler(admin_conn, discogs_id="r1", site_name="Target Site")
+    other_id = _make_catalog_and_crawler(admin_conn, discogs_id="r2", site_name="Other Site")
+    admin_conn.commit()
+    for discogs_id in ("r1", "r2"):
+        db.enqueue_crawl_queue(admin_conn, discogs_id, target_id)
+        db.enqueue_crawl_queue(admin_conn, discogs_id, other_id)
+    admin_conn.commit()
+    admin_conn.execute(
+        "UPDATE crawl_queue SET status = 'in_progress' WHERE crawler_id = %s AND discogs_id = 'r1'",
+        [target_id],
+    )
+    admin_conn.execute(
+        "UPDATE crawl_queue SET status = 'done' WHERE crawler_id = %s AND discogs_id = 'r2'",
+        [other_id],
+    )
+    admin_conn.commit()
+
+    deleted = db.delete_pending_crawl_queue_for_crawler(admin_conn, target_id)
+    admin_conn.commit()
+
+    assert deleted == 1
+    remaining = admin_conn.execute(
+        "SELECT crawler_id, discogs_id, status FROM crawl_queue ORDER BY crawler_id, discogs_id"
+    ).fetchall()
+    assert [(r["discogs_id"], r["status"]) for r in remaining if r["crawler_id"] == target_id] == [("r1", "in_progress")]
+    assert sorted((r["discogs_id"], r["status"]) for r in remaining if r["crawler_id"] == other_id) == [
+        ("r1", "pending"), ("r2", "done"),
+    ]

@@ -3,9 +3,11 @@ from pydantic import BaseModel, Field
 from config import load_config, save_config
 import db
 from admin import require_admin
+from logging_config import get_logger
 import plex_security
 import scheduler
 
+log = get_logger("routers.settings")
 router = APIRouter()
 
 
@@ -68,8 +70,16 @@ def update_settings(body: SettingsUpdate):
 def update_crawler(crawler_id: int, body: CrawlerUpdate):
     with db.get_app_pool().connection() as conn:
         db.set_crawler_enabled(conn, crawler_id, body.enabled)
+        discarded = 0
+        if not body.enabled:
+            discarded = db.delete_pending_crawl_queue_for_crawler(conn, crawler_id)
         conn.commit()
-    return {"ok": True}
+    if discarded:
+        # INFO, not WARNING: routers/logs.py's _line_visible filters by exact
+        # level membership, so at WARNING this is invisible to anyone watching
+        # the INFO stream that carries the rest of the crawl narrative.
+        log.info("Crawler %d disabled: %d pending crawl jobs discarded", crawler_id, discarded)
+    return {"ok": True, "discarded": discarded}
 
 
 @router.get("/user-settings")

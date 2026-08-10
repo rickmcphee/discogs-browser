@@ -861,6 +861,16 @@ def mark_crawl_queue_done(conn, queue_id: int):
     conn.execute("UPDATE crawl_queue SET status = 'done' WHERE id = %s", [queue_id])
 
 
+# 'pending' only: an 'in_progress' row is held by a worker's open transaction
+# -- it is the current item, which finishes by design, and deleting it would
+# block on that worker's row lock until it committed.
+def delete_pending_crawl_queue_for_crawler(conn, crawler_id: int) -> int:
+    return conn.execute(
+        "DELETE FROM crawl_queue WHERE crawler_id = %s AND status = 'pending'",
+        [crawler_id],
+    ).rowcount
+
+
 def count_pending_crawl_queue_for_user(conn, user_id: int) -> int:
     return conn.execute(
         """
