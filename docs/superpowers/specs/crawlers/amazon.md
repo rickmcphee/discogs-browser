@@ -78,7 +78,7 @@ After navigating to the product page, `vinyl_url = page.url` captures the post-r
 
 If Amazon returns a CAPTCHA or bot interstitial (detected via `_BOT_SELECTORS`), raises `BotDetectedError`. The crawl engine resets the browser context and retries.
 
-**(2026-08-09:** true of the search-results page all along, but *not* of the product page until now. The product-page step was wrapped in a bare `except Exception` that logged a warning and fell through, and `BotDetectedError` subclasses `Exception` — so a product-page wall was swallowed, never reached `_paced_search`'s context-reset retry, and returned the price-less listing described under Error Handling below, which the circuit breaker then counted as a success. Fixed; the sentence above now holds for both pages.**)**
+**(2026-08-09:** true of the search-results page all along, but *not* of the product page until now. The product-page step was wrapped in a bare `except Exception` that logged a warning and fell through, and `BotDetectedError` subclasses `Exception` — so a product-page wall was swallowed, never reached `_paced_search`'s context-reset retry, and returned the price-less listing described under Error Handling below, which the circuit breaker then counted as a success. Fixed; the sentence above now holds for both pages.)**
 
 ## Error Handling
 
@@ -89,6 +89,8 @@ If Amazon returns a CAPTCHA or bot interstitial (detected via `_BOT_SELECTORS`),
 - **Any exception in the product-page step** (navigation failure, timeout, bot wall) → propagates to the caller.
 
 That last case is the 2026-08-09 fix. It previously fell through to the same `price: None` listing as the second case, which is *truthy* — so `CrawlManager._record_site_result` recorded a failed crawl as a success and **reset** the site's consecutive-failure count, the opposite of what the circuit breaker needed. This is the same contract eBay's `search_ebay()` was corrected to in [`2026-08-01-worker-pool-pacing-design.md`](../2026-08-01-worker-pool-pacing-design.md) item 9: `[]` means the site answered and has nothing; anything else must raise.
+
+The page is blanked in a `finally` on both paths, and that cleanup swallows its own errors on purpose — after an aborted navigation the `goto("about:blank")` raises ("interrupted by another navigation to `chrome-error://`"), which from a `finally` would replace the real failure with a cleanup artifact. Blanking matters because a live Amazon page (or a CAPTCHA) otherwise keeps running its scripts on the shared context through the whole inter-request delay.
 
 Not changed: the `except Exception: pass` around the search-results item scan (`amazon.py`), which still converts a scan failure into "no match". It's reachable only when the page or context is already broken, in which case the next `page.goto` raises anyway — left alone rather than changed without a test that can trigger it.
 

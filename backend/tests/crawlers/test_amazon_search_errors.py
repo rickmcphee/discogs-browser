@@ -79,6 +79,19 @@ async def test_product_page_bot_wall_raises_bot_detected(browser_page):
         await Crawler().search(_RELEASE, browser_page)
 
 
+async def test_page_is_left_blank_after_a_product_page_failure(browser_page):
+    """The success path blanks the page before returning; the failure path
+    should too, rather than leaving a live Amazon page (or a CAPTCHA) running
+    its scripts on the shared context through the inter-request delay."""
+    async def wall(route):
+        await route.fulfill(status=200, content_type="text/html", body=_PRODUCT_HTML_BOT_WALL)
+
+    await _route(browser_page, wall)
+    with pytest.raises(BotDetectedError):
+        await Crawler().search(_RELEASE, browser_page)
+    assert browser_page.url == "about:blank"
+
+
 async def test_product_page_without_a_price_still_returns_the_listing(browser_page):
     """The other half of the contract: a product page that loads fine but
     shows no price (out of stock, marketplace-only) is a real answer, not a

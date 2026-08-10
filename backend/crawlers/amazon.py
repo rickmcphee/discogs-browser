@@ -234,8 +234,19 @@ class Crawler:
             # raising, and that is a real answer, not a failure.
             log.warning("[Amazon] product page error: %s", e)
             raise
-
-        await page.goto("about:blank")
+        finally:
+            # Best-effort, and deliberately the one swallow left in here: the
+            # blank matters (a live Amazon page, or a CAPTCHA, otherwise keeps
+            # running its scripts on the shared context through the whole
+            # inter-request delay), but it must never replace the failure being
+            # reported. After an aborted navigation this goto raises on its own
+            # -- "interrupted by another navigation to chrome-error://" -- and
+            # from a finally that would mask the real error, which is the one
+            # thing the circuit breaker needs to see.
+            try:
+                await page.goto("about:blank")
+            except Exception:
+                pass
         return [{
             "url": vinyl_url,
             "price": vinyl_price,
