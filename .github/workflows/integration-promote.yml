@@ -1,0 +1,49 @@
+name: Promote integration to main
+
+on:
+  schedule:
+    # Tuesday 06:00 UTC -- a full day after Dependabot's Monday 06:00 UTC
+    # runs on `integration` (.github/dependabot.yml), so stragglers (a rebase
+    # after a merge conflict, a delayed check run) land before this fires.
+    - cron: "0 6 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  promote:
+    name: Open/update the promotion PR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Open the integration -> main PR if there's anything to promote
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git fetch origin main integration
+
+          if [ -z "$(git log origin/main..origin/integration --oneline)" ]; then
+            echo "integration has nothing main doesn't already have; nothing to promote."
+            exit 0
+          fi
+
+          existing="$(gh pr list --base main --head integration --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            echo "Promotion PR #$existing is already open; leaving it as-is."
+            exit 0
+          fi
+
+          gh pr create \
+            --base main \
+            --head integration \
+            --title "chore: promote this week's dependency updates to main" \
+            --body "Batches this week's Dependabot updates from \`integration\` into one deploy. Opened automatically by .github/workflows/integration-promote.yml every Tuesday; auto-merges once CI is green." \
+            --label dependencies
+
+          gh pr merge integration --auto --squash
