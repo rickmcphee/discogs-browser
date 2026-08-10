@@ -54,6 +54,25 @@ interface Props {
   onRefreshStoreCrawler: (crawlerId: number) => void
 }
 
+// apiFetch throws Error(await r.text()), so err.message is FastAPI's raw JSON
+// body for a handled error and a plain string for anything else. Every branch
+// narrows to a string before returning: `detail` is only a string for the
+// app's own HTTPExceptions -- FastAPI's own 422s make it an array of objects,
+// which React throws on rendering -- and a rejection carrying no message at
+// all must reach the fallback rather than throwing here.
+function errorMessage(err: unknown, fallback: string): string {
+  const raw = typeof (err as { message?: unknown })?.message === 'string'
+    ? (err as { message: string }).message
+    : typeof err === 'string' ? err : ''
+  try {
+    const parsed = JSON.parse(raw)
+    if (typeof parsed?.detail === 'string' && parsed.detail) return parsed.detail
+  } catch {
+    // not JSON, use raw message
+  }
+  return raw || fallback
+}
+
 function toggleButtonClass(on: boolean): string {
   return `px-3 py-1 rounded-full text-xs font-medium transition-colors ${
     on ? 'bg-green-700 hover:bg-green-600 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-400'
@@ -81,6 +100,7 @@ function Settings({
   // re-run once settings load, even when the fetched values equal the
   // useState defaults above and React would otherwise bail out of re-rendering.
   const [settingsLoaded, setSettingsLoaded] = useState(false)
+  const [discardedNotice, setDiscardedNotice] = useState<{ crawlerId: number; count: number } | null>(null)
 
   const releaseCrawlers = crawlers.filter((c) => c.crawler_type === 'release')
   const catalogCrawlers = crawlers.filter((c) => c.crawler_type === 'catalog' || c.crawler_type === 'catalog_browser')
@@ -170,6 +190,11 @@ function Settings({
                   >
                     {c.enabled ? 'Enabled' : 'Disabled'}
                   </button>
+                  {discardedNotice?.crawlerId === c.id && (
+                    <span className="ml-2 text-xs text-gray-500">
+                      {discardedNotice.count} queued {discardedNotice.count === 1 ? 'job' : 'jobs'} discarded
+                    </span>
+                  )}
                 </td>
               )}
               {isAdmin && showRefresh && (
@@ -208,16 +233,9 @@ function Settings({
       setSettingsSaveError('')
       try {
         await saveSettings(settings)
-      } catch (err: any) {
+      } catch (err) {
         if (seq !== latestSaveSeq.current) return
-        let message = err.message || 'Save failed'
-        try {
-          const parsed = JSON.parse(err.message)
-          if (parsed.detail) message = parsed.detail
-        } catch {
-          // not JSON, use raw message
-        }
-        setSettingsSaveError(message)
+        setSettingsSaveError(errorMessage(err, 'Save failed'))
       }
     })
   }
@@ -235,8 +253,16 @@ function Settings({
   }, [settings, settingsLoaded])
 
   async function handleToggleCrawler(crawler: Crawler) {
-    await setCrawlerEnabled(crawler.id, !crawler.enabled)
-    onCrawlersChange(crawlers.map((c) => c.id === crawler.id ? { ...c, enabled: !c.enabled } : c))
+    setSettingsSaveError('')
+    try {
+      const { discarded } = await setCrawlerEnabled(crawler.id, !crawler.enabled)
+      onCrawlersChange(crawlers.map((c) => c.id === crawler.id ? { ...c, enabled: !c.enabled } : c))
+      setDiscardedNotice(discarded ? { crawlerId: crawler.id, count: discarded } : null)
+    } catch (err) {
+      // The row keeps showing its old state because onCrawlersChange never
+      // ran -- the button reflects the server, not the click.
+      setSettingsSaveError(errorMessage(err, 'Could not change this crawler'))
+    }
   }
 
   return (

@@ -85,6 +85,21 @@ def test_app_user_cannot_query_sessions(admin_conn):
             conn.execute("SELECT * FROM sessions")
 
 
+def test_app_user_has_full_dml_on_crawl_queue(admin_conn):
+    """DELETE is the load-bearing one: routers/settings.update_crawler purges a
+    disabled crawler's pending rows through get_app_pool(). It shipped without
+    the grant, and every router test runs on pg_test_db's superuser pool, where
+    no ACL is consulted -- so this asserts the grant itself rather than a
+    statement that happens to need it."""
+    granted = {
+        priv: admin_conn.execute(
+            "SELECT has_table_privilege('app_user', 'crawl_queue', %s) AS granted", [priv]
+        ).fetchone()["granted"]
+        for priv in ("SELECT", "INSERT", "UPDATE", "DELETE")
+    }
+    assert granted == {"SELECT": True, "INSERT": True, "UPDATE": True, "DELETE": True}
+
+
 def test_app_identity_can_update_session_last_seen_at(admin_conn):
     admin_conn.execute(
         "INSERT INTO users (discogs_user_id, discogs_username) VALUES (%s, %s)",

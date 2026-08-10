@@ -1450,6 +1450,40 @@ async def test_run_catalog_crawler_clears_the_page_reporter_when_the_crawl_ends(
     assert [e for e in manager.recent_events() if e["status"] == "stock_sync_page_fetched"] == []
 
 
+async def test_start_worker_pool_loads_plugins_for_disabled_crawlers(pg_schema):
+    """`enabled` is a runtime gate, not a plugin-loading filter. When it was
+    both, a crawler enabled after boot had no plugin, and _drain_one_batch's
+    `plugin is None` branch marked its rows done with no listing and no log."""
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/amazon.py")
+        db.register_crawler(conn, "eBay", "/ebay.py")
+        conn.commit()
+        ebay_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'eBay'").fetchone()["id"]
+        db.set_crawler_enabled(conn, ebay_id, False)
+        conn.commit()
+
+    loaded = []
+
+    def _capture(rows):
+        loaded.extend(r["site_name"] for r in rows)
+        return []
+
+    browser = AsyncMock()
+    playwright = AsyncMock()
+    playwright.chromium.launch = AsyncMock(return_value=browser)
+    launcher = MagicMock()
+    launcher.start = AsyncMock(return_value=playwright)
+
+    manager = CrawlManager()
+    with patch("crawler.load_enabled_crawlers", side_effect=_capture), \
+         patch("playwright.async_api.async_playwright", return_value=launcher), \
+         patch("playwright_stealth.Stealth"):
+        await manager.start_worker_pool(worker_count=0)
+        await manager.stop_worker_pool()
+
+    assert sorted(loaded) == ["Amazon", "eBay"]
+
+
 async def test_sync_stock_broadcasts_the_store_name_before_crawling_it(pg_schema):
     with db.get_admin_pool().connection() as conn:
         db.register_crawler(conn, "Stock Site", "/x.py", crawler_type="catalog")
@@ -2137,6 +2171,79 @@ async def test_sync_stock_skips_a_cooling_down_catalog_crawler(pg_schema):
     assert called == []
     statuses = [e["status"] for e in manager.recent_events()]
     assert "stock_sync_complete" in statuses  # a cooling-down source doesn't abort the run
+
+
+async def test_sync_stock_skips_a_source_disabled_during_the_run(pg_schema):
+    """The enabled list is read once at the top of a run. Without a per-source
+    re-check, an admin disabling a store mid-sync still gets it crawled when
+    the loop reaches it."""
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "First Site", "/a.py", crawler_type="catalog")
+        db.register_crawler(conn, "Second Site", "/b.py", crawler_type="catalog")
+        conn.commit()
+        first_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'First Site'").fetchone()["id"]
+        second_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Second Site'").fetchone()["id"]
+
+    second_called = []
+
+    async def _first_items():
+        with db.get_admin_pool().connection() as conn:
+            db.set_crawler_enabled(conn, second_id, False)
+            conn.commit()
+        yield {"artist": "A", "title": "T", "url": "https://x/1", "price": 5.0, "currency": "USD"}
+
+    async def _second_items():
+        second_called.append(1)
+        yield {"artist": "B", "title": "U", "url": "https://x/2", "price": 6.0, "currency": "USD"}
+
+    first = AsyncMock()
+    first.crawl_catalog = lambda: _first_items()
+    first._db_id = first_id
+    first._db_site_name = "First Site"
+    second = AsyncMock()
+    second.crawl_catalog = lambda: _second_items()
+    second._db_id = second_id
+    second._db_site_name = "Second Site"
+
+    manager = CrawlManager()
+    with patch("crawler.load_enabled_crawlers", return_value=[first, second]):
+        await manager._sync_stock()
+
+    assert second_called == []
+    with db.get_admin_pool().connection() as conn:
+        artists = [r["artist"] for r in conn.execute("SELECT artist FROM stock_items").fetchall()]
+    assert artists == ["A"]
+
+    sources = [e.get("source") for e in manager.recent_events() if e["status"] == "stock_sync_source_started"]
+    assert sources == ["First Site"]
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert "stock_sync_complete" in statuses
+
+
+async def test_sync_stock_completion_log_names_disabled_sources(pg_schema, caplog):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Off Site", "/a.py", crawler_type="catalog")
+        conn.commit()
+        off_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Off Site'").fetchone()["id"]
+        db.set_crawler_enabled(conn, off_id, False)
+        conn.commit()
+
+    plugin = AsyncMock()
+    called = []
+    plugin.crawl_catalog = lambda: called.append(1)
+    plugin._db_id = off_id
+    plugin._db_site_name = "Off Site"
+
+    manager = CrawlManager()
+    with patch("crawler.load_enabled_crawlers", return_value=[plugin]), \
+         caplog.at_level(logging.INFO, logger="crawl_manager"):
+        await manager._sync_stock()
+
+    assert called == []
+    complete = [r.getMessage() for r in caplog.records if "Stock sync complete" in r.getMessage()]
+    assert len(complete) == 1
+    assert "Off Site" in complete[0]
+    assert "disabled" in complete[0]
 
 
 async def test_sync_stock_does_not_count_a_429_toward_the_cooloff(pg_schema):

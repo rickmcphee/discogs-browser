@@ -151,6 +151,28 @@ def test_count_pending_crawl_queue_for_user_only_counts_their_library(admin_conn
         assert db.count_pending_crawl_queue_for_user(conn, bob["id"]) == 0
 
 
+def test_count_pending_crawl_queue_for_user_excludes_a_disabled_crawler(admin_conn):
+    """A row the disable purge missed -- inserted by an enqueue transaction
+    that straddled the disable commit -- is unclaimable forever while the
+    crawler stays off. Counting it would keep the crawl-status UI and
+    _events_to_replay believing the user has work in flight."""
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    crawler_id = _make_catalog_and_crawler(admin_conn, "r1")
+    admin_conn.commit()
+    db.upsert_library_item(admin_conn, alice["id"], "r1", in_collection=True)
+    db.enqueue_crawl_queue(admin_conn, "r1", crawler_id)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.count_pending_crawl_queue_for_user(conn, alice["id"]) == 1
+
+    db.set_crawler_enabled(admin_conn, crawler_id, False)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.count_pending_crawl_queue_for_user(conn, alice["id"]) == 0
+
+
 def test_get_stock_item_identity_returns_none_for_unknown_key(admin_conn):
     assert db.get_stock_item_identity(admin_conn, "missing") is None
 
@@ -230,3 +252,137 @@ def test_claim_crawl_queue_batch_prioritizes_release_rows_over_stock_item_rows(a
     [row] = db.claim_crawl_queue_batch(admin_conn, "worker-1", limit=1)
     assert row["discogs_id"] == "r1"
     assert row["item_key"] is None
+
+
+def test_claim_crawl_queue_batch_skips_a_disabled_crawler(admin_conn):
+    crawler_id = _make_catalog_and_crawler(admin_conn)
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1", crawler_id)
+    admin_conn.commit()
+
+    db.set_crawler_enabled(admin_conn, crawler_id, False)
+    admin_conn.commit()
+
+    with db.get_app_pool().connection() as conn:
+        assert db.claim_crawl_queue_batch(conn, "worker-1", limit=10) == []
+        conn.commit()
+
+    db.set_crawler_enabled(admin_conn, crawler_id, True)
+    admin_conn.commit()
+
+    with db.get_app_pool().connection() as conn:
+        claimed = db.claim_crawl_queue_batch(conn, "worker-1", limit=10)
+        conn.commit()
+    assert [r["discogs_id"] for r in claimed] == ["r1"]
+
+
+def test_claim_crawl_queue_batch_disabled_rows_do_not_consume_batch_slots(admin_conn):
+    """A disabled crawler's rows must be invisible to the claim, not merely
+    skipped after selection -- otherwise a large disabled backlog sorts ahead
+    of enabled work and starves it batch after batch."""
+    off_id = _make_catalog_and_crawler(admin_conn, discogs_id="r1", site_name="Off Site")
+    on_id = _make_catalog_and_crawler(admin_conn, discogs_id="r2", site_name="On Site")
+    admin_conn.commit()
+    for i in range(5):
+        db.upsert_catalog_release(admin_conn, {
+            "discogs_id": f"off{i}", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(admin_conn, f"off{i}", off_id)
+    db.enqueue_crawl_queue(admin_conn, "r2", on_id)
+    admin_conn.commit()
+
+    db.set_crawler_enabled(admin_conn, off_id, False)
+    admin_conn.commit()
+
+    with db.get_app_pool().connection() as conn:
+        claimed = db.claim_crawl_queue_batch(conn, "worker-1", limit=5)
+        conn.commit()
+    assert [r["discogs_id"] for r in claimed] == ["r2"]
+
+
+def test_enqueue_crawl_queue_is_a_no_op_for_a_disabled_crawler(admin_conn):
+    crawler_id = _make_catalog_and_crawler(admin_conn)
+    admin_conn.commit()
+    db.set_crawler_enabled(admin_conn, crawler_id, False)
+    admin_conn.commit()
+
+    db.enqueue_crawl_queue(admin_conn, "r1", crawler_id)
+    admin_conn.commit()
+    assert admin_conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 0
+
+
+def test_enqueue_crawl_queue_for_stock_item_is_a_no_op_for_a_disabled_crawler(admin_conn):
+    crawler_id = _make_stock_identity_and_crawler(admin_conn)
+    admin_conn.commit()
+    db.set_crawler_enabled(admin_conn, crawler_id, False)
+    admin_conn.commit()
+
+    db.enqueue_crawl_queue_for_stock_item(admin_conn, "key1", crawler_id)
+    admin_conn.commit()
+    assert admin_conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 0
+
+
+def test_enqueue_crawl_queue_still_resurrects_a_done_row_for_an_enabled_crawler(admin_conn):
+    """The ON CONFLICT ... DO UPDATE ... WHERE status = 'done' semantics must
+    survive the rewrite to INSERT ... SELECT: without the resurrect, a pair
+    would be crawled exactly once, ever."""
+    crawler_id = _make_catalog_and_crawler(admin_conn)
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1", crawler_id)
+    admin_conn.commit()
+    queue_id = admin_conn.execute("SELECT id FROM crawl_queue").fetchone()["id"]
+    db.mark_crawl_queue_done(admin_conn, queue_id)
+    admin_conn.commit()
+
+    db.enqueue_crawl_queue(admin_conn, "r1", crawler_id)
+    admin_conn.commit()
+    rows = admin_conn.execute("SELECT status FROM crawl_queue").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["status"] == "pending"
+
+
+def test_enqueue_crawl_queue_still_leaves_an_in_progress_row_alone(admin_conn):
+    crawler_id = _make_catalog_and_crawler(admin_conn)
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1", crawler_id)
+    admin_conn.execute("UPDATE crawl_queue SET status = 'in_progress'")
+    admin_conn.commit()
+
+    db.enqueue_crawl_queue(admin_conn, "r1", crawler_id)
+    admin_conn.commit()
+    rows = admin_conn.execute("SELECT status FROM crawl_queue").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["status"] == "in_progress"
+
+
+def test_delete_pending_crawl_queue_for_crawler_only_deletes_that_crawlers_pending_rows(admin_conn):
+    target_id = _make_catalog_and_crawler(admin_conn, discogs_id="r1", site_name="Target Site")
+    other_id = _make_catalog_and_crawler(admin_conn, discogs_id="r2", site_name="Other Site")
+    admin_conn.commit()
+    for discogs_id in ("r1", "r2"):
+        db.enqueue_crawl_queue(admin_conn, discogs_id, target_id)
+        db.enqueue_crawl_queue(admin_conn, discogs_id, other_id)
+    admin_conn.commit()
+    admin_conn.execute(
+        "UPDATE crawl_queue SET status = 'in_progress' WHERE crawler_id = %s AND discogs_id = 'r1'",
+        [target_id],
+    )
+    admin_conn.execute(
+        "UPDATE crawl_queue SET status = 'done' WHERE crawler_id = %s AND discogs_id = 'r2'",
+        [other_id],
+    )
+    admin_conn.commit()
+
+    deleted = db.delete_pending_crawl_queue_for_crawler(admin_conn, target_id)
+    admin_conn.commit()
+
+    assert deleted == 1
+    remaining = admin_conn.execute(
+        "SELECT crawler_id, discogs_id, status FROM crawl_queue ORDER BY crawler_id, discogs_id"
+    ).fetchall()
+    assert [(r["discogs_id"], r["status"]) for r in remaining if r["crawler_id"] == target_id] == [("r1", "in_progress")]
+    assert sorted((r["discogs_id"], r["status"]) for r in remaining if r["crawler_id"] == other_id) == [
+        ("r1", "pending"), ("r2", "done"),
+    ]

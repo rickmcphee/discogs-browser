@@ -298,6 +298,19 @@ other pending rows for non-cooldown sites still fill that worker's batch.
 (or equivalent) in its `WHERE` clause when the list is non-empty; unchanged when
 empty (the common case — most sites aren't in cooldown most of the time).
 
+**Amendment (2026-08-10):** "unchanged when empty" no longer means the bare
+`status = 'pending'`. That `WHERE` clause now also carries an unconditional
+`AND crawler_id IN (SELECT id FROM crawlers WHERE enabled)`, deliberately the
+same shape as this exclusion for the same purpose — stop sending work to a
+site without disturbing anything else about the queue — but never omitted,
+since there is no "no crawlers disabled" case worth branching on. Only the
+cooldown half is conditional. Relatedly, `_set_failure_domains` (item 10 above)
+now sees every release crawler rather than only the enabled ones, because
+`start_worker_pool` no longer filters the plugin registry by `enabled`; a
+disabled crawler's domain entry is inert while its rows go unclaimed and
+correct the moment it is re-enabled. See
+[`2026-08-09-stop-crawling-disabled-stores-design.md`](../../specifications/shaping/2026-08-09-stop-crawling-disabled-stores-design.md).
+
 ### Bot-detection interaction
 
 `BotDetectedError` (raised by a plugin, triggering `_reset_context`'s browser

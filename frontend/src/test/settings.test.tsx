@@ -15,7 +15,7 @@ const { getSettings, saveSettings, setCrawlerEnabled } = vi.hoisted(() => ({
     stock_schedule: '',
   }),
   saveSettings: vi.fn().mockResolvedValue(undefined),
-  setCrawlerEnabled: vi.fn().mockResolvedValue(undefined),
+  setCrawlerEnabled: vi.fn().mockResolvedValue({ ok: true, discarded: 0 }),
 }))
 
 vi.mock('../api/client', () => ({
@@ -231,5 +231,84 @@ describe('Settings', () => {
     const tables = screen.getAllByRole('table')
     expect(within(tables[0]).queryByText('Angry Young and Poor')).not.toBeInTheDocument()
     expect(within(tables[1]).getByText('Angry Young and Poor')).toBeInTheDocument()
+  })
+
+  it('shows the discarded job count on the row that was just disabled', async () => {
+    setCrawlerEnabled.mockResolvedValueOnce({ ok: true, discarded: 42 })
+    renderSettings({ crawlers: CRAWLERS })
+    await settle()
+
+    const row = screen.getByText('Amazon').closest('tr') as HTMLElement
+    fireEvent.click(within(row).getByText('Enabled'))
+    await waitFor(() => expect(within(row).getByText('42 queued jobs discarded')).toBeInTheDocument())
+
+    const otherRow = screen.getByText('Disabled Site').closest('tr') as HTMLElement
+    expect(within(otherRow).queryByText(/queued jobs? discarded/)).not.toBeInTheDocument()
+  })
+
+  it('moves the notice when a second crawler is toggled', async () => {
+    setCrawlerEnabled
+      .mockResolvedValueOnce({ ok: true, discarded: 42 })
+      .mockResolvedValueOnce({ ok: true, discarded: 7 })
+    renderSettings({ crawlers: CRAWLERS })
+    await settle()
+
+    fireEvent.click(within(screen.getByText('Amazon').closest('tr') as HTMLElement).getByText('Enabled'))
+    await waitFor(() => expect(screen.getByText('42 queued jobs discarded')).toBeInTheDocument())
+
+    fireEvent.click(within(screen.getByText('Epitaph').closest('tr') as HTMLElement).getByText('Enabled'))
+    await waitFor(() => expect(screen.getByText('7 queued jobs discarded')).toBeInTheDocument())
+    expect(screen.queryByText('42 queued jobs discarded')).not.toBeInTheDocument()
+  })
+
+  it('surfaces a rejected toggle as an error and leaves the row showing its old state', async () => {
+    setCrawlerEnabled.mockRejectedValueOnce(
+      new Error(JSON.stringify({ detail: 'Admin access required' }))
+    )
+    const onCrawlersChange = vi.fn()
+    renderSettings({ crawlers: CRAWLERS, onCrawlersChange })
+    await settle()
+
+    const row = screen.getByText('Amazon').closest('tr') as HTMLElement
+    fireEvent.click(within(row).getByText('Enabled'))
+    await waitFor(() => expect(screen.getByText('Admin access required')).toBeInTheDocument())
+
+    expect(onCrawlersChange).not.toHaveBeenCalled()
+    expect(within(row).getByText('Enabled')).toBeInTheDocument()
+    expect(within(row).queryByText(/queued jobs? discarded/)).not.toBeInTheDocument()
+  })
+
+  // FastAPI's own 422s carry detail as an array of objects, not a string.
+  // Returning that unchanged put a non-string into settingsSaveError, which
+  // React throws on rendering — so the helper must fall back to the raw body.
+  it('does not crash when a rejection carries a non-string detail', async () => {
+    const body = JSON.stringify({ detail: [{ loc: ['body', 'enabled'], msg: 'field required' }] })
+    setCrawlerEnabled.mockRejectedValueOnce(new Error(body))
+    renderSettings({ crawlers: CRAWLERS })
+    await settle()
+
+    const row = screen.getByText('Amazon').closest('tr') as HTMLElement
+    fireEvent.click(within(row).getByText('Enabled'))
+    await waitFor(() => expect(screen.getByText(body)).toBeInTheDocument())
+  })
+
+  it('falls back to a default message when a rejection carries no message at all', async () => {
+    setCrawlerEnabled.mockRejectedValueOnce(null)
+    renderSettings({ crawlers: CRAWLERS })
+    await settle()
+
+    const row = screen.getByText('Amazon').closest('tr') as HTMLElement
+    fireEvent.click(within(row).getByText('Enabled'))
+    await waitFor(() => expect(screen.getByText('Could not change this crawler')).toBeInTheDocument())
+  })
+
+  it('shows no notice when nothing was discarded', async () => {
+    setCrawlerEnabled.mockResolvedValueOnce({ ok: true, discarded: 0 })
+    renderSettings({ crawlers: CRAWLERS })
+    await settle()
+
+    fireEvent.click(within(screen.getByText('Amazon').closest('tr') as HTMLElement).getByText('Enabled'))
+    await settle()
+    expect(screen.queryByText(/queued jobs? discarded/)).not.toBeInTheDocument()
   })
 })

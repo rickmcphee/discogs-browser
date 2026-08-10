@@ -409,7 +409,11 @@ def init_tenant_schema():
         conn.execute("GRANT USAGE, SELECT ON SEQUENCE listings_id_seq, stock_items_id_seq TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON library_items TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON stock_item_judgments TO app_user")
-        conn.execute("GRANT SELECT, INSERT, UPDATE ON crawl_queue TO app_user")
+        # crawl_queue needs DELETE for the same reason stock_items does:
+        # delete_pending_crawl_queue_for_crawler(), run through get_app_pool()
+        # from routers/settings.update_crawler, purges a crawler's pending rows
+        # when an admin disables it.
+        conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON crawl_queue TO app_user")
         conn.execute("GRANT USAGE, SELECT ON SEQUENCE crawl_queue_id_seq TO app_user")
         # INSERT only -- app_user never needs to read back another admin's
         # minted invites, and redemption (SELECT/UPDATE) runs through
@@ -704,6 +708,10 @@ def get_enabled_crawlers(conn, crawler_type: str = "release") -> list[dict]:
     ).fetchall()
 
 
+def get_crawlers(conn, crawler_type: str = "release") -> list[dict]:
+    return conn.execute("SELECT * FROM crawlers WHERE crawler_type = %s", [crawler_type]).fetchall()
+
+
 def get_all_crawlers(conn) -> list[dict]:
     rows = conn.execute("SELECT * FROM crawlers ORDER BY site_name").fetchall()
     result = []
@@ -771,27 +779,37 @@ def update_crawler_last_run(conn, crawler_id: int):
 # 'done' pair must reset it to 'pending' so periodic re-crawling of stale
 # listings actually happens -- a plain ON CONFLICT DO NOTHING would let a
 # pair be crawled exactly once, ever, for the app's entire lifetime.
+#
+# The WHERE EXISTS makes a disabled crawler's enqueue a silent no-op at the
+# statement level rather than at each of the four call sites. _sync_collection
+# reads its enabled-crawler list once and then enqueues across every collection
+# page for minutes afterwards, so a call-site check would let a store disabled
+# mid-sync keep re-creating the very rows the disable just purged.
 def enqueue_crawl_queue(conn, discogs_id: str, crawler_id: int):
     conn.execute(
         """
-        INSERT INTO crawl_queue (discogs_id, crawler_id) VALUES (%s, %s)
+        INSERT INTO crawl_queue (discogs_id, crawler_id)
+        SELECT %(discogs_id)s, %(crawler_id)s
+        WHERE EXISTS (SELECT 1 FROM crawlers WHERE id = %(crawler_id)s AND enabled)
         ON CONFLICT (discogs_id, crawler_id) DO UPDATE SET
             status = 'pending', requested_at = CURRENT_TIMESTAMP, claimed_by = NULL, claimed_at = NULL
         WHERE crawl_queue.status = 'done'
         """,
-        [discogs_id, crawler_id],
+        {"discogs_id": discogs_id, "crawler_id": crawler_id},
     )
 
 
 def enqueue_crawl_queue_for_stock_item(conn, item_key: str, crawler_id: int):
     conn.execute(
         """
-        INSERT INTO crawl_queue (item_key, crawler_id) VALUES (%s, %s)
+        INSERT INTO crawl_queue (item_key, crawler_id)
+        SELECT %(item_key)s, %(crawler_id)s
+        WHERE EXISTS (SELECT 1 FROM crawlers WHERE id = %(crawler_id)s AND enabled)
         ON CONFLICT (item_key, crawler_id) DO UPDATE SET
             status = 'pending', requested_at = CURRENT_TIMESTAMP, claimed_by = NULL, claimed_at = NULL
         WHERE crawl_queue.status = 'done'
         """,
-        [item_key, crawler_id],
+        {"item_key": item_key, "crawler_id": crawler_id},
     )
 
 
@@ -818,7 +836,12 @@ def claim_crawl_queue_batch(
         UPDATE crawl_queue SET status = 'in_progress', claimed_by = %(worker_id)s, claimed_at = CURRENT_TIMESTAMP
         WHERE id IN (
             SELECT id FROM crawl_queue
-            WHERE status = 'pending' {exclusion_clause}
+            -- Live gate, re-evaluated every batch: this is what makes an
+            -- admin disabling a crawler stop it mid-crawl rather than only
+            -- stopping future enqueues.
+            WHERE status = 'pending'
+              AND crawler_id IN (SELECT id FROM crawlers WHERE enabled)
+              {exclusion_clause}
             -- (item_key IS NOT NULL) leads the sort so every pending release
             -- row (FALSE) sorts ahead of every pending stock-item row
             -- (TRUE), regardless of which was enqueued first -- a large
@@ -842,12 +865,31 @@ def mark_crawl_queue_done(conn, queue_id: int):
     conn.execute("UPDATE crawl_queue SET status = 'done' WHERE id = %s", [queue_id])
 
 
+# 'pending' only: an 'in_progress' row is held by a worker's open transaction
+# -- it is the current item, which finishes by design, and deleting it would
+# block on that worker's row lock until it committed.
+def delete_pending_crawl_queue_for_crawler(conn, crawler_id: int) -> int:
+    return conn.execute(
+        "DELETE FROM crawl_queue WHERE crawler_id = %s AND status = 'pending'",
+        [crawler_id],
+    ).rowcount
+
+
+# Disabled crawlers' rows are excluded rather than trusted to be absent. The
+# disable purge cannot catch them all: under READ COMMITTED an enqueue that
+# began before the disable committed still evaluates its WHERE EXISTS against
+# the older snapshot and inserts afterwards, and _sync_collection holds one
+# transaction open for a whole ~110s page. Those survivors are unclaimable, so
+# counting them would leave the count stuck above zero for as long as the
+# crawler stays off -- and routers/crawl._events_to_replay would then read the
+# user as permanently mid-job and replay stale event history on every connect.
 def count_pending_crawl_queue_for_user(conn, user_id: int) -> int:
     return conn.execute(
         """
         SELECT COUNT(*) FROM crawl_queue cq
         JOIN library_items li ON li.discogs_id = cq.discogs_id
-        WHERE li.user_id = %s AND cq.status IN ('pending', 'in_progress')
+        JOIN crawlers c ON c.id = cq.crawler_id
+        WHERE li.user_id = %s AND cq.status IN ('pending', 'in_progress') AND c.enabled
         """,
         [user_id],
     ).fetchone()["count"]

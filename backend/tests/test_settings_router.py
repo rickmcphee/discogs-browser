@@ -1,3 +1,4 @@
+import os
 import socket
 
 import pytest
@@ -161,3 +162,95 @@ def test_post_user_settings_with_empty_plex_base_url_skips_validation(pg_test_db
         "plex_base_url": "", "plex_token": "", "plex_match_threshold": 90,
     }, headers={"X-Requested-With": "fetch"})
     assert r.status_code == 200
+
+
+def test_patch_crawler_disable_discards_pending_jobs(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1", crawler_id)
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute("UPDATE users SET is_admin = TRUE WHERE id = %s", [user["id"]])
+        conn.commit()
+
+    client = authed_client_factory(user["id"])
+    r = client.patch(f"/api/crawlers/{crawler_id}", json={"enabled": False}, headers={"X-Requested-With": "fetch"})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "discarded": 1}
+
+    with db.get_admin_pool().connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 0
+
+
+def test_patch_crawler_disable_discards_pending_jobs_as_the_app_user_role(
+    pg_test_db, authed_client_factory, monkeypatch
+):
+    """update_crawler runs on get_app_pool(), which in production authenticates
+    as app_user -- but pg_test_db points every pool at the admin/superuser DSN,
+    so no GRANT is ever checked and the sibling test above passes with app_user
+    holding no DELETE on crawl_queue at all. Repoint the app pool at the real
+    role, same idiom as test_crawl_manager.py's pg_schema fixture. Verified by
+    hand: against the grant as it stood before this test, the PATCH raised
+    psycopg.errors.InsufficientPrivilege and 500'd, which is exactly what
+    happened on every disable in production."""
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1", crawler_id)
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute("UPDATE users SET is_admin = TRUE WHERE id = %s", [user["id"]])
+        conn.commit()
+
+    monkeypatch.setattr(
+        db.config,
+        "APP_DATABASE_URL",
+        db.config._with_userinfo(
+            os.environ["TEST_DATABASE_URL"], "app_user", os.environ["APP_DB_PASSWORD"]
+        ),
+    )
+
+    client = authed_client_factory(user["id"])
+    r = client.patch(f"/api/crawlers/{crawler_id}", json={"enabled": False}, headers={"X-Requested-With": "fetch"})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "discarded": 1}
+
+    with db.get_admin_pool().connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 0
+        # The flag flip and the purge share one transaction: a DELETE that
+        # raises rolls the enable state back too, so assert both landed.
+        assert conn.execute(
+            "SELECT enabled FROM crawlers WHERE id = %s", [crawler_id]
+        ).fetchone()["enabled"] is False
+
+
+def test_patch_crawler_enable_discards_nothing(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1", crawler_id)
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute("UPDATE users SET is_admin = TRUE WHERE id = %s", [user["id"]])
+        conn.commit()
+
+    client = authed_client_factory(user["id"])
+    r = client.patch(f"/api/crawlers/{crawler_id}", json={"enabled": True}, headers={"X-Requested-With": "fetch"})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "discarded": 0}
+
+    with db.get_admin_pool().connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 1
