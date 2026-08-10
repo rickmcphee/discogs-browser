@@ -241,15 +241,23 @@ A pure `@classmethod` so it is unit-testable without any HTTP:
   original title. `angryyoungandpoor.py` sets the precedent for its V/A
   category, though it emitted `"Various Artists"` there (a pre-existing
   issue on that crawler, out of scope here and fixed separately in PR #93). `"Various"` — not `"Various Artists"`
-  — is the literal string Discogs' own entity uses, and three consumers
+  — is the literal string Discogs' own entity uses, and two consumers
   depend on that exact spelling: `amazon.py`'s `Crawler._artist()` only
-  special-cases the literal `"various"` case-insensitively; `db.py`'s
+  special-cases the literal `"various"` case-insensitively, and `db.py`'s
   `_library_match_fragment` does an exact `LOWER()` equality against the
-  catalog artist; and `ebay_api.pick_matching_item` requires at least half of
-  the artist's words to appear in the listing title, which `"various"` and
-  `"artists"` essentially never do. `"Various Artists"` would satisfy none
-  of the three, silently breaking library matching and eBay search for every
-  row that falls into this branch. This is right for the large majority of
+  catalog artist. `"Various Artists"` satisfies neither, silently breaking
+  library matching and sending a junk artist term to Amazon for every row
+  that falls into this branch.
+
+  `ebay_api.pick_matching_item` is deliberately *not* cited as a third such
+  consumer. It is a word-overlap ratio, not an exact-string check, and
+  measured it does not discriminate between the two spellings: a listing
+  naming neither word rejects both, and one naming `"various"` passes both
+  (`"Various Artists"` scores exactly 0.50, which clears the `< 0.5` reject).
+  eBay matching for compilations is poor either way; that is a pre-existing
+  fleet-wide limitation, not something this choice fixes.
+
+  This is right for the large majority of
   the 161 (they are compilations and tributes). It mis-attributes the ~12
   self-titled cases; that is accepted rather than papered over.
 
