@@ -44,6 +44,20 @@ all-crawlers path.
   bulk or single-store. No new concurrency tracking is introduced.
 - **Enabled-only.** The refresh button is disabled for a crawler whose "Crawl"
   toggle shows "Disabled" — refreshing doesn't override that state.
+
+  **Amendment (2026-08-10):** still true at the entry point, and the
+  `_sync_stock` filter described below — a `crawler_id` naming a disabled
+  crawler produces an empty list and the existing "No enabled catalog
+  crawlers" error — is unchanged. But enabled state is now consulted a second
+  time, per source, inside the crawler loop, so "enabled-only" holds for the
+  whole duration of a run rather than only at its start: disabling a store
+  while its own refresh is in flight lets that crawl finish and its items be
+  written, but disabling one mid-*bulk*-run skips it when the loop reaches it,
+  with no `stock_sync_source_started` for it and a `disabled` entry in the
+  completion log's notes tail. A single-store refresh whose one crawler is
+  disabled after the run starts therefore reaches `stock_sync_complete` with
+  zero items rather than `stock_sync_error`. See
+  [`2026-08-09-stop-crawling-disabled-stores-design.md`](2026-08-09-stop-crawling-disabled-stores-design.md).
 - **Admin gating on the endpoint, not just the button.** `POST
   /stock/sync/start` currently has no `require_admin` dependency — any
   authenticated user can call it directly today even though the UI hides its

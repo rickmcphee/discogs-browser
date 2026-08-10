@@ -215,6 +215,21 @@ def enqueue_crawl_queue_for_stock_item(conn, item_key: str, crawler_id: int):
     )
 ```
 
+**Amendment (2026-08-10):** the body above is stale, and so is the
+`enqueue_crawl_queue` it mirrors. Both are now
+`INSERT ... SELECT ... WHERE EXISTS (SELECT 1 FROM crawlers WHERE id = %(crawler_id)s AND enabled)`
+on named parameters, so an enqueue for a disabled crawler inserts zero rows and
+never reaches the `ON CONFLICT` clause. The conflict target and the
+resurrect-a-`done`-row `DO UPDATE` are unchanged. One correction this branch
+exposed rather than caused: the `_sync_stock` fan-out below is not preceded by
+a run-level `eligible_price_crawlers` computation — commit `1067686`, the very
+change this spec describes, put that list inside the per-source
+`replace_stock_items` block (`crawl_manager.py:742`), so it is re-read once per
+successfully-crawled source rather than once before the loop, and it is
+belt-and-braces either way now that the enqueue statement carries the guard
+itself. See
+[`2026-08-09-stop-crawling-disabled-stores-design.md`](2026-08-09-stop-crawling-disabled-stores-design.md).
+
 `upsert_stock_item_listing` (new, same shape as `upsert_listing`):
 
 ```python
