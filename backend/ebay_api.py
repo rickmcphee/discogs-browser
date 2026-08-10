@@ -149,9 +149,16 @@ async def search_ebay(
         # HTML, say) would otherwise dump tens of KB into a rotating log file
         # the viewer has to render. Same reason shopify_catalog logs 429
         # headers at debug.
+        #
+        # Whitespace is collapsed so the record stays one line: routers/logs.py's
+        # _line_visible passes through any line it can't read a level from, so a
+        # body's second and subsequent lines would appear in *every* level view,
+        # DEBUG filter or not -- the same path that puts tracebacks in the INFO
+        # stream as OTHER.
+        body = " ".join(e.response.text.split())[:2000]
         log.debug(
             "[%s] search HTTP %s response body: %s",
-            log_prefix, e.response.status_code, e.response.text[:2000],
+            log_prefix, e.response.status_code, body,
         )
         raise
     except httpx.RequestError as e:
