@@ -775,27 +775,37 @@ def update_crawler_last_run(conn, crawler_id: int):
 # 'done' pair must reset it to 'pending' so periodic re-crawling of stale
 # listings actually happens -- a plain ON CONFLICT DO NOTHING would let a
 # pair be crawled exactly once, ever, for the app's entire lifetime.
+#
+# The WHERE EXISTS makes a disabled crawler's enqueue a silent no-op at the
+# statement level rather than at each of the four call sites. _sync_collection
+# reads its enabled-crawler list once and then enqueues across every collection
+# page for minutes afterwards, so a call-site check would let a store disabled
+# mid-sync keep re-creating the very rows the disable just purged.
 def enqueue_crawl_queue(conn, discogs_id: str, crawler_id: int):
     conn.execute(
         """
-        INSERT INTO crawl_queue (discogs_id, crawler_id) VALUES (%s, %s)
+        INSERT INTO crawl_queue (discogs_id, crawler_id)
+        SELECT %(discogs_id)s, %(crawler_id)s
+        WHERE EXISTS (SELECT 1 FROM crawlers WHERE id = %(crawler_id)s AND enabled)
         ON CONFLICT (discogs_id, crawler_id) DO UPDATE SET
             status = 'pending', requested_at = CURRENT_TIMESTAMP, claimed_by = NULL, claimed_at = NULL
         WHERE crawl_queue.status = 'done'
         """,
-        [discogs_id, crawler_id],
+        {"discogs_id": discogs_id, "crawler_id": crawler_id},
     )
 
 
 def enqueue_crawl_queue_for_stock_item(conn, item_key: str, crawler_id: int):
     conn.execute(
         """
-        INSERT INTO crawl_queue (item_key, crawler_id) VALUES (%s, %s)
+        INSERT INTO crawl_queue (item_key, crawler_id)
+        SELECT %(item_key)s, %(crawler_id)s
+        WHERE EXISTS (SELECT 1 FROM crawlers WHERE id = %(crawler_id)s AND enabled)
         ON CONFLICT (item_key, crawler_id) DO UPDATE SET
             status = 'pending', requested_at = CURRENT_TIMESTAMP, claimed_by = NULL, claimed_at = NULL
         WHERE crawl_queue.status = 'done'
         """,
-        [item_key, crawler_id],
+        {"item_key": item_key, "crawler_id": crawler_id},
     )
 
 

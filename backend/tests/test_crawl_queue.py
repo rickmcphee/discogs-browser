@@ -278,3 +278,58 @@ def test_claim_crawl_queue_batch_disabled_rows_do_not_consume_batch_slots(admin_
         claimed = db.claim_crawl_queue_batch(conn, "worker-1", limit=5)
         conn.commit()
     assert [r["discogs_id"] for r in claimed] == ["r2"]
+
+
+def test_enqueue_crawl_queue_is_a_no_op_for_a_disabled_crawler(admin_conn):
+    crawler_id = _make_catalog_and_crawler(admin_conn)
+    admin_conn.commit()
+    db.set_crawler_enabled(admin_conn, crawler_id, False)
+    admin_conn.commit()
+
+    db.enqueue_crawl_queue(admin_conn, "r1", crawler_id)
+    admin_conn.commit()
+    assert admin_conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 0
+
+
+def test_enqueue_crawl_queue_for_stock_item_is_a_no_op_for_a_disabled_crawler(admin_conn):
+    crawler_id = _make_stock_identity_and_crawler(admin_conn)
+    admin_conn.commit()
+    db.set_crawler_enabled(admin_conn, crawler_id, False)
+    admin_conn.commit()
+
+    db.enqueue_crawl_queue_for_stock_item(admin_conn, "key1", crawler_id)
+    admin_conn.commit()
+    assert admin_conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 0
+
+
+def test_enqueue_crawl_queue_still_resurrects_a_done_row_for_an_enabled_crawler(admin_conn):
+    """The ON CONFLICT ... DO UPDATE ... WHERE status = 'done' semantics must
+    survive the rewrite to INSERT ... SELECT: without the resurrect, a pair
+    would be crawled exactly once, ever."""
+    crawler_id = _make_catalog_and_crawler(admin_conn)
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1", crawler_id)
+    admin_conn.commit()
+    queue_id = admin_conn.execute("SELECT id FROM crawl_queue").fetchone()["id"]
+    db.mark_crawl_queue_done(admin_conn, queue_id)
+    admin_conn.commit()
+
+    db.enqueue_crawl_queue(admin_conn, "r1", crawler_id)
+    admin_conn.commit()
+    rows = admin_conn.execute("SELECT status FROM crawl_queue").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["status"] == "pending"
+
+
+def test_enqueue_crawl_queue_still_leaves_an_in_progress_row_alone(admin_conn):
+    crawler_id = _make_catalog_and_crawler(admin_conn)
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1", crawler_id)
+    admin_conn.execute("UPDATE crawl_queue SET status = 'in_progress'")
+    admin_conn.commit()
+
+    db.enqueue_crawl_queue(admin_conn, "r1", crawler_id)
+    admin_conn.commit()
+    rows = admin_conn.execute("SELECT status FROM crawl_queue").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["status"] == "in_progress"
