@@ -261,6 +261,23 @@ describe('Settings', () => {
     expect(screen.queryByText('42 queued jobs discarded')).not.toBeInTheDocument()
   })
 
+  it('surfaces a rejected toggle as an error and leaves the row showing its old state', async () => {
+    setCrawlerEnabled.mockRejectedValueOnce(
+      new Error(JSON.stringify({ detail: 'Admin access required' }))
+    )
+    const onCrawlersChange = vi.fn()
+    renderSettings({ crawlers: CRAWLERS, onCrawlersChange })
+    await settle()
+
+    const row = screen.getByText('Amazon').closest('tr') as HTMLElement
+    fireEvent.click(within(row).getByText('Enabled'))
+    await waitFor(() => expect(screen.getByText('Admin access required')).toBeInTheDocument())
+
+    expect(onCrawlersChange).not.toHaveBeenCalled()
+    expect(within(row).getByText('Enabled')).toBeInTheDocument()
+    expect(within(row).queryByText(/queued jobs? discarded/)).not.toBeInTheDocument()
+  })
+
   it('shows no notice when nothing was discarded', async () => {
     setCrawlerEnabled.mockResolvedValueOnce({ ok: true, discarded: 0 })
     renderSettings({ crawlers: CRAWLERS })

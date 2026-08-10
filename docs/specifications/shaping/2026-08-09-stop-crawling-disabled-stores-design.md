@@ -35,17 +35,19 @@ Touches:
 - `backend/db.py` — `claim_crawl_queue_batch` gains a live enabled gate; new
   `delete_pending_crawl_queue_for_crawler`; new `get_crawlers`;
   `enqueue_crawl_queue` and `enqueue_crawl_queue_for_stock_item` gain an
-  enabled guard.
+  enabled guard; `count_pending_crawl_queue_for_user` counts enabled crawlers
+  only; `init_tenant_schema` grants `app_user` `DELETE` on `crawl_queue`.
 - `backend/routers/settings.py` — `update_crawler` purges pending rows on
   disable and returns the count.
 - `backend/crawl_manager.py` — `start_worker_pool` loads all release crawlers;
   `_sync_stock` re-checks enabled state per source.
 - `frontend/src/api/client.ts` — `setCrawlerEnabled` returns the response body.
 - `frontend/src/views/Settings.tsx` — show the discarded count next to the
-  toggled row.
+  toggled row, and surface a rejected `PATCH` in the existing save-error line.
 - Tests: `backend/tests/test_crawl_queue.py`,
   `backend/tests/test_settings_router.py`,
   `backend/tests/test_crawl_manager.py`,
+  `backend/tests/test_tenant_schema.py`,
   `frontend/src/test/settings.test.tsx`.
 
 Out of scope:
@@ -144,6 +146,16 @@ Both statements in one transaction, so the flag flip and the purge commit
 together — a worker cannot observe a window where the crawler is still enabled
 but its queue is already empty, or vice versa.
 
+That shared transaction is also why the grant matters. `get_app_pool()`
+authenticates as `app_user` in production, and `init_tenant_schema()` grants
+that role only `SELECT, INSERT, UPDATE ON crawl_queue`; the new `DELETE` must be
+added to it, the same way `stock_items` already carries `DELETE` for
+`replace_stock_items`. Postgres checks a table's ACL when the statement
+executes, not when it matches a row, so without the grant every disable fails —
+including one with nothing pending — and the rollback takes the `enabled` flip
+down with it, leaving the crawler running. No migration file: `TENANT_SCHEMA`
+and its grants re-run on every boot, so the grant lands on redeploy.
+
 INFO, not WARNING: `routers/logs.py`'s `_line_visible` filters by exact level
 membership rather than level-and-above, so a WARNING here would be invisible to
 anyone watching the INFO stream that carries the rest of the crawl narrative —
@@ -187,6 +199,19 @@ def enqueue_crawl_queue(conn, discogs_id: str, crawler_id: int):
 resurrect-a-`done`-row semantics are unchanged; when the `WHERE EXISTS` fails
 the statement inserts zero rows and the `ON CONFLICT` clause is simply never
 reached.
+
+The guard closes the common case but cannot close all of it. Under READ
+COMMITTED the `WHERE EXISTS` is evaluated against a statement snapshot, so an
+enqueue whose transaction began before the disable committed still inserts
+afterwards — and `_sync_collection` holds one transaction open for an entire
+collection page, roughly 110s at the 1.1s-per-release barcode pacing. Those
+rows are harmless to crawling, since the claim gate keeps them unclaimable, but
+they would leave the per-user pending count stuck above zero for as long as the
+store stayed off, defeating the property the delete-over-park decision was made
+to get, and leaving `routers/crawl._events_to_replay` reading the user as
+permanently mid-job. `count_pending_crawl_queue_for_user` therefore joins
+`crawlers` and counts only enabled ones: the count is honest by construction
+rather than by the purge being exhaustive.
 
 ### 4. Stock sync: per-source live check
 
@@ -332,13 +357,23 @@ from Settings.
 - `delete_pending_crawl_queue_for_crawler` deletes `pending` rows for that
   crawler only, leaves `in_progress` and `done` rows, leaves other crawlers'
   rows, and returns the deleted count.
+- `count_pending_crawl_queue_for_user` excludes a disabled crawler's rows.
 
 `backend/tests/test_settings_router.py`:
 
 - `PATCH /crawlers/{id}` with `enabled=false` returns the discarded count and
   the rows are gone; with `enabled=true` it returns `discarded: 0` and deletes
   nothing.
+- The same disable again with the app pool repointed at the real `app_user`
+  role. `pg_test_db` points every pool at the superuser DSN, so the test above
+  exercises no GRANT at all and passes with the `DELETE` missing; this one is
+  the only coverage of what production actually runs as.
 - Still 403 for a non-admin (existing coverage, unchanged behaviour).
+
+`backend/tests/test_tenant_schema.py`:
+
+- `app_user` holds `SELECT`, `INSERT`, `UPDATE`, and `DELETE` on `crawl_queue`,
+  asserted on the grant itself rather than on a statement that needs it.
 
 `backend/tests/test_crawl_manager.py`:
 
@@ -355,6 +390,8 @@ from Settings.
 - Toggling a crawler off renders the discarded count in that row and no other;
   toggling a second crawler moves the note; a response with `discarded: 0`
   renders no note.
+- A rejected `PATCH` renders the error in the existing `settingsSaveError`
+  line and leaves the row's toggle showing its old state.
 
 Per CLAUDE.md, Playwright-dependent behaviour — a real `plugin.search()`
 finishing after a disable, a real catalog page fetch — stays manual. No new

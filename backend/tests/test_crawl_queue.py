@@ -151,6 +151,28 @@ def test_count_pending_crawl_queue_for_user_only_counts_their_library(admin_conn
         assert db.count_pending_crawl_queue_for_user(conn, bob["id"]) == 0
 
 
+def test_count_pending_crawl_queue_for_user_excludes_a_disabled_crawler(admin_conn):
+    """A row the disable purge missed -- inserted by an enqueue transaction
+    that straddled the disable commit -- is unclaimable forever while the
+    crawler stays off. Counting it would keep the crawl-status UI and
+    _events_to_replay believing the user has work in flight."""
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    crawler_id = _make_catalog_and_crawler(admin_conn, "r1")
+    admin_conn.commit()
+    db.upsert_library_item(admin_conn, alice["id"], "r1", in_collection=True)
+    db.enqueue_crawl_queue(admin_conn, "r1", crawler_id)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.count_pending_crawl_queue_for_user(conn, alice["id"]) == 1
+
+    db.set_crawler_enabled(admin_conn, crawler_id, False)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.count_pending_crawl_queue_for_user(conn, alice["id"]) == 0
+
+
 def test_get_stock_item_identity_returns_none_for_unknown_key(admin_conn):
     assert db.get_stock_item_identity(admin_conn, "missing") is None
 

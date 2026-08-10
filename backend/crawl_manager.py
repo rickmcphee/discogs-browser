@@ -86,7 +86,14 @@ class CrawlManager:
         self._pool_running = True
         for i in range(worker_count):
             self._worker_tasks.append(asyncio.create_task(self._worker_loop(f"worker-{i}", plugins_by_crawler_id)))
-        log.info("Crawl worker pool started: %d workers, %d crawler plugins", worker_count, len(plugins))
+        # Loaded and enabled are separate counts now that the pool loads every
+        # plugin regardless of enabled state -- without both, the boot log
+        # cannot answer what this instance is actually going to crawl.
+        enabled_count = sum(1 for c in all_crawlers if c["enabled"] and c["id"] in plugins_by_crawler_id)
+        log.info(
+            "Crawl worker pool started: %d workers, %d crawler plugins loaded (%d enabled)",
+            worker_count, len(plugins), enabled_count,
+        )
 
     async def stop_worker_pool(self):
         self._pool_running = False

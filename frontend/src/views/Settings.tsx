@@ -54,6 +54,18 @@ interface Props {
   onRefreshStoreCrawler: (crawlerId: number) => void
 }
 
+// apiFetch throws Error(await r.text()), so err.message is FastAPI's raw JSON
+// body for a handled error and a plain string for anything else.
+function errorMessage(err: any, fallback: string): string {
+  try {
+    const parsed = JSON.parse(err.message)
+    if (parsed.detail) return parsed.detail
+  } catch {
+    // not JSON, use raw message
+  }
+  return err.message || fallback
+}
+
 function toggleButtonClass(on: boolean): string {
   return `px-3 py-1 rounded-full text-xs font-medium transition-colors ${
     on ? 'bg-green-700 hover:bg-green-600 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-400'
@@ -216,14 +228,7 @@ function Settings({
         await saveSettings(settings)
       } catch (err: any) {
         if (seq !== latestSaveSeq.current) return
-        let message = err.message || 'Save failed'
-        try {
-          const parsed = JSON.parse(err.message)
-          if (parsed.detail) message = parsed.detail
-        } catch {
-          // not JSON, use raw message
-        }
-        setSettingsSaveError(message)
+        setSettingsSaveError(errorMessage(err, 'Save failed'))
       }
     })
   }
@@ -241,9 +246,16 @@ function Settings({
   }, [settings, settingsLoaded])
 
   async function handleToggleCrawler(crawler: Crawler) {
-    const { discarded } = await setCrawlerEnabled(crawler.id, !crawler.enabled)
-    onCrawlersChange(crawlers.map((c) => c.id === crawler.id ? { ...c, enabled: !c.enabled } : c))
-    setDiscardedNotice(discarded ? { crawlerId: crawler.id, count: discarded } : null)
+    setSettingsSaveError('')
+    try {
+      const { discarded } = await setCrawlerEnabled(crawler.id, !crawler.enabled)
+      onCrawlersChange(crawlers.map((c) => c.id === crawler.id ? { ...c, enabled: !c.enabled } : c))
+      setDiscardedNotice(discarded ? { crawlerId: crawler.id, count: discarded } : null)
+    } catch (err: any) {
+      // The row keeps showing its old state because onCrawlersChange never
+      // ran -- the button reflects the server, not the click.
+      setSettingsSaveError(errorMessage(err, 'Could not change this crawler'))
+    }
   }
 
   return (

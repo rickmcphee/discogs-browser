@@ -409,7 +409,11 @@ def init_tenant_schema():
         conn.execute("GRANT USAGE, SELECT ON SEQUENCE listings_id_seq, stock_items_id_seq TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON library_items TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON stock_item_judgments TO app_user")
-        conn.execute("GRANT SELECT, INSERT, UPDATE ON crawl_queue TO app_user")
+        # crawl_queue needs DELETE for the same reason stock_items does:
+        # delete_pending_crawl_queue_for_crawler(), run through get_app_pool()
+        # from routers/settings.update_crawler, purges a crawler's pending rows
+        # when an admin disables it.
+        conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON crawl_queue TO app_user")
         conn.execute("GRANT USAGE, SELECT ON SEQUENCE crawl_queue_id_seq TO app_user")
         # INSERT only -- app_user never needs to read back another admin's
         # minted invites, and redemption (SELECT/UPDATE) runs through
@@ -871,12 +875,21 @@ def delete_pending_crawl_queue_for_crawler(conn, crawler_id: int) -> int:
     ).rowcount
 
 
+# Disabled crawlers' rows are excluded rather than trusted to be absent. The
+# disable purge cannot catch them all: under READ COMMITTED an enqueue that
+# began before the disable committed still evaluates its WHERE EXISTS against
+# the older snapshot and inserts afterwards, and _sync_collection holds one
+# transaction open for a whole ~110s page. Those survivors are unclaimable, so
+# counting them would leave the count stuck above zero for as long as the
+# crawler stays off -- and routers/crawl._events_to_replay would then read the
+# user as permanently mid-job and replay stale event history on every connect.
 def count_pending_crawl_queue_for_user(conn, user_id: int) -> int:
     return conn.execute(
         """
         SELECT COUNT(*) FROM crawl_queue cq
         JOIN library_items li ON li.discogs_id = cq.discogs_id
-        WHERE li.user_id = %s AND cq.status IN ('pending', 'in_progress')
+        JOIN crawlers c ON c.id = cq.crawler_id
+        WHERE li.user_id = %s AND cq.status IN ('pending', 'in_progress') AND c.enabled
         """,
         [user_id],
     ).fetchone()["count"]
