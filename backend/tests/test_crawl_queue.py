@@ -230,3 +230,51 @@ def test_claim_crawl_queue_batch_prioritizes_release_rows_over_stock_item_rows(a
     [row] = db.claim_crawl_queue_batch(admin_conn, "worker-1", limit=1)
     assert row["discogs_id"] == "r1"
     assert row["item_key"] is None
+
+
+def test_claim_crawl_queue_batch_skips_a_disabled_crawler(admin_conn):
+    crawler_id = _make_catalog_and_crawler(admin_conn)
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1", crawler_id)
+    admin_conn.commit()
+
+    db.set_crawler_enabled(admin_conn, crawler_id, False)
+    admin_conn.commit()
+
+    with db.get_app_pool().connection() as conn:
+        assert db.claim_crawl_queue_batch(conn, "worker-1", limit=10) == []
+        conn.commit()
+
+    db.set_crawler_enabled(admin_conn, crawler_id, True)
+    admin_conn.commit()
+
+    with db.get_app_pool().connection() as conn:
+        claimed = db.claim_crawl_queue_batch(conn, "worker-1", limit=10)
+        conn.commit()
+    assert [r["discogs_id"] for r in claimed] == ["r1"]
+
+
+def test_claim_crawl_queue_batch_disabled_rows_do_not_consume_batch_slots(admin_conn):
+    """A disabled crawler's rows must be invisible to the claim, not merely
+    skipped after selection -- otherwise a large disabled backlog sorts ahead
+    of enabled work and starves it batch after batch."""
+    off_id = _make_catalog_and_crawler(admin_conn, discogs_id="r1", site_name="Off Site")
+    on_id = _make_catalog_and_crawler(admin_conn, discogs_id="r2", site_name="On Site")
+    admin_conn.commit()
+    for i in range(5):
+        db.upsert_catalog_release(admin_conn, {
+            "discogs_id": f"off{i}", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(admin_conn, f"off{i}", off_id)
+    db.enqueue_crawl_queue(admin_conn, "r2", on_id)
+    admin_conn.commit()
+
+    db.set_crawler_enabled(admin_conn, off_id, False)
+    admin_conn.commit()
+
+    with db.get_app_pool().connection() as conn:
+        claimed = db.claim_crawl_queue_batch(conn, "worker-1", limit=5)
+        conn.commit()
+    assert [r["discogs_id"] for r in claimed] == ["r2"]

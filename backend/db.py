@@ -822,7 +822,12 @@ def claim_crawl_queue_batch(
         UPDATE crawl_queue SET status = 'in_progress', claimed_by = %(worker_id)s, claimed_at = CURRENT_TIMESTAMP
         WHERE id IN (
             SELECT id FROM crawl_queue
-            WHERE status = 'pending' {exclusion_clause}
+            -- Live gate, re-evaluated every batch: this is what makes an
+            -- admin disabling a crawler stop it mid-crawl rather than only
+            -- stopping future enqueues.
+            WHERE status = 'pending'
+              AND crawler_id IN (SELECT id FROM crawlers WHERE enabled)
+              {exclusion_clause}
             -- (item_key IS NOT NULL) leads the sort so every pending release
             -- row (FALSE) sorts ahead of every pending stock-item row
             -- (TRUE), regardless of which was enqueued first -- a large
