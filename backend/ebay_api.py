@@ -141,6 +141,25 @@ async def search_ebay(
         # per-status meaning for Browse search failures, and any of them is
         # equally "the API isn't answering", which is what the breaker counts.
         log.error("[%s] search HTTP error %s: %s", log_prefix, e.response.status_code, e)
+        # The status line alone can't distinguish a daily quota from a
+        # suspended keyset from a transient fault -- eBay says which in the
+        # body's errors[] array (errorId + longMessage), and documents no
+        # per-status meaning for Browse search failures at all. Debug, and
+        # truncated: an error page from something other than eBay (a proxy's
+        # HTML, say) would otherwise dump tens of KB into a rotating log file
+        # the viewer has to render. Same reason shopify_catalog logs 429
+        # headers at debug.
+        #
+        # Whitespace is collapsed so the record stays one line: routers/logs.py's
+        # _line_visible passes through any line it can't read a level from, so a
+        # body's second and subsequent lines would appear in *every* level view,
+        # DEBUG filter or not -- the same path that puts tracebacks in the INFO
+        # stream as OTHER.
+        body = " ".join(e.response.text.split())[:2000]
+        log.debug(
+            "[%s] search HTTP %s response body: %s",
+            log_prefix, e.response.status_code, body,
+        )
         raise
     except httpx.RequestError as e:
         log.error("[%s] search request error: %s", log_prefix, e)

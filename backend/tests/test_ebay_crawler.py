@@ -1,3 +1,4 @@
+import logging
 import time
 import respx
 import httpx
@@ -102,6 +103,62 @@ async def test_search_raises_on_http_error(crawler, status):
         respx.get(_SEARCH_URL).mock(return_value=httpx.Response(status, json={}))
         with pytest.raises(httpx.HTTPStatusError):
             await crawler.search(_RELEASE, page=None)
+
+
+async def test_search_logs_the_error_response_body_at_debug(crawler, caplog):
+    """eBay documents no per-status meaning for Browse search failures, so the
+    body's errors[] array is the only thing that says *why* a 409 happened --
+    a daily quota, a suspended keyset and a transient fault all look identical
+    from the status line alone. Same reason shopify_catalog dumps 429 headers
+    at debug."""
+    body = {"errors": [{"errorId": 12001, "longMessage": "The keyset is suspended."}]}
+    with respx.mock:
+        respx.post(_TOKEN_URL).mock(return_value=httpx.Response(200, json=_TOKEN_RESP))
+        respx.get(_SEARCH_URL).mock(return_value=httpx.Response(409, json=body))
+        with caplog.at_level(logging.DEBUG, logger="ebay_api"):
+            with pytest.raises(httpx.HTTPStatusError):
+                await crawler.search(_RELEASE, page=None)
+
+    debug_messages = [r.getMessage() for r in caplog.records if r.levelname == "DEBUG"]
+    assert any("The keyset is suspended." in m for m in debug_messages)
+    assert any("12001" in m for m in debug_messages)
+
+
+async def test_error_response_body_is_logged_as_a_single_line(crawler, caplog):
+    """routers/logs.py's _line_visible passes through any line it can't parse
+    a level from, so a multi-line body would leak its continuation lines into
+    the default {INFO, WARNING, ERROR} view -- the same reason tracebacks show
+    up there as OTHER -- and the LogViewer would fail to parse them."""
+    pretty_json = '{\n  "errors": [\n    {\n      "errorId": 12001\n    }\n  ]\n}'
+    with respx.mock:
+        respx.post(_TOKEN_URL).mock(return_value=httpx.Response(200, json=_TOKEN_RESP))
+        respx.get(_SEARCH_URL).mock(return_value=httpx.Response(409, text=pretty_json))
+        with caplog.at_level(logging.DEBUG, logger="ebay_api"):
+            with pytest.raises(httpx.HTTPStatusError):
+                await crawler.search(_RELEASE, page=None)
+
+    body_lines = [r.getMessage() for r in caplog.records if "response body" in r.getMessage()]
+    assert len(body_lines) == 1
+    assert "\n" not in body_lines[0]
+    assert "\r" not in body_lines[0]
+    assert "12001" in body_lines[0]  # collapsed, not stripped of content
+
+
+async def test_error_response_body_logging_is_truncated(crawler, caplog):
+    """A non-JSON error page (a proxy's HTML, say) must not dump tens of KB
+    into a rotating log file the viewer has to render."""
+    with respx.mock:
+        respx.post(_TOKEN_URL).mock(return_value=httpx.Response(200, json=_TOKEN_RESP))
+        respx.get(_SEARCH_URL).mock(
+            return_value=httpx.Response(503, html="<html>" + ("x" * 50_000) + "</html>")
+        )
+        with caplog.at_level(logging.DEBUG, logger="ebay_api"):
+            with pytest.raises(httpx.HTTPStatusError):
+                await crawler.search(_RELEASE, page=None)
+
+    body_lines = [r.getMessage() for r in caplog.records if "response body" in r.getMessage()]
+    assert len(body_lines) == 1
+    assert len(body_lines[0]) < 3_000
 
 
 async def test_search_raises_on_request_error(crawler):
