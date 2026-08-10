@@ -304,11 +304,25 @@ the row it just toggled:
 const [discardedNotice, setDiscardedNotice] = useState<{ crawlerId: number; count: number } | null>(null)
 
 async function handleToggleCrawler(crawler: Crawler) {
-  const { discarded } = await setCrawlerEnabled(crawler.id, !crawler.enabled)
-  onCrawlersChange(crawlers.map((c) => c.id === crawler.id ? { ...c, enabled: !c.enabled } : c))
-  setDiscardedNotice(discarded ? { crawlerId: crawler.id, count: discarded } : null)
+  setSettingsSaveError('')
+  try {
+    const { discarded } = await setCrawlerEnabled(crawler.id, !crawler.enabled)
+    onCrawlersChange(crawlers.map((c) => c.id === crawler.id ? { ...c, enabled: !c.enabled } : c))
+    setDiscardedNotice(discarded ? { crawlerId: crawler.id, count: discarded } : null)
+  } catch (err: any) {
+    setSettingsSaveError(errorMessage(err, 'Could not change this crawler'))
+  }
 }
 ```
+
+`setCrawlerEnabled` throws on a non-OK response, so the `catch` is what keeps a
+failed toggle from disappearing into an unhandled rejection — the grant bug
+above made that path real rather than theoretical. It reports through the same
+`settingsSaveError` line the settings autosave already uses, via an
+`errorMessage(err, fallback)` helper extracted from `saveSettingsNow` so both
+callers parse FastAPI's `detail` the same way. Because `onCrawlersChange` never
+runs on the failure path, the button keeps showing the server's state rather
+than the state the admin clicked for.
 
 Rendered in the existing "Crawl" cell, after the toggle button:
 
