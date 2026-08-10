@@ -239,8 +239,8 @@ A pure `@classmethod` so it is unit-testable without any HTTP:
 
 - **No separator** after stripping → `artist = "Various"`, album = the full
   original title. `angryyoungandpoor.py` sets the precedent for its V/A
-  category, though it emits `"Various Artists"` there (a pre-existing,
-  out-of-scope issue on that crawler). `"Various"` — not `"Various Artists"`
+  category, though it emitted `"Various Artists"` there (a pre-existing
+  issue on that crawler, out of scope here and fixed separately in PR #93). `"Various"` — not `"Various Artists"`
   — is the literal string Discogs' own entity uses, and three consumers
   depend on that exact spelling: `amazon.py`'s `Crawler._artist()` only
   special-cases the literal `"various"` case-insensitively; `db.py`'s

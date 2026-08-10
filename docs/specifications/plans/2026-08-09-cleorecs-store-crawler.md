@@ -10,6 +10,11 @@
 
 **Spec:** [`docs/specifications/shaping/2026-08-09-cleorecs-store-crawler-design.md`](../shaping/2026-08-09-cleorecs-store-crawler-design.md)
 
+> **Outcome note (2026-08-10).** This plan is a historical task log and is left as written; the code and the design spec are the current reference. Two things changed during execution, so do not copy these from the task text below:
+>
+> - **The no-separator fallback artist is `"Various"`, not `"Various Artists"`.** Discogs' entity is named `Various`, and `amazon.py`'s `_artist()`, `db.py`'s `_library_match_fragment` and `ebay_api.pick_matching_item` all key on that exact string. The whole-branch review caught this; the plan's snippets still show the original, wrong value.
+> - **The version bump landed at 3.15, not 3.14.** PR #91 merged and took 3.14 while this branch was in flight.
+
 ## Global Constraints
 
 - Python ≥3.9. No `str | None` union syntax — use `Optional[str]` or leave untyped.
