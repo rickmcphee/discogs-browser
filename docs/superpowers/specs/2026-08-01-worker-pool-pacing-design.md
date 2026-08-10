@@ -141,6 +141,26 @@ follow-ons from items 9 and 10.
     pause was invisible to anyone watching the INFO stream that carries the
     rest of the crawl narrative. Covered by
     `test_tripping_the_cooldown_is_logged_at_info`.
+13. **The breaker now covers catalog crawlers too, not just the worker pool.**
+    `_sync_stock` had no consecutive-failure breaker at all — only the
+    2-consecutive-429-sites run abort — so a site that hard-blocks us was
+    re-attempted in full (initial attempt plus `_run_catalog_crawler`'s
+    context-reset retry) on every scheduled sync, forever. Found via Amoeba
+    Music answering every request with a Cloudflare 403. It now calls the same
+    `_record_site_result` and skips a source whose `crawler_id` is in
+    `_cooling_down_crawler_ids()`, reusing one set of state and one setting
+    across both paths. A 429 is deliberately still excluded — it keeps its own
+    handling (never retried, plus the run-level abort) as an expected,
+    handled condition rather than evidence the site is broken. Covered by
+    `test_sync_stock_cools_down_a_repeatedly_failing_catalog_crawler`,
+    `test_sync_stock_skips_a_cooling_down_catalog_crawler`, and
+    `test_sync_stock_does_not_count_a_429_toward_the_cooloff`.
+14. **The stock-sync completion line names failed and cooling-down sources.**
+    "Stock sync complete: 0 items" on its own read as a clean run; the ERROR
+    explaining the zero was a different level, and per item 12's filtering
+    quirk an INFO-only view never saw it. It now appends, when non-empty,
+    `-- N failed (names); M cooling down (names)`. Covered by
+    `test_sync_stock_completion_log_names_failed_and_skipped_sources`.
 
 ---
 

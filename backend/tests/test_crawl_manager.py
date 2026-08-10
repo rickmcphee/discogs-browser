@@ -2084,6 +2084,111 @@ async def test_sync_stock_broadcasts_error_and_continues_when_a_crawler_fails(pg
     assert [i["artist"] for i in items] == ["B"]
 
 
+def _failing_catalog_crawler(crawler_id, name, exc):
+    plugin = AsyncMock()
+
+    async def _boom():
+        raise exc
+        yield  # pragma: no cover -- unreachable, but keeps this an async generator
+
+    plugin.crawl_catalog = lambda: _boom()
+    plugin._db_id = crawler_id
+    plugin._db_site_name = name
+    return plugin
+
+
+async def test_sync_stock_cools_down_a_repeatedly_failing_catalog_crawler(pg_schema):
+    """Amoeba answering every request with a Cloudflare 403 was fully
+    re-attempted on every scheduled sync, forever -- the stock path had no
+    consecutive-failure breaker at all, only the 429 abort."""
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Blocked Site", "/x.py", crawler_type="catalog")
+        conn.commit()
+        blocked_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Blocked Site'").fetchone()["id"]
+
+    manager = CrawlManager()
+    plugin = _failing_catalog_crawler(blocked_id, "Blocked Site", RuntimeError("HTTP 403"))
+
+    with patch("crawler.load_enabled_crawlers", return_value=[plugin]), \
+         patch("config.load_config", return_value={"consecutive_failure_limit": 2}):
+        await manager._sync_stock()
+        assert manager._site_cooldown_until.get(blocked_id, 0) == 0  # one failure isn't enough
+        await manager._sync_stock()
+
+    assert manager._site_cooldown_until.get(blocked_id, 0) > time.monotonic()
+
+
+async def test_sync_stock_skips_a_cooling_down_catalog_crawler(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Blocked Site", "/x.py", crawler_type="catalog")
+        conn.commit()
+        blocked_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Blocked Site'").fetchone()["id"]
+
+    manager = CrawlManager()
+    manager._site_cooldown_until[blocked_id] = time.monotonic() + 1800
+    plugin = _failing_catalog_crawler(blocked_id, "Blocked Site", RuntimeError("HTTP 403"))
+    called = []
+    plugin.crawl_catalog = lambda: called.append(1)
+
+    with patch("crawler.load_enabled_crawlers", return_value=[plugin]), \
+         patch("config.load_config", return_value={"consecutive_failure_limit": 2}):
+        await manager._sync_stock()
+
+    assert called == []
+    statuses = [e["status"] for e in manager.recent_events()]
+    assert "stock_sync_complete" in statuses  # a cooling-down source doesn't abort the run
+
+
+async def test_sync_stock_does_not_count_a_429_toward_the_cooloff(pg_schema):
+    """A 429 keeps its own handling -- fail fast, never retried, and the
+    two-consecutive-sites abort -- and is deliberately not a breaker failure
+    (see 2026-08-02-stock-sync-429-backoff-design.md's 2026-08-04 amendment)."""
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Throttled Site", "/x.py", crawler_type="catalog")
+        conn.commit()
+        throttled_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Throttled Site'").fetchone()["id"]
+
+    rate_limited = httpx.HTTPStatusError(
+        "429", request=httpx.Request("GET", "https://x/"), response=httpx.Response(429)
+    )
+    manager = CrawlManager()
+    plugin = _failing_catalog_crawler(throttled_id, "Throttled Site", rate_limited)
+
+    with patch("crawler.load_enabled_crawlers", return_value=[plugin]), \
+         patch("config.load_config", return_value={"consecutive_failure_limit": 1}):
+        await manager._sync_stock()
+
+    assert manager._site_consecutive_failures.get(throttled_id, 0) == 0
+    assert manager._site_cooldown_until.get(throttled_id, 0) == 0
+
+
+async def test_sync_stock_completion_log_names_failed_and_skipped_sources(pg_schema, caplog):
+    """"Stock sync complete: 0 items" on its own reads as a clean run. The
+    ERROR explaining the zero is a different level, and the log viewer filters
+    by exact level, so an INFO-only view saw success."""
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Blocked Site", "/x.py", crawler_type="catalog")
+        db.register_crawler(conn, "Cooling Site", "/y.py", crawler_type="catalog")
+        conn.commit()
+        blocked_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Blocked Site'").fetchone()["id"]
+        cooling_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Cooling Site'").fetchone()["id"]
+
+    manager = CrawlManager()
+    manager._site_cooldown_until[cooling_id] = time.monotonic() + 1800
+    blocked = _failing_catalog_crawler(blocked_id, "Blocked Site", RuntimeError("HTTP 403"))
+    cooling = _failing_catalog_crawler(cooling_id, "Cooling Site", RuntimeError("HTTP 403"))
+
+    with patch("crawler.load_enabled_crawlers", return_value=[blocked, cooling]), \
+         patch("config.load_config", return_value={"consecutive_failure_limit": 10}), \
+         caplog.at_level(logging.INFO, logger="crawl_manager"):
+        await manager._sync_stock()
+
+    complete = [r.getMessage() for r in caplog.records if "Stock sync complete" in r.getMessage()]
+    assert len(complete) == 1
+    assert "Blocked Site" in complete[0]
+    assert "Cooling Site" in complete[0]
+
+
 async def test_start_stock_sync_forwards_crawler_id_to_sync_stock(manager):
     calls = []
 
