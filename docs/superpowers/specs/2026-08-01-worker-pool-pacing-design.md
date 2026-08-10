@@ -119,6 +119,49 @@ had a consequence nobody spotted when it landed.
     `test_failures_pool_across_crawlers_sharing_a_failure_domain` and
     `test_a_crawler_with_no_failure_domain_keeps_its_own_counter`.
 
+**Amendment (2026-08-09, branch `worktree-amazon-error-swallowing`):** two
+follow-ons from items 9 and 10.
+
+11. **`crawlers/amazon.py` had the same blind spot, in a worse shape.** Its
+    product-page step was wrapped in a bare `except Exception` that logged a
+    warning and fell through to `return [{"url": ..., "price": None, ...}]`.
+    That value is *truthy*, so `_record_site_result` recorded the failed crawl
+    as a success and **reset** the site's consecutive-failure count — where
+    eBay's `[]` at least counted as a failure on the release path, this
+    actively cleared the counter on both. `BotDetectedError` subclasses
+    `Exception`, so the same handler also swallowed product-page bot walls,
+    which therefore never reached `_paced_search`'s context-reset retry. The
+    handler now logs and re-raises. A product page that loads but shows no
+    price still returns the listing with `price: None` — `extract_price`
+    returns `None` without raising, and that is a real answer, not a failure.
+    Covered by `tests/crawlers/test_amazon_search_errors.py`.
+12. **The cooldown notice is logged at INFO, not WARNING.** `routers/logs.py`'s
+    `_line_visible` filters by exact level membership rather than
+    level-and-above, so at WARNING the one line explaining a 30-minute crawl
+    pause was invisible to anyone watching the INFO stream that carries the
+    rest of the crawl narrative. Covered by
+    `test_tripping_the_cooldown_is_logged_at_info`.
+13. **The breaker now covers catalog crawlers too, not just the worker pool.**
+    `_sync_stock` had no consecutive-failure breaker at all — only the
+    2-consecutive-429-sites run abort — so a site that hard-blocks us was
+    re-attempted in full (initial attempt plus `_run_catalog_crawler`'s
+    context-reset retry) on every scheduled sync, forever. Found via Amoeba
+    Music answering every request with a Cloudflare 403. It now calls the same
+    `_record_site_result` and skips a source whose `crawler_id` is in
+    `_cooling_down_crawler_ids()`, reusing one set of state and one setting
+    across both paths. A 429 is deliberately still excluded — it keeps its own
+    handling (never retried, plus the run-level abort) as an expected,
+    handled condition rather than evidence the site is broken. Covered by
+    `test_sync_stock_cools_down_a_repeatedly_failing_catalog_crawler`,
+    `test_sync_stock_skips_a_cooling_down_catalog_crawler`, and
+    `test_sync_stock_does_not_count_a_429_toward_the_cooloff`.
+14. **The stock-sync completion line names failed and cooling-down sources.**
+    "Stock sync complete: 0 items" on its own read as a clean run; the ERROR
+    explaining the zero was a different level, and per item 12's filtering
+    quirk an INFO-only view never saw it. It now appends, when non-empty,
+    `-- N failed (names); M cooling down (names)`. Covered by
+    `test_sync_stock_completion_log_names_failed_and_skipped_sources`.
+
 ---
 
 ## Overview

@@ -224,9 +224,29 @@ class Crawler:
             vinyl_price = await extract_price(page, fmt_keywords)
 
         except Exception as e:
+            # Raised, not swallowed: falling through returned the listing below
+            # with price None, which is truthy, so CrawlManager recorded the
+            # failure as a *success* and reset the site's consecutive-failure
+            # count. It also caught the BotDetectedError raised just above,
+            # hiding product-page walls from _paced_search's context-reset
+            # retry entirely. A page that loads but shows no price still
+            # returns the listing -- extract_price returns None without
+            # raising, and that is a real answer, not a failure.
             log.warning("[Amazon] product page error: %s", e)
-
-        await page.goto("about:blank")
+            raise
+        finally:
+            # Best-effort, and deliberately the one swallow left in here: the
+            # blank matters (a live Amazon page, or a CAPTCHA, otherwise keeps
+            # running its scripts on the shared context through the whole
+            # inter-request delay), but it must never replace the failure being
+            # reported. After an aborted navigation this goto raises on its own
+            # -- "interrupted by another navigation to chrome-error://" -- and
+            # from a finally that would mask the real error, which is the one
+            # thing the circuit breaker needs to see.
+            try:
+                await page.goto("about:blank")
+            except Exception:
+                pass
         return [{
             "url": vinyl_url,
             "price": vinyl_price,

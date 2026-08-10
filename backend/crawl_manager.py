@@ -171,7 +171,13 @@ class CrawlManager:
             if limit and count >= limit:
                 self._site_cooldown_until[cid] = time.monotonic() + 1800
                 self._site_consecutive_failures[cid] = 0
-                log.warning(
+                # INFO, not WARNING: the log viewer filters by exact level
+                # membership rather than level-and-above (routers/logs.py's
+                # _line_visible), so at WARNING this was invisible to anyone
+                # watching the INFO stream that carries the rest of the crawl
+                # narrative -- the crawl would just go quiet for 30 minutes
+                # with no line explaining why.
+                log.info(
                     "Crawler %d hit %d consecutive failures, cooling down for 30 minutes",
                     cid, count,
                 )
@@ -651,17 +657,42 @@ class CrawlManager:
 
             total_synced = 0
             consecutive_429_sites: list[str] = []
+            failed_sources: list[str] = []
+            skipped_sources: list[str] = []
             for crawler in crawlers:
+                # Same per-site breaker the release path uses, reusing its
+                # state and its consecutive_failure_limit setting: a site that
+                # hard-blocks us (Amoeba's Cloudflare 403s) was otherwise
+                # re-attempted in full -- initial attempt plus the
+                # context-reset retry -- on every scheduled sync, forever.
+                # Recomputed per crawler rather than once per run so a site
+                # that trips its own limit mid-run takes effect for its
+                # failure-domain peers immediately.
+                if crawler._db_id in self._cooling_down_crawler_ids():
+                    skipped_sources.append(crawler._db_site_name)
+                    log.info(
+                        "[%s] Stock crawl skipped: site is cooling down after repeated failures",
+                        crawler._db_site_name,
+                    )
+                    continue
                 await self._broadcast({"status": "stock_sync_source_started", "source": crawler._db_site_name})
                 try:
                     items = await self._run_catalog_crawler(crawler)
                 except Exception as e:
                     is_rate_limited = isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 429
                     if is_rate_limited:
+                        # Not counted against the breaker: a 429 already has its
+                        # own handling (never retried, plus the two-consecutive-
+                        # sites abort below) and is an expected, handled
+                        # condition rather than a sign this site is broken --
+                        # see 2026-08-02-stock-sync-429-backoff-design.md's
+                        # 2026-08-04 amendment.
                         log.warning("[%s] Stock crawl rate-limited (HTTP 429): %s", crawler._db_site_name, e)
                         consecutive_429_sites.append(crawler._db_site_name)
                     else:
                         log.error("[%s] Stock crawl failed: %s", crawler._db_site_name, e, exc_info=True)
+                        self._record_site_result(crawler._db_id, succeeded=False)
+                        failed_sources.append(crawler._db_site_name)
                         await self._broadcast({
                             "status": "stock_sync_error",
                             "error": str(e),
@@ -684,6 +715,7 @@ class CrawlManager:
                     continue
 
                 consecutive_429_sites = []
+                self._record_site_result(crawler._db_id, succeeded=True)
                 with get_app_pool().connection() as conn:
                     item_keys = replace_stock_items(conn, crawler._db_id, items)
                     update_crawler_last_run(conn, crawler._db_id)
@@ -699,7 +731,20 @@ class CrawlManager:
                 await self._broadcast({"status": "stock_sync_progress", "synced": total_synced, "source": crawler._db_site_name})
 
             await self._broadcast({"status": "stock_sync_complete", "synced": total_synced, "crawler_id": crawler_id})
-            log.info("Stock sync complete: %d items", total_synced)
+            # The failed/skipped tail is why "complete: 0 items" alone was
+            # misleading: the ERROR explaining the zero is a different level,
+            # and routers/logs.py filters by exact level membership, so an
+            # INFO-only view saw a clean run.
+            notes = []
+            if failed_sources:
+                notes.append(f"{len(failed_sources)} failed ({', '.join(failed_sources)})")
+            if skipped_sources:
+                notes.append(f"{len(skipped_sources)} cooling down ({', '.join(skipped_sources)})")
+            log.info(
+                "Stock sync complete: %d items%s",
+                total_synced,
+                f" -- {'; '.join(notes)}" if notes else "",
+            )
         except asyncio.CancelledError:
             log.info("Stock sync cancelled")
             raise
