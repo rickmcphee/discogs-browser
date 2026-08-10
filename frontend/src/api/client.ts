@@ -130,13 +130,14 @@ export async function saveUserSettings(settings: UserSettings): Promise<void> {
   if (!r.ok) throw new Error(await r.text())
 }
 
-export async function setCrawlerEnabled(id: number, enabled: boolean): Promise<void> {
+export async function setCrawlerEnabled(id: number, enabled: boolean): Promise<{ ok: boolean; discarded: number }> {
   const r = await apiFetch(`/crawlers/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ enabled }),
   })
   if (!r.ok) throw new Error(await r.text())
+  return r.json()
 }
 
 export async function getCrawlStatus(): Promise<CrawlStatus> {

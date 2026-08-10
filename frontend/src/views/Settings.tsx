@@ -81,6 +81,7 @@ function Settings({
   // re-run once settings load, even when the fetched values equal the
   // useState defaults above and React would otherwise bail out of re-rendering.
   const [settingsLoaded, setSettingsLoaded] = useState(false)
+  const [discardedNotice, setDiscardedNotice] = useState<{ crawlerId: number; count: number } | null>(null)
 
   const releaseCrawlers = crawlers.filter((c) => c.crawler_type === 'release')
   const catalogCrawlers = crawlers.filter((c) => c.crawler_type === 'catalog' || c.crawler_type === 'catalog_browser')
@@ -170,6 +171,11 @@ function Settings({
                   >
                     {c.enabled ? 'Enabled' : 'Disabled'}
                   </button>
+                  {discardedNotice?.crawlerId === c.id && (
+                    <span className="ml-2 text-xs text-gray-500">
+                      {discardedNotice.count} queued {discardedNotice.count === 1 ? 'job' : 'jobs'} discarded
+                    </span>
+                  )}
                 </td>
               )}
               {isAdmin && showRefresh && (
@@ -235,8 +241,9 @@ function Settings({
   }, [settings, settingsLoaded])
 
   async function handleToggleCrawler(crawler: Crawler) {
-    await setCrawlerEnabled(crawler.id, !crawler.enabled)
+    const { discarded } = await setCrawlerEnabled(crawler.id, !crawler.enabled)
     onCrawlersChange(crawlers.map((c) => c.id === crawler.id ? { ...c, enabled: !c.enabled } : c))
+    setDiscardedNotice(discarded ? { crawlerId: crawler.id, count: discarded } : null)
   }
 
   return (
