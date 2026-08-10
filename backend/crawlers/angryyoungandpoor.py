@@ -94,7 +94,15 @@ class Crawler:
         else:
             if not _FORMAT_RE.search(name):
                 return None
-            artist = "Various Artists"
+            # Bare "Various", not "Various Artists" -- Discogs' own entity name
+            # is "Various", and three consumers key off that exact string:
+            # amazon.py's Crawler._artist() only special-cases the literal
+            # "various" (case-insensitively) to search by title alone, db.py's
+            # _library_match_fragment does an exact LOWER() equality against the
+            # catalog artist, and ebay_api.pick_matching_item requires >=50%
+            # word overlap with the listing title. "Various Artists" satisfies
+            # none of the three.
+            artist = "Various"
             remainder = name.strip()
 
         if _USED_RE.search(remainder):
