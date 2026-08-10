@@ -96,10 +96,13 @@ async def test_crawl_catalog_marks_used_condition_suffix(fake_page):
     assert item["title"] == "When Daylight Reveals The Torture LP (Used)"
 
 
-async def test_crawl_catalog_uses_various_artists_for_va_compilation(fake_page):
+async def test_crawl_catalog_uses_various_for_va_compilation(fake_page):
+    # "Various", not "Various Artists" -- the exact string amazon.py's
+    # _artist() and db.py's _library_match_fragment both compare against.
     crawler = Crawler()
     items = [item async for item in crawler.crawl_catalog(fake_page)]
-    va_items = [i for i in items if i["artist"] == "Various Artists"]
+    assert not [i for i in items if i["artist"] == "Various Artists"]
+    va_items = [i for i in items if i["artist"] == "Various"]
     assert len(va_items) == 2
     assert {i["title"] for i in va_items} == {
         "Barbarian (Soundtrack) LP (Mothers Milk & Blood Splatter Vinyl)",
