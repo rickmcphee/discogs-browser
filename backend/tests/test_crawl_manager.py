@@ -1450,6 +1450,40 @@ async def test_run_catalog_crawler_clears_the_page_reporter_when_the_crawl_ends(
     assert [e for e in manager.recent_events() if e["status"] == "stock_sync_page_fetched"] == []
 
 
+async def test_start_worker_pool_loads_plugins_for_disabled_crawlers(pg_schema):
+    """`enabled` is a runtime gate, not a plugin-loading filter. When it was
+    both, a crawler enabled after boot had no plugin, and _drain_one_batch's
+    `plugin is None` branch marked its rows done with no listing and no log."""
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/amazon.py")
+        db.register_crawler(conn, "eBay", "/ebay.py")
+        conn.commit()
+        ebay_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'eBay'").fetchone()["id"]
+        db.set_crawler_enabled(conn, ebay_id, False)
+        conn.commit()
+
+    loaded = []
+
+    def _capture(rows):
+        loaded.extend(r["site_name"] for r in rows)
+        return []
+
+    browser = AsyncMock()
+    playwright = AsyncMock()
+    playwright.chromium.launch = AsyncMock(return_value=browser)
+    launcher = MagicMock()
+    launcher.start = AsyncMock(return_value=playwright)
+
+    manager = CrawlManager()
+    with patch("crawler.load_enabled_crawlers", side_effect=_capture), \
+         patch("playwright.async_api.async_playwright", return_value=launcher), \
+         patch("playwright_stealth.Stealth"):
+        await manager.start_worker_pool(worker_count=0)
+        await manager.stop_worker_pool()
+
+    assert sorted(loaded) == ["Amazon", "eBay"]
+
+
 async def test_sync_stock_broadcasts_the_store_name_before_crawling_it(pg_schema):
     with db.get_admin_pool().connection() as conn:
         db.register_crawler(conn, "Stock Site", "/x.py", crawler_type="catalog")

@@ -704,6 +704,10 @@ def get_enabled_crawlers(conn, crawler_type: str = "release") -> list[dict]:
     ).fetchall()
 
 
+def get_crawlers(conn, crawler_type: str = "release") -> list[dict]:
+    return conn.execute("SELECT * FROM crawlers WHERE crawler_type = %s", [crawler_type]).fetchall()
+
+
 def get_all_crawlers(conn) -> list[dict]:
     rows = conn.execute("SELECT * FROM crawlers ORDER BY site_name").fetchall()
     result = []

@@ -155,3 +155,19 @@ def test_set_crawler_enabled_and_update_last_run(admin_conn):
         "SELECT last_run FROM crawlers WHERE id = %s", [crawler_id]
     ).fetchone()
     assert row["last_run"] is not None
+
+
+def test_get_crawlers_includes_disabled_and_filters_by_type(admin_conn):
+    db.register_crawler(admin_conn, "Amazon", "/path/amazon.py")
+    db.register_crawler(admin_conn, "eBay", "/path/ebay.py")
+    db.register_crawler(admin_conn, "Stock Site", "/path/stock.py", crawler_type="catalog")
+    admin_conn.commit()
+    ebay_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'eBay'").fetchone()["id"]
+    db.set_crawler_enabled(admin_conn, ebay_id, False)
+    admin_conn.commit()
+
+    release = db.get_crawlers(admin_conn)
+    assert {c["site_name"] for c in release} == {"Amazon", "eBay"}
+
+    catalog = db.get_crawlers(admin_conn, crawler_type="catalog")
+    assert {c["site_name"] for c in catalog} == {"Stock Site"}

@@ -68,11 +68,11 @@ class CrawlManager:
         from playwright_stealth import Stealth
         from crawler import load_enabled_crawlers
         from config import PLAYWRIGHT_CHANNEL
-        from db import get_app_pool, get_enabled_crawlers
+        from db import get_app_pool, get_crawlers
 
         with get_app_pool().connection() as conn:
-            enabled = get_enabled_crawlers(conn)
-        plugins = load_enabled_crawlers(enabled)
+            all_crawlers = get_crawlers(conn)
+        plugins = load_enabled_crawlers(all_crawlers)
         plugins_by_crawler_id = {p._db_id: p for p in plugins}
         self._set_failure_domains(plugins_by_crawler_id)
 
