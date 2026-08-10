@@ -55,15 +55,22 @@ interface Props {
 }
 
 // apiFetch throws Error(await r.text()), so err.message is FastAPI's raw JSON
-// body for a handled error and a plain string for anything else.
-function errorMessage(err: any, fallback: string): string {
+// body for a handled error and a plain string for anything else. Every branch
+// narrows to a string before returning: `detail` is only a string for the
+// app's own HTTPExceptions -- FastAPI's own 422s make it an array of objects,
+// which React throws on rendering -- and a rejection carrying no message at
+// all must reach the fallback rather than throwing here.
+function errorMessage(err: unknown, fallback: string): string {
+  const raw = typeof (err as { message?: unknown })?.message === 'string'
+    ? (err as { message: string }).message
+    : typeof err === 'string' ? err : ''
   try {
-    const parsed = JSON.parse(err.message)
-    if (parsed.detail) return parsed.detail
+    const parsed = JSON.parse(raw)
+    if (typeof parsed?.detail === 'string' && parsed.detail) return parsed.detail
   } catch {
     // not JSON, use raw message
   }
-  return err.message || fallback
+  return raw || fallback
 }
 
 function toggleButtonClass(on: boolean): string {
@@ -226,7 +233,7 @@ function Settings({
       setSettingsSaveError('')
       try {
         await saveSettings(settings)
-      } catch (err: any) {
+      } catch (err) {
         if (seq !== latestSaveSeq.current) return
         setSettingsSaveError(errorMessage(err, 'Save failed'))
       }
@@ -251,7 +258,7 @@ function Settings({
       const { discarded } = await setCrawlerEnabled(crawler.id, !crawler.enabled)
       onCrawlersChange(crawlers.map((c) => c.id === crawler.id ? { ...c, enabled: !c.enabled } : c))
       setDiscardedNotice(discarded ? { crawlerId: crawler.id, count: discarded } : null)
-    } catch (err: any) {
+    } catch (err) {
       // The row keeps showing its old state because onCrawlersChange never
       // ran -- the button reflects the server, not the click.
       setSettingsSaveError(errorMessage(err, 'Could not change this crawler'))

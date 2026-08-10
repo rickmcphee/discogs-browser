@@ -278,6 +278,30 @@ describe('Settings', () => {
     expect(within(row).queryByText(/queued jobs? discarded/)).not.toBeInTheDocument()
   })
 
+  // FastAPI's own 422s carry detail as an array of objects, not a string.
+  // Returning that unchanged put a non-string into settingsSaveError, which
+  // React throws on rendering — so the helper must fall back to the raw body.
+  it('does not crash when a rejection carries a non-string detail', async () => {
+    const body = JSON.stringify({ detail: [{ loc: ['body', 'enabled'], msg: 'field required' }] })
+    setCrawlerEnabled.mockRejectedValueOnce(new Error(body))
+    renderSettings({ crawlers: CRAWLERS })
+    await settle()
+
+    const row = screen.getByText('Amazon').closest('tr') as HTMLElement
+    fireEvent.click(within(row).getByText('Enabled'))
+    await waitFor(() => expect(screen.getByText(body)).toBeInTheDocument())
+  })
+
+  it('falls back to a default message when a rejection carries no message at all', async () => {
+    setCrawlerEnabled.mockRejectedValueOnce(null)
+    renderSettings({ crawlers: CRAWLERS })
+    await settle()
+
+    const row = screen.getByText('Amazon').closest('tr') as HTMLElement
+    fireEvent.click(within(row).getByText('Enabled'))
+    await waitFor(() => expect(screen.getByText('Could not change this crawler')).toBeInTheDocument())
+  })
+
   it('shows no notice when nothing was discarded', async () => {
     setCrawlerEnabled.mockResolvedValueOnce({ ok: true, discarded: 0 })
     renderSettings({ crawlers: CRAWLERS })
