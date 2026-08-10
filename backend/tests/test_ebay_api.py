@@ -1,4 +1,24 @@
-from ebay_api import pick_matching_item
+from ebay_api import _is_ebay_item_url, pick_matching_item
+
+
+def test_is_ebay_item_url_accepts_real_ebay():
+    assert _is_ebay_item_url("https://www.ebay.com/itm/123456") is True
+
+
+def test_is_ebay_item_url_rejects_lookalike_host():
+    assert _is_ebay_item_url("https://www.ebay.com.example.test/itm/123456") is False
+
+
+def test_is_ebay_item_url_rejects_userinfo_host():
+    assert _is_ebay_item_url("https://www.ebay.com@example.test/itm/123456") is False
+
+
+def test_is_ebay_item_url_rejects_plain_http():
+    assert _is_ebay_item_url("http://www.ebay.com/itm/123456") is False
+
+
+def test_is_ebay_item_url_rejects_empty():
+    assert _is_ebay_item_url("") is False
 
 
 def test_pick_matching_item_vinyl_match():

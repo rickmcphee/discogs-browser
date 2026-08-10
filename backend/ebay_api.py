@@ -1,6 +1,7 @@
 import re
 import time
 from typing import Optional
+from urllib.parse import urlparse
 import httpx
 from logging_config import get_logger
 from crawler import clean_search_text, strip_stop_words, title_variants
@@ -51,6 +52,16 @@ async def get_token(app_id: str, cert_id: str) -> str:
 
 def _words(text: str) -> set:
     return set(text.lower().split())
+
+
+def _is_ebay_item_url(url: str) -> bool:
+    # A prefix test on the raw string accepts https://www.ebay.com.example.test/,
+    # so compare the parsed host instead. The URL comes from eBay's own API but
+    # is rendered as a link the user clicks.
+    if not url:
+        return False
+    parsed = urlparse(url)
+    return parsed.scheme == "https" and parsed.hostname == "www.ebay.com"
 
 
 def pick_matching_item(items: list, release: dict) -> Optional[dict]:
@@ -192,7 +203,7 @@ async def search_ebay(
         price = None
 
     item_url = item.get("itemWebUrl", "")
-    if not item_url or not item_url.startswith("https://www.ebay.com"):
+    if not _is_ebay_item_url(item_url):
         legacy_id = item.get("legacyItemId")
         item_url = f"https://www.ebay.com/itm/{legacy_id}" if legacy_id else fallback_url
 

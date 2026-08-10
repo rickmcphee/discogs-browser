@@ -140,6 +140,12 @@ Set via `fly secrets set`, not committed to the repo:
 - GitHub Actions workflow: `flyctl deploy` on push to `main`, functionally
   replacing what `bootstrap.sh` + manual `git pull`/`docker-compose up -d`
   does for the NAS path today, minus the SSH step.
+- The deploy job runs in the `production` GitHub environment, whose deployment
+  branch policy restricts it to `main`. `FLY_API_TOKEN` belongs on that
+  environment rather than at repository scope, so a workflow on some other
+  branch cannot read it. The environment carries no required reviewer — the
+  deploy is deliberately unattended so an auto-merged PR ships without a human
+  in the loop.
 - Cloudflare Pages deploys on push independently via its own git integration.
 
 ## Migration / cutover
