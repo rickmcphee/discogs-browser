@@ -1,6 +1,7 @@
 import re
+from typing import AsyncIterator
 
-from shopify_catalog import resolve_cover_image
+from shopify_catalog import iter_products, resolve_cover_image
 
 _COLLECTION_SLUG = "vinyl-1"
 
@@ -26,6 +27,11 @@ class Crawler:
     site_name: str = "Cleopatra Records"
     base_url: str = "https://cleorecs.com"
     crawler_type: str = "catalog"
+
+    async def crawl_catalog(self) -> AsyncIterator[dict]:
+        async for product in iter_products(self.base_url, _COLLECTION_SLUG):
+            for item in self._items(product):
+                yield item
 
     @classmethod
     def _items(cls, product: dict) -> list[dict]:

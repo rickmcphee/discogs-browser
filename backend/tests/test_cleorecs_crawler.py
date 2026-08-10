@@ -247,3 +247,46 @@ def test_items_emits_none_price_on_unparseable_price():
     items = Crawler._items(product)
     assert len(items) == 1
     assert items[0]["price"] is None
+
+
+import httpx
+import respx
+
+
+_PRODUCTS_URL = "https://cleorecs.com/collections/vinyl-1/products.json"
+
+
+def _page_response(products):
+    return httpx.Response(200, json={"products": products})
+
+
+@respx.mock
+async def test_crawl_catalog_yields_items_across_pages():
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(
+        return_value=_page_response([_MULTI_COLOUR_PRODUCT]))
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "2"}).mock(
+        return_value=_page_response([_SEVEN_INCH_PRODUCT]))
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "3"}).mock(
+        return_value=_page_response([]))
+
+    items = [item async for item in Crawler().crawl_catalog()]
+
+    assert [i["artist"] for i in items] == ["UFO", "UFO", "Iggy & The Stooges"]
+
+
+@respx.mock
+async def test_crawl_catalog_drops_non_vinyl_products_from_the_feed():
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(
+        return_value=_page_response([_POSTER_PRODUCT, _BOOK_PRODUCT, _SHIRT_BUNDLE_PRODUCT]))
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "2"}).mock(
+        return_value=_page_response([]))
+
+    items = [item async for item in Crawler().crawl_catalog()]
+
+    assert items == []
+
+
+def test_site_metadata():
+    assert Crawler.site_name == "Cleopatra Records"
+    assert Crawler.base_url == "https://cleorecs.com"
+    assert Crawler.crawler_type == "catalog"
