@@ -659,6 +659,7 @@ class CrawlManager:
             consecutive_429_sites: list[str] = []
             failed_sources: list[str] = []
             skipped_sources: list[str] = []
+            disabled_sources: list[str] = []
             for crawler in crawlers:
                 # Same per-site breaker the release path uses, reusing its
                 # state and its consecutive_failure_limit setting: a site that
@@ -672,6 +673,25 @@ class CrawlManager:
                     skipped_sources.append(crawler._db_site_name)
                     log.info(
                         "[%s] Stock crawl skipped: site is cooling down after repeated failures",
+                        crawler._db_site_name,
+                    )
+                    continue
+                # Re-read per source, not once per run: the enabled list is a
+                # snapshot taken before the first crawl, and an admin disabling
+                # a store mid-run must stop it being visited when the loop
+                # reaches it. One small query per catalog source, single digits
+                # per run.
+                with get_app_pool().connection() as conn:
+                    live_enabled = {
+                        c["id"] for c in (
+                            get_enabled_crawlers(conn, crawler_type="catalog")
+                            + get_enabled_crawlers(conn, crawler_type="catalog_browser")
+                        )
+                    }
+                if crawler._db_id not in live_enabled:
+                    disabled_sources.append(crawler._db_site_name)
+                    log.info(
+                        "[%s] Stock crawl skipped: crawler was disabled during this run",
                         crawler._db_site_name,
                     )
                     continue
@@ -740,6 +760,8 @@ class CrawlManager:
                 notes.append(f"{len(failed_sources)} failed ({', '.join(failed_sources)})")
             if skipped_sources:
                 notes.append(f"{len(skipped_sources)} cooling down ({', '.join(skipped_sources)})")
+            if disabled_sources:
+                notes.append(f"{len(disabled_sources)} disabled ({', '.join(disabled_sources)})")
             log.info(
                 "Stock sync complete: %d items%s",
                 total_synced,
