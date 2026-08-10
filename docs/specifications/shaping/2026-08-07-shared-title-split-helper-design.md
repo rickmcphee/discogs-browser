@@ -3,6 +3,33 @@
 Date: 2026-08-07
 Branch: `shared-title-split-helper`
 
+**Amendment (2026-08-10, branch `claude/cleorecs-vinyl-crawler-265d08`):**
+`backend/crawlers/cleorecs.py` is a tenth Shopify title-splitting crawler,
+shipped after this doc, and it is genuine counter-evidence to the "Is this
+the diverges-enough-to-need-flags case, or not?" section's conclusion that
+title-splitting mechanics converge across the fleet. `cleorecs.py` diverges
+from the proposed `split_artist_title(title)` contract in four ways at once:
+(1) its separator class is `[-–—]` — hyphen, en-dash, *and* em-dash — one
+character wider than the `[-–]` this design's shared regex accepts; (2) it
+runs a paren-stripping preprocessing pass (`_strip_trailing_parens`) over the
+title before matching, to keep a trailing-bracket `" - "` from being mistaken
+for the artist/album separator, which no sibling crawler does; (3) it has no
+vendor fallback at all — `vendor` names the imprint on every Cleopatra
+product, never the artist, so the no-separator case falls through to
+`"Various"` instead of trusting `vendor` the way the other eight do; and (4)
+its method signature is `_parse_artist_title(title)`, one argument, not this
+doc's proposed `_parse_artist_title(title, vendor)` two-argument shape — there
+is no vendor to thread through. None of these four is expressible by calling
+`split_artist_title(title)` and layering a one-line vendor-fallback wrapper
+around it, the pattern this design proposes for every other crawler; the
+character class alone would need to become a parameter, and the paren-strip
+and no-vendor-fallback points aren't parameters of the split at all, they're
+different call shapes. This doesn't retract the doc's original argument for
+the other eight (they still converge exactly as described) — it records that
+the premise no longer holds unconditionally across "the Shopify crawlers" as
+a whole, and any future implementation of `split_artist_title` should treat
+`cleorecs.py` as a documented exception, not a bug to fix into conformance.
+
 ## Problem
 
 Nine Shopify-storefront catalog crawlers each need to split a product's

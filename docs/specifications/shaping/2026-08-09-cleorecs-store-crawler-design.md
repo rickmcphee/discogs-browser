@@ -22,8 +22,8 @@ stock, plus a tail of posters, books, apparel bundles and discs.
 
 Add `backend/crawlers/cleorecs.py` as a `crawler_type="catalog"` plugin
 covering the full `/collections/vinyl-1` collection — every available vinyl
-variant, fetched in 15 requests per sync via the existing
-`shopify_catalog.iter_products()`.
+variant, fetched in 16 GETs per sync (15 product pages plus the terminating
+empty page) via the existing `shopify_catalog.iter_products()`.
 
 The terms this crawl operates under are set out in
 [Crawl citizenship and `robots.txt` compliance](#crawl-citizenship-and-robotstxt-compliance)
@@ -223,11 +223,34 @@ A pure `@classmethod` so it is unit-testable without any HTTP:
   to the collector. This matches `amoeba.py` keeping its `(LP)` and
   `[Coke Bottle Clear]` tokens.
 
-- **No separator** after stripping → `artist = "Various Artists"`, album =
-  the full original title. `angryyoungandpoor.py` sets the precedent for its
-  V/A category. This is right for the large majority of the 161 (they are
-  compilations and tributes) and `Various Artists` is the literal string
-  Discogs uses, so library matching works. It mis-attributes the ~12
+  This rationale is one-sided, though: it only weighs the `_library_match_fragment`
+  prefix match, not `ebay_api.pick_matching_item`, which this crawler's own
+  queue fan-out feeds (see "Queue fan-out" below). That function splits both
+  the release title and the listing title on whitespace and requires at
+  least half the words to intersect — it never strips parentheses. A row like
+  `A Conspiracy Of Stars (Colored Double Vinyl LP) — Red Marble` intersects a
+  clean eBay listing (`UFO A Conspiracy Of Stars Vinyl LP`) at roughly 5 of
+  11 words, under the 50% gate, so the eBay match is dropped. This is a
+  fleet-wide convention — every sibling crawler that keeps parentheticals has
+  the same exposure — not a regression introduced here. Cleopatra is unusual
+  only in degree: nearly every title carries such a suffix, and multi-variant
+  products compound it further with the appended `— {variant_title}`. Accepted
+  as a known tradeoff, consistent with the rest of the fleet, not fixed here.
+
+- **No separator** after stripping → `artist = "Various"`, album = the full
+  original title. `angryyoungandpoor.py` sets the precedent for its V/A
+  category, though it emits `"Various Artists"` there (a pre-existing,
+  out-of-scope issue on that crawler). `"Various"` — not `"Various Artists"`
+  — is the literal string Discogs' own entity uses, and three consumers
+  depend on that exact spelling: `amazon.py`'s `Crawler._artist()` only
+  special-cases the literal `"various"` case-insensitively; `db.py`'s
+  `_library_match_fragment` does an exact `LOWER()` equality against the
+  catalog artist; and `ebay_api.pick_matching_item` requires at least half of
+  the artist's words to appear in the listing title, which `"various"` and
+  `"artists"` essentially never do. `"Various Artists"` would satisfy none
+  of the three, silently breaking library matching and eBay search for every
+  row that falls into this branch. This is right for the large majority of
+  the 161 (they are compilations and tributes). It mis-attributes the ~12
   self-titled cases; that is accepted rather than papered over.
 
 - **`vendor` is never consulted.** Stated explicitly because every sibling
@@ -290,7 +313,7 @@ Cases:
 - `Anti-Flag - Die For The Government (…)` → artist not clipped to `Anti`
 - `Danzig Sings Elvis (Gatefold Green Vinyl LP - Signed by Glenn Danzig)` →
   no split inside the parenthetical
-- `Punk Rock Christmas (Black Vinyl LP Test Pressing)` → `Various Artists`,
+- `Punk Rock Christmas (Black Vinyl LP Test Pressing)` → `Various`,
   title kept verbatim so the test-pressing marking survives
 - `"Default Title"` variant → no ` — ` suffix
 - two-colour product → two rows, distinct titles, distinct
@@ -316,9 +339,10 @@ Per the normative section of the amoeba spec. This site's finding:
   contemporaneous human approval. Track Tempest satisfies this trivially: it
   links out to the product page and never transacts, holds no cart, and stores
   no payment method.
-- Load: 15 requests per sync, paced at `random.uniform(delay * 0.5, delay)`
-  with `crawl_delay_seconds` defaulting to 30s. No detail-page fan-out. No
-  retry storms — `iter_products()` fails fast on 429 and gives up after
+- Load: 16 GETs per sync (15 product pages plus the terminating empty page),
+  paced at `random.uniform(delay * 0.5, delay)` with `crawl_delay_seconds`
+  defaulting to 30s. No detail-page fan-out. No retry storms —
+  `iter_products()` fails fast on 429 and gives up after
   `consecutive_failure_limit` on anything else.
 - If Cleopatra blocks this crawler, adds a `Disallow` covering this path, or
   asks us to stop, the response is to disable the plugin.
@@ -331,4 +355,7 @@ enumerates `catalog` plugins — and no new inbound interface. It adds one new
 outbound host (`cleorecs.com`), which would belong in `.agents/OUTPUTS.md` if
 that file existed.
 
-`backend/version.py`'s `VERSION` goes `3.13` → `3.14` in the implementing PR.
+`backend/version.py`'s `VERSION` goes `3.13` → `3.15` in the implementing PR
+(not `3.14`: `origin/main` took `3.14` via a different, separately-merged PR
+#91 after this branch's merge-base, so `3.14` was already taken by the time
+this shipped — see commit `bfc37d6`).
