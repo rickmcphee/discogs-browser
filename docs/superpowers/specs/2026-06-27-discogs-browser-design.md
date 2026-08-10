@@ -469,6 +469,8 @@ Target: Synology NAS (x86_64).
 
 `backend/Dockerfile` builds from `python:3.11-slim`, installs Playwright and runs `playwright install chromium` to bundle Chromium. Sets `PLAYWRIGHT_CHANNEL=""`, `HEADLESS_AUTH=1`, `DISCOGS_BROWSER_DATA=/data`. Dependencies are installed by parsing `pyproject.toml` with `tomllib` and running `pip install` directly (not `pip install -e .`, which requires hatchling to locate the package directory in the build context).
 
+These two base image tags are coupled to the `python-version` and `node-version` pins in `.github/workflows/fly-deploy.yml` — bumping the image without the CI pin runs production on a runtime the tests never exercised. Dependabot is configured (`.github/dependabot.yml`) to ignore major and minor updates for `python` and `node` for that reason; both move by hand, together with CI.
+
 `frontend/Dockerfile` uses a two-stage build: Node 20 to build `dist/`, then `nginx:alpine` to serve it. Copies `nginx.conf` which proxies `/api/` to `backend:8000` with `proxy_buffering off`, `chunked_transfer_encoding on` (SSE compatibility), and `proxy_read_timeout 600s` (prevents timeout on large collection refreshes).
 
 `docker-compose.yml` defines two services (`backend`, `frontend`). The backend bind-mounts `./workspace` at `/data` — no named volume. The frontend is exposed on host port `8080`. nginx's `/api/` proxy block sets `proxy_read_timeout 600s` to avoid timeouts on large collection refreshes.
