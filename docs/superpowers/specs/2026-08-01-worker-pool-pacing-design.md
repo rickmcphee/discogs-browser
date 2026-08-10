@@ -119,6 +119,29 @@ had a consequence nobody spotted when it landed.
     `test_failures_pool_across_crawlers_sharing_a_failure_domain` and
     `test_a_crawler_with_no_failure_domain_keeps_its_own_counter`.
 
+**Amendment (2026-08-09, branch `worktree-amazon-error-swallowing`):** two
+follow-ons from items 9 and 10.
+
+11. **`crawlers/amazon.py` had the same blind spot, in a worse shape.** Its
+    product-page step was wrapped in a bare `except Exception` that logged a
+    warning and fell through to `return [{"url": ..., "price": None, ...}]`.
+    That value is *truthy*, so `_record_site_result` recorded the failed crawl
+    as a success and **reset** the site's consecutive-failure count — where
+    eBay's `[]` at least counted as a failure on the release path, this
+    actively cleared the counter on both. `BotDetectedError` subclasses
+    `Exception`, so the same handler also swallowed product-page bot walls,
+    which therefore never reached `_paced_search`'s context-reset retry. The
+    handler now logs and re-raises. A product page that loads but shows no
+    price still returns the listing with `price: None` — `extract_price`
+    returns `None` without raising, and that is a real answer, not a failure.
+    Covered by `tests/crawlers/test_amazon_search_errors.py`.
+12. **The cooldown notice is logged at INFO, not WARNING.** `routers/logs.py`'s
+    `_line_visible` filters by exact level membership rather than
+    level-and-above, so at WARNING the one line explaining a 30-minute crawl
+    pause was invisible to anyone watching the INFO stream that carries the
+    rest of the crawl narrative. Covered by
+    `test_tripping_the_cooldown_is_logged_at_info`.
+
 ---
 
 ## Overview

@@ -1,5 +1,6 @@
 """Tests for CrawlManager — background task, subscribe/broadcast, stop."""
 import asyncio
+import logging
 import os
 import time
 import pytest
@@ -1782,6 +1783,20 @@ async def test_a_crawler_with_no_failure_domain_keeps_its_own_counter(pg_schema)
 
     assert manager._site_consecutive_failures[amazon_id] == 1
     assert manager._site_consecutive_failures.get(ebay_id, 0) == 0
+
+
+def test_tripping_the_cooldown_is_logged_at_info(caplog):
+    """The log viewer filters by exact level membership, not level-and-above
+    (`routers/logs.py:_line_visible`), so a WARNING-only cooloff notice is
+    invisible to anyone watching INFO -- which is where the rest of the crawl
+    narrative is."""
+    manager = CrawlManager()
+    with patch("config.load_config", return_value={"consecutive_failure_limit": 1}), \
+         caplog.at_level(logging.INFO, logger="crawl_manager"):
+        manager._record_site_result(7, succeeded=False)
+
+    cooldown_records = [r for r in caplog.records if "cooling down" in r.getMessage()]
+    assert [r.levelname for r in cooldown_records] == ["INFO"]
 
 
 def test_empty_failure_domain_does_not_pool_crawlers():
