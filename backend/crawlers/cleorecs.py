@@ -82,7 +82,15 @@ class Crawler:
         stripped = cls._strip_trailing_parens(base)
         m = _TITLE_RE.match(stripped)
         if not m:
-            return "Various Artists", base
+            # Bare "Various", not "Various Artists" -- Discogs' own entity
+            # name is "Various", and three consumers key off that exact
+            # string: amazon.py's Crawler._artist() only special-cases the
+            # literal "various" (case-insensitively), db.py's
+            # _library_match_fragment does an exact LOWER() equality against
+            # the catalog artist, and ebay_api.pick_matching_item requires
+            # >=50% word overlap with the listing title. "Various Artists"
+            # satisfies none of the three.
+            return "Various", base
         return m.group("artist").strip(), base[m.start("album"):].strip()
 
     @staticmethod

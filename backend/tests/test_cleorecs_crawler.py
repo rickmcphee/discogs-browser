@@ -41,15 +41,15 @@ def test_parse_artist_title_ignores_separator_inside_trailing_parenthetical():
     # trailing bracket. Splitting on it yields the artist
     # "Danzig Sings Elvis (Gatefold Green Vinyl LP".
     title = "Danzig Sings Elvis (Gatefold Green Vinyl LP - Signed by Glenn Danzig)"
-    assert Crawler._parse_artist_title(title) == ("Various Artists", title)
+    assert Crawler._parse_artist_title(title) == ("Various", title)
 
 
-def test_parse_artist_title_falls_back_to_various_artists_not_vendor():
+def test_parse_artist_title_falls_back_to_various_no_separator():
     # 161 live products carry no artist in the title, overwhelmingly the
-    # label's own compilations. "Various Artists" is the literal string
-    # Discogs uses, so library matching still works.
+    # label's own compilations. "Various" is the literal string Discogs
+    # uses, so library matching still works.
     title = "Punk Rock Christmas (Black Vinyl LP Test Pressing)"
-    assert Crawler._parse_artist_title(title) == ("Various Artists", title)
+    assert Crawler._parse_artist_title(title) == ("Various", title)
 
 
 def test_strip_trailing_parens_removes_groups_right_to_left():
@@ -232,7 +232,7 @@ def test_items_keeps_test_pressings_marked_by_their_own_title():
                "tags": ["Test Pressing", "Vinyl Test Pressing"]}
     items = Crawler._items(product)
     assert len(items) == 1
-    assert items[0]["artist"] == "Various Artists"
+    assert items[0]["artist"] == "Various"
     assert items[0]["title"] == "Punk Rock Christmas (Black Vinyl LP Test Pressing)"
 
 
