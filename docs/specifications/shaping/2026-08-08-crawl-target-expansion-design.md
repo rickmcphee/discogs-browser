@@ -20,7 +20,7 @@ This is the second slice of the v3.0 redesign (see
 (`crawler_type='release'`: amazon, discogs_marketplace, ebay) only ever
 search on behalf of a Discogs release — `crawl_queue` and `listings` are
 both hard-FK'd to `catalog(discogs_id)`. Store-crawler stock items
-(`crawler_type='catalog'`/`'catalog_browser'`, ~32 small-site crawlers)
+(`crawler_type='catalog'`/`'catalog_browser'`, ~34 small-site crawlers)
 have no `catalog.discogs_id` and get no cross-site price comparison at
 all today; `stock_items` only ever holds the one price the store itself
 reported. This slice lets amazon and ebay search on behalf of a stock item
