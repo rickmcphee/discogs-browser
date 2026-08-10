@@ -224,7 +224,16 @@ class Crawler:
             vinyl_price = await extract_price(page, fmt_keywords)
 
         except Exception as e:
+            # Raised, not swallowed: falling through returned the listing below
+            # with price None, which is truthy, so CrawlManager recorded the
+            # failure as a *success* and reset the site's consecutive-failure
+            # count. It also caught the BotDetectedError raised just above,
+            # hiding product-page walls from _paced_search's context-reset
+            # retry entirely. A page that loads but shows no price still
+            # returns the listing -- extract_price returns None without
+            # raising, and that is a real answer, not a failure.
             log.warning("[Amazon] product page error: %s", e)
+            raise
 
         await page.goto("about:blank")
         return [{
