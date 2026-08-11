@@ -1,4 +1,5 @@
 import importlib
+import re
 import subprocess
 from unittest.mock import patch
 
@@ -79,3 +80,10 @@ def test_import_never_raises_and_yields_a_non_empty_string():
     reloaded = importlib.reload(version)
     assert isinstance(reloaded.VERSION, str)
     assert reloaded.VERSION
+
+
+def test_real_git_output_matches_the_documented_format():
+    resolved = version._git_version()
+    if resolved is None:
+        pytest.skip("no git repository available")
+    assert re.fullmatch(r"\d{4}\.\d{2}\.\d{2}\+[0-9a-f]{7,}", resolved)

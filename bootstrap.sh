@@ -11,6 +11,12 @@ git pull
 echo "==> Creating workspace directory..."
 mkdir -p workspace
 
+# docker-compose.yml has no other source for APP_VERSION; without this the
+# self-hosted image always resolves to "dev" (no .git in the build context,
+# no git binary in the image). Computed after git pull so it names the
+# commit that's actually being built.
+export APP_VERSION="$(git log -1 --format=%cd --date=format:%Y.%m.%d)+$(git rev-parse --short HEAD)"
+
 echo "==> Building Docker images..."
 docker-compose build
 
