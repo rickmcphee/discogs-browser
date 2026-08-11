@@ -23,12 +23,34 @@ def _make_catalog_and_crawler(conn, discogs_id="r1", site_name="Amazon"):
     return conn.execute("SELECT id FROM crawlers WHERE site_name = %s", [site_name]).fetchone()["id"]
 
 
-def _make_stock_identity_and_crawler(conn, item_key="key1", site_name="Amazon"):
+def _make_stock_identity_and_crawler(conn, item_key="key1", site_name="Amazon", source_site_name=None):
+    """Mirrors production: the item's source is a catalog crawler and the queue
+    row's crawler_id is a separate price crawler. Keeping them distinct is what
+    lets a test disable the source without disabling the crawler under test."""
     conn.execute(
-        "INSERT INTO stock_item_identities (item_key, artist, title) VALUES (%s, 'A', 'T')", [item_key]
+        "INSERT INTO stock_item_identities (item_key, artist, title) VALUES (%s, 'A', 'T') "
+        "ON CONFLICT (item_key) DO NOTHING",
+        [item_key],
+    )
+    source_site_name = source_site_name or f"{site_name} Source"
+    db.register_crawler(conn, source_site_name, "/src.py", crawler_type="catalog")
+    source_id = conn.execute(
+        "SELECT id FROM crawlers WHERE site_name = %s", [source_site_name]
+    ).fetchone()["id"]
+    conn.execute(
+        "INSERT INTO stock_items (crawler_id, artist, title, url, item_key) "
+        "VALUES (%s, 'A', 'T', %s, %s)",
+        [source_id, f"https://x/{item_key}/{source_site_name}", item_key],
     )
     db.register_crawler(conn, site_name, "/x.py")
     return conn.execute("SELECT id FROM crawlers WHERE site_name = %s", [site_name]).fetchone()["id"]
+
+
+def _set_enabled_by_name(conn, site_name, enabled):
+    crawler_id = conn.execute(
+        "SELECT id FROM crawlers WHERE site_name = %s", [site_name]
+    ).fetchone()["id"]
+    db.set_crawler_enabled(conn, crawler_id, enabled)
 
 
 def test_enqueue_crawl_queue_is_idempotent(admin_conn):
@@ -386,3 +408,157 @@ def test_delete_pending_crawl_queue_for_crawler_only_deletes_that_crawlers_pendi
     assert sorted((r["discogs_id"], r["status"]) for r in remaining if r["crawler_id"] == other_id) == [
         ("r1", "pending"), ("r2", "done"),
     ]
+
+
+def test_claim_crawl_queue_batch_skips_a_stock_item_whose_only_source_is_disabled(admin_conn):
+    crawler_id = _make_stock_identity_and_crawler(admin_conn)
+    admin_conn.commit()
+    db.enqueue_crawl_queue_for_stock_item(admin_conn, "key1", crawler_id)
+    _set_enabled_by_name(admin_conn, "Amazon Source", False)
+    admin_conn.commit()
+
+    with db.get_app_pool().connection() as conn:
+        assert db.claim_crawl_queue_batch(conn, "worker-1", limit=10) == []
+        conn.commit()
+
+
+def test_claim_crawl_queue_batch_claims_a_stock_item_again_once_its_source_is_re_enabled(admin_conn):
+    crawler_id = _make_stock_identity_and_crawler(admin_conn)
+    admin_conn.commit()
+    db.enqueue_crawl_queue_for_stock_item(admin_conn, "key1", crawler_id)
+    _set_enabled_by_name(admin_conn, "Amazon Source", False)
+    admin_conn.commit()
+
+    _set_enabled_by_name(admin_conn, "Amazon Source", True)
+    admin_conn.commit()
+
+    with db.get_app_pool().connection() as conn:
+        claimed = db.claim_crawl_queue_batch(conn, "worker-1", limit=10)
+        conn.commit()
+    assert [r["item_key"] for r in claimed] == ["key1"]
+
+
+def test_claim_crawl_queue_batch_skips_a_stock_item_with_no_stock_items_row(admin_conn):
+    """A sold-out item: replace_stock_items dropped its stock_items row, while
+    its identity and its queue rows survived. Inserted directly rather than via
+    enqueue_crawl_queue_for_stock_item, which refuses such a row -- this is the
+    shape of a row that predates that guard."""
+    crawler_id = _make_stock_identity_and_crawler(admin_conn, item_key="key1")
+    admin_conn.execute(
+        "INSERT INTO stock_item_identities (item_key, artist, title) VALUES ('gone', 'A', 'T')"
+    )
+    admin_conn.execute(
+        "INSERT INTO crawl_queue (item_key, crawler_id) VALUES ('gone', %s)", [crawler_id]
+    )
+    admin_conn.commit()
+
+    with db.get_app_pool().connection() as conn:
+        assert db.claim_crawl_queue_batch(conn, "worker-1", limit=10) == []
+        conn.commit()
+
+
+def test_claim_crawl_queue_batch_claims_a_stock_item_with_one_enabled_source_of_two(admin_conn):
+    """'No enabled source remains' -- one surviving enabled source is enough."""
+    crawler_id = _make_stock_identity_and_crawler(admin_conn, item_key="key1")
+    _make_stock_identity_and_crawler(
+        admin_conn, item_key="key1", site_name="Amazon", source_site_name="Second Source"
+    )
+    admin_conn.commit()
+    db.enqueue_crawl_queue_for_stock_item(admin_conn, "key1", crawler_id)
+    _set_enabled_by_name(admin_conn, "Amazon Source", False)
+    admin_conn.commit()
+
+    with db.get_app_pool().connection() as conn:
+        claimed = db.claim_crawl_queue_batch(conn, "worker-1", limit=10)
+        conn.commit()
+    assert [r["item_key"] for r in claimed] == ["key1"]
+
+
+def test_claim_crawl_queue_batch_still_claims_release_rows_when_a_catalog_crawler_is_disabled(admin_conn):
+    """Release rows have a NULL item_key and must be untouched by the source gate."""
+    release_crawler_id = _make_catalog_and_crawler(admin_conn, discogs_id="r1", site_name="eBay")
+    _make_stock_identity_and_crawler(admin_conn, item_key="key1", site_name="Amazon")
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1", release_crawler_id)
+    _set_enabled_by_name(admin_conn, "Amazon Source", False)
+    admin_conn.commit()
+
+    with db.get_app_pool().connection() as conn:
+        claimed = db.claim_crawl_queue_batch(conn, "worker-1", limit=10)
+        conn.commit()
+    assert [r["discogs_id"] for r in claimed] == ["r1"]
+
+
+def test_enqueue_crawl_queue_for_stock_item_inserts_nothing_when_the_source_is_disabled(admin_conn):
+    crawler_id = _make_stock_identity_and_crawler(admin_conn)
+    _set_enabled_by_name(admin_conn, "Amazon Source", False)
+    admin_conn.commit()
+
+    db.enqueue_crawl_queue_for_stock_item(admin_conn, "key1", crawler_id)
+    admin_conn.commit()
+    rows = admin_conn.execute("SELECT * FROM crawl_queue WHERE item_key = 'key1'").fetchall()
+    assert rows == []
+
+
+def test_enqueue_crawl_queue_for_stock_item_inserts_nothing_when_the_item_has_no_stock_row(admin_conn):
+    crawler_id = _make_stock_identity_and_crawler(admin_conn, item_key="key1")
+    admin_conn.execute(
+        "INSERT INTO stock_item_identities (item_key, artist, title) VALUES ('gone', 'A', 'T')"
+    )
+    admin_conn.commit()
+
+    db.enqueue_crawl_queue_for_stock_item(admin_conn, "gone", crawler_id)
+    admin_conn.commit()
+    rows = admin_conn.execute("SELECT * FROM crawl_queue WHERE item_key = 'gone'").fetchall()
+    assert rows == []
+
+
+def test_a_disable_during_an_open_sync_transaction_is_closed_by_the_sweep(admin_conn):
+    """_sync_stock writes a source's stock_items and all its enqueues in one
+    transaction. A disable committing mid-transaction cannot be seen by the
+    enqueue guard for rows already written, and the disable's own sweep cannot
+    see those uncommitted rows either -- so pending rows for a disabled store
+    can exist. They must still never be claimable, and the end-of-run sweep
+    must remove them once they are visible."""
+    admin_conn.execute(
+        "INSERT INTO stock_item_identities (item_key, artist, title) VALUES ('key1', 'A', 'T')"
+    )
+    db.register_crawler(admin_conn, "Source Store", "/src.py", crawler_type="catalog")
+    db.register_crawler(admin_conn, "Amazon", "/x.py")
+    source_id = admin_conn.execute(
+        "SELECT id FROM crawlers WHERE site_name = 'Source Store'"
+    ).fetchone()["id"]
+    price_id = admin_conn.execute(
+        "SELECT id FROM crawlers WHERE site_name = 'Amazon'"
+    ).fetchone()["id"]
+    admin_conn.commit()
+
+    with db.get_app_pool().connection() as sync_conn, db.get_app_pool().connection() as admin_side:
+        sync_conn.execute("BEGIN")
+        sync_conn.execute(
+            "INSERT INTO stock_items (crawler_id, artist, title, url, item_key) "
+            "VALUES (%s, 'A', 'T', 'https://x/1', 'key1')",
+            [source_id],
+        )
+        db.enqueue_crawl_queue_for_stock_item(sync_conn, "key1", price_id)
+
+        admin_side.execute("BEGIN")
+        db.set_crawler_enabled(admin_side, source_id, False)
+        assert db.delete_dead_stock_crawl_queue_rows(admin_side) == 0
+        admin_side.commit()
+
+        sync_conn.commit()
+
+    assert admin_conn.execute(
+        "SELECT COUNT(*) FROM crawl_queue WHERE item_key = 'key1'"
+    ).fetchone()["count"] == 1
+
+    with db.get_app_pool().connection() as conn:
+        assert db.claim_crawl_queue_batch(conn, "worker-1", limit=10) == []
+        conn.commit()
+
+    with db.get_app_pool().connection() as conn:
+        assert db.delete_dead_stock_crawl_queue_rows(conn) == 1
+        conn.commit()
+
+    assert admin_conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 0

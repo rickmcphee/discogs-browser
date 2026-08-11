@@ -772,6 +772,26 @@ def update_crawler_last_run(conn, crawler_id: int):
     conn.execute("UPDATE crawlers SET last_run = CURRENT_TIMESTAMP WHERE id = %s", [crawler_id])
 
 
+def _enabled_stock_source_exists(item_key_expr: str) -> str:
+    """A stock item is worth crawling only while some enabled crawler still
+    lists it. One predicate covers two populations: an item whose store an
+    admin disabled, and an item that has left every store's stock --
+    replace_stock_items() deletes a crawler's whole batch and reinserts only
+    what is currently in stock, so a sold-out item loses its stock_items row
+    while its stock_item_identities row and its queue rows survive.
+
+    item_key_expr is always a literal chosen at the call site -- a column
+    reference or a bound-parameter placeholder, never request-derived -- the
+    same contract _library_match_fragment's user_id_param already carries."""
+    return f"""
+        EXISTS (
+            SELECT 1 FROM stock_items si
+            JOIN crawlers sc ON sc.id = si.crawler_id
+            WHERE si.item_key = {item_key_expr} AND sc.enabled
+        )
+    """
+
+
 # The WHERE on the DO UPDATE is load-bearing, not decorative: re-enqueuing a
 # pair whose row is already 'pending'/'in_progress' must be a no-op (the
 # DO UPDATE runs but its WHERE filters the row out, so it's left untouched --
@@ -800,11 +820,13 @@ def enqueue_crawl_queue(conn, discogs_id: str, crawler_id: int):
 
 
 def enqueue_crawl_queue_for_stock_item(conn, item_key: str, crawler_id: int):
+    stock_source_gate = _enabled_stock_source_exists("%(item_key)s")
     conn.execute(
-        """
+        f"""
         INSERT INTO crawl_queue (item_key, crawler_id)
         SELECT %(item_key)s, %(crawler_id)s
         WHERE EXISTS (SELECT 1 FROM crawlers WHERE id = %(crawler_id)s AND enabled)
+          AND {stock_source_gate}
         ON CONFLICT (item_key, crawler_id) DO UPDATE SET
             status = 'pending', requested_at = CURRENT_TIMESTAMP, claimed_by = NULL, claimed_at = NULL
         WHERE crawl_queue.status = 'done'
@@ -831,6 +853,7 @@ def claim_crawl_queue_batch(
     if excluded_crawler_ids:
         exclusion_clause = "AND crawler_id != ALL(%(excluded)s)"
         params["excluded"] = list(excluded_crawler_ids)
+    stock_source_gate = _enabled_stock_source_exists("crawl_queue.item_key")
     return conn.execute(
         f"""
         UPDATE crawl_queue SET status = 'in_progress', claimed_by = %(worker_id)s, claimed_at = CURRENT_TIMESTAMP
@@ -841,6 +864,10 @@ def claim_crawl_queue_batch(
             -- stopping future enqueues.
             WHERE status = 'pending'
               AND crawler_id IN (SELECT id FROM crawlers WHERE enabled)
+              -- Source-side gate: the row above checks the crawler about to do
+              -- the work; this checks whether anything still stocks the item it
+              -- would price. item_key IS NULL keeps release rows out of it.
+              AND (item_key IS NULL OR {stock_source_gate})
               {exclusion_clause}
             -- (item_key IS NOT NULL) leads the sort so every pending release
             -- row (FALSE) sorts ahead of every pending stock-item row
@@ -865,13 +892,36 @@ def mark_crawl_queue_done(conn, queue_id: int):
     conn.execute("UPDATE crawl_queue SET status = 'done' WHERE id = %s", [queue_id])
 
 
-# 'pending' only: an 'in_progress' row is held by a worker's open transaction
-# -- it is the current item, which finishes by design, and deleting it would
-# block on that worker's row lock until it committed.
+# 'pending' only: an in_progress row has already been claimed and committed by
+# a worker that is mid-crawl -- it is the current item, which finishes by
+# design.
 def delete_pending_crawl_queue_for_crawler(conn, crawler_id: int) -> int:
     return conn.execute(
         "DELETE FROM crawl_queue WHERE crawler_id = %s AND status = 'pending'",
         [crawler_id],
+    ).rowcount
+
+
+# Global rather than scoped to one crawler: idempotent, self-correcting, and it
+# also clears residue predating the source gate. The cost is that the count a
+# disable reports can include rows from another store's delisted items -- it
+# means "jobs that are now dead", not "jobs this store created".
+#
+# 'pending' only. An in_progress row has already been claimed by a worker that
+# is mid-crawl and will mark_crawl_queue_done() when it finishes; deleting it
+# would leave that UPDATE matching nothing while the crawl still writes its
+# listing, so the pair would look never-crawled to the next sync. 'done' rows
+# are the record of past crawls and are never re-claimed -- only
+# enqueue_crawl_queue_for_stock_item resurrects one, and it now refuses to.
+def delete_dead_stock_crawl_queue_rows(conn) -> int:
+    stock_source_gate = _enabled_stock_source_exists("crawl_queue.item_key")
+    return conn.execute(
+        f"""
+        DELETE FROM crawl_queue
+        WHERE status = 'pending'
+          AND item_key IS NOT NULL
+          AND NOT {stock_source_gate}
+        """
     ).rowcount
 
 

@@ -72,7 +72,10 @@ def update_crawler(crawler_id: int, body: CrawlerUpdate):
         db.set_crawler_enabled(conn, crawler_id, body.enabled)
         discarded = 0
         if not body.enabled:
-            discarded = db.delete_pending_crawl_queue_for_crawler(conn, crawler_id)
+            discarded = (
+                db.delete_pending_crawl_queue_for_crawler(conn, crawler_id)
+                + db.delete_dead_stock_crawl_queue_rows(conn)
+            )
         conn.commit()
     if discarded:
         # INFO, not WARNING: routers/logs.py's _line_visible filters by exact

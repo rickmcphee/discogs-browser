@@ -1143,6 +1143,25 @@ async def test_sync_collection_does_not_block_event_loop(pg_schema, monkeypatch)
 # write them.
 # ---------------------------------------------------------------------------
 
+def _stock_item_with_source(conn, item_key="key1", source_site_name="Source Store"):
+    """A stock item needs an enabled crawler stocking it, or the source gate in
+    claim_crawl_queue_batch treats it as dead and never claims its jobs."""
+    conn.execute(
+        "INSERT INTO stock_item_identities (item_key, artist, title) VALUES (%s, 'A', 'T') "
+        "ON CONFLICT (item_key) DO NOTHING",
+        [item_key],
+    )
+    db.register_crawler(conn, source_site_name, "/src.py", crawler_type="catalog")
+    source_id = conn.execute(
+        "SELECT id FROM crawlers WHERE site_name = %s", [source_site_name]
+    ).fetchone()["id"]
+    conn.execute(
+        "INSERT INTO stock_items (crawler_id, artist, title, url, item_key) "
+        "VALUES (%s, 'A', 'T', %s, %s)",
+        [source_id, f"https://src/{item_key}", item_key],
+    )
+
+
 async def test_worker_claims_and_completes_one_queue_row(pg_schema):
     with db.get_admin_pool().connection() as conn:
         db.register_crawler(conn, "Amazon", "/x.py")
@@ -1178,9 +1197,7 @@ async def test_worker_claims_and_completes_one_stock_item_queue_row(pg_schema):
     with db.get_admin_pool().connection() as conn:
         db.register_crawler(conn, "Amazon", "/x.py")
         crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
-        conn.execute(
-            "INSERT INTO stock_item_identities (item_key, artist, title) VALUES ('key1', 'A', 'T')"
-        )
+        _stock_item_with_source(conn, "key1")
         db.enqueue_crawl_queue_for_stock_item(conn, "key1", crawler_id)
         conn.commit()
 
@@ -1214,9 +1231,7 @@ async def test_worker_dispatches_both_target_kinds_when_claimed_in_one_batch(pg_
             "discogs_url": None,
         })
         db.enqueue_crawl_queue(conn, "r1", crawler_id)
-        conn.execute(
-            "INSERT INTO stock_item_identities (item_key, artist, title) VALUES ('key1', 'A', 'T')"
-        )
+        _stock_item_with_source(conn, "key1")
         db.enqueue_crawl_queue_for_stock_item(conn, "key1", crawler_id)
         conn.commit()
 
@@ -1250,9 +1265,7 @@ async def test_worker_broadcasts_stock_listing_changed_with_no_discogs_id(pg_sch
     with db.get_admin_pool().connection() as conn:
         db.register_crawler(conn, "Amazon", "/x.py")
         crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
-        conn.execute(
-            "INSERT INTO stock_item_identities (item_key, artist, title) VALUES ('key1', 'A', 'T')"
-        )
+        _stock_item_with_source(conn, "key1")
         db.enqueue_crawl_queue_for_stock_item(conn, "key1", crawler_id)
         conn.commit()
 
@@ -1312,9 +1325,7 @@ async def test_drain_one_batch_excludes_empty_stock_item_result_from_circuit_bre
     with db.get_admin_pool().connection() as conn:
         db.register_crawler(conn, "Amazon", "/x.py")
         crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
-        conn.execute(
-            "INSERT INTO stock_item_identities (item_key, artist, title) VALUES ('key1', 'A', 'T')"
-        )
+        _stock_item_with_source(conn, "key1")
         db.enqueue_crawl_queue_for_stock_item(conn, "key1", crawler_id)
         conn.commit()
 
@@ -1344,9 +1355,7 @@ async def test_drain_one_batch_counts_bot_detected_stock_item_search_as_a_failur
     with db.get_admin_pool().connection() as conn:
         db.register_crawler(conn, "Amazon", "/x.py")
         crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
-        conn.execute(
-            "INSERT INTO stock_item_identities (item_key, artist, title) VALUES ('key1', 'A', 'T')"
-        )
+        _stock_item_with_source(conn, "key1")
         db.enqueue_crawl_queue_for_stock_item(conn, "key1", crawler_id)
         conn.commit()
 
@@ -1377,9 +1386,7 @@ async def test_drain_one_batch_resets_failure_count_on_a_found_stock_item_match(
     with db.get_admin_pool().connection() as conn:
         db.register_crawler(conn, "Amazon", "/x.py")
         crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
-        conn.execute(
-            "INSERT INTO stock_item_identities (item_key, artist, title) VALUES ('key1', 'A', 'T')"
-        )
+        _stock_item_with_source(conn, "key1")
         db.enqueue_crawl_queue_for_stock_item(conn, "key1", crawler_id)
         conn.commit()
 
@@ -1691,10 +1698,7 @@ async def test_successive_ebay_api_errors_cool_down_the_site(pg_schema):
         db.register_crawler(conn, "eBay/CCmusic", "/ebay.py")
         crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'eBay/CCmusic'").fetchone()["id"]
         for i in range(3):
-            conn.execute(
-                "INSERT INTO stock_item_identities (item_key, artist, title) VALUES (%s, 'A', 'T')",
-                [f"key{i}"],
-            )
+            _stock_item_with_source(conn, f"key{i}")
             db.enqueue_crawl_queue_for_stock_item(conn, f"key{i}", crawler_id)
         conn.commit()
 
@@ -1740,7 +1744,7 @@ async def test_failures_pool_across_crawlers_sharing_a_failure_domain(pg_schema)
         db.register_crawler(conn, "eBay", "/ebay_general.py")
         ccmusic_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'eBay/CCmusic'").fetchone()["id"]
         general_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'eBay'").fetchone()["id"]
-        conn.execute("INSERT INTO stock_item_identities (item_key, artist, title) VALUES ('key1', 'A', 'T')")
+        _stock_item_with_source(conn, "key1")
         db.enqueue_crawl_queue_for_stock_item(conn, "key1", ccmusic_id)
         db.enqueue_crawl_queue_for_stock_item(conn, "key1", general_id)
         conn.commit()
@@ -3404,3 +3408,58 @@ async def test_mode_all_sync_clears_a_price_the_user_removed(pg_schema, monkeypa
             "SELECT price_paid FROM library_items WHERE user_id = %s AND discogs_id = 'r111'",
             [alice["id"]],
         ).fetchone()["price_paid"] is None
+
+
+async def test_sync_stock_sweeps_dead_stock_jobs_at_end_of_run(pg_schema):
+    """Nothing disables a store when an item merely sells out, so the end-of-run
+    sweep is the only thing that stops it being priced forever. Two enabled
+    catalog sources are looped over so a per-source implementation of the
+    sweep (instead of once per run) would be caught by the call count below."""
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Stock Site", "/x.py", crawler_type="catalog")
+        db.register_crawler(conn, "Stock Site B", "/y.py", crawler_type="catalog")
+        db.register_crawler(conn, "Amazon", "/amazon.py", crawler_type="release")
+        _stock_item_with_source(conn, "dead", source_site_name="Dead Store")
+        amazon_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        dead_store_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Dead Store'").fetchone()["id"]
+        db.enqueue_crawl_queue_for_stock_item(conn, "dead", amazon_id)
+        db.set_crawler_enabled(conn, dead_store_id, False)
+        conn.commit()
+
+    fake_plugin = AsyncMock()
+    fake_plugin_b = AsyncMock()
+
+    async def _items():
+        yield {"artist": "A", "title": "T", "url": "https://x/1", "price": 5.0, "currency": "USD"}
+
+    async def _items_b():
+        return
+        yield  # pragma: no cover - makes this an async generator with no items
+
+    fake_plugin.crawl_catalog = lambda: _items()
+    fake_plugin._db_site_name = "Stock Site"
+    fake_plugin_b.crawl_catalog = lambda: _items_b()
+    fake_plugin_b._db_site_name = "Stock Site B"
+    with db.get_admin_pool().connection() as conn:
+        fake_plugin._db_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Stock Site'").fetchone()["id"]
+        fake_plugin_b._db_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Stock Site B'").fetchone()["id"]
+
+    real_delete = db.delete_dead_stock_crawl_queue_rows
+    call_count = 0
+
+    def _counting_delete(conn):
+        nonlocal call_count
+        call_count += 1
+        return real_delete(conn)
+
+    manager = CrawlManager()
+    with patch("crawler.load_enabled_crawlers", return_value=[fake_plugin, fake_plugin_b]), \
+         patch("db.delete_dead_stock_crawl_queue_rows", side_effect=_counting_delete):
+        await manager._sync_stock()
+
+    assert call_count == 1
+
+    live_key = db.compute_item_key("A".title(), "T", "https://x/1")
+    with db.get_admin_pool().connection() as conn:
+        keys = [r["item_key"] for r in conn.execute("SELECT item_key FROM crawl_queue").fetchall()]
+    assert keys == [live_key]
