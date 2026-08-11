@@ -834,6 +834,17 @@ def enqueue_crawl_queue_for_stock_item(conn, item_key: str, crawler_id: int):
         {"item_key": item_key, "crawler_id": crawler_id},
     )
 
+
+# The row lock taken by the inner SELECT ... FOR UPDATE SKIP LOCKED is held
+# until the caller commits or rolls back the current transaction -- callers
+# must mark_crawl_queue_done() on these rows before/without another worker's
+# claim call being able to grab them.
+#
+# Known gap, not an oversight: there is no reclaim/timeout path for a row
+# stuck 'in_progress' because its claiming worker hung (as opposed to
+# crashed -- a crash rolls back the open transaction and self-heals). A
+# hung worker holding the transaction open leaves that row unclaimable by
+# anyone else indefinitely.
 def claim_crawl_queue_batch(
     conn, worker_id: str, limit: int, excluded_crawler_ids: Optional[list] = None
 ) -> list[dict]:
