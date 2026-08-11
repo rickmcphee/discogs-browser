@@ -3,6 +3,16 @@
 Date: 2026-08-09
 Branch: `claude/stop-crawls-disabled-stores-ff6645`
 
+> **2026-08-10 amendment.** Every gate below checks the crawler *doing* the
+> crawling. On the stock-item path the crawler the work came *from* is a
+> different row, and none of this reached it: disabling a store left its items'
+> Amazon/eBay jobs queued and running. Extended by
+> [2026-08-10-dead-stock-crawl-jobs-design.md](2026-08-10-dead-stock-crawl-jobs-design.md),
+> which adds a source-side predicate to `claim_crawl_queue_batch`,
+> `enqueue_crawl_queue_for_stock_item`, and a new global sweep. "Out of scope:
+> existing data" below still holds for recorded `listings`/`stock_items` rows;
+> it never meant queued work.
+
 ## Problem
 
 Disabling a crawler in Settings' "Crawler Management" / "Store Management"
