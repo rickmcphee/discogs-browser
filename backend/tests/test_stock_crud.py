@@ -1028,7 +1028,7 @@ def test_delete_dead_stock_crawl_queue_rows_keeps_a_live_row(admin_conn):
 
 
 def test_delete_dead_stock_crawl_queue_rows_keeps_in_progress_and_done_rows(admin_conn):
-    """in_progress rows belong to a worker's open transaction and finish by
+    """in_progress rows belong to a worker that is mid-crawl and finishes by
     design; done rows are the historical record and are never re-claimed."""
     _stock_row(admin_conn, "key1", "Dead Store", source_enabled=False)
     _stock_row(admin_conn, "key2", "Dead Store", source_enabled=False)

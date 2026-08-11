@@ -88,9 +88,10 @@ Out of scope:
   (`count_pending_crawl_queue_for_user` inner-joins `library_items` on
   `discogs_id`), so this is not about an honest count. It is about the claim
   query's cost — see "Why both".
-- **`in_progress` rows are left alone** — carried unchanged. Such a row is held
-  by a worker's open transaction; deleting it would block on that worker's row
-  lock until it committed.
+- **`in_progress` rows are left alone** — carried unchanged. Such a row has
+  already been claimed and committed by a worker that is mid-crawl and will
+  `mark_crawl_queue_done()` when it finishes; deleting it would leave that
+  update matching nothing while the crawl still writes its listing.
 
 ## Backend design
 
@@ -232,9 +233,11 @@ The sweep is what keeps the gate cheap. `claim_crawl_queue_batch`'s
 whole filtered set rather than an index walk terminated by `LIMIT`, so the
 predicate is evaluated for every pending row on every batch. Without the sweep,
 dead rows would accumulate permanently — never claimed, never removed, re-tested
-by every claim for the life of the deployment. The sweep keeps the pending set
-live-only, which is what makes the added predicate's cost bounded rather than
-monotonically growing.
+by every claim for the life of the deployment. The sweep keeps dead rows from
+accumulating on top of that working set — the added predicate is a
+constant-factor bump on a scan and sort that already existed, and the sweep is
+what stops that bump growing without limit as disabled stores and delisted
+items pile up.
 
 ## Consequences
 

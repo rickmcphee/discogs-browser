@@ -140,7 +140,10 @@ would silently destroy crawl history on every re-sync. `stock_item_identities`
 exists specifically to be the thing that isn't wiped: it's populated by
 `ON CONFLICT (item_key) DO UPDATE`, never bulk-deleted, and is the FK anchor
 `crawl_queue`/`listings` need — structurally identical to the role `catalog`
-already plays for releases.
+already plays for releases. That guarantee covers `stock_item_identities`,
+`listings`, and `done` `crawl_queue` rows; it doesn't extend to `pending`
+`crawl_queue` rows for an item no enabled store still lists, which a later
+change deliberately deletes — see 2026-08-10-dead-stock-crawl-jobs-design.md.
 
 ## Backend design
 

@@ -3412,9 +3412,12 @@ async def test_mode_all_sync_clears_a_price_the_user_removed(pg_schema, monkeypa
 
 async def test_sync_stock_sweeps_dead_stock_jobs_at_end_of_run(pg_schema):
     """Nothing disables a store when an item merely sells out, so the end-of-run
-    sweep is the only thing that stops it being priced forever."""
+    sweep is the only thing that stops it being priced forever. Two enabled
+    catalog sources are looped over so a per-source implementation of the
+    sweep (instead of once per run) would be caught by the call count below."""
     with db.get_admin_pool().connection() as conn:
         db.register_crawler(conn, "Stock Site", "/x.py", crawler_type="catalog")
+        db.register_crawler(conn, "Stock Site B", "/y.py", crawler_type="catalog")
         db.register_crawler(conn, "Amazon", "/amazon.py", crawler_type="release")
         _stock_item_with_source(conn, "dead", source_site_name="Dead Store")
         amazon_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
@@ -3424,18 +3427,37 @@ async def test_sync_stock_sweeps_dead_stock_jobs_at_end_of_run(pg_schema):
         conn.commit()
 
     fake_plugin = AsyncMock()
+    fake_plugin_b = AsyncMock()
 
     async def _items():
         yield {"artist": "A", "title": "T", "url": "https://x/1", "price": 5.0, "currency": "USD"}
 
+    async def _items_b():
+        return
+        yield  # pragma: no cover - makes this an async generator with no items
+
     fake_plugin.crawl_catalog = lambda: _items()
     fake_plugin._db_site_name = "Stock Site"
+    fake_plugin_b.crawl_catalog = lambda: _items_b()
+    fake_plugin_b._db_site_name = "Stock Site B"
     with db.get_admin_pool().connection() as conn:
         fake_plugin._db_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Stock Site'").fetchone()["id"]
+        fake_plugin_b._db_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Stock Site B'").fetchone()["id"]
+
+    real_delete = db.delete_dead_stock_crawl_queue_rows
+    call_count = 0
+
+    def _counting_delete(conn):
+        nonlocal call_count
+        call_count += 1
+        return real_delete(conn)
 
     manager = CrawlManager()
-    with patch("crawler.load_enabled_crawlers", return_value=[fake_plugin]):
+    with patch("crawler.load_enabled_crawlers", return_value=[fake_plugin, fake_plugin_b]), \
+         patch("db.delete_dead_stock_crawl_queue_rows", side_effect=_counting_delete):
         await manager._sync_stock()
+
+    assert call_count == 1
 
     live_key = db.compute_item_key("A".title(), "T", "https://x/1")
     with db.get_admin_pool().connection() as conn:

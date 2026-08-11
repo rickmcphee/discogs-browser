@@ -892,9 +892,9 @@ def mark_crawl_queue_done(conn, queue_id: int):
     conn.execute("UPDATE crawl_queue SET status = 'done' WHERE id = %s", [queue_id])
 
 
-# 'pending' only: an 'in_progress' row is held by a worker's open transaction
-# -- it is the current item, which finishes by design, and deleting it would
-# block on that worker's row lock until it committed.
+# 'pending' only: an in_progress row has already been claimed and committed by
+# a worker that is mid-crawl -- it is the current item, which finishes by
+# design.
 def delete_pending_crawl_queue_for_crawler(conn, crawler_id: int) -> int:
     return conn.execute(
         "DELETE FROM crawl_queue WHERE crawler_id = %s AND status = 'pending'",
@@ -907,9 +907,11 @@ def delete_pending_crawl_queue_for_crawler(conn, crawler_id: int) -> int:
 # disable reports can include rows from another store's delisted items -- it
 # means "jobs that are now dead", not "jobs this store created".
 #
-# 'pending' only, for the same reason as delete_pending_crawl_queue_for_crawler:
-# an in_progress row is held by a worker's open transaction. 'done' rows are the
-# record of past crawls and are never re-claimed -- only
+# 'pending' only. An in_progress row has already been claimed by a worker that
+# is mid-crawl and will mark_crawl_queue_done() when it finishes; deleting it
+# would leave that UPDATE matching nothing while the crawl still writes its
+# listing, so the pair would look never-crawled to the next sync. 'done' rows
+# are the record of past crawls and are never re-claimed -- only
 # enqueue_crawl_queue_for_stock_item resurrects one, and it now refuses to.
 def delete_dead_stock_crawl_queue_rows(conn) -> int:
     stock_source_gate = _enabled_stock_source_exists("crawl_queue.item_key")
