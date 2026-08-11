@@ -1,4 +1,5 @@
 import importlib
+import os
 import re
 import subprocess
 from unittest.mock import patch
@@ -82,8 +83,25 @@ def test_import_never_raises_and_yields_a_non_empty_string():
     assert reloaded.VERSION
 
 
+def _git_repo_available():
+    module_dir = os.path.dirname(os.path.abspath(version.__file__))
+    try:
+        subprocess.run(["git", "rev-parse", "--git-dir"], capture_output=True,
+                       timeout=5, check=True, cwd=module_dir)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return True
+
+
 def test_real_git_output_matches_the_documented_format():
-    resolved = version._git_version()
-    if resolved is None:
+    # The only test that runs _DATE_CMD and _SHA_CMD for real -- every other
+    # test mocks subprocess, so a typo in either would otherwise pass the
+    # whole suite. Repository presence is probed separately rather than
+    # inferred from a None return: _git_version() also returns None when our
+    # own git commands are malformed, so skipping on None would swallow
+    # exactly the defect this test exists to catch.
+    if not _git_repo_available():
         pytest.skip("no git repository available")
+    resolved = version._git_version()
+    assert resolved is not None
     assert re.fullmatch(r"\d{4}\.\d{2}\.\d{2}\+[0-9a-f]{7,}", resolved)
