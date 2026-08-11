@@ -8,6 +8,7 @@ interface Props {
   scope?: StockScope
   recommendedAvailable?: boolean
   hiddenCrawlerIds?: number[]
+  syncGeneration?: number
 }
 
 const NO_HIDDEN_CRAWLER_IDS: number[] = []
@@ -18,7 +19,7 @@ function trackLibraryScope(value: string): LibraryScope | undefined {
   return (TRACK_FILTERS as readonly string[]).includes(value) ? (value as LibraryScope) : undefined
 }
 
-function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCrawlerIds = NO_HIDDEN_CRAWLER_IDS }: Props) {
+function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCrawlerIds = NO_HIDDEN_CRAWLER_IDS, syncGeneration }: Props) {
   const [items, setItems] = useState<StockItem[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -63,19 +64,27 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
     }
   }, [search, selectedArtist, sort, order, page, filter, hiddenCrawlerIds, scope])
 
-  useEffect(() => { load() }, [load])
+  // syncGeneration ticks on every stock_sync_progress/stock_sync_complete SSE
+  // event so the store/track tabs repaint as crawlers add items, same as
+  // RecordBrowser's syncGeneration does for collection sync. Kept in this
+  // same effect as `load` (rather than a second `if (syncGeneration) load()`
+  // effect) so a syncGeneration tick and an unrelated load-identity change
+  // (search/sort/filter/page/...) can never both fire and double-call load().
+  useEffect(() => { load() }, [load, syncGeneration])
   useEffect(() => {
     if (!recommendedAvailable && filter === 'recommended') {
       setFilter('all')
     }
   }, [recommendedAvailable, filter])
+  // Also refetches on syncGeneration ticks, same as load() above -- otherwise
+  // the sidebar's artist list would go stale mid-crawl.
   useEffect(() => {
     getStockArtists(
       scope === 'track' ? trackLibraryScope(filter) : undefined,
       scope === 'store' && filter === 'recommended',
       hiddenCrawlerIds,
     ).then(setArtists)
-  }, [scope, filter, hiddenCrawlerIds])
+  }, [scope, filter, hiddenCrawlerIds, syncGeneration])
   useEffect(() => { localStorage.setItem(`collectionViewMode_${scope}`, viewMode) }, [viewMode, scope])
   useEffect(() => { localStorage.setItem(`stockFilter_${scope}`, filter) }, [filter, scope])
   useEffect(() => { tableScrollRef.current?.scrollTo({ top: 0 }) }, [selectedArtist])
