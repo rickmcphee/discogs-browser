@@ -52,6 +52,7 @@ export default function App() {
   const [dismissedSyncId, setDismissedSyncId] = useState(() => Number(localStorage.getItem(DISMISSED_SYNC_KEY) ?? 0))
   const [syncing, setSyncing] = useState(false)
   const [syncGeneration, setSyncGeneration] = useState(0)
+  const [stockSyncGeneration, setStockSyncGeneration] = useState(0)
   const [stockSyncTarget, setStockSyncTarget] = useState<number | 'all' | null>(null)
   const [authState, setAuthState] = useState<AuthStatus | null>(null)
   const [viewAsUser, setViewAsUser] = useState(() => localStorage.getItem(VIEW_AS_USER_KEY) === 'true')
@@ -182,12 +183,14 @@ export default function App() {
       }
       if (event.status === 'stock_sync_progress') {
         setSyncStatus(`Syncing in-stock catalog… ${event.synced} items (${event.source})`, event.id ?? null)
+        setStockSyncGeneration(g => g + 1)
         return
       }
       if (event.status === 'stock_sync_complete') {
         setSyncing(false)
         setStockSyncTarget(null)
         setSyncStatus(`In-stock sync complete: ${event.synced} items`, event.id ?? null)
+        setStockSyncGeneration(g => g + 1)
         return
       }
       if (event.status === 'stock_sync_error') {
@@ -562,10 +565,10 @@ export default function App() {
           />
         </div>
         <div className={view === 'store' ? 'h-full' : 'hidden'}>
-          <StockBrowser recommendedAvailable={recommendedAvailable} hiddenCrawlerIds={hiddenCrawlerIds} />
+          <StockBrowser recommendedAvailable={recommendedAvailable} hiddenCrawlerIds={hiddenCrawlerIds} syncGeneration={stockSyncGeneration} />
         </div>
         <div className={view === 'track' ? 'h-full' : 'hidden'}>
-          <StockBrowser scope="track" hiddenCrawlerIds={hiddenCrawlerIds} />
+          <StockBrowser scope="track" hiddenCrawlerIds={hiddenCrawlerIds} syncGeneration={stockSyncGeneration} />
         </div>
         <div className={view === 'settings' ? 'h-full overflow-y-auto' : 'hidden'}>
           <Settings
