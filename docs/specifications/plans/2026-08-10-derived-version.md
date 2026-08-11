@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the hand-maintained `VERSION = "3.16"` literal with a string derived from the commit, so no pull request ever writes a version number and version collisions become structurally impossible.
+**Goal:** Replace the hand-maintained `VERSION = "<number>"` literal with a string derived from the commit, so no pull request ever writes a version number and version collisions become structurally impossible.
 
 **Architecture:** `backend/version.py` becomes a three-step resolver — `APP_VERSION` env var, then git, then `"dev"` — resolved once at import. CI bakes the real value into the Fly image via a Docker build argument declared as the Dockerfile's last instructions, so the version never invalidates the expensive Chromium layer.
 
@@ -35,7 +35,7 @@
 ### Task 1: The version resolver
 
 **Files:**
-- Modify: `backend/version.py` (currently one line: `VERSION = "3.16"`)
+- Modify: `backend/version.py` (currently one line, a quoted literal such as `VERSION = "3.17"` — read the file for the value on your branch; another PR may have bumped it since this plan was written)
 - Test: `backend/tests/test_version.py` (create)
 
 **Interfaces:**
@@ -135,7 +135,7 @@ def test_import_never_raises_and_yields_a_non_empty_string():
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `cd backend && pytest tests/test_version.py -v`
-Expected: FAIL. `test_app_version_env_wins_and_git_is_never_invoked` fails with `AssertionError: assert '3.16' == '2026.08.10+abc1234'` — the module is still a literal and ignores the environment. Several others fail the same way. `test_import_never_raises_and_yields_a_non_empty_string` already passes, which is expected and fine.
+Expected: FAIL. `test_app_version_env_wins_and_git_is_never_invoked` fails with an `AssertionError` comparing the current literal (e.g. `'3.17'`) against `'2026.08.10+abc1234'` — the module is still a literal and ignores the environment. Several others fail the same way. `test_import_never_raises_and_yields_a_non_empty_string` already passes, which is expected and fine.
 
 - [ ] **Step 3: Write the implementation**
 
@@ -183,7 +183,7 @@ Expected: PASS, 8 tests.
 - [ ] **Step 5: Verify the real value resolves in this checkout**
 
 Run: `cd backend && python -c "from version import VERSION; print(VERSION)"`
-Expected: a string like `2026.08.10+640e189` — today's-or-earlier date, `+`, the short SHA of `HEAD`. Not `dev`, and not `3.16`. Paste the actual output into your report.
+Expected: a string like `2026.08.10+640e189` — today's-or-earlier date, `+`, the short SHA of `HEAD`. Not `dev`, and not the old numeric literal. Paste the actual output into your report.
 
 - [ ] **Step 6: Confirm the app still starts**
 
@@ -448,4 +448,4 @@ The deployed value cannot be proven before merge, because it is produced by the 
 Discogs Browser backend v2026.08.10+<sha> starting
 ```
 
-A `v3.16` there means the old image is still running; a `vdev` means the build argument did not reach the image, and the first thing to check is whether the `--build-arg` survived the `flyctl deploy` invocation.
+A bare numeric version there (e.g. `v3.17`) means the old image is still running; a `vdev` means the build argument did not reach the image, and the first thing to check is whether the `--build-arg` survived the `flyctl deploy` invocation.
