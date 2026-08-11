@@ -1,0 +1,19 @@
+# Ownership signal only. `require_code_owner_review` is deliberately NOT enabled
+# in the main-branch-protection ruleset: this is a single-maintainer repo, and
+# GitHub will not let you approve your own pull request, so requiring code owner
+# review would permanently block every PR touching the paths below.
+
+* @rickmcphee
+
+# Auth, sessions, and tenant isolation.
+/backend/auth_middleware.py @rickmcphee
+/backend/routers/session.py @rickmcphee
+/backend/db.py @rickmcphee
+
+# CI, deployment, and repository security configuration.
+/.github/ @rickmcphee
+/backend/fly.toml @rickmcphee
+/backend/Dockerfile @rickmcphee
+/frontend/Dockerfile @rickmcphee
+/docker-compose.yml @rickmcphee
+/bootstrap.sh @rickmcphee

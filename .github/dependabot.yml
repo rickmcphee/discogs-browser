@@ -1,0 +1,102 @@
+# Grouping is about deploy count, not PR count: every merge to main is a push,
+# and every push to main runs the Fly deploy job. Ungrouped, the first run after
+# this file landed opened 12 PRs, which is 12 sequential production deploys.
+#
+# Minor and patch updates are grouped per ecosystem -- one PR, one deploy.
+# Majors are deliberately left ungrouped so they arrive one at a time and get
+# read. Security updates are not configured here at all -- they're driven by
+# the repo's "Dependabot security updates" setting, land on the default branch
+# regardless of target-branch below, and stay individually mergeable rather
+# than waiting on a batch.
+#
+# All four version-update ecosystems target `integration`, not `main`. Each
+# runs Monday 06:00 UTC; .github/workflows/integration-promote.yml opens one
+# PR from integration to main every Tuesday and auto-merges it once CI is
+# green, so a week's worth of routine bumps becomes one deploy instead of one
+# per PR. `integration` carries its own ruleset (integration-branch-protection)
+# requiring the same status checks as main, so each bump is still vetted
+# individually before it lands in the batch -- only the deploy is batched.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    target-branch: "integration"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+    commit-message:
+      prefix: "chore"
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    target-branch: "integration"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+    commit-message:
+      prefix: "chore"
+    open-pull-requests-limit: 5
+    groups:
+      frontend:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "pip"
+    directory: "/backend"
+    target-branch: "integration"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+    commit-message:
+      prefix: "chore"
+    open-pull-requests-limit: 5
+    groups:
+      backend:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # The base image tags are floating (`3.11-slim`, `20-alpine`), so patch
+  # updates already arrive at build time and Dependabot has nothing to raise.
+  # What it does propose -- python 3.11 -> 3.14, node 20 -> 26 -- has to move in
+  # lockstep with the `python-version` and `node-version` pins in
+  # .github/workflows/fly-deploy.yml, which Dependabot cannot do. Left to
+  # itself it silently diverges the runtime from the one CI tests against, so
+  # those two move by hand.
+  - package-ecosystem: "docker"
+    directories:
+      - "/backend"
+      - "/frontend"
+    target-branch: "integration"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+    commit-message:
+      prefix: "chore"
+    open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: "python"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+      - dependency-name: "node"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"

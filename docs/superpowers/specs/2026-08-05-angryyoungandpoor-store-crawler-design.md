@@ -7,10 +7,32 @@ _2026-08-05_
 
 **Amendment (2026-08-05, during plan-writing):** two corrections to the original Title parsing and accessory filtering section below, found while verifying details against live data before writing the implementation plan (text below is updated in place to match):
 
-1. **The filter is category-specific, not global.** V/A Compilation LPs (`V-A-Compilation-LPs-c397`) titles carry no `"Artist- "` prefix at all — confirmed live: `"Barbarian (Soundtrack) LP (Mothers Milk & Blood Splatter Vinyl)"`, `"Carrie (Soundtrack) 2xLP (Red & Orange Smoke Vinyl)"`. Requiring a `"- "` split globally, as originally written, would have silently dropped every item in that category. The dash+format-token filter applies only to Records-c301, Sale-Records-c472, and Used-Records-c1215 (all three confirmed to use the `"Artist- Title FORMAT (variant)"` shape). V/A Compilation LPs instead requires only a format-token match, with `artist` hardcoded to `"Various Artists"` — that category isn't confirmed to mix in non-release accessories the way Records-c301 does, so the dash gate isn't needed there, and the category can't provide one anyway.
+1. **The filter is category-specific, not global.** V/A Compilation LPs (`V-A-Compilation-LPs-c397`) titles carry no `"Artist- "` prefix at all — confirmed live: `"Barbarian (Soundtrack) LP (Mothers Milk & Blood Splatter Vinyl)"`, `"Carrie (Soundtrack) 2xLP (Red & Orange Smoke Vinyl)"`. Requiring a `"- "` split globally, as originally written, would have silently dropped every item in that category. The dash+format-token filter applies only to Records-c301, Sale-Records-c472, and Used-Records-c1215 (all three confirmed to use the `"Artist- Title FORMAT (variant)"` shape). V/A Compilation LPs instead requires only a format-token match, with `artist` hardcoded to `"Various"` — that category isn't confirmed to mix in non-release accessories the way Records-c301 does, so the dash gate isn't needed there, and the category can't provide one anyway.
 2. **A format-token check alone is not a safe accessory filter.** `12" Record Sleeve` contains a literal `12"`, which matches the same inch-size token (`\d+\s*"`) used to detect 7"/10"/12" singles — a format-token-only rule would have let it back in. The dash-split requirement is what actually excludes accessories (none of the sampled accessory names contain `"- "` at all); the format-token check is a second, additional gate on top of it, not a substitute for it.
 
 The rest of this section (the concrete regex/split rule) is written below already reflecting both corrections.
+
+**Amendment (2026-08-10, branch `claude/angryyoungandpoor-various-artist`):** the
+hardcoded V/A artist is **`"Various"`**, not `"Various Artists"`. Both mentions
+below are updated in place.
+
+Discogs' own various-artists entity is named `Various`, and two consumers compare
+against that exact string: `amazon.py`'s `Crawler._artist()` only special-cases
+the literal `"various"` (case-insensitively) to search by title alone, and
+`db.py`'s `_library_match_fragment` does an exact `LOWER()` equality against the
+catalog artist. `"Various Artists"` satisfies neither, so every item in
+`V-A-Compilation-LPs-c397` was invisible to library matching and searched Amazon
+with a junk artist term instead of by title.
+
+`ebay_api.pick_matching_item` is *not* a third such consumer: it is a word-overlap
+ratio (`len(artist_words & listing_words) / len(artist_words) < 0.5`), not an
+exact-string check. Measured, it does not discriminate between the two spellings
+here — a listing naming neither word rejects both, and one naming `"various"`
+passes both (`"Various Artists"` scores exactly 0.50, which clears the gate). It
+is sensitive to the artist text in general, but it is not a reason to prefer
+either string. Surfaced while specifying the Cleopatra Records crawler,
+which hit the same question and originally made the same mistake — see
+`docs/specifications/shaping/2026-08-09-cleorecs-store-crawler-design.md`.
 
 ## Overview
 
@@ -132,7 +154,7 @@ V/A Compilation LPs (`V-A-Compilation-LPs-c397`) doesn't fit this shape —
 titles carry no artist prefix at all (`"Barbarian (Soundtrack) LP (Mothers
 Milk & Blood Splatter Vinyl)"`, `"Carrie (Soundtrack) 2xLP (Red & Orange
 Smoke Vinyl)"`). For this one category, skip the dash requirement, require
-only the format-token match, and hardcode `artist = "Various Artists"`.
+only the format-token match, and hardcode `artist = "Various"`.
 
 This is a new filter shape relative to every existing Shopify crawler — none
 of them lean on a title-regex to separate real releases from non-music

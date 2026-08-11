@@ -47,6 +47,8 @@ Returns the first passing candidate. If none pass, returns no result for this re
 
 `itemWebUrl` from the API response is preferred. Falls back to `https://www.ebay.com/itm/{legacyItemId}` if absent or not an `https://www.ebay.com` URL. Final fallback: `search_url(release)` (a direct eBay storefront search URL).
 
+The "is it an eBay URL" test is `ebay_api._is_ebay_item_url`, which parses the URL and compares `hostname` against `www.ebay.com`. It was originally a `str.startswith` prefix test, which also accepted lookalike hosts such as `https://www.ebay.com.example.test/` — the URL is rendered as a link the user clicks, so those now fall through to the `legacyItemId` construction instead.
+
 ## No Playwright Dependency
 
 `async def search(self, release, page)` ignores the `page` argument and manages its own `httpx.AsyncClient`. The `page` argument is `None` for this crawler.
