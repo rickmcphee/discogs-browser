@@ -167,10 +167,11 @@ Create the commit via `git commit -F <message-file>`, not `git commit -m` — tr
 
 ## Versioning
 
-`backend/version.py`'s `VERSION` string is bumped as part of every PR that merges to `main` — not a separate follow-up commit, and not something that needs to be asked for each time:
+`backend/version.py`'s `VERSION` is **derived, never edited**. A PR that changes a version number is wrong by definition; there is nothing to bump.
 
-- **Minor bump is the default, automatic action.** Increment the second number (`1.48` → `1.49`) on every PR merge, regardless of how small the change is.
-- **Major bump (reset to `X.0`) only happens on the repo owner's explicit instruction.** Never take a major bump on your own judgment, no matter how large the change looks.
+The value is `YYYY.MM.DD+<short-sha>` (e.g. `2026.08.10+8fac644`), resolved at import from, in order: the `APP_VERSION` environment variable, then git, then `"dev"`. CI bakes the real value into the Fly image as a Docker build argument.
+
+The old scheme required each PR to bump a shared literal before merge, but whether the number was right could only be known at merge — so concurrent PRs collided routinely (see `docs/specifications/shaping/2026-08-10-derived-version-design.md`). There are no major/minor components any more, and no `3.x` successor.
 
 ## Style notes
 
