@@ -961,3 +961,99 @@ def test_get_distinct_stock_artists_wishlist_scope_and_recommended_intersect(adm
             conn, alice["id"], library_scope="wishlist", recommended=True
         ) == ["Artist B"]
         assert db.get_distinct_stock_artists(conn, alice["id"], recommended=True) == ["Artist B", "Artist C"]
+
+
+def _stock_row(conn, item_key, source_site_name, price_site_name="Amazon", source_enabled=True):
+    """Builds the production shape: a catalog crawler stocking an item, a
+    separate price crawler, and a pending queue row for the pair. Returns the
+    price crawler's id."""
+    db.register_crawler(conn, source_site_name, "/src.py", crawler_type="catalog")
+    source_id = conn.execute(
+        "SELECT id FROM crawlers WHERE site_name = %s", [source_site_name]
+    ).fetchone()["id"]
+    db.register_crawler(conn, price_site_name, "/price.py")
+    price_id = conn.execute(
+        "SELECT id FROM crawlers WHERE site_name = %s", [price_site_name]
+    ).fetchone()["id"]
+    conn.execute(
+        "INSERT INTO stock_item_identities (item_key, artist, title) VALUES (%s, 'A', 'T') "
+        "ON CONFLICT (item_key) DO NOTHING",
+        [item_key],
+    )
+    conn.execute(
+        "INSERT INTO stock_items (crawler_id, artist, title, url, item_key) "
+        "VALUES (%s, 'A', 'T', %s, %s)",
+        [source_id, f"https://x/{item_key}", item_key],
+    )
+    conn.execute(
+        "INSERT INTO crawl_queue (item_key, crawler_id) VALUES (%s, %s)", [item_key, price_id]
+    )
+    if not source_enabled:
+        db.set_crawler_enabled(conn, source_id, False)
+    return price_id
+
+
+def test_delete_dead_stock_crawl_queue_rows_deletes_a_disabled_source_row(admin_conn):
+    _stock_row(admin_conn, "key1", "Dead Store", source_enabled=False)
+    admin_conn.commit()
+
+    assert db.delete_dead_stock_crawl_queue_rows(admin_conn) == 1
+    admin_conn.commit()
+    assert admin_conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 0
+
+
+def test_delete_dead_stock_crawl_queue_rows_deletes_a_row_whose_item_has_no_stock_row(admin_conn):
+    price_id = _stock_row(admin_conn, "key1", "Live Store")
+    admin_conn.execute("DELETE FROM stock_items WHERE item_key = 'key1'")
+    admin_conn.execute(
+        "INSERT INTO stock_item_identities (item_key, artist, title) VALUES ('gone', 'A', 'T')"
+    )
+    admin_conn.execute(
+        "INSERT INTO crawl_queue (item_key, crawler_id) VALUES ('gone', %s)", [price_id]
+    )
+    admin_conn.commit()
+
+    assert db.delete_dead_stock_crawl_queue_rows(admin_conn) == 2
+    admin_conn.commit()
+    assert admin_conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 0
+
+
+def test_delete_dead_stock_crawl_queue_rows_keeps_a_live_row(admin_conn):
+    _stock_row(admin_conn, "key1", "Live Store")
+    admin_conn.commit()
+
+    assert db.delete_dead_stock_crawl_queue_rows(admin_conn) == 0
+    admin_conn.commit()
+    assert admin_conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 1
+
+
+def test_delete_dead_stock_crawl_queue_rows_keeps_in_progress_and_done_rows(admin_conn):
+    """in_progress rows belong to a worker's open transaction and finish by
+    design; done rows are the historical record and are never re-claimed."""
+    _stock_row(admin_conn, "key1", "Dead Store", source_enabled=False)
+    _stock_row(admin_conn, "key2", "Dead Store", source_enabled=False)
+    admin_conn.execute("UPDATE crawl_queue SET status = 'in_progress' WHERE item_key = 'key1'")
+    admin_conn.execute("UPDATE crawl_queue SET status = 'done' WHERE item_key = 'key2'")
+    admin_conn.commit()
+
+    assert db.delete_dead_stock_crawl_queue_rows(admin_conn) == 0
+    admin_conn.commit()
+    assert admin_conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 2
+
+
+def test_delete_dead_stock_crawl_queue_rows_keeps_release_rows(admin_conn):
+    db.register_crawler(admin_conn, "Amazon", "/price.py")
+    price_id = admin_conn.execute(
+        "SELECT id FROM crawlers WHERE site_name = 'Amazon'"
+    ).fetchone()["id"]
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+        "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+        "discogs_url": None,
+    })
+    db.enqueue_crawl_queue(admin_conn, "r1", price_id)
+    admin_conn.commit()
+
+    assert db.delete_dead_stock_crawl_queue_rows(admin_conn) == 0
+    admin_conn.commit()
+    assert admin_conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 1

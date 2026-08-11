@@ -902,6 +902,27 @@ def delete_pending_crawl_queue_for_crawler(conn, crawler_id: int) -> int:
     ).rowcount
 
 
+# Global rather than scoped to one crawler: idempotent, self-correcting, and it
+# also clears residue predating the source gate. The cost is that the count a
+# disable reports can include rows from another store's delisted items -- it
+# means "jobs that are now dead", not "jobs this store created".
+#
+# 'pending' only, for the same reason as delete_pending_crawl_queue_for_crawler:
+# an in_progress row is held by a worker's open transaction. 'done' rows are the
+# record of past crawls and are never re-claimed -- only
+# enqueue_crawl_queue_for_stock_item resurrects one, and it now refuses to.
+def delete_dead_stock_crawl_queue_rows(conn) -> int:
+    stock_source_gate = _enabled_stock_source_exists("crawl_queue.item_key")
+    return conn.execute(
+        f"""
+        DELETE FROM crawl_queue
+        WHERE status = 'pending'
+          AND item_key IS NOT NULL
+          AND NOT {stock_source_gate}
+        """
+    ).rowcount
+
+
 # Disabled crawlers' rows are excluded rather than trusted to be absent. The
 # disable purge cannot catch them all: under READ COMMITTED an enqueue that
 # began before the disable committed still evaluates its WHERE EXISTS against
