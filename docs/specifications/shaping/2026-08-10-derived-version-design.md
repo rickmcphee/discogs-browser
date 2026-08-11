@@ -5,7 +5,7 @@ Branch: `derived-version`
 
 ## Problem
 
-`backend/version.py` holds a hand-maintained literal (`VERSION = "3.16"`), and
+`backend/version.py` holds a hand-maintained literal (`VERSION = "3.17"`), and
 CLAUDE.md requires every PR that merges to `main` to bump it. That rule only
 works when pull requests merge strictly one at a time. They don't, and on
 2026-08-10 the failure mode showed up three times in a single afternoon:
@@ -73,7 +73,9 @@ than managed by convention.
 - **No semantic-version components.** Nothing consumes major/minor; see
   "Consequences" for what this gives up.
 - **No change to the deploy trigger, the Fly configuration, or the release
-  process** beyond the one build argument.
+  process** beyond the build argument, threaded through both the Fly deploy
+  workflow and the self-hosted `docker-compose`/`bootstrap.sh` path (see
+  "Injection").
 
 ## Design
 
@@ -115,8 +117,9 @@ ENV APP_VERSION=$APP_VERSION
 Placement at the end is load-bearing, not stylistic. An `ARG` invalidates the
 build cache for every layer below it, and the layers above include
 `pip install` and `playwright install chromium` — the expensive ones. Declaring
-`APP_VERSION` early would rebuild Chromium on every deploy, since the value
-changes every time. At the end, a new version dirties one trivial layer.
+`APP_VERSION` above the `playwright install` layer would rebuild Chromium on
+every deploy, since the value changes every time. At the end, a new version
+dirties one trivial layer.
 
 `.github/workflows/fly-deploy.yml`'s deploy job computes the string and passes
 it through:
@@ -138,9 +141,18 @@ A manual `flyctl deploy` from a developer's checkout, without the build
 argument, produces `dev` via the Dockerfile's `ARG` default — visibly
 unofficial, which is the right outcome for a hand-rolled deploy.
 
+The self-hosted `docker-compose` path needs the same argument, since it
+builds from the same Dockerfile: `docker-compose.yml`'s `backend` service
+build stanza passes `APP_VERSION: ${APP_VERSION:-dev}`, and `bootstrap.sh` —
+the routine update/redeploy script, run after `git pull` and before
+`docker-compose build` — exports `APP_VERSION` computed the same way as the
+Fly workflow. Without this, that build context has no `.git` and the image
+has no git binary, so the self-hosted deployment would resolve to `"dev"` on
+every build, silently defeating the feature there.
+
 ## Consequences
 
-**Accepted:** the `3.x` line ends at 3.16 and there is no successor numbering.
+**Accepted:** the `3.x` line ends at 3.17 and there is no successor numbering.
 Nothing can be said to be "version 4.0". The repo owner explicitly accepted this
 when choosing a commit-traceable identifier over an assigned release number.
 Existing `3.x` references in older specs are historical records of what was true
