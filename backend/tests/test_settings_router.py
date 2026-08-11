@@ -254,3 +254,34 @@ def test_patch_crawler_enable_discards_nothing(pg_test_db, authed_client_factory
 
     with db.get_admin_pool().connection() as conn:
         assert conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 1
+
+
+def test_patch_crawler_disable_discards_dead_stock_jobs(pg_test_db, authed_client_factory):
+    """Disabling a store discards the Amazon/eBay jobs queued for its items --
+    rows that carry the price crawler's id, not the store's, so the
+    crawler-scoped purge alone never matched them."""
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Dead Store", "/src.py", crawler_type="catalog")
+        store_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Dead Store'").fetchone()["id"]
+        db.register_crawler(conn, "Amazon", "/price.py")
+        amazon_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        conn.execute(
+            "INSERT INTO stock_item_identities (item_key, artist, title) VALUES ('key1', 'A', 'T')"
+        )
+        conn.execute(
+            "INSERT INTO stock_items (crawler_id, artist, title, url, item_key) "
+            "VALUES (%s, 'A', 'T', 'https://x/1', 'key1')",
+            [store_id],
+        )
+        db.enqueue_crawl_queue_for_stock_item(conn, "key1", amazon_id)
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute("UPDATE users SET is_admin = TRUE WHERE id = %s", [user["id"]])
+        conn.commit()
+
+    client = authed_client_factory(user["id"])
+    r = client.patch(f"/api/crawlers/{store_id}", json={"enabled": False}, headers={"X-Requested-With": "fetch"})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "discarded": 1}
+
+    with db.get_admin_pool().connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 0
