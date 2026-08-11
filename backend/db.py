@@ -772,6 +772,26 @@ def update_crawler_last_run(conn, crawler_id: int):
     conn.execute("UPDATE crawlers SET last_run = CURRENT_TIMESTAMP WHERE id = %s", [crawler_id])
 
 
+def _enabled_stock_source_exists(item_key_expr: str) -> str:
+    """A stock item is worth crawling only while some enabled crawler still
+    lists it. One predicate covers two populations: an item whose store an
+    admin disabled, and an item that has left every store's stock --
+    replace_stock_items() deletes a crawler's whole batch and reinserts only
+    what is currently in stock, so a sold-out item loses its stock_items row
+    while its stock_item_identities row and its queue rows survive.
+
+    item_key_expr is always a literal chosen at the call site -- a column
+    reference or a bound-parameter placeholder, never request-derived -- the
+    same contract _library_match_fragment's user_id_param already carries."""
+    return f"""
+        EXISTS (
+            SELECT 1 FROM stock_items si
+            JOIN crawlers sc ON sc.id = si.crawler_id
+            WHERE si.item_key = {item_key_expr} AND sc.enabled
+        )
+    """
+
+
 # The WHERE on the DO UPDATE is load-bearing, not decorative: re-enqueuing a
 # pair whose row is already 'pending'/'in_progress' must be a no-op (the
 # DO UPDATE runs but its WHERE filters the row out, so it's left untouched --
@@ -831,6 +851,7 @@ def claim_crawl_queue_batch(
     if excluded_crawler_ids:
         exclusion_clause = "AND crawler_id != ALL(%(excluded)s)"
         params["excluded"] = list(excluded_crawler_ids)
+    stock_source_gate = _enabled_stock_source_exists("crawl_queue.item_key")
     return conn.execute(
         f"""
         UPDATE crawl_queue SET status = 'in_progress', claimed_by = %(worker_id)s, claimed_at = CURRENT_TIMESTAMP
@@ -841,6 +862,10 @@ def claim_crawl_queue_batch(
             -- stopping future enqueues.
             WHERE status = 'pending'
               AND crawler_id IN (SELECT id FROM crawlers WHERE enabled)
+              -- Source-side gate: the row above checks the crawler about to do
+              -- the work; this checks whether anything still stocks the item it
+              -- would price. item_key IS NULL keeps release rows out of it.
+              AND (item_key IS NULL OR {stock_source_gate})
               {exclusion_clause}
             -- (item_key IS NOT NULL) leads the sort so every pending release
             -- row (FALSE) sorts ahead of every pending stock-item row
