@@ -5,7 +5,7 @@ Branch: `derived-version`
 
 ## Problem
 
-`backend/version.py` holds a hand-maintained literal (`VERSION = "3.17"`), and
+`backend/version.py` holds a hand-maintained literal (`VERSION = "3.18"`), and
 CLAUDE.md requires every PR that merges to `main` to bump it. That rule only
 works when pull requests merge strictly one at a time. They don't, and on
 2026-08-10 the failure mode showed up three times in a single afternoon:
@@ -88,7 +88,7 @@ in this order:
    deployed path — the value is baked into the image (see "Injection").
 2. **Git**, otherwise: the commit date via
    `git log -1 --format=%cd --date=format:%Y.%m.%d` and the short SHA via
-   `git rev-parse --short HEAD`, joined with `+`. This is the local-development
+   `git rev-parse --short=7 HEAD`, joined with `+`. This is the local-development
    path; `backend/` sits inside the working tree, so git resolves the
    repository root on its own.
 3. **`"dev"`**, if neither is available.
@@ -129,7 +129,7 @@ it through:
   working-directory: backend
   run: |
     flyctl deploy --remote-only \
-      --build-arg APP_VERSION="$(git log -1 --format=%cd --date=format:%Y.%m.%d)+$(git rev-parse --short HEAD)"
+      --build-arg APP_VERSION="$(git log -1 --format=%cd --date=format:%Y.%m.%d)+$(git rev-parse --short=7 HEAD)"
 ```
 
 Derived from the checked-out commit rather than from `github.sha` directly, so
@@ -150,9 +150,28 @@ Fly workflow. Without this, that build context has no `.git` and the image
 has no git binary, so the self-hosted deployment would resolve to `"dev"` on
 every build, silently defeating the feature there.
 
+`bootstrap.sh` additionally appends `.dirty` when `git status --porcelain` is
+non-empty, giving `2026.08.11+644b80b.dirty`. `git pull` succeeds with
+non-conflicting local changes, there is no `.dockerignore`, and the
+Dockerfile's `COPY . .` takes the whole build context — so without this a
+modified or untracked file is baked into the image under a version string
+naming a clean commit that does not describe it. `--porcelain` covers
+untracked files and honours `.gitignore`, so `workspace/`, `postgres-data/`
+and `.env` never trip it. A dirty tree is marked rather than rejected:
+`bootstrap.sh` is the routine redeploy path, and an operator with a local edit
+should still be able to deploy — just not mislabel the result. The Fly path
+needs no equivalent, since `actions/checkout` is always clean.
+
+The short SHA is taken with `--short=7`, not bare `--short`. The bare form
+abbreviates to whatever is unique in the local clone (default: `core.abbrev`),
+so the same commit can yield different lengths in a shallow CI checkout, a
+full self-hosted clone, and a developer's checkout with `core.abbrev` set. An
+explicit minimum makes every build path produce the same string for the same
+commit; git still lengthens it beyond 7 if 7 is ambiguous.
+
 ## Consequences
 
-**Accepted:** the `3.x` line ends at 3.17 and there is no successor numbering.
+**Accepted:** the `3.x` line ends at 3.18 and there is no successor numbering.
 Nothing can be said to be "version 4.0". The repo owner explicitly accepted this
 when choosing a commit-traceable identifier over an assigned release number.
 Existing `3.x` references in older specs are historical records of what was true
