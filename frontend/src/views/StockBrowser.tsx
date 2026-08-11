@@ -64,13 +64,13 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
     }
   }, [search, selectedArtist, sort, order, page, filter, hiddenCrawlerIds, scope])
 
-  useEffect(() => { load() }, [load])
   // syncGeneration ticks on every stock_sync_progress/stock_sync_complete SSE
   // event so the store/track tabs repaint as crawlers add items, same as
-  // RecordBrowser's syncGeneration does for collection sync.
-  useEffect(() => {
-    if (syncGeneration) load()
-  }, [syncGeneration, load])
+  // RecordBrowser's syncGeneration does for collection sync. Kept in this
+  // same effect as `load` (rather than a second `if (syncGeneration) load()`
+  // effect) so a syncGeneration tick and an unrelated load-identity change
+  // (search/sort/filter/page/...) can never both fire and double-call load().
+  useEffect(() => { load() }, [load, syncGeneration])
   useEffect(() => {
     if (!recommendedAvailable && filter === 'recommended') {
       setFilter('all')

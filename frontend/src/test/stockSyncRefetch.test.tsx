@@ -44,4 +44,16 @@ describe('refetch on stock sync progress', () => {
     rerender(<StockBrowser syncGeneration={1} />)
     await waitFor(() => expect(getStock).toHaveBeenCalledTimes(2))
   })
+
+  it('reloads exactly once, not twice, when an unrelated prop changes after a sync tick', async () => {
+    // Regression test: with a truthy syncGeneration already in effect, a
+    // change to a prop that recreates `load` (e.g. hiddenCrawlerIds) must
+    // not also re-fire a separate syncGeneration-watching effect.
+    const { rerender } = render(<StockBrowser syncGeneration={1} hiddenCrawlerIds={[]} />)
+    await waitFor(() => expect(getStock).toHaveBeenCalledTimes(1))
+
+    rerender(<StockBrowser syncGeneration={1} hiddenCrawlerIds={[3]} />)
+    await waitFor(() => expect(getStock).toHaveBeenCalledTimes(2))
+    expect(getStock).toHaveBeenCalledTimes(2)
+  })
 })
