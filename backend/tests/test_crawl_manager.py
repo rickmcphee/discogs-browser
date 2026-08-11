@@ -3408,3 +3408,36 @@ async def test_mode_all_sync_clears_a_price_the_user_removed(pg_schema, monkeypa
             "SELECT price_paid FROM library_items WHERE user_id = %s AND discogs_id = 'r111'",
             [alice["id"]],
         ).fetchone()["price_paid"] is None
+
+
+async def test_sync_stock_sweeps_dead_stock_jobs_at_end_of_run(pg_schema):
+    """Nothing disables a store when an item merely sells out, so the end-of-run
+    sweep is the only thing that stops it being priced forever."""
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Stock Site", "/x.py", crawler_type="catalog")
+        db.register_crawler(conn, "Amazon", "/amazon.py", crawler_type="release")
+        _stock_item_with_source(conn, "dead", source_site_name="Dead Store")
+        amazon_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        dead_store_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Dead Store'").fetchone()["id"]
+        db.enqueue_crawl_queue_for_stock_item(conn, "dead", amazon_id)
+        db.set_crawler_enabled(conn, dead_store_id, False)
+        conn.commit()
+
+    fake_plugin = AsyncMock()
+
+    async def _items():
+        yield {"artist": "A", "title": "T", "url": "https://x/1", "price": 5.0, "currency": "USD"}
+
+    fake_plugin.crawl_catalog = lambda: _items()
+    fake_plugin._db_site_name = "Stock Site"
+    with db.get_admin_pool().connection() as conn:
+        fake_plugin._db_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Stock Site'").fetchone()["id"]
+
+    manager = CrawlManager()
+    with patch("crawler.load_enabled_crawlers", return_value=[fake_plugin]):
+        await manager._sync_stock()
+
+    live_key = db.compute_item_key("A".title(), "T", "https://x/1")
+    with db.get_admin_pool().connection() as conn:
+        keys = [r["item_key"] for r in conn.execute("SELECT item_key FROM crawl_queue").fetchall()]
+    assert keys == [live_key]

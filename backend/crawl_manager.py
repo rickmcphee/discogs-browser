@@ -640,7 +640,7 @@ class CrawlManager:
 
     async def _sync_stock(self, crawler_id: Optional[int] = None):
         import httpx
-        from db import get_app_pool, get_enabled_crawlers, replace_stock_items, update_crawler_last_run, enqueue_crawl_queue_for_stock_item
+        from db import get_app_pool, get_enabled_crawlers, replace_stock_items, update_crawler_last_run, enqueue_crawl_queue_for_stock_item, delete_dead_stock_crawl_queue_rows
         from crawler import load_enabled_crawlers
 
         await self._broadcast({"status": "stock_sync_started", "crawler_id": crawler_id})
@@ -756,6 +756,16 @@ class CrawlManager:
                 total_synced += len(items)
                 log.info("[%s] Stock sync found %d items", crawler._db_site_name, len(items))
                 await self._broadcast({"status": "stock_sync_progress", "synced": total_synced, "source": crawler._db_site_name})
+
+            with get_app_pool().connection() as conn:
+                swept = delete_dead_stock_crawl_queue_rows(conn)
+                conn.commit()
+            if swept:
+                # INFO, not WARNING: routers/logs.py's _line_visible filters by
+                # exact level membership, so at WARNING this would be invisible
+                # to anyone watching the INFO stream carrying the rest of the
+                # crawl narrative.
+                log.info("Discarded %d queued price lookups with no enabled source", swept)
 
             await self._broadcast({"status": "stock_sync_complete", "synced": total_synced, "crawler_id": crawler_id})
             # The failed/skipped tail is why "complete: 0 items" alone was
