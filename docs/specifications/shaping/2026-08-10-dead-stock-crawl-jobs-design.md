@@ -246,6 +246,19 @@ items pile up.
   ([2026-08-07 spec](2026-08-07-store-crawler-refresh-button-design.md)) or the
   next scheduled stock sync: `replace_stock_items` returns the item keys and
   the fan-out re-enqueues them.
+
+  One race this does not cover, and the enqueue guard cannot: a disable that
+  commits while `_sync_stock`'s per-source transaction is still open. Rows that
+  transaction had already written are invisible to the disable's sweep and
+  commit afterwards, so pending rows for a now-disabled store can exist. They
+  are never claimable — the claim gate re-reads `sc.enabled` — and the same
+  run's end-of-run sweep deletes them, because it runs in a fresh transaction
+  after that commit. The exception therefore only outlives a run that never
+  reaches the sweep: the two-consecutive-429 abort, a cancellation, or a raise
+  in between. Until the next sync or the next disable, those rows would resume
+  on re-enable. Closing it properly would mean serializing an admin's disable
+  against a minutes-long stock sync; the sweep already collapses the window to
+  the aborted-run case, which is not worth that.
 - **Sold-out items stop being priced.** This is a behaviour change beyond the
   disabled-store motivation and is intended.
 - **Worst-case overrun is one batch per worker**, unchanged from the prior

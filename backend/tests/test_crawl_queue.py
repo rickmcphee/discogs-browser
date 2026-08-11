@@ -511,3 +511,54 @@ def test_enqueue_crawl_queue_for_stock_item_inserts_nothing_when_the_item_has_no
     admin_conn.commit()
     rows = admin_conn.execute("SELECT * FROM crawl_queue WHERE item_key = 'gone'").fetchall()
     assert rows == []
+
+
+def test_a_disable_during_an_open_sync_transaction_is_closed_by_the_sweep(admin_conn):
+    """_sync_stock writes a source's stock_items and all its enqueues in one
+    transaction. A disable committing mid-transaction cannot be seen by the
+    enqueue guard for rows already written, and the disable's own sweep cannot
+    see those uncommitted rows either -- so pending rows for a disabled store
+    can exist. They must still never be claimable, and the end-of-run sweep
+    must remove them once they are visible."""
+    admin_conn.execute(
+        "INSERT INTO stock_item_identities (item_key, artist, title) VALUES ('key1', 'A', 'T')"
+    )
+    db.register_crawler(admin_conn, "Source Store", "/src.py", crawler_type="catalog")
+    db.register_crawler(admin_conn, "Amazon", "/x.py")
+    source_id = admin_conn.execute(
+        "SELECT id FROM crawlers WHERE site_name = 'Source Store'"
+    ).fetchone()["id"]
+    price_id = admin_conn.execute(
+        "SELECT id FROM crawlers WHERE site_name = 'Amazon'"
+    ).fetchone()["id"]
+    admin_conn.commit()
+
+    with db.get_app_pool().connection() as sync_conn, db.get_app_pool().connection() as admin_side:
+        sync_conn.execute("BEGIN")
+        sync_conn.execute(
+            "INSERT INTO stock_items (crawler_id, artist, title, url, item_key) "
+            "VALUES (%s, 'A', 'T', 'https://x/1', 'key1')",
+            [source_id],
+        )
+        db.enqueue_crawl_queue_for_stock_item(sync_conn, "key1", price_id)
+
+        admin_side.execute("BEGIN")
+        db.set_crawler_enabled(admin_side, source_id, False)
+        assert db.delete_dead_stock_crawl_queue_rows(admin_side) == 0
+        admin_side.commit()
+
+        sync_conn.commit()
+
+    assert admin_conn.execute(
+        "SELECT COUNT(*) FROM crawl_queue WHERE item_key = 'key1'"
+    ).fetchone()["count"] == 1
+
+    with db.get_app_pool().connection() as conn:
+        assert db.claim_crawl_queue_batch(conn, "worker-1", limit=10) == []
+        conn.commit()
+
+    with db.get_app_pool().connection() as conn:
+        assert db.delete_dead_stock_crawl_queue_rows(conn) == 1
+        conn.commit()
+
+    assert admin_conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 0
