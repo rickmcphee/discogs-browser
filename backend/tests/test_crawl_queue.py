@@ -487,3 +487,27 @@ def test_claim_crawl_queue_batch_still_claims_release_rows_when_a_catalog_crawle
         claimed = db.claim_crawl_queue_batch(conn, "worker-1", limit=10)
         conn.commit()
     assert [r["discogs_id"] for r in claimed] == ["r1"]
+
+
+def test_enqueue_crawl_queue_for_stock_item_inserts_nothing_when_the_source_is_disabled(admin_conn):
+    crawler_id = _make_stock_identity_and_crawler(admin_conn)
+    _set_enabled_by_name(admin_conn, "Amazon Source", False)
+    admin_conn.commit()
+
+    db.enqueue_crawl_queue_for_stock_item(admin_conn, "key1", crawler_id)
+    admin_conn.commit()
+    rows = admin_conn.execute("SELECT * FROM crawl_queue WHERE item_key = 'key1'").fetchall()
+    assert rows == []
+
+
+def test_enqueue_crawl_queue_for_stock_item_inserts_nothing_when_the_item_has_no_stock_row(admin_conn):
+    crawler_id = _make_stock_identity_and_crawler(admin_conn, item_key="key1")
+    admin_conn.execute(
+        "INSERT INTO stock_item_identities (item_key, artist, title) VALUES ('gone', 'A', 'T')"
+    )
+    admin_conn.commit()
+
+    db.enqueue_crawl_queue_for_stock_item(admin_conn, "gone", crawler_id)
+    admin_conn.commit()
+    rows = admin_conn.execute("SELECT * FROM crawl_queue WHERE item_key = 'gone'").fetchall()
+    assert rows == []
