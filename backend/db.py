@@ -542,6 +542,13 @@ def delete_stock_item_for_release(conn, release_id: str, crawler_id: int):
     )
 
 
+def clear_listing_price(conn, release_id: str, crawler_id: int):
+    conn.execute(
+        "UPDATE listings SET price = NULL, last_checked = CURRENT_TIMESTAMP WHERE release_id = %s AND crawler_id = %s",
+        [release_id, crawler_id],
+    )
+
+
 def create_user(conn, discogs_user_id: int, discogs_username: str, invited_by: Optional[int] = None) -> dict:
     return conn.execute(
         """

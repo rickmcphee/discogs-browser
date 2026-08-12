@@ -1197,9 +1197,39 @@ def test_delete_stock_item_for_release_leaves_the_identity_row(admin_conn):
     assert row is not None
 
 
+def test_clear_listing_price_nulls_an_existing_row(admin_conn):
+    db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="release")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+        "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+        "discogs_url": None,
+    })
+    admin_conn.commit()
+    db.upsert_listing(admin_conn, "r1", crawler_id, "https://x", 9.99, None, "USD", None)
+    admin_conn.commit()
+
+    db.clear_listing_price(admin_conn, "r1", crawler_id)
+    admin_conn.commit()
+
+    row = admin_conn.execute("SELECT price, url FROM listings WHERE release_id = 'r1' AND crawler_id = %s", [crawler_id]).fetchone()
+    assert row["price"] is None
+    assert row["url"] == "https://x"
+
+
+def test_clear_listing_price_is_a_noop_when_no_row_exists(admin_conn):
+    db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="release")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+
+    db.clear_listing_price(admin_conn, "r1", crawler_id)
+    admin_conn.commit()
+
+
 def test_upsert_stock_item_from_release_item_key_uses_legacy_title_convention(admin_conn):
-    # item_key must hash the raw .title() artist/title (not normalize_artist_casing
-    # output) so existing stock_item_judgments rows keyed on that hash don't orphan.
+    # item_key must hash the raw .title() artist/title so existing
+    # stock_item_judgments rows keyed on that hash don't orphan.
     # This test verifies the convention matches replace_stock_items.
     crawler_id, _ = _release_crawler_and_catalog_row(admin_conn, discogs_id="r2")
     db.upsert_catalog_release(admin_conn, {
