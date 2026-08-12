@@ -157,6 +157,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS listings_item_key_crawler_idx ON listings (ite
 -- get_all_stock_judgments' LEFT JOIN LATERAL, and it also serves the
 -- existing get_stock_items / get_unjudged_stock_items joins on s.item_key.
 CREATE INDEX IF NOT EXISTS stock_items_item_key_idx ON stock_items (item_key);
+
+ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS release_id TEXT REFERENCES catalog(discogs_id);
+CREATE UNIQUE INDEX IF NOT EXISTS stock_items_crawler_release_idx ON stock_items (crawler_id, release_id);
 """
 
 
@@ -492,6 +495,46 @@ def upsert_stock_item_listing(
             currency = EXCLUDED.currency, condition = EXCLUDED.condition, last_checked = CURRENT_TIMESTAMP
         """,
         [item_key, crawler_id, url, price, shipping, currency, condition],
+    )
+
+
+def upsert_stock_item_from_release(conn, release_id: str, crawler_id: int, catalog_release: dict, listing: dict):
+    artist = normalize_artist_casing(catalog_release["artist"])
+    title = normalize_title_casing(catalog_release["title"])
+    item_key = compute_item_key(artist, title, listing["url"])
+    conn.execute(
+        """
+        INSERT INTO stock_item_identities (item_key, artist, title, format, last_seen)
+        VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+        ON CONFLICT (item_key) DO UPDATE SET
+            artist = EXCLUDED.artist, title = EXCLUDED.title, format = EXCLUDED.format,
+            last_seen = CURRENT_TIMESTAMP
+        """,
+        [item_key, artist, title, catalog_release["format"]],
+    )
+    conn.execute(
+        """
+        INSERT INTO stock_items
+            (crawler_id, release_id, artist, title, format, price, currency, url, cover_image_url, item_key, last_seen)
+        VALUES (%(crawler_id)s, %(release_id)s, %(artist)s, %(title)s, %(format)s, %(price)s, %(currency)s,
+                %(url)s, %(cover_image_url)s, %(item_key)s, CURRENT_TIMESTAMP)
+        ON CONFLICT (crawler_id, release_id) DO UPDATE SET
+            artist = EXCLUDED.artist, title = EXCLUDED.title, format = EXCLUDED.format,
+            price = EXCLUDED.price, currency = EXCLUDED.currency, url = EXCLUDED.url,
+            cover_image_url = EXCLUDED.cover_image_url, item_key = EXCLUDED.item_key, last_seen = CURRENT_TIMESTAMP
+        """,
+        {
+            "crawler_id": crawler_id, "release_id": release_id, "artist": artist, "title": title,
+            "format": catalog_release["format"], "price": listing.get("price"), "currency": listing.get("currency"),
+            "url": listing["url"], "cover_image_url": catalog_release["cover_image_url"], "item_key": item_key,
+        },
+    )
+
+
+def delete_stock_item_for_release(conn, release_id: str, crawler_id: int):
+    conn.execute(
+        "DELETE FROM stock_items WHERE crawler_id = %s AND release_id = %s",
+        [crawler_id, release_id],
     )
 
 
