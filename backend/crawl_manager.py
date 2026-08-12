@@ -242,7 +242,7 @@ class CrawlManager:
 
     async def _drain_one_batch(self, worker_id: str, plugins_by_crawler_id: dict, pages: dict, batch_size: int = 5) -> int:
         from crawler import _new_context
-        from db import get_app_pool, claim_crawl_queue_batch, mark_crawl_queue_done, upsert_listing, get_catalog_release, get_stock_item_identity, upsert_stock_item_listing
+        from db import get_app_pool, claim_crawl_queue_batch, mark_crawl_queue_done, upsert_listing, get_catalog_release, get_stock_item_identity, upsert_stock_item_listing, upsert_stock_item_from_release, delete_stock_item_for_release
 
         excluded = self._cooling_down_crawler_ids()
         with get_app_pool().connection() as conn:
@@ -309,11 +309,14 @@ class CrawlManager:
                             conn, row["discogs_id"], row["crawler_id"], best["url"],
                             best.get("price"), best.get("shipping"), best.get("currency"), best.get("condition"),
                         )
+                        upsert_stock_item_from_release(conn, row["discogs_id"], row["crawler_id"], target, best)
                     else:
                         upsert_stock_item_listing(
                             conn, row["item_key"], row["crawler_id"], best["url"],
                             best.get("price"), best.get("shipping"), best.get("currency"), best.get("condition"),
                         )
+                elif is_release:
+                    delete_stock_item_for_release(conn, row["discogs_id"], row["crawler_id"])
                 mark_crawl_queue_done(conn, row["id"])
                 conn.commit()
 

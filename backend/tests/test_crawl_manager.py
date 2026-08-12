@@ -1221,6 +1221,106 @@ async def test_worker_claims_and_completes_one_stock_item_queue_row(pg_schema):
     assert queue_row["status"] == "done"
 
 
+async def test_worker_release_match_also_creates_a_stock_items_row(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": "LP", "discogs_price": None, "barcode": None,
+            "cover_image_url": "https://img/r1.jpg", "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1", crawler_id)
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(return_value=[{"url": "https://x", "price": 9.99, "shipping": None, "currency": "USD", "condition": None}])
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT artist, title, format, price, url, cover_image_url FROM stock_items WHERE crawler_id = %s AND release_id = 'r1'",
+            [crawler_id],
+        ).fetchone()
+    assert row["artist"] == "A"
+    assert row["title"] == "T"
+    assert row["format"] == "LP"
+    assert row["price"] == 9.99
+    assert row["url"] == "https://x"
+    assert row["cover_image_url"] == "https://img/r1.jpg"
+
+
+async def test_worker_release_not_found_deletes_an_existing_stock_items_row(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        catalog_release = conn.execute("SELECT * FROM catalog WHERE discogs_id = 'r1'").fetchone()
+        db.upsert_stock_item_from_release(
+            conn, "r1", crawler_id, catalog_release, {"url": "https://x", "price": 9.99, "currency": "USD"},
+        )
+        db.enqueue_crawl_queue(conn, "r1", crawler_id)
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(return_value=[])
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    with db.get_admin_pool().connection() as conn:
+        rows = conn.execute("SELECT * FROM stock_items WHERE release_id = 'r1'").fetchall()
+    assert rows == []
+
+
+async def test_worker_release_crawl_exception_leaves_an_existing_stock_items_row_untouched(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        catalog_release = conn.execute("SELECT * FROM catalog WHERE discogs_id = 'r1'").fetchone()
+        db.upsert_stock_item_from_release(
+            conn, "r1", crawler_id, catalog_release, {"url": "https://x", "price": 9.99, "currency": "USD"},
+        )
+        db.enqueue_crawl_queue(conn, "r1", crawler_id)
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(side_effect=RuntimeError("boom"))
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute("SELECT price FROM stock_items WHERE crawler_id = %s AND release_id = 'r1'", [crawler_id]).fetchone()
+    assert row["price"] == 9.99
+
+
 async def test_worker_dispatches_both_target_kinds_when_claimed_in_one_batch(pg_schema):
     with db.get_admin_pool().connection() as conn:
         db.register_crawler(conn, "Amazon", "/x.py")
