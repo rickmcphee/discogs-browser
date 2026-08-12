@@ -9,7 +9,7 @@ This repository is specification-driven. The design spec and implementation plan
 
 ## Workspace isolation
 
-**Always work in a git worktree, never directly on `main` (or any other checked-out branch) in the primary checkout.** This includes spec/plan edits, not just code. Use the harness's native worktree tool (e.g. `EnterWorktree`) when available; fall back to `git worktree add` (conventionally under `.worktrees/`, gitignored) only when no native tool exists. One worktree per unit of work — branch, implement, commit, and open the PR from there, then remove it.
+**For all development in a session, always work in a git worktree — never just check out or create a branch in the primary checkout.** A branch alone is not isolation: the primary checkout is shared state, so checking one out there (even a fresh feature branch) still risks clobbering whatever the user or another session has checked out. This includes spec/plan edits, not just code. Use the harness's native worktree tool (e.g. `EnterWorktree`) when available; fall back to `git worktree add` (conventionally under `.worktrees/`, gitignored) only when no native tool exists. One worktree per unit of work — branch, implement, commit, and open the PR from there, then remove it.
 
 ## Repository layout
 
