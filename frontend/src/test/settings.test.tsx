@@ -382,4 +382,29 @@ describe('Settings', () => {
     await waitFor(() => expect(screen.getByText('Rate limited')).toBeInTheDocument())
     expect((noteInput as HTMLInputElement).value).toBe('for dave')
   })
+
+  it('keeps the minted code and does not claim minting failed when the refetch fails', async () => {
+    createInvite.mockResolvedValueOnce({ code: 'MINTED1' })
+    renderSettings()
+    await waitFor(() => expect(listInvites).toHaveBeenCalled())
+    listInvites.mockRejectedValueOnce(new Error('network down'))
+    fireEvent.click(screen.getByText('Generate'))
+    expect(await screen.findByText('MINTED1')).toBeInTheDocument()
+    expect(await screen.findByText('Invite created, but the list could not be refreshed.')).toBeInTheDocument()
+    expect(screen.queryByText('Could not generate invite')).not.toBeInTheDocument()
+  })
+
+  it('shows an error when the clipboard is unavailable', async () => {
+    const clipboard = navigator.clipboard
+    Object.assign(navigator, { clipboard: undefined })
+    createInvite.mockResolvedValueOnce({ code: 'NOCLIP1' })
+    renderSettings()
+    await waitFor(() => expect(listInvites).toHaveBeenCalled())
+    fireEvent.click(screen.getByText('Generate'))
+    await waitFor(() => expect(screen.getByText('NOCLIP1')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Copy'))
+    expect(await screen.findByText(/Could not copy to the clipboard/)).toBeInTheDocument()
+    expect(screen.queryByText('Copied')).not.toBeInTheDocument()
+    Object.assign(navigator, { clipboard })
+  })
 })

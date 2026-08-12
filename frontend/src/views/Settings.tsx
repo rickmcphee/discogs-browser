@@ -282,15 +282,26 @@ function Settings({
       setMintedCode(code)
       setCopied(false)
       setInviteNote('')
-      setInvites(await listInvites())
     } catch (err) {
       setInvitesError(errorMessage(err, 'Could not generate invite'))
+      return
+    }
+    // separate from the mint's catch: the code is already minted, so a failed
+    // refetch must not be reported as a failed mint
+    try {
+      setInvites(await listInvites())
+    } catch {
+      setInvitesError('Invite created, but the list could not be refreshed.')
     }
   }
 
   async function handleCopyInvite(code: string) {
-    await navigator.clipboard.writeText(code)
-    setCopied(true)
+    try {
+      await navigator.clipboard.writeText(code)
+      setCopied(true)
+    } catch {
+      setInvitesError('Could not copy to the clipboard. Select the code above and copy it manually.')
+    }
   }
 
   return (
