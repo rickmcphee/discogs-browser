@@ -35,16 +35,25 @@ Touches:
   helpers alongside the existing `upsert_listing`.
 - `backend/crawl_manager.py` — `_drain_one_batch`'s `is_release` branch calls
   the new helpers after (not instead of) `upsert_listing`.
-- `frontend/src/App.tsx` — SSE handler bumps `stockSyncGeneration` on
-  `listing_changed` events too, not just `stock_sync_progress`/
-  `stock_sync_complete`, so Store/Track repaint live as release crawlers find
-  matches, matching the existing live-repaint behavior for catalog crawls
-  (#118).
-- `backend/version.py` — minor bump.
+- `frontend/src/api/types.ts` — `CrawlEvent` gains `type?: 'listing_changed'`
+  and `item_key?: string`, matching the wire shape `_broadcast_listing_changed`/
+  `_broadcast_stock_listing_changed` already send but the type doesn't declare.
+- `frontend/src/App.tsx` — SSE handler bumps `stockSyncGeneration` on any
+  `type === 'listing_changed'` event, not just `stock_sync_progress`/
+  `stock_sync_complete`. Covers both the release-path event (`discogs_id`,
+  what this spec adds a `stock_items` write to) and the pre-existing
+  item_key-path event (a new price comparison attached to an existing
+  anchor row also changes what Store/Track render) — matching the existing
+  live-repaint behavior for catalog crawls (#118). `event.status` values
+  `'found'`/`'not_found'` are already used by an unrelated, and apparently
+  otherwise-dead, older per-release progress banner keyed on `event.release`
+  (`crawlStatusBar.test.tsx`) — the new handler discriminates on `type`, not
+  `status`, so it can't collide with that path.
 - Tests: `backend/tests/test_crawl_manager.py` (`_drain_one_batch` release
   branch), `backend/tests/test_stock_crud.py` (new helpers),
-  `frontend/src/test/crawlStatusBar.test.tsx` or a new SSE test for the
-  `listing_changed` → `stockSyncGeneration` wiring.
+  `frontend/src/test/inStockTab.test.tsx` for the `listing_changed` →
+  `stockSyncGeneration` wiring (same file already covers `stock_sync_*` →
+  `stockSyncGeneration`).
 
 Out of scope:
 
@@ -143,13 +152,18 @@ after the existing `upsert_listing(...)` call:
 ## Live repaint
 
 `listing_changed` SSE events already fire on every release-crawl result
-(`_broadcast_listing_changed`, `crawl_manager.py:328`) but the frontend
-currently drops them — the per-release UI that used to consume them was
-removed by the 2026-08-08 tab rename. `App.tsx`'s SSE handler gains a case
-for `listing_changed` that bumps `stockSyncGeneration`, the same counter
+(`_broadcast_listing_changed`, `crawl_manager.py:328`) and every stock-item
+price-comparison result (`_broadcast_stock_listing_changed`,
+`crawl_manager.py:334`), but the frontend currently drops both — the
+per-release UI that used to consume the first was removed by the 2026-08-08
+tab rename, and nothing has ever consumed the second. `App.tsx`'s SSE
+handler gains a case matching `event.type === 'listing_changed'` (either
+shape) that bumps `stockSyncGeneration`, the same counter
 `stock_sync_progress`/`stock_sync_complete` already bump, so `StockBrowser`
-(both `store` and `track` scopes) refetches live as release crawlers find
-matches, consistent with catalog-crawl live repaint (#118).
+(both `store` and `track` scopes) refetches live — as a release crawler
+finds a match (this spec's new `stock_items` write) or as a price
+comparison arrives for an item already shown (an existing, previously-inert
+signal) — consistent with catalog-crawl live repaint (#118).
 
 ## Testing
 
@@ -160,6 +174,6 @@ matches, consistent with catalog-crawl live repaint (#118).
 - `upsert_stock_item_from_release`/`delete_stock_item_for_release`: direct
   unit coverage in `test_stock_crud.py`, including the upsert-on-conflict
   case (same release/crawler crawled twice with a changed price/url).
-- Frontend: a `listing_changed` SSE event bumps `stockSyncGeneration`
-  (existing pattern in `crawlStatusBar.test.tsx`/similar SSE-handling
-  tests).
+- Frontend: a `listing_changed` SSE event triggers a `getStock` refetch,
+  proven the same way `inStockTab.test.tsx` already proves it for
+  `stock_sync_progress`.
