@@ -386,6 +386,13 @@ def init_tenant_schema():
 
         conn.execute("GRANT SELECT, INSERT, UPDATE ON users TO app_identity")
         conn.execute("GRANT SELECT, INSERT, UPDATE ON invites TO app_identity")
+        # Older schema versions granted app_user INSERT on invites before invite
+        # minting moved to app_identity. GRANT/REVOKE aren't self-reversing --
+        # deleting that GRANT line from this function does not strip the
+        # privilege from a role that already has it on an upgraded database, so
+        # the old grant is revoked explicitly on every re-run. A no-op on a
+        # database that never had it (or already had it revoked).
+        conn.execute("REVOKE INSERT ON invites FROM app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON sessions TO app_identity")
         conn.execute("GRANT USAGE, SELECT ON SEQUENCE users_id_seq TO app_identity")
         conn.execute("GRANT SELECT, INSERT, DELETE ON oauth_request_state TO app_identity")

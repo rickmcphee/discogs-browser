@@ -67,6 +67,31 @@ def test_invites_table_has_rls_disabled(admin_conn):
     assert row["relforcerowsecurity"] is False
 
 
+def test_app_user_cannot_insert_invites(admin_conn):
+    granted = admin_conn.execute(
+        "SELECT has_table_privilege('app_user', 'invites', 'INSERT') AS granted"
+    ).fetchone()["granted"]
+    assert granted is False
+
+
+def test_reinit_revokes_stale_invite_insert_grant_from_app_user(admin_conn):
+    """Simulates an upgraded database that already ran the old
+    `GRANT INSERT ON invites TO app_user` before invite minting moved to
+    app_identity -- GRANT/REVOKE are not self-reversing, so removing that
+    line from TENANT_SCHEMA's source does not by itself strip the privilege
+    from a role that already has it. init_tenant_schema() must REVOKE it
+    explicitly on every re-run, not just skip granting it on a fresh db."""
+    admin_conn.execute("GRANT INSERT ON invites TO app_user")
+    admin_conn.commit()
+
+    db.init_tenant_schema()
+
+    granted = admin_conn.execute(
+        "SELECT has_table_privilege('app_user', 'invites', 'INSERT') AS granted"
+    ).fetchone()["granted"]
+    assert granted is False
+
+
 def test_app_identity_cannot_query_library_items(admin_conn):
     with _connect_as("app_identity", os.environ["IDENTITY_DB_PASSWORD"]) as conn:
         with pytest.raises(psycopg.errors.InsufficientPrivilege):

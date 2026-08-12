@@ -79,6 +79,13 @@ function toggleButtonClass(on: boolean): string {
   }`
 }
 
+// Postgres TIMESTAMP (not TIMESTAMPTZ) columns serialize as offsetless ISO
+// strings -- `new Date()` on those parses as browser-local time, not UTC.
+function formatServerTimestamp(iso: string): string {
+  const hasOffset = /[zZ]|[+-]\d\d:\d\d$/.test(iso)
+  return new Date(hasOffset ? iso : `${iso}Z`).toLocaleString()
+}
+
 function Settings({
   crawlers, onCrawlersChange, onRefreshPrices, onRefreshStock, isAdmin, hiddenCrawlerIds, onToggleCrawlerView,
   stockSyncBusy, stockSyncCrawlerId, onRefreshStoreCrawler,
@@ -102,10 +109,13 @@ function Settings({
   const [settingsLoaded, setSettingsLoaded] = useState(false)
   const [discardedNotice, setDiscardedNotice] = useState<{ crawlerId: number; count: number } | null>(null)
   const [invites, setInvites] = useState<Invite[]>([])
+  const [invitesLoading, setInvitesLoading] = useState(true)
+  const latestInvitesSeq = useRef(0)
   const [invitesError, setInvitesError] = useState('')
   const [inviteNote, setInviteNote] = useState('')
   const [mintedCode, setMintedCode] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
+  const [minting, setMinting] = useState(false)
 
   const releaseCrawlers = crawlers.filter((c) => c.crawler_type === 'release')
   const catalogCrawlers = crawlers.filter((c) => c.crawler_type === 'catalog' || c.crawler_type === 'catalog_browser')
@@ -234,7 +244,18 @@ function Settings({
 
   useEffect(() => {
     if (!isAdmin) return
-    listInvites().then(setInvites).catch((err) => setInvitesError(errorMessage(err, 'Could not load invites')))
+    const seq = ++latestInvitesSeq.current
+    listInvites()
+      .then((result) => {
+        if (seq !== latestInvitesSeq.current) return
+        setInvites(result)
+        setInvitesLoading(false)
+      })
+      .catch((err) => {
+        if (seq !== latestInvitesSeq.current) return
+        setInvitesError(errorMessage(err, 'Could not load invites'))
+        setInvitesLoading(false)
+      })
   }, [isAdmin])
 
   function saveSettingsNow() {
@@ -277,21 +298,31 @@ function Settings({
 
   async function handleGenerateInvite() {
     setInvitesError('')
+    setMinting(true)
     try {
-      const { code } = await createInvite(inviteNote.trim() || undefined)
-      setMintedCode(code)
-      setCopied(false)
-      setInviteNote('')
-    } catch (err) {
-      setInvitesError(errorMessage(err, 'Could not generate invite'))
-      return
-    }
-    // separate from the mint's catch: the code is already minted, so a failed
-    // refetch must not be reported as a failed mint
-    try {
-      setInvites(await listInvites())
-    } catch {
-      setInvitesError('Invite created, but the list could not be refreshed.')
+      try {
+        const { code } = await createInvite(inviteNote.trim() || undefined)
+        setMintedCode(code)
+        setCopied(false)
+        setInviteNote('')
+      } catch (err) {
+        setInvitesError(errorMessage(err, 'Could not generate invite'))
+        return
+      }
+      // separate from the mint's catch: the code is already minted, so a failed
+      // refetch must not be reported as a failed mint
+      const seq = ++latestInvitesSeq.current
+      try {
+        const result = await listInvites()
+        if (seq !== latestInvitesSeq.current) return
+        setInvites(result)
+        setInvitesLoading(false)
+      } catch {
+        if (seq !== latestInvitesSeq.current) return
+        setInvitesError('Invite created, but the list could not be refreshed.')
+      }
+    } finally {
+      setMinting(false)
     }
   }
 
@@ -444,8 +475,8 @@ function Settings({
               onChange={(e) => setInviteNote(e.target.value)}
               className={`flex-1 px-3 py-1 ${textInputClass()}`}
             />
-            <button onClick={handleGenerateInvite} className={`px-3 py-1 text-xs ${secondaryButtonClass()}`}>
-              Generate
+            <button onClick={handleGenerateInvite} disabled={minting} className={`px-3 py-1 text-xs disabled:opacity-50 ${secondaryButtonClass()}`}>
+              {minting ? 'Generating…' : 'Generate'}
             </button>
           </div>
           {mintedCode && (
@@ -460,7 +491,9 @@ function Settings({
             </p>
           )}
           {invites.length === 0 ? (
-            <p className="text-gray-500 text-sm text-left">No invites minted yet.</p>
+            !invitesLoading && !invitesError && (
+              <p className="text-gray-500 text-sm text-left">No invites minted yet.</p>
+            )
           ) : (
             <table className="w-full text-sm border-collapse">
               <thead>
@@ -479,10 +512,10 @@ function Settings({
                     <td className="py-2 pr-4 text-left font-mono text-xs text-gray-300">{invite.code}</td>
                     <td className="py-2 pr-4 text-left text-gray-400">{invite.note || '—'}</td>
                     <td className="py-2 pr-4 text-left text-gray-400">{invite.created_by_username || '—'}</td>
-                    <td className="py-2 pr-4 text-left text-gray-500 text-xs">{new Date(invite.created_at).toLocaleString()}</td>
+                    <td className="py-2 pr-4 text-left text-gray-500 text-xs">{formatServerTimestamp(invite.created_at)}</td>
                     <td className="py-2 pr-4 text-left text-gray-400">{invite.redeemed_by_username || '—'}</td>
                     <td className="py-2 text-left text-gray-500 text-xs">
-                      {invite.redeemed_at ? new Date(invite.redeemed_at).toLocaleString() : '—'}
+                      {invite.redeemed_at ? formatServerTimestamp(invite.redeemed_at) : '—'}
                     </td>
                   </tr>
                 ))}
