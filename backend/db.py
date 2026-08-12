@@ -277,6 +277,8 @@ CREATE TABLE IF NOT EXISTS invites (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+ALTER TABLE invites ADD COLUMN IF NOT EXISTS note TEXT;
+
 -- Neither oauth_request_state nor pending_signups gets an RLS policy: both
 -- are pre-session state with no per-user row-ownership column to scope a
 -- policy on in the first place (unlike users/sessions, where the row IS
@@ -506,15 +508,33 @@ def create_user(conn, discogs_user_id: int, discogs_username: str, invited_by: O
     ).fetchone()
 
 
-def create_invite(conn, created_by: int, code: str) -> dict:
+def create_invite(conn, created_by: int, code: str, note: Optional[str] = None) -> dict:
     return conn.execute(
         """
-        INSERT INTO invites (code, created_by, created_at)
-        VALUES (%s, %s, CURRENT_TIMESTAMP)
+        INSERT INTO invites (code, created_by, note, created_at)
+        VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
         RETURNING *
         """,
-        [code, created_by],
+        [code, created_by, note],
     ).fetchone()
+
+
+def list_invites(conn) -> list[dict]:
+    return conn.execute(
+        """
+        SELECT
+            invites.code,
+            invites.note,
+            invites.created_at,
+            invites.redeemed_at,
+            creator.discogs_username AS created_by_username,
+            redeemer.discogs_username AS redeemed_by_username
+        FROM invites
+        LEFT JOIN users creator ON creator.id = invites.created_by
+        LEFT JOIN users redeemer ON redeemer.id = invites.redeemed_by
+        ORDER BY invites.created_at DESC
+        """
+    ).fetchall()
 
 
 # Includes discogs_oauth_token_encrypted, discogs_oauth_secret_encrypted,
