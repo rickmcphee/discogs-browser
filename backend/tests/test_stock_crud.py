@@ -1195,3 +1195,37 @@ def test_delete_stock_item_for_release_leaves_the_identity_row(admin_conn):
         "SELECT artist FROM stock_item_identities WHERE item_key = %s", [item_key]
     ).fetchone()
     assert row is not None
+
+
+def test_upsert_stock_item_from_release_item_key_uses_legacy_title_convention(admin_conn):
+    # item_key must hash the raw .title() artist/title (not normalize_artist_casing
+    # output) so existing stock_item_judgments rows keyed on that hash don't orphan.
+    # This test verifies the convention matches replace_stock_items.
+    crawler_id, _ = _release_crawler_and_catalog_row(admin_conn, discogs_id="r2")
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r2", "artist": "NAILS", "title": "UNSILENT NIGHT",
+        "year": None, "label": None, "format": "LP", "discogs_price": None,
+        "barcode": None, "cover_image_url": "https://img/r2.jpg", "discogs_url": None,
+    })
+    admin_conn.commit()
+    catalog_release = admin_conn.execute("SELECT * FROM catalog WHERE discogs_id = 'r2'").fetchone()
+
+    db.upsert_stock_item_from_release(
+        admin_conn, "r2", crawler_id, catalog_release,
+        {"url": "https://amazon/y", "price": 15.0, "currency": "USD"},
+    )
+    admin_conn.commit()
+
+    # The stored artist/title use normalize_artist_casing/normalize_title_casing
+    row = admin_conn.execute(
+        "SELECT artist, title FROM stock_items WHERE crawler_id = %s AND release_id = 'r2'", [crawler_id]
+    ).fetchone()
+    assert row["artist"] == "Nails"
+    assert row["title"] == "Unsilent Night"
+
+    # But the item_key was computed using .title() on the raw values, matching legacy convention
+    item_key = db.compute_item_key("NAILS".title(), "UNSILENT NIGHT", "https://amazon/y")
+    assert admin_conn.execute(
+        "SELECT * FROM stock_items WHERE crawler_id = %s AND release_id = 'r2' AND item_key = %s",
+        [crawler_id, item_key]
+    ).fetchone() is not None

@@ -501,7 +501,11 @@ def upsert_stock_item_listing(
 def upsert_stock_item_from_release(conn, release_id: str, crawler_id: int, catalog_release: dict, listing: dict):
     artist = normalize_artist_casing(catalog_release["artist"])
     title = normalize_title_casing(catalog_release["title"])
-    item_key = compute_item_key(artist, title, listing["url"])
+    # item_key keeps hashing the legacy str.title() casing (not the corrected
+    # `artist`/`title` above) so existing stock_item_judgments rows, which
+    # join on item_key, don't orphan for items whose casing changed here.
+    # Mirrors replace_stock_items's convention.
+    item_key = compute_item_key(catalog_release["artist"].title(), catalog_release["title"], listing["url"])
     conn.execute(
         """
         INSERT INTO stock_item_identities (item_key, artist, title, format, last_seen)
