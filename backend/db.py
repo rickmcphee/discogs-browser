@@ -159,7 +159,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS listings_item_key_crawler_idx ON listings (ite
 CREATE INDEX IF NOT EXISTS stock_items_item_key_idx ON stock_items (item_key);
 
 ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS release_id TEXT REFERENCES catalog(discogs_id);
-CREATE UNIQUE INDEX IF NOT EXISTS stock_items_crawler_release_idx ON stock_items (crawler_id, release_id);
+CREATE UNIQUE INDEX IF NOT EXISTS stock_items_crawler_release_idx ON stock_items (crawler_id, release_id) WHERE release_id IS NOT NULL;
 """
 
 
@@ -499,12 +499,13 @@ def upsert_stock_item_listing(
 
 
 def upsert_stock_item_from_release(conn, release_id: str, crawler_id: int, catalog_release: dict, listing: dict):
-    artist = normalize_artist_casing(catalog_release["artist"])
-    title = normalize_title_casing(catalog_release["title"])
-    # item_key keeps hashing the legacy str.title() casing (not the corrected
-    # `artist`/`title` above) so existing stock_item_judgments rows, which
-    # join on item_key, don't orphan for items whose casing changed here.
-    # Mirrors replace_stock_items's convention.
+    artist = catalog_release["artist"]
+    title = catalog_release["title"]
+    # Catalog data is already curated Discogs metadata, not scraped text, so
+    # unlike replace_stock_items it's stored as-is -- no normalize_artist_casing/
+    # normalize_title_casing pass. item_key still hashes the .title()/raw-title
+    # legacy convention below, matching replace_stock_items, regardless of what
+    # gets stored for display.
     item_key = compute_item_key(catalog_release["artist"].title(), catalog_release["title"], listing["url"])
     conn.execute(
         """
@@ -522,7 +523,7 @@ def upsert_stock_item_from_release(conn, release_id: str, crawler_id: int, catal
             (crawler_id, release_id, artist, title, format, price, currency, url, cover_image_url, item_key, last_seen)
         VALUES (%(crawler_id)s, %(release_id)s, %(artist)s, %(title)s, %(format)s, %(price)s, %(currency)s,
                 %(url)s, %(cover_image_url)s, %(item_key)s, CURRENT_TIMESTAMP)
-        ON CONFLICT (crawler_id, release_id) DO UPDATE SET
+        ON CONFLICT (crawler_id, release_id) WHERE release_id IS NOT NULL DO UPDATE SET
             artist = EXCLUDED.artist, title = EXCLUDED.title, format = EXCLUDED.format,
             price = EXCLUDED.price, currency = EXCLUDED.currency, url = EXCLUDED.url,
             cover_image_url = EXCLUDED.cover_image_url, item_key = EXCLUDED.item_key, last_seen = CURRENT_TIMESTAMP
@@ -833,6 +834,11 @@ def _enabled_stock_source_exists(item_key_expr: str) -> str:
     replace_stock_items() deletes a crawler's whole batch and reinserts only
     what is currently in stock, so a sold-out item loses its stock_items row
     while its stock_item_identities row and its queue rows survive.
+
+    Release-crawler-sourced stock_items rows (keyed by release_id, written by
+    upsert_stock_item_from_release/delete_stock_item_for_release) are a
+    separate population this predicate doesn't apply to -- it only reasons
+    about the item_key-keyed rows above.
 
     item_key_expr is always a literal chosen at the call site -- a column
     reference or a bound-parameter placeholder, never request-derived -- the

@@ -1246,12 +1246,13 @@ def test_upsert_stock_item_from_release_item_key_uses_legacy_title_convention(ad
     )
     admin_conn.commit()
 
-    # The stored artist/title use normalize_artist_casing/normalize_title_casing
+    # Catalog artist/title are stored raw (unnormalized) -- catalog metadata
+    # is already curated, unlike scraped stock-page text.
     row = admin_conn.execute(
         "SELECT artist, title FROM stock_items WHERE crawler_id = %s AND release_id = 'r2'", [crawler_id]
     ).fetchone()
-    assert row["artist"] == "Nails"
-    assert row["title"] == "Unsilent Night"
+    assert row["artist"] == "NAILS"
+    assert row["title"] == "UNSILENT NIGHT"
 
     # But the item_key was computed using .title() on the raw values, matching legacy convention
     item_key = db.compute_item_key("NAILS".title(), "UNSILENT NIGHT", "https://amazon/y")
