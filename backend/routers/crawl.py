@@ -65,6 +65,12 @@ def _events_to_replay(request: Request) -> list[dict]:
     history for no benefit. Gated on any per-user-relevant job being active,
     not a single global crawl task, since there's no single "the crawl"
     anymore under a shared queue.
+
+    listing_changed events themselves are never filtered by library
+    ownership here -- Store/Track are global (any user's tab can show any
+    release-crawler match), so a listing_changed event for a release outside
+    the calling user's own library still needs to reach them so their
+    Store/Track tab repaints.
     """
     user_id = request.state.user_id
     with db.user_scope(user_id) as conn:
@@ -75,27 +81,11 @@ def _events_to_replay(request: Request) -> list[dict]:
     )
     if not any_active:
         return []
-    return [
-        e for e in crawl_manager.recent_events()
-        if e.get("type") != "listing_changed" or _event_touches_user(e, user_id)
-    ]
-
-
-def _event_touches_user(event: dict, user_id: int) -> bool:
-    discogs_id = event.get("discogs_id")
-    if not discogs_id:
-        return True
-    with db.user_scope(user_id) as conn:
-        row = conn.execute(
-            "SELECT 1 FROM library_items WHERE user_id = %s AND discogs_id = %s", [user_id, discogs_id]
-        ).fetchone()
-    return row is not None
+    return crawl_manager.recent_events()
 
 
 @router.get("/crawl/stream")
 async def crawl_stream(request: Request):
-    user_id = request.state.user_id
-
     async def generate():
         q = crawl_manager.subscribe()
         try:
@@ -106,8 +96,6 @@ async def crawl_stream(request: Request):
                     event = await asyncio.wait_for(q.get(), timeout=15.0)
                 except asyncio.TimeoutError:
                     yield {"data": json.dumps({"status": "ping"})}
-                    continue
-                if event.get("type") == "listing_changed" and not _event_touches_user(event, user_id):
                     continue
                 yield {"data": json.dumps(event)}
         finally:

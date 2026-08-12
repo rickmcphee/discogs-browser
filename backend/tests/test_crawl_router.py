@@ -181,25 +181,13 @@ def _setup_two_users_each_with_a_different_release(crawler_site_name="Amazon"):
     return alice, bob, crawler_id
 
 
-def test_event_touches_user_is_scoped_to_the_calling_users_own_library(pg_test_db, authed_client_factory):
-    alice, bob, crawler_id = _setup_two_users_each_with_a_different_release()
-
-    event_for_r1 = {"type": "listing_changed", "discogs_id": "r1", "crawler_id": crawler_id, "status": "found"}
-    event_for_r2 = {"type": "listing_changed", "discogs_id": "r2", "crawler_id": crawler_id, "status": "found"}
-
-    assert crawl_router._event_touches_user(event_for_r1, alice["id"]) is True
-    assert crawl_router._event_touches_user(event_for_r2, alice["id"]) is False
-    assert crawl_router._event_touches_user(event_for_r2, bob["id"]) is True
-
-
-def test_event_touches_user_returns_true_for_a_stock_item_event_with_no_discogs_id(pg_test_db, authed_client_factory):
-    alice, bob, crawler_id = _setup_two_users_each_with_a_different_release()
-    event = {"type": "listing_changed", "item_key": "key1", "crawler_id": crawler_id, "status": "found"}
-    assert crawl_router._event_touches_user(event, alice["id"]) is True
-    assert crawl_router._event_touches_user(event, bob["id"]) is True
-
-
-def test_crawl_stream_replay_only_includes_events_relevant_to_calling_user(pg_test_db, authed_client_factory):
+def test_crawl_stream_replay_includes_listing_changed_events_for_every_release(pg_test_db, authed_client_factory):
+    # Store/Track are global, not per-user: a stock_items row a release
+    # crawler wrote for r2 (Bob's release) must repaint Alice's Store tab
+    # too, even though r2 is never in Alice's own library. Filtering
+    # listing_changed replay by library ownership would silently starve
+    # every user's Store/Track tab of updates for releases outside their
+    # own collection/wishlist.
     alice, bob, crawler_id = _setup_two_users_each_with_a_different_release()
 
     # _broadcast_listing_changed fans a listing_changed event out to live
@@ -223,7 +211,7 @@ def test_crawl_stream_replay_only_includes_events_relevant_to_calling_user(pg_te
 
     discogs_ids = [e.get("discogs_id") for e in events]
     assert "r1" in discogs_ids
-    assert "r2" not in discogs_ids
+    assert "r2" in discogs_ids
     assert any(e.get("status") == "sync_started" for e in events)
 
 
