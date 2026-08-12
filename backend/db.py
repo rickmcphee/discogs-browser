@@ -1465,8 +1465,12 @@ def count_matching_stock_items(conn, item_keys: list[str]) -> int:
 
 
 def get_missing_releases(conn, user_id: int) -> list[str]:
+    # Scoped to crawler_type = 'release': only release crawlers ever write a
+    # listings row (via upsert_listing), so counting catalog crawlers in the
+    # denominator would make every release permanently short of the target
+    # and thus permanently "missing".
     enabled_count = conn.execute(
-        "SELECT COUNT(*) FROM crawlers WHERE enabled = TRUE"
+        "SELECT COUNT(*) FROM crawlers WHERE enabled = TRUE AND crawler_type = 'release'"
     ).fetchone()["count"]
     if enabled_count == 0:
         return []
@@ -1475,7 +1479,7 @@ def get_missing_releases(conn, user_id: int) -> list[str]:
         SELECT li.discogs_id FROM library_items li
         WHERE li.user_id = %(user_id)s AND (
             SELECT COUNT(DISTINCT l.crawler_id) FROM listings l
-            JOIN crawlers c ON c.id = l.crawler_id AND c.enabled = TRUE
+            JOIN crawlers c ON c.id = l.crawler_id AND c.enabled = TRUE AND c.crawler_type = 'release'
             WHERE l.release_id = li.discogs_id AND l.price IS NOT NULL
         ) < %(enabled_count)s
         """,
@@ -1488,8 +1492,10 @@ def get_crawl_status_for_user(conn, user_id: int) -> dict:
     total = conn.execute(
         "SELECT COUNT(*) FROM library_items WHERE user_id = %s", [user_id]
     ).fetchone()["count"]
+    # Scoped to crawler_type = 'release' -- see get_missing_releases, whose
+    # mode=missing candidate set this status must stay consistent with.
     enabled_count = conn.execute(
-        "SELECT COUNT(*) FROM crawlers WHERE enabled = TRUE"
+        "SELECT COUNT(*) FROM crawlers WHERE enabled = TRUE AND crawler_type = 'release'"
     ).fetchone()["count"]
 
     if enabled_count == 0 or total == 0:
@@ -1501,7 +1507,7 @@ def get_crawl_status_for_user(conn, user_id: int) -> dict:
             SELECT li.discogs_id
             FROM library_items li
             JOIN listings l ON l.release_id = li.discogs_id
-            JOIN crawlers c ON c.id = l.crawler_id AND c.enabled = TRUE
+            JOIN crawlers c ON c.id = l.crawler_id AND c.enabled = TRUE AND c.crawler_type = 'release'
             WHERE li.user_id = %(user_id)s AND l.price IS NOT NULL
             GROUP BY li.discogs_id
             HAVING COUNT(DISTINCT l.crawler_id) = %(enabled_count)s

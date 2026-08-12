@@ -88,6 +88,29 @@ def test_get_missing_releases_includes_wishlist_only_items(pg_test_db):
         assert set(db.get_missing_releases(conn, alice["id"])) == {"r1", "r2"}
 
 
+def test_get_missing_releases_counts_only_release_crawlers(pg_test_db):
+    # A catalog crawler never writes a `listings` row -- only release-type
+    # crawlers do, via upsert_listing -- so counting catalog crawlers in the
+    # enabled-crawler denominator makes every release permanently "missing"
+    # even once every release crawler has priced it.
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        db.register_crawler(conn, "Amazon", "/x.py", crawler_type="release")
+        db.register_crawler(conn, "Some Store", "/y.py", crawler_type="catalog")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.upsert_library_item(conn, alice["id"], "r1", in_collection=True)
+        db.upsert_listing(conn, "r1", crawler_id, "https://x", 9.99, None, "USD", None)
+        conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.get_missing_releases(conn, alice["id"]) == []
+
+
 def test_get_crawl_status_for_user(pg_test_db):
     with db.get_admin_pool().connection() as conn:
         alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
@@ -104,6 +127,31 @@ def test_get_crawl_status_for_user(pg_test_db):
     with db.user_scope(alice["id"]) as conn:
         status = db.get_crawl_status_for_user(conn, alice["id"])
     assert status == {"total": 1, "missing": 1, "oldest_checked": None}
+
+
+def test_get_crawl_status_for_user_counts_only_release_crawlers(pg_test_db):
+    # Same mismatch as get_missing_releases: an enabled catalog crawler can
+    # never contribute a listings row, so it must not inflate the completeness
+    # denominator either -- otherwise `missing` never reaches 0.
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        db.register_crawler(conn, "Amazon", "/x.py", crawler_type="release")
+        db.register_crawler(conn, "Some Store", "/y.py", crawler_type="catalog")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.upsert_library_item(conn, alice["id"], "r1", in_collection=True)
+        db.upsert_listing(conn, "r1", crawler_id, "https://x", 9.99, None, "USD", None)
+        conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        status = db.get_crawl_status_for_user(conn, alice["id"])
+    assert status["total"] == 1
+    assert status["missing"] == 0
+    assert status["oldest_checked"] is not None
 
 
 def test_get_crawl_status_for_user_includes_wishlist_only_items(pg_test_db):
