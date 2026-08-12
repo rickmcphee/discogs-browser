@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { postCrawlStart, postStockSyncStart, getUserSettings, saveUserSettings, logout, getStock, getStockArtists, getReleases, getArtists, postPlexMatchStart, refreshCollection, openCrawlStream, openLogsStream, importRecommendationsCsv } from '../api/client'
+import { postCrawlStart, postStockSyncStart, getUserSettings, saveUserSettings, logout, getStock, getStockArtists, getReleases, getArtists, postPlexMatchStart, refreshCollection, openCrawlStream, openLogsStream, importRecommendationsCsv, listInvites, createInvite } from '../api/client'
 
 describe('crawl/user-settings client functions', () => {
   let fetchMock: ReturnType<typeof vi.fn>
@@ -216,5 +216,26 @@ describe('crawl/user-settings client functions', () => {
     // The browser must supply the multipart boundary; setting Content-Type by
     // hand omits it and the request fails to parse server-side.
     expect(new Headers(init.headers).has('Content-Type')).toBe(false)
+  })
+
+  it('listInvites fetches /auth/invites', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => [] })
+    await listInvites()
+    expect(fetchMock.mock.calls[0][0]).toContain('/auth/invites')
+  })
+
+  it('createInvite posts the note and returns the minted code', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ code: 'ABC123' }) })
+    const result = await createInvite('for a friend')
+    expect(fetchMock.mock.calls[0][0]).toContain('/auth/invites')
+    expect(fetchMock.mock.calls[0][1].method).toBe('POST')
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ note: 'for a friend' })
+    expect(result).toEqual({ code: 'ABC123' })
+  })
+
+  it('createInvite sends a null note when none is given', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ code: 'XYZ789' }) })
+    await createInvite()
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ note: null })
   })
 })

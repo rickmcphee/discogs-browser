@@ -112,6 +112,15 @@ export type AuthStatus =
   | { state: 'unauthenticated' }
   | { state: 'authenticated'; user: { discogs_username: string; is_admin: boolean } }
 
+export interface Invite {
+  code: string
+  note: string | null
+  created_by_username: string | null
+  created_at: string
+  redeemed_by_username: string | null
+  redeemed_at: string | null
+}
+
 export interface StockItem {
   id: number | string
   item_key: string
