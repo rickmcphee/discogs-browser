@@ -277,6 +277,8 @@ CREATE TABLE IF NOT EXISTS invites (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+ALTER TABLE invites ADD COLUMN IF NOT EXISTS note TEXT;
+
 -- Neither oauth_request_state nor pending_signups gets an RLS policy: both
 -- are pre-session state with no per-user row-ownership column to scope a
 -- policy on in the first place (unlike users/sessions, where the row IS
@@ -383,7 +385,14 @@ def init_tenant_schema():
         _ensure_role(conn, "app_user", config.APP_DB_PASSWORD, bypass_rls=False)
 
         conn.execute("GRANT SELECT, INSERT, UPDATE ON users TO app_identity")
-        conn.execute("GRANT SELECT, UPDATE ON invites TO app_identity")
+        conn.execute("GRANT SELECT, INSERT, UPDATE ON invites TO app_identity")
+        # Older schema versions granted app_user INSERT on invites before invite
+        # minting moved to app_identity. GRANT/REVOKE aren't self-reversing --
+        # deleting that GRANT line from this function does not strip the
+        # privilege from a role that already has it on an upgraded database, so
+        # the old grant is revoked explicitly on every re-run. A no-op on a
+        # database that never had it (or already had it revoked).
+        conn.execute("REVOKE INSERT ON invites FROM app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON sessions TO app_identity")
         conn.execute("GRANT USAGE, SELECT ON SEQUENCE users_id_seq TO app_identity")
         conn.execute("GRANT SELECT, INSERT, DELETE ON oauth_request_state TO app_identity")
@@ -415,10 +424,6 @@ def init_tenant_schema():
         # when an admin disables it.
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON crawl_queue TO app_user")
         conn.execute("GRANT USAGE, SELECT ON SEQUENCE crawl_queue_id_seq TO app_user")
-        # INSERT only -- app_user never needs to read back another admin's
-        # minted invites, and redemption (SELECT/UPDATE) runs through
-        # app_identity, not this role.
-        conn.execute("GRANT INSERT ON invites TO app_user")
         conn.commit()
 
 
@@ -506,15 +511,33 @@ def create_user(conn, discogs_user_id: int, discogs_username: str, invited_by: O
     ).fetchone()
 
 
-def create_invite(conn, created_by: int, code: str) -> dict:
+def create_invite(conn, created_by: int, code: str, note: Optional[str] = None) -> dict:
     return conn.execute(
         """
-        INSERT INTO invites (code, created_by, created_at)
-        VALUES (%s, %s, CURRENT_TIMESTAMP)
+        INSERT INTO invites (code, created_by, note, created_at)
+        VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
         RETURNING *
         """,
-        [code, created_by],
+        [code, created_by, note],
     ).fetchone()
+
+
+def list_invites(conn) -> list[dict]:
+    return conn.execute(
+        """
+        SELECT
+            invites.code,
+            invites.note,
+            invites.created_at,
+            invites.redeemed_at,
+            creator.discogs_username AS created_by_username,
+            redeemer.discogs_username AS redeemed_by_username
+        FROM invites
+        LEFT JOIN users creator ON creator.id = invites.created_by
+        LEFT JOIN users redeemer ON redeemer.id = invites.redeemed_by
+        ORDER BY invites.created_at DESC
+        """
+    ).fetchall()
 
 
 # Includes discogs_oauth_token_encrypted, discogs_oauth_secret_encrypted,

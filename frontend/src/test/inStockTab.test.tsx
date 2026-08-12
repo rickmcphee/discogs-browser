@@ -59,6 +59,8 @@ vi.mock('../api/client', () => ({
   clearJudgments: (...args: unknown[]) => clearJudgments(...args),
   exportRecommendationsCsv: (...args: unknown[]) => exportRecommendationsCsv(...args),
   getJudgmentStatus: (...args: unknown[]) => getJudgmentStatus(...args),
+  listInvites: vi.fn().mockResolvedValue([]),
+  createInvite: vi.fn().mockResolvedValue({ code: '' }),
 }))
 
 function getLastCrawlSource() {

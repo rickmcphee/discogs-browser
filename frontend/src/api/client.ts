@@ -1,6 +1,6 @@
 import type {
   ReleasesResponse, Crawler, Settings, UserSettings, SortField, SortOrder, CrawlStatus, CollectionStatus, ScreenshotSession,
-  AuthStatus, RecordScope, StockResponse, StockSortField, LibraryScope, RecommendationImportResult,
+  AuthStatus, RecordScope, StockResponse, StockSortField, LibraryScope, RecommendationImportResult, Invite,
 } from './types'
 
 const BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/+$/, '')
@@ -292,6 +292,22 @@ export async function redeemInvite(signupToken: string, inviteCode: string): Pro
 export async function logout(): Promise<void> {
   const r = await apiFetch('/auth/logout', { method: 'POST' })
   if (!r.ok) throw new Error(await r.text())
+}
+
+export async function listInvites(): Promise<Invite[]> {
+  const r = await apiFetch('/auth/invites')
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
+}
+
+export async function createInvite(note?: string): Promise<{ code: string }> {
+  const r = await apiFetch('/auth/invites', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ note: note || null }),
+  })
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
 }
 
 export async function hasAvatar(): Promise<boolean> {

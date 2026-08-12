@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, memo } from 'react'
-import { getSettings, saveSettings, setCrawlerEnabled } from '../api/client'
-import type { Settings as SettingsType, Crawler } from '../api/types'
+import { getSettings, saveSettings, setCrawlerEnabled, listInvites, createInvite } from '../api/client'
+import type { Settings as SettingsType, Crawler, Invite } from '../api/types'
 import { navButtonClass, secondaryButtonClass } from '../styles/buttons'
 import { textInputClass, selectClass } from '../styles/inputs'
 
@@ -79,6 +79,13 @@ function toggleButtonClass(on: boolean): string {
   }`
 }
 
+// Postgres TIMESTAMP (not TIMESTAMPTZ) columns serialize as offsetless ISO
+// strings -- `new Date()` on those parses as browser-local time, not UTC.
+function formatServerTimestamp(iso: string): string {
+  const hasOffset = /[zZ]|[+-]\d\d:\d\d$/.test(iso)
+  return new Date(hasOffset ? iso : `${iso}Z`).toLocaleString()
+}
+
 function Settings({
   crawlers, onCrawlersChange, onRefreshPrices, onRefreshStock, isAdmin, hiddenCrawlerIds, onToggleCrawlerView,
   stockSyncBusy, stockSyncCrawlerId, onRefreshStoreCrawler,
@@ -101,6 +108,14 @@ function Settings({
   // useState defaults above and React would otherwise bail out of re-rendering.
   const [settingsLoaded, setSettingsLoaded] = useState(false)
   const [discardedNotice, setDiscardedNotice] = useState<{ crawlerId: number; count: number } | null>(null)
+  const [invites, setInvites] = useState<Invite[]>([])
+  const [invitesLoading, setInvitesLoading] = useState(true)
+  const latestInvitesSeq = useRef(0)
+  const [invitesError, setInvitesError] = useState('')
+  const [inviteNote, setInviteNote] = useState('')
+  const [mintedCode, setMintedCode] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
+  const [minting, setMinting] = useState(false)
 
   const releaseCrawlers = crawlers.filter((c) => c.crawler_type === 'release')
   const catalogCrawlers = crawlers.filter((c) => c.crawler_type === 'catalog' || c.crawler_type === 'catalog_browser')
@@ -227,6 +242,22 @@ function Settings({
     }).catch(() => {})
   }, [isAdmin])
 
+  useEffect(() => {
+    if (!isAdmin) return
+    const seq = ++latestInvitesSeq.current
+    listInvites()
+      .then((result) => {
+        if (seq !== latestInvitesSeq.current) return
+        setInvites(result)
+        setInvitesLoading(false)
+      })
+      .catch((err) => {
+        if (seq !== latestInvitesSeq.current) return
+        setInvitesError(errorMessage(err, 'Could not load invites'))
+        setInvitesLoading(false)
+      })
+  }, [isAdmin])
+
   function saveSettingsNow() {
     const seq = ++latestSaveSeq.current
     saveChainRef.current = saveChainRef.current.then(async () => {
@@ -262,6 +293,45 @@ function Settings({
       // The row keeps showing its old state because onCrawlersChange never
       // ran -- the button reflects the server, not the click.
       setSettingsSaveError(errorMessage(err, 'Could not change this crawler'))
+    }
+  }
+
+  async function handleGenerateInvite() {
+    setInvitesError('')
+    setMinting(true)
+    try {
+      try {
+        const { code } = await createInvite(inviteNote.trim() || undefined)
+        setMintedCode(code)
+        setCopied(false)
+        setInviteNote('')
+      } catch (err) {
+        setInvitesError(errorMessage(err, 'Could not generate invite'))
+        return
+      }
+      // separate from the mint's catch: the code is already minted, so a failed
+      // refetch must not be reported as a failed mint
+      const seq = ++latestInvitesSeq.current
+      try {
+        const result = await listInvites()
+        if (seq !== latestInvitesSeq.current) return
+        setInvites(result)
+        setInvitesLoading(false)
+      } catch {
+        if (seq !== latestInvitesSeq.current) return
+        setInvitesError('Invite created, but the list could not be refreshed.')
+      }
+    } finally {
+      setMinting(false)
+    }
+  }
+
+  async function handleCopyInvite(code: string) {
+    try {
+      await navigator.clipboard.writeText(code)
+      setCopied(true)
+    } catch {
+      setInvitesError('Could not copy to the clipboard. Select the code above and copy it manually.')
     }
   }
 
@@ -388,6 +458,72 @@ function Settings({
         )}
         {renderCrawlerTable(shownCatalogCrawlers, 'No catalog crawlers configured.', true)}
       </section>
+
+      {isAdmin && (
+        <section>
+          <h2 className="text-lg font-semibold text-white mb-1 text-left">Invites</h2>
+          <p className="text-sm text-gray-500 mb-4 text-left">
+            Mint a code for someone to sign up with. Anyone holding the code can redeem it once.
+          </p>
+          {invitesError && <p className="text-xs text-red-400 mb-3 text-left">{invitesError}</p>}
+          <div className="flex items-center gap-2 mb-4">
+            <input
+              type="text"
+              aria-label="Invite note"
+              value={inviteNote}
+              placeholder="Optional note (e.g. who this is for)"
+              onChange={(e) => setInviteNote(e.target.value)}
+              className={`flex-1 px-3 py-1 ${textInputClass()}`}
+            />
+            <button onClick={handleGenerateInvite} disabled={minting} className={`px-3 py-1 text-xs disabled:opacity-50 ${secondaryButtonClass()}`}>
+              {minting ? 'Generating…' : 'Generate'}
+            </button>
+          </div>
+          {mintedCode && (
+            <p className="text-sm text-gray-300 mb-4 text-left">
+              <span className="font-mono">{mintedCode}</span>
+              <button
+                onClick={() => handleCopyInvite(mintedCode)}
+                className={`ml-2 px-2 py-0.5 text-xs ${secondaryButtonClass()}`}
+              >
+                {copied ? 'Copied' : 'Copy'}
+              </button>
+            </p>
+          )}
+          {invites.length === 0 ? (
+            !invitesLoading && !invitesError && (
+              <p className="text-gray-500 text-sm text-left">No invites minted yet.</p>
+            )
+          ) : (
+            <table className="w-full text-sm border-collapse">
+              <thead>
+                <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-800">
+                  <th className="text-left py-2 pr-4">Code</th>
+                  <th className="text-left py-2 pr-4">Note</th>
+                  <th className="text-left py-2 pr-4">Created by</th>
+                  <th className="text-left py-2 pr-4">Created at</th>
+                  <th className="text-left py-2 pr-4">Redeemed by</th>
+                  <th className="text-left py-2">Redeemed at</th>
+                </tr>
+              </thead>
+              <tbody>
+                {invites.map((invite) => (
+                  <tr key={invite.code} className="border-b border-gray-800/50">
+                    <td className="py-2 pr-4 text-left font-mono text-xs text-gray-300">{invite.code}</td>
+                    <td className="py-2 pr-4 text-left text-gray-400">{invite.note || '—'}</td>
+                    <td className="py-2 pr-4 text-left text-gray-400">{invite.created_by_username || '—'}</td>
+                    <td className="py-2 pr-4 text-left text-gray-500 text-xs">{formatServerTimestamp(invite.created_at)}</td>
+                    <td className="py-2 pr-4 text-left text-gray-400">{invite.redeemed_by_username || '—'}</td>
+                    <td className="py-2 text-left text-gray-500 text-xs">
+                      {invite.redeemed_at ? formatServerTimestamp(invite.redeemed_at) : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+      )}
 
     </div>
   )
