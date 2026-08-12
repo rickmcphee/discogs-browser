@@ -1,5 +1,6 @@
 import secrets
 from datetime import datetime, timedelta
+from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse
@@ -25,6 +26,10 @@ discogs_oauth_limiter = RateLimiter(config.LOGIN_MAX_FAILURES, config.LOGIN_LOCK
 class RedeemInviteRequest(BaseModel):
     signup_token: str
     invite_code: str
+
+
+class CreateInviteRequest(BaseModel):
+    note: Optional[str] = None
 
 
 def _client_key(request: Request) -> str:
@@ -207,12 +212,18 @@ def redeem_invite(body: RedeemInviteRequest, request: Request, response: Respons
 
 
 @router.post("/auth/invites", dependencies=[Depends(require_admin)])
-def create_invite(request: Request):
+def create_invite(request: Request, body: CreateInviteRequest = CreateInviteRequest()):
     code = secrets.token_urlsafe(12)
     with db.get_app_pool().connection() as conn:
-        db.create_invite(conn, request.state.user_id, code)
+        db.create_invite(conn, request.state.user_id, code, note=body.note)
         conn.commit()
     return {"code": code}
+
+
+@router.get("/auth/invites", dependencies=[Depends(require_admin)])
+def list_invites():
+    with db.get_identity_pool().connection() as conn:
+        return db.list_invites(conn)
 
 
 @router.post("/auth/logout")

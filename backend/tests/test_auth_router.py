@@ -414,6 +414,75 @@ def test_create_invite_as_admin_returns_code_that_redeems_successfully(client):
     assert r.status_code == 200
 
 
+def test_create_invite_accepts_optional_note(client):
+    with db.get_admin_pool().connection() as conn:
+        admin_user = db.create_user(conn, discogs_user_id=1, discogs_username="admin")
+        conn.execute("UPDATE users SET is_admin = TRUE WHERE id = %s", [admin_user["id"]])
+        conn.commit()
+    token = session_tokens.new_session_token()
+    with db.get_admin_pool().connection() as conn:
+        db.create_session(conn, session_tokens.hash_token(token), admin_user["id"], datetime.utcnow() + timedelta(days=1))
+        conn.commit()
+    client.cookies.set(config.COOKIE_NAME, token)
+
+    r = client.post(
+        "/api/auth/invites",
+        json={"note": "for-alice-friend"},
+        headers={"X-Requested-With": "fetch"},
+    )
+    assert r.status_code == 200
+    code = r.json()["code"]
+
+    with db.get_admin_pool().connection() as conn:
+        invite = conn.execute("SELECT note FROM invites WHERE code = %s", [code]).fetchone()
+    assert invite["note"] == "for-alice-friend"
+
+
+def test_list_invites_requires_admin(client):
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    token = session_tokens.new_session_token()
+    with db.get_admin_pool().connection() as conn:
+        db.create_session(conn, session_tokens.hash_token(token), user["id"], datetime.utcnow() + timedelta(days=1))
+        conn.commit()
+    client.cookies.set(config.COOKIE_NAME, token)
+
+    r = client.get("/api/auth/invites")
+    assert r.status_code == 403
+
+
+def test_list_invites_returns_created_and_redeemed_invites_newest_first(client):
+    with db.get_admin_pool().connection() as conn:
+        admin_user = db.create_user(conn, discogs_user_id=1, discogs_username="admin")
+        conn.execute("UPDATE users SET is_admin = TRUE WHERE id = %s", [admin_user["id"]])
+        redeemer = db.create_user(conn, discogs_user_id=2, discogs_username="bob")
+        conn.execute(
+            "INSERT INTO invites (code, created_by, note, created_at) VALUES (%s, %s, %s, %s)",
+            ["OLDCODE", admin_user["id"], "old one", datetime.utcnow() - timedelta(days=1)],
+        )
+        conn.execute(
+            "INSERT INTO invites (code, created_by, note, redeemed_by, redeemed_at, created_at) "
+            "VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP, %s)",
+            ["NEWCODE", admin_user["id"], None, redeemer["id"], datetime.utcnow()],
+        )
+        conn.commit()
+    token = session_tokens.new_session_token()
+    with db.get_admin_pool().connection() as conn:
+        db.create_session(conn, session_tokens.hash_token(token), admin_user["id"], datetime.utcnow() + timedelta(days=1))
+        conn.commit()
+    client.cookies.set(config.COOKIE_NAME, token)
+
+    r = client.get("/api/auth/invites")
+    assert r.status_code == 200
+    invites = r.json()
+    assert [i["code"] for i in invites] == ["NEWCODE", "OLDCODE"]
+    assert invites[0]["redeemed_by_username"] == "bob"
+    assert invites[0]["created_by_username"] == "admin"
+    assert invites[1]["redeemed_by_username"] is None
+    assert invites[1]["note"] == "old one"
+
+
 def test_logout_deletes_session_and_clears_cookie(client):
     with db.get_admin_pool().connection() as conn:
         user = db.create_user(conn, discogs_user_id=42, discogs_username="alice")
