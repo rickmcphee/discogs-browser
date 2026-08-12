@@ -64,10 +64,12 @@ def test_get_missing_releases_is_scoped_per_user(pg_test_db):
         assert db.get_missing_releases(conn, bob["id"]) == ["r2"]
 
 
-def test_get_missing_releases_excludes_wishlist_only_items(pg_test_db):
-    # The scheduled/mode=missing sweep shouldn't spend crawl budget on
-    # wishlist-only items against sites that are already hard to crawl at
-    # scale -- only in_collection rows are candidates.
+def test_get_missing_releases_includes_wishlist_only_items(pg_test_db):
+    # Wishlist items are auto-enqueued the same as collection items (see
+    # crawl_manager._sync_collection's wishlist loop), so the scheduled/
+    # mode=missing sweep must offer them as candidates too, or a wishlist-
+    # only release enqueued once would never get picked up again after its
+    # first listing goes stale.
     with db.get_admin_pool().connection() as conn:
         alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
         db.register_crawler(conn, "Amazon", "/x.py")
@@ -82,7 +84,8 @@ def test_get_missing_releases_excludes_wishlist_only_items(pg_test_db):
         conn.commit()
 
     with db.user_scope(alice["id"]) as conn:
-        assert db.get_missing_releases(conn, alice["id"]) == ["r1"]
+        # No ORDER BY in get_missing_releases -- compare as a set.
+        assert set(db.get_missing_releases(conn, alice["id"])) == {"r1", "r2"}
 
 
 def test_get_crawl_status_for_user(pg_test_db):
@@ -103,12 +106,11 @@ def test_get_crawl_status_for_user(pg_test_db):
     assert status == {"total": 1, "missing": 1, "oldest_checked": None}
 
 
-def test_get_crawl_status_for_user_excludes_wishlist_only_items(pg_test_db):
-    # get_missing_releases (mode=missing enqueue target) is collection-only;
-    # if this status count still included wishlist-only rows, the checkpoint
-    # modal could report missing > 0 from wishlist rows alone while a
-    # mode=missing crawl enqueues nothing for them, making "Resume" appear
-    # to do nothing.
+def test_get_crawl_status_for_user_includes_wishlist_only_items(pg_test_db):
+    # get_missing_releases (mode=missing enqueue target) now counts
+    # wishlist-only rows too -- this status must match, or the checkpoint
+    # modal's "Resume" could report missing == 0 while a mode=missing crawl
+    # actually has wishlist candidates to enqueue.
     with db.get_admin_pool().connection() as conn:
         alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
         db.register_crawler(conn, "Amazon", "/x.py")
@@ -122,7 +124,7 @@ def test_get_crawl_status_for_user_excludes_wishlist_only_items(pg_test_db):
 
     with db.user_scope(alice["id"]) as conn:
         status = db.get_crawl_status_for_user(conn, alice["id"])
-    assert status == {"total": 0, "missing": 0, "oldest_checked": None}
+    assert status == {"total": 1, "missing": 1, "oldest_checked": None}
 
 
 def test_get_crawl_status_for_user_with_zero_total(pg_test_db):

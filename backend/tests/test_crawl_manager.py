@@ -353,7 +353,7 @@ async def test_sync_collection_mode_new_backfills_date_added_for_skipped_item(pg
     assert str(row["collection_date_added"]) == "2024-03-15 10:00:00"
 
 
-async def test_sync_collection_wishlist_captures_date_added_and_does_not_enqueue(pg_schema, monkeypatch):
+async def test_sync_collection_wishlist_captures_date_added_and_enqueues(pg_schema, monkeypatch):
     import config
     import crawl_manager as crawl_manager_module
     import discogs
@@ -406,8 +406,8 @@ async def test_sync_collection_wishlist_captures_date_added_and_does_not_enqueue
     assert str(row["wishlist_date_added"]) == "2024-05-01 00:00:00"
 
     with db.get_admin_pool().connection() as conn:
-        queued = conn.execute("SELECT discogs_id FROM crawl_queue").fetchall()
-    assert queued == []
+        queued = conn.execute("SELECT discogs_id, status FROM crawl_queue").fetchall()
+    assert [(q["discogs_id"], q["status"]) for q in queued] == [("r111", "pending")]
 
 
 async def test_sync_collection_wishlist_does_not_wipe_a_collection_discogs_price(pg_schema, monkeypatch):

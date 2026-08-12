@@ -436,11 +436,11 @@ class CrawlManager:
             count = 0
             wishlist_count = 0
             wishlist_seen: set = set()
+            with get_app_pool().connection() as pool_conn:
+                enabled_crawlers = get_enabled_crawlers(pool_conn)
+
             with user_scope(user_id) as conn:
                 if scope != "wishlist":
-                    with get_app_pool().connection() as pool_conn:
-                        enabled_crawlers = get_enabled_crawlers(pool_conn)
-
                     existing = None
                     if mode == "new":
                         existing = {row["discogs_id"] for row in conn.execute(
@@ -523,6 +523,8 @@ class CrawlManager:
                             in_collection=False if is_new_release else None,
                             wishlist_date_added=item.get("date_added"),
                         )
+                        for crawler in enabled_crawlers:
+                            enqueue_crawl_queue(conn, rid, crawler["id"])
                         wishlist_count += 1
                     conn.commit()
                     # Same reasoning as the collection-loop commit above: re-scope
