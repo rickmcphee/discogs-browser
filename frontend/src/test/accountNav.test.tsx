@@ -47,6 +47,8 @@ vi.mock('../api/client', () => ({
   postStockSyncStart: vi.fn().mockResolvedValue({ started: true, running: true }),
   postJudgmentStart: vi.fn().mockResolvedValue({ started: true, running: true }),
   getJudgmentStatus: vi.fn().mockResolvedValue({ any_judged: false }),
+  listInvites: vi.fn().mockResolvedValue([]),
+  createInvite: vi.fn().mockResolvedValue({ code: '' }),
 }))
 
 beforeEach(() => {

@@ -68,6 +68,8 @@ vi.mock('../api/client', () => ({
   postJudgmentStart: vi.fn().mockResolvedValue({ started: true, running: true }),
   getJudgmentStatus: vi.fn().mockResolvedValue({ any_judged: false }),
   importRecommendationsCsv: vi.fn(),
+  listInvites: vi.fn().mockResolvedValue([]),
+  createInvite: vi.fn().mockResolvedValue({ code: '' }),
 }))
 
 function getLastCrawlSource() {

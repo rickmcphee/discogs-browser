@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, memo } from 'react'
-import { getSettings, saveSettings, setCrawlerEnabled } from '../api/client'
-import type { Settings as SettingsType, Crawler } from '../api/types'
+import { getSettings, saveSettings, setCrawlerEnabled, listInvites, createInvite } from '../api/client'
+import type { Settings as SettingsType, Crawler, Invite } from '../api/types'
 import { navButtonClass, secondaryButtonClass } from '../styles/buttons'
 import { textInputClass, selectClass } from '../styles/inputs'
 
@@ -101,6 +101,11 @@ function Settings({
   // useState defaults above and React would otherwise bail out of re-rendering.
   const [settingsLoaded, setSettingsLoaded] = useState(false)
   const [discardedNotice, setDiscardedNotice] = useState<{ crawlerId: number; count: number } | null>(null)
+  const [invites, setInvites] = useState<Invite[]>([])
+  const [invitesError, setInvitesError] = useState('')
+  const [inviteNote, setInviteNote] = useState('')
+  const [mintedCode, setMintedCode] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
 
   const releaseCrawlers = crawlers.filter((c) => c.crawler_type === 'release')
   const catalogCrawlers = crawlers.filter((c) => c.crawler_type === 'catalog' || c.crawler_type === 'catalog_browser')
@@ -227,6 +232,11 @@ function Settings({
     }).catch(() => {})
   }, [isAdmin])
 
+  useEffect(() => {
+    if (!isAdmin) return
+    listInvites().then(setInvites).catch((err) => setInvitesError(errorMessage(err, 'Could not load invites')))
+  }, [isAdmin])
+
   function saveSettingsNow() {
     const seq = ++latestSaveSeq.current
     saveChainRef.current = saveChainRef.current.then(async () => {
@@ -263,6 +273,24 @@ function Settings({
       // ran -- the button reflects the server, not the click.
       setSettingsSaveError(errorMessage(err, 'Could not change this crawler'))
     }
+  }
+
+  async function handleGenerateInvite() {
+    setInvitesError('')
+    try {
+      const { code } = await createInvite(inviteNote.trim() || undefined)
+      setMintedCode(code)
+      setCopied(false)
+      setInviteNote('')
+      setInvites(await listInvites())
+    } catch (err) {
+      setInvitesError(errorMessage(err, 'Could not generate invite'))
+    }
+  }
+
+  async function handleCopyInvite(code: string) {
+    await navigator.clipboard.writeText(code)
+    setCopied(true)
   }
 
   return (
@@ -388,6 +416,70 @@ function Settings({
         )}
         {renderCrawlerTable(shownCatalogCrawlers, 'No catalog crawlers configured.', true)}
       </section>
+
+      {isAdmin && (
+        <section>
+          <h2 className="text-lg font-semibold text-white mb-1 text-left">Invites</h2>
+          <p className="text-sm text-gray-500 mb-4 text-left">
+            Mint a code for someone to sign up with. Anyone holding the code can redeem it once.
+          </p>
+          {invitesError && <p className="text-xs text-red-400 mb-3 text-left">{invitesError}</p>}
+          <div className="flex items-center gap-2 mb-4">
+            <input
+              type="text"
+              aria-label="Invite note"
+              value={inviteNote}
+              placeholder="Optional note (e.g. who this is for)"
+              onChange={(e) => setInviteNote(e.target.value)}
+              className={`flex-1 px-3 py-1 ${textInputClass()}`}
+            />
+            <button onClick={handleGenerateInvite} className={`px-3 py-1 text-xs ${secondaryButtonClass()}`}>
+              Generate
+            </button>
+          </div>
+          {mintedCode && (
+            <p className="text-sm text-gray-300 mb-4 text-left">
+              <span className="font-mono">{mintedCode}</span>
+              <button
+                onClick={() => handleCopyInvite(mintedCode)}
+                className={`ml-2 px-2 py-0.5 text-xs ${secondaryButtonClass()}`}
+              >
+                {copied ? 'Copied' : 'Copy'}
+              </button>
+            </p>
+          )}
+          {invites.length === 0 ? (
+            <p className="text-gray-500 text-sm text-left">No invites minted yet.</p>
+          ) : (
+            <table className="w-full text-sm border-collapse">
+              <thead>
+                <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-800">
+                  <th className="text-left py-2 pr-4">Code</th>
+                  <th className="text-left py-2 pr-4">Note</th>
+                  <th className="text-left py-2 pr-4">Created by</th>
+                  <th className="text-left py-2 pr-4">Created at</th>
+                  <th className="text-left py-2 pr-4">Redeemed by</th>
+                  <th className="text-left py-2">Redeemed at</th>
+                </tr>
+              </thead>
+              <tbody>
+                {invites.map((invite) => (
+                  <tr key={invite.code} className="border-b border-gray-800/50">
+                    <td className="py-2 pr-4 text-left font-mono text-xs text-gray-300">{invite.code}</td>
+                    <td className="py-2 pr-4 text-left text-gray-400">{invite.note || '—'}</td>
+                    <td className="py-2 pr-4 text-left text-gray-400">{invite.created_by_username || '—'}</td>
+                    <td className="py-2 pr-4 text-left text-gray-500 text-xs">{new Date(invite.created_at).toLocaleString()}</td>
+                    <td className="py-2 pr-4 text-left text-gray-400">{invite.redeemed_by_username || '—'}</td>
+                    <td className="py-2 text-left text-gray-500 text-xs">
+                      {invite.redeemed_at ? new Date(invite.redeemed_at).toLocaleString() : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+      )}
 
     </div>
   )
