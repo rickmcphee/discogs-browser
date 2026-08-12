@@ -1406,6 +1406,35 @@ async def test_drain_one_batch_resets_failure_count_on_a_found_stock_item_match(
     assert manager._site_consecutive_failures[crawler_id] == 0
 
 
+async def test_drain_one_batch_logs_readable_target_on_stock_item_crawl_failure(pg_schema, caplog):
+    """The stock-item exception branch logs `target["artist"]`/`target["title"]`
+    alongside the raw item_key -- an opaque sha256 hash on its own -- so a
+    crawl failure is legible in the logs without a DB lookup."""
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        _stock_item_with_source(conn, "key1")
+        db.enqueue_crawl_queue_for_stock_item(conn, "key1", crawler_id)
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(side_effect=RuntimeError("boom"))
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("config.load_config", return_value={"crawl_delay_seconds": 0}), \
+         caplog.at_level(logging.ERROR, logger="crawl_manager"):
+        await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    failure_logs = [r.getMessage() for r in caplog.records if "Crawl failed for" in r.getMessage()]
+    assert len(failure_logs) == 1
+    assert "A - T (key1)" in failure_logs[0]
+
+
 async def test_run_catalog_crawler_calls_zero_arg_crawl_catalog_for_plain_catalog_type(manager):
     fake_plugin = MagicMock()
     fake_plugin.crawler_type = "catalog"
