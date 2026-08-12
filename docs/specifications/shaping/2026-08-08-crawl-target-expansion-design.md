@@ -360,7 +360,10 @@ for row in rows:
     try:
         matches, bot_detected = await self._paced_search(row["crawler_id"], plugin, target, pages)
     except Exception as e:
-        log.error("[%s] Crawl failed for %s: %s", plugin._db_site_name, row.get("discogs_id") or row["item_key"], e)
+        log.error(
+            "[%s] Crawl failed for %s - %s (%s): %s",
+            plugin._db_site_name, target["artist"], target["title"], row.get("discogs_id") or row["item_key"], e,
+        )
         self._record_site_result(row["crawler_id"], succeeded=False)
         with get_app_pool().connection() as conn:
             mark_crawl_queue_done(conn, row["id"])
