@@ -1057,3 +1057,206 @@ def test_delete_dead_stock_crawl_queue_rows_keeps_release_rows(admin_conn):
     assert db.delete_dead_stock_crawl_queue_rows(admin_conn) == 0
     admin_conn.commit()
     assert admin_conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 1
+
+
+def _release_crawler_and_catalog_row(conn, site_name="Amazon", discogs_id="r1", cover_image_url="https://img/r1.jpg"):
+    db.register_crawler(conn, site_name, "/x.py", crawler_type="release")
+    conn.commit()
+    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = %s", [site_name]).fetchone()["id"]
+    db.upsert_catalog_release(conn, {
+        "discogs_id": discogs_id, "artist": "Aphex Twin", "title": "Selected Ambient Works",
+        "year": None, "label": None, "format": "LP", "discogs_price": None,
+        "barcode": None, "cover_image_url": cover_image_url, "discogs_url": None,
+    })
+    conn.commit()
+    catalog_release = conn.execute("SELECT * FROM catalog WHERE discogs_id = %s", [discogs_id]).fetchone()
+    return crawler_id, catalog_release
+
+
+def test_upsert_stock_item_from_release_creates_a_stock_items_row(admin_conn):
+    crawler_id, catalog_release = _release_crawler_and_catalog_row(admin_conn)
+
+    db.upsert_stock_item_from_release(
+        admin_conn, "r1", crawler_id, catalog_release,
+        {"url": "https://amazon/x", "price": 24.99, "currency": "USD"},
+    )
+    admin_conn.commit()
+
+    row = admin_conn.execute(
+        "SELECT * FROM stock_items WHERE crawler_id = %s AND release_id = 'r1'", [crawler_id]
+    ).fetchone()
+    assert row["artist"] == "Aphex Twin"
+    assert row["title"] == "Selected Ambient Works"
+    assert row["format"] == "LP"
+    assert row["price"] == 24.99
+    assert row["currency"] == "USD"
+    assert row["url"] == "https://amazon/x"
+    assert row["cover_image_url"] == "https://img/r1.jpg"
+    assert row["item_key"] == db.compute_item_key("Aphex Twin", "Selected Ambient Works", "https://amazon/x")
+
+
+def test_upsert_stock_item_from_release_updates_in_place_on_rerun(admin_conn):
+    crawler_id, catalog_release = _release_crawler_and_catalog_row(admin_conn)
+
+    db.upsert_stock_item_from_release(
+        admin_conn, "r1", crawler_id, catalog_release,
+        {"url": "https://amazon/x", "price": 24.99, "currency": "USD"},
+    )
+    admin_conn.commit()
+    db.upsert_stock_item_from_release(
+        admin_conn, "r1", crawler_id, catalog_release,
+        {"url": "https://amazon/x-new", "price": 19.99, "currency": "USD"},
+    )
+    admin_conn.commit()
+
+    rows = admin_conn.execute(
+        "SELECT * FROM stock_items WHERE crawler_id = %s AND release_id = 'r1'", [crawler_id]
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["price"] == 19.99
+    assert rows[0]["url"] == "https://amazon/x-new"
+
+
+def test_upsert_stock_item_from_release_upserts_stock_item_identities(admin_conn):
+    crawler_id, catalog_release = _release_crawler_and_catalog_row(admin_conn)
+
+    db.upsert_stock_item_from_release(
+        admin_conn, "r1", crawler_id, catalog_release,
+        {"url": "https://amazon/x", "price": 24.99, "currency": "USD"},
+    )
+    admin_conn.commit()
+
+    item_key = db.compute_item_key("Aphex Twin", "Selected Ambient Works", "https://amazon/x")
+    row = admin_conn.execute(
+        "SELECT artist, title, format FROM stock_item_identities WHERE item_key = %s", [item_key]
+    ).fetchone()
+    assert row["artist"] == "Aphex Twin"
+    assert row["format"] == "LP"
+
+
+def test_upsert_stock_item_from_release_allows_two_crawlers_for_the_same_release(admin_conn):
+    amazon_id, catalog_release = _release_crawler_and_catalog_row(admin_conn, site_name="Amazon")
+    db.register_crawler(admin_conn, "eBay", "/y.py", crawler_type="release")
+    admin_conn.commit()
+    ebay_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'eBay'").fetchone()["id"]
+
+    db.upsert_stock_item_from_release(
+        admin_conn, "r1", amazon_id, catalog_release,
+        {"url": "https://amazon/x", "price": 24.99, "currency": "USD"},
+    )
+    db.upsert_stock_item_from_release(
+        admin_conn, "r1", ebay_id, catalog_release,
+        {"url": "https://ebay/x", "price": 21.99, "currency": "USD"},
+    )
+    admin_conn.commit()
+
+    rows = admin_conn.execute(
+        "SELECT crawler_id FROM stock_items WHERE release_id = 'r1' ORDER BY crawler_id"
+    ).fetchall()
+    assert sorted(r["crawler_id"] for r in rows) == sorted([amazon_id, ebay_id])
+
+
+def test_delete_stock_item_for_release_removes_only_that_crawlers_row(admin_conn):
+    amazon_id, catalog_release = _release_crawler_and_catalog_row(admin_conn, site_name="Amazon")
+    db.register_crawler(admin_conn, "eBay", "/y.py", crawler_type="release")
+    admin_conn.commit()
+    ebay_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'eBay'").fetchone()["id"]
+    db.upsert_stock_item_from_release(
+        admin_conn, "r1", amazon_id, catalog_release,
+        {"url": "https://amazon/x", "price": 24.99, "currency": "USD"},
+    )
+    db.upsert_stock_item_from_release(
+        admin_conn, "r1", ebay_id, catalog_release,
+        {"url": "https://ebay/x", "price": 21.99, "currency": "USD"},
+    )
+    admin_conn.commit()
+
+    db.delete_stock_item_for_release(admin_conn, "r1", amazon_id)
+    admin_conn.commit()
+
+    rows = admin_conn.execute("SELECT crawler_id FROM stock_items WHERE release_id = 'r1'").fetchall()
+    assert [r["crawler_id"] for r in rows] == [ebay_id]
+
+
+def test_delete_stock_item_for_release_leaves_the_identity_row(admin_conn):
+    crawler_id, catalog_release = _release_crawler_and_catalog_row(admin_conn)
+    db.upsert_stock_item_from_release(
+        admin_conn, "r1", crawler_id, catalog_release,
+        {"url": "https://amazon/x", "price": 24.99, "currency": "USD"},
+    )
+    admin_conn.commit()
+    item_key = db.compute_item_key("Aphex Twin", "Selected Ambient Works", "https://amazon/x")
+
+    db.delete_stock_item_for_release(admin_conn, "r1", crawler_id)
+    admin_conn.commit()
+
+    assert admin_conn.execute("SELECT * FROM stock_items WHERE release_id = 'r1'").fetchall() == []
+    row = admin_conn.execute(
+        "SELECT artist FROM stock_item_identities WHERE item_key = %s", [item_key]
+    ).fetchone()
+    assert row is not None
+
+
+def test_clear_listing_price_nulls_an_existing_row(admin_conn):
+    db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="release")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+        "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+        "discogs_url": None,
+    })
+    admin_conn.commit()
+    db.upsert_listing(admin_conn, "r1", crawler_id, "https://x", 9.99, None, "USD", None)
+    admin_conn.commit()
+
+    db.clear_listing_price(admin_conn, "r1", crawler_id)
+    admin_conn.commit()
+
+    row = admin_conn.execute("SELECT price, url FROM listings WHERE release_id = 'r1' AND crawler_id = %s", [crawler_id]).fetchone()
+    assert row["price"] is None
+    assert row["url"] == "https://x"
+
+
+def test_clear_listing_price_is_a_noop_when_no_row_exists(admin_conn):
+    db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="release")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+
+    db.clear_listing_price(admin_conn, "r1", crawler_id)
+    admin_conn.commit()
+
+
+def test_upsert_stock_item_from_release_item_key_uses_legacy_title_convention(admin_conn):
+    # item_key must hash the raw .title() artist/title so existing
+    # stock_item_judgments rows keyed on that hash don't orphan.
+    # This test verifies the convention matches replace_stock_items.
+    crawler_id, _ = _release_crawler_and_catalog_row(admin_conn, discogs_id="r2")
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r2", "artist": "NAILS", "title": "UNSILENT NIGHT",
+        "year": None, "label": None, "format": "LP", "discogs_price": None,
+        "barcode": None, "cover_image_url": "https://img/r2.jpg", "discogs_url": None,
+    })
+    admin_conn.commit()
+    catalog_release = admin_conn.execute("SELECT * FROM catalog WHERE discogs_id = 'r2'").fetchone()
+
+    db.upsert_stock_item_from_release(
+        admin_conn, "r2", crawler_id, catalog_release,
+        {"url": "https://amazon/y", "price": 15.0, "currency": "USD"},
+    )
+    admin_conn.commit()
+
+    # Catalog artist/title are stored raw (unnormalized) -- catalog metadata
+    # is already curated, unlike scraped stock-page text.
+    row = admin_conn.execute(
+        "SELECT artist, title FROM stock_items WHERE crawler_id = %s AND release_id = 'r2'", [crawler_id]
+    ).fetchone()
+    assert row["artist"] == "NAILS"
+    assert row["title"] == "UNSILENT NIGHT"
+
+    # But the item_key was computed using .title() on the raw values, matching legacy convention
+    item_key = db.compute_item_key("NAILS".title(), "UNSILENT NIGHT", "https://amazon/y")
+    assert admin_conn.execute(
+        "SELECT * FROM stock_items WHERE crawler_id = %s AND release_id = 'r2' AND item_key = %s",
+        [crawler_id, item_key]
+    ).fetchone() is not None

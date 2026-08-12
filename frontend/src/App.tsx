@@ -231,6 +231,10 @@ export default function App() {
         setSyncStatus(`Finding recommendations failed: ${event.error}`, event.id ?? null)
         return
       }
+      if (event.type === 'listing_changed') {
+        setStockSyncGeneration(g => g + 1)
+        return
+      }
       if (event.status === 'started') {
         setCrawlTotal(event.total ?? 0)
         setCrawling(true)

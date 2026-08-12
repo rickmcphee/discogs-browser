@@ -12,6 +12,17 @@ anticipated is now called **Track**, and this tab went back to
 values changed with the labels (`'discogs'` → `'collection'`), though the
 backend `scope="discogs"` value this spec introduced is unchanged.
 
+**Amendment (2026-08-11):** the "wishlist sync stops enqueueing release-crawler
+price crawls" decision below (and its `get_missing_releases`/
+`get_crawl_status_for_user` follow-on in PR #69) was itself reversed —
+wishlist items are auto-enqueued to every enabled release crawler again,
+the same as collection items, and both functions treat wishlist-only rows
+as candidates. The "nothing displays that data" half of the original
+rationale no longer holds either: `2026-08-11-release-crawler-stock-items-design.md`
+and its implementation plan `2026-08-12-release-crawler-stock-items.md` made
+release-crawler matches write into `stock_items`, so this data now shows up
+live in the Store and Track tabs.
+
 This is the first slice of a v3.0 redesign that eventually splits the app's
 tabs along two use cases: tracking the value of a Discogs collection, and
 comparing prices for in-stock inventory across ecommerce sites (including a

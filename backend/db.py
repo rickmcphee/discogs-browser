@@ -157,6 +157,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS listings_item_key_crawler_idx ON listings (ite
 -- get_all_stock_judgments' LEFT JOIN LATERAL, and it also serves the
 -- existing get_stock_items / get_unjudged_stock_items joins on s.item_key.
 CREATE INDEX IF NOT EXISTS stock_items_item_key_idx ON stock_items (item_key);
+
+ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS release_id TEXT REFERENCES catalog(discogs_id);
+CREATE UNIQUE INDEX IF NOT EXISTS stock_items_crawler_release_idx ON stock_items (crawler_id, release_id) WHERE release_id IS NOT NULL;
 """
 
 
@@ -500,6 +503,58 @@ def upsert_stock_item_listing(
     )
 
 
+def upsert_stock_item_from_release(conn, release_id: str, crawler_id: int, catalog_release: dict, listing: dict):
+    artist = catalog_release["artist"]
+    title = catalog_release["title"]
+    # Catalog data is already curated Discogs metadata, not scraped text, so
+    # unlike replace_stock_items it's stored as-is -- no normalize_artist_casing/
+    # normalize_title_casing pass. item_key still hashes the .title()/raw-title
+    # legacy convention below, matching replace_stock_items, regardless of what
+    # gets stored for display.
+    item_key = compute_item_key(catalog_release["artist"].title(), catalog_release["title"], listing["url"])
+    conn.execute(
+        """
+        INSERT INTO stock_item_identities (item_key, artist, title, format, last_seen)
+        VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+        ON CONFLICT (item_key) DO UPDATE SET
+            artist = EXCLUDED.artist, title = EXCLUDED.title, format = EXCLUDED.format,
+            last_seen = CURRENT_TIMESTAMP
+        """,
+        [item_key, artist, title, catalog_release["format"]],
+    )
+    conn.execute(
+        """
+        INSERT INTO stock_items
+            (crawler_id, release_id, artist, title, format, price, currency, url, cover_image_url, item_key, last_seen)
+        VALUES (%(crawler_id)s, %(release_id)s, %(artist)s, %(title)s, %(format)s, %(price)s, %(currency)s,
+                %(url)s, %(cover_image_url)s, %(item_key)s, CURRENT_TIMESTAMP)
+        ON CONFLICT (crawler_id, release_id) WHERE release_id IS NOT NULL DO UPDATE SET
+            artist = EXCLUDED.artist, title = EXCLUDED.title, format = EXCLUDED.format,
+            price = EXCLUDED.price, currency = EXCLUDED.currency, url = EXCLUDED.url,
+            cover_image_url = EXCLUDED.cover_image_url, item_key = EXCLUDED.item_key, last_seen = CURRENT_TIMESTAMP
+        """,
+        {
+            "crawler_id": crawler_id, "release_id": release_id, "artist": artist, "title": title,
+            "format": catalog_release["format"], "price": listing.get("price"), "currency": listing.get("currency"),
+            "url": listing["url"], "cover_image_url": catalog_release["cover_image_url"], "item_key": item_key,
+        },
+    )
+
+
+def delete_stock_item_for_release(conn, release_id: str, crawler_id: int):
+    conn.execute(
+        "DELETE FROM stock_items WHERE crawler_id = %s AND release_id = %s",
+        [crawler_id, release_id],
+    )
+
+
+def clear_listing_price(conn, release_id: str, crawler_id: int):
+    conn.execute(
+        "UPDATE listings SET price = NULL, last_checked = CURRENT_TIMESTAMP WHERE release_id = %s AND crawler_id = %s",
+        [release_id, crawler_id],
+    )
+
+
 def create_user(conn, discogs_user_id: int, discogs_username: str, invited_by: Optional[int] = None) -> dict:
     return conn.execute(
         """
@@ -802,6 +857,11 @@ def _enabled_stock_source_exists(item_key_expr: str) -> str:
     replace_stock_items() deletes a crawler's whole batch and reinserts only
     what is currently in stock, so a sold-out item loses its stock_items row
     while its stock_item_identities row and its queue rows survive.
+
+    Release-crawler-sourced stock_items rows (keyed by release_id, written by
+    upsert_stock_item_from_release/delete_stock_item_for_release) are a
+    separate population this predicate doesn't apply to -- it only reasons
+    about the item_key-keyed rows above.
 
     item_key_expr is always a literal chosen at the call site -- a column
     reference or a bound-parameter placeholder, never request-derived -- the
@@ -1428,17 +1488,21 @@ def count_matching_stock_items(conn, item_keys: list[str]) -> int:
 
 
 def get_missing_releases(conn, user_id: int) -> list[str]:
+    # Scoped to crawler_type = 'release': only release crawlers ever write a
+    # listings row (via upsert_listing), so counting catalog crawlers in the
+    # denominator would make every release permanently short of the target
+    # and thus permanently "missing".
     enabled_count = conn.execute(
-        "SELECT COUNT(*) FROM crawlers WHERE enabled = TRUE"
+        "SELECT COUNT(*) FROM crawlers WHERE enabled = TRUE AND crawler_type = 'release'"
     ).fetchone()["count"]
     if enabled_count == 0:
         return []
     rows = conn.execute(
         """
         SELECT li.discogs_id FROM library_items li
-        WHERE li.user_id = %(user_id)s AND li.in_collection = TRUE AND (
+        WHERE li.user_id = %(user_id)s AND (
             SELECT COUNT(DISTINCT l.crawler_id) FROM listings l
-            JOIN crawlers c ON c.id = l.crawler_id AND c.enabled = TRUE
+            JOIN crawlers c ON c.id = l.crawler_id AND c.enabled = TRUE AND c.crawler_type = 'release'
             WHERE l.release_id = li.discogs_id AND l.price IS NOT NULL
         ) < %(enabled_count)s
         """,
@@ -1448,14 +1512,13 @@ def get_missing_releases(conn, user_id: int) -> list[str]:
 
 
 def get_crawl_status_for_user(conn, user_id: int) -> dict:
-    # Scoped to in_collection = TRUE to match get_missing_releases' mode=missing
-    # candidate set -- otherwise wishlist-only rows could inflate `missing` here
-    # while a mode=missing crawl enqueues nothing for them.
     total = conn.execute(
-        "SELECT COUNT(*) FROM library_items WHERE user_id = %s AND in_collection = TRUE", [user_id]
+        "SELECT COUNT(*) FROM library_items WHERE user_id = %s", [user_id]
     ).fetchone()["count"]
+    # Scoped to crawler_type = 'release' -- see get_missing_releases, whose
+    # mode=missing candidate set this status must stay consistent with.
     enabled_count = conn.execute(
-        "SELECT COUNT(*) FROM crawlers WHERE enabled = TRUE"
+        "SELECT COUNT(*) FROM crawlers WHERE enabled = TRUE AND crawler_type = 'release'"
     ).fetchone()["count"]
 
     if enabled_count == 0 or total == 0:
@@ -1467,8 +1530,8 @@ def get_crawl_status_for_user(conn, user_id: int) -> dict:
             SELECT li.discogs_id
             FROM library_items li
             JOIN listings l ON l.release_id = li.discogs_id
-            JOIN crawlers c ON c.id = l.crawler_id AND c.enabled = TRUE
-            WHERE li.user_id = %(user_id)s AND li.in_collection = TRUE AND l.price IS NOT NULL
+            JOIN crawlers c ON c.id = l.crawler_id AND c.enabled = TRUE AND c.crawler_type = 'release'
+            WHERE li.user_id = %(user_id)s AND l.price IS NOT NULL
             GROUP BY li.discogs_id
             HAVING COUNT(DISTINCT l.crawler_id) = %(enabled_count)s
         ) complete_releases
@@ -1480,7 +1543,7 @@ def get_crawl_status_for_user(conn, user_id: int) -> dict:
         """
         SELECT MIN(l.last_checked) FROM listings l
         JOIN library_items li ON li.discogs_id = l.release_id
-        WHERE li.user_id = %s AND li.in_collection = TRUE
+        WHERE li.user_id = %s
         """,
         [user_id],
     ).fetchone()["min"]

@@ -242,7 +242,7 @@ class CrawlManager:
 
     async def _drain_one_batch(self, worker_id: str, plugins_by_crawler_id: dict, pages: dict, batch_size: int = 5) -> int:
         from crawler import _new_context
-        from db import get_app_pool, claim_crawl_queue_batch, mark_crawl_queue_done, upsert_listing, get_catalog_release, get_stock_item_identity, upsert_stock_item_listing
+        from db import get_app_pool, claim_crawl_queue_batch, mark_crawl_queue_done, upsert_listing, get_catalog_release, get_stock_item_identity, upsert_stock_item_listing, upsert_stock_item_from_release, delete_stock_item_for_release, clear_listing_price
 
         excluded = self._cooling_down_crawler_ids()
         with get_app_pool().connection() as conn:
@@ -312,11 +312,15 @@ class CrawlManager:
                             conn, row["discogs_id"], row["crawler_id"], best["url"],
                             best.get("price"), best.get("shipping"), best.get("currency"), best.get("condition"),
                         )
+                        upsert_stock_item_from_release(conn, row["discogs_id"], row["crawler_id"], target, best)
                     else:
                         upsert_stock_item_listing(
                             conn, row["item_key"], row["crawler_id"], best["url"],
                             best.get("price"), best.get("shipping"), best.get("currency"), best.get("condition"),
                         )
+                elif is_release and not bot_detected:
+                    delete_stock_item_for_release(conn, row["discogs_id"], row["crawler_id"])
+                    clear_listing_price(conn, row["discogs_id"], row["crawler_id"])
                 mark_crawl_queue_done(conn, row["id"])
                 conn.commit()
 
@@ -439,11 +443,11 @@ class CrawlManager:
             count = 0
             wishlist_count = 0
             wishlist_seen: set = set()
+            with get_app_pool().connection() as pool_conn:
+                enabled_crawlers = get_enabled_crawlers(pool_conn)
+
             with user_scope(user_id) as conn:
                 if scope != "wishlist":
-                    with get_app_pool().connection() as pool_conn:
-                        enabled_crawlers = get_enabled_crawlers(pool_conn)
-
                     existing = None
                     if mode == "new":
                         existing = {row["discogs_id"] for row in conn.execute(
@@ -526,6 +530,8 @@ class CrawlManager:
                             in_collection=False if is_new_release else None,
                             wishlist_date_added=item.get("date_added"),
                         )
+                        for crawler in enabled_crawlers:
+                            enqueue_crawl_queue(conn, rid, crawler["id"])
                         wishlist_count += 1
                     conn.commit()
                     # Same reasoning as the collection-loop commit above: re-scope

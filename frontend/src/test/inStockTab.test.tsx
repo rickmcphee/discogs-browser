@@ -402,4 +402,15 @@ describe('In Stock tab', () => {
     source.emit({ status: 'stock_judgment_started' })
     await waitFor(() => expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(true))
   })
+
+  it('refetches stock items on a listing_changed SSE event', async () => {
+    render(<App />)
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    await waitFor(() => expect(getStock).toHaveBeenCalled())
+    const callsBefore = getStock.mock.calls.length
+
+    getLastCrawlSource().emit({ id: 1, type: 'listing_changed', status: 'found', discogs_id: 'r1', crawler_id: 9 })
+
+    await waitFor(() => expect(getStock.mock.calls.length).toBeGreaterThan(callsBefore))
+  })
 })
