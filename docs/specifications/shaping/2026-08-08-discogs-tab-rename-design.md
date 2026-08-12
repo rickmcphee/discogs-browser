@@ -18,10 +18,10 @@ price crawls" decision below (and its `get_missing_releases`/
 wishlist items are auto-enqueued to every enabled release crawler again,
 the same as collection items, and both functions treat wishlist-only rows
 as candidates. The "nothing displays that data" half of the original
-rationale still holds (no tab shows per-release wishlist listings; the
-Track tab's Price column is stock-crawler matching, a separate system) —
-this crawls and stores the data without surfacing it yet, same as it did
-before this tab-rename slice.
+rationale no longer holds either: `2026-08-11-release-crawler-stock-items-design.md`
+and its implementation plan `2026-08-12-release-crawler-stock-items.md` made
+release-crawler matches write into `stock_items`, so this data now shows up
+live in the Store and Track tabs.
 
 This is the first slice of a v3.0 redesign that eventually splits the app's
 tabs along two use cases: tracking the value of a Discogs collection, and

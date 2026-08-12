@@ -29,7 +29,7 @@ the UI displays.
 
 Touches:
 
-- `backend/db.py` — `TENANT_SCHEMA` gains `stock_items.release_id` (nullable
+- `backend/db.py` — `GLOBAL_SCHEMA` gains `stock_items.release_id` (nullable
   FK to `catalog`) plus a unique index on `(crawler_id, release_id)`; new
   `upsert_stock_item_from_release()` and `delete_stock_item_for_release()`
   helpers alongside the existing `upsert_listing`.

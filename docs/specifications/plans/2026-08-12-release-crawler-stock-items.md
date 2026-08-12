@@ -33,7 +33,7 @@
 
 ## File Structure
 
-- `backend/db.py` — `TENANT_SCHEMA` gains `stock_items.release_id` + a unique index (Task 1); new `upsert_stock_item_from_release()` and `delete_stock_item_for_release()` (Task 1).
+- `backend/db.py` — `GLOBAL_SCHEMA` gains `stock_items.release_id` + a unique index (Task 1); new `upsert_stock_item_from_release()` and `delete_stock_item_for_release()` (Task 1).
 - `backend/crawl_manager.py` — `_drain_one_batch`'s `is_release` branch calls the two new functions (Task 2).
 - `frontend/src/api/types.ts` — `CrawlEvent` gains `type?: 'listing_changed'` and `item_key?: string` (Task 3).
 - `frontend/src/App.tsx` — SSE handler gains a `listing_changed` case (Task 3).
@@ -46,7 +46,7 @@
 ### Task 1: Schema + `stock_items` write/delete helpers
 
 **Files:**
-- Modify: `backend/db.py` — `TENANT_SCHEMA` string (add after line 159, before the closing `"""` at line 160); two new functions, placed directly after `upsert_stock_item_listing` (currently ends at line 495).
+- Modify: `backend/db.py` — `GLOBAL_SCHEMA` string (add after line 159, before the closing `"""` at line 160); two new functions, placed directly after `upsert_stock_item_listing` (currently ends at line 495).
 - Test: `backend/tests/test_stock_crud.py`
 
 **Interfaces:**
