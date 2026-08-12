@@ -57,6 +57,7 @@ export type LibraryScope = 'collection' | 'wantlist' | 'all'
 
 export interface CrawlEvent {
   id?: number
+  type?: 'listing_changed'
   status?: 'found' | 'not_found' | 'error' | 'complete' | 'started' | 'stopped' | 'ping'
     | 'sync_started' | 'sync_page_fetched' | 'sync_progress' | 'sync_complete' | 'sync_error'
     | 'stock_sync_started' | 'stock_sync_source_started' | 'stock_sync_page_fetched'
@@ -64,6 +65,7 @@ export interface CrawlEvent {
     | 'stock_judgment_started' | 'stock_judgment_progress' | 'stock_judgment_complete' | 'stock_judgment_error'
     | 'plex_match_started' | 'plex_match_progress' | 'plex_match_complete' | 'plex_match_error'
   discogs_id?: string
+  item_key?: string
   release?: string
   artist?: string
   site?: string
