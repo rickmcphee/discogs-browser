@@ -35,6 +35,12 @@ ALTER TABLE invites ADD COLUMN IF NOT EXISTS note TEXT;
   `db.list_invites` as a JSON array:
   `[{code, note, created_by_username, created_at, redeemed_by_username, redeemed_at}]`.
 
+Both routes use `db.get_identity_pool()`, matching redemption. `app_user` has no
+grant on `invites` at all: `create_invite`'s `INSERT ... RETURNING *` needs `SELECT`
+as well as `INSERT` (Postgres requires it for every column named in `RETURNING`), and
+`list_invites` obviously needs `SELECT` — so `invites` is `app_identity`'s table
+end to end.
+
 ## Frontend
 
 Follows the existing admin-section pattern in `frontend/src/views/Settings.tsx`
@@ -47,8 +53,12 @@ own data via a `useEffect` keyed on `isAdmin` (same shape as the existing
 - `api/client.ts`: add `createInvite(note?: string)` and `listInvites()`.
 - `Settings.tsx`: new "Invites" section.
   - A one-line mint form: optional note text input + "Generate" button.
-    Calls `createInvite`, prepends the result to local list state, clears
-    the note input.
+    Calls `createInvite`, then refetches the whole list via `listInvites()`
+    rather than prepending the result to local list state (the mint response
+    is just `{code}`; a client-side row would have to fabricate
+    `created_at`/`created_by_username`). Clears the note input. A refetch
+    that fails after a successful mint keeps the minted code on screen and
+    reports itself as a refresh failure, not a mint failure.
   - The freshly minted code is shown with a "Copy" button
     (`navigator.clipboard.writeText`) next to the plaintext code — this is a
     new UI pattern not used elsewhere in the codebase, added deliberately
@@ -65,6 +75,9 @@ own data via a `useEffect` keyed on `isAdmin` (same shape as the existing
   `.catch(() => {})`, this shows a small inline error message. A blank
   invite list with no explanation is confusing on an operational admin
   screen where the admin is specifically checking status.
+- Clipboard failure (`navigator.clipboard` is undefined outside a secure
+  context): caught and surfaced in the same inline error slot, pointing the
+  admin at the plaintext code next to the button.
 
 ## Testing
 

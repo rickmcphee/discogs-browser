@@ -46,7 +46,9 @@ exact shape remains recoverable without needing a separate repo.
 **Non-goals (for this spec)**
 - Billing/subscription logic. Initial rollout is invite-only, monetization decided
   later.
-- A self-serve invite-generation UI. Codes are minted by hand for v1.
+- A self-serve invite-generation UI. Codes are minted by hand for v1. (**Correction
+  (2026-08-11):** an *admin-only* mint-and-list UI shipped in Settings; self-serve
+  generation by ordinary users remains a non-goal.)
 - Fully worked-out Plex tunneling/remote-access UX beyond "user supplies a reachable
   URL" — covered at the level needed to identify the new SSRF risk and its mitigation;
   UX polish is a follow-on concern.
@@ -307,15 +309,18 @@ Primary key `(user_id, discogs_id)`.
 | `redeemed_by`  | INTEGER FK → users.id, nullable |                 |
 | `redeemed_at`  | TIMESTAMP, nullable |                     |
 | `created_at`   | TIMESTAMP |                               |
+| `note`         | TEXT, nullable | free-text label the admin optionally sets at mint time (who the code is for). Added 2026-08-11 with the admin invite UI |
 
 `invites` is not RLS-scoped the way `users`/`sessions`/`library_items` are: redemption
 happens as part of account creation, before the new user has a session, so there is
 no `app.user_id` to scope by yet. The redemption check-and-consume (validate code
 unredeemed, insert the new `users` row, mark the code redeemed) runs as a single
 transaction over a privileged connection outside the per-request RLS context, the
-same way the account-creation step itself has to. Once a user exists, ordinary
-per-request queries never read `invites` directly — there's nothing there a logged-in
-user's own session needs.
+same way the account-creation step itself has to. **Correction (2026-08-11):** the
+claim that followed here — that once a user exists, ordinary per-request queries never
+read `invites` — no longer holds. `GET /api/auth/invites` (admin-only, `require_admin`)
+reads the table for the admin invite-management UI. It remains true that nothing a
+*non-admin* logged-in user's session does touches `invites`.
 
 `in_collection`/`in_wishlist` retain the existing invariant from
 `docs/superpowers/specs/2026-06-27-discogs-browser-design.md`: a release dropped from
@@ -414,6 +419,13 @@ mints a code through the app itself, returning `{code}`. This is still not the
 "real invite-generation UI" described above (no frontend for it, no listing of
 existing invites, no waitlist mechanism), just enough for an admin to hand out a
 code without a raw SQL `INSERT`.
+
+**Amendment (2026-08-11):** the invite-generation UI shipped — an "Invites" section
+in Settings, gated on `isAdmin`, that mints a code with an optional `note` and lists
+every invite issued (`GET /api/auth/invites`, also `require_admin`-gated) with its
+creator, redeemer, and timestamps. It is admin-only, not self-serve for ordinary
+users, and there is still no waitlist mechanism, revocation, or expiry. See
+[`docs/superpowers/specs/2026-08-11-invite-code-admin-design.md`](2026-08-11-invite-code-admin-design.md).
 
 ---
 
@@ -552,8 +564,9 @@ implementation plan (per this repo's spec-first workflow):
    the validation logic, and re-validation on use.
 5. **Invite/waitlist gating** — `invites` table, redemption flow, code-minting path.
    The table and redemption flow shipped with this spec; code-minting got a minimal
-   admin API endpoint on 2026-08-02 (see "Invite / waitlist gating" above) — a
-   waitlist mechanism, if wanted, is still unbuilt.
+   admin API endpoint on 2026-08-02, and an admin-only mint-and-list UI in Settings
+   on 2026-08-11 (see "Invite / waitlist gating" above) — a waitlist mechanism, if
+   wanted, is still unbuilt.
 
 ---
 
