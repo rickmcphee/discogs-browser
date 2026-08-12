@@ -1,6 +1,6 @@
 # Release-Crawler Stock Items Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: this repo's `CLAUDE.md` mandates `superpowers:subagent-driven-development` for executing a written plan — inline execution via `superpowers:executing-plans` only if the user explicitly asks for it instead. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** When a release crawler (Amazon, eBay/CCmusic, Discogs Marketplace, ...) finds a match for a release in a user's collection or wishlist, write it into `stock_items` too — not just `listings` — so it shows up in the Store and Track tabs like any catalog-crawler find, live.
 

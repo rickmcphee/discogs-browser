@@ -55,6 +55,21 @@ Touches:
   `stockSyncGeneration` wiring (same file already covers `stock_sync_*` →
   `stockSyncGeneration`).
 
+**Added during PR review, beyond the original scope above:**
+
+- `backend/crawl_manager.py`/`backend/db.py` — the not-found branch also
+  gates on `not bot_detected` and calls a new `clear_listing_price`, and
+  `upsert_stock_item_from_release` stopped normalizing already-curated
+  catalog artist/title (see "Decisions carried" and "Write path" below).
+- `backend/db.py` — `get_missing_releases`/`get_crawl_status_for_user`
+  scope their enabled-crawler count to `crawler_type = 'release'`; an
+  enabled catalog crawler was inflating the denominator and could make a
+  fully-priced release look permanently incomplete.
+- `backend/routers/crawl.py` — `crawl_stream`/`_events_to_replay` stopped
+  filtering `listing_changed` events by library ownership (deleted
+  `_event_touches_user`); see "Live repaint" below.
+- Tests: `backend/tests/test_library_maintenance.py`, `backend/tests/test_crawl_router.py`.
+
 Out of scope:
 
 - **Backfill.** Existing `listings` rows with `release_id` set and a price
@@ -95,13 +110,27 @@ Out of scope:
   about the user whose wishlist triggered the crawl — no different in kind
   from a catalog crawler discovering the same release in a store's
   inventory. No per-user scoping is added on the write side.
-- **Delete on a clean "not found," not on a crawl exception.** The crawler
-  plugin interface's contract (`CLAUDE.md`) already distinguishes these:
-  `[]` means the site answered and has nothing, while any failure must
-  raise. `_drain_one_batch`'s `except` block already short-circuits before
-  reaching match processing, so "matches == [] and no exception was raised"
-  is already the exact signal available at the point the new delete call is
-  added — no new signal needs to be threaded through.
+- **Delete on a clean "not found," not on a crawl exception or a bot-detected
+  empty retry.** The crawler plugin interface's contract (`CLAUDE.md`)
+  already distinguishes exception from `[]`: `[]` means the site answered
+  and has nothing, while any failure must raise. `_drain_one_batch`'s
+  `except` block already short-circuits before reaching match processing.
+  A third case surfaced during review: `_paced_search` can also return
+  `matches == []` with `bot_detected = True` — a post-interstitial retry
+  that came back empty is not a trustworthy "not in stock" answer either
+  (the same signal the circuit breaker already treats as untrustworthy), so
+  the delete (and the `clear_listing_price` call below) is additionally
+  gated on `not bot_detected`.
+- **Clearing `listings.price`, not just deleting the `stock_items` row, on a
+  clean not-found.** `upsert_listing` writes the release_id-keyed `listings`
+  row `get_missing_releases`/`get_crawl_status_for_user` use for
+  completeness accounting; deleting only `stock_items` left that row's
+  stale non-NULL price behind, so a release that matched once and later
+  went not-found looked permanently "complete" and never got re-enqueued by
+  the scheduled sweep. `clear_listing_price` nulls the price in place
+  (`listings.url` is `NOT NULL`, so there's no url to write a fresh row
+  with on a not-found) without touching `url`, making the release missing
+  again.
 - **`upsert_listing` is unchanged, not replaced.** It still backs
   `get_missing_releases`/`get_crawl_status_for_user`'s completeness
   accounting, which has nothing to do with what the Store/Track UI shows.
@@ -115,65 +144,96 @@ Out of scope:
 
 ```sql
 ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS release_id TEXT REFERENCES catalog(discogs_id);
-CREATE UNIQUE INDEX IF NOT EXISTS stock_items_crawler_release_idx ON stock_items (crawler_id, release_id);
+CREATE UNIQUE INDEX IF NOT EXISTS stock_items_crawler_release_idx ON stock_items (crawler_id, release_id) WHERE release_id IS NOT NULL;
 ```
 
-Postgres unique indexes treat `NULL` as distinct from every other value, so
-catalog-crawler rows (`release_id IS NULL`, arbitrarily many per crawler)
-are unaffected by the new index; only release-crawler rows (`release_id`
-set) are constrained to one row per `(crawler_id, release_id)`.
+The index is partial (`WHERE release_id IS NOT NULL`) so it only ever
+constrains release-crawler rows — catalog-crawler rows (`release_id IS
+NULL`, arbitrarily many per crawler) never enter it at all, rather than
+relying on Postgres's NULL-is-distinct behavior to make an unconstrained
+full index a no-op for them. `upsert_stock_item_from_release`'s `ON
+CONFLICT (crawler_id, release_id) WHERE release_id IS NOT NULL DO UPDATE`
+repeats the same predicate, which Postgres requires to infer a partial
+index as the conflict target.
 
 ## Write path
 
-`_drain_one_batch`'s `is_release` branch (`crawl_manager.py:291-318`),
-after the existing `upsert_listing(...)` call:
+`_drain_one_batch`'s `is_release` branch, after the existing
+`upsert_listing(...)` call:
 
 - **Match found** (`matches` non-empty): `upsert_stock_item_from_release`
   inserts or updates a `stock_items` row keyed by `(crawler_id, release_id)`
-  — `artist`/`title`/`format`/`cover_image_url` from `target` (the catalog
-  row already fetched earlier in the loop), `price`/`currency`/`url` from
-  `best` (`matches[0]`), `item_key = compute_item_key(artist, title, url)`.
-  It also upserts the matching `stock_item_identities` row (same
-  `ON CONFLICT (item_key) DO UPDATE` shape `replace_stock_items` already
-  uses), keeping the "every `stock_items` row has a durable identity row"
-  invariant that `get_recommended_stock_items`/judgments' `LEFT JOIN`
-  depends on — release-crawler rows would otherwise silently fall back to
-  `NULL` artist/title/format there instead of erroring, a real but easy-to-
-  miss gap rather than a hard failure.
-- **Clean "not found"** (`matches == []`): `delete_stock_item_for_release`
-  removes any existing `stock_items` row for that `(crawler_id, release_id)`
-  — the release is no longer in stock there. The `stock_item_identities` row
-  is left in place, same as the existing dead-stock-item convention
-  (identity rows are durable; only the live `stock_items` row goes).
-- **Crawl exception**: neither call runs (the existing `except` block
-  already `continue`s first) — an untrustworthy failure leaves any prior
-  `stock_items` row as-is.
+  — `artist`/`title`/`format`/`cover_image_url` stored as-is from `target`
+  (the catalog row already fetched earlier in the loop; unlike
+  `replace_stock_items`, no `normalize_artist_casing`/`normalize_title_casing`
+  pass, since catalog data is already curated Discogs metadata, not scraped
+  text), `price`/`currency`/`url` from `best` (`matches[0]`). `item_key`
+  hashes `catalog_release["artist"].title()` and the raw (non-normalized)
+  title — matching `replace_stock_items`'s legacy convention exactly,
+  regardless of what gets stored for display, so an item found by both a
+  release crawler and a catalog crawler resolves to the same `item_key`
+  rather than two different hashes for one identity. It also upserts the
+  matching `stock_item_identities` row (same `ON CONFLICT (item_key) DO
+  UPDATE` shape `replace_stock_items` already uses), keeping the "every
+  `stock_items` row has a durable identity row" invariant that
+  `get_recommended_stock_items`/judgments' `LEFT JOIN` depends on.
+- **Clean "not found"** (`matches == []` and `bot_detected` is `False`):
+  `delete_stock_item_for_release` removes any existing `stock_items` row
+  for that `(crawler_id, release_id)`, and `clear_listing_price` nulls the
+  `listings` row's price in place (leaving `url`, which is `NOT NULL`,
+  untouched) so `get_missing_releases` treats the release as missing again
+  instead of permanently complete. The `stock_item_identities` row is left
+  in place, same as the existing dead-stock-item convention.
+- **Untrustworthy result** — a crawl exception, or `bot_detected = True`
+  (a post-interstitial retry that came back empty): neither call runs, so
+  any prior `stock_items`/`listings` state is left exactly as-is. The
+  exception case is the existing `except` block, which already `continue`s
+  before reaching match processing; the `bot_detected` case is a `matches
+  == []` result that reaches this branch but is excluded by an explicit
+  `and not bot_detected` guard, since an empty post-retry result is the
+  same untrustworthy signal the circuit breaker already treats specially
+  one line above.
 
 ## Live repaint
 
 `listing_changed` SSE events already fire on every release-crawl result
-(`_broadcast_listing_changed`, `crawl_manager.py:328`) and every stock-item
-price-comparison result (`_broadcast_stock_listing_changed`,
-`crawl_manager.py:334`), but the frontend currently drops both — the
-per-release UI that used to consume the first was removed by the 2026-08-08
-tab rename, and nothing has ever consumed the second. `App.tsx`'s SSE
-handler gains a case matching `event.type === 'listing_changed'` (either
-shape) that bumps `stockSyncGeneration`, the same counter
-`stock_sync_progress`/`stock_sync_complete` already bump, so `StockBrowser`
-(both `store` and `track` scopes) refetches live — as a release crawler
-finds a match (this spec's new `stock_items` write) or as a price
-comparison arrives for an item already shown (an existing, previously-inert
-signal) — consistent with catalog-crawl live repaint (#118).
+(`_broadcast_listing_changed`) and every stock-item price-comparison result
+(`_broadcast_stock_listing_changed`), but the frontend currently drops
+both — the per-release UI that used to consume the first was removed by
+the 2026-08-08 tab rename, and nothing has ever consumed the second.
+`App.tsx`'s SSE handler gains a case matching `event.type ===
+'listing_changed'` (either shape) that bumps `stockSyncGeneration`, the
+same counter `stock_sync_progress`/`stock_sync_complete` already bump, so
+`StockBrowser` (both `store` and `track` scopes) refetches live —
+consistent with catalog-crawl live repaint (#118).
+
+Since Store/Track are global rather than per-user, `backend/routers/crawl.py`
+no longer filters `listing_changed` events by whether the release is in the
+requesting user's own library before delivering them — a discogs_id-scoped
+filter existed for an older, now-removed per-release progress UI, and left
+in place it would have silently starved every user's Store/Track tab of
+repaints for any release outside their own collection/wishlist. Both the
+live SSE stream and the reconnect replay buffer deliver every
+`listing_changed` event to every connected user now.
 
 ## Testing
 
 - `_drain_one_batch`: a release-type crawl that finds a match creates a
   `stock_items` row with the expected fields; a second run with no match
-  deletes it; a run that raises leaves an existing row untouched; the
-  existing `listings`-row assertions keep passing unchanged.
-- `upsert_stock_item_from_release`/`delete_stock_item_for_release`: direct
-  unit coverage in `test_stock_crud.py`, including the upsert-on-conflict
-  case (same release/crawler crawled twice with a changed price/url).
+  deletes it and nulls the `listings` price; a run that raises, and a run
+  whose retry comes back empty after bot detection, both leave any existing
+  `stock_items`/`listings` state untouched; the existing `listings`-row
+  assertions keep passing unchanged.
+- `upsert_stock_item_from_release`/`delete_stock_item_for_release`/
+  `clear_listing_price`: direct unit coverage in `test_stock_crud.py`,
+  including the upsert-on-conflict case (same release/crawler crawled twice
+  with a changed price/url) and the legacy `.title()` item_key convention.
+- `get_missing_releases`/`get_crawl_status_for_user`: a release fully
+  priced by every enabled *release* crawler is not "missing", even with an
+  unrelated enabled *catalog* crawler also present (`test_library_maintenance.py`).
+- `_events_to_replay`: a `listing_changed` event for a release outside the
+  requesting user's own library is still included in their replay buffer
+  (`test_crawl_router.py`).
 - Frontend: a `listing_changed` SSE event triggers a `getStock` refetch,
   proven the same way `inStockTab.test.tsx` already proves it for
   `stock_sync_progress`.
