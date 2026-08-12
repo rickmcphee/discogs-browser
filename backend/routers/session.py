@@ -212,10 +212,10 @@ def redeem_invite(body: RedeemInviteRequest, request: Request, response: Respons
 
 
 @router.post("/auth/invites", dependencies=[Depends(require_admin)])
-def create_invite(request: Request, body: CreateInviteRequest = CreateInviteRequest()):
+def create_invite(request: Request, body: Optional[CreateInviteRequest] = None):
     code = secrets.token_urlsafe(12)
-    with db.get_app_pool().connection() as conn:
-        db.create_invite(conn, request.state.user_id, code, note=body.note)
+    with db.get_identity_pool().connection() as conn:
+        db.create_invite(conn, request.state.user_id, code, note=body.note if body else None)
         conn.commit()
     return {"code": code}
 

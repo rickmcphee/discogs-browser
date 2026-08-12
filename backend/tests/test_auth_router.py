@@ -413,6 +413,15 @@ def test_create_invite_as_admin_returns_code_that_redeems_successfully(client):
     )
     assert r.status_code == 200
 
+    # redeeming logged the client in as the new user; go back to the admin's session
+    client.cookies.clear()
+    client.cookies.set(config.COOKIE_NAME, token)
+    r = client.get("/api/auth/invites")
+    assert r.status_code == 200
+    listed = next(i for i in r.json() if i["code"] == code)
+    assert listed["redeemed_by_username"] == "erin"
+    assert listed["redeemed_at"] is not None
+
 
 def test_create_invite_accepts_optional_note(client):
     with db.get_admin_pool().connection() as conn:
@@ -479,6 +488,7 @@ def test_list_invites_returns_created_and_redeemed_invites_newest_first(client):
     assert [i["code"] for i in invites] == ["NEWCODE", "OLDCODE"]
     assert invites[0]["redeemed_by_username"] == "bob"
     assert invites[0]["created_by_username"] == "admin"
+    assert invites[0]["note"] is None
     assert invites[1]["redeemed_by_username"] is None
     assert invites[1]["note"] == "old one"
 

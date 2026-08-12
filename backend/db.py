@@ -385,7 +385,7 @@ def init_tenant_schema():
         _ensure_role(conn, "app_user", config.APP_DB_PASSWORD, bypass_rls=False)
 
         conn.execute("GRANT SELECT, INSERT, UPDATE ON users TO app_identity")
-        conn.execute("GRANT SELECT, UPDATE ON invites TO app_identity")
+        conn.execute("GRANT SELECT, INSERT, UPDATE ON invites TO app_identity")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON sessions TO app_identity")
         conn.execute("GRANT USAGE, SELECT ON SEQUENCE users_id_seq TO app_identity")
         conn.execute("GRANT SELECT, INSERT, DELETE ON oauth_request_state TO app_identity")
@@ -417,10 +417,6 @@ def init_tenant_schema():
         # when an admin disables it.
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON crawl_queue TO app_user")
         conn.execute("GRANT USAGE, SELECT ON SEQUENCE crawl_queue_id_seq TO app_user")
-        # INSERT only -- app_user never needs to read back another admin's
-        # minted invites, and redemption (SELECT/UPDATE) runs through
-        # app_identity, not this role.
-        conn.execute("GRANT INSERT ON invites TO app_user")
         conn.commit()
 
 
