@@ -13,6 +13,7 @@ _VINYL_RE = re.compile(r'\bvinyl\b|\b\d*x?lps?\b', re.IGNORECASE)
 class Crawler:
     site_name: str = "Father/Daughter Records"
     base_url: str = "https://fatherdaughterrecords.com"
+    genre_summary: str = "Indie rock and indie pop label."
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:

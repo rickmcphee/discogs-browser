@@ -166,8 +166,9 @@ function Settings({
               <td className="py-3 pr-4 text-left text-gray-200 font-medium">
                 {c.base_url
                   ? <a href={c.base_url} target="_blank" rel="noreferrer"
+                       title={c.genre_summary ?? undefined}
                        className="text-gray-400 hover:text-white underline">{c.site_name}</a>
-                  : c.site_name}
+                  : <span title={c.genre_summary ?? undefined}>{c.site_name}</span>}
               </td>
               {isAdmin && (
                 <td className="py-3 pr-4 text-left text-gray-500 text-xs">

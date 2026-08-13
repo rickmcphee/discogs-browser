@@ -9,6 +9,7 @@ _VINYL_RE = re.compile(r'\bvinyl\b', re.IGNORECASE)
 class Crawler:
     site_name: str = "Fat Possum"
     base_url: str = "https://fatpossum.com"
+    genre_summary: str = "Blues, garage rock, and Southern indie rock label."
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:

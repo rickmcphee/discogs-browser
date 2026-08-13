@@ -8,6 +8,7 @@ _COLLECTION_SLUG = "vinyl"
 class Crawler:
     site_name: str = "Peaceville"
     base_url: str = "https://usa-peaceville.myshopify.com"
+    genre_summary: str = "Doom, death, and black metal label."
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:

@@ -13,6 +13,7 @@ _TITLE_RE = re.compile(r'^(?P<artist>.+?)(?:\s+-\s*|\s*-\s+)(?P<album>.+)$')
 class Crawler:
     site_name: str = "Run For Cover"
     base_url: str = "https://runforcoverrecords.com"
+    genre_summary: str = "Indie emo and pop-punk label."
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:

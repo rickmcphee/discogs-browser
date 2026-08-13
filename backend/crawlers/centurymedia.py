@@ -8,6 +8,7 @@ _COLLECTION_SLUG = "vinyl"
 class Crawler:
     site_name: str = "Century Media"
     base_url: str = "https://centurymedia.store"
+    genre_summary: str = "Metal label spanning death, black, and gothic metal."
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:

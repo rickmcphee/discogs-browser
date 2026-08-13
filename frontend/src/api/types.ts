@@ -29,6 +29,7 @@ export interface Crawler {
   enabled: boolean
   last_run: string | null
   base_url: string | null
+  genre_summary?: string | null
 }
 
 export interface Settings {
