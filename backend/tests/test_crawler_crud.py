@@ -171,3 +171,34 @@ def test_get_crawlers_includes_disabled_and_filters_by_type(admin_conn):
 
     catalog = db.get_crawlers(admin_conn, crawler_type="catalog")
     assert {c["site_name"] for c in catalog} == {"Stock Site"}
+
+
+def test_get_all_crawlers_reads_genre_summary(admin_conn, tmp_path):
+    crawler_file = tmp_path / "genre_test_crawler.py"
+    crawler_file.write_text(
+        "class Crawler:\n"
+        "    site_name = 'Genre Test Store'\n"
+        "    base_url = 'https://example.com'\n"
+        "    genre_summary = 'Sells only kazoo solos.'\n"
+    )
+    db.register_crawler(admin_conn, "Genre Test Store", str(crawler_file), crawler_type="catalog")
+    admin_conn.commit()
+
+    crawlers = db.get_all_crawlers(admin_conn)
+    row = next(c for c in crawlers if c["site_name"] == "Genre Test Store")
+    assert row["genre_summary"] == "Sells only kazoo solos."
+
+
+def test_get_all_crawlers_genre_summary_defaults_to_none(admin_conn, tmp_path):
+    crawler_file = tmp_path / "no_genre_test_crawler.py"
+    crawler_file.write_text(
+        "class Crawler:\n"
+        "    site_name = 'No Genre Test Store'\n"
+        "    base_url = 'https://example.com'\n"
+    )
+    db.register_crawler(admin_conn, "No Genre Test Store", str(crawler_file))
+    admin_conn.commit()
+
+    crawlers = db.get_all_crawlers(admin_conn)
+    row = next(c for c in crawlers if c["site_name"] == "No Genre Test Store")
+    assert row["genre_summary"] is None
