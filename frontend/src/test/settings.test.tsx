@@ -25,14 +25,14 @@ vi.mock('../api/client', () => ({
 }))
 
 const CRAWLERS: Crawler[] = [
-  { id: 1, site_name: 'Amazon', module_path: '', crawler_type: 'release', enabled: true, last_run: null, base_url: null },
-  { id: 2, site_name: 'Disabled Site', module_path: '', crawler_type: 'release', enabled: false, last_run: null, base_url: null },
-  { id: 3, site_name: 'Epitaph', module_path: '', crawler_type: 'catalog', enabled: true, last_run: null, base_url: null },
+  { id: 1, site_name: 'Amazon', module_path: '', crawler_type: 'release', enabled: true, last_run: null, base_url: null, genre_summary: null },
+  { id: 2, site_name: 'Disabled Site', module_path: '', crawler_type: 'release', enabled: false, last_run: null, base_url: null, genre_summary: null },
+  { id: 3, site_name: 'Epitaph', module_path: '', crawler_type: 'catalog', enabled: true, last_run: null, base_url: 'https://www.epitaph.com', genre_summary: 'Punk rock label.' },
 ]
 
 const CATALOG_CRAWLERS_WITH_DISABLED: Crawler[] = [
   ...CRAWLERS,
-  { id: 4, site_name: 'Disabled Catalog', module_path: '', crawler_type: 'catalog', enabled: false, last_run: null, base_url: null },
+  { id: 4, site_name: 'Disabled Catalog', module_path: '', crawler_type: 'catalog', enabled: false, last_run: null, base_url: null, genre_summary: null },
 ]
 
 beforeEach(() => {
@@ -225,7 +225,7 @@ describe('Settings', () => {
   it('buckets a catalog_browser crawler into the Store Catalog Sources table, not the release table', () => {
     const crawlers: Crawler[] = [
       ...CRAWLERS,
-      { id: 4, site_name: 'Angry Young and Poor', module_path: '', crawler_type: 'catalog_browser', enabled: true, last_run: null, base_url: null },
+      { id: 4, site_name: 'Angry Young and Poor', module_path: '', crawler_type: 'catalog_browser', enabled: true, last_run: null, base_url: null, genre_summary: null },
     ]
     renderSettings({ crawlers, isAdmin: false })
     const tables = screen.getAllByRole('table')
@@ -310,6 +310,12 @@ describe('Settings', () => {
     fireEvent.click(within(screen.getByText('Amazon').closest('tr') as HTMLElement).getByText('Enabled'))
     await settle()
     expect(screen.queryByText(/queued jobs? discarded/)).not.toBeInTheDocument()
+  })
+
+  it('shows the genre summary as a hover tooltip on the store link', async () => {
+    renderSettings({ crawlers: CRAWLERS })
+    await waitFor(() => expect(getSettings).toHaveBeenCalled())
+    expect(screen.getByTitle('Punk rock label.')).toHaveTextContent('Epitaph')
   })
 
 })
