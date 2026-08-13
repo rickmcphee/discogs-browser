@@ -486,16 +486,6 @@ describe('StockBrowser', () => {
     expect(localStorage.getItem('stockFilter_track')).toBe('all')
   })
 
-  it('shows a spinner alongside Loading… during the initial fetch', async () => {
-    let resolveFetch: (v: any) => void = () => {}
-    getStock.mockReturnValue(new Promise((resolve) => { resolveFetch = resolve }))
-    render(<StockBrowser />)
-    expect(screen.getByText('Loading…')).toBeTruthy()
-    expect(document.querySelector('.animate-spin')).toBeTruthy()
-    resolveFetch({ total: 0, page: 1, per_page: 250, items: [] })
-    await waitFor(() => expect(screen.queryByText('Loading…')).toBeNull())
-  })
-
   it('renders a row for every item, including comparison rows, in list view', async () => {
     getStock.mockResolvedValue({
       total: 1, page: 1, per_page: 250,

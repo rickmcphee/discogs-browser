@@ -25,7 +25,6 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
   const [artists, setArtists] = useState<string[]>([])
   const [sort, setSort] = useState<SortField>('artist')
   const [order, setOrder] = useState<SortOrder>('asc')
-  const [loading, setLoading] = useState(false)
   const [viewMode, setViewMode] = useState<'list' | 'tiles'>(
     () => (localStorage.getItem(`collectionViewMode_${scope}`) === 'tiles' ? 'tiles' : 'list')
   )
@@ -39,23 +38,18 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
   }, [selectedArtist])
 
   const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const result = await getReleases({
-        search: search || undefined,
-        artist: selectedArtist || undefined,
-        sort,
-        order,
-        page,
-        per_page: PER_PAGE,
-        scope,
-        unmatched: scope === 'collection' ? unmatched : undefined,
-      })
-      setReleases(result.releases)
-      setTotal(result.total)
-    } finally {
-      setLoading(false)
-    }
+    const result = await getReleases({
+      search: search || undefined,
+      artist: selectedArtist || undefined,
+      sort,
+      order,
+      page,
+      per_page: PER_PAGE,
+      scope,
+      unmatched: scope === 'collection' ? unmatched : undefined,
+    })
+    setReleases(result.releases)
+    setTotal(result.total)
   }, [search, selectedArtist, sort, order, page, scope, unmatched])
 
   useEffect(() => { load() }, [load])
@@ -193,13 +187,12 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
         {/* Tiles */}
         {viewMode === 'tiles' && (
           <div className="flex-1 overflow-auto" ref={tableScrollRef}>
-            {loading && <div className="text-center py-8 text-gray-500">Loading…</div>}
-            {!loading && releases.length === 0 && (
+            {releases.length === 0 && (
               <div className="text-center py-8 text-gray-500">
                 {scope === 'wantlist' ? WANTLIST_EMPTY : COLLECTION_EMPTY}
               </div>
             )}
-            {!loading && releases.length > 0 && (
+            {releases.length > 0 && (
               <div className="grid gap-4 p-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))' }}>
                 {releases.map((r) => (
                   <div key={r.discogs_id}>
@@ -300,14 +293,7 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
               </tr>
             </thead>
             <tbody>
-              {loading && (
-                <tr>
-                  <td colSpan={8} className="text-center py-8 text-gray-500">
-                    Loading…
-                  </td>
-                </tr>
-              )}
-              {!loading && releases.length === 0 && (
+              {releases.length === 0 && (
                 <tr>
                   <td colSpan={8} className="text-center py-8 text-gray-500">
                     {scope === 'wantlist' ? WANTLIST_EMPTY : COLLECTION_EMPTY}

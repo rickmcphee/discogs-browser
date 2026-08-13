@@ -253,6 +253,8 @@ Several Settings action buttons ("Refresh Now" for collection/prices/stock, "Ref
 
 **Amendment (2026-08-07, branch `monochrome-restyle`):** `border-indigo-500` no longer exists anywhere in the app, including this spinner and the bottom status bar's — the monochrome restyle (see [`2026-08-07-monochrome-restyle-design.md`](../../specifications/shaping/2026-08-07-monochrome-restyle-design.md)) changed both to `border-white border-t-transparent`. The two spinners are still visually consistent with each other, just white instead of indigo.
 
+**Amendment (2026-08-12, branch `remove-loading-spinner-tabs`):** This entire per-tab loading state (`"Loading…"` text and spinner) has been removed from both `StockBrowser` and `RecordBrowser` — with the app's performance improvements since this section was written, tab data loads fast enough that the loading feedback was no longer needed and had become visually distracting on every artist selection and repaint, not just the one-time initial fetch. The initial app-startup spinner (`App.tsx`, session/auth check) is unrelated and untouched.
+
 ### 4. `Recommended` gating
 
 `Recommended` is currently disabled only via `!hasAnthropicKey` — it becomes selectable as soon as a key is configured, even if no judgment run has ever completed, and stays selectable during a later in-progress run even though `StockBrowser` has no SSE awareness and won't reflect newly-judged items until something re-triggers its fetch (filter change, page change, remount). Confirmed via inspection: the Recommended view is not live-updating today, so leaving it selectable while data is incomplete or stale would show a misleading list.

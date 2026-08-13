@@ -33,7 +33,6 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
     const stored = localStorage.getItem(`stockFilter_${scope}`)
     return stored && allowed.includes(stored) ? stored : 'all'
   })
-  const [loading, setLoading] = useState(false)
   const [viewMode, setViewMode] = useState<'list' | 'tiles'>(
     () => (localStorage.getItem(`collectionViewMode_${scope}`) === 'tiles' ? 'tiles' : 'list')
   )
@@ -47,21 +46,16 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
   }
 
   const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const result = await getStock({
-        search: search || undefined,
-        artist: selectedArtist || undefined,
-        sort, order, page, per_page: PER_PAGE,
-        libraryScope: scope === 'track' ? trackLibraryScope(filter) : undefined,
-        recommended: scope === 'store' && filter === 'recommended',
-        hiddenCrawlerIds,
-      })
-      setItems(result.items)
-      setTotal(result.total)
-    } finally {
-      setLoading(false)
-    }
+    const result = await getStock({
+      search: search || undefined,
+      artist: selectedArtist || undefined,
+      sort, order, page, per_page: PER_PAGE,
+      libraryScope: scope === 'track' ? trackLibraryScope(filter) : undefined,
+      recommended: scope === 'store' && filter === 'recommended',
+      hiddenCrawlerIds,
+    })
+    setItems(result.items)
+    setTotal(result.total)
   }, [search, selectedArtist, sort, order, page, filter, hiddenCrawlerIds, scope])
 
   // syncGeneration ticks on every stock_sync_progress/stock_sync_complete SSE
@@ -239,18 +233,12 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
         {/* Tiles */}
         {viewMode === 'tiles' && (
           <div className="flex-1 overflow-auto" ref={tableScrollRef}>
-            {loading && (
-              <div className="flex items-center justify-center gap-2 py-8 text-gray-500">
-                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                Loading…
-              </div>
-            )}
-            {!loading && items.length === 0 && (
+            {items.length === 0 && (
               <div className="text-center py-8 text-gray-500">
                 {emptyMessage}
               </div>
             )}
-            {!loading && items.length > 0 && (
+            {items.length > 0 && (
               <div className="grid gap-4 p-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))' }}>
                 {items.filter((item) => item.is_own).map((item) => (
                   <a
@@ -324,15 +312,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
               </tr>
             </thead>
             <tbody>
-              {loading && (
-                <tr><td colSpan={colCount} className="py-8 text-gray-500">
-                  <div className="flex items-center justify-center gap-2">
-                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                    Loading…
-                  </div>
-                </td></tr>
-              )}
-              {!loading && items.length === 0 && (
+              {items.length === 0 && (
                 <tr><td colSpan={colCount} className="text-center py-8 text-gray-500">{emptyMessage}</td></tr>
               )}
               {items.map((item) => (
