@@ -427,6 +427,9 @@ creator, redeemer, and timestamps. It is admin-only, not self-serve for ordinary
 users, and there is still no waitlist mechanism, revocation, or expiry. See
 [`docs/superpowers/specs/2026-08-11-invite-code-admin-design.md`](2026-08-11-invite-code-admin-design.md).
 
+**Amendment (2026-08-12):** that section now lives in Profile (`Account.tsx`),
+not Settings — see the 2026-08-12 amendment on the spec linked above.
+
 ---
 
 ## Admin crawler curation
