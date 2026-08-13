@@ -128,7 +128,7 @@ class Crawler:
         delay = float(load_config().get("crawl_delay_seconds", 30))
         seen_album_ids = set()
 
-        await page.goto(f"{self.base_url}/music/cd-and-vinyl", timeout=120_000)
+        await page.goto(f"{self.base_url}/music/cd-and-vinyl", wait_until="domcontentloaded", timeout=120_000)
         if "Attention Required" in await page.title():
             raise BotDetectedError("Cloudflare block page")
 
