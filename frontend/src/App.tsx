@@ -569,10 +569,10 @@ export default function App() {
           />
         </div>
         <div className={view === 'store' ? 'h-full' : 'hidden'}>
-          <StockBrowser recommendedAvailable={recommendedAvailable} hiddenCrawlerIds={hiddenCrawlerIds} syncGeneration={stockSyncGeneration} />
+          <StockBrowser recommendedAvailable={recommendedAvailable} hiddenCrawlerIds={hiddenCrawlerIds} syncGeneration={stockSyncGeneration} isAdmin={showAdminNav} />
         </div>
         <div className={view === 'track' ? 'h-full' : 'hidden'}>
-          <StockBrowser scope="track" hiddenCrawlerIds={hiddenCrawlerIds} syncGeneration={stockSyncGeneration} />
+          <StockBrowser scope="track" hiddenCrawlerIds={hiddenCrawlerIds} syncGeneration={stockSyncGeneration} isAdmin={showAdminNav} />
         </div>
         <div className={view === 'settings' ? 'h-full overflow-y-auto' : 'hidden'}>
           <Settings

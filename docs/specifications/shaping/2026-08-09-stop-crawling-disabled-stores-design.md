@@ -20,6 +20,10 @@ tables (`PATCH /crawlers/{id}` → `db.set_crawler_enabled`) only stops *future*
 enqueues. Work already in motion for that store carries on, on two independent
 paths:
 
+> "Crawler Management" was renamed to "Marketplace Management" by a later,
+> separately-documented rename; see `frontend/src/views/Settings.tsx` for
+> current heading text.
+
 - **Price/release crawl.** `db.claim_crawl_queue_batch` selects pending rows
   with no reference to `crawlers.enabled`, and the worker pool's
   `plugins_by_crawler_id` is a boot-time snapshot built from

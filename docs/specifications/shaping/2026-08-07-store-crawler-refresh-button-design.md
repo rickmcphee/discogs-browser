@@ -33,7 +33,8 @@ Touches:
   `frontend/src/test/settings.test.tsx`.
 
 Out of scope: the release/price crawler table (top "Crawler Management"
-section) is unaffected — the refresh column is catalog-only. The scheduled
+section — renamed to "Marketplace Management" by a later, separately-
+documented rename) is unaffected — the refresh column is catalog-only. The scheduled
 stock sync (`stock_schedule` cron) is unaffected — it always runs the bulk,
 all-crawlers path.
 

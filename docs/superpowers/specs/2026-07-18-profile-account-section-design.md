@@ -26,6 +26,12 @@ _2026-07-18_
 
 `Settings.tsx` currently has an "Account & Security" section (current/new password, TOTP code, "Change password", "Log out") mixed in with unrelated app-config sections (Collection Management, Crawler Management, Store Management, Recommendations Management). This spec moves account/security out of Settings entirely, into a dedicated "Account" view reached via a profile avatar button in the header — the standard SaaS pattern (GitHub, Slack, etc.) of a circular avatar in the top-right corner that opens the account page. It also adds the ability to upload a photo to replace the default avatar glyph.
 
+> This paragraph is a 2026-07-18 snapshot, not current state: password/TOTP
+> auth predates the later Discogs-OAuth migration, Recommendations
+> Management later moved to the Account view, and Crawler Management was
+> later renamed to Marketplace Management — each by a separately-documented
+> change. See `frontend/src/views/Settings.tsx` for current sections.
+
 The app is single-owner (one `owner` row in SQLite, no multi-user concept — see `backend/auth_core.py`, `backend/routers/session.py`). "Profile" here means the one owner's avatar and account/security controls, not a multi-user profile system.
 
 ## Goals / non-goals

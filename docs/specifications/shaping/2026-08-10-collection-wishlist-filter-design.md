@@ -488,6 +488,15 @@ stock exists, nothing matched — and the generic copy tells a user whose
 stock is fine to go refresh stock, so it gets "Nothing recommended is in
 stock right now." Store / `all` keeps the original string.
 
+**Amendment (2026-08-13, marketplace/store terminology rename):** Store /
+`all` no longer keeps one original string — `StockBrowser` now takes an
+`isAdmin` prop (threaded from `App.tsx`'s `showAdminNav`) and branches on
+it, since the original copy pointed every visitor at a "Refresh" button
+that only admins can see. Admin: "No in-stock items yet. Click Refresh
+under Store Management in Settings." Non-admin: "No in-stock items yet.
+Check back after the next store sync." See
+`frontend/src/views/StockBrowser.tsx`.
+
 ### Nav labels that double as dropdown options are ambiguous in App-level tests
 
 `App.tsx` keeps every view mounted and toggles visibility with a class
