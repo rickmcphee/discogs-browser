@@ -36,6 +36,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
   const [viewMode, setViewMode] = useState<'list' | 'tiles'>(
     () => (localStorage.getItem(`collectionViewMode_${scope}`) === 'tiles' ? 'tiles' : 'list')
   )
+  const [hasLoaded, setHasLoaded] = useState(false)
   const PER_PAGE = 250
   const tableScrollRef = useRef<HTMLDivElement>(null)
 
@@ -56,6 +57,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
     })
     setItems(result.items)
     setTotal(result.total)
+    setHasLoaded(true)
   }, [search, selectedArtist, sort, order, page, filter, hiddenCrawlerIds, scope])
 
   // syncGeneration ticks on every stock_sync_progress/stock_sync_complete SSE
@@ -233,7 +235,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
         {/* Tiles */}
         {viewMode === 'tiles' && (
           <div className="flex-1 overflow-auto" ref={tableScrollRef}>
-            {items.length === 0 && (
+            {hasLoaded && items.length === 0 && (
               <div className="text-center py-8 text-gray-500">
                 {emptyMessage}
               </div>
@@ -312,7 +314,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
               </tr>
             </thead>
             <tbody>
-              {items.length === 0 && (
+              {hasLoaded && items.length === 0 && (
                 <tr><td colSpan={colCount} className="text-center py-8 text-gray-500">{emptyMessage}</td></tr>
               )}
               {items.map((item) => (

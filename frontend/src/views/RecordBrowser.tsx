@@ -29,6 +29,7 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
     () => (localStorage.getItem(`collectionViewMode_${scope}`) === 'tiles' ? 'tiles' : 'list')
   )
   const [unmatched, setUnmatched] = useState(false)
+  const [hasLoaded, setHasLoaded] = useState(false)
   const PER_PAGE = 250
 
   const tableScrollRef = useRef<HTMLDivElement>(null)
@@ -50,6 +51,7 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
     })
     setReleases(result.releases)
     setTotal(result.total)
+    setHasLoaded(true)
   }, [search, selectedArtist, sort, order, page, scope, unmatched])
 
   useEffect(() => { load() }, [load])
@@ -187,7 +189,7 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
         {/* Tiles */}
         {viewMode === 'tiles' && (
           <div className="flex-1 overflow-auto" ref={tableScrollRef}>
-            {releases.length === 0 && (
+            {hasLoaded && releases.length === 0 && (
               <div className="text-center py-8 text-gray-500">
                 {scope === 'wantlist' ? WANTLIST_EMPTY : COLLECTION_EMPTY}
               </div>
@@ -293,7 +295,7 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
               </tr>
             </thead>
             <tbody>
-              {releases.length === 0 && (
+              {hasLoaded && releases.length === 0 && (
                 <tr>
                   <td colSpan={8} className="text-center py-8 text-gray-500">
                     {scope === 'wantlist' ? WANTLIST_EMPTY : COLLECTION_EMPTY}

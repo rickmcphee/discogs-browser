@@ -133,6 +133,15 @@ describe('RecordBrowser', () => {
     expect(await screen.findByText('No wantlist items yet. Add records to your wantlist on Discogs, then sync.')).toBeInTheDocument()
   })
 
+  it('does not show the empty state while the initial fetch is still pending', async () => {
+    let resolveFetch: (v: any) => void = () => {}
+    getReleases.mockReturnValue(new Promise((resolve) => { resolveFetch = resolve }))
+    render(<RecordBrowser scope="collection" />)
+    expect(screen.queryByText('No records found. Click the sync icon above to load your collection from Discogs.')).toBeNull()
+    resolveFetch({ total: 0, page: 1, per_page: 250, releases: [] })
+    await screen.findByText('No records found. Click the sync icon above to load your collection from Discogs.')
+  })
+
   it('defaults sort to title when a specific artist is selected, and back to artist for All', async () => {
     getArtists.mockResolvedValue(['Pink Floyd'])
     render(<RecordBrowser scope="collection" />)

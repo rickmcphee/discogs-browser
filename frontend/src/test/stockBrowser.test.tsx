@@ -59,6 +59,15 @@ describe('StockBrowser', () => {
     await waitFor(() => expect(screen.getByText(/No in-stock items yet/)).toBeTruthy())
   })
 
+  it('does not show the empty state while the initial fetch is still pending', async () => {
+    let resolveFetch: (v: any) => void = () => {}
+    getStock.mockReturnValue(new Promise((resolve) => { resolveFetch = resolve }))
+    render(<StockBrowser />)
+    expect(screen.queryByText(/No in-stock items yet/)).toBeNull()
+    resolveFetch({ total: 0, page: 1, per_page: 250, items: [] })
+    await screen.findByText(/No in-stock items yet/)
+  })
+
   it('searches by artist or title', async () => {
     render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
