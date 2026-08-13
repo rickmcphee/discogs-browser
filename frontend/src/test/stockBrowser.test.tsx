@@ -62,14 +62,17 @@ describe('StockBrowser', () => {
   it('points a non-admin to a store sync, not the admin-only Refresh button', async () => {
     getStock.mockResolvedValue({ total: 0, page: 1, per_page: 250, items: [] })
     render(<StockBrowser />)
-    await waitFor(() => expect(screen.getByText(/No in-stock items yet/)).toBeTruthy())
-    expect(screen.queryByText(/Refresh/)).toBeNull()
+    await waitFor(() => expect(
+      screen.getByText('No in-stock items yet. Check back after the next store sync.')
+    ).toBeTruthy())
   })
 
-  it('points an admin to the Settings Refresh button', async () => {
+  it('points an admin to the Store Management Refresh button', async () => {
     getStock.mockResolvedValue({ total: 0, page: 1, per_page: 250, items: [] })
     render(<StockBrowser isAdmin />)
-    await waitFor(() => expect(screen.getByText(/Click "Refresh" in Settings/)).toBeTruthy())
+    await waitFor(() => expect(
+      screen.getByText('No in-stock items yet. Click Refresh under Store Management in Settings.')
+    ).toBeTruthy())
   })
 
   it('does not show the empty state while the initial fetch is still pending', async () => {
