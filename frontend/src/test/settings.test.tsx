@@ -166,8 +166,8 @@ describe('Settings', () => {
     expect(screen.getByText('Amazon')).toBeInTheDocument()
     expect(screen.queryByText('Disabled Site')).not.toBeInTheDocument()
     expect(screen.queryByText('Enabled')).not.toBeInTheDocument()
-    expect(screen.getByText('Store Sources')).toBeInTheDocument()
-    expect(screen.getByText('Store Catalog Sources')).toBeInTheDocument()
+    expect(screen.getByText('Marketplaces')).toBeInTheDocument()
+    expect(screen.getByText('Stores')).toBeInTheDocument()
   })
 
   it('still shows View toggles to a non-admin', async () => {
@@ -222,7 +222,7 @@ describe('Settings', () => {
     expect(within(row).getByText('Refresh')).toBeDisabled()
   })
 
-  it('buckets a catalog_browser crawler into the Store Catalog Sources table, not the release table', () => {
+  it('buckets a catalog_browser crawler into the Stores table, not the Marketplaces table', () => {
     const crawlers: Crawler[] = [
       ...CRAWLERS,
       { id: 4, site_name: 'Angry Young and Poor', module_path: '', crawler_type: 'catalog_browser', enabled: true, last_run: null, base_url: null, genre_summary: null },

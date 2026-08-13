@@ -136,7 +136,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
   const priceSortable = scope === 'track' && filter !== 'wantlist'
   const emptyMessage =
     scope === 'store' && filter === 'recommended' ? 'Nothing recommended is in stock right now.'
-    : scope === 'store' ? 'No in-stock items yet. Click "Refresh Stock Now" in Settings.'
+    : scope === 'store' ? 'No in-stock items yet. Click "Refresh" in Settings.'
     : filter === 'collection' ? 'Nothing in your collection is in stock right now.'
     : filter === 'wantlist' ? 'Nothing on your wantlist is in stock right now.'
     : "Nothing you're tracking is in stock right now."

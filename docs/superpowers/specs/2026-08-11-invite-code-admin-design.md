@@ -59,7 +59,8 @@ end to end.
 ## Frontend
 
 Follows the existing admin-section pattern in `frontend/src/views/Settings.tsx`
-(Crawler Management / Store Management): a `<section>` with heading,
+(Marketplace Management / Store Management — the former was "Crawler
+Management" as of a later, separately-documented rename): a `<section>` with heading,
 description paragraph, and table, gated on the `isAdmin` prop, fetching its
 own data via a `useEffect` keyed on `isAdmin` (same shape as the existing
 `getSettings()` effect).

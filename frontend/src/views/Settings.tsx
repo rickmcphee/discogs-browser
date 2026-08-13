@@ -272,12 +272,12 @@ function Settings({
       {/* Crawler Management */}
       <section>
         <h2 className="text-lg font-semibold text-white mb-1 text-left">
-          {isAdmin ? 'Crawler Management' : 'Store Sources'}
+          {isAdmin ? 'Marketplace Management' : 'Marketplaces'}
         </h2>
         <p className="text-sm text-gray-500 mb-4 text-left">
           {isAdmin
             ? <>Run price crawlers on a schedule. Leave blank to disable. Example: <code className="text-gray-400 font-mono">0 2 * * *</code> = 2 am daily.</>
-            : 'Choose which stores\' items you want to see in the Store tab.'}
+            : 'Choose which marketplaces to check for prices — on items in your collection or wantlist, and on items found in Stores.'}
         </p>
         {isAdmin && settingsSaveError && <p className="text-xs text-red-400 mb-3 text-left">{settingsSaveError}</p>}
         {isAdmin && (
@@ -344,7 +344,7 @@ function Settings({
       {/* Store Management */}
       <section>
         <h2 className="text-lg font-semibold text-white mb-1 text-left">
-          {isAdmin ? 'Store Management' : 'Store Catalog Sources'}
+          {isAdmin ? 'Store Management' : 'Stores'}
         </h2>
         <p className="text-sm text-gray-500 mb-4 text-left">
           {isAdmin

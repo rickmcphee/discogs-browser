@@ -93,6 +93,10 @@ read less like admin controls: "Collection & Wishlist Price Sources" (was
 Same underlying crawler list and toggle component as the admin table —
 just fewer columns and rows.
 
+> As of later, separately-documented renames, the non-admin headings are
+> "Marketplaces" and "Stores" (admin: "Marketplace Management" and "Store
+> Management"); see `frontend/src/views/Settings.tsx` for current text.
+
 ## Backend changes
 
 `routers/stock.py`'s list-stock endpoint (backing `getStock`) and its
