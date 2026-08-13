@@ -10,6 +10,21 @@ Out of scope: revoking an unredeemed code, expiring codes, pagination (invite
 volume here is small — an invite-gated app has few admins minting a handful
 of codes each, not thousands of rows).
 
+**Amendment (2026-08-12, branch `move-invites-settings-profile`):** the
+Invites section described under "## Frontend" below now lives in
+`frontend/src/views/Account.tsx` ("Profile" in the header nav), not
+`Settings.tsx` — Settings is scoped to store/crawler configuration, Profile
+to user/account concerns, and invites (who can create an account) are the
+latter. Gating changed accordingly: `Settings.tsx` received a bare `isAdmin`
+prop that `App.tsx` had already pre-filtered to `isRealAdmin && !viewAsUser`,
+but `Account.tsx`'s `isAdmin` prop is the raw `isRealAdmin` (needed as-is so
+the admin/user role switch itself stays visible while previewing as a user).
+The Invites section and its data-loading effect are therefore gated on
+`isAdmin && !viewingAsUser` directly in `Account.tsx`, to preserve the same
+"hidden while previewing as user" behavior the section had in `Settings.tsx`.
+Tests moved to `account.test.tsx` accordingly. Everything else below — the
+backend, the mint/list/copy behavior, error handling — is unchanged.
+
 ## Backend
 
 `invites` table gains a nullable note column, via the existing

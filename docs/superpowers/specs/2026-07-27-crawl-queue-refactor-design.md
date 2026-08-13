@@ -380,9 +380,12 @@ by any endpoint in this plan — see Non-goals.
   authorization check this line assumed would stay unused a while longer.
   See the base spec's "Invite / waitlist gating" amendment for detail.
   **Amendment, 2026-08-11**: the UI part is no longer out of scope either — an
-  admin-only Invites section in Settings now mints (with an optional note) and
+  admin-only Invites section now mints (with an optional note) and
   lists invites over `POST`/`GET /api/auth/invites`. Self-serve generation by
-  ordinary users is still out of scope.)
+  ordinary users is still out of scope. **Amendment, 2026-08-12**: that
+  section moved from Settings to Profile (`Account.tsx`); see
+  [`2026-08-11-invite-code-admin-design.md`](2026-08-11-invite-code-admin-design.md)'s
+  2026-08-12 amendment.)
 - A separate worker process/container — the pool stays in-process asyncio
   tasks, consistent with this app's current single-container deployment.
 - Billing, detailed infra/ops — unchanged from the base spec's Out of scope.
