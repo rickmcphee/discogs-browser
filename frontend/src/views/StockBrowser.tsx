@@ -9,6 +9,7 @@ interface Props {
   recommendedAvailable?: boolean
   hiddenCrawlerIds?: number[]
   syncGeneration?: number
+  isAdmin?: boolean
 }
 
 const NO_HIDDEN_CRAWLER_IDS: number[] = []
@@ -19,7 +20,7 @@ function trackLibraryScope(value: string): LibraryScope | undefined {
   return (TRACK_FILTERS as readonly string[]).includes(value) ? (value as LibraryScope) : undefined
 }
 
-function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCrawlerIds = NO_HIDDEN_CRAWLER_IDS, syncGeneration }: Props) {
+function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCrawlerIds = NO_HIDDEN_CRAWLER_IDS, syncGeneration, isAdmin = false }: Props) {
   const [items, setItems] = useState<StockItem[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -136,7 +137,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
   const priceSortable = scope === 'track' && filter !== 'wantlist'
   const emptyMessage =
     scope === 'store' && filter === 'recommended' ? 'Nothing recommended is in stock right now.'
-    : scope === 'store' ? 'No in-stock items yet. Click "Refresh" in Settings.'
+    : scope === 'store' ? (isAdmin ? 'No in-stock items yet. Click "Refresh" in Settings.' : 'No in-stock items yet. Check back after the next store sync.')
     : filter === 'collection' ? 'Nothing in your collection is in stock right now.'
     : filter === 'wantlist' ? 'Nothing on your wantlist is in stock right now.'
     : "Nothing you're tracking is in stock right now."

@@ -170,6 +170,14 @@ describe('Settings', () => {
     expect(screen.getByText('Stores')).toBeInTheDocument()
   })
 
+  it('shows the admin headings Marketplace Management and Store Management', async () => {
+    renderSettings({ crawlers: CRAWLERS })
+    await waitFor(() => expect(getSettings).toHaveBeenCalled())
+    expect(screen.getByText('Marketplace Management')).toBeInTheDocument()
+    expect(screen.getByText('Store Management')).toBeInTheDocument()
+    expect(screen.queryByText('Crawler Management')).not.toBeInTheDocument()
+  })
+
   it('still shows View toggles to a non-admin', async () => {
     const onToggleCrawlerView = vi.fn()
     renderSettings({ crawlers: CRAWLERS, isAdmin: false, onToggleCrawlerView })
