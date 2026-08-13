@@ -277,7 +277,7 @@ function Settings({
         <p className="text-sm text-gray-500 mb-4 text-left">
           {isAdmin
             ? <>Run price crawlers on a schedule. Leave blank to disable. Example: <code className="text-gray-400 font-mono">0 2 * * *</code> = 2 am daily.</>
-            : 'Choose which marketplaces to check for prices — on items in your collection or wantlist, and on items found in Stores.'}
+            : 'Choose which marketplaces\' prices you want to see — for items in your collection or wantlist, and items found in Stores.'}
         </p>
         {isAdmin && settingsSaveError && <p className="text-xs text-red-400 mb-3 text-left">{settingsSaveError}</p>}
         {isAdmin && (
