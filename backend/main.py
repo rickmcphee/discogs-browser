@@ -10,6 +10,7 @@ from crawl_manager import crawl_manager
 from db import get_admin_pool, init_global_schema, init_tenant_schema, register_crawler, rename_crawler
 from routers import collection, releases, settings, crawl, logs, screenshots, health, session, stock, plex
 from auth_middleware import AuthMiddleware
+from security_headers_middleware import SecurityHeadersMiddleware, unhandled_exception_headers
 import scheduler
 
 setup_logging()
@@ -61,6 +62,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Added last so it's outermost -- applies to every response, including ones
+# CORS or AuthMiddleware reject before the route handler ever runs.
+app.add_middleware(SecurityHeadersMiddleware)
+
+# ServerErrorMiddleware wraps the whole app unconditionally, outside
+# SecurityHeadersMiddleware -- a genuinely unhandled exception's 500 never
+# reaches it. Registering this as the Exception handler wires it into
+# ServerErrorMiddleware itself (see security_headers_middleware.py).
+app.add_exception_handler(Exception, unhandled_exception_headers)
 
 
 def _configure_schedules(cfg: dict) -> None:
