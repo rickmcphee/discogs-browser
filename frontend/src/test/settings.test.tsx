@@ -318,4 +318,10 @@ describe('Settings', () => {
     expect(screen.getByTitle('Punk rock label.')).toHaveTextContent('Epitaph')
   })
 
+  it('shows no title attribute when a crawler has no genre summary', async () => {
+    renderSettings({ crawlers: CRAWLERS })
+    await waitFor(() => expect(getSettings).toHaveBeenCalled())
+    expect(screen.getByText('Amazon')).not.toHaveAttribute('title')
+  })
+
 })

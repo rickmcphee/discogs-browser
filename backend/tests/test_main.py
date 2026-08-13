@@ -54,6 +54,7 @@ def test_startup_seeds_catalog_crawlers_with_genre_summary(pg_test_db):
     assert len(catalog_crawlers) >= 36
     missing = [c["site_name"] for c in catalog_crawlers if not c["genre_summary"]]
     assert missing == [], f"catalog crawlers missing genre_summary: {missing}"
+    assert len(release_crawlers) >= 4
     assert all(c["genre_summary"] is None for c in release_crawlers)
 
     century_media = next(c for c in catalog_crawlers if c["site_name"] == "Century Media")

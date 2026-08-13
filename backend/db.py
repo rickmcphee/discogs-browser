@@ -808,7 +808,7 @@ def get_all_crawlers(conn) -> list[dict]:
             # listing -- but stay consistent with crawler.py's loader and
             # leave a trace rather than silently reporting None for a
             # plugin that won't import.
-            log.warning("Could not load crawler plugin %s for base_url: %s", d["module_path"], e)
+            log.warning("Could not load crawler plugin %s for base_url/genre_summary: %s", d["module_path"], e)
             d["base_url"] = None
             d["genre_summary"] = None
         result.append(d)
