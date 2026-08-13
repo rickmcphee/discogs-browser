@@ -16,6 +16,7 @@ _BUNDLE_RE = re.compile(r'bundle|\+', re.IGNORECASE)
 class Crawler:
     site_name: str = "Kill Rock Stars"
     base_url: str = "https://killrockstars.com"
+    genre_summary: str = "Indie rock and riot grrrl label."
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:

@@ -10,6 +10,7 @@ _VINYL_RE = re.compile(r'\bvinyl\b|\b\d*x?lp\b', re.IGNORECASE)
 class Crawler:
     site_name: str = "Numero Group"
     base_url: str = "https://numerogroup.com"
+    genre_summary: str = "Reissue label for obscure soul, funk, gospel, and outsider music."
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:

@@ -40,6 +40,26 @@ def test_startup_seeds_bundled_crawlers(pg_test_db):
     assert len(crawlers) > 0
 
 
+def test_startup_seeds_catalog_crawlers_with_genre_summary(pg_test_db):
+    with patch("main.crawl_manager.start_worker_pool", new=AsyncMock()), \
+         patch("main.crawl_manager.stop_worker_pool", new=AsyncMock()):
+        import main
+        with TestClient(main.app):
+            with db.get_admin_pool().connection() as conn:
+                crawlers = db.get_all_crawlers(conn)
+
+    catalog_crawlers = [c for c in crawlers if c["crawler_type"] in ("catalog", "catalog_browser")]
+    release_crawlers = [c for c in crawlers if c["crawler_type"] == "release"]
+
+    assert len(catalog_crawlers) >= 36
+    missing = [c["site_name"] for c in catalog_crawlers if not c["genre_summary"]]
+    assert missing == [], f"catalog crawlers missing genre_summary: {missing}"
+    assert all(c["genre_summary"] is None for c in release_crawlers)
+
+    century_media = next(c for c in catalog_crawlers if c["site_name"] == "Century Media")
+    assert century_media["genre_summary"] == "Metal label spanning death, black, and gothic metal."
+
+
 def test_cors_allows_configured_frontend_origin(pg_test_db, monkeypatch):
     import config
     import main

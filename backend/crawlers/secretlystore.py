@@ -12,6 +12,7 @@ _VINYL_RE = re.compile(r'\bvinyl\b|\b\d*x?lp\b|\d+\s*"', re.IGNORECASE)
 class Crawler:
     site_name: str = "Secretly Store"
     base_url: str = "https://secretlystore.com"
+    genre_summary: str = "Indie rock and singer-songwriter label group (Secretly Canadian / Jagjaguwar / Dead Oceans)."
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:

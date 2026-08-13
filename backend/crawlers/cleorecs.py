@@ -26,6 +26,7 @@ _DEFAULT_VARIANT_TITLE = "Default Title"
 class Crawler:
     site_name: str = "Cleopatra Records"
     base_url: str = "https://cleorecs.com"
+    genre_summary: str = "Reissue label spanning goth, industrial, new wave, and classic rock."
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:

@@ -12,6 +12,7 @@ _PREORDER_RE = re.compile(r'^pre-order', re.IGNORECASE)
 class Crawler:
     site_name: str = "Flatspot Records"
     base_url: str = "https://flatspotrecords.com"
+    genre_summary: str = "Hardcore and metalcore label/store rooted in skate culture."
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:

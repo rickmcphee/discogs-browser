@@ -16,6 +16,7 @@ _NON_VINYL_VARIANT_RE = re.compile(r"^(cd|cassette)$", re.IGNORECASE)
 class Crawler:
     site_name: str = "Craft Recordings"
     base_url: str = "https://craftrecordings.com"
+    genre_summary: str = "Reissue label for jazz, soul, blues, and classic rock catalogs."
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:

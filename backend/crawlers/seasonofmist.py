@@ -15,6 +15,7 @@ _PREORDER_RE = re.compile(r'pre-?order', re.IGNORECASE)
 class Crawler:
     site_name: str = "Season of Mist"
     base_url: str = "https://shopusa.season-of-mist.com"
+    genre_summary: str = "Extreme metal label."
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:

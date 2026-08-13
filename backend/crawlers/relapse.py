@@ -8,6 +8,7 @@ _COLLECTION_SLUG = "vinyl"
 class Crawler:
     site_name: str = "Relapse"
     base_url: str = "https://www.relapse.com"
+    genre_summary: str = "Extreme metal and grindcore label."
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:

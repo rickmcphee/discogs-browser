@@ -15,6 +15,7 @@ _MERCH_TITLE_RE = re.compile(r'tote bag|t-shirt|hoodie', re.IGNORECASE)
 class Crawler:
     site_name: str = "20 Buck Spin"
     base_url: str = "https://20buckspin.com"
+    genre_summary: str = "Doom, sludge, and death metal label."
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:

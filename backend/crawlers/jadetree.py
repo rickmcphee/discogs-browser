@@ -7,6 +7,7 @@ _COLLECTION_SLUG = "vinyl"
 class Crawler:
     site_name: str = "Jade Tree Records"
     base_url: str = "https://jadetree.store"
+    genre_summary: str = "Emo and indie rock label."
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:
