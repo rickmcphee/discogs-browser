@@ -2442,7 +2442,51 @@ async def test_worker_marks_a_target_done_when_no_crawler_is_eligible(pg_schema)
 
     with db.get_admin_pool().connection() as conn:
         row = conn.execute("SELECT status FROM crawl_queue WHERE discogs_id = 'r1'").fetchone()
+        listing = conn.execute("SELECT 1 FROM listings WHERE release_id = 'r1'").fetchone()
     assert row["status"] == "done"
+    # Distinguishes this zero-eligible-crawlers path from the plugin-is-None
+    # path (test_worker_skips_a_unit_whose_plugin_failed_to_load_without_
+    # deferring_it above), which also ends 'done' but only after a unit ran
+    # and recorded a failure. Here no unit ever runs at all: no listing was
+    # written, and no failure was recorded.
+    assert listing is None
+    assert manager._site_consecutive_failures == {}
+
+
+async def test_worker_skips_a_unit_whose_plugin_failed_to_load_without_deferring_it(pg_schema):
+    """The plugin is None branch in _drain_one_batch: a crawler enabled in the
+    crawlers table but whose module failed to load at boot, so its id is
+    absent from plugins_by_crawler_id. The design calls this "skipped,
+    recorded as a failure, and does not defer the row" -- deferring would let
+    a permanently broken module hold its rows pending forever."""
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/a.py")
+        amazon_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1")
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+
+    # amazon_id is enabled and eligible, but is missing from the plugins dict
+    # handed to _drain_one_batch -- exactly what a module that failed to
+    # import at boot looks like to this code.
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        await manager._drain_one_batch("worker-test", {}, pages={})
+
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT status, pending_crawler_ids FROM crawl_queue WHERE discogs_id = 'r1'"
+        ).fetchone()
+    assert row["status"] == "done"
+    assert row["pending_crawler_ids"] is None
+    assert manager._site_consecutive_failures.get(amazon_id) == 1
 
 
 async def test_worker_drains_units_target_major_across_a_batch(pg_schema):
@@ -2475,7 +2519,8 @@ async def test_worker_drains_units_target_major_across_a_batch(pg_schema):
         plugin._db_site_name = name
         plugins[crawler_id] = plugin
 
-    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("config.load_config", return_value={"crawl_delay_seconds": 0}):
         await manager._drain_one_batch("worker-test", plugins, pages={})
 
     # Both crawlers run for one target before either runs for the other --

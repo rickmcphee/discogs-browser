@@ -173,6 +173,31 @@ def test_count_pending_crawl_queue_for_user_excludes_a_disabled_crawler(admin_co
         assert db.count_pending_crawl_queue_for_user(conn, alice["id"]) == 0
 
 
+def test_count_pending_crawl_queue_for_user_excludes_a_narrowed_row_whose_named_crawlers_are_all_disabled(admin_conn):
+    """Complements test_count_pending_crawl_queue_for_user_excludes_a_disabled_
+    crawler above, which only exercises pending_crawler_ids IS NULL. Here the
+    row is narrowed to a specific crawler (as defer_crawl_queue_row and
+    backfill_crawl_queue_for_crawler both do) and that named crawler is
+    disabled while an unrelated release crawler stays enabled -- proving the
+    count is reaching zero via the ANY(pending_crawler_ids) match failing, not
+    via the IS NULL fallback's EXISTS-any-enabled-crawler check, which would
+    stay true here."""
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    crawler_id = _make_catalog_and_crawler(admin_conn, "r1", site_name="Amazon")
+    db.register_crawler(admin_conn, "eBay", "/b.py")
+    admin_conn.commit()
+    db.upsert_library_item(admin_conn, alice["id"], "r1", in_collection=True)
+    db.enqueue_crawl_queue(admin_conn, "r1")
+    admin_conn.execute(
+        "UPDATE crawl_queue SET pending_crawler_ids = ARRAY[%s] WHERE discogs_id = 'r1'", [crawler_id]
+    )
+    db.set_crawler_enabled(admin_conn, crawler_id, False)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.count_pending_crawl_queue_for_user(conn, alice["id"]) == 0
+
+
 def test_get_stock_item_identity_returns_none_for_unknown_key(admin_conn):
     assert db.get_stock_item_identity(admin_conn, "missing") is None
 

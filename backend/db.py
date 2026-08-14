@@ -907,7 +907,8 @@ def get_all_crawlers(conn) -> list[dict]:
 def rename_crawler(conn, old_site_name: str, new_site_name: str):
     # register_crawler() upserts ON CONFLICT (site_name), so a plugin's site_name
     # literal can't just be edited in place -- that inserts a new row and orphans
-    # the old crawler's id along with its listings/crawl_queue/stock_items history.
+    # the old crawler's id along with its listings/stock_items history. (crawl_queue
+    # no longer holds per-crawler history -- a row names no crawler at all.)
     # The NOT EXISTS guard makes this a no-op instead of a unique-constraint crash
     # when new_site_name is already registered (e.g. a prior deploy inserted it
     # directly via register_crawler before this rename step existed).
@@ -965,6 +966,16 @@ def backfill_crawl_queue_for_crawler(conn, crawler_id: int) -> int:
     release_only_clause = (
         "AND crawl_queue.discogs_id IS NOT NULL" if requires_release["requires_discogs_release"] else ""
     )
+    # This UPDATE runs unordered across the whole crawl_queue table and can
+    # take row locks in the opposite order from a running collection sync
+    # (_sync_collection_blocking holds one transaction per page for ~110s,
+    # locking rows via enqueue_crawl_queue's ON CONFLICT DO UPDATE). Bound the
+    # wait so a lock race aborts this transaction quickly instead of hanging
+    # the admin's request or forcing Postgres to abort the sync's side
+    # instead -- update_crawler catches the resulting LockNotAvailable. SET
+    # LOCAL only affects the current transaction, so it must be issued here,
+    # not at connection setup.
+    conn.execute("SET LOCAL lock_timeout = '2s'")
     revived = conn.execute(
         f"""
         UPDATE crawl_queue SET
@@ -1158,7 +1169,7 @@ def delete_dead_stock_crawl_queue_rows(conn) -> int:
     ).rowcount
 
 
-# A row counts only if something can actually claim and act on it. routers/
+# A 'pending' row counts only if something can actually claim it: routers/
 # crawl._events_to_replay reads a non-zero count as "this user is mid-job", so
 # a count that cannot reach zero would leave the client replaying stale event
 # history on every connect. A pending row whose narrowed pending_crawler_ids
@@ -1166,6 +1177,13 @@ def delete_dead_stock_crawl_queue_rows(conn) -> int:
 # enabled -- is unactionable, and is excluded here even though it is still
 # 'pending' in the table. _drain_one_batch marks such rows done when it reaches
 # them.
+#
+# That claim doesn't hold for 'in_progress': a row stranded by a crashed
+# browser or hung worker is still counted here and is not actually claimable
+# by anyone -- see claim_crawl_queue_batch's own comment on the missing
+# reclaim/timeout path. This function has no way to distinguish a stranded
+# in_progress row from one a worker is genuinely mid-crawl on, so it counts
+# both.
 def count_pending_crawl_queue_for_user(conn, user_id: int) -> int:
     return conn.execute(
         """

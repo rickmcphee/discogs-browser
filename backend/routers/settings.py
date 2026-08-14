@@ -1,3 +1,4 @@
+import psycopg
 from fastapi import APIRouter, HTTPException, Request, Depends
 from pydantic import BaseModel, Field
 from config import load_config, save_config
@@ -68,19 +69,48 @@ def update_settings(body: SettingsUpdate):
 
 @router.patch("/crawlers/{crawler_id}", dependencies=[Depends(require_admin)])
 def update_crawler(crawler_id: int, body: CrawlerUpdate):
-    with db.get_app_pool().connection() as conn:
-        db.set_crawler_enabled(conn, crawler_id, body.enabled)
-        discarded = 0
-        backfilled = 0
-        if body.enabled:
-            backfilled = db.backfill_crawl_queue_for_crawler(conn, crawler_id)
-        else:
+    discarded = 0
+    backfilled = 0
+    if body.enabled:
+        # The toggle and the backfill run in separate transactions: backfill_
+        # crawl_queue_for_crawler's UPDATE can lock the same crawl_queue rows a
+        # running collection sync is locking in the opposite order (see that
+        # function's comment), and Postgres aborts one side. Committing the
+        # toggle first means an aborted backfill can never take the enable
+        # state down with it.
+        with db.get_app_pool().connection() as conn:
+            db.set_crawler_enabled(conn, crawler_id, body.enabled)
+            conn.commit()
+        with db.get_app_pool().connection() as conn:
+            try:
+                backfilled = db.backfill_crawl_queue_for_crawler(conn, crawler_id)
+                # Enabling can revive 'done' stock-item rows whose store is
+                # disabled or whose item has since left stock -- backfill's
+                # first UPDATE has no stock-source predicate, only a
+                # release-crawler-only one. Sweep those back out here, in the
+                # same transaction as the backfill, so they don't sit pending
+                # and unclaimable in the claim index until a later stock sync
+                # happens to catch them.
+                db.delete_dead_stock_crawl_queue_rows(conn)
+                conn.commit()
+            except psycopg.errors.LockNotAvailable:
+                conn.rollback()
+                log.info(
+                    "Crawler %d enable: backfill skipped because crawl_queue was busy; "
+                    "the next collection sync or scheduled sweep will pick the crawler "
+                    "up anyway since eligibility is resolved live at dispatch",
+                    crawler_id,
+                )
+                backfilled = 0
+    else:
+        with db.get_app_pool().connection() as conn:
+            db.set_crawler_enabled(conn, crawler_id, body.enabled)
             # Disabling a marketplace crawler discards nothing: queue rows name
             # no crawler, and _drain_one_batch stops selecting it on the next
             # batch. This sweep is for the other case -- disabling a *store*
             # leaves stock-item rows nothing still stocks.
             discarded = db.delete_dead_stock_crawl_queue_rows(conn)
-        conn.commit()
+            conn.commit()
     if discarded:
         # INFO, not WARNING: routers/logs.py's _line_visible filters by exact
         # level membership, so at WARNING this is invisible to anyone watching

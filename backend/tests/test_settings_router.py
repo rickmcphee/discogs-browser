@@ -1,6 +1,8 @@
 import os
 import socket
+from unittest.mock import patch
 
+import psycopg
 import pytest
 
 import db
@@ -319,3 +321,28 @@ def test_patch_crawler_disable_discards_dead_stock_jobs(pg_test_db, authed_clien
 
     with db.get_admin_pool().connection() as conn:
         assert conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 0
+
+
+def test_patch_crawler_enable_persists_when_backfill_hits_a_busy_queue(pg_test_db, authed_client_factory):
+    """The toggle and the backfill run in separate transactions so a backfill
+    that loses a lock race against a running collection sync can't roll back
+    the admin's enable along with it -- see backfill_crawl_queue_for_crawler's
+    SET LOCAL lock_timeout and update_crawler's LockNotAvailable handling."""
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.set_crawler_enabled(conn, crawler_id, False)
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute("UPDATE users SET is_admin = TRUE WHERE id = %s", [user["id"]])
+        conn.commit()
+
+    client = authed_client_factory(user["id"])
+    with patch("db.backfill_crawl_queue_for_crawler", side_effect=psycopg.errors.LockNotAvailable("lock timeout")):
+        r = client.patch(f"/api/crawlers/{crawler_id}", json={"enabled": True}, headers={"X-Requested-With": "fetch"})
+
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "discarded": 0, "backfilled": 0}
+
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute("SELECT enabled FROM crawlers WHERE id = %s", [crawler_id]).fetchone()
+    assert row["enabled"] is True
