@@ -295,17 +295,53 @@ class CrawlManager:
         # on -- there is deliberately no barrier between targets, so a worker
         # facing a cooling-down site moves to the next unit instead of idling.
         deferred: dict = {}
-        for row_id, crawler_id in units:
+
+        def resolve_row(row_id: int):
+            # Resolves one row's terminal crawl_queue status as soon as its
+            # own last unit finishes, rather than in a single pass after the
+            # whole batch drains. A row with nothing deferred is done; a row
+            # with deferred crawlers goes back to pending, narrowed to just
+            # those, until the earliest cooldown expires. Resolving here --
+            # inline in the unit loop, per row -- means an earlier row's
+            # status write is already committed before a later row's unit
+            # runs, so a BaseException that escapes that later unit (e.g.
+            # asyncio.CancelledError from stop_worker_pool's task.cancel(),
+            # which the `except Exception` below deliberately does not catch)
+            # can no longer strand an already-finished row at 'in_progress'.
+            with get_app_pool().connection() as conn:
+                if row_id in deferred:
+                    defer_crawl_queue_row(
+                        conn, row_id, deferred[row_id],
+                        self._cooldown_remaining_seconds(deferred[row_id]),
+                    )
+                else:
+                    mark_crawl_queue_done(conn, row_id)
+                conn.commit()
+
+        # A row with zero eligible crawlers contributes no units, so it would
+        # never reach the per-unit resolve_row calls below -- resolve it (as
+        # done; it can't have anything deferred) up front instead.
+        row_ids_with_units = {row_id for row_id, _crawler_id in units}
+        for row_id in targets:
+            if row_id not in row_ids_with_units:
+                resolve_row(row_id)
+
+        for i, (row_id, crawler_id) in enumerate(units):
             row, target, is_release = targets[row_id]
+            is_last_unit_for_row = i + 1 == len(units) or units[i + 1][0] != row_id
             plugin = plugins_by_crawler_id.get(crawler_id)
             if plugin is None:
                 # A crawler whose module failed to load at boot. Counted as a
                 # site failure but deliberately NOT deferred: a permanently
                 # broken module would otherwise defer its rows forever.
                 self._record_site_result(crawler_id, succeeded=False)
+                if is_last_unit_for_row:
+                    resolve_row(row_id)
                 continue
             if crawler_id in self._cooling_down_crawler_ids():
                 deferred.setdefault(row_id, []).append(crawler_id)
+                if is_last_unit_for_row:
+                    resolve_row(row_id)
                 continue
 
             if crawler_id not in pages:
@@ -319,6 +355,8 @@ class CrawlManager:
                     plugin._db_site_name, target["artist"], target["title"], row["discogs_id"] or row["item_key"], e,
                 )
                 self._record_site_result(crawler_id, succeeded=False)
+                if is_last_unit_for_row:
+                    resolve_row(row_id)
                 continue
 
             if is_release:
@@ -359,19 +397,8 @@ class CrawlManager:
             else:
                 await self._broadcast_stock_listing_changed(row["item_key"], crawler_id, status)
 
-        # One resolution per row, after its units are drained. A row with
-        # nothing deferred is done; a row with deferred crawlers goes back to
-        # pending, narrowed to just those, until the earliest cooldown expires.
-        for row_id in targets:
-            with get_app_pool().connection() as conn:
-                if row_id in deferred:
-                    defer_crawl_queue_row(
-                        conn, row_id, deferred[row_id],
-                        self._cooldown_remaining_seconds(deferred[row_id]),
-                    )
-                else:
-                    mark_crawl_queue_done(conn, row_id)
-                conn.commit()
+            if is_last_unit_for_row:
+                resolve_row(row_id)
 
         return len(rows)
 

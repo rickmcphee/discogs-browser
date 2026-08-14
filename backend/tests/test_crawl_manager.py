@@ -1793,14 +1793,11 @@ async def test_worker_row_commit_is_isolated_from_a_later_rows_failure(pg_schema
     # worker cancellation) would have taken row 1's already-finished work
     # down with it.
     #
-    # Row 1's crawl_queue status is deliberately not asserted 'done' here:
-    # the fan-out's final status-resolution loop runs only after every unit in
-    # the batch has been attempted, so row 2's CancelledError skips it
-    # entirely and row 1 stays 'in_progress' -- its written data survives, but
-    # its own status flip is now batch-scoped rather than per-row. That is an
-    # accepted gap alongside the hung-worker one already noted on
-    # claim_crawl_queue_batch's docstring, not something this test asserts
-    # away.
+    # Row 1's crawl_queue status IS asserted 'done' here: each row is now
+    # resolved as soon as its own last unit finishes, not in a single pass
+    # after the whole batch drains, so row 2's CancelledError -- raised only
+    # once row 1's status write has already committed -- can't strand row 1
+    # at 'in_progress'.
     #
     # asyncio.CancelledError specifically (not a plain Exception subclass,
     # e.g. RuntimeError) is what actually distinguishes old vs. new behavior
@@ -1862,7 +1859,79 @@ async def test_worker_row_commit_is_isolated_from_a_later_rows_failure(pg_schema
     succeeded_id = processed_ids[0]
     with db.get_admin_pool().connection() as conn:
         listing = conn.execute("SELECT price FROM listings WHERE release_id = %s", [succeeded_id]).fetchone()
+        queue_row = conn.execute("SELECT status FROM crawl_queue WHERE discogs_id = %s", [succeeded_id]).fetchone()
     assert listing["price"] == 9.99
+    assert queue_row["status"] == "done"
+
+
+async def test_worker_completed_row_is_not_stranded_by_a_later_rows_cancellation(pg_schema):
+    # Direct regression test for the stranding bug this fix closes: before
+    # per-row resolution, _drain_one_batch resolved every claimed row's
+    # crawl_queue status in a single pass run only after the whole batch's
+    # units had all been attempted. An uncaught CancelledError from a later
+    # row's search (task.cancel() during worker-pool shutdown, per
+    # stop_worker_pool) skipped that pass entirely, leaving an already-fully-
+    # crawled, already-committed row stuck at 'in_progress' forever: neither
+    # claim_crawl_queue_batch (no reclaim/timeout path) nor
+    # enqueue_crawl_queue's revival (gated on status = 'done') ever picks it
+    # back up. With per-row resolution, the finished row's status commits
+    # before the later row's search even runs, so the CancelledError can no
+    # longer reach it.
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r2", "artist": "B", "title": "T2", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1")
+        db.enqueue_crawl_queue(conn, "r2")
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+
+    # Same call-order-not-identity tracking as
+    # test_worker_row_commit_is_isolated_from_a_later_rows_failure just above,
+    # since claim_crawl_queue_batch's claim order for two same-instant rows
+    # isn't guaranteed to track discogs_id: whichever row this crawler
+    # searches first succeeds, whichever it searches second raises.
+    processed_ids = []
+
+    async def _search(release, page):
+        processed_ids.append(release["discogs_id"])
+        if len(processed_ids) == 1:
+            return [{"url": "https://x/1", "price": 9.99, "shipping": None, "currency": "USD", "condition": None}]
+        raise asyncio.CancelledError()
+
+    fake_plugin.search = AsyncMock(side_effect=_search)
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("config.load_config", return_value={"crawl_delay_seconds": 0}):
+        with pytest.raises(asyncio.CancelledError):
+            await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    assert len(processed_ids) == 2
+    done_id, stranded_id = processed_ids[0], processed_ids[1]
+    with db.get_admin_pool().connection() as conn:
+        done_status = conn.execute(
+            "SELECT status FROM crawl_queue WHERE discogs_id = %s", [done_id]
+        ).fetchone()["status"]
+        stranded_status = conn.execute(
+            "SELECT status FROM crawl_queue WHERE discogs_id = %s", [stranded_id]
+        ).fetchone()["status"]
+    assert done_status == "done"
+    assert stranded_status != "done"
 
 
 async def test_drain_one_batch_records_failure_and_cools_down_after_limit(pg_schema):
@@ -2409,9 +2478,17 @@ async def test_worker_drains_units_target_major_across_a_batch(pg_schema):
     with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
         await manager._drain_one_batch("worker-test", plugins, pages={})
 
-    # Both crawlers run for r1 before either runs for r2 -- the property the
-    # old (target, crawler) row layout only produced by accident of insert order.
-    assert [rid for rid, _name in order] == ["r1", "r1", "r2", "r2"]
+    # Both crawlers run for one target before either runs for the other --
+    # the property the old (target, crawler) row layout only produced by
+    # accident of insert order. Asserted without assuming claim order tracks
+    # discogs_id (same claim-order caveat as
+    # test_worker_row_commit_is_isolated_from_a_later_rows_failure's comment):
+    # whichever target claim_crawl_queue_batch hands back first, both of its
+    # crawler calls land contiguously before either call for the other target.
+    rids = [rid for rid, _name in order]
+    assert len(rids) == 4
+    assert rids[0] == rids[1] and rids[2] == rids[3]
+    assert {rids[0], rids[2]} == {"r1", "r2"}
 
 
 # ---------------------------------------------------------------------------
