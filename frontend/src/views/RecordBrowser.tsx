@@ -39,7 +39,10 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
     tableScrollRef.current?.scrollTo({ top: 0 })
   }, [selectedArtist])
 
-  const load = useCallback(async () => {
+  // isLatest gates the commit, not the request -- see StockBrowser's copy: a
+  // request started under a selection the reconciliation then clears or re-cases
+  // must not paint its filtered rows under a sidebar that has moved on.
+  const load = useCallback(async (isLatest: () => boolean = () => true) => {
     const result = await getReleases({
       search: search || undefined,
       artist: selectedArtist || undefined,
@@ -50,19 +53,27 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
       scope,
       unmatched: scope === 'collection' ? unmatched : undefined,
     })
+    if (!isLatest()) return
     setReleases(result.releases)
     setTotal(result.total)
     setHasLoaded(true)
   }, [search, selectedArtist, sort, order, page, scope, unmatched])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    let latest = true
+    load(() => latest)
+    return () => { latest = false }
+  }, [load])
   // syncGeneration ticks on every sync_progress/sync_complete SSE event so the
   // collection/wantlist tables fill in as pages land, not just once the whole
   // sync finishes. Guarded on truthy (not just changed) so the initial render's
   // generation of 0 doesn't trigger a redundant second load alongside the
   // mount effect above.
   useEffect(() => {
-    if (syncGeneration) load()
+    if (!syncGeneration) return
+    let latest = true
+    load(() => latest)
+    return () => { latest = false }
   }, [syncGeneration, load])
   // Also refetches on syncGeneration ticks, same as load() above -- otherwise
   // the nav list stays stuck at whatever it was on mount while a collection

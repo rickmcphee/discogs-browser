@@ -152,6 +152,33 @@ describe('canonical label changing while an artist is selected', () => {
     expect(screen.getByRole('button', { name: 'Jets to Brazil' }).className).toContain(SELECTED)
   })
 
+  it('does not paint a filtered stock response after the selection was cleared', async () => {
+    // The request under the old selection is already in flight when the
+    // reconciliation clears it. If its response were committed, "All" would sit
+    // highlighted over rows filtered to an artist the sidebar no longer offers.
+    const filtered = {
+      ...NO_STOCK, total: 1,
+      items: [{ id: 1, item_key: 'k', artist: 'Jets to Brazil', title: 'Orange Rhyming Dictionary', source: 'Jade Tree', is_own: true }],
+    }
+    getStockArtists.mockResolvedValue(['Jets to Brazil'])
+    render(<StockBrowser syncGeneration={0} />)
+    await waitFor(() => expect(getStock).toHaveBeenCalledTimes(1))
+
+    let resolveFiltered: (result: typeof filtered) => void = () => {}
+    getStock.mockImplementationOnce(() => new Promise<typeof filtered>((res) => { resolveFiltered = res }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Jets to Brazil' }))
+    await waitFor(() => expect(getStock).toHaveBeenCalledTimes(2))
+
+    // The artist disappears, so reconciliation clears the selection and a fresh
+    // unfiltered request goes out; only then does the filtered one land.
+    getStockArtists.mockResolvedValue(['Nails'])
+    fireEvent.click(screen.getByRole('button', { name: 'All' }))
+    await waitFor(() => expect(getStock).toHaveBeenCalledTimes(3))
+
+    await act(async () => { resolveFiltered(filtered) })
+    expect(screen.queryByText('Orange Rhyming Dictionary')).toBeNull()
+  })
+
   it('keeps the collection sidebar entry highlighted when a sync re-cases the label', async () => {
     getArtists.mockResolvedValue(['Jets to Brazil'])
     const { rerender } = render(<RecordBrowser scope="collection" syncGeneration={0} />)

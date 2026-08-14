@@ -183,6 +183,15 @@ sidebar; now that it feeds reconciliation, a stale list could re-case the
 selection to an old label or clear an artist the newest response still lists.
 The effect cleanup drops superseded responses.
 
+**So do the row requests.** `load()` in both views now takes an `isLatest`
+predicate and checks it before committing, with the effect clearing the flag on
+cleanup. This race predates the branch, but reconciliation makes its visible
+form reachable without any user action: a request issued under a selection that
+is then cleared automatically can land last and paint rows filtered to an artist
+while "All" sits highlighted. Gating the commit rather than the request keeps
+the change to one predicate — nothing is aborted, a superseded response is
+simply not painted.
+
 Not solved by a stable non-display artist identity (a `LOWER()`-derived key
 returned per label, compared instead of JS-folding). That is the airtight fix,
 and it is a schema-adjacent change plus a new response shape on both listing

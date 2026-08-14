@@ -48,7 +48,11 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
     setPage(1)
   }
 
-  const load = useCallback(async () => {
+  // isLatest gates the commit rather than the request: reconciliation can clear
+  // or re-case the selection while a request started under the old one is still
+  // in flight, and that older filtered response arriving last would leave the
+  // table showing a subset the sidebar no longer claims to be filtering by.
+  const load = useCallback(async (isLatest: () => boolean = () => true) => {
     const result = await getStock({
       search: search || undefined,
       artist: selectedArtist || undefined,
@@ -57,6 +61,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
       recommended: scope === 'store' && filter === 'recommended',
       hiddenCrawlerIds,
     })
+    if (!isLatest()) return
     setItems(result.items)
     setTotal(result.total)
     setHasLoaded(true)
@@ -68,7 +73,11 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
   // same effect as `load` (rather than a second `if (syncGeneration) load()`
   // effect) so a syncGeneration tick and an unrelated load-identity change
   // (search/sort/filter/page/...) can never both fire and double-call load().
-  useEffect(() => { load() }, [load, syncGeneration])
+  useEffect(() => {
+    let latest = true
+    load(() => latest)
+    return () => { latest = false }
+  }, [load, syncGeneration])
   useEffect(() => {
     if (!recommendedAvailable && filter === 'recommended') {
       setFilter('all')
