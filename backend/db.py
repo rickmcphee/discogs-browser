@@ -1004,7 +1004,10 @@ def backfill_crawl_queue_for_crawler(conn, crawler_id: int) -> int:
     # A row narrowed by an earlier deferral carries a set that predates this
     # crawler being enabled, so it would otherwise skip it. Rows with NULL need
     # nothing -- NULL already means "all currently eligible". Same SKIP LOCKED
-    # shape and same reasoning as the UPDATE above.
+    # shape, but the compensating mechanism is weaker: a skipped row here keeps
+    # its narrowed set, so the newly enabled crawler misses that target until
+    # the row completes and is re-enqueued. This is bounded and self-healing,
+    # the same fallback the enable path relies on when the backfill itself is skipped.
     conn.execute(
         """
         UPDATE crawl_queue SET pending_crawler_ids = pending_crawler_ids || %(crawler_id)s

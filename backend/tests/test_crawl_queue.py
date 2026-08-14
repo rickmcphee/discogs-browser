@@ -715,6 +715,9 @@ def test_backfill_skips_a_row_another_transaction_holds(admin_conn):
     try:
         locker.execute("SELECT * FROM crawl_queue WHERE discogs_id = 'r1' FOR UPDATE")
 
+        # Production's lock_timeout bound lives in the router's transaction; without
+        # this, a regression from FOR UPDATE SKIP LOCKED would hang the suite.
+        admin_conn.execute("SET LOCAL lock_timeout = '2s'")
         revived = db.backfill_crawl_queue_for_crawler(admin_conn, crawler_id)
         admin_conn.commit()
 

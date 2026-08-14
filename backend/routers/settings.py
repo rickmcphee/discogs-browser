@@ -87,9 +87,10 @@ def update_crawler(crawler_id: int, body: CrawlerUpdate):
                 # braces for anything else that might wait in this
                 # transaction -- including the dead-stock sweep just below,
                 # which used to run unbounded on this path. Lowered to 500ms,
-                # below the server's 1s deadlock_timeout, so that if it ever
-                # does apply it fires before Postgres's own deadlock detector
-                # would. SET LOCAL only affects the open transaction, so it
+                # below the server's 1s deadlock_timeout, so that it usually
+                # fires before Postgres's own deadlock detector would (though
+                # timing isn't guaranteed if our side starts waiting late).
+                # SET LOCAL only affects the open transaction, so it
                 # must be issued here, not at connection setup.
                 conn.execute("SET LOCAL lock_timeout = '500ms'")
                 backfilled = db.backfill_crawl_queue_for_crawler(conn, crawler_id)
