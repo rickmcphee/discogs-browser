@@ -1,6 +1,6 @@
 # Per-Item Marketplace Crawler Fan-Out — Design
 
-**Status:** shaped, awaiting implementation plan
+**Status:** implemented
 **Date:** 2026-08-14
 **Verified against:** `origin/main` @ `ebf38f2`
 
@@ -202,7 +202,15 @@ otherwise defer its row forever.
 
 ### Row resolution
 
-After the batch's units are drained, each row is resolved exactly once:
+Each row is resolved exactly once, as soon as its own last work unit finishes — not in a single
+pass after the whole batch drains. The distinction is load-bearing: `units` is built target-major
+and contiguous per row, and resolving at batch end meant a `CancelledError` escaping the unit loop
+(which `except Exception` deliberately does not catch, and which `stop_worker_pool`'s
+`task.cancel()` raises) skipped resolution entirely, leaving an already-completed row at
+`in_progress`. With no reclaim path and `enqueue_crawl_queue`'s revival gated on `status = 'done'`,
+such a row is unclaimable and unrevivable forever — its target never priced again.
+
+The resolution itself:
 
 - Any deferred crawlers → `status = 'pending'`, `claimed_by = NULL`, `claimed_at = NULL`,
   `pending_crawler_ids = <deferred ids>`, `available_at = CURRENT_TIMESTAMP + <remaining
@@ -234,14 +242,31 @@ WHERE status = 'done'
   -- AND discogs_id IS NOT NULL
 
 -- 2. widen rows already narrowed by an earlier deferral
-UPDATE crawl_queue SET pending_crawler_ids = pending_crawler_ids || %(crawler_id)s
+UPDATE crawl_queue SET pending_crawler_ids = pending_crawler_ids || %(crawler_id)s,
+                       available_at = CURRENT_TIMESTAMP
 WHERE status = 'pending' AND pending_crawler_ids IS NOT NULL
   AND NOT (%(crawler_id)s = ANY(pending_crawler_ids))
 ```
 
+Both statements select their rows through a `FOR UPDATE SKIP LOCKED` subquery and update by id. A
+transaction that never waits on a row lock cannot join a wait cycle, so the backfill cannot
+deadlock against a collection sync holding queue rows for the length of a page. `lock_timeout`
+alone could not provide that: Postgres's `deadlock_timeout` is 1s, so a longer bound never fires
+first, and the detector picks its own victim — measured, in the case that motivated this, as the
+user's sync rather than the admin's request. Skipping a locked row loses nothing on statement 1: a
+row the sync holds is a row the sync is re-enqueuing, which resets `pending_crawler_ids` to NULL,
+so the newly enabled crawler is picked up at dispatch anyway.
+
 Statement 2 matters: a row deferred behind a cooldown carries a narrowed set that would otherwise
 exclude the newly enabled crawler. Rows with `pending_crawler_ids IS NULL` need nothing, since
 NULL already means "all currently eligible".
+
+It resets `available_at` along with the widen, and that reset is the point rather than a detail. A
+narrowed row is narrowed *because* another crawler is cooling down, so it carries that crawler's
+deadline — up to 30 minutes out. Appending the newly enabled crawler without clearing the deadline
+would leave the row unclaimable for that whole cooldown, so enabling a crawler would not take
+effect on the next batch the way it does everywhere else in this design. Dispatch re-defers the
+still-cooling crawler on its own terms.
 
 `pending_crawler_ids = ARRAY[id]` is what makes this a backfill rather than a re-crawl: only the
 newly enabled crawler runs for those targets, and the prices other crawlers already found are left
@@ -254,9 +279,16 @@ crawler legitimately found nothing have no priced row and are re-enqueued on eve
 bounded, idempotent cost, but not a free one.
 
 `delete_pending_crawl_queue_for_crawler` and its `PATCH /api/crawlers/{id}` call site are
-**deleted**, along with the "N pending crawl jobs discarded" log line and the discarded count in
-the response. With no per-crawler rows there is nothing to purge, and disable now takes effect
+**deleted**. With no per-crawler rows there is nothing to purge, and disable now takes effect
 because dispatch stops selecting that crawler.
+
+The `discarded` count and its log line stay. Only the per-marketplace-crawler purge is gone; the
+endpoint still reports what `delete_dead_stock_crawl_queue_rows` removed, which is the *other*
+population — stock-item rows left behind when a store is disabled or an item leaves stock. So
+disabling a marketplace crawler now reports `0`, while disabling a store still reports a real
+count, and the frontend's "N queued jobs discarded" line stays accurate. The enable path runs the
+same sweep (backfill statement 1 has no stock-source predicate, so it can revive dead stock rows)
+and logs its count separately, deliberately not folded into `discarded`.
 
 ### Counts and API surface
 
@@ -349,6 +381,19 @@ tests, the per-row commit isolation test, `_sync_stock`'s 429 abort and streak t
   widening the existing hung-worker stranding window. Mitigated by `batch_size = 2`, not
   eliminated — the reclaim gap remains a known, accepted gap.
 - **Repeated toggling re-enqueues not-found targets**, as described under Backfill on enable.
+- **A crawler enabled mid-pass misses the targets already in flight.** Both backfill statements
+  filter on `status` — `done` for the revive, `pending` for the widen — so neither touches a row a
+  worker currently holds as `in_progress`. A row claimed before the enable commits resolves its
+  eligibility from the pre-enable crawler set, and the backfill then skips it, so that target does
+  not get the newly enabled crawler until a later sync or scheduled sweep re-enqueues it. The
+  window is one row's pass (seconds to a couple of minutes at `crawl_delay_seconds = 30`), bounded
+  to at most `worker_count × batch_size` targets — four by default. This is the same fallback the
+  design already accepts for rows the backfill skips via `FOR UPDATE SKIP LOCKED`, and it is
+  deliberately not closed here: doing so means re-resolving eligibility at resolution time against
+  a claim-time baseline (to avoid re-running crawlers an earlier pass already completed for a
+  narrowed row), which adds two queries and a second eligibility-diffing path per row to the hot
+  loop. That cost is not worth removing an hours-at-most delay on four targets, and any check of
+  this shape leaves a residual window between the re-check and the status write anyway.
 - **Deferral churn** if a site's cooldown expires while its peers keep failing: a row can be
   claimed, deferred, and re-claimed several times. Each cycle costs one claim and one update, not
   a crawl, and `available_at` bounds the rate.

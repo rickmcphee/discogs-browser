@@ -173,6 +173,16 @@ ALTER TABLE listings ADD COLUMN IF NOT EXISTS item_key TEXT REFERENCES stock_ite
 CREATE UNIQUE INDEX IF NOT EXISTS listings_item_key_crawler_idx ON listings (item_key, crawler_id);
 ```
 
+**Amendment (2026-08-14):** the `crawl_queue_item_key_crawler_idx` created
+above is dropped again, along with `crawl_queue.crawler_id` itself.
+`crawl_queue` becomes a table of targets, not target/crawler pairs:
+`discogs_id` and `item_key` each get their own unique index
+(`crawl_queue_discogs_id_idx`, `crawl_queue_item_key_idx`), with no
+`crawler_id` column on the row at all. The `listings_item_key_crawler_idx`
+immediately above is unaffected — `listings` still keys per `(item_key,
+crawler_id)`, unchanged. See
+[`2026-08-14-per-item-crawler-fanout-design.md`](2026-08-14-per-item-crawler-fanout-design.md).
+
 The existing table-level `UNIQUE(discogs_id, crawler_id)` /
 `UNIQUE(release_id, crawler_id)` constraints are untouched. Postgres treats
 NULL as distinct for uniqueness purposes, so `item_key`-based rows (which
@@ -232,6 +242,20 @@ successfully-crawled source rather than once before the loop, and it is
 belt-and-braces either way now that the enqueue statement carries the guard
 itself. See
 [`2026-08-09-stop-crawling-disabled-stores-design.md`](2026-08-09-stop-crawling-disabled-stores-design.md).
+
+**Amendment (2026-08-14):** `enqueue_crawl_queue_for_stock_item`'s signature
+shown above, `(conn, item_key, crawler_id)`, is stale in the same way
+`enqueue_crawl_queue`'s already-amended body is — it drops `crawler_id`
+entirely, taking only `(conn, item_key)`; there is no crawler on the row left
+to gate or conflict on. `claim_crawl_queue_batch`'s `RETURNING` clause
+(described below as changing from `id, discogs_id, crawler_id` to `id,
+discogs_id, item_key, crawler_id`) is stale a second time: it now returns
+`id, discogs_id, item_key, pending_crawler_ids`, with no `crawler_id` at all.
+And the `_drain_one_batch` code further down that reads `row["crawler_id"]`
+to pick one plugin per claimed row no longer applies — a claimed row fans out
+across every crawler `db.get_eligible_crawlers` resolves for it, one work
+unit per crawler, not one plugin lookup per row. See
+[`2026-08-14-per-item-crawler-fanout-design.md`](2026-08-14-per-item-crawler-fanout-design.md).
 
 `upsert_stock_item_listing` (new, same shape as `upsert_listing`):
 

@@ -162,6 +162,29 @@ follow-ons from items 9 and 10.
     `-- N failed (names); M cooling down (names)`. Covered by
     `test_sync_stock_completion_log_names_failed_and_skipped_sources`.
 
+**Amendment (2026-08-14, branch `per-item-crawler-fanout`):** two more details
+in this document are now stale — `crawl_queue` rows are per-target, not
+per-`(target, crawler)` pair, so cooldown exclusion can no longer be expressed
+as a claim-time exclusion list.
+
+15. **`claim_crawl_queue_batch` has no `excluded_crawler_ids` parameter any
+    more.** Item 5's "passes them ... as a new `excluded_crawler_ids`
+    parameter" and item 10's "keyed by `crawler_id` rather than by domain,
+    because that is what `claim_crawl_queue_batch`'s `excluded_crawler_ids`
+    consumes" both describe a mechanism that no longer exists: a `crawl_queue`
+    row no longer carries a `crawler_id` to exclude by. Cooldown is now an
+    in-loop skip inside `_drain_one_batch`'s per-crawler dispatch, deferred via
+    `pending_crawler_ids`/`available_at` written back onto the row, rather than
+    kept off the claim in the first place. The counters/`_site_cooldown_until`
+    staying keyed by `crawler_id` (item 10) is unchanged.
+16. **The 2026-08-10 amendment's `AND crawler_id IN (SELECT id FROM crawlers
+    WHERE enabled)` clause is gone from the claim query.** There is no
+    `crawler_id` column on `crawl_queue` to filter by any more; the
+    enabled-crawler set is resolved per claimed row at dispatch time
+    (`db.get_eligible_crawlers`), not as a claim-time predicate.
+
+See [`2026-08-14-per-item-crawler-fanout-design.md`](../../specifications/shaping/2026-08-14-per-item-crawler-fanout-design.md).
+
 ---
 
 ## Overview

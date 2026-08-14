@@ -3,6 +3,28 @@
 Date: 2026-08-10
 Branch: `claude/dead-stock-crawl-jobs`
 
+**Amendment (2026-08-14, branch `per-item-crawler-fanout`):** the
+per-`(target, crawler)` row model this spec assumes throughout is gone.
+`crawl_queue.crawler_id` is dropped; a row now names only a target
+(`discogs_id` xor `item_key`). Consequences for this document's own claims:
+`_sync_stock` no longer enqueues "one `crawl_queue` row per `(item_key,
+price_crawler)`" — it enqueues one row per `item_key`, and which price
+crawlers run for it is resolved per row at dispatch
+(`db.get_eligible_crawlers`), not fixed at enqueue time. `enqueue_crawl_queue_for_stock_item`
+no longer takes a `crawler_id` to check `crawlers WHERE id = crawler_id AND
+enabled` against — that check is gone along with the parameter.
+`claim_crawl_queue_batch`'s `crawler_id IN (SELECT id FROM crawlers WHERE
+enabled)` clause, shown in the claim query under §2, is removed; only the
+`item_key IS NULL OR {_enabled_stock_source_exists(...)}` half of that query
+survives unchanged — the stock-source gate this spec adds is exactly as
+load-bearing today as when it was written. `delete_pending_crawl_queue_for_crawler`,
+called alongside `delete_dead_stock_crawl_queue_rows` in §5's combined
+`discarded` count, no longer exists (see the 2026-07-27 spec's amendment);
+disabling a marketplace crawler now contributes `0` to that count, while
+`delete_dead_stock_crawl_queue_rows` itself is unaffected and still runs on
+both disable and the end of every stock sync. See
+[`2026-08-14-per-item-crawler-fanout-design.md`](2026-08-14-per-item-crawler-fanout-design.md).
+
 ## Problem
 
 [The 2026-08-09 disabled-stores change](2026-08-09-stop-crawling-disabled-stores-design.md)

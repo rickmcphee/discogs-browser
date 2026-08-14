@@ -13,6 +13,35 @@ Branch: `claude/stop-crawls-disabled-stores-ff6645`
 > existing data" below still holds for recorded `listings`/`stock_items` rows;
 > it never meant queued work.
 
+**Amendment (2026-08-14, branch `per-item-crawler-fanout`).** The
+crawler-doing-the-crawling gate this spec builds, and the amendment above
+extends, is itself superseded — `crawl_queue.crawler_id` is dropped, so there
+is no longer a `crawler_id` on a row for any of these mechanisms to key on.
+Specifically: §1's live claim-time gate, `AND crawler_id IN (SELECT id FROM
+crawlers WHERE enabled)`, is removed from `claim_crawl_queue_batch` outright;
+eligibility is now resolved per claimed row at dispatch time
+(`db.get_eligible_crawlers`), immediately, against live `crawlers` state —
+the same "takes effect on the very next claim" property, by a different
+mechanism. §2's `delete_pending_crawl_queue_for_crawler` is deleted;
+disabling a marketplace crawler now purges nothing and reports `discarded:
+0`, because there are no per-crawler pending rows left to purge — dispatch
+simply stops selecting a disabled crawler for future work units. (The
+store-disable purge this spec's own 2026-08-10 amendment points at,
+`delete_dead_stock_crawl_queue_rows`, is unaffected and keeps running on both
+disable and enable.) §3's `enqueue_crawl_queue(conn, discogs_id, crawler_id)`
+drops the `crawler_id` parameter entirely, and with it the per-call `WHERE
+EXISTS (... crawlers ... enabled)` guard — there is no crawler on the row to
+gate at enqueue time any more. §4 (stock sync's per-source live check) and §5
+(loading all plugins, gating on `enabled` at runtime via
+`plugins_by_crawler_id`) are both unaffected by this — the plugin-loading and
+per-source-disable mechanics they describe are unchanged.
+`count_pending_crawl_queue_for_user`'s "counts enabled crawlers only" (Scope,
+and §3's closing paragraph) is superseded by a query that instead checks, per
+target row, whether `pending_crawler_ids` is NULL or intersects the
+currently-enabled set — same property (a row counts only if something can
+actually claim it), different mechanism. See
+[`2026-08-14-per-item-crawler-fanout-design.md`](2026-08-14-per-item-crawler-fanout-design.md).
+
 ## Problem
 
 Disabling a crawler in Settings' "Crawler Management" / "Store Management"
