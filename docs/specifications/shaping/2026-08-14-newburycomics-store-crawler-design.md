@@ -193,7 +193,7 @@ products, so no live site and no bot-detection risk. Cases:
 - `vendor` used as artist directly, `title` used as-is (no split)
 - `"Various Artists"` vendor passed through unchanged
 - an unavailable variant is skipped
-- a product with `variants: None` or an empty list yields nothing
+- a product with `variants: None` yields nothing
 - site metadata (`site_name`, `base_url`, `crawler_type`)
 
 ## Crawl citizenship and `robots.txt` compliance

@@ -27,7 +27,7 @@
 
 **Interfaces:**
 - Consumes: `shopify_catalog.iter_products(base_url: str, collection_slug: str) -> AsyncIterator[dict]`, `shopify_catalog.resolve_cover_image(product: dict, variant: dict) -> Optional[str]` — both already defined in `backend/shopify_catalog.py`, used unchanged.
-- Produces: `newburycomics.Crawler` with `site_name`, `base_url`, `genre_summary`, `crawler_type = "catalog"` class attributes and `async def crawl_catalog(self) -> AsyncIterator[dict]`. Consumed by `main.py`'s startup loop via `register_crawler()` (Task 2) — no other task depends on `Crawler`'s internals.
+- Produces: `newburycomics.Crawler` with `site_name`, `base_url`, `genre_summary`, `crawler_type = "catalog"` class attributes and `async def crawl_catalog(self) -> AsyncIterator[dict]`. Consumed by `main.py`'s startup loop via `register_crawler()` — no other task depends on `Crawler`'s internals.
 
 This task is TDD end-to-end: the test file is written first, run to confirm it fails (module doesn't exist yet), then the plugin is implemented to make it pass. Each step below is one red/green cycle building up the full test file and full plugin together — write the step's test code into the test file, then the corresponding implementation code into the plugin file, per the step instructions.
 
