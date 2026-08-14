@@ -28,11 +28,23 @@ logic (see `docs/specifications/shaping/2026-08-07-shared-title-split-helper-des
 - **No pagination.** Confirmed live: `/products.json?page=2`,
   `?page=3`, and `?limit=5` all return the same, full 76-product array —
   Bigcartel silently ignores both params on this store. One GET per sync.
-- **No use of the `categories` field for inclusion filtering.** 20 of 76
+- **No use of `categories` as the sole inclusion signal.** 20 of 76
   products (26%) — including genuine vinyl releases like `Random Hand -
   Random Hand` and `John Hinckley - Redemption LP` — carry an empty
-  `categories` array. Filtering on it would under-cover the real catalog; see
-  "Format filtering" below for what's used instead.
+  `categories` array. Filtering on `categories` alone would under-cover the
+  real catalog. This reasoning still holds and is unchanged by the
+  "Format filtering" correction below — but note `Random Hand - Random
+  Hand` is itself an example of the *other* half of the problem: it also
+  carries no format token in its `name`, so the name-only gate this design
+  originally shipped with dropped it too. Neither signal alone is
+  sufficient, which is why the shipped gate (see "Format filtering") is a
+  union of the format regex and the `categories` check, not categories
+  alone and not the format regex alone. Even the union will still miss a
+  title with neither a format token in its name nor a `Vinyl` category —
+  e.g. a genuinely empty-categories vinyl release with an atypical name.
+  That residual gap can't be sized exactly without checking each of the 76
+  products' actual on-page listing by hand; it's a known, accepted
+  limitation, not a solved problem.
 - **No CD/tape coverage.** This app's stock-item pipeline is vinyl-only by
   convention (`format: "Vinyl"` is hardcoded across every sibling crawler);
   this store's standalone CD products (`Treephort - ... CD`, etc.) are
@@ -62,27 +74,49 @@ does not apply here; this crawler makes exactly one HTTP request per sync.
 
 ### Format filtering
 
-Reusing `angryyoungandpoor.py`'s `_FORMAT_RE`
-(`\bvinyl\b|\b\d*x?lp\b|\bep\b|\d+\s*"`) against the product `name`, applied
-uniformly regardless of `categories`:
+**Corrected 2026-08-13, post-merge, following a final whole-branch code
+review.** The section below as originally written proposed
+`angryyoungandpoor.py`'s `_FORMAT_RE`
+(`\bvinyl\b|\b\d*x?lp\b|\bep\b|\d+\s*"`) against the product `name` as the
+*sole* inclusion gate, "applied uniformly regardless of `categories`." That
+shipped as written, but a re-check against live data found it under-covers
+the catalog: 11 products (10 real releases plus the one subscription
+bundle discussed below) carry a `Vinyl` category but no format token
+anywhere in their `name` — e.g. `David McWane - The Gypsy Mile`, `River
+City Extension - Deliverance`, `Roots & Bases : a Latin American Ska Scene
+Compilation`. That's 19 available (non-sold-out) option rows the name-only
+gate silently dropped.
+
+The gate is now a union: `_FORMAT_RE.search(name)` OR `Vinyl` in the
+product's `categories`. Neither signal alone is sufficient — `categories`
+alone under-covers (26% of releases carry no categories at all, per
+"Non-goals" above) and `name` alone under-covers (the 11-product/19-row gap
+just described) — so `_items` ORs both.
 
 | Measure | Count |
 |---|---|
 | Products total | 76 |
-| Match `_FORMAT_RE` on `name` | 42 |
-| ...of which carry `categories: []` | 10 (would be lost by a category-only filter) |
-| ...of which carry `Vinyl` category | 29 |
+| Match `_FORMAT_RE` on `name` (old gate) | 42 (43 available rows) |
+| Carry `Vinyl` category | 45 |
+| Union of the two (shipped gate) | 53 (62 available rows) |
+| Dropped by the old name-only gate despite a `Vinyl` category | 11 products / 19 available rows |
 
-One false positive is accepted: `2025 Ska Vinyl Supscription - 10 LPs` (a
-subscription bundle, not a release) matches `_FORMAT_RE` on the word `Vinyl`
-in its own name. This is the same class of noise `cleorecs.py` and
-`angryyoungandpoor.py` already accept rather than special-case a single SKU
-— its hyphen-split artist (`2025 Ska Vinyl Supscription`) will never match a
-real Discogs artist, so it's inert noise in the Store tab, not a false match.
+One false positive is accepted, unchanged by this fix: `2025 Ska Vinyl
+Supscription - 10 LPs` (a subscription bundle, not a release) matches
+`_FORMAT_RE` on the word `Vinyl` in its own name — it would be included by
+the format-regex arm regardless of its (empty) `categories`. This is the
+same class of noise `cleorecs.py` and `angryyoungandpoor.py` already accept
+rather than special-case a single SKU — its hyphen-split artist (`2025 Ska
+Vinyl Supscription`) will never match a real Discogs artist, so it's inert
+noise in the Store tab, not a false match.
 
-One real release is known-lost by the format gate: `Various Artists - No
-Worries: east coast love for a west coast friend` has no format token in its
-title at all. Accepted rather than widening the regex for one item.
+The design's original claim that `Various Artists - No Worries: east coast
+love for a west coast friend` was a real release known-lost by the format
+gate was itself wrong: live data shows this product is categorized `["CDs",
+"Asbestos Records"]`, not `Vinyl` — it's correctly excluded as a CD, not a
+lost vinyl release. There is no longer a known specific real-release loss
+called out here; see "Non-goals" for the residual gap the union gate still
+has.
 
 ### Artist/title split
 

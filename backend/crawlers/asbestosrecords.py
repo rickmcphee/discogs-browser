@@ -16,10 +16,17 @@ from crawl_progress import report_page
 # "The Suicide Machines" plus a mangled album).
 _TITLE_RE = re.compile(r'^(?P<artist>.+?)(?:\s+-\s*|\s*-\s+)(?P<album>.+)$')
 _VARIOUS_RE = re.compile(r'^various(?:\s+artists)?$', re.IGNORECASE)
-# Bigcartel's own `categories` field is not used for inclusion -- confirmed
-# live, 26% of real vinyl releases carry an empty categories array. This
-# regex (same shape as angryyoungandpoor.py's, which filters an equally
-# mixed single-store catalog) is the sole inclusion gate.
+# Bigcartel's own `categories` field is never used alone -- confirmed live,
+# 26% of real vinyl releases carry an empty categories array, so a
+# categories-only filter would under-cover the catalog. This regex (same
+# shape as angryyoungandpoor.py's, which filters an equally mixed
+# single-store catalog) was originally the sole inclusion gate, but a later
+# whole-branch review re-confirmed live that the name-only gate itself
+# under-covers: 11 products (10 real releases plus one subscription
+# bundle) carrying a `Vinyl` category have no format token anywhere in
+# their `name` (e.g. "David McWane - The Gypsy Mile"), costing 19 available
+# rows. `_items` below now ORs this regex with a `Vinyl`-category check --
+# neither signal alone is sufficient, so it's a union of both.
 _FORMAT_RE = re.compile(r'\bvinyl\b|\b\d*x?lp\b|\bep\b|\d+\s*"', re.IGNORECASE)
 
 
@@ -50,7 +57,8 @@ class Crawler:
     @classmethod
     def _items(cls, product: dict) -> list:
         name = product.get("name", "")
-        if not _FORMAT_RE.search(name):
+        categories = product.get("categories") or []
+        if not (_FORMAT_RE.search(name) or any(c.get("name") == "Vinyl" for c in categories)):
             return []
 
         artist, album = cls._parse_artist_title(name, product.get("artists") or [])

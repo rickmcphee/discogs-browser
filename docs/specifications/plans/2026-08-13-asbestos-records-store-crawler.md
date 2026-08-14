@@ -10,6 +10,10 @@
 
 **Spec:** [`docs/specifications/shaping/2026-08-13-asbestos-records-store-crawler-design.md`](../shaping/2026-08-13-asbestos-records-store-crawler-design.md)
 
+> **Outcome note (2026-08-13).** This plan is a historical task log and is left as written; the code and the design spec are the current reference. One thing changed after execution, so do not copy this from Task 2's text below:
+>
+> - **Task 2's inclusion gate is a union, not name-only.** A final whole-branch review re-confirmed live data and found the name-only `_FORMAT_RE` gate this task shipped with dropped 11 `Vinyl`-categorized products (~19 available rows) that had no format token in their `name` (e.g. `David McWane - The Gypsy Mile`). `Crawler._items` now also includes a product when its `categories` contains `Vinyl`, ORed with the original regex check — `categories` is still never used for anything besides this one inclusion signal (not artist/title parsing, not price). The design spec's "Format filtering" and "Non-goals" sections were corrected accordingly.
+
 ## Global Constraints
 
 - Python ≥3.9. No `str | None` union syntax — use `Optional[str]` or leave untyped.

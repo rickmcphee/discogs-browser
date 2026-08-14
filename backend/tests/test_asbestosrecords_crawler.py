@@ -119,6 +119,50 @@ _NO_ATTRIBUTION_PRODUCT = {
     "categories": [],
 }
 
+# Confirmed live: a real release with no format token anywhere in its name,
+# but tagged with the store's own `Vinyl` category -- one of the 11 products
+# the name-only gate was found to drop on final whole-branch review.
+_VINYL_CATEGORY_NO_FORMAT_TOKEN_PRODUCT = {
+    "id": 5,
+    "name": "David McWane - The Gypsy Mile",
+    "url": "/product/david-mcwane-the-gypsy-mile",
+    "status": "active",
+    "images": [{"url": "https://assets.bigcartel.com/product_images/5/gypsymile.jpg"}],
+    "options": [{"id": 50, "name": "David McWane - The Gypsy Mile", "price": 20.0, "sold_out": False}],
+    "artists": [],
+    "categories": [{"id": 1, "name": "Vinyl"}],
+}
+
+# Confirmed live: a standalone CD product -- no format token in its name and
+# no `Vinyl` category, so it must stay excluded under the union gate.
+_CD_ONLY_PRODUCT = {
+    "id": 6,
+    "name": "Treephort - And the Streets Will Run Red CD",
+    "url": "/product/treephort-and-the-streets-will-run-red-cd",
+    "status": "active",
+    "images": [],
+    "options": [{"id": 60, "name": "Treephort - And the Streets Will Run Red CD",
+                 "price": 10.0, "sold_out": False}],
+    "artists": [],
+    "categories": [{"id": 3, "name": "CDs"}],
+}
+
+# Confirmed live: a subscription bundle, not a release -- matches `_FORMAT_RE`
+# on the word "Vinyl" in its own name, so it's kept regardless of the
+# `Vinyl`-category check. Documented, accepted noise, unchanged by the union
+# gate.
+_VINYL_WORD_BUNDLE_PRODUCT = {
+    "id": 7,
+    "name": "2025 Ska Vinyl Supscription - 10 LPs",
+    "url": "/product/2025-ska-vinyl-supscription-10-lps",
+    "status": "active",
+    "images": [],
+    "options": [{"id": 70, "name": "2025 Ska Vinyl Supscription - 10 LPs",
+                 "price": 250.0, "sold_out": False}],
+    "artists": [],
+    "categories": [],
+}
+
 
 def test_items_emits_one_row_per_available_option_with_variant_suffix():
     items = Crawler._items(_MULTI_OPTION_PRODUCT)
@@ -153,6 +197,30 @@ def test_items_omits_variant_suffix_when_option_name_equals_product_name():
 
 def test_items_drops_products_with_no_format_token_in_name():
     assert Crawler._items(_NON_VINYL_PRODUCT) == []
+
+
+def test_items_includes_vinyl_categorized_product_with_no_format_token_in_name():
+    # The union gate: `_FORMAT_RE` alone would drop this product (no
+    # vinyl/lp/ep/inch token in its name), but its `Vinyl` category now
+    # includes it -- the whole-branch-review-confirmed gap this fix closes.
+    items = Crawler._items(_VINYL_CATEGORY_NO_FORMAT_TOKEN_PRODUCT)
+    assert len(items) == 1
+    assert items[0]["artist"] == "David McWane"
+    assert items[0]["title"] == "The Gypsy Mile"
+
+
+def test_items_drops_cd_only_product_with_no_vinyl_category():
+    # Neither signal fires: no format token in the name, and the store's own
+    # `categories` field says CDs, not Vinyl.
+    assert Crawler._items(_CD_ONLY_PRODUCT) == []
+
+
+def test_items_keeps_accepted_noise_bundle_matching_format_regex_on_name():
+    # Documents the known, accepted false positive -- unaffected by the
+    # union gate since it already passes on the `\bvinyl\b` word match.
+    items = Crawler._items(_VINYL_WORD_BUNDLE_PRODUCT)
+    assert len(items) == 1
+    assert items[0]["title"] == "10 LPs"
 
 
 def test_items_drops_products_with_no_artist_source():
