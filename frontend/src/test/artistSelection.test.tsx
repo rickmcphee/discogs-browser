@@ -96,7 +96,12 @@ describe('canonical label changing while an artist is selected', () => {
     await waitFor(() => expect(
       screen.getByRole('button', { name: 'All' }).className
     ).toContain(SELECTED))
-    expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ artist: undefined }))
+    // Waited, not asserted straight after the highlight: clearing the
+    // selection re-renders first and only then re-runs the load effect, so on a
+    // loaded runner the last recorded call is still the pre-clear one.
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ artist: undefined })
+    ))
   })
 
   it('ignores an artist list from a superseded stock request', async () => {
