@@ -3,6 +3,7 @@ import { getReleases, getArtists } from '../api/client'
 import type { Release, SortField, SortOrder, RecordScope } from '../api/types'
 import { navButtonClass, dismissButtonClass } from '../styles/buttons'
 import { textInputClass, selectClass } from '../styles/inputs'
+import { reconcileSelectedArtist } from './artistSelection'
 
 interface Props {
   scope: RecordScope
@@ -67,6 +68,15 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
   // the nav list stays stuck at whatever it was on mount while a collection
   // sync fills the table in page by page.
   useEffect(() => { getArtists(scope).then(setArtists) }, [scope, syncGeneration])
+  // A collection sync can re-case the selected artist's label -- the canonical
+  // casing follows the catalog, which the sync itself writes. See
+  // reconcileSelectedArtist; same handling as StockBrowser.
+  useEffect(() => {
+    const next = reconcileSelectedArtist(artists, selectedArtist)
+    if (next === selectedArtist) return
+    if (next) setSelectedArtist(next)
+    else selectArtist('')
+  }, [artists, selectedArtist])
   useEffect(() => { localStorage.setItem(`collectionViewMode_${scope}`, viewMode) }, [viewMode, scope])
 
   function toggleSort(field: SortField) {

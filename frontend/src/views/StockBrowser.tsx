@@ -3,6 +3,7 @@ import { getStock, getStockArtists } from '../api/client'
 import type { StockItem, StockSortField, SortOrder, StockScope, LibraryScope } from '../api/types'
 import { navButtonClass, dismissButtonClass } from '../styles/buttons'
 import { textInputClass, selectClass } from '../styles/inputs'
+import { reconcileSelectedArtist } from './artistSelection'
 
 interface Props {
   scope?: StockScope
@@ -82,6 +83,17 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
       hiddenCrawlerIds,
     ).then(setArtists)
   }, [scope, filter, hiddenCrawlerIds, syncGeneration])
+  // A refetched list can re-case the selected artist's label, or drop it
+  // entirely -- see reconcileSelectedArtist. A pure re-casing keeps the current
+  // sort and page (it's still the same artist); losing the artist delegates to
+  // selectArtist(''), the full "back to All" transition, sort derivation
+  // included.
+  useEffect(() => {
+    const next = reconcileSelectedArtist(artists, selectedArtist)
+    if (next === selectedArtist) return
+    if (next) setSelectedArtist(next)
+    else selectArtist('')
+  }, [artists, selectedArtist])
   useEffect(() => { localStorage.setItem(`collectionViewMode_${scope}`, viewMode) }, [viewMode, scope])
   useEffect(() => { localStorage.setItem(`stockFilter_${scope}`, filter) }, [filter, scope])
   useEffect(() => { tableScrollRef.current?.scrollTo({ top: 0 }) }, [selectedArtist])

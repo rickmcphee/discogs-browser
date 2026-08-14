@@ -127,6 +127,7 @@ artist spelled differently.
 | `db.get_distinct_stock_artists` | same |
 | `db.get_library_releases` | filter `LOWER(c.artist) = LOWER(%(artist)s)`; canonical label on returned rows; artist sort case-insensitive |
 | `db.get_stock_items` | filter `LOWER(s.artist) = LOWER(%(artist)s)`; canonical label on returned rows (own rows and their comparison rows, which derive their artist from the own row); artist sort case-insensitive |
+| `views/artistSelection.ts` | new; `reconcileSelectedArtist`, called by both browsers after an artist-list refetch (see "The label is not stable" below) |
 
 The artist sorts move to `LOWER(...)` so that the two casings of one artist
 stay adjacent even under a byte-ordering collation; under `en_US` they already
@@ -144,9 +145,32 @@ listing — and without the expression indexes each of those is a sequential sca
 of one of the two largest tables on every browse request. Neither table had an
 artist index at all before.
 
-No frontend change. The sidebar sends back exactly the label it was given, and
-the filter now matches case-insensitively, so `selectedArtist === a` keeps
-working unchanged.
+**The label is not stable, so the frontend reconciles the active selection.**
+It's derived from live row counts, and both syncs move those counts: a stock
+sync replaces one crawler's rows at a time, so mid-sync a majority casing can
+invert; a collection sync writes `catalog`, which can bring an artist under the
+catalog preference for the first time and legitimately change its label for
+good. `StockBrowser` and `RecordBrowser` both refetch the artist list on every
+`syncGeneration` tick, and both highlight the sidebar by exact string
+comparison (`selectedArtist === a`) — so a changed label would leave nothing
+highlighted while `artist=` kept filtering. That is precisely the invisible
+filter `changeFilter` already goes out of its way to avoid.
+
+`views/artistSelection.ts`'s `reconcileSelectedArtist(artists, selected)` runs
+after each list refetch in both views: it keeps the selection when the list
+still offers it, follows it to the re-cased label when only the casing moved
+(current sort and page preserved — it's still the same artist), and otherwise
+delegates to `selectArtist('')`, the existing full "back to All" transition.
+That last branch also covers JS's `toLowerCase` disagreeing with `LOWER()` for
+some name: the selection resets visibly rather than silently mismatching, so
+the JS fold is a hint, never an authority. It also closes a pre-existing hole
+of the same shape — hiding a crawler could already drop the selected artist out
+of the sidebar and leave the filter applied but unattributable.
+
+Not solved by a stable non-display artist identity (a surrogate key per
+case-folded artist): that would be a schema change and a new API contract for
+both listing endpoints, to fix a mislabelled highlight. Reconciling on the
+client is proportionate, and correct for *any* cause of a label change.
 
 ## Out of scope
 
