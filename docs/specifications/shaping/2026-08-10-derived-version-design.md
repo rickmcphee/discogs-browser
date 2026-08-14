@@ -48,8 +48,9 @@ collisions aside: `3.16` does not say which tree is deployed, cannot be
 verified, and can be — and on 2026-08-10 was — duplicated or skipped. A
 commit-derived identifier is unforgeable and names an exact tree.
 
-`amazon.py`'s `_VERSION = "v5-format-aware"` is a crawler-strategy marker,
-unrelated to this despite the name, and is not touched.
+`amazon.py`'s `_VERSION = "v5-format-aware"` was a crawler-strategy marker,
+unrelated to this despite the name, and was not touched by this design. It was
+later removed as unused cleanup (PR #132), independent of this change.
 
 ## Scope
 
