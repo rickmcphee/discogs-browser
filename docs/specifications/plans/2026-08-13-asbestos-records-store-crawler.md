@@ -611,4 +611,4 @@ Open it as ready for review, never a draft — pass `--draft=false`. The descrip
 
 ## Manual verification (not automated)
 
-Per the repo's convention, the live crawl path stays manually integration-tested. After merge, confirm on a running backend that a stock sync for `Asbestos Records` writes roughly 43 rows (the confirmed-live count of available options across format-matching products as of 2026-08-13), that no row's artist is empty or `None`, and that the Store tab shows pressing-colour variants (e.g. `Sgt Scagnetti`'s Maroon vinyl vs. Test Pressing) as separate rows.
+Per the repo's convention, the live crawl path stays manually integration-tested. After merge, confirm on a running backend that a stock sync for `Asbestos Records` writes roughly 62 rows (the confirmed-live count of available options across the union-gated cohort as of 2026-08-14, post the inclusion-gate fix noted above — not the original 43), that no row's artist is empty or `None`, and that the Store tab shows pressing-colour variants (e.g. `Sgt Scagnetti`'s Maroon vinyl vs. Test Pressing) as separate rows.

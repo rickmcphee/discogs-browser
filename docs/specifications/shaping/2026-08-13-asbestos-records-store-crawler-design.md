@@ -57,8 +57,10 @@ logic (see `docs/specifications/shaping/2026-08-07-shared-title-split-helper-des
 
 ## Technical grounding
 
-All figures confirmed against the live site on 2026-08-13 via
-`GET /products.json` (single request, 76 products, 141KB).
+Figures below were confirmed against the live site on 2026-08-13 via
+`GET /products.json` (single request, 76 products, 141KB), except where
+marked "Corrected 2026-08-14" — those were re-derived against a fresh fetch
+of the same endpoint after the inclusion gate changed post-merge.
 
 ### No pagination
 
@@ -125,35 +127,46 @@ crawlers — `^(?P<artist>.+?)(?:\s+-\s*|\s*-\s+)(?P<album>.+)$` — so a hyphen
 inside a name with no surrounding space (e.g. `Suicide Machines-On the Eve
 of Destruction`) isn't mistaken for the separator.
 
-Of the 42 kept products, 40 split cleanly on this regex. The remaining 2 have
+**Corrected 2026-08-14** alongside the "Format filtering" fix above — the
+cohort here is the 53-product union, not the original 42.
+
+Of the 53 kept products, 49 split cleanly on this regex. The remaining 4 have
 no whitespace-anchored hyphen at all:
 
 - `The Least Worst of the Suicide Machines 2xLP` — no hyphen.
 - `The Suicide Machines-On the Eve of Destruction 2xLP` — hyphen present but
   glued to `Machines`, correctly rejected by the whitespace anchor.
+- `Roots & Bases : a Latin American Ska Scene Compilation` — no hyphen, and
+  no curated `artists` entry either.
+- `2024 Asbestos Records Subscription Club!` — no hyphen, and no curated
+  `artists` entry either; this is the accepted-noise bundle brought in by
+  the `Vinyl`-category arm of the union gate, discussed in "Format
+  filtering."
 
-Both carry a populated `artists` array (`[{"name": "Suicide Machines", ...}]`)
-— Bigcartel's own curated artist tag, present on 38/76 products store-wide.
-Unlike `vendor` on the Shopify stores, this field is store-curated per
-product rather than a single label name repeated everywhere, so it's a
-legitimate fallback — but only a fallback, not the primary source: some
-tagged artists don't literally match the billing in the title (e.g. `David
-McWane - The Gypsy Mile` is tagged under `big d & the kids table`, the
-member's main band, not the solo billing), so trusting it over an actual
-title split would silently overwrite a correct, literal artist name with an
-editorial one. Priority order:
+The first two carry a populated `artists` array (`[{"name": "Suicide
+Machines", ...}]`) — Bigcartel's own curated artist tag, present on 38/76
+products store-wide — and fall back to it correctly. Unlike `vendor` on the
+Shopify stores, this field is store-curated per product rather than a single
+label name repeated everywhere, so it's a legitimate fallback — but only a
+fallback, not the primary source: some tagged artists don't literally match
+the billing in the title (e.g. `David McWane - The Gypsy Mile` is tagged
+under `big d & the kids table`, the member's main band, not the solo
+billing), so trusting it over an actual title split would silently overwrite
+a correct, literal artist name with an editorial one. Priority order:
 
 1. Whitespace-anchored hyphen split on `name` → use both halves.
 2. No split found → `artists[0]["name"]` if present, full `name` as title.
 3. Neither → skip (`None`, following `angryyoungandpoor.py`'s no-split
-   precedent). Not exercised in the current 42, but kept as a guard.
+   precedent). Exercised live by the last two products above, not just a
+   guard against a case that hadn't occurred.
 
-No live product's split-out artist is `"various"` / `"various artists"`
-(the one V/A compilation on the store is excluded by the format gate above),
-so the `angryyoungandpoor.py`/`cleorecs.py` convention of normalizing to the
-literal Discogs entity string `"Various"` is included for correctness but
-untested against live data — it's a one-line, already-proven guard, not new
-logic.
+One live product's split-out artist is `"various artists"`: `Various Artists
+- Black Sand Relief benefit Compilation`, brought in by the `Vinyl`-category
+arm of the union gate (its name carries no format token, so the pre-fix
+name-only gate never saw it). The `angryyoungandpoor.py`/`cleorecs.py`
+convention of normalizing to the literal Discogs entity string `"Various"`
+is now exercised by live data, not just included for correctness against a
+case that hadn't occurred — confirmed `_VARIOUS_RE` normalizes it correctly.
 
 `html.unescape()` is required on `name` before splitting/display —
 confirmed live: `River City Extension - Don&#x27;t Let the Sun Go Down on
@@ -161,9 +174,10 @@ Your Anger 2xLP` carries a literal HTML entity in the JSON field.
 
 ### Variants (`options`)
 
-60 options across the 42 kept products; 17 `sold_out: true`, 43 available; 7
-of the 42 products have zero available options (yield nothing for those,
-same as any sibling crawler with an all-unavailable product).
+**Corrected 2026-08-14**, same reason as above: 81 options across the 53
+kept products; 19 `sold_out: true`, 62 available; 7 of the 53 products have
+zero available options (yield nothing for those, same as any sibling
+crawler with an all-unavailable product).
 
 Bigcartel has no Shopify-style `"Default Title"` placeholder — a
 single-option product just repeats the product's own `name` as the option's

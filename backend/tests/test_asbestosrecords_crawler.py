@@ -49,6 +49,17 @@ def test_parse_artist_title_returns_none_artist_when_no_separator_and_no_curated
     assert Crawler._parse_artist_title(name, []) == (None, name)
 
 
+def test_parse_artist_title_returns_none_when_curated_artist_name_is_blank():
+    # A blank/missing name on the first curated artist entry must not
+    # produce an empty-string artist -- that would slip past _items()'s
+    # `if artist is None` guard and violate the "neither source -> skip"
+    # contract.
+    name = "Black guy fawkes birthday bash!"
+    assert Crawler._parse_artist_title(name, [{"id": 1, "name": ""}]) == (None, name)
+    assert Crawler._parse_artist_title(name, [{"id": 1, "name": "   "}]) == (None, name)
+    assert Crawler._parse_artist_title(name, [{"id": 1}]) == (None, name)
+
+
 def test_parse_artist_title_normalizes_various_artists_to_various():
     # Discogs' own entity name is "Various", not "Various Artists" --
     # db.py's _library_match_fragment does an exact LOWER() equality against
@@ -195,7 +206,10 @@ def test_items_omits_variant_suffix_when_option_name_equals_product_name():
     assert items[0]["title"] == "Master Celebrations 2xLP (import) **PREORDER**"
 
 
-def test_items_drops_products_with_no_format_token_in_name():
+def test_items_drops_products_with_neither_format_token_nor_vinyl_category():
+    # Naming this for "no format token" alone would overstate the rule --
+    # the next test shows a no-format-token product that IS included when
+    # it carries a Vinyl category. Dropping requires neither signal to fire.
     assert Crawler._items(_NON_VINYL_PRODUCT) == []
 
 

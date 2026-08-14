@@ -105,5 +105,12 @@ class Crawler:
                 artist = "Various"
             return artist, album
         if artists:
-            return html.unescape(artists[0].get("name") or "").strip(), clean
+            # A blank/missing name on the first curated artist entry must
+            # fall through to the skip below, not return an empty-string
+            # artist -- _items()'s `if artist is None` guard only rejects
+            # None, so "" would otherwise reach stock_items and violate the
+            # documented "neither source -> skip" contract.
+            fallback = html.unescape(artists[0].get("name") or "").strip()
+            if fallback:
+                return fallback, clean
         return None, clean
