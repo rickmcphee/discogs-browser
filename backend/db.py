@@ -226,6 +226,13 @@ CREATE INDEX IF NOT EXISTS stock_items_item_key_idx ON stock_items (item_key);
 
 ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS release_id TEXT REFERENCES catalog(discogs_id);
 CREATE UNIQUE INDEX IF NOT EXISTS stock_items_crawler_release_idx ON stock_items (crawler_id, release_id) WHERE release_id IS NOT NULL;
+
+-- Expression indexes, because every artist read path case-folds now: the
+-- artist filters in get_library_releases/get_stock_items, and
+-- canonical_artist_labels, which runs per page of either. Without these both
+-- are sequential scans of the two largest tables on every browse request.
+CREATE INDEX IF NOT EXISTS catalog_artist_lower_idx ON catalog (LOWER(artist));
+CREATE INDEX IF NOT EXISTS stock_items_artist_lower_idx ON stock_items (LOWER(artist));
 """
 
 
@@ -790,7 +797,10 @@ def get_library_releases(
         conditions.append("(c.artist ILIKE %(search)s OR c.title ILIKE %(search)s)")
         params["search"] = f"%{search}%"
     if artist:
-        conditions.append("c.artist = %(artist)s")
+        # LOWER on both sides: the sidebar sends back one canonical label per
+        # artist (see canonical_artist_labels), so an exact match would hide
+        # every release whose catalog row spells the artist differently.
+        conditions.append("LOWER(c.artist) = LOWER(%(artist)s)")
         params["artist"] = artist
     if scope == "discogs":
         conditions.append("li.in_collection = TRUE")
@@ -814,7 +824,9 @@ def get_library_releases(
         sort_expr = "li." + ("wishlist_date_added" if scope == "wishlist" else "collection_date_added")
     else:
         sort_col = sort if sort in _RELEASE_ALLOWED_SORT else "artist"
-        sort_expr = f"c.{sort_col}"
+        # Case-insensitive so an artist's differently-cased catalog rows stay
+        # adjacent even under a byte-ordering collation.
+        sort_expr = "LOWER(c.artist)" if sort_col == "artist" else f"c.{sort_col}"
 
     rows = conn.execute(
         f"""
@@ -841,6 +853,7 @@ def get_library_releases(
             del r["collection_date_added"]
             del r["wishlist_date_added"]
         releases.append(r)
+    _apply_canonical_artists(conn, releases)
 
     return {"total": total, "page": page, "per_page": per_page, "releases": releases}
 
@@ -1281,6 +1294,64 @@ def normalize_title_casing(title: str) -> str:
     return title
 
 
+# One casing per artist, whatever each source stored. The most frequent casing
+# in the table wins; the tie-break is byte order (COLLATE "C") rather than the
+# database's collation, so a two-way tie resolves the same way on every
+# deployment -- under en_US the lowercase variant would sort first, under C the
+# uppercase one, and the label would depend on how the cluster was initdb'd.
+# GROUP BY collapses the duplicates COUNT(*) counts, DISTINCT ON then takes the
+# winner per case-folded key.
+_CANONICAL_ARTIST_SQL = """
+    SELECT DISTINCT ON (LOWER(artist)) LOWER(artist) AS key, artist AS label
+    FROM {table}
+    WHERE LOWER(artist) = ANY(%(keys)s)
+    GROUP BY LOWER(artist), artist
+    ORDER BY LOWER(artist), COUNT(*) DESC, artist COLLATE "C"
+"""
+
+
+def canonical_artist_labels(conn, artists) -> dict:
+    """Map each artist's case-folded name to the one casing the UI displays.
+
+    Stores disagree with each other and with Discogs on how to capitalize
+    prepositions ("Jets to Brazil" vs "Jets To Brazil"), and
+    normalize_artist_casing deliberately can't help: it only touches inputs
+    that are entirely one case, since title-casing a mixed-case name mangles
+    it. So the drift is resolved at read time instead, and `catalog` wins when
+    it has the artist at all -- Discogs metadata is curated by hand, which no
+    small-word list can reproduce ("The Jesus and Mary Chain", "clipping.").
+
+    Both tables are global and un-RLS'd, so the label is app-wide: two users
+    can't see one artist spelled two ways.
+    """
+    keys = sorted({a.lower() for a in artists if a})
+    labels: dict = {}
+    for table in ("catalog", "stock_items"):
+        remaining = [k for k in keys if k not in labels]
+        if not remaining:
+            break
+        rows = conn.execute(_CANONICAL_ARTIST_SQL.format(table=table), {"keys": remaining}).fetchall()
+        for row in rows:
+            labels[row["key"]] = row["label"]
+    return labels
+
+
+def _canonical_artist_list(conn, artists) -> list:
+    """One entry per artist for a sidebar, canonically cased. Ordering is done
+    here rather than in SQL -- the label isn't known until the rows are back --
+    so it is Python's case-folded order, not the database collation's; the two
+    differ only for accented and punctuated names."""
+    labels = canonical_artist_labels(conn, artists)
+    deduped = {labels.get(a.lower(), a) for a in artists if a}
+    return sorted(deduped, key=lambda a: (a.lower(), a))
+
+
+def _apply_canonical_artists(conn, rows: list[dict]) -> None:
+    labels = canonical_artist_labels(conn, [r["artist"] for r in rows])
+    for row in rows:
+        row["artist"] = labels.get(row["artist"].lower(), row["artist"])
+
+
 def replace_stock_items(conn, crawler_id: int, items: list[dict]) -> list[str]:
     conn.execute("DELETE FROM stock_items WHERE crawler_id = %s", [crawler_id])
     if not items:
@@ -1399,7 +1470,8 @@ def get_stock_items(
         sort_expr = "cr.site_name"
     else:
         sort_col = sort if sort in _STOCK_ALLOWED_SORT else "artist"
-        sort_expr = f"s.{sort_col}"
+        # See get_library_releases: keeps casing variants of one artist together.
+        sort_expr = "LOWER(s.artist)" if sort_col == "artist" else f"s.{sort_col}"
 
     conditions = []
     params: dict = {"user_id": user_id}
@@ -1407,7 +1479,9 @@ def get_stock_items(
         conditions.append("(s.artist ILIKE %(search)s OR s.title ILIKE %(search)s)")
         params["search"] = f"%{search}%"
     if artist:
-        conditions.append("s.artist = %(artist)s")
+        # See the matching clause in get_library_releases: the filter value is
+        # a canonical label, not any one store's spelling.
+        conditions.append("LOWER(s.artist) = LOWER(%(artist)s)")
         params["artist"] = artist
     in_library = _in_library_clause("%(user_id)s", library_scope)
     if in_library:
@@ -1461,8 +1535,11 @@ def get_stock_items(
         comparisons_by_item.setdefault(c["item_key"], []).append(c)
 
     items = []
-    for row in rows:
-        r = dict(row)
+    own_rows = [dict(row) for row in rows]
+    # Before the loop, so the comparison rows below -- which take their artist
+    # from the own row -- inherit the canonical label too.
+    _apply_canonical_artists(conn, own_rows)
+    for r in own_rows:
         items.append({**r, "is_own": True})
         for c in comparisons_by_item.get(r["item_key"], []):
             items.append({
@@ -1496,8 +1573,8 @@ def get_distinct_stock_artists(conn, user_id: int, library_scope: Optional[str] 
         conditions.append("s.crawler_id != ALL(%(exclude_crawler_ids)s)")
         params["exclude_crawler_ids"] = exclude_crawler_ids
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
-    rows = conn.execute(f"SELECT DISTINCT s.artist FROM stock_items s {where} ORDER BY s.artist", params).fetchall()
-    return [row["artist"] for row in rows]
+    rows = conn.execute(f"SELECT DISTINCT s.artist FROM stock_items s {where}", params).fetchall()
+    return _canonical_artist_list(conn, [row["artist"] for row in rows])
 
 
 def get_unjudged_stock_items(conn, user_id: int, limit: int) -> list[dict]:
@@ -1798,11 +1875,11 @@ def get_distinct_artists(conn, user_id: int, scope: Optional[str] = None) -> lis
         f"""
         SELECT DISTINCT c.artist FROM library_items li
         JOIN catalog c ON c.discogs_id = li.discogs_id
-        {where} ORDER BY c.artist
+        {where}
         """,
         {"user_id": user_id},
     ).fetchall()
-    return [row["artist"] for row in rows]
+    return _canonical_artist_list(conn, [row["artist"] for row in rows])
 
 
 def create_oauth_request_state(conn, request_token: str, request_token_secret: str):

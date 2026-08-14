@@ -1250,3 +1250,84 @@ def test_upsert_stock_item_from_release_item_key_uses_legacy_title_convention(ad
         "SELECT * FROM stock_items WHERE crawler_id = %s AND release_id = 'r2' AND item_key = %s",
         [crawler_id, item_key]
     ).fetchone() is not None
+
+
+def _register(admin_conn, site_name):
+    db.register_crawler(admin_conn, site_name, f"/{site_name}.py", crawler_type="catalog")
+    admin_conn.commit()
+    return admin_conn.execute(
+        "SELECT id FROM crawlers WHERE site_name = %s", [site_name]
+    ).fetchone()["id"]
+
+
+def test_get_distinct_stock_artists_collapses_casing_variants_onto_catalog_casing(admin_conn):
+    # Two stores disagree on the preposition: one vendor field reads "Jets to
+    # Brazil" (mixed case, so normalize_artist_casing leaves it alone), the
+    # other shouts and comes out "Jets To Brazil". Discogs' curated casing
+    # decides which one the sidebar shows, and there is only one entry.
+    jade = _register(admin_conn, "Jade Tree")
+    amoeba = _register(admin_conn, "Amoeba")
+    db.replace_stock_items(admin_conn, jade, [
+        {"artist": "Jets to Brazil", "title": "Orange Rhyming Dictionary", "url": "https://j/1",
+         "price": 20.0, "currency": "USD"},
+    ])
+    db.replace_stock_items(admin_conn, amoeba, [
+        {"artist": "JETS TO BRAZIL", "title": "Four Cornered Night", "url": "https://a/1",
+         "price": 25.0, "currency": "USD"},
+    ])
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r1", "artist": "Jets To Brazil", "title": "Orange Rhyming Dictionary",
+        "year": None, "label": None, "format": None, "barcode": None,
+        "cover_image_url": None, "discogs_url": None,
+    })
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.get_distinct_stock_artists(conn, alice["id"]) == ["Jets To Brazil"]
+
+
+def test_get_distinct_stock_artists_uses_commonest_stock_casing_when_not_in_catalog(admin_conn):
+    jade = _register(admin_conn, "Jade Tree")
+    amoeba = _register(admin_conn, "Amoeba")
+    db.replace_stock_items(admin_conn, jade, [
+        {"artist": "Jets to Brazil", "title": "Orange Rhyming Dictionary", "url": "https://j/1",
+         "price": 20.0, "currency": "USD"},
+        {"artist": "Jets to Brazil", "title": "Perfecting Loneliness", "url": "https://j/2",
+         "price": 21.0, "currency": "USD"},
+    ])
+    db.replace_stock_items(admin_conn, amoeba, [
+        {"artist": "JETS TO BRAZIL", "title": "Four Cornered Night", "url": "https://a/1",
+         "price": 25.0, "currency": "USD"},
+    ])
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.get_distinct_stock_artists(conn, alice["id"]) == ["Jets to Brazil"]
+
+
+def test_get_stock_items_artist_filter_spans_casing_variants_and_labels_them_canonically(admin_conn):
+    jade = _register(admin_conn, "Jade Tree")
+    amoeba = _register(admin_conn, "Amoeba")
+    db.replace_stock_items(admin_conn, jade, [
+        {"artist": "Jets to Brazil", "title": "Orange Rhyming Dictionary", "url": "https://j/1",
+         "price": 20.0, "currency": "USD"},
+    ])
+    db.replace_stock_items(admin_conn, amoeba, [
+        {"artist": "JETS TO BRAZIL", "title": "Four Cornered Night", "url": "https://a/1",
+         "price": 25.0, "currency": "USD"},
+    ])
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r1", "artist": "Jets To Brazil", "title": "Orange Rhyming Dictionary",
+        "year": None, "label": None, "format": None, "barcode": None,
+        "cover_image_url": None, "discogs_url": None,
+    })
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], artist="Jets To Brazil")
+    assert result["total"] == 2
+    assert {i["title"] for i in result["items"]} == {"Orange Rhyming Dictionary", "Four Cornered Night"}
+    assert {i["artist"] for i in result["items"]} == {"Jets To Brazil"}

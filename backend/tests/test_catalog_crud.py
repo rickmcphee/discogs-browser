@@ -511,3 +511,40 @@ def test_upsert_library_item_price_paid_is_per_user(admin_conn):
 
     assert _price_paid(admin_conn, alice["id"]) == "$10"
     assert _price_paid(admin_conn, bob["id"]) is None
+
+
+def _catalog(admin_conn, discogs_id, artist, title):
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": discogs_id, "artist": artist, "title": title, "year": None, "label": None,
+        "format": None, "barcode": None, "cover_image_url": None, "discogs_url": None,
+    })
+
+
+def test_get_distinct_artists_collapses_casing_variants_onto_the_commonest(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "Jets To Brazil", "Orange Rhyming Dictionary")
+    _catalog(admin_conn, "r2", "Jets To Brazil", "Four Cornered Night")
+    _catalog(admin_conn, "r3", "Jets to Brazil", "Perfecting Loneliness")
+    for rid in ("r1", "r2", "r3"):
+        db.upsert_library_item(admin_conn, alice["id"], rid, in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.get_distinct_artists(conn, alice["id"]) == ["Jets To Brazil"]
+
+
+def test_get_library_releases_artist_filter_spans_casing_variants(admin_conn):
+    # One row of each casing, so the frequency rule ties and the byte-order
+    # tie-break decides -- "Jets To Brazil" regardless of the cluster's
+    # collation, which under en_US would otherwise pick the lowercase variant.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "Jets To Brazil", "Orange Rhyming Dictionary")
+    _catalog(admin_conn, "r2", "Jets to Brazil", "Perfecting Loneliness")
+    for rid in ("r1", "r2"):
+        db.upsert_library_item(admin_conn, alice["id"], rid, in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], artist="Jets To Brazil")
+    assert result["total"] == 2
+    assert {r["artist"] for r in result["releases"]} == {"Jets To Brazil"}
