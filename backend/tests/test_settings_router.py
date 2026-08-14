@@ -1,3 +1,4 @@
+import logging
 import os
 import socket
 from unittest.mock import patch
@@ -323,11 +324,57 @@ def test_patch_crawler_disable_discards_dead_stock_jobs(pg_test_db, authed_clien
         assert conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 0
 
 
+def test_patch_crawler_enable_logs_its_own_dead_stock_sweep(pg_test_db, authed_client_factory, caplog):
+    """Mirrors test_patch_crawler_disable_discards_dead_stock_jobs, but for the
+    enable path: enabling an unrelated release crawler still runs the same
+    delete_dead_stock_crawl_queue_rows() sweep (it has no predicate scoping it
+    to the crawler just enabled), and that sweep's count must be logged too --
+    previously only the disable path logged anything, so rows deleted on
+    enable were invisible in the INFO stream. Logged separately from
+    "discarded" in the response: that field is the disable path's number and
+    the frontend renders it as "queued jobs discarded" for that action."""
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Dead Store", "/src.py", crawler_type="catalog")
+        store_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Dead Store'").fetchone()["id"]
+        db.register_crawler(conn, "Amazon", "/price.py")
+        amazon_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.set_crawler_enabled(conn, amazon_id, False)
+        conn.execute(
+            "INSERT INTO stock_item_identities (item_key, artist, title) VALUES ('key-enable-sweep', 'A', 'T')"
+        )
+        conn.execute(
+            "INSERT INTO stock_items (crawler_id, artist, title, url, item_key) "
+            "VALUES (%s, 'A', 'T', 'https://x/1', 'key-enable-sweep')",
+            [store_id],
+        )
+        db.enqueue_crawl_queue_for_stock_item(conn, "key-enable-sweep")
+        # The item's own source is now disabled -- this pending row is dead --
+        # but it's Amazon, a wholly unrelated release crawler, that we enable.
+        db.set_crawler_enabled(conn, store_id, False)
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute("UPDATE users SET is_admin = TRUE WHERE id = %s", [user["id"]])
+        conn.commit()
+
+    client = authed_client_factory(user["id"])
+    with caplog.at_level(logging.INFO, logger="routers.settings"):
+        r = client.patch(f"/api/crawlers/{amazon_id}", json={"enabled": True}, headers={"X-Requested-With": "fetch"})
+
+    assert r.status_code == 200
+    # Not folded into "discarded" -- that field stays the disable path's.
+    assert r.json() == {"ok": True, "discarded": 0, "backfilled": 0}
+    with db.get_admin_pool().connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 0
+
+    sweep_logs = [rec.getMessage() for rec in caplog.records if "dead stock crawl jobs swept" in rec.getMessage()]
+    assert len(sweep_logs) == 1
+    assert "1" in sweep_logs[0]
+
+
 def test_patch_crawler_enable_persists_when_backfill_hits_a_busy_queue(pg_test_db, authed_client_factory):
     """The toggle and the backfill run in separate transactions so a backfill
     that loses a lock race against a running collection sync can't roll back
-    the admin's enable along with it -- see backfill_crawl_queue_for_crawler's
-    SET LOCAL lock_timeout and update_crawler's LockNotAvailable handling."""
+    the admin's enable along with it -- see update_crawler's SET LOCAL lock_
+    timeout and its LockNotAvailable/DeadlockDetected handling."""
     with db.get_admin_pool().connection() as conn:
         db.register_crawler(conn, "Amazon", "/x.py")
         crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
@@ -338,6 +385,32 @@ def test_patch_crawler_enable_persists_when_backfill_hits_a_busy_queue(pg_test_d
 
     client = authed_client_factory(user["id"])
     with patch("db.backfill_crawl_queue_for_crawler", side_effect=psycopg.errors.LockNotAvailable("lock timeout")):
+        r = client.patch(f"/api/crawlers/{crawler_id}", json={"enabled": True}, headers={"X-Requested-With": "fetch"})
+
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "discarded": 0, "backfilled": 0}
+
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute("SELECT enabled FROM crawlers WHERE id = %s", [crawler_id]).fetchone()
+    assert row["enabled"] is True
+
+
+def test_patch_crawler_enable_does_not_500_on_deadlock(pg_test_db, authed_client_factory):
+    """FOR UPDATE SKIP LOCKED means backfill_crawl_queue_for_crawler itself
+    should never raise DeadlockDetected, but the except clause is the safety
+    net and must not let a 40P01 through as an uncaught 500 -- a different
+    exception class than LockNotAvailable, and the one Postgres's own deadlock
+    detector actually raises when it picks a victim."""
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.set_crawler_enabled(conn, crawler_id, False)
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute("UPDATE users SET is_admin = TRUE WHERE id = %s", [user["id"]])
+        conn.commit()
+
+    client = authed_client_factory(user["id"])
+    with patch("db.backfill_crawl_queue_for_crawler", side_effect=psycopg.errors.DeadlockDetected("deadlock detected")):
         r = client.patch(f"/api/crawlers/{crawler_id}", json={"enabled": True}, headers={"X-Requested-With": "fetch"})
 
     assert r.status_code == 200

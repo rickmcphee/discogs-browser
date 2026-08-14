@@ -2444,11 +2444,13 @@ async def test_worker_marks_a_target_done_when_no_crawler_is_eligible(pg_schema)
         row = conn.execute("SELECT status FROM crawl_queue WHERE discogs_id = 'r1'").fetchone()
         listing = conn.execute("SELECT 1 FROM listings WHERE release_id = 'r1'").fetchone()
     assert row["status"] == "done"
-    # Distinguishes this zero-eligible-crawlers path from the plugin-is-None
-    # path (test_worker_skips_a_unit_whose_plugin_failed_to_load_without_
-    # deferring_it above), which also ends 'done' but only after a unit ran
-    # and recorded a failure. Here no unit ever runs at all: no listing was
-    # written, and no failure was recorded.
+    # listing is None here for the same reason it's None in the plugin-is-None
+    # path below (test_worker_skips_a_unit_whose_plugin_failed_to_load_
+    # without_deferring_it) -- that branch also continues before any
+    # upsert_listing, so it writes no listing either. It's
+    # _site_consecutive_failures == {} that actually distinguishes this path:
+    # no unit ever runs at all here, so no failure is recorded, whereas the
+    # plugin-is-None path does record one.
     assert listing is None
     assert manager._site_consecutive_failures == {}
 
@@ -2477,7 +2479,15 @@ async def test_worker_skips_a_unit_whose_plugin_failed_to_load_without_deferring
     # amazon_id is enabled and eligible, but is missing from the plugins dict
     # handed to _drain_one_batch -- exactly what a module that failed to
     # import at boot looks like to this code.
-    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+    #
+    # _record_site_result reads consecutive_failure_limit from the real
+    # config, and at a limit of 1 it would reset the just-recorded failure
+    # back to 0 -- patch it fixed, same as test_worker_drains_units_target_
+    # major_across_a_batch does for crawl_delay_seconds, so the assertion
+    # below doesn't depend on the ambient config file being absent or having
+    # a limit above 1.
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("config.load_config", return_value={"consecutive_failure_limit": 10}):
         await manager._drain_one_batch("worker-test", {}, pages={})
 
     with db.get_admin_pool().connection() as conn:

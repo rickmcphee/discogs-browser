@@ -695,6 +695,46 @@ def test_backfill_revives_targets_whose_price_was_cleared(admin_conn):
     assert revived == 1
 
 
+def test_backfill_skips_a_row_another_transaction_holds(admin_conn):
+    """backfill_crawl_queue_for_crawler must never wait on a row lock: a
+    transaction that never waits cannot be part of a wait cycle, so it can
+    neither deadlock against a running collection sync nor be picked as the
+    victim if it does. Proven here by holding r1's row locked on a second,
+    independent connection while the backfill runs on admin_conn -- it must
+    skip r1 (SKIP LOCKED) rather than block on it, reviving only r2."""
+    crawler_id = _make_catalog_and_crawler(admin_conn, "r1")
+    _make_catalog_and_crawler(admin_conn, "r2")
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1")
+    db.enqueue_crawl_queue(admin_conn, "r2")
+    admin_conn.execute("UPDATE crawl_queue SET status = 'done' WHERE discogs_id IN ('r1', 'r2')")
+    admin_conn.commit()
+
+    lock_cm = db.get_admin_pool().connection()
+    locker = lock_cm.__enter__()
+    try:
+        locker.execute("SELECT * FROM crawl_queue WHERE discogs_id = 'r1' FOR UPDATE")
+
+        revived = db.backfill_crawl_queue_for_crawler(admin_conn, crawler_id)
+        admin_conn.commit()
+
+        assert revived == 1
+        r1 = admin_conn.execute(
+            "SELECT status, pending_crawler_ids FROM crawl_queue WHERE discogs_id = 'r1'"
+        ).fetchone()
+        r2 = admin_conn.execute(
+            "SELECT status, pending_crawler_ids FROM crawl_queue WHERE discogs_id = 'r2'"
+        ).fetchone()
+        assert r1["status"] == "done"
+        assert r2["status"] == "pending"
+        assert r2["pending_crawler_ids"] == [crawler_id]
+    finally:
+        # rollback releases the FOR UPDATE lock; __exit__ then returns the
+        # connection to the pool instead of leaving it checked out.
+        locker.rollback()
+        lock_cm.__exit__(None, None, None)
+
+
 def test_backfill_widens_a_narrowed_pending_row(admin_conn):
     crawler_a = _make_catalog_and_crawler(admin_conn, "r1", site_name="Amazon")
     crawler_b = _make_catalog_and_crawler(admin_conn, "r1", site_name="eBay")

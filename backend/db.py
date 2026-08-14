@@ -967,39 +967,53 @@ def backfill_crawl_queue_for_crawler(conn, crawler_id: int) -> int:
         "AND crawl_queue.discogs_id IS NOT NULL" if requires_release["requires_discogs_release"] else ""
     )
     # This UPDATE runs unordered across the whole crawl_queue table and can
-    # take row locks in the opposite order from a running collection sync
-    # (_sync_collection_blocking holds one transaction per page for ~110s,
-    # locking rows via enqueue_crawl_queue's ON CONFLICT DO UPDATE). Bound the
-    # wait so a lock race aborts this transaction quickly instead of hanging
-    # the admin's request or forcing Postgres to abort the sync's side
-    # instead -- update_crawler catches the resulting LockNotAvailable. SET
-    # LOCAL only affects the current transaction, so it must be issued here,
-    # not at connection setup.
-    conn.execute("SET LOCAL lock_timeout = '2s'")
+    # target the same crawl_queue rows a running collection sync is locking in
+    # the opposite order (_sync_collection_blocking holds one transaction per
+    # page for ~110s, locking rows via enqueue_crawl_queue's ON CONFLICT DO
+    # UPDATE). A plain UPDATE would wait on those rows and could be chosen as
+    # the deadlock victim -- Postgres decides that, not us, and a real trace
+    # showed it picking the sync's side, the opposite of what this backfill is
+    # for. Selecting the target ids through FOR UPDATE SKIP LOCKED instead
+    # means this transaction never waits on a row lock: a transaction that
+    # never waits cannot be part of a wait cycle, so it can neither deadlock
+    # nor be picked as a victim. Skipping a row the sync currently holds loses
+    # nothing -- the sync is re-enqueuing that same row via enqueue_crawl_
+    # queue, which sets it pending with pending_crawler_ids = NULL, meaning
+    # "all currently eligible crawlers", so this crawler picks it up at
+    # dispatch regardless.
     revived = conn.execute(
         f"""
         UPDATE crawl_queue SET
             status = 'pending', requested_at = CURRENT_TIMESTAMP,
             available_at = CURRENT_TIMESTAMP, claimed_by = NULL, claimed_at = NULL,
             pending_crawler_ids = ARRAY[%(crawler_id)s]
-        WHERE status = 'done'
-          {release_only_clause}
-          AND NOT EXISTS (
-              SELECT 1 FROM listings l
-              WHERE l.crawler_id = %(crawler_id)s AND l.price IS NOT NULL
-                AND (l.release_id = crawl_queue.discogs_id OR l.item_key = crawl_queue.item_key)
-          )
+        WHERE id IN (
+            SELECT id FROM crawl_queue
+            WHERE status = 'done'
+              {release_only_clause}
+              AND NOT EXISTS (
+                  SELECT 1 FROM listings l
+                  WHERE l.crawler_id = %(crawler_id)s AND l.price IS NOT NULL
+                    AND (l.release_id = crawl_queue.discogs_id OR l.item_key = crawl_queue.item_key)
+              )
+            FOR UPDATE SKIP LOCKED
+        )
         """,
         {"crawler_id": crawler_id},
     ).rowcount
     # A row narrowed by an earlier deferral carries a set that predates this
     # crawler being enabled, so it would otherwise skip it. Rows with NULL need
-    # nothing -- NULL already means "all currently eligible".
+    # nothing -- NULL already means "all currently eligible". Same SKIP LOCKED
+    # shape and same reasoning as the UPDATE above.
     conn.execute(
         """
         UPDATE crawl_queue SET pending_crawler_ids = pending_crawler_ids || %(crawler_id)s
-        WHERE status = 'pending' AND pending_crawler_ids IS NOT NULL
-          AND NOT (%(crawler_id)s = ANY(pending_crawler_ids))
+        WHERE id IN (
+            SELECT id FROM crawl_queue
+            WHERE status = 'pending' AND pending_crawler_ids IS NOT NULL
+              AND NOT (%(crawler_id)s = ANY(pending_crawler_ids))
+            FOR UPDATE SKIP LOCKED
+        )
         """,
         {"crawler_id": crawler_id},
     )

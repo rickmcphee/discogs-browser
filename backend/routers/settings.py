@@ -72,17 +72,26 @@ def update_crawler(crawler_id: int, body: CrawlerUpdate):
     discarded = 0
     backfilled = 0
     if body.enabled:
-        # The toggle and the backfill run in separate transactions: backfill_
-        # crawl_queue_for_crawler's UPDATE can lock the same crawl_queue rows a
-        # running collection sync is locking in the opposite order (see that
-        # function's comment), and Postgres aborts one side. Committing the
-        # toggle first means an aborted backfill can never take the enable
-        # state down with it.
+        # The toggle and the backfill run in separate transactions: committing
+        # the toggle first means anything that goes wrong in the backfill
+        # transaction can never take the enable state down with it.
         with db.get_app_pool().connection() as conn:
             db.set_crawler_enabled(conn, crawler_id, body.enabled)
             conn.commit()
         with db.get_app_pool().connection() as conn:
             try:
+                # backfill_crawl_queue_for_crawler now selects its target rows
+                # through FOR UPDATE SKIP LOCKED, so it never waits on a row
+                # lock and cannot deadlock against a running collection sync
+                # (see that function's comment). This bound is belt-and-
+                # braces for anything else that might wait in this
+                # transaction -- including the dead-stock sweep just below,
+                # which used to run unbounded on this path. Lowered to 500ms,
+                # below the server's 1s deadlock_timeout, so that if it ever
+                # does apply it fires before Postgres's own deadlock detector
+                # would. SET LOCAL only affects the open transaction, so it
+                # must be issued here, not at connection setup.
+                conn.execute("SET LOCAL lock_timeout = '500ms'")
                 backfilled = db.backfill_crawl_queue_for_crawler(conn, crawler_id)
                 # Enabling can revive 'done' stock-item rows whose store is
                 # disabled or whose item has since left stock -- backfill's
@@ -91,9 +100,19 @@ def update_crawler(crawler_id: int, body: CrawlerUpdate):
                 # same transaction as the backfill, so they don't sit pending
                 # and unclaimable in the claim index until a later stock sync
                 # happens to catch them.
-                db.delete_dead_stock_crawl_queue_rows(conn)
+                enable_swept = db.delete_dead_stock_crawl_queue_rows(conn)
                 conn.commit()
-            except psycopg.errors.LockNotAvailable:
+                if enable_swept:
+                    # Separate line from the disable path's "discarded" log
+                    # below: this count is not the disable path's number and
+                    # must not be folded into the response's discarded field,
+                    # which the frontend renders as "queued jobs discarded"
+                    # for the disable action specifically.
+                    log.info(
+                        "Crawler %d enable: %d dead stock crawl jobs swept",
+                        crawler_id, enable_swept,
+                    )
+            except (psycopg.errors.LockNotAvailable, psycopg.errors.DeadlockDetected):
                 conn.rollback()
                 log.info(
                     "Crawler %d enable: backfill skipped because crawl_queue was busy; "
