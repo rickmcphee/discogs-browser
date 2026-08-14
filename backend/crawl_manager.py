@@ -391,17 +391,17 @@ class CrawlManager:
                     clear_listing_price(conn, row["discogs_id"], crawler_id)
                 conn.commit()
 
-            # Before the broadcast, not after: the broadcast awaits q.put() for
-            # every subscriber, which is a cancellation point, and
-            # stop_worker_pool()'s task.cancel() injects CancelledError there.
-            # Resolving afterwards meant a fully finished last unit could have
-            # its listing committed and its row left 'in_progress' anyway, with
-            # no reclaim path and no re-enqueue able to revive it -- the same
-            # stranding this per-row resolution exists to prevent, through a
-            # one-await window. resolve_row() is synchronous, so nothing can be
-            # injected between the unit's commit and the status write. Losing
-            # the SSE event to a shutdown instead is harmless: clients refetch
-            # on reconnect.
+            # Before the broadcast, not after, so the status write cannot be
+            # separated from the unit's commit by anything awaitable. Both are
+            # synchronous now (the broadcasts use put_nowait), so today neither
+            # ordering can strand a row -- `await q.put()` on an unbounded queue
+            # does not suspend, so stop_worker_pool()'s task.cancel() had no
+            # window to land in either. This ordering is what keeps that true
+            # without depending on Queue's internals: if the broadcast ever
+            # gains a real await, resolving first means a finished row's status
+            # is already committed, instead of the row being left 'in_progress'
+            # with its listing written and no reclaim path or re-enqueue able to
+            # revive it.
             if is_last_unit_for_row:
                 resolve_row(row_id)
 
@@ -413,17 +413,31 @@ class CrawlManager:
 
         return len(rows)
 
+    # put_nowait, not await put: these two broadcasts must not become a
+    # suspension point. Unlike _broadcast's events, listing_changed is never
+    # buffered in _recent, and _events_to_replay's gate closes once the row is
+    # 'done', so a dropped one is gone for good -- the frontend increments
+    # stockSyncGeneration on listing_changed to trigger its refetch
+    # (App.tsx:234-236) and its SSE onerror path only reopens the stream
+    # (App.tsx:255-262), so an open Store/Track view would sit stale until an
+    # unrelated update or a reload. subscribe() creates unbounded queues, so
+    # put_nowait cannot raise QueueFull; it also means a slow SSE consumer can
+    # never stall a crawl worker, which an await on a bounded queue would.
+    # (As it happens `await put` on an unbounded queue does not suspend either,
+    # so this is making an existing property explicit rather than changing
+    # behaviour -- but the property was implicit in Queue's internals, one
+    # maxsize= away from silently becoming false.)
     async def _broadcast_listing_changed(self, discogs_id: str, crawler_id: int, status: str):
         self._seq += 1
         event = {"id": self._seq, "type": "listing_changed", "discogs_id": discogs_id, "crawler_id": crawler_id, "status": status}
         for q in list(self._subscribers):
-            await q.put(event)
+            q.put_nowait(event)
 
     async def _broadcast_stock_listing_changed(self, item_key: str, crawler_id: int, status: str):
         self._seq += 1
         event = {"id": self._seq, "type": "listing_changed", "item_key": item_key, "crawler_id": crawler_id, "status": status}
         for q in list(self._subscribers):
-            await q.put(event)
+            q.put_nowait(event)
 
     def _username_for_log(self, user_id: int) -> str:
         """Best-effort display name for log messages -- falls back to the
