@@ -948,9 +948,17 @@ def set_crawler_enabled(conn, crawler_id: int, enabled: bool):
 # for, and a bare existence check would read that as already priced. The
 # trade-off is that targets where the crawler legitimately found nothing are
 # revived on every enable -- bounded and idempotent, but not free.
+#
+# Release-crawler-only, mirroring get_eligible_crawlers's own crawler_type =
+# 'release' filter. A catalog crawler (a store crawler) never writes to
+# listings at all -- it writes to stock_items -- so the "no price yet" NOT
+# EXISTS check below would be unconditionally true for it, and with no
+# release-only clause to narrow it, the UPDATE would match every 'done' row
+# in the whole crawl_queue table.
 def backfill_crawl_queue_for_crawler(conn, crawler_id: int) -> int:
     requires_release = conn.execute(
-        "SELECT requires_discogs_release FROM crawlers WHERE id = %s", [crawler_id]
+        "SELECT requires_discogs_release FROM crawlers WHERE id = %s AND crawler_type = 'release'",
+        [crawler_id],
     ).fetchone()
     if requires_release is None:
         return 0

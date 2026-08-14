@@ -701,3 +701,29 @@ def test_backfill_leaves_stock_item_rows_alone_for_a_discogs_only_crawler(admin_
     admin_conn.commit()
 
     assert revived == 0
+
+
+def test_backfill_ignores_a_catalog_crawler(admin_conn):
+    # A catalog crawler (store crawler) has no listings rows at all -- it
+    # writes to stock_items, never listings. Without a crawler_type filter
+    # the backfill's NOT EXISTS-on-listings predicate is unconditionally
+    # true for it, which would revive every 'done' row in the whole table.
+    _make_catalog_and_crawler(admin_conn, "r1")
+    db.register_crawler(admin_conn, "Some Store", "/s.py", crawler_type="catalog")
+    catalog_crawler_id = admin_conn.execute(
+        "SELECT id FROM crawlers WHERE site_name = %s", ["Some Store"]
+    ).fetchone()["id"]
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1")
+    admin_conn.execute("UPDATE crawl_queue SET status = 'done' WHERE discogs_id = 'r1'")
+    admin_conn.commit()
+
+    revived = db.backfill_crawl_queue_for_crawler(admin_conn, catalog_crawler_id)
+    admin_conn.commit()
+
+    assert revived == 0
+    row = admin_conn.execute(
+        "SELECT status, pending_crawler_ids FROM crawl_queue WHERE discogs_id = 'r1'"
+    ).fetchone()
+    assert row["status"] == "done"
+    assert row["pending_crawler_ids"] is None
