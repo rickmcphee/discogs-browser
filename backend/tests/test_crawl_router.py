@@ -67,7 +67,6 @@ def test_crawl_start_does_not_enqueue_for_other_users_releases(pg_test_db, authe
     with db.get_admin_pool().connection() as conn:
         db.register_crawler(conn, "Amazon", "/x.py")
         conn.commit()
-        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
         for rid in ("r1", "r2"):
             db.upsert_catalog_release(conn, {
                 "discogs_id": rid, "artist": "A", "title": "T", "year": None, "label": None,
@@ -92,13 +91,13 @@ def test_crawl_start_does_not_enqueue_for_other_users_releases(pg_test_db, authe
 
     with db.get_admin_pool().connection() as conn:
         row = conn.execute(
-            "SELECT status FROM crawl_queue WHERE discogs_id = 'r2' AND crawler_id = %s", [crawler_id]
+            "SELECT status FROM crawl_queue WHERE discogs_id = 'r2'"
         ).fetchone()
     assert row is None
 
 
 def test_crawl_start_release_id_rejects_a_release_the_caller_does_not_own(pg_test_db, authed_client_factory):
-    alice, _bob, crawler_id = _setup_two_users_each_with_a_different_release()
+    alice, _bob, _crawler_id = _setup_two_users_each_with_a_different_release()
 
     client = authed_client_factory(alice["id"])
     r = client.post(
@@ -110,13 +109,13 @@ def test_crawl_start_release_id_rejects_a_release_the_caller_does_not_own(pg_tes
 
     with db.get_admin_pool().connection() as conn:
         row = conn.execute(
-            "SELECT status FROM crawl_queue WHERE discogs_id = 'r2' AND crawler_id = %s", [crawler_id]
+            "SELECT status FROM crawl_queue WHERE discogs_id = 'r2'"
         ).fetchone()
     assert row is None
 
 
 def test_crawl_start_release_id_enqueues_a_release_the_caller_owns(pg_test_db, authed_client_factory):
-    alice, _bob, crawler_id = _setup_two_users_each_with_a_different_release()
+    alice, _bob, _crawler_id = _setup_two_users_each_with_a_different_release()
 
     client = authed_client_factory(alice["id"])
     r = client.post(
@@ -128,7 +127,7 @@ def test_crawl_start_release_id_enqueues_a_release_the_caller_owns(pg_test_db, a
 
     with db.get_admin_pool().connection() as conn:
         row = conn.execute(
-            "SELECT status FROM crawl_queue WHERE discogs_id = 'r1' AND crawler_id = %s", [crawler_id]
+            "SELECT status FROM crawl_queue WHERE discogs_id = 'r1'"
         ).fetchone()
     assert row is not None
 
@@ -204,7 +203,7 @@ def test_crawl_stream_replay_includes_listing_changed_events_for_every_release(p
     # Gate _events_to_replay open for alice via a real pending queue row --
     # otherwise "nothing active" makes it return [] regardless of content.
     with db.user_scope(alice["id"]) as conn:
-        db.enqueue_crawl_queue(conn, "r1", crawler_id)
+        db.enqueue_crawl_queue(conn, "r1")
         conn.commit()
 
     events = crawl_router._events_to_replay(_FakeRequest(alice["id"]))

@@ -164,7 +164,10 @@ def test_post_user_settings_with_empty_plex_base_url_skips_validation(pg_test_db
     assert r.status_code == 200
 
 
-def test_patch_crawler_disable_discards_pending_jobs(pg_test_db, authed_client_factory):
+def test_patch_crawler_disable_discards_nothing_for_a_marketplace_crawler(pg_test_db, authed_client_factory):
+    """Disabling a marketplace crawler discards no queue rows any more: a row
+    names no crawler, so _drain_one_batch simply stops selecting the disabled
+    one on its next batch instead of anything being purged."""
     with db.get_admin_pool().connection() as conn:
         db.register_crawler(conn, "Amazon", "/x.py")
         crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
@@ -173,7 +176,7 @@ def test_patch_crawler_disable_discards_pending_jobs(pg_test_db, authed_client_f
             "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
             "discogs_url": None,
         })
-        db.enqueue_crawl_queue(conn, "r1", crawler_id)
+        db.enqueue_crawl_queue(conn, "r1")
         user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
         conn.execute("UPDATE users SET is_admin = TRUE WHERE id = %s", [user["id"]])
         conn.commit()
@@ -181,23 +184,23 @@ def test_patch_crawler_disable_discards_pending_jobs(pg_test_db, authed_client_f
     client = authed_client_factory(user["id"])
     r = client.patch(f"/api/crawlers/{crawler_id}", json={"enabled": False}, headers={"X-Requested-With": "fetch"})
     assert r.status_code == 200
-    assert r.json() == {"ok": True, "discarded": 1}
+    assert r.json() == {"ok": True, "discarded": 0}
 
     with db.get_admin_pool().connection() as conn:
-        assert conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 0
+        assert conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 1
 
 
-def test_patch_crawler_disable_discards_pending_jobs_as_the_app_user_role(
+def test_patch_crawler_disable_runs_the_dead_stock_sweep_as_the_app_user_role(
     pg_test_db, authed_client_factory, monkeypatch
 ):
     """update_crawler runs on get_app_pool(), which in production authenticates
     as app_user -- but pg_test_db points every pool at the admin/superuser DSN,
-    so no GRANT is ever checked and the sibling test above passes with app_user
-    holding no DELETE on crawl_queue at all. Repoint the app pool at the real
-    role, same idiom as test_crawl_manager.py's pg_schema fixture. Verified by
-    hand: against the grant as it stood before this test, the PATCH raised
-    psycopg.errors.InsufficientPrivilege and 500'd, which is exactly what
-    happened on every disable in production."""
+    so no GRANT is ever checked. Repoint the app pool at the real role, same
+    idiom as test_crawl_manager.py's pg_schema fixture. delete_dead_stock_crawl_
+    queue_rows's DELETE runs on every disable, even a marketplace crawler with
+    no stock rows to discard -- verified by hand: against the grant as it stood
+    before this test, the PATCH raised psycopg.errors.InsufficientPrivilege and
+    500'd, which is exactly what happened on every disable in production."""
     with db.get_admin_pool().connection() as conn:
         db.register_crawler(conn, "Amazon", "/x.py")
         crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
@@ -206,7 +209,7 @@ def test_patch_crawler_disable_discards_pending_jobs_as_the_app_user_role(
             "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
             "discogs_url": None,
         })
-        db.enqueue_crawl_queue(conn, "r1", crawler_id)
+        db.enqueue_crawl_queue(conn, "r1")
         user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
         conn.execute("UPDATE users SET is_admin = TRUE WHERE id = %s", [user["id"]])
         conn.commit()
@@ -222,11 +225,11 @@ def test_patch_crawler_disable_discards_pending_jobs_as_the_app_user_role(
     client = authed_client_factory(user["id"])
     r = client.patch(f"/api/crawlers/{crawler_id}", json={"enabled": False}, headers={"X-Requested-With": "fetch"})
     assert r.status_code == 200
-    assert r.json() == {"ok": True, "discarded": 1}
+    assert r.json() == {"ok": True, "discarded": 0}
 
     with db.get_admin_pool().connection() as conn:
-        assert conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 0
-        # The flag flip and the purge share one transaction: a DELETE that
+        assert conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 1
+        # The flag flip and the sweep share one transaction: a DELETE that
         # raises rolls the enable state back too, so assert both landed.
         assert conn.execute(
             "SELECT enabled FROM crawlers WHERE id = %s", [crawler_id]
@@ -242,7 +245,7 @@ def test_patch_crawler_enable_discards_nothing(pg_test_db, authed_client_factory
             "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
             "discogs_url": None,
         })
-        db.enqueue_crawl_queue(conn, "r1", crawler_id)
+        db.enqueue_crawl_queue(conn, "r1")
         user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
         conn.execute("UPDATE users SET is_admin = TRUE WHERE id = %s", [user["id"]])
         conn.commit()
@@ -258,13 +261,13 @@ def test_patch_crawler_enable_discards_nothing(pg_test_db, authed_client_factory
 
 def test_patch_crawler_disable_discards_dead_stock_jobs(pg_test_db, authed_client_factory):
     """Disabling a store discards the Amazon/eBay jobs queued for its items --
-    rows that carry the price crawler's id, not the store's, so the
-    crawler-scoped purge alone never matched them."""
+    a queue row names no crawler at all, so it's the source-side stock_items
+    join in delete_dead_stock_crawl_queue_rows that matches them, not anything
+    scoped to the price crawler."""
     with db.get_admin_pool().connection() as conn:
         db.register_crawler(conn, "Dead Store", "/src.py", crawler_type="catalog")
         store_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Dead Store'").fetchone()["id"]
         db.register_crawler(conn, "Amazon", "/price.py")
-        amazon_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
         conn.execute(
             "INSERT INTO stock_item_identities (item_key, artist, title) VALUES ('key1', 'A', 'T')"
         )
@@ -273,7 +276,7 @@ def test_patch_crawler_disable_discards_dead_stock_jobs(pg_test_db, authed_clien
             "VALUES (%s, 'A', 'T', 'https://x/1', 'key1')",
             [store_id],
         )
-        db.enqueue_crawl_queue_for_stock_item(conn, "key1", amazon_id)
+        db.enqueue_crawl_queue_for_stock_item(conn, "key1")
         user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
         conn.execute("UPDATE users SET is_admin = TRUE WHERE id = %s", [user["id"]])
         conn.commit()
