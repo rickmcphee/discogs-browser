@@ -184,10 +184,11 @@ Registration is automatic: `main.py`'s startup loop reads `site_name` /
 
 ## Queue fan-out
 
-2,547 stock items × 3 eligible release crawlers (`amazon`, `ebay`,
-`ebay_general`; `discogs_marketplace` is excluded by its
-`requires_discogs_release = True`) = **~7,641 `crawl_queue` jobs per sync**,
-the same order of magnitude as `cleorecs.py`'s ~9,450. No window is applied,
+2,547 variants minus the 55 unavailable/non-pre-order ones this crawler
+skips (see "Pre-orders and availability" above) = 2,492 stock items, × 3 eligible release
+crawlers (`amazon`, `ebay`, `ebay_general`; `discogs_marketplace` is excluded
+by its `requires_discogs_release = True`) = **~7,476 `crawl_queue` jobs per
+sync**, the same order of magnitude as `cleorecs.py`'s ~9,450. No window is applied,
 consistent with every other unwindowed label-store plugin — see
 `2026-08-09-cleorecs-store-crawler-design.md`'s "Queue fan-out" section for
 the fuller reasoning (the `claim_crawl_queue_batch` ordering that prevents a
