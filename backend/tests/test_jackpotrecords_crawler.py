@@ -129,10 +129,12 @@ _PREORDER_PRODUCT = {
 }
 
 # Hypothetical multi-variant product (none observed live as of 2026-08-14,
-# see design doc "Variants: always exactly one per product") -- proves a
-# future multi-variant product isn't silently reduced to its first variant,
-# and that an unavailable non-preorder variant doesn't drop the whole
-# product when a sibling variant is available.
+# see design doc "Variants: always exactly one per product") -- two
+# available variants proves a future multi-variant product isn't silently
+# reduced to its first variant (a fixture with only variants[0] available
+# would pass unchanged against a variants[0]-only implementation); the
+# third, unavailable variant proves a non-preorder-unavailable sibling is
+# skipped without dropping the rest of the product.
 _MULTI_VARIANT_PRODUCT = {
     "title": "Big Thief - Dragon New Warm Mountain I Believe In You",
     "vendor": "4AD",
@@ -142,7 +144,8 @@ _MULTI_VARIANT_PRODUCT = {
     "images": [{"src": "https://cdn.shopify.com/big-thief-fallback.jpg"}],
     "variants": [
         {"title": "Black Vinyl", "price": "29.99", "available": True, "featured_image": None},
-        {"title": "Indie Exclusive Colored Vinyl", "price": "34.99", "available": False, "featured_image": None},
+        {"title": "Indie Exclusive Colored Vinyl", "price": "34.99", "available": True, "featured_image": None},
+        {"title": "Repress Black Vinyl", "price": "27.99", "available": False, "featured_image": None},
     ],
 }
 
@@ -274,11 +277,13 @@ async def test_crawl_catalog_skips_product_with_null_variants(crawler):
 async def test_crawl_catalog_yields_all_available_variants_no_title_suffix(crawler):
     _mock_single_page([_MULTI_VARIANT_PRODUCT])
     items = [item async for item in crawler.crawl_catalog()]
-    assert len(items) == 1
-    item = items[0]
-    assert item["artist"] == "Big Thief"
-    assert item["title"] == "Dragon New Warm Mountain I Believe In You"
-    assert item["price"] == 29.99
+    assert len(items) == 2
+    assert items[0]["artist"] == "Big Thief"
+    assert items[0]["title"] == "Dragon New Warm Mountain I Believe In You"
+    assert items[0]["price"] == 29.99
+    assert items[1]["artist"] == "Big Thief"
+    assert items[1]["title"] == "Dragon New Warm Mountain I Believe In You"
+    assert items[1]["price"] == 34.99
 
 
 @respx.mock

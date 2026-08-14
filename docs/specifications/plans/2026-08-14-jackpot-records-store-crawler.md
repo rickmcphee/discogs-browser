@@ -1,6 +1,6 @@
 # Jackpot Records Store Crawler Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: this repo's `CLAUDE.md` mandates `superpowers:subagent-driven-development` for every written implementation plan by default — do not offer `superpowers:executing-plans` as an equal alternative; only fall back to it if the user explicitly asks for inline/in-session execution instead. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add `backend/crawlers/jackpotrecords.py`, a `crawler_type="catalog"` Shopify plugin covering Jackpot Records' (`jackpotrecords.com`) new-vinyl catalog.
 
