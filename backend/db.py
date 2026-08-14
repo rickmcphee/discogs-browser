@@ -1306,10 +1306,21 @@ def normalize_title_casing(title: str) -> str:
 # input string rather than a Python-computed key, because str.lower() and
 # LOWER() are not the same function: LOWER() follows the database's collation
 # and can't expand one character into two, so on an ordinary en_US cluster
-# LOWER('Isis') with a dotted capital I is 'isis' while Python's .lower() gives
-# 'i' + U+0307. A Python-side key would match no row there, and the label
-# lookup would silently miss -- leaving exactly the split sidebar this function
-# exists to fix. (On a tr_TR cluster the two disagree on plain ASCII "ISIS".)
+# LOWER('İsis') (U+0130, capital I with dot above) is 'isis' while Python's
+# 'İsis'.lower() gives 'i' + U+0307. A Python-side key would match no row there,
+# and the label lookup would silently miss -- leaving exactly the split sidebar
+# this function exists to fix. (On a tr_TR cluster the two also disagree about
+# plain ASCII "ISIS".)
+#
+# The fold is the database's own LOWER(), locale and all, deliberately: it is
+# the same fold used by the artist filters, the artist sort, the expression
+# indexes behind them, and the pre-existing owned-artist match in
+# _library_match_fragment. A locale-independent fold here alone would put label
+# grouping and ownership matching on different definitions of "same artist",
+# and the obvious candidate -- folding under COLLATE "C" -- only folds ASCII, so
+# "BJÖRK" and "Björk" would stop collapsing. That is a real regression for
+# real data, traded against a Turkish-locale cluster nobody deploys this on --
+# and on which Turkish folding would be the locally correct answer anyway.
 _CANONICAL_ARTIST_SQL = """
     WITH wanted AS (
         SELECT DISTINCT a AS artist FROM unnest(%(artists)s::text[]) AS a

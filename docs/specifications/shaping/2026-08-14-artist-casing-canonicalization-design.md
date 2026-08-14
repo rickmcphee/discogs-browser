@@ -87,6 +87,26 @@ exists to fix, reintroduced for a narrower set of names. (On a `tr_TR` cluster
 the two also disagree about plain ASCII `"ISIS"`.) `test_get_distinct_artists_collapses_casing_python_and_postgres_fold_differently`
 pins this; it fails with `['İSIS', 'İsis']` against a Python-keyed lookup.
 
+**The fold is the database's own `LOWER()`, locale and all — deliberately.**
+That does make the *grouping* locale-dependent: a `tr_TR` cluster folds `ISIS`
+to `ısıs` and `Isis` to `ısis`, so those two would stay separate entries. That
+is accepted, for two reasons. First, `LOWER()` is already the app's definition
+of "same artist" everywhere else — the artist filters, the artist sort, the
+expression indexes behind them, and the pre-existing owned-artist match in
+`_library_match_fragment` (`LOWER(c.artist) = LOWER(s.artist)`). Making the
+label lookup locale-independent *alone* would leave label grouping and
+ownership matching disagreeing about which rows are the same artist, which is a
+worse failure than the one it fixes. Second, the obvious locale-independent
+candidate doesn't work on this data: `LOWER('BJÖRK' COLLATE "C")` is `bjÖrk`,
+so `"BJÖRK"` and `"Björk"` would stop collapsing — a real regression for real
+records, traded against a Turkish-locale deployment that doesn't exist and on
+which Turkish folding would be the locally correct answer anyway.
+
+The distinction that matters is *consistency*, not locale-independence. A
+Python-side fold was a genuine bug because it disagreed with SQL within a single
+lookup; one `LOWER()` applied everywhere is self-consistent whatever the cluster
+locale.
+
 The `WHERE LOWER(artist) = ANY (ARRAY(SELECT ...))` shape is deliberate over
 `IN (SELECT ...)`: `EXPLAIN` confirms the former resolves the subquery to an
 `InitPlan` and reaches the rows through a bitmap index scan on the expression
