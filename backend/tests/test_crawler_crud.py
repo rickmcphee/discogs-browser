@@ -104,7 +104,9 @@ def test_rename_crawler_preserves_id_and_history(admin_conn):
         "discogs_url": None,
     })
     db.upsert_listing(admin_conn, "r1", crawler_id, "http://example.com/listing", 10.0, 2.0, "USD", "VG+")
-    db.enqueue_crawl_queue(admin_conn, "r1", crawler_id)
+    # A queue row names no crawler, so it has nothing to orphan here -- this
+    # only confirms the rename leaves it in place, not that it survives by id.
+    db.enqueue_crawl_queue(admin_conn, "r1")
     admin_conn.commit()
 
     db.rename_crawler(admin_conn, "CC Music/eBay", "eBay/CCmusic")
@@ -119,9 +121,9 @@ def test_rename_crawler_preserves_id_and_history(admin_conn):
     assert listing["crawler_id"] == crawler_id
 
     queue_row = admin_conn.execute(
-        "SELECT crawler_id FROM crawl_queue WHERE discogs_id = 'r1'"
+        "SELECT status FROM crawl_queue WHERE discogs_id = 'r1'"
     ).fetchone()
-    assert queue_row["crawler_id"] == crawler_id
+    assert queue_row["status"] == "pending"
 
 
 def test_rename_crawler_is_a_noop_once_old_name_is_gone(admin_conn):

@@ -336,6 +336,21 @@ reference it.
 
 **Amendment (2026-07-31, branch `crawl-queue-refactor`):** three details below differ from what shipped. (1) There is **no TTL-based staleness check** — enqueue targets are missing-only (`db.get_missing_releases`: fewer than N distinct enabled crawlers with a non-null price) or the user's whole `library_items` set for `mode="all"`. `listings.last_checked` is written but never read for freshness, so "or stale" is aspirational and periodic re-crawl of a priced-but-old listing is not implemented. (2) The enqueue is `ON CONFLICT (discogs_id, crawler_id) DO UPDATE SET status = 'pending', … WHERE crawl_queue.status = 'done'`, not `DO NOTHING` — "only the first succeeds" holds per sync cycle but not forever; see [`2026-07-27-crawl-queue-refactor-design.md`](2026-07-27-crawl-queue-refactor-design.md)'s enqueue amendment. (3) The drain is N **in-process asyncio tasks** sharing one Playwright browser (`crawl_manager.start_worker_pool`/`_worker_loop`/`_drain_one_batch`), not worker processes — a separate worker process/container is explicitly out of scope in that spec. `crawl_manager._run` and `crawler.crawl_releases`, named both here and at the "`Page` model unchanged" line further up, are deleted; the one-`Page`-per-crawler-plugin model survives as a per-worker `pages` dict keyed by `crawler_id`.
 
+**Amendment (2026-08-14, branch `per-item-crawler-fanout`):** the schema line
+and the enqueue statement immediately below are superseded again —
+`crawl_queue.crawler_id` is dropped. A row now names only `discogs_id` xor
+`item_key`, unique on each column separately rather than on the
+`(discogs_id, crawler_id)` pair described below, and the `ON CONFLICT
+(discogs_id, crawler_id) DO UPDATE` enqueue is now `ON CONFLICT (discogs_id)`
+(or `(item_key)`). Which crawlers run for a row is no longer fixed at enqueue
+time by "a fresh row per enabled `crawler_id`" — it is resolved per row at
+dispatch, against live `crawlers` state, via `db.get_eligible_crawlers`. The
+"Drain" paragraph's claim/plugin-search/mark-done shape is otherwise
+unchanged: a worker still claims via `FOR UPDATE SKIP LOCKED` and still runs
+the existing plugin `search()`, just once per eligible crawler per claimed
+target rather than once per claimed pair. See
+[`2026-08-14-per-item-crawler-fanout-design.md`](../../specifications/shaping/2026-08-14-per-item-crawler-fanout-design.md).
+
 **`crawl_queue`**: `discogs_id, crawler_id, requested_at, status
 ('pending'|'in_progress'|'done'), claimed_by, claimed_at`, unique on
 `(discogs_id, crawler_id)`.

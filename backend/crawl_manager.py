@@ -132,6 +132,21 @@ class CrawlManager:
         now = time.monotonic()
         return [cid for cid, until in self._site_cooldown_until.items() if now < until]
 
+    # Earliest expiry, not latest: the row should come back as soon as any one
+    # of its deferred crawlers is workable again. The rest stay narrowed into
+    # pending_crawler_ids and get deferred again if they are still cooling.
+    # Converts monotonic deadlines to a relative delay because the caller
+    # writes a wall-clock available_at.
+    def _cooldown_remaining_seconds(self, crawler_ids: list) -> float:
+        import time
+        now = time.monotonic()
+        remaining = [
+            self._site_cooldown_until[cid] - now
+            for cid in crawler_ids
+            if cid in self._site_cooldown_until and self._site_cooldown_until[cid] > now
+        ]
+        return min(remaining) if remaining else 0.0
+
     def _set_failure_domains(self, plugins_by_crawler_id: dict):
         """Group crawlers that share one upstream for circuit-breaker purposes.
 
@@ -165,8 +180,8 @@ class CrawlManager:
         from config import load_config
         # Applied to every crawler in the domain rather than to one shared
         # counter so that _site_consecutive_failures/_site_cooldown_until stay
-        # keyed by crawler_id -- which is what claim_crawl_queue_batch's
-        # excluded_crawler_ids needs, and what a crawler with no declared
+        # keyed by crawler_id -- which is what _cooling_down_crawler_ids and
+        # _cooldown_remaining_seconds need, and what a crawler with no declared
         # domain (every crawler but the two eBay ones) already was.
         limit = int(load_config().get("consecutive_failure_limit", 10))
         for cid in self._domain_peers(crawler_id):
@@ -240,59 +255,112 @@ class CrawlManager:
                 delay = float(load_config().get("crawl_delay_seconds", 30))
                 self._site_next_allowed_at[crawler_id] = time.monotonic() + random.uniform(0.5, 1.0) * delay
 
-    async def _drain_one_batch(self, worker_id: str, plugins_by_crawler_id: dict, pages: dict, batch_size: int = 5) -> int:
+    async def _drain_one_batch(self, worker_id: str, plugins_by_crawler_id: dict, pages: dict, batch_size: int = 2) -> int:
         from crawler import _new_context
-        from db import get_app_pool, claim_crawl_queue_batch, mark_crawl_queue_done, upsert_listing, get_catalog_release, get_stock_item_identity, upsert_stock_item_listing, upsert_stock_item_from_release, delete_stock_item_for_release, clear_listing_price
+        from db import get_app_pool, claim_crawl_queue_batch, mark_crawl_queue_done, defer_crawl_queue_row, upsert_listing, get_catalog_release, get_stock_item_identity, upsert_stock_item_listing, upsert_stock_item_from_release, delete_stock_item_for_release, clear_listing_price, get_eligible_crawlers
 
-        excluded = self._cooling_down_crawler_ids()
         with get_app_pool().connection() as conn:
-            rows = claim_crawl_queue_batch(conn, worker_id, limit=batch_size, excluded_crawler_ids=excluded)
+            rows = claim_crawl_queue_batch(conn, worker_id, limit=batch_size)
             conn.commit()
         if not rows:
             return 0
 
-        # Each row gets its own connection/commit, entered and exited around
-        # the Playwright calls rather than spanning them, for two reasons:
-        # a held pool connection across several sequential page loads starves
-        # the pool the same way e557f31 already fixed for _sync_collection,
-        # and a single shared transaction across the whole batch means one
-        # row's crash/cancellation rolls back every earlier row's already-
-        # finished, committed-in-spirit work along with it -- turning a
-        # one-row stranding (the accepted gap noted on claim_crawl_queue_batch)
-        # into a whole-batch one.
+        # Two passes: resolve every claimed row's target and eligible crawler
+        # set first, then drain the resulting work units in target-major order.
+        # batch_size is small (2) because a batch is now batch_size x eligible
+        # crawlers of sequential page loads, and a claimed row stays
+        # 'in_progress' for all of it -- see the hung-worker gap noted on
+        # claim_crawl_queue_batch.
+        targets: dict = {}
+        units: list = []
         for row in rows:
-            plugin = plugins_by_crawler_id.get(row["crawler_id"])
             is_release = row["discogs_id"] is not None
             with get_app_pool().connection() as conn:
                 if is_release:
                     target = get_catalog_release(conn, row["discogs_id"])
                 else:
                     target = get_stock_item_identity(conn, row["item_key"])
-
-            if plugin is None or target is None:
+                eligible = get_eligible_crawlers(conn, is_release, row["pending_crawler_ids"])
+            if target is None:
                 with get_app_pool().connection() as conn:
                     mark_crawl_queue_done(conn, row["id"])
                     conn.commit()
                 continue
+            targets[row["id"]] = (row, target, is_release)
+            for crawler in eligible:
+                units.append((row["id"], crawler["id"]))
 
-            if row["crawler_id"] not in pages:
-                pages[row["crawler_id"]] = await _new_context(self._browser, self._stealth)
+        # Crawlers skipped this pass because their site is cooling down, per
+        # row. They go back into pending_crawler_ids rather than being waited
+        # on -- there is deliberately no barrier between targets, so a worker
+        # facing a cooling-down site moves to the next unit instead of idling.
+        deferred: dict = {}
+
+        def resolve_row(row_id: int):
+            # Resolves one row's terminal crawl_queue status as soon as its
+            # own last unit finishes, rather than in a single pass after the
+            # whole batch drains. A row with nothing deferred is done; a row
+            # with deferred crawlers goes back to pending, narrowed to just
+            # those, until the earliest cooldown expires. Resolving here --
+            # inline in the unit loop, per row -- means an earlier row's
+            # status write is already committed before a later row's unit
+            # runs, so a BaseException that escapes that later unit (e.g.
+            # asyncio.CancelledError from stop_worker_pool's task.cancel(),
+            # which the `except Exception` below deliberately does not catch)
+            # can no longer strand an already-finished row at 'in_progress'.
+            with get_app_pool().connection() as conn:
+                if row_id in deferred:
+                    defer_crawl_queue_row(
+                        conn, row_id, deferred[row_id],
+                        self._cooldown_remaining_seconds(deferred[row_id]),
+                    )
+                else:
+                    mark_crawl_queue_done(conn, row_id)
+                conn.commit()
+
+        # A row with zero eligible crawlers contributes no units, so it would
+        # never reach the per-unit resolve_row calls below -- resolve it (as
+        # done; it can't have anything deferred) up front instead.
+        row_ids_with_units = {row_id for row_id, _crawler_id in units}
+        for row_id in targets:
+            if row_id not in row_ids_with_units:
+                resolve_row(row_id)
+
+        for i, (row_id, crawler_id) in enumerate(units):
+            row, target, is_release = targets[row_id]
+            is_last_unit_for_row = i + 1 == len(units) or units[i + 1][0] != row_id
+            plugin = plugins_by_crawler_id.get(crawler_id)
+            if plugin is None:
+                # A crawler whose module failed to load at boot. Counted as a
+                # site failure but deliberately NOT deferred: a permanently
+                # broken module would otherwise defer its rows forever.
+                self._record_site_result(crawler_id, succeeded=False)
+                if is_last_unit_for_row:
+                    resolve_row(row_id)
+                continue
+            if crawler_id in self._cooling_down_crawler_ids():
+                deferred.setdefault(row_id, []).append(crawler_id)
+                if is_last_unit_for_row:
+                    resolve_row(row_id)
+                continue
+
+            if crawler_id not in pages:
+                pages[crawler_id] = await _new_context(self._browser, self._stealth)
 
             try:
-                matches, bot_detected = await self._paced_search(row["crawler_id"], plugin, target, pages)
+                matches, bot_detected = await self._paced_search(crawler_id, plugin, target, pages)
             except Exception as e:
                 log.error(
                     "[%s] Crawl failed for %s - %s (%s): %s",
                     plugin._db_site_name, target["artist"], target["title"], row["discogs_id"] or row["item_key"], e,
                 )
-                self._record_site_result(row["crawler_id"], succeeded=False)
-                with get_app_pool().connection() as conn:
-                    mark_crawl_queue_done(conn, row["id"])
-                    conn.commit()
+                self._record_site_result(crawler_id, succeeded=False)
+                if is_last_unit_for_row:
+                    resolve_row(row_id)
                 continue
 
             if is_release:
-                self._record_site_result(row["crawler_id"], succeeded=bool(matches) and not bot_detected)
+                self._record_site_result(crawler_id, succeeded=bool(matches) and not bot_detected)
             elif bot_detected or matches:
                 # A stock item's search failing to find anything carries no
                 # site-health signal -- most small-label stock isn't listed on
@@ -302,33 +370,35 @@ class CrawlManager:
                 # site currently works) is recorded; a plain empty result is
                 # silently excluded from the circuit breaker rather than counted
                 # as either outcome.
-                self._record_site_result(row["crawler_id"], succeeded=not bot_detected)
+                self._record_site_result(crawler_id, succeeded=not bot_detected)
 
             with get_app_pool().connection() as conn:
                 if matches:
                     best = matches[0]
                     if is_release:
                         upsert_listing(
-                            conn, row["discogs_id"], row["crawler_id"], best["url"],
+                            conn, row["discogs_id"], crawler_id, best["url"],
                             best.get("price"), best.get("shipping"), best.get("currency"), best.get("condition"),
                         )
-                        upsert_stock_item_from_release(conn, row["discogs_id"], row["crawler_id"], target, best)
+                        upsert_stock_item_from_release(conn, row["discogs_id"], crawler_id, target, best)
                     else:
                         upsert_stock_item_listing(
-                            conn, row["item_key"], row["crawler_id"], best["url"],
+                            conn, row["item_key"], crawler_id, best["url"],
                             best.get("price"), best.get("shipping"), best.get("currency"), best.get("condition"),
                         )
                 elif is_release and not bot_detected:
-                    delete_stock_item_for_release(conn, row["discogs_id"], row["crawler_id"])
-                    clear_listing_price(conn, row["discogs_id"], row["crawler_id"])
-                mark_crawl_queue_done(conn, row["id"])
+                    delete_stock_item_for_release(conn, row["discogs_id"], crawler_id)
+                    clear_listing_price(conn, row["discogs_id"], crawler_id)
                 conn.commit()
 
             status = "found" if matches else "not_found"
             if is_release:
-                await self._broadcast_listing_changed(row["discogs_id"], row["crawler_id"], status)
+                await self._broadcast_listing_changed(row["discogs_id"], crawler_id, status)
             else:
-                await self._broadcast_stock_listing_changed(row["item_key"], row["crawler_id"], status)
+                await self._broadcast_stock_listing_changed(row["item_key"], crawler_id, status)
+
+            if is_last_unit_for_row:
+                resolve_row(row_id)
 
         return len(rows)
 
@@ -408,8 +478,8 @@ class CrawlManager:
         import token_encryption
         import discogs
         from db import (
-            get_identity_pool, get_app_pool, user_scope, upsert_catalog_release, upsert_library_item,
-            clear_wishlist_flags_not_in, delete_orphaned_releases, get_enabled_crawlers, enqueue_crawl_queue,
+            get_identity_pool, user_scope, upsert_catalog_release, upsert_library_item,
+            clear_wishlist_flags_not_in, delete_orphaned_releases, enqueue_crawl_queue,
         )
         import httpx
 
@@ -443,8 +513,6 @@ class CrawlManager:
             count = 0
             wishlist_count = 0
             wishlist_seen: set = set()
-            with get_app_pool().connection() as pool_conn:
-                enabled_crawlers = get_enabled_crawlers(pool_conn)
 
             with user_scope(user_id) as conn:
                 if scope != "wishlist":
@@ -487,8 +555,7 @@ class CrawlManager:
                                 collection_date_added=item.get("date_added"),
                                 price_paid=release["price_paid"],
                             )
-                            for crawler in enabled_crawlers:
-                                enqueue_crawl_queue(conn, rid, crawler["id"])
+                            enqueue_crawl_queue(conn, rid)
                             count += 1
                         conn.commit()
                         # user_scope()'s set_config(..., true) is transaction-local and
@@ -530,8 +597,7 @@ class CrawlManager:
                             in_collection=False if is_new_release else None,
                             wishlist_date_added=item.get("date_added"),
                         )
-                        for crawler in enabled_crawlers:
-                            enqueue_crawl_queue(conn, rid, crawler["id"])
+                        enqueue_crawl_queue(conn, rid)
                         wishlist_count += 1
                     conn.commit()
                     # Same reasoning as the collection-loop commit above: re-scope
@@ -573,10 +639,8 @@ class CrawlManager:
             return None
 
     async def sweep_enqueue(self, mode: str = "missing"):
-        from db import get_identity_pool, get_app_pool, get_enabled_crawlers, enqueue_crawl_queue, get_missing_releases, user_scope
+        from db import get_identity_pool, enqueue_crawl_queue, get_missing_releases, user_scope
 
-        with get_app_pool().connection() as conn:
-            enabled_crawlers = get_enabled_crawlers(conn)
         # Enumerated via get_identity_pool(), not get_app_pool(): app_user has
         # no grant at all on users (db.py's init_tenant_schema — isolation for
         # that table comes from the grant boundary itself, not RLS), so a
@@ -595,8 +659,7 @@ class CrawlManager:
                         "SELECT discogs_id FROM library_items WHERE user_id = %s", [user_id]
                     ).fetchall()]
                 for discogs_id in target_ids:
-                    for crawler in enabled_crawlers:
-                        enqueue_crawl_queue(conn, discogs_id, crawler["id"])
+                    enqueue_crawl_queue(conn, discogs_id)
                 conn.commit()
         log.info("Sweep-enqueue complete (mode=%s) across %d users", mode, len(user_ids))
 
@@ -755,12 +818,8 @@ class CrawlManager:
                 with get_app_pool().connection() as conn:
                     item_keys = replace_stock_items(conn, crawler._db_id, items)
                     update_crawler_last_run(conn, crawler._db_id)
-                    eligible_price_crawlers = [
-                        c for c in get_enabled_crawlers(conn, crawler_type="release") if not c["requires_discogs_release"]
-                    ]
                     for item_key in item_keys:
-                        for price_crawler in eligible_price_crawlers:
-                            enqueue_crawl_queue_for_stock_item(conn, item_key, price_crawler["id"])
+                        enqueue_crawl_queue_for_stock_item(conn, item_key)
                     conn.commit()
                 total_synced += len(items)
                 log.info("[%s] Stock sync found %d items", crawler._db_site_name, len(items))

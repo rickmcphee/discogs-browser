@@ -113,28 +113,16 @@ CREATE TABLE IF NOT EXISTS stock_items (
 
 CREATE TABLE IF NOT EXISTS crawl_queue (
     id SERIAL PRIMARY KEY,
-    discogs_id TEXT NOT NULL REFERENCES catalog(discogs_id),
-    crawler_id INTEGER NOT NULL REFERENCES crawlers(id),
+    discogs_id TEXT REFERENCES catalog(discogs_id),
     requested_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     status TEXT NOT NULL DEFAULT 'pending',
     claimed_by TEXT,
-    claimed_at TIMESTAMP,
-    UNIQUE(discogs_id, crawler_id)
+    claimed_at TIMESTAMP
 );
 
--- Narrows claim_crawl_queue_batch's WHERE status = 'pending' scan; partial
--- so the index stays small as rows accumulate 'done' history instead of
--- growing with the whole table. Since that query's ORDER BY leads with
--- (item_key IS NOT NULL) (release rows claimed before stock-item rows),
--- not requested_at, this index no longer lets the planner skip a sort --
--- worth a composite index if that scan ever shows up as a bottleneck, but
--- not changed here: rewriting an index under an unchanged name via CREATE
--- INDEX IF NOT EXISTS is a no-op against a database that already has the
--- old definition, so doing this safely needs an explicit DROP INDEX (or a
--- new name), which this repo's "no migration tooling" idempotent-DDL-only
--- convention doesn't yet have a pattern for.
-CREATE INDEX IF NOT EXISTS crawl_queue_pending_idx ON crawl_queue (requested_at)
-    WHERE status = 'pending';
+-- Old crawl_queue_pending_idx dropped below, after item_key exists: this
+-- table's composite replacement indexes on item_key, which isn't a column
+-- here yet on a fresh install (added by the ALTER a few statements down).
 
 CREATE TABLE IF NOT EXISTS stock_item_identities (
     item_key TEXT PRIMARY KEY,
@@ -146,7 +134,85 @@ CREATE TABLE IF NOT EXISTS stock_item_identities (
 
 ALTER TABLE crawl_queue ALTER COLUMN discogs_id DROP NOT NULL;
 ALTER TABLE crawl_queue ADD COLUMN IF NOT EXISTS item_key TEXT REFERENCES stock_item_identities(item_key);
-CREATE UNIQUE INDEX IF NOT EXISTS crawl_queue_item_key_crawler_idx ON crawl_queue (item_key, crawler_id);
+
+-- Serves claim_crawl_queue_batch's WHERE/ORDER BY directly: leading
+-- (item_key IS NOT NULL) matches the release-before-stock sort, then
+-- requested_at, id for FIFO within a kind. Partial so it stays small as rows
+-- accumulate 'done' history. available_at is deliberately not a key column --
+-- deferred rows are a small minority, so keeping the index ordered for the
+-- sort beats indexing the filter. Named differently from the
+-- crawl_queue_pending_idx it replaces because CREATE INDEX IF NOT EXISTS
+-- under an unchanged name is a no-op against a database that already has the
+-- old definition. Placed after item_key exists (not immediately after
+-- CREATE TABLE crawl_queue above) since it indexes that column and a fresh
+-- install has no item_key column until the ALTER just above runs.
+DROP INDEX IF EXISTS crawl_queue_pending_idx;
+CREATE INDEX IF NOT EXISTS crawl_queue_claimable_idx
+    ON crawl_queue ((item_key IS NOT NULL), requested_at, id)
+    WHERE status = 'pending';
+
+-- pending_crawler_ids is the per-pass progress record: NULL means "every
+-- crawler currently eligible for this target", a non-NULL array narrows the
+-- next pass to unfinished work from an earlier one. listings cannot serve
+-- this purpose -- an empty result writes no row at all, and clear_listing_price
+-- leaves a NULL-price row behind, so neither absence nor presence of a row
+-- distinguishes "not attempted" from "attempted, found nothing".
+ALTER TABLE crawl_queue ADD COLUMN IF NOT EXISTS pending_crawler_ids INTEGER[];
+
+-- available_at is a not-before marker, set when a pass defers a crawler whose
+-- site is in circuit-breaker cooldown. Without it the row would be re-claimed
+-- on the very next batch and re-deferred in a hot loop.
+ALTER TABLE crawl_queue ADD COLUMN IF NOT EXISTS available_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+
+-- One row per target, not per (target, crawler) pair: the crawler set is a
+-- runtime decision resolved by _drain_one_batch against live crawlers state,
+-- not something frozen into row data at enqueue time. Guarded on crawler_id
+-- still existing so re-runs are no-ops.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'crawl_queue' AND column_name = 'crawler_id'
+    ) THEN
+        -- The surviving row per target is its lowest id. pending_crawler_ids
+        -- inherits exactly that target's unfinished crawlers, so a pass that
+        -- was in flight when the upgrade ran resumes with the right set
+        -- instead of re-running crawlers that already finished.
+        WITH collapsed AS (
+            SELECT COALESCE(discogs_id, item_key) AS target,
+                   MIN(id) AS keep_id,
+                   array_agg(crawler_id ORDER BY crawler_id)
+                       FILTER (WHERE status <> 'done') AS unfinished
+            FROM crawl_queue
+            GROUP BY COALESCE(discogs_id, item_key)
+        )
+        UPDATE crawl_queue cq
+        SET status = CASE WHEN c.unfinished IS NULL THEN 'done' ELSE 'pending' END,
+            pending_crawler_ids = c.unfinished,
+            claimed_by = NULL,
+            claimed_at = NULL
+        FROM collapsed c
+        WHERE cq.id = c.keep_id;
+
+        DELETE FROM crawl_queue cq
+        USING (
+            SELECT COALESCE(discogs_id, item_key) AS target, MIN(id) AS keep_id
+            FROM crawl_queue
+            GROUP BY COALESCE(discogs_id, item_key)
+        ) k
+        WHERE COALESCE(cq.discogs_id, cq.item_key) = k.target AND cq.id <> k.keep_id;
+
+        ALTER TABLE crawl_queue DROP CONSTRAINT IF EXISTS crawl_queue_discogs_id_crawler_id_key;
+        DROP INDEX IF EXISTS crawl_queue_item_key_crawler_idx;
+        ALTER TABLE crawl_queue DROP COLUMN crawler_id;
+    END IF;
+END $$;
+
+-- Nullable-column unique indexes: exactly one of discogs_id/item_key is set
+-- per row, multiple NULLs coexist, and ON CONFLICT (discogs_id) /
+-- ON CONFLICT (item_key) infer them.
+CREATE UNIQUE INDEX IF NOT EXISTS crawl_queue_discogs_id_idx ON crawl_queue (discogs_id);
+CREATE UNIQUE INDEX IF NOT EXISTS crawl_queue_item_key_idx ON crawl_queue (item_key);
 
 ALTER TABLE listings ALTER COLUMN release_id DROP NOT NULL;
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS item_key TEXT REFERENCES stock_item_identities(item_key);
@@ -422,9 +488,8 @@ def init_tenant_schema():
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON library_items TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON stock_item_judgments TO app_user")
         # crawl_queue needs DELETE for the same reason stock_items does:
-        # delete_pending_crawl_queue_for_crawler(), run through get_app_pool()
-        # from routers/settings.update_crawler, purges a crawler's pending rows
-        # when an admin disables it.
+        # delete_dead_stock_crawl_queue_rows(), run through get_app_pool() from
+        # PATCH /api/crawlers/{id} and at the end of each stock sync.
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON crawl_queue TO app_user")
         conn.execute("GRANT USAGE, SELECT ON SEQUENCE crawl_queue_id_seq TO app_user")
         conn.commit()
@@ -790,6 +855,30 @@ def get_crawlers(conn, crawler_type: str = "release") -> list[dict]:
     return conn.execute("SELECT * FROM crawlers WHERE crawler_type = %s", [crawler_type]).fetchall()
 
 
+# The dispatch-time replacement for enqueue-time crawler selection: which
+# marketplace crawlers should run for one claimed queue row, right now.
+#
+# is_release distinguishes the two target kinds. requires_discogs_release
+# crawlers (Discogs Marketplace) can only search by release id, so they are
+# excluded for stock-item targets -- this is the predicate _sync_stock used to
+# apply at enqueue time.
+#
+# pending_crawler_ids narrows the set to a previous pass's unfinished work;
+# NULL means no narrowing. The intersection is what makes a crawler disabled
+# since that pass drop out silently.
+def get_eligible_crawlers(conn, is_release: bool, pending_crawler_ids: Optional[list] = None) -> list[dict]:
+    return conn.execute(
+        """
+        SELECT * FROM crawlers
+        WHERE enabled AND crawler_type = 'release'
+          AND (%(is_release)s OR NOT requires_discogs_release)
+          AND (%(pending)s::int[] IS NULL OR id = ANY(%(pending)s::int[]))
+        ORDER BY id
+        """,
+        {"is_release": is_release, "pending": pending_crawler_ids},
+    ).fetchall()
+
+
 def get_all_crawlers(conn) -> list[dict]:
     rows = conn.execute("SELECT * FROM crawlers ORDER BY site_name").fetchall()
     result = []
@@ -818,7 +907,8 @@ def get_all_crawlers(conn) -> list[dict]:
 def rename_crawler(conn, old_site_name: str, new_site_name: str):
     # register_crawler() upserts ON CONFLICT (site_name), so a plugin's site_name
     # literal can't just be edited in place -- that inserts a new row and orphans
-    # the old crawler's id along with its listings/crawl_queue/stock_items history.
+    # the old crawler's id along with its listings/stock_items history. (crawl_queue
+    # no longer holds per-crawler history -- a row names no crawler at all.)
     # The NOT EXISTS guard makes this a no-op instead of a unique-constraint crash
     # when new_site_name is already registered (e.g. a prior deploy inserted it
     # directly via register_crawler before this rename step existed).
@@ -847,6 +937,109 @@ def register_crawler(conn, site_name: str, module_path: str, crawler_type: str =
 
 def set_crawler_enabled(conn, crawler_id: int, enabled: bool):
     conn.execute("UPDATE crawlers SET enabled = %s WHERE id = %s", [enabled, crawler_id])
+
+
+# Enabling a crawler makes it apply to every target still pending for free --
+# eligibility is resolved at dispatch. Targets already marked 'done', though,
+# would not see it until the next sync or scheduled sweep, so enabling one
+# revives exactly the targets it has no price for.
+#
+# price IS NOT NULL, not bare NOT EXISTS: clear_listing_price leaves a
+# NULL-price row behind for a target this crawler crawled and found nothing
+# for, and a bare existence check would read that as already priced. The
+# trade-off is that targets where the crawler legitimately found nothing are
+# revived on every enable -- bounded and idempotent, but not free.
+#
+# Release-crawler-only, mirroring get_eligible_crawlers's own crawler_type =
+# 'release' filter. A catalog crawler (a store crawler) never writes to
+# listings at all -- it writes to stock_items -- so the "no price yet" NOT
+# EXISTS check below would be unconditionally true for it, and with no
+# release-only clause to narrow it, the UPDATE would match every 'done' row
+# in the whole crawl_queue table.
+#
+# Neither statement touches an 'in_progress' row: the revive filters 'done',
+# the widen filters 'pending'. A row a worker is holding right now therefore
+# resolved its eligibility from the pre-enable crawler set and is skipped
+# here, so its target waits for a later sync or sweep to see this crawler.
+# Accepted, not overlooked -- same fallback as a row skipped by the widen's
+# SKIP LOCKED, bounded to worker_count x batch_size targets (four by default)
+# for the length of one pass. See the design's Risks section for why closing
+# it (re-resolving eligibility at resolution time against a claim-time
+# baseline) costs more than the delay it removes.
+def backfill_crawl_queue_for_crawler(conn, crawler_id: int) -> int:
+    requires_release = conn.execute(
+        "SELECT requires_discogs_release FROM crawlers WHERE id = %s AND crawler_type = 'release'",
+        [crawler_id],
+    ).fetchone()
+    if requires_release is None:
+        return 0
+    release_only_clause = (
+        "AND crawl_queue.discogs_id IS NOT NULL" if requires_release["requires_discogs_release"] else ""
+    )
+    # This UPDATE runs unordered across the whole crawl_queue table and can
+    # target the same crawl_queue rows a running collection sync is locking in
+    # the opposite order (_sync_collection_blocking holds one transaction per
+    # page for ~110s, locking rows via enqueue_crawl_queue's ON CONFLICT DO
+    # UPDATE). A plain UPDATE would wait on those rows and could be chosen as
+    # the deadlock victim -- Postgres decides that, not us, and a real trace
+    # showed it picking the sync's side, the opposite of what this backfill is
+    # for. Selecting the target ids through FOR UPDATE SKIP LOCKED instead
+    # means this transaction never waits on a row lock: a transaction that
+    # never waits cannot be part of a wait cycle, so it can neither deadlock
+    # nor be picked as a victim. Skipping a row the sync currently holds loses
+    # nothing -- the sync is re-enqueuing that same row via enqueue_crawl_
+    # queue, which sets it pending with pending_crawler_ids = NULL, meaning
+    # "all currently eligible crawlers", so this crawler picks it up at
+    # dispatch regardless.
+    revived = conn.execute(
+        f"""
+        UPDATE crawl_queue SET
+            status = 'pending', requested_at = CURRENT_TIMESTAMP,
+            available_at = CURRENT_TIMESTAMP, claimed_by = NULL, claimed_at = NULL,
+            pending_crawler_ids = ARRAY[%(crawler_id)s]
+        WHERE id IN (
+            SELECT id FROM crawl_queue
+            WHERE status = 'done'
+              {release_only_clause}
+              AND NOT EXISTS (
+                  SELECT 1 FROM listings l
+                  WHERE l.crawler_id = %(crawler_id)s AND l.price IS NOT NULL
+                    AND (l.release_id = crawl_queue.discogs_id OR l.item_key = crawl_queue.item_key)
+              )
+            FOR UPDATE SKIP LOCKED
+        )
+        """,
+        {"crawler_id": crawler_id},
+    ).rowcount
+    # A row narrowed by an earlier deferral carries a set that predates this
+    # crawler being enabled, so it would otherwise skip it. Rows with NULL need
+    # nothing -- NULL already means "all currently eligible". Same SKIP LOCKED
+    # shape, but the compensating mechanism is weaker: a skipped row here keeps
+    # its narrowed set, so the newly enabled crawler misses that target until
+    # the row completes and is re-enqueued. This is bounded and self-healing,
+    # the same fallback the enable path relies on when the backfill itself is skipped.
+    #
+    # available_at is reset along with the widen, and that reset is the point:
+    # a narrowed row is narrowed *because* some other crawler is cooling down,
+    # so it carries that crawler's cooldown deadline -- up to 30 minutes out.
+    # Appending the newly enabled crawler without clearing the deadline would
+    # leave the row unclaimable for that whole cooldown, so enabling a crawler
+    # would not take effect on the next batch the way it does everywhere else.
+    # Dispatch re-defers the still-cooling crawler on its own terms.
+    conn.execute(
+        """
+        UPDATE crawl_queue SET pending_crawler_ids = pending_crawler_ids || %(crawler_id)s,
+                               available_at = CURRENT_TIMESTAMP
+        WHERE id IN (
+            SELECT id FROM crawl_queue
+            WHERE status = 'pending' AND pending_crawler_ids IS NOT NULL
+              AND NOT (%(crawler_id)s = ANY(pending_crawler_ids))
+            FOR UPDATE SKIP LOCKED
+        )
+        """,
+        {"crawler_id": crawler_id},
+    )
+    return revived
 
 
 def update_crawler_last_run(conn, crawler_id: int):
@@ -879,45 +1072,48 @@ def _enabled_stock_source_exists(item_key_expr: str) -> str:
 
 
 # The WHERE on the DO UPDATE is load-bearing, not decorative: re-enqueuing a
-# pair whose row is already 'pending'/'in_progress' must be a no-op (the
-# DO UPDATE runs but its WHERE filters the row out, so it's left untouched --
-# no accidental restart/duplicate of in-flight work), while re-enqueuing a
-# 'done' pair must reset it to 'pending' so periodic re-crawling of stale
-# listings actually happens -- a plain ON CONFLICT DO NOTHING would let a
-# pair be crawled exactly once, ever, for the app's entire lifetime.
+# target whose row is already 'pending'/'in_progress' must be a no-op (the
+# DO UPDATE runs but its WHERE filters the row out, so in-flight work is left
+# untouched), while re-enqueuing a 'done' target must reset it to 'pending' so
+# periodic re-crawling of stale listings actually happens -- a plain ON
+# CONFLICT DO NOTHING would let a target be crawled exactly once, ever.
 #
-# The WHERE EXISTS makes a disabled crawler's enqueue a silent no-op at the
-# statement level rather than at each of the four call sites. _sync_collection
-# reads its enabled-crawler list once and then enqueues across every collection
-# page for minutes afterwards, so a call-site check would let a store disabled
-# mid-sync keep re-creating the very rows the disable just purged.
-def enqueue_crawl_queue(conn, discogs_id: str, crawler_id: int):
+# Reviving a target clears pending_crawler_ids back to NULL: a re-enqueue means
+# "price this target with everything eligible", not "resume whatever narrowed
+# set some earlier pass deferred".
+#
+# There is deliberately no enabled-crawler gate here any more. A queue row
+# names no crawler, so there is nothing to gate -- eligibility is resolved at
+# dispatch by get_eligible_crawlers() against live crawlers state.
+def enqueue_crawl_queue(conn, discogs_id: str):
     conn.execute(
         """
-        INSERT INTO crawl_queue (discogs_id, crawler_id)
-        SELECT %(discogs_id)s, %(crawler_id)s
-        WHERE EXISTS (SELECT 1 FROM crawlers WHERE id = %(crawler_id)s AND enabled)
-        ON CONFLICT (discogs_id, crawler_id) DO UPDATE SET
-            status = 'pending', requested_at = CURRENT_TIMESTAMP, claimed_by = NULL, claimed_at = NULL
+        INSERT INTO crawl_queue (discogs_id) VALUES (%(discogs_id)s)
+        ON CONFLICT (discogs_id) DO UPDATE SET
+            status = 'pending', requested_at = CURRENT_TIMESTAMP,
+            available_at = CURRENT_TIMESTAMP, claimed_by = NULL, claimed_at = NULL,
+            pending_crawler_ids = NULL
         WHERE crawl_queue.status = 'done'
         """,
-        {"discogs_id": discogs_id, "crawler_id": crawler_id},
+        {"discogs_id": discogs_id},
     )
 
 
-def enqueue_crawl_queue_for_stock_item(conn, item_key: str, crawler_id: int):
+# Keeps the source gate: it asks whether any enabled *store* still stocks the
+# item, which is independent of which marketplace crawler will price it.
+def enqueue_crawl_queue_for_stock_item(conn, item_key: str):
     stock_source_gate = _enabled_stock_source_exists("%(item_key)s")
     conn.execute(
         f"""
-        INSERT INTO crawl_queue (item_key, crawler_id)
-        SELECT %(item_key)s, %(crawler_id)s
-        WHERE EXISTS (SELECT 1 FROM crawlers WHERE id = %(crawler_id)s AND enabled)
-          AND {stock_source_gate}
-        ON CONFLICT (item_key, crawler_id) DO UPDATE SET
-            status = 'pending', requested_at = CURRENT_TIMESTAMP, claimed_by = NULL, claimed_at = NULL
+        INSERT INTO crawl_queue (item_key)
+        SELECT %(item_key)s WHERE {stock_source_gate}
+        ON CONFLICT (item_key) DO UPDATE SET
+            status = 'pending', requested_at = CURRENT_TIMESTAMP,
+            available_at = CURRENT_TIMESTAMP, claimed_by = NULL, claimed_at = NULL,
+            pending_crawler_ids = NULL
         WHERE crawl_queue.status = 'done'
         """,
-        {"item_key": item_key, "crawler_id": crawler_id},
+        {"item_key": item_key},
     )
 
 
@@ -931,46 +1127,36 @@ def enqueue_crawl_queue_for_stock_item(conn, item_key: str, crawler_id: int):
 # crashed -- a crash rolls back the open transaction and self-heals). A
 # hung worker holding the transaction open leaves that row unclaimable by
 # anyone else indefinitely.
-def claim_crawl_queue_batch(
-    conn, worker_id: str, limit: int, excluded_crawler_ids: Optional[list] = None
-) -> list[dict]:
-    exclusion_clause = ""
-    params: dict = {"worker_id": worker_id, "limit": limit}
-    if excluded_crawler_ids:
-        exclusion_clause = "AND crawler_id != ALL(%(excluded)s)"
-        params["excluded"] = list(excluded_crawler_ids)
+def claim_crawl_queue_batch(conn, worker_id: str, limit: int) -> list[dict]:
     stock_source_gate = _enabled_stock_source_exists("crawl_queue.item_key")
     return conn.execute(
         f"""
         UPDATE crawl_queue SET status = 'in_progress', claimed_by = %(worker_id)s, claimed_at = CURRENT_TIMESTAMP
         WHERE id IN (
             SELECT id FROM crawl_queue
-            -- Live gate, re-evaluated every batch: this is what makes an
-            -- admin disabling a crawler stop it mid-crawl rather than only
-            -- stopping future enqueues.
             WHERE status = 'pending'
-              AND crawler_id IN (SELECT id FROM crawlers WHERE enabled)
-              -- Source-side gate: the row above checks the crawler about to do
-              -- the work; this checks whether anything still stocks the item it
-              -- would price. item_key IS NULL keeps release rows out of it.
+              -- Set when a pass deferred a crawler whose site is in
+              -- circuit-breaker cooldown; keeps the row out of the claim until
+              -- the earliest of those cooldowns expires.
+              AND available_at <= CURRENT_TIMESTAMP
+              -- Source-side gate: whether anything still stocks the item this
+              -- row would price. item_key IS NULL keeps release rows out of it.
+              -- There is no crawler-side gate here any more: the row names no
+              -- crawler, and _drain_one_batch resolves the eligible set against
+              -- live crawlers state per row instead.
               AND (item_key IS NULL OR {stock_source_gate})
-              {exclusion_clause}
             -- (item_key IS NOT NULL) leads the sort so every pending release
-            -- row (FALSE) sorts ahead of every pending stock-item row
-            -- (TRUE), regardless of which was enqueued first -- a large
-            -- stock-sync enqueue burst must never delay a user's own
-            -- collection crawl behind it. This is priority within one
-            -- LIMIT'd batch, not exclusion: a batch with fewer pending
-            -- release rows than %(limit)s still fills its remaining slots
-            -- with stock-item rows, so both kinds can be claimed together
-            -- once release rows are exhausted for that batch.
+            -- row (FALSE) sorts ahead of every pending stock-item row (TRUE),
+            -- regardless of which was enqueued first -- a large stock-sync
+            -- enqueue burst must never delay a user's own collection crawl
+            -- behind it. Priority within one LIMIT'd batch, not exclusion.
             ORDER BY (item_key IS NOT NULL), requested_at, id
             LIMIT %(limit)s
             FOR UPDATE SKIP LOCKED
         )
-        RETURNING id, discogs_id, item_key, crawler_id
+        RETURNING id, discogs_id, item_key, pending_crawler_ids
         """,
-        params,
+        {"worker_id": worker_id, "limit": limit},
     ).fetchall()
 
 
@@ -978,14 +1164,22 @@ def mark_crawl_queue_done(conn, queue_id: int):
     conn.execute("UPDATE crawl_queue SET status = 'done' WHERE id = %s", [queue_id])
 
 
-# 'pending' only: an in_progress row has already been claimed and committed by
-# a worker that is mid-crawl -- it is the current item, which finishes by
-# design.
-def delete_pending_crawl_queue_for_crawler(conn, crawler_id: int) -> int:
-    return conn.execute(
-        "DELETE FROM crawl_queue WHERE crawler_id = %s AND status = 'pending'",
-        [crawler_id],
-    ).rowcount
+# The inverse of mark_crawl_queue_done: hands a claimed row back as pending
+# with only its unfinished crawlers, deferred until the earliest moment one of
+# them is workable again. requested_at is deliberately not touched -- bumping
+# it would send a row that merely waited on a cooling-down site to the back of
+# the queue behind everything enqueued while it waited.
+def defer_crawl_queue_row(conn, queue_id: int, crawler_ids: list, delay_seconds: float):
+    conn.execute(
+        """
+        UPDATE crawl_queue
+        SET status = 'pending', claimed_by = NULL, claimed_at = NULL,
+            pending_crawler_ids = %(crawler_ids)s,
+            available_at = CURRENT_TIMESTAMP + (%(delay_seconds)s * INTERVAL '1 second')
+        WHERE id = %(queue_id)s
+        """,
+        {"queue_id": queue_id, "crawler_ids": list(crawler_ids), "delay_seconds": delay_seconds},
+    )
 
 
 # Global rather than scoped to one crawler: idempotent, self-correcting, and it
@@ -1011,23 +1205,34 @@ def delete_dead_stock_crawl_queue_rows(conn) -> int:
     ).rowcount
 
 
-# Disabled crawlers' rows are excluded rather than trusted to be absent. The
-# disable purge cannot catch them all: under READ COMMITTED an enqueue that
-# began before the disable committed still evaluates its WHERE EXISTS against
-# the older snapshot and inserts afterwards, and _sync_collection holds one
-# transaction open for a whole ~110s page. Those survivors are unclaimable, so
-# counting them would leave the count stuck above zero for as long as the
-# crawler stays off -- and routers/crawl._events_to_replay would then read the
-# user as permanently mid-job and replay stale event history on every connect.
+# A 'pending' row counts only if something can actually claim it: routers/
+# crawl._events_to_replay reads a non-zero count as "this user is mid-job", so
+# a count that cannot reach zero would leave the client replaying stale event
+# history on every connect. A pending row whose narrowed pending_crawler_ids
+# are all disabled -- or any pending row at all when no marketplace crawler is
+# enabled -- is unactionable, and is excluded here even though it is still
+# 'pending' in the table. _drain_one_batch marks such rows done when it reaches
+# them.
+#
+# That claim doesn't hold for 'in_progress': a row stranded by a crashed
+# browser or hung worker is still counted here and is not actually claimable
+# by anyone -- see claim_crawl_queue_batch's own comment on the missing
+# reclaim/timeout path. This function has no way to distinguish a stranded
+# in_progress row from one a worker is genuinely mid-crawl on, so it counts
+# both.
 def count_pending_crawl_queue_for_user(conn, user_id: int) -> int:
     return conn.execute(
         """
         SELECT COUNT(*) FROM crawl_queue cq
         JOIN library_items li ON li.discogs_id = cq.discogs_id
-        JOIN crawlers c ON c.id = cq.crawler_id
-        WHERE li.user_id = %s AND cq.status IN ('pending', 'in_progress') AND c.enabled
+        WHERE li.user_id = %(user_id)s AND cq.status IN ('pending', 'in_progress')
+          AND EXISTS (
+              SELECT 1 FROM crawlers c
+              WHERE c.enabled AND c.crawler_type = 'release'
+                AND (cq.pending_crawler_ids IS NULL OR c.id = ANY(cq.pending_crawler_ids))
+          )
         """,
-        [user_id],
+        {"user_id": user_id},
     ).fetchone()["count"]
 
 

@@ -32,7 +32,6 @@ def crawl_status(request: Request):
 def crawl_start(body: CrawlStartRequest, request: Request):
     user_id = request.state.user_id
     with db.user_scope(user_id) as conn:
-        enabled_crawlers = db.get_enabled_crawlers(conn)
         if body.release_id:
             # A release_id the caller doesn't actually own in their own
             # library_items must not be enqueueable -- library_items is the
@@ -51,10 +50,11 @@ def crawl_start(body: CrawlStartRequest, request: Request):
             ).fetchall()]
         enqueued = 0
         for discogs_id in target_ids:
-            for crawler in enabled_crawlers:
-                db.enqueue_crawl_queue(conn, discogs_id, crawler["id"])
-                enqueued += 1
+            db.enqueue_crawl_queue(conn, discogs_id)
+            enqueued += 1
         conn.commit()
+    # Counts targets, not (target, crawler) pairs -- one queue row per target
+    # now, with the crawler set resolved at dispatch.
     return {"enqueued": enqueued}
 
 

@@ -12,6 +12,29 @@ _2026-07-27_
 
 **Amendment (2026-08-10, second):** the enabled gate described immediately above checks only the crawler that would *do* the work. A stock-item queue row's `crawler_id` is the price crawler (Amazon/eBay), never the store the item came from, so neither statement reached the source store — disabling a store left its items' price lookups queued and running. Both now additionally require some enabled crawler to still list the row's `item_key` in `stock_items`, and a third helper joins the inventory: `delete_dead_stock_crawl_queue_rows`, which sweeps `pending` rows failing that test, called on crawler disable and once at the end of each stock sync. The same predicate also retires rows for items that have left every store's stock, which `replace_stock_items` otherwise strands. See [`2026-08-10-dead-stock-crawl-jobs-design.md`](../../specifications/shaping/2026-08-10-dead-stock-crawl-jobs-design.md).
 
+**Amendment (2026-08-14, branch `per-item-crawler-fanout`):** the row shape
+both amendments above assume — one `crawl_queue` row per `(target, crawler)`
+pair, gated by a live `crawler_id IN (SELECT id FROM crawlers WHERE enabled)`
+— is gone. `crawl_queue.crawler_id` is dropped; a row now names only a target
+(`discogs_id` xor `item_key`), unique per target rather than per pair (the
+Data model section's "Unique on `(discogs_id, crawler_id)`" no longer holds —
+there are now separate unique indexes on `discogs_id` and on `item_key`). The
+claim's enabled-crawler gate and the enqueue's `WHERE EXISTS (... crawlers ...
+enabled)` gate (both amendment (2026-08-10)) are removed outright — with no
+crawler on the row there is nothing to gate; eligibility is resolved per row
+at dispatch time instead (`db.get_eligible_crawlers`). `delete_pending_crawl_queue_for_crawler`,
+introduced by that same amendment, is deleted; disabling a marketplace
+crawler now purges nothing (dispatch simply stops selecting it), while
+`delete_dead_stock_crawl_queue_rows` (amendment (2026-08-10, second)) is
+unaffected and still runs on both disable and enable. The **Enqueue**
+section's `ON CONFLICT (discogs_id, crawler_id) DO UPDATE ...` and the
+**Testing** section's "never process the same `(discogs_id, crawler_id)` row
+twice" describe the old per-pair uniqueness and claim guarantee; the
+target-level equivalents (`ON CONFLICT (discogs_id)` / `ON CONFLICT
+(item_key)`, no two workers claiming the same target row twice) are what
+actually hold now. See
+[`2026-08-14-per-item-crawler-fanout-design.md`](../../specifications/shaping/2026-08-14-per-item-crawler-fanout-design.md).
+
 ---
 
 ## Overview

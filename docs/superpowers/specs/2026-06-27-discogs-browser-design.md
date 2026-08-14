@@ -219,6 +219,17 @@ empty result there isn't evidence the site itself is broken the way it is
 for a real release. Bot detection and an actual match still behave exactly
 as described, for both kinds of target.
 
+**Amendment (2026-08-14, branch `per-item-crawler-fanout`):** the 2026-08-01
+bullet's `db.claim_crawl_queue_batch`'s `excluded_crawler_ids` clause no
+longer exists — a `crawl_queue` row carries no `crawler_id` to exclude by.
+The 30-minute cooldown itself is unchanged (still per-site, still
+`_record_site_result`/`_site_cooldown_until`), but it now acts as an in-loop
+skip inside dispatch rather than a claim-time exclusion list: a cooling-down
+crawler's work unit for a claimed row is deferred (written back to
+`pending_crawler_ids`/`available_at`) instead of that crawler's rows never
+being claimed. See
+[`2026-08-14-per-item-crawler-fanout-design.md`](../../specifications/shaping/2026-08-14-per-item-crawler-fanout-design.md).
+
 | Field | Default | Description |
 |---|---|---|
 | `debug_screenshot_interval` | `20` | Screenshot interval: 0 = off, 1 = every search, N = every Nth search |
