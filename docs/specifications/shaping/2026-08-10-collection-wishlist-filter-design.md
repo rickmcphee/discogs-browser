@@ -315,6 +315,11 @@ else:
     sort_expr = f"s.{sort_col}"
 ```
 
+(As of 2026-08-14 the final line reads
+`sort_expr = "LOWER(s.artist)" if sort_col == "artist" else f"s.{sort_col}"`;
+the artist sort is case-insensitive now. See
+[`2026-08-14-artist-casing-canonicalization-design.md`](2026-08-14-artist-casing-canonicalization-design.md).)
+
 Under the Wantlist filter every value the expression produces is `NULL`,
 so the sort is a harmless no-op (all rows tie and fall to the NULL-last
 branch) rather than a case needing its own gate. Harmless on the wire, but
