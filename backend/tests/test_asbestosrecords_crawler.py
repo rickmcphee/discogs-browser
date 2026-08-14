@@ -65,3 +65,124 @@ def test_parse_artist_title_unescapes_html_entities():
     assert Crawler._parse_artist_title(name, []) == (
         "River City Extension", "Don't Let the Sun Go Down on Your Anger 2xLP"
     )
+
+
+_MULTI_OPTION_PRODUCT = {
+    "id": 1,
+    "name": 'Sgt Scagnetti - Just Another Trick LP',
+    "url": "/product/sgt-scagnetti-just-another-trick-lp",
+    "status": "active",
+    "images": [{"url": "https://assets.bigcartel.com/product_images/1/scagnetti.jpg"}],
+    "options": [
+        {"id": 10, "name": "Maroon vinyl", "price": 25.0, "sold_out": False},
+        {"id": 11, "name": "Test Pressing", "price": 50.0, "sold_out": False},
+    ],
+    "artists": [],
+    "categories": [],
+}
+
+_SINGLE_OPTION_PRODUCT = {
+    "id": 2,
+    "name": "No Fun At All - Master Celebrations 2xLP (import) **PREORDER**",
+    "url": "/product/no-fun-at-all-master-celebrations-2xlp-import-preorder",
+    "status": "active",
+    "images": [{"url": "https://assets.bigcartel.com/product_images/2/nofunatall.jpg"}],
+    "options": [
+        {"id": 20, "name": "No Fun At All - Master Celebrations 2xLP (import) **PREORDER**",
+         "price": 35.0, "sold_out": False},
+    ],
+    "artists": [],
+    "categories": [{"id": 1, "name": "Vinyl"}],
+}
+
+_NON_VINYL_PRODUCT = {
+    "id": 3,
+    "name": "Protect Trans Kids - Tshirt",
+    "url": "/product/protect-trans-kids-tshirt",
+    "status": "active",
+    "images": [],
+    "options": [{"id": 30, "name": "Medium", "price": 25.0, "sold_out": False}],
+    "artists": [],
+    "categories": [{"id": 2, "name": "Shirts"}],
+}
+
+_NO_ATTRIBUTION_PRODUCT = {
+    "id": 4,
+    "name": "Black guy fawkes birthday bash!",
+    "url": "/product/black-guy-fawkes-birthday-bash",
+    "status": "active",
+    "images": [],
+    "options": [{"id": 40, "name": "Black guy fawkes birthday bash!", "price": 33.0, "sold_out": False}],
+    "artists": [],
+    "categories": [],
+}
+
+
+def test_items_emits_one_row_per_available_option_with_variant_suffix():
+    items = Crawler._items(_MULTI_OPTION_PRODUCT)
+    assert [i["title"] for i in items] == [
+        "Just Another Trick LP — Maroon vinyl",
+        "Just Another Trick LP — Test Pressing",
+    ]
+    assert all(i["artist"] == "Sgt Scagnetti" for i in items)
+    assert [i["price"] for i in items] == [25.0, 50.0]
+
+
+def test_items_emits_full_row_shape():
+    items = Crawler._items(_MULTI_OPTION_PRODUCT)
+    assert items[0] == {
+        "artist": "Sgt Scagnetti",
+        "title": "Just Another Trick LP — Maroon vinyl",
+        "format": "Vinyl",
+        "price": 25.0,
+        "currency": "USD",
+        "url": "https://asbestosrecords.bigcartel.com/product/sgt-scagnetti-just-another-trick-lp",
+        "cover_image_url": "https://assets.bigcartel.com/product_images/1/scagnetti.jpg",
+    }
+
+
+def test_items_omits_variant_suffix_when_option_name_equals_product_name():
+    # Bigcartel has no Shopify-style "Default Title" placeholder -- a
+    # single-option product just repeats its own name as the option name.
+    items = Crawler._items(_SINGLE_OPTION_PRODUCT)
+    assert len(items) == 1
+    assert items[0]["title"] == "Master Celebrations 2xLP (import) **PREORDER**"
+
+
+def test_items_drops_products_with_no_format_token_in_name():
+    assert Crawler._items(_NON_VINYL_PRODUCT) == []
+
+
+def test_items_drops_products_with_no_artist_source():
+    assert Crawler._items(_NO_ATTRIBUTION_PRODUCT) == []
+
+
+def test_items_skips_sold_out_options():
+    product = {**_MULTI_OPTION_PRODUCT, "options": [
+        {**_MULTI_OPTION_PRODUCT["options"][0], "sold_out": True},
+        _MULTI_OPTION_PRODUCT["options"][1],
+    ]}
+    items = Crawler._items(product)
+    assert len(items) == 1
+    assert items[0]["title"] == "Just Another Trick LP — Test Pressing"
+
+
+def test_items_returns_empty_when_all_options_sold_out():
+    product = {**_MULTI_OPTION_PRODUCT, "options": [
+        {**o, "sold_out": True} for o in _MULTI_OPTION_PRODUCT["options"]
+    ]}
+    assert Crawler._items(product) == []
+
+
+def test_items_falls_back_to_none_cover_image_when_no_images():
+    product = {**_SINGLE_OPTION_PRODUCT, "images": []}
+    items = Crawler._items(product)
+    assert items[0]["cover_image_url"] is None
+
+
+def test_items_handles_non_numeric_price():
+    product = {**_MULTI_OPTION_PRODUCT, "options": [
+        {"id": 10, "name": "Maroon vinyl", "price": None, "sold_out": False},
+    ]}
+    items = Crawler._items(product)
+    assert items[0]["price"] is None

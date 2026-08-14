@@ -1,5 +1,6 @@
 import html
 import re
+from typing import Optional
 
 # Whitespace required on at least one side of the hyphen, matching the
 # repo's standard fix for this bug class: a plain \s*-\s* form would clip a
@@ -8,6 +9,11 @@ import re
 # "The Suicide Machines" plus a mangled album).
 _TITLE_RE = re.compile(r'^(?P<artist>.+?)(?:\s+-\s*|\s*-\s+)(?P<album>.+)$')
 _VARIOUS_RE = re.compile(r'^various(?:\s+artists)?$', re.IGNORECASE)
+# Bigcartel's own `categories` field is not used for inclusion -- confirmed
+# live, 26% of real vinyl releases carry an empty categories array. This
+# regex (same shape as angryyoungandpoor.py's, which filters an equally
+# mixed single-store catalog) is the sole inclusion gate.
+_FORMAT_RE = re.compile(r'\bvinyl\b|\b\d*x?lp\b|\bep\b|\d+\s*"', re.IGNORECASE)
 
 
 class Crawler:
@@ -15,6 +21,39 @@ class Crawler:
     base_url: str = "https://asbestosrecords.bigcartel.com"
     genre_summary: str = "Ska, punk, and hardcore label and record store."
     crawler_type: str = "catalog"
+
+    @classmethod
+    def _items(cls, product: dict) -> list:
+        name = product.get("name", "")
+        if not _FORMAT_RE.search(name):
+            return []
+
+        artist, album = cls._parse_artist_title(name, product.get("artists") or [])
+        if artist is None:
+            return []
+
+        url = f"{cls.base_url}{product.get('url', '')}"
+        images = product.get("images") or []
+        cover_image_url = images[0].get("url") if images else None
+        clean_name = html.unescape(name).strip()
+
+        items = []
+        for option in product.get("options") or []:
+            if option.get("sold_out"):
+                continue
+            option_name = html.unescape(option.get("name") or "").strip()
+            title = album if option_name == clean_name else f"{album} — {option_name}"
+            price = option.get("price")
+            items.append({
+                "artist": artist,
+                "title": title,
+                "format": "Vinyl",
+                "price": float(price) if isinstance(price, (int, float)) else None,
+                "currency": "USD",
+                "url": url,
+                "cover_image_url": cover_image_url,
+            })
+        return items
 
     @classmethod
     def _parse_artist_title(cls, name: str, artists: list):
