@@ -77,11 +77,17 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
   // Also refetches on syncGeneration ticks, same as load() above -- otherwise
   // the sidebar's artist list would go stale mid-crawl.
   useEffect(() => {
+    // syncGeneration ticks faster than a request round-trip, so these overlap.
+    // Committing whichever response lands last would let a stale list drive
+    // the reconciliation below -- re-casing the selection to an old label, or
+    // clearing an artist the newest response still lists.
+    let latest = true
     getStockArtists(
       scope === 'track' ? trackLibraryScope(filter) : undefined,
       scope === 'store' && filter === 'recommended',
       hiddenCrawlerIds,
-    ).then(setArtists)
+    ).then((list) => { if (latest) setArtists(list) })
+    return () => { latest = false }
   }, [scope, filter, hiddenCrawlerIds, syncGeneration])
   // A refetched list can re-case the selected artist's label, or drop it
   // entirely -- see reconcileSelectedArtist. A pure re-casing keeps the current

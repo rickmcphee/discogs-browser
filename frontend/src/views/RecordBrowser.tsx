@@ -67,7 +67,14 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
   // Also refetches on syncGeneration ticks, same as load() above -- otherwise
   // the nav list stays stuck at whatever it was on mount while a collection
   // sync fills the table in page by page.
-  useEffect(() => { getArtists(scope).then(setArtists) }, [scope, syncGeneration])
+  // The `latest` guard is load-bearing, not hygiene: syncGeneration ticks per
+  // sync_progress event, faster than a round-trip, so these requests overlap
+  // and a late-arriving stale list would drive the reconciliation below.
+  useEffect(() => {
+    let latest = true
+    getArtists(scope).then((list) => { if (latest) setArtists(list) })
+    return () => { latest = false }
+  }, [scope, syncGeneration])
   // A collection sync can re-case the selected artist's label -- the canonical
   // casing follows the catalog, which the sync itself writes. See
   // reconcileSelectedArtist; same handling as StockBrowser.

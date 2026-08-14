@@ -160,17 +160,37 @@ filter `changeFilter` already goes out of its way to avoid.
 after each list refetch in both views: it keeps the selection when the list
 still offers it, follows it to the re-cased label when only the casing moved
 (current sort and page preserved — it's still the same artist), and otherwise
-delegates to `selectArtist('')`, the existing full "back to All" transition.
-That last branch also covers JS's `toLowerCase` disagreeing with `LOWER()` for
-some name: the selection resets visibly rather than silently mismatching, so
-the JS fold is a hint, never an authority. It also closes a pre-existing hole
-of the same shape — hiding a crawler could already drop the selected artist out
-of the sidebar and leave the filter applied but unattributable.
+delegates to `selectArtist('')`, the existing full "back to All" transition. It
+also closes a pre-existing hole of the same shape — hiding a crawler could
+already drop the selected artist out of the sidebar and leave the filter applied
+but unattributable.
 
-Not solved by a stable non-display artist identity (a surrogate key per
-case-folded artist): that would be a schema change and a new API contract for
-both listing endpoints, to fix a mislabelled highlight. Reconciling on the
-client is proportionate, and correct for *any* cause of a label change.
+**The re-casing match requires equal length**, which is what a pure change of
+case looks like. JS is not the authority on which labels are one artist —
+`LOWER()` is — and the two disagree in both directions. Without the length
+check, JS folding precomposed `İsis` (U+0130, 4 chars) and decomposed `i̇sis`
+(`i` + U+0307, 5 chars) to the same string would let a vanished `İsis` hand the
+filter to what Postgres considers a different artist, silently. No client-side
+rule is airtight (JS and glibc could disagree about, say, U+212A folding to
+`k`), so the residual risk is a selection following a same-length label that is
+a different SQL group: a mislabelled highlight over the wrong rows, one click
+from correct.
+
+**Both artist-list requests carry a `latest` guard.** `syncGeneration` ticks per
+sync-progress event, faster than a round trip, so the requests overlap.
+Committing whichever response lands last was harmless when the list only fed the
+sidebar; now that it feeds reconciliation, a stale list could re-case the
+selection to an old label or clear an artist the newest response still lists.
+The effect cleanup drops superseded responses.
+
+Not solved by a stable non-display artist identity (a `LOWER()`-derived key
+returned per label, compared instead of JS-folding). That is the airtight fix,
+and it is a schema-adjacent change plus a new response shape on both listing
+endpoints, rippling through types, client, both views, router tests and the
+specs that document those endpoints — to remove a mislabelled highlight in a
+Unicode-normalization edge case. Client reconciliation is proportionate and
+correct for *any* cause of a label change; the residual is documented at the
+function.
 
 ## Out of scope
 
