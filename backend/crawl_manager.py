@@ -132,6 +132,21 @@ class CrawlManager:
         now = time.monotonic()
         return [cid for cid, until in self._site_cooldown_until.items() if now < until]
 
+    # Earliest expiry, not latest: the row should come back as soon as any one
+    # of its deferred crawlers is workable again. The rest stay narrowed into
+    # pending_crawler_ids and get deferred again if they are still cooling.
+    # Converts monotonic deadlines to a relative delay because the caller
+    # writes a wall-clock available_at.
+    def _cooldown_remaining_seconds(self, crawler_ids: list) -> float:
+        import time
+        now = time.monotonic()
+        remaining = [
+            self._site_cooldown_until[cid] - now
+            for cid in crawler_ids
+            if cid in self._site_cooldown_until and self._site_cooldown_until[cid] > now
+        ]
+        return min(remaining) if remaining else 0.0
+
     def _set_failure_domains(self, plugins_by_crawler_id: dict):
         """Group crawlers that share one upstream for circuit-breaker purposes.
 

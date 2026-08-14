@@ -148,6 +148,19 @@ ALTER TABLE crawl_queue ALTER COLUMN discogs_id DROP NOT NULL;
 ALTER TABLE crawl_queue ADD COLUMN IF NOT EXISTS item_key TEXT REFERENCES stock_item_identities(item_key);
 CREATE UNIQUE INDEX IF NOT EXISTS crawl_queue_item_key_crawler_idx ON crawl_queue (item_key, crawler_id);
 
+-- pending_crawler_ids is the per-pass progress record: NULL means "every
+-- crawler currently eligible for this target", a non-NULL array narrows the
+-- next pass to unfinished work from an earlier one. listings cannot serve
+-- this purpose -- an empty result writes no row at all, and clear_listing_price
+-- leaves a NULL-price row behind, so neither absence nor presence of a row
+-- distinguishes "not attempted" from "attempted, found nothing".
+ALTER TABLE crawl_queue ADD COLUMN IF NOT EXISTS pending_crawler_ids INTEGER[];
+
+-- available_at is a not-before marker, set when a pass defers a crawler whose
+-- site is in circuit-breaker cooldown. Without it the row would be re-claimed
+-- on the very next batch and re-deferred in a hot loop.
+ALTER TABLE crawl_queue ADD COLUMN IF NOT EXISTS available_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+
 ALTER TABLE listings ALTER COLUMN release_id DROP NOT NULL;
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS item_key TEXT REFERENCES stock_item_identities(item_key);
 CREATE UNIQUE INDEX IF NOT EXISTS listings_item_key_crawler_idx ON listings (item_key, crawler_id);
@@ -949,6 +962,7 @@ def claim_crawl_queue_batch(
             -- admin disabling a crawler stop it mid-crawl rather than only
             -- stopping future enqueues.
             WHERE status = 'pending'
+              AND available_at <= CURRENT_TIMESTAMP
               AND crawler_id IN (SELECT id FROM crawlers WHERE enabled)
               -- Source-side gate: the row above checks the crawler about to do
               -- the work; this checks whether anything still stocks the item it
@@ -976,6 +990,24 @@ def claim_crawl_queue_batch(
 
 def mark_crawl_queue_done(conn, queue_id: int):
     conn.execute("UPDATE crawl_queue SET status = 'done' WHERE id = %s", [queue_id])
+
+
+# The inverse of mark_crawl_queue_done: hands a claimed row back as pending
+# with only its unfinished crawlers, deferred until the earliest moment one of
+# them is workable again. requested_at is deliberately not touched -- bumping
+# it would send a row that merely waited on a cooling-down site to the back of
+# the queue behind everything enqueued while it waited.
+def defer_crawl_queue_row(conn, queue_id: int, crawler_ids: list, delay_seconds: float):
+    conn.execute(
+        """
+        UPDATE crawl_queue
+        SET status = 'pending', claimed_by = NULL, claimed_at = NULL,
+            pending_crawler_ids = %(crawler_ids)s,
+            available_at = CURRENT_TIMESTAMP + (%(delay_seconds)s * INTERVAL '1 second')
+        WHERE id = %(queue_id)s
+        """,
+        {"queue_id": queue_id, "crawler_ids": list(crawler_ids), "delay_seconds": delay_seconds},
+    )
 
 
 # 'pending' only: an in_progress row has already been claimed and committed by

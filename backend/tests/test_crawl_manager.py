@@ -3664,3 +3664,32 @@ async def test_sync_stock_sweeps_dead_stock_jobs_at_end_of_run(pg_schema):
     with db.get_admin_pool().connection() as conn:
         keys = [r["item_key"] for r in conn.execute("SELECT item_key FROM crawl_queue").fetchall()]
     assert keys == [live_key]
+
+
+def test_cooldown_remaining_seconds_returns_the_earliest_expiry():
+    import time
+    manager = CrawlManager()
+    now = time.monotonic()
+    manager._site_cooldown_until = {1: now + 600, 2: now + 120}
+
+    remaining = manager._cooldown_remaining_seconds([1, 2])
+
+    assert 100 < remaining <= 120
+
+
+def test_cooldown_remaining_seconds_is_zero_when_nothing_is_cooling_down():
+    manager = CrawlManager()
+    manager._site_cooldown_until = {}
+
+    assert manager._cooldown_remaining_seconds([1, 2]) == 0.0
+
+
+def test_cooldown_remaining_seconds_ignores_expired_cooldowns():
+    import time
+    manager = CrawlManager()
+    now = time.monotonic()
+    manager._site_cooldown_until = {1: now - 5, 2: now + 300}
+
+    remaining = manager._cooldown_remaining_seconds([1, 2])
+
+    assert 250 < remaining <= 300

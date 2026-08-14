@@ -562,3 +562,60 @@ def test_a_disable_during_an_open_sync_transaction_is_closed_by_the_sweep(admin_
         conn.commit()
 
     assert admin_conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 0
+
+
+def test_claim_crawl_queue_batch_skips_rows_not_yet_available(admin_conn):
+    crawler_id = _make_catalog_and_crawler(admin_conn, "r1")
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1", crawler_id)
+    admin_conn.execute(
+        "UPDATE crawl_queue SET available_at = CURRENT_TIMESTAMP + INTERVAL '1 hour' WHERE discogs_id = 'r1'"
+    )
+    admin_conn.commit()
+
+    claimed = db.claim_crawl_queue_batch(admin_conn, "worker-1", limit=10)
+
+    assert claimed == []
+
+
+def test_claim_crawl_queue_batch_claims_rows_whose_availability_has_passed(admin_conn):
+    crawler_id = _make_catalog_and_crawler(admin_conn, "r1")
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1", crawler_id)
+    admin_conn.execute(
+        "UPDATE crawl_queue SET available_at = CURRENT_TIMESTAMP - INTERVAL '1 second' WHERE discogs_id = 'r1'"
+    )
+    admin_conn.commit()
+
+    claimed = db.claim_crawl_queue_batch(admin_conn, "worker-1", limit=10)
+
+    assert len(claimed) == 1
+
+
+def test_defer_crawl_queue_row_reopens_the_row_with_a_narrowed_crawler_set(admin_conn):
+    crawler_id = _make_catalog_and_crawler(admin_conn, "r1")
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1", crawler_id)
+    admin_conn.commit()
+    claimed = db.claim_crawl_queue_batch(admin_conn, "worker-1", limit=10)
+    before = admin_conn.execute(
+        "SELECT requested_at FROM crawl_queue WHERE id = %s", [claimed[0]["id"]]
+    ).fetchone()["requested_at"]
+
+    db.defer_crawl_queue_row(admin_conn, claimed[0]["id"], [crawler_id], 1800.0)
+    admin_conn.commit()
+
+    row = admin_conn.execute(
+        "SELECT status, claimed_by, claimed_at, pending_crawler_ids, requested_at, "
+        "available_at > CURRENT_TIMESTAMP + INTERVAL '25 minutes' AS deferred_far_out "
+        "FROM crawl_queue WHERE id = %s",
+        [claimed[0]["id"]],
+    ).fetchone()
+    assert row["status"] == "pending"
+    assert row["claimed_by"] is None
+    assert row["claimed_at"] is None
+    assert row["pending_crawler_ids"] == [crawler_id]
+    assert row["deferred_far_out"] is True
+    # requested_at is deliberately untouched: a deferred row returns near its
+    # original queue position rather than at the back of the queue.
+    assert row["requested_at"] == before
