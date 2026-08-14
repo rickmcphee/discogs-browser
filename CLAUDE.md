@@ -131,6 +131,8 @@ Plans (`docs/superpowers/plans/` and `docs/specifications/plans/`) are historica
 
 Always open PRs as ready for review, not as drafts — pass `--draft=false` (or omit `--draft` and don't add `Draft PR` state) whenever creating a PR via `gh`, the GitHub API, or any PR-opening skill. Don't ask which mode to use.
 
+**Never enable auto-merge on a PR you open, and disable it if you find it already enabled** (`gh pr merge <PR> --disable-auto`) before ending your turn. `main`'s branch-protection ruleset requires 0 approving reviews (`required_approving_review_count: 0`) — only 3 CI checks gate merge — while GitHub's own Copilot code review (`copilot_code_review.review_on_push`) runs asynchronously and is not required. This is a real, observed race, not a theoretical one: on PR #134, CI went green and auto-merge fired within 2 seconds; Copilot's review posted 20 seconds *after* the merge, too late to matter. Before considering a PR-opening task finished, check for and read automated review comments (`gh api repos/{owner}/{repo}/pulls/{number}/comments`) in addition to CI status — don't just check CI and stop. If a PR merges before you can do that (auto-merge enabled by something outside your control), treat any legitimate finding the same as if caught pre-merge: fix it and open a small follow-up PR immediately, don't let it slide because the original PR is already closed.
+
 ## Tests
 
 - `pytest-asyncio` with `asyncio_mode = "auto"` (all async tests run automatically)
