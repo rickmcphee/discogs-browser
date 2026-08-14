@@ -256,11 +256,13 @@ def _fast_catalog_crawl_sleep(request, monkeypatch):
             pass
 
         monkeypatch.setattr("shopify_catalog.sleep", fake_sleep)
-        # angryyoungandpoor.py and amoeba.py pace their own Playwright calls rather
-        # than going through shopify_catalog.iter_products() (they're catalog_browser
-        # crawlers, not httpx ones) -- patch their module-local `sleep` bindings too,
-        # when importable.
-        for module_name in ("angryyoungandpoor", "amoeba"):
+        # angryyoungandpoor.py, amoeba.py, and asbestosrecords.py pace their own
+        # request directly rather than going through shopify_catalog.iter_products()
+        # -- patch their module-local `sleep` bindings too, when importable.
+        # asbestosrecords is imported as "crawlers.asbestosrecords" (a package
+        # submodule), not a bare top-level name like the other two, which is why
+        # its tuple entry carries the "crawlers." prefix.
+        for module_name in ("angryyoungandpoor", "amoeba", "crawlers.asbestosrecords"):
             try:
                 monkeypatch.setattr(f"{module_name}.sleep", fake_sleep)
             except (ModuleNotFoundError, AttributeError):
