@@ -956,6 +956,16 @@ def set_crawler_enabled(conn, crawler_id: int, enabled: bool):
 # EXISTS check below would be unconditionally true for it, and with no
 # release-only clause to narrow it, the UPDATE would match every 'done' row
 # in the whole crawl_queue table.
+#
+# Neither statement touches an 'in_progress' row: the revive filters 'done',
+# the widen filters 'pending'. A row a worker is holding right now therefore
+# resolved its eligibility from the pre-enable crawler set and is skipped
+# here, so its target waits for a later sync or sweep to see this crawler.
+# Accepted, not overlooked -- same fallback as a row skipped by the widen's
+# SKIP LOCKED, bounded to worker_count x batch_size targets (four by default)
+# for the length of one pass. See the design's Risks section for why closing
+# it (re-resolving eligibility at resolution time against a claim-time
+# baseline) costs more than the delay it removes.
 def backfill_crawl_queue_for_crawler(conn, crawler_id: int) -> int:
     requires_release = conn.execute(
         "SELECT requires_discogs_release FROM crawlers WHERE id = %s AND crawler_type = 'release'",
@@ -1008,9 +1018,18 @@ def backfill_crawl_queue_for_crawler(conn, crawler_id: int) -> int:
     # its narrowed set, so the newly enabled crawler misses that target until
     # the row completes and is re-enqueued. This is bounded and self-healing,
     # the same fallback the enable path relies on when the backfill itself is skipped.
+    #
+    # available_at is reset along with the widen, and that reset is the point:
+    # a narrowed row is narrowed *because* some other crawler is cooling down,
+    # so it carries that crawler's cooldown deadline -- up to 30 minutes out.
+    # Appending the newly enabled crawler without clearing the deadline would
+    # leave the row unclaimable for that whole cooldown, so enabling a crawler
+    # would not take effect on the next batch the way it does everywhere else.
+    # Dispatch re-defers the still-cooling crawler on its own terms.
     conn.execute(
         """
-        UPDATE crawl_queue SET pending_crawler_ids = pending_crawler_ids || %(crawler_id)s
+        UPDATE crawl_queue SET pending_crawler_ids = pending_crawler_ids || %(crawler_id)s,
+                               available_at = CURRENT_TIMESTAMP
         WHERE id IN (
             SELECT id FROM crawl_queue
             WHERE status = 'pending' AND pending_crawler_ids IS NOT NULL

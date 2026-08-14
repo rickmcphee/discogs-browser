@@ -757,6 +757,31 @@ def test_backfill_widens_a_narrowed_pending_row(admin_conn):
     assert sorted(row["pending_crawler_ids"]) == sorted([crawler_a, crawler_b])
 
 
+def test_backfill_widening_clears_a_deferred_rows_cooldown_deadline(admin_conn):
+    """A narrowed row is narrowed because some other crawler is cooling down, so
+    it carries that crawler's available_at -- up to 30 minutes out. Appending the
+    newly enabled crawler without clearing that deadline would leave the row
+    unclaimable for the whole cooldown, so enabling a crawler would not take
+    effect on the next batch the way it does everywhere else."""
+    crawler_a = _make_catalog_and_crawler(admin_conn, "r1", site_name="Amazon")
+    crawler_b = _make_catalog_and_crawler(admin_conn, "r1", site_name="eBay")
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1")
+    admin_conn.execute(
+        "UPDATE crawl_queue SET pending_crawler_ids = ARRAY[%s], "
+        "available_at = CURRENT_TIMESTAMP + INTERVAL '30 minutes' WHERE discogs_id = 'r1'",
+        [crawler_a],
+    )
+    admin_conn.commit()
+
+    db.backfill_crawl_queue_for_crawler(admin_conn, crawler_b)
+    admin_conn.commit()
+
+    claimed = db.claim_crawl_queue_batch(admin_conn, "worker-1", limit=10)
+    assert len(claimed) == 1, "the row must be claimable immediately, not in 30 minutes"
+    assert sorted(claimed[0]["pending_crawler_ids"]) == sorted([crawler_a, crawler_b])
+
+
 def test_backfill_leaves_stock_item_rows_alone_for_a_discogs_only_crawler(admin_conn):
     crawler_id = _make_stock_identity_and_crawler(admin_conn, "key1", site_name="Discogs")
     admin_conn.execute("UPDATE crawlers SET requires_discogs_release = TRUE WHERE id = %s", [crawler_id])
