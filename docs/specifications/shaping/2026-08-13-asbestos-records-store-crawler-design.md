@@ -57,8 +57,10 @@ logic (see `docs/specifications/shaping/2026-08-07-shared-title-split-helper-des
 
 ## Technical grounding
 
-All figures confirmed against the live site on 2026-08-13 via
-`GET /products.json` (single request, 76 products, 141KB).
+Figures below were confirmed against the live site on 2026-08-13 via
+`GET /products.json` (single request, 76 products, 141KB), except where
+marked "Corrected 2026-08-14" — those were re-derived against a fresh fetch
+of the same endpoint after the inclusion gate changed post-merge.
 
 ### No pagination
 
@@ -125,7 +127,7 @@ crawlers — `^(?P<artist>.+?)(?:\s+-\s*|\s*-\s+)(?P<album>.+)$` — so a hyphen
 inside a name with no surrounding space (e.g. `Suicide Machines-On the Eve
 of Destruction`) isn't mistaken for the separator.
 
-**Corrected 2026-08-14** alongside the "Format filtering" fix below — the
+**Corrected 2026-08-14** alongside the "Format filtering" fix above — the
 cohort here is the 53-product union, not the original 42.
 
 Of the 53 kept products, 49 split cleanly on this regex. The remaining 4 have
