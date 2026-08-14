@@ -108,11 +108,11 @@ _NON_VINYL_PRODUCT = {
 
 _NO_ATTRIBUTION_PRODUCT = {
     "id": 4,
-    "name": "Black guy fawkes birthday bash!",
-    "url": "/product/black-guy-fawkes-birthday-bash",
+    "name": "Ashen Dawn Live Session LP",
+    "url": "/product/ashen-dawn-live-session-lp",
     "status": "active",
     "images": [],
-    "options": [{"id": 40, "name": "Black guy fawkes birthday bash!", "price": 33.0, "sold_out": False}],
+    "options": [{"id": 40, "name": "Ashen Dawn Live Session LP", "price": 33.0, "sold_out": False}],
     "artists": [],
     "categories": [],
 }

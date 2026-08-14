@@ -1,6 +1,5 @@
 import html
 import re
-from typing import Optional
 
 # Whitespace required on at least one side of the hyphen, matching the
 # repo's standard fix for this bug class: a plain \s*-\s* form would clip a
