@@ -30,6 +30,14 @@ the premise no longer holds unconditionally across "the Shopify crawlers" as
 a whole, and any future implementation of `split_artist_title` should treat
 `cleorecs.py` as a documented exception, not a bug to fix into conformance.
 
+**Second amendment (2026-08-14, branch `claude/jackpot-records-crawler-5a6b9f`):**
+`backend/crawlers/jackpotrecords.py` is a second exception with the same
+shape as `cleorecs.py`'s divergences (1) and (3) above: it reuses the same
+wider `[-–—]` separator class, and it has no vendor fallback at all (`vendor`
+here is the store's own name or a reissue label, never the artist). It skips
+the paren-stripping pass, unlike `cleorecs.py`. `cleorecs.py` is no longer
+the sole documented exception to the converging contract; there are now two.
+
 ## Problem
 
 Nine Shopify-storefront catalog crawlers each need to split a product's
