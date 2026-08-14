@@ -1301,17 +1301,36 @@ def normalize_title_casing(title: str) -> str:
 # uppercase one, and the label would depend on how the cluster was initdb'd.
 # GROUP BY collapses the duplicates COUNT(*) counts, DISTINCT ON then takes the
 # winner per case-folded key.
+#
+# Every case fold happens here in SQL, and the result is keyed on the caller's
+# input string rather than a Python-computed key, because str.lower() and
+# LOWER() are not the same function: LOWER() follows the database's collation
+# and can't expand one character into two, so on an ordinary en_US cluster
+# LOWER('Isis') with a dotted capital I is 'isis' while Python's .lower() gives
+# 'i' + U+0307. A Python-side key would match no row there, and the label
+# lookup would silently miss -- leaving exactly the split sidebar this function
+# exists to fix. (On a tr_TR cluster the two disagree on plain ASCII "ISIS".)
 _CANONICAL_ARTIST_SQL = """
-    SELECT DISTINCT ON (LOWER(artist)) LOWER(artist) AS key, artist AS label
-    FROM {table}
-    WHERE LOWER(artist) = ANY(%(keys)s)
-    GROUP BY LOWER(artist), artist
-    ORDER BY LOWER(artist), COUNT(*) DESC, artist COLLATE "C"
+    WITH wanted AS (
+        SELECT DISTINCT a AS artist FROM unnest(%(artists)s::text[]) AS a
+    ),
+    grouped AS (
+        SELECT LOWER(artist) AS key, artist AS label, COUNT(*) AS n
+        FROM {table}
+        WHERE LOWER(artist) = ANY (ARRAY(SELECT LOWER(artist) FROM wanted))
+        GROUP BY LOWER(artist), artist
+    ),
+    winner AS (
+        SELECT DISTINCT ON (key) key, label FROM grouped
+        ORDER BY key, n DESC, label COLLATE "C"
+    )
+    SELECT w.artist AS input, winner.label AS label
+    FROM wanted w JOIN winner ON winner.key = LOWER(w.artist)
 """
 
 
 def canonical_artist_labels(conn, artists) -> dict:
-    """Map each artist's case-folded name to the one casing the UI displays.
+    """Map each artist name, exactly as stored, to the casing the UI displays.
 
     Stores disagree with each other and with Discogs on how to capitalize
     prepositions ("Jets to Brazil" vs "Jets To Brazil"), and
@@ -1324,32 +1343,34 @@ def canonical_artist_labels(conn, artists) -> dict:
     Both tables are global and un-RLS'd, so the label is app-wide: two users
     can't see one artist spelled two ways.
     """
-    keys = sorted({a.lower() for a in artists if a})
+    inputs = sorted({a for a in artists if a})
     labels: dict = {}
     for table in ("catalog", "stock_items"):
-        remaining = [k for k in keys if k not in labels]
+        remaining = [a for a in inputs if a not in labels]
         if not remaining:
             break
-        rows = conn.execute(_CANONICAL_ARTIST_SQL.format(table=table), {"keys": remaining}).fetchall()
+        rows = conn.execute(_CANONICAL_ARTIST_SQL.format(table=table), {"artists": remaining}).fetchall()
         for row in rows:
-            labels[row["key"]] = row["label"]
+            labels[row["input"]] = row["label"]
     return labels
 
 
 def _canonical_artist_list(conn, artists) -> list:
     """One entry per artist for a sidebar, canonically cased. Ordering is done
     here rather than in SQL -- the label isn't known until the rows are back --
-    so it is Python's case-folded order, not the database collation's; the two
-    differ only for accented and punctuated names."""
+    so it is Python's ordering, not the database collation's; the two differ
+    only for accented and punctuated names. Grouping does not depend on it:
+    variants collapse because they share a label, not because they sort
+    together."""
     labels = canonical_artist_labels(conn, artists)
-    deduped = {labels.get(a.lower(), a) for a in artists if a}
+    deduped = {labels.get(a, a) for a in artists if a}
     return sorted(deduped, key=lambda a: (a.lower(), a))
 
 
 def _apply_canonical_artists(conn, rows: list[dict]) -> None:
     labels = canonical_artist_labels(conn, [r["artist"] for r in rows])
     for row in rows:
-        row["artist"] = labels.get(row["artist"].lower(), row["artist"])
+        row["artist"] = labels.get(row["artist"], row["artist"])
 
 
 def replace_stock_items(conn, crawler_id: int, items: list[dict]) -> list[str]:

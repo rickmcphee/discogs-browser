@@ -548,3 +548,21 @@ def test_get_library_releases_artist_filter_spans_casing_variants(admin_conn):
         result = db.get_library_releases(conn, alice["id"], artist="Jets To Brazil")
     assert result["total"] == 2
     assert {r["artist"] for r in result["releases"]} == {"Jets To Brazil"}
+
+
+def test_get_distinct_artists_collapses_casing_python_and_postgres_fold_differently(admin_conn):
+    # "İsis" carries U+0130 (capital I with dot above). Postgres LOWER() folds
+    # it to plain "i" -- one character in, one out, per the database collation
+    # -- while Python's str.lower() yields "i" + U+0307. Keying the canonical
+    # label lookup on a Python-computed fold therefore matched no row here, and
+    # the sidebar fell back to listing both raw spellings.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "İsis", "Celestial")
+    _catalog(admin_conn, "r2", "İsis", "Oceanic")
+    _catalog(admin_conn, "r3", "İSIS", "Panopticon")
+    for rid in ("r1", "r2", "r3"):
+        db.upsert_library_item(admin_conn, alice["id"], rid, in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.get_distinct_artists(conn, alice["id"]) == ["İsis"]

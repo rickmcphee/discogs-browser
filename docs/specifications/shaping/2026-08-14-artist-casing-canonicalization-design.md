@@ -76,6 +76,22 @@ title-cased spelling, which is the more common convention.
 definition of the rule; both sidebars and both row-listing paths call it, so a
 sidebar label and the rows it filters to can't disagree.
 
+**All case folding happens in SQL**, and the returned map is keyed on the
+caller's input string rather than a fold computed in Python. `str.lower()` and
+`LOWER()` are not the same function: `LOWER()` follows the database collation
+and cannot expand one character into two, so on an ordinary `en_US` cluster
+`LOWER('İsis')` is `'isis'` while Python's `'İsis'.lower()` is `'i' + U+0307`.
+A Python-side key matches no row there, the lookup misses silently, and the
+sidebar falls back to listing both raw spellings — the exact bug this design
+exists to fix, reintroduced for a narrower set of names. (On a `tr_TR` cluster
+the two also disagree about plain ASCII `"ISIS"`.) `test_get_distinct_artists_collapses_casing_python_and_postgres_fold_differently`
+pins this; it fails with `['İSIS', 'İsis']` against a Python-keyed lookup.
+
+The `WHERE LOWER(artist) = ANY (ARRAY(SELECT ...))` shape is deliberate over
+`IN (SELECT ...)`: `EXPLAIN` confirms the former resolves the subquery to an
+`InitPlan` and reaches the rows through a bitmap index scan on the expression
+index below, which the semi-join form does not.
+
 `catalog` and `stock_items` are both global tables with no RLS — the labels are
 app-wide, not per-user, which is the point: two users must not see the same
 artist spelled differently.
