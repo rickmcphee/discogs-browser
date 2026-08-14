@@ -938,6 +938,55 @@ def set_crawler_enabled(conn, crawler_id: int, enabled: bool):
     conn.execute("UPDATE crawlers SET enabled = %s WHERE id = %s", [enabled, crawler_id])
 
 
+# Enabling a crawler makes it apply to every target still pending for free --
+# eligibility is resolved at dispatch. Targets already marked 'done', though,
+# would not see it until the next sync or scheduled sweep, so enabling one
+# revives exactly the targets it has no price for.
+#
+# price IS NOT NULL, not bare NOT EXISTS: clear_listing_price leaves a
+# NULL-price row behind for a target this crawler crawled and found nothing
+# for, and a bare existence check would read that as already priced. The
+# trade-off is that targets where the crawler legitimately found nothing are
+# revived on every enable -- bounded and idempotent, but not free.
+def backfill_crawl_queue_for_crawler(conn, crawler_id: int) -> int:
+    requires_release = conn.execute(
+        "SELECT requires_discogs_release FROM crawlers WHERE id = %s", [crawler_id]
+    ).fetchone()
+    if requires_release is None:
+        return 0
+    release_only_clause = (
+        "AND crawl_queue.discogs_id IS NOT NULL" if requires_release["requires_discogs_release"] else ""
+    )
+    revived = conn.execute(
+        f"""
+        UPDATE crawl_queue SET
+            status = 'pending', requested_at = CURRENT_TIMESTAMP,
+            available_at = CURRENT_TIMESTAMP, claimed_by = NULL, claimed_at = NULL,
+            pending_crawler_ids = ARRAY[%(crawler_id)s]
+        WHERE status = 'done'
+          {release_only_clause}
+          AND NOT EXISTS (
+              SELECT 1 FROM listings l
+              WHERE l.crawler_id = %(crawler_id)s AND l.price IS NOT NULL
+                AND (l.release_id = crawl_queue.discogs_id OR l.item_key = crawl_queue.item_key)
+          )
+        """,
+        {"crawler_id": crawler_id},
+    ).rowcount
+    # A row narrowed by an earlier deferral carries a set that predates this
+    # crawler being enabled, so it would otherwise skip it. Rows with NULL need
+    # nothing -- NULL already means "all currently eligible".
+    conn.execute(
+        """
+        UPDATE crawl_queue SET pending_crawler_ids = pending_crawler_ids || %(crawler_id)s
+        WHERE status = 'pending' AND pending_crawler_ids IS NOT NULL
+          AND NOT (%(crawler_id)s = ANY(pending_crawler_ids))
+        """,
+        {"crawler_id": crawler_id},
+    )
+    return revived
+
+
 def update_crawler_last_run(conn, crawler_id: int):
     conn.execute("UPDATE crawlers SET last_run = CURRENT_TIMESTAMP WHERE id = %s", [crawler_id])
 

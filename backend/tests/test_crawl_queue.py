@@ -615,3 +615,89 @@ def test_enqueue_leaves_a_pending_target_untouched(admin_conn):
     ).fetchall()
     assert len(rows) == 1
     assert rows[0]["requested_at"] == before
+
+
+def test_backfill_revives_done_targets_the_crawler_has_no_price_for(admin_conn):
+    crawler_id = _make_catalog_and_crawler(admin_conn, "r1")
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1")
+    admin_conn.execute("UPDATE crawl_queue SET status = 'done' WHERE discogs_id = 'r1'")
+    admin_conn.commit()
+
+    revived = db.backfill_crawl_queue_for_crawler(admin_conn, crawler_id)
+    admin_conn.commit()
+
+    assert revived == 1
+    row = admin_conn.execute(
+        "SELECT status, pending_crawler_ids FROM crawl_queue WHERE discogs_id = 'r1'"
+    ).fetchone()
+    assert row["status"] == "pending"
+    # Narrowed to just this crawler: the point is to fill in the prices it is
+    # missing, not to re-crawl what other crawlers already priced.
+    assert row["pending_crawler_ids"] == [crawler_id]
+
+
+def test_backfill_skips_targets_this_crawler_already_priced(admin_conn):
+    crawler_id = _make_catalog_and_crawler(admin_conn, "r1")
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1")
+    admin_conn.execute("UPDATE crawl_queue SET status = 'done' WHERE discogs_id = 'r1'")
+    db.upsert_listing(admin_conn, "r1", crawler_id, "https://x", 9.99, None, "USD", None)
+    admin_conn.commit()
+
+    revived = db.backfill_crawl_queue_for_crawler(admin_conn, crawler_id)
+    admin_conn.commit()
+
+    assert revived == 0
+    row = admin_conn.execute("SELECT status FROM crawl_queue WHERE discogs_id = 'r1'").fetchone()
+    assert row["status"] == "done"
+
+
+def test_backfill_revives_targets_whose_price_was_cleared(admin_conn):
+    crawler_id = _make_catalog_and_crawler(admin_conn, "r1")
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1")
+    admin_conn.execute("UPDATE crawl_queue SET status = 'done' WHERE discogs_id = 'r1'")
+    db.upsert_listing(admin_conn, "r1", crawler_id, "https://x", 9.99, None, "USD", None)
+    # clear_listing_price leaves the row behind with a NULL price, which must
+    # not read as "already priced".
+    db.clear_listing_price(admin_conn, "r1", crawler_id)
+    admin_conn.commit()
+
+    revived = db.backfill_crawl_queue_for_crawler(admin_conn, crawler_id)
+    admin_conn.commit()
+
+    assert revived == 1
+
+
+def test_backfill_widens_a_narrowed_pending_row(admin_conn):
+    crawler_a = _make_catalog_and_crawler(admin_conn, "r1", site_name="Amazon")
+    crawler_b = _make_catalog_and_crawler(admin_conn, "r1", site_name="eBay")
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1")
+    admin_conn.execute(
+        "UPDATE crawl_queue SET pending_crawler_ids = ARRAY[%s] WHERE discogs_id = 'r1'", [crawler_a]
+    )
+    admin_conn.commit()
+
+    db.backfill_crawl_queue_for_crawler(admin_conn, crawler_b)
+    admin_conn.commit()
+
+    row = admin_conn.execute(
+        "SELECT pending_crawler_ids FROM crawl_queue WHERE discogs_id = 'r1'"
+    ).fetchone()
+    assert sorted(row["pending_crawler_ids"]) == sorted([crawler_a, crawler_b])
+
+
+def test_backfill_leaves_stock_item_rows_alone_for_a_discogs_only_crawler(admin_conn):
+    crawler_id = _make_stock_identity_and_crawler(admin_conn, "key1", site_name="Discogs")
+    admin_conn.execute("UPDATE crawlers SET requires_discogs_release = TRUE WHERE id = %s", [crawler_id])
+    admin_conn.commit()
+    db.enqueue_crawl_queue_for_stock_item(admin_conn, "key1")
+    admin_conn.execute("UPDATE crawl_queue SET status = 'done' WHERE item_key = 'key1'")
+    admin_conn.commit()
+
+    revived = db.backfill_crawl_queue_for_crawler(admin_conn, crawler_id)
+    admin_conn.commit()
+
+    assert revived == 0

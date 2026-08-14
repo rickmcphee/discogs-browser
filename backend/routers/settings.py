@@ -71,7 +71,10 @@ def update_crawler(crawler_id: int, body: CrawlerUpdate):
     with db.get_app_pool().connection() as conn:
         db.set_crawler_enabled(conn, crawler_id, body.enabled)
         discarded = 0
-        if not body.enabled:
+        backfilled = 0
+        if body.enabled:
+            backfilled = db.backfill_crawl_queue_for_crawler(conn, crawler_id)
+        else:
             # Disabling a marketplace crawler discards nothing: queue rows name
             # no crawler, and _drain_one_batch stops selecting it on the next
             # batch. This sweep is for the other case -- disabling a *store*
@@ -83,7 +86,9 @@ def update_crawler(crawler_id: int, body: CrawlerUpdate):
         # level membership, so at WARNING this is invisible to anyone watching
         # the INFO stream that carries the rest of the crawl narrative.
         log.info("Crawler %d disabled: %d pending crawl jobs discarded", crawler_id, discarded)
-    return {"ok": True, "discarded": discarded}
+    if backfilled:
+        log.info("Crawler %d enabled: %d targets re-queued for backfill", crawler_id, backfilled)
+    return {"ok": True, "discarded": discarded, "backfilled": backfilled}
 
 
 @router.get("/user-settings")

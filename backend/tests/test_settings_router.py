@@ -79,6 +79,37 @@ def test_patch_crawler_as_admin_flips_enabled(pg_test_db, authed_client_factory)
     assert row["enabled"] is False
 
 
+def test_enabling_a_crawler_backfills_the_queue(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/a.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.set_crawler_enabled(conn, crawler_id, False)
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute("UPDATE users SET is_admin = TRUE WHERE id = %s", [user["id"]])
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1")
+        conn.execute("UPDATE crawl_queue SET status = 'done' WHERE discogs_id = 'r1'")
+        conn.commit()
+
+    client = authed_client_factory(user["id"])
+    resp = client.patch(
+        f"/api/crawlers/{crawler_id}", json={"enabled": True}, headers={"X-Requested-With": "fetch"}
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["backfilled"] == 1
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT status, pending_crawler_ids FROM crawl_queue WHERE discogs_id = 'r1'"
+        ).fetchone()
+    assert row["status"] == "pending"
+    assert row["pending_crawler_ids"] == [crawler_id]
+
+
 def test_get_and_post_user_settings(pg_test_db, authed_client_factory, monkeypatch):
     with db.get_identity_pool().connection() as conn:
         conn.execute("SELECT 1")
@@ -184,7 +215,7 @@ def test_patch_crawler_disable_discards_nothing_for_a_marketplace_crawler(pg_tes
     client = authed_client_factory(user["id"])
     r = client.patch(f"/api/crawlers/{crawler_id}", json={"enabled": False}, headers={"X-Requested-With": "fetch"})
     assert r.status_code == 200
-    assert r.json() == {"ok": True, "discarded": 0}
+    assert r.json() == {"ok": True, "discarded": 0, "backfilled": 0}
 
     with db.get_admin_pool().connection() as conn:
         assert conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 1
@@ -225,7 +256,7 @@ def test_patch_crawler_disable_runs_the_dead_stock_sweep_as_the_app_user_role(
     client = authed_client_factory(user["id"])
     r = client.patch(f"/api/crawlers/{crawler_id}", json={"enabled": False}, headers={"X-Requested-With": "fetch"})
     assert r.status_code == 200
-    assert r.json() == {"ok": True, "discarded": 0}
+    assert r.json() == {"ok": True, "discarded": 0, "backfilled": 0}
 
     with db.get_admin_pool().connection() as conn:
         assert conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 1
@@ -253,7 +284,7 @@ def test_patch_crawler_enable_discards_nothing(pg_test_db, authed_client_factory
     client = authed_client_factory(user["id"])
     r = client.patch(f"/api/crawlers/{crawler_id}", json={"enabled": True}, headers={"X-Requested-With": "fetch"})
     assert r.status_code == 200
-    assert r.json() == {"ok": True, "discarded": 0}
+    assert r.json() == {"ok": True, "discarded": 0, "backfilled": 0}
 
     with db.get_admin_pool().connection() as conn:
         assert conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 1
@@ -284,7 +315,7 @@ def test_patch_crawler_disable_discards_dead_stock_jobs(pg_test_db, authed_clien
     client = authed_client_factory(user["id"])
     r = client.patch(f"/api/crawlers/{store_id}", json={"enabled": False}, headers={"X-Requested-With": "fetch"})
     assert r.status_code == 200
-    assert r.json() == {"ok": True, "discarded": 1}
+    assert r.json() == {"ok": True, "discarded": 1, "backfilled": 0}
 
     with db.get_admin_pool().connection() as conn:
         assert conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 0
