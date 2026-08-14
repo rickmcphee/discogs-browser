@@ -1,5 +1,13 @@
 import html
+import random
 import re
+from asyncio import sleep
+from typing import AsyncIterator
+
+import httpx
+
+from config import load_config
+from crawl_progress import report_page
 
 # Whitespace required on at least one side of the hyphen, matching the
 # repo's standard fix for this bug class: a plain \s*-\s* form would clip a
@@ -20,6 +28,24 @@ class Crawler:
     base_url: str = "https://asbestosrecords.bigcartel.com"
     genre_summary: str = "Ska, punk, and hardcore label and record store."
     crawler_type: str = "catalog"
+
+    async def crawl_catalog(self) -> AsyncIterator[dict]:
+        # Confirmed live: page= and limit= query params are silently ignored
+        # on this store -- /products.json always returns the full 76-product
+        # catalog in one response. One request per sync, still paced like
+        # every sibling crawler.
+        cfg = load_config()
+        delay = float(cfg.get("crawl_delay_seconds", 30))
+        await sleep(random.uniform(delay * 0.5, delay))
+        async with httpx.AsyncClient() as client:
+            r = await client.get(f"{self.base_url}/products.json")
+            r.raise_for_status()
+        products = r.json()
+
+        items = [item for product in products for item in self._items(product)]
+        await report_page(1, len(items))
+        for item in items:
+            yield item
 
     @classmethod
     def _items(cls, product: dict) -> list:

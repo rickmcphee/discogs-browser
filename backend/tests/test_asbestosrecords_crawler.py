@@ -1,4 +1,6 @@
+import httpx
 import pytest
+import respx
 
 from crawlers.asbestosrecords import Crawler
 
@@ -186,3 +188,35 @@ def test_items_handles_non_numeric_price():
     ]}
     items = Crawler._items(product)
     assert items[0]["price"] is None
+
+
+_PRODUCTS_URL = "https://asbestosrecords.bigcartel.com/products.json"
+
+
+@respx.mock
+async def test_crawl_catalog_yields_items_from_the_single_response():
+    respx.get(_PRODUCTS_URL).mock(
+        return_value=httpx.Response(200, json=[_MULTI_OPTION_PRODUCT, _SINGLE_OPTION_PRODUCT]))
+
+    items = [item async for item in Crawler().crawl_catalog()]
+
+    assert len(items) == 3  # 2 options on the first product, 1 on the second
+    assert items[0]["artist"] == "Sgt Scagnetti"
+    assert items[2]["title"] == "Master Celebrations 2xLP (import) **PREORDER**"
+
+
+@respx.mock
+async def test_crawl_catalog_drops_non_vinyl_products_from_the_feed():
+    respx.get(_PRODUCTS_URL).mock(
+        return_value=httpx.Response(200, json=[_NON_VINYL_PRODUCT, _NO_ATTRIBUTION_PRODUCT]))
+
+    items = [item async for item in Crawler().crawl_catalog()]
+
+    assert items == []
+
+
+def test_site_metadata():
+    assert Crawler.site_name == "Asbestos Records"
+    assert Crawler.base_url == "https://asbestosrecords.bigcartel.com"
+    assert Crawler.crawler_type == "catalog"
+    assert Crawler.genre_summary == "Ska, punk, and hardcore label and record store."
