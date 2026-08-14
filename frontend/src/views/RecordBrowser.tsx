@@ -59,22 +59,20 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
     setHasLoaded(true)
   }, [search, selectedArtist, sort, order, page, scope, unmatched])
 
-  useEffect(() => {
-    let latest = true
-    load(() => latest)
-    return () => { latest = false }
-  }, [load])
   // syncGeneration ticks on every sync_progress/sync_complete SSE event so the
   // collection/wantlist tables fill in as pages land, not just once the whole
-  // sync finishes. Guarded on truthy (not just changed) so the initial render's
-  // generation of 0 doesn't trigger a redundant second load alongside the
-  // mount effect above.
+  // sync finishes. One effect keyed on both, matching StockBrowser: as two
+  // effects (a mount one on [load], a tick one on [syncGeneration, load]) a
+  // load-identity change re-ran both and issued two requests for the same
+  // query, and each kept its own `latest` flag, so a tick could not invalidate
+  // an in-flight request from the other -- letting the older snapshot land last
+  // and overwrite the fresher one mid-sync. The truthy guard the tick effect
+  // needed to avoid a duplicate mount load goes away with it.
   useEffect(() => {
-    if (!syncGeneration) return
     let latest = true
     load(() => latest)
     return () => { latest = false }
-  }, [syncGeneration, load])
+  }, [load, syncGeneration])
   // Also refetches on syncGeneration ticks, same as load() above -- otherwise
   // the nav list stays stuck at whatever it was on mount while a collection
   // sync fills the table in page by page.

@@ -185,7 +185,13 @@ The effect cleanup drops superseded responses.
 
 **So do the row requests.** `load()` in both views now takes an `isLatest`
 predicate and checks it before committing, with the effect clearing the flag on
-cleanup. This race predates the branch, but reconciliation makes its visible
+cleanup. `RecordBrowser`'s two load effects are merged into one keyed on
+`[load, syncGeneration]`, matching `StockBrowser`: as two effects, a
+load-identity change re-ran both and issued two requests for the same query, and
+each kept its own flag, so a tick could not invalidate an in-flight request from
+the other — letting the older snapshot land last and overwrite the fresher one
+mid-sync. The truthy `syncGeneration` guard existed only to stop the second
+effect duplicating the mount load, so it goes away with the merge. This race predates the branch, but reconciliation makes its visible
 form reachable without any user action: a request issued under a selection that
 is then cleared automatically can land last and paint rows filtered to an artist
 while "All" sits highlighted. Gating the commit rather than the request keeps
