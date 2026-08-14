@@ -315,6 +315,11 @@ else:
     sort_expr = f"s.{sort_col}"
 ```
 
+(As of 2026-08-14 the final line reads
+`sort_expr = "LOWER(s.artist)" if sort_col == "artist" else f"s.{sort_col}"`;
+the artist sort is case-insensitive now. See
+[`2026-08-14-artist-casing-canonicalization-design.md`](2026-08-14-artist-casing-canonicalization-design.md).)
+
 Under the Wantlist filter every value the expression produces is `NULL`,
 so the sort is a harmless no-op (all rows tie and fall to the NULL-last
 branch) rather than a case needing its own gate. Harmless on the wire, but
@@ -461,6 +466,15 @@ invisible filter with no sidebar button highlighted (`All` highlights on
 `!selectedArtist`) and an empty table blaming the library scope. The Store
 tab's `All`/`Recommended` switch had the same latent bug and is fixed by
 the same shared path.
+
+**Amendment (2026-08-14, branch `artist-name-normalization`):** `changeFilter`
+is no longer the only guard against that state. Every artist-list refetch —
+whichever cause: a filter change, a hidden crawler, a `syncGeneration` tick —
+now runs `reconcileSelectedArtist` (`frontend/src/views/artistSelection.ts`) in
+both browsers, which clears a selection the refetched list no longer contains
+and follows one whose canonical casing changed. `changeFilter`'s eager clear
+stays as-is; the reconciliation is a backstop for the refetches it doesn't
+mediate. See [`2026-08-14-artist-casing-canonicalization-design.md`](2026-08-14-artist-casing-canonicalization-design.md).
 
 The dropdown renders for both scopes now, with scope-dependent options —
 `All`/`Recommended` for Store (unchanged, `Recommended` still disabled when

@@ -3,6 +3,7 @@ import { getReleases, getArtists } from '../api/client'
 import type { Release, SortField, SortOrder, RecordScope } from '../api/types'
 import { navButtonClass, dismissButtonClass } from '../styles/buttons'
 import { textInputClass, selectClass } from '../styles/inputs'
+import { reconcileSelectedArtist } from './artistSelection'
 
 interface Props {
   scope: RecordScope
@@ -38,7 +39,10 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
     tableScrollRef.current?.scrollTo({ top: 0 })
   }, [selectedArtist])
 
-  const load = useCallback(async () => {
+  // isLatest gates the commit, not the request -- see StockBrowser's copy: a
+  // request started under a selection the reconciliation then clears or re-cases
+  // must not paint its filtered rows under a sidebar that has moved on.
+  const load = useCallback(async (isLatest: () => boolean = () => true) => {
     const result = await getReleases({
       search: search || undefined,
       artist: selectedArtist || undefined,
@@ -49,24 +53,46 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
       scope,
       unmatched: scope === 'collection' ? unmatched : undefined,
     })
+    if (!isLatest()) return
     setReleases(result.releases)
     setTotal(result.total)
     setHasLoaded(true)
   }, [search, selectedArtist, sort, order, page, scope, unmatched])
 
-  useEffect(() => { load() }, [load])
   // syncGeneration ticks on every sync_progress/sync_complete SSE event so the
   // collection/wantlist tables fill in as pages land, not just once the whole
-  // sync finishes. Guarded on truthy (not just changed) so the initial render's
-  // generation of 0 doesn't trigger a redundant second load alongside the
-  // mount effect above.
+  // sync finishes. One effect keyed on both, matching StockBrowser: as two
+  // effects (a mount one on [load], a tick one on [syncGeneration, load]) a
+  // load-identity change re-ran both and issued two requests for the same
+  // query, and each kept its own `latest` flag, so a tick could not invalidate
+  // an in-flight request from the other -- letting the older snapshot land last
+  // and overwrite the fresher one mid-sync. The truthy guard the tick effect
+  // needed to avoid a duplicate mount load goes away with it.
   useEffect(() => {
-    if (syncGeneration) load()
-  }, [syncGeneration, load])
+    let latest = true
+    load(() => latest)
+    return () => { latest = false }
+  }, [load, syncGeneration])
   // Also refetches on syncGeneration ticks, same as load() above -- otherwise
   // the nav list stays stuck at whatever it was on mount while a collection
   // sync fills the table in page by page.
-  useEffect(() => { getArtists(scope).then(setArtists) }, [scope, syncGeneration])
+  // The `latest` guard is load-bearing, not hygiene: syncGeneration ticks per
+  // sync_progress event, faster than a round-trip, so these requests overlap
+  // and a late-arriving stale list would drive the reconciliation below.
+  useEffect(() => {
+    let latest = true
+    getArtists(scope).then((list) => { if (latest) setArtists(list) })
+    return () => { latest = false }
+  }, [scope, syncGeneration])
+  // A collection sync can re-case the selected artist's label -- the canonical
+  // casing follows the catalog, which the sync itself writes. See
+  // reconcileSelectedArtist; same handling as StockBrowser.
+  useEffect(() => {
+    const next = reconcileSelectedArtist(artists, selectedArtist)
+    if (next === selectedArtist) return
+    if (next) setSelectedArtist(next)
+    else selectArtist('')
+  }, [artists, selectedArtist])
   useEffect(() => { localStorage.setItem(`collectionViewMode_${scope}`, viewMode) }, [viewMode, scope])
 
   function toggleSort(field: SortField) {

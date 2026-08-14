@@ -3,6 +3,7 @@ import { getStock, getStockArtists } from '../api/client'
 import type { StockItem, StockSortField, SortOrder, StockScope, LibraryScope } from '../api/types'
 import { navButtonClass, dismissButtonClass } from '../styles/buttons'
 import { textInputClass, selectClass } from '../styles/inputs'
+import { reconcileSelectedArtist } from './artistSelection'
 
 interface Props {
   scope?: StockScope
@@ -47,7 +48,11 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
     setPage(1)
   }
 
-  const load = useCallback(async () => {
+  // isLatest gates the commit rather than the request: reconciliation can clear
+  // or re-case the selection while a request started under the old one is still
+  // in flight, and that older filtered response arriving last would leave the
+  // table showing a subset the sidebar no longer claims to be filtering by.
+  const load = useCallback(async (isLatest: () => boolean = () => true) => {
     const result = await getStock({
       search: search || undefined,
       artist: selectedArtist || undefined,
@@ -56,6 +61,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
       recommended: scope === 'store' && filter === 'recommended',
       hiddenCrawlerIds,
     })
+    if (!isLatest()) return
     setItems(result.items)
     setTotal(result.total)
     setHasLoaded(true)
@@ -67,7 +73,11 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
   // same effect as `load` (rather than a second `if (syncGeneration) load()`
   // effect) so a syncGeneration tick and an unrelated load-identity change
   // (search/sort/filter/page/...) can never both fire and double-call load().
-  useEffect(() => { load() }, [load, syncGeneration])
+  useEffect(() => {
+    let latest = true
+    load(() => latest)
+    return () => { latest = false }
+  }, [load, syncGeneration])
   useEffect(() => {
     if (!recommendedAvailable && filter === 'recommended') {
       setFilter('all')
@@ -76,12 +86,29 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
   // Also refetches on syncGeneration ticks, same as load() above -- otherwise
   // the sidebar's artist list would go stale mid-crawl.
   useEffect(() => {
+    // syncGeneration ticks faster than a request round-trip, so these overlap.
+    // Committing whichever response lands last would let a stale list drive
+    // the reconciliation below -- re-casing the selection to an old label, or
+    // clearing an artist the newest response still lists.
+    let latest = true
     getStockArtists(
       scope === 'track' ? trackLibraryScope(filter) : undefined,
       scope === 'store' && filter === 'recommended',
       hiddenCrawlerIds,
-    ).then(setArtists)
+    ).then((list) => { if (latest) setArtists(list) })
+    return () => { latest = false }
   }, [scope, filter, hiddenCrawlerIds, syncGeneration])
+  // A refetched list can re-case the selected artist's label, or drop it
+  // entirely -- see reconcileSelectedArtist. A pure re-casing keeps the current
+  // sort and page (it's still the same artist); losing the artist delegates to
+  // selectArtist(''), the full "back to All" transition, sort derivation
+  // included.
+  useEffect(() => {
+    const next = reconcileSelectedArtist(artists, selectedArtist)
+    if (next === selectedArtist) return
+    if (next) setSelectedArtist(next)
+    else selectArtist('')
+  }, [artists, selectedArtist])
   useEffect(() => { localStorage.setItem(`collectionViewMode_${scope}`, viewMode) }, [viewMode, scope])
   useEffect(() => { localStorage.setItem(`stockFilter_${scope}`, filter) }, [filter, scope])
   useEffect(() => { tableScrollRef.current?.scrollTo({ top: 0 }) }, [selectedArtist])

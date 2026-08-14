@@ -171,6 +171,12 @@ else:
     sort_expr = f"s.{sort_col}"
 ```
 
+(As of 2026-08-14 the `else` branch's last line reads
+`sort_expr = "LOWER(s.artist)" if sort_col == "artist" else f"s.{sort_col}"` —
+the artist sort became case-insensitive so an artist's casing variants stay
+adjacent. Nothing else about the gate above changed. See
+[`2026-08-14-artist-casing-canonicalization-design.md`](2026-08-14-artist-casing-canonicalization-design.md).)
+
 `_STOCK_ALLOWED_SORT` is left unchanged — `"discogs_price"` is deliberately
 *not* a member. `routers/stock.py` passes `sort` straight through to
 `get_stock_items` with no validation of its own, so `_STOCK_ALLOWED_SORT`
