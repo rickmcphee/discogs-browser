@@ -322,7 +322,12 @@ is never displayed — so this is a backend semantics change plus comments, with
 - No NULL-price placeholder is created for a target that has not been crawled; a missing
   `listings` row still means "not yet crawled".
 - Only `matches[0]` is stored.
-- One short-lived connection per row, committed per row, never spanning Playwright calls.
+- Short-lived connections, each committed on its own, never spanning Playwright calls. Under
+  fan-out that is three kinds of transaction per target rather than the one-per-row of the pair-row
+  design: one to load the target and resolve its eligible crawlers, one per work unit to write that
+  crawler's listing, and one to resolve the queue row. The invariant being protected is unchanged —
+  no connection is held across a page load, and no single transaction spans several units, so one
+  unit's crash cannot roll back an earlier unit's committed work.
 - One request per site in flight process-wide, via the per-`crawler_id` lock, spanning the
   bot-detection retry.
 - Failure domains: crawlers declaring the same `failure_domain` share breaker state, applied per

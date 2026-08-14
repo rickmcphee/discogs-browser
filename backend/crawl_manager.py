@@ -391,14 +391,25 @@ class CrawlManager:
                     clear_listing_price(conn, row["discogs_id"], crawler_id)
                 conn.commit()
 
+            # Before the broadcast, not after: the broadcast awaits q.put() for
+            # every subscriber, which is a cancellation point, and
+            # stop_worker_pool()'s task.cancel() injects CancelledError there.
+            # Resolving afterwards meant a fully finished last unit could have
+            # its listing committed and its row left 'in_progress' anyway, with
+            # no reclaim path and no re-enqueue able to revive it -- the same
+            # stranding this per-row resolution exists to prevent, through a
+            # one-await window. resolve_row() is synchronous, so nothing can be
+            # injected between the unit's commit and the status write. Losing
+            # the SSE event to a shutdown instead is harmless: clients refetch
+            # on reconnect.
+            if is_last_unit_for_row:
+                resolve_row(row_id)
+
             status = "found" if matches else "not_found"
             if is_release:
                 await self._broadcast_listing_changed(row["discogs_id"], crawler_id, status)
             else:
                 await self._broadcast_stock_listing_changed(row["item_key"], crawler_id, status)
-
-            if is_last_unit_for_row:
-                resolve_row(row_id)
 
         return len(rows)
 

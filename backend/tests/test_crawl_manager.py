@@ -1934,6 +1934,57 @@ async def test_worker_completed_row_is_not_stranded_by_a_later_rows_cancellation
     assert stranded_status != "done"
 
 
+async def test_worker_row_is_resolved_before_the_cancellable_broadcast(pg_schema):
+    # The same stranding hazard through a much narrower window: the last unit's
+    # listing is committed, then the SSE broadcast awaits q.put() for every
+    # subscriber -- a cancellation point stop_worker_pool()'s task.cancel()
+    # injects into. Resolving the row after that await meant a fully finished
+    # row could still be left at 'in_progress' with its data already written,
+    # unreachable by both claim_crawl_queue_batch (no reclaim path) and
+    # enqueue_crawl_queue's revival (gated on status = 'done'). resolve_row()
+    # now runs before the broadcast, and is synchronous, so no CancelledError
+    # can land between the unit's commit and the status write.
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1")
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(return_value=[
+        {"url": "https://x", "price": 9.99, "shipping": None, "currency": "USD", "condition": None}
+    ])
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    # Cancellation delivered exactly at the broadcast await, which is where a
+    # shutdown lands once the unit's own write has already committed.
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("config.load_config", return_value={"crawl_delay_seconds": 0}), \
+         patch.object(manager, "_broadcast_listing_changed", new=AsyncMock(side_effect=asyncio.CancelledError())):
+        with pytest.raises(asyncio.CancelledError):
+            await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT status FROM crawl_queue WHERE discogs_id = 'r1'"
+        ).fetchone()
+        listing = conn.execute(
+            "SELECT price FROM listings WHERE release_id = 'r1'"
+        ).fetchone()
+    # Both the work and its status survive the cancellation.
+    assert listing["price"] == 9.99
+    assert row["status"] == "done"
+
+
 async def test_drain_one_batch_records_failure_and_cools_down_after_limit(pg_schema):
     with db.get_admin_pool().connection() as conn:
         db.register_crawler(conn, "Amazon", "/x.py")
