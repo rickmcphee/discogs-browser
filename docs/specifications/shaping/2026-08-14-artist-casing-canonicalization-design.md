@@ -13,11 +13,12 @@ are the usual tell, because that is where sources disagree.
 This is live behaviour, not stale rows left over from before normalization
 existed. Two write paths feed artist names and neither reconciles them:
 
-- `catalog.artist` comes from the Discogs API and is stored verbatim
-  (`db.py:436`) — no casing pass at all. Discogs' own form is "Jets To Brazil".
+- `catalog.artist` comes from the Discogs API and is stored verbatim by
+  `db.upsert_catalog_release` — no casing pass at all. Discogs' own form is
+  "Jets To Brazil".
 - `stock_items.artist` comes from store crawlers — a Shopify `vendor` field or
   a regex split of a product title — and goes through
-  `normalize_artist_casing` (`db.py:1060`).
+  `db.normalize_artist_casing`, called from `db.replace_stock_items`.
 
 `normalize_artist_casing` is deliberately a no-op unless its input is entirely
 upper- or entirely lower-case; title-casing an already-mixed name mangles it
@@ -29,16 +30,16 @@ on which store's HTML it came from and whether that store shouted.
 
 The drift is *visible* because display and filtering are case-sensitive:
 
-| Site | Behaviour |
+| Function | Behaviour |
 |---|---|
-| `db.py:1294` | `SELECT DISTINCT s.artist` — stock sidebar |
-| `db.py:1585` | `SELECT DISTINCT c.artist` — release sidebar |
-| `db.py:1205` | `s.artist = %(artist)s` — stock artist filter |
-| `db.py:728` | `c.artist = %(artist)s` — release artist filter |
+| `db.get_distinct_stock_artists` | `SELECT DISTINCT s.artist` — stock sidebar |
+| `db.get_distinct_artists` | `SELECT DISTINCT c.artist` — release sidebar |
+| `db.get_stock_items` | `s.artist = %(artist)s` — stock artist filter |
+| `db.get_library_releases` | `c.artist = %(artist)s` — release artist filter |
 
 Two casings therefore mean two sidebar entries and a split filter. Ownership
-matching is *not* affected — that already case-folds (`db.py:1148`) — and
-neither is search, which is `ILIKE`.
+matching is *not* affected — `db._library_match_fragment` already case-folds
+both sides — and neither is search, which is `ILIKE`.
 
 ## Why not a smarter title-caser, and why not a backfill
 
@@ -48,10 +49,11 @@ styling at all ("Godspeed You! Black Emperor", "clipping.", "SUNN O)))").
 Discogs' metadata is already curated by humans for exactly this, so the fix is
 to *pick* the curated casing rather than to compute one.
 
-A data backfill would not hold either. `replace_stock_items` deletes and
-re-inserts a crawler's rows on every crawl (`db.py:1080`), `stock_item_identities`
-is upserted with overwrite, and `catalog.artist` is rewritten on every Discogs
-sync (`db.py:440`) — so the next run reintroduces each source's own casing.
+A data backfill would not hold either. `db.replace_stock_items` deletes and
+re-inserts a crawler's rows on every crawl, `stock_item_identities` is upserted
+with overwrite, and `db.upsert_catalog_release`'s `ON CONFLICT` rewrites
+`catalog.artist` on every Discogs sync — so the next run reintroduces each
+source's own casing.
 Conversely, once read-time display is canonical, no migration is needed and
 nothing has to wait for a crawl.
 
@@ -148,9 +150,10 @@ working unchanged.
 
 ## Out of scope
 
-- **`item_key` is untouched.** It hashes `artist.title()` of the *raw* value
-  (`db.py:514`, `db.py:1093`), so display casing has never fed it and changing
-  display cannot orphan a `stock_item_judgments` row.
+- **`item_key` is untouched.** Both write paths — `db.replace_stock_items` and
+  `db.upsert_stock_item_from_release` — hash `artist.title()` of the *raw*
+  value, so display casing has never fed it and changing display cannot orphan
+  a `stock_item_judgments` row.
 - **`replace_stock_items` still normalizes as it does today.** Its
   all-one-case-only rule is right for what it does; this design layers display
   canonicalization over whatever it stores rather than replacing it.

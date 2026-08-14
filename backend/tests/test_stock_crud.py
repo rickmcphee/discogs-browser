@@ -1265,11 +1265,20 @@ def test_get_distinct_stock_artists_collapses_casing_variants_onto_catalog_casin
     # Brazil" (mixed case, so normalize_artist_casing leaves it alone), the
     # other shouts and comes out "Jets To Brazil". Discogs' curated casing
     # decides which one the sidebar shows, and there is only one entry.
+    #
+    # Stock deliberately holds *two* "Jets to Brazil" rows against one "Jets To
+    # Brazil": that makes the stock-only answer "Jets to Brazil" (see the next
+    # test), so the expected result here can only come from the catalog
+    # preference. With one row each, the byte-order tie-break would return
+    # "Jets To Brazil" too and the assertion would pass with the catalog
+    # lookup deleted.
     jade = _register(admin_conn, "Jade Tree")
     amoeba = _register(admin_conn, "Amoeba")
     db.replace_stock_items(admin_conn, jade, [
         {"artist": "Jets to Brazil", "title": "Orange Rhyming Dictionary", "url": "https://j/1",
          "price": 20.0, "currency": "USD"},
+        {"artist": "Jets to Brazil", "title": "Perfecting Loneliness", "url": "https://j/2",
+         "price": 21.0, "currency": "USD"},
     ])
     db.replace_stock_items(admin_conn, amoeba, [
         {"artist": "JETS TO BRAZIL", "title": "Four Cornered Night", "url": "https://a/1",
@@ -1308,11 +1317,15 @@ def test_get_distinct_stock_artists_uses_commonest_stock_casing_when_not_in_cata
 
 
 def test_get_stock_items_artist_filter_spans_casing_variants_and_labels_them_canonically(admin_conn):
+    # Same 2-vs-1 stock split as above, so the rows can only carry the catalog
+    # label, not a tie-break that happens to agree with it.
     jade = _register(admin_conn, "Jade Tree")
     amoeba = _register(admin_conn, "Amoeba")
     db.replace_stock_items(admin_conn, jade, [
         {"artist": "Jets to Brazil", "title": "Orange Rhyming Dictionary", "url": "https://j/1",
          "price": 20.0, "currency": "USD"},
+        {"artist": "Jets to Brazil", "title": "Perfecting Loneliness", "url": "https://j/2",
+         "price": 21.0, "currency": "USD"},
     ])
     db.replace_stock_items(admin_conn, amoeba, [
         {"artist": "JETS TO BRAZIL", "title": "Four Cornered Night", "url": "https://a/1",
@@ -1328,6 +1341,8 @@ def test_get_stock_items_artist_filter_spans_casing_variants_and_labels_them_can
 
     with db.user_scope(alice["id"]) as conn:
         result = db.get_stock_items(conn, alice["id"], artist="Jets To Brazil")
-    assert result["total"] == 2
-    assert {i["title"] for i in result["items"]} == {"Orange Rhyming Dictionary", "Four Cornered Night"}
+    assert result["total"] == 3
+    assert {i["title"] for i in result["items"]} == {
+        "Orange Rhyming Dictionary", "Perfecting Loneliness", "Four Cornered Night",
+    }
     assert {i["artist"] for i in result["items"]} == {"Jets To Brazil"}
