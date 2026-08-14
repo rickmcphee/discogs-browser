@@ -1934,6 +1934,78 @@ async def test_worker_completed_row_is_not_stranded_by_a_later_rows_cancellation
     assert stranded_status != "done"
 
 
+async def test_worker_row_is_resolved_before_the_cancellable_broadcast(pg_schema):
+    # Ordering guard, not a live-bug regression test. The last unit's listing
+    # commits, then the row is resolved, then the SSE broadcast runs. Nothing
+    # awaitable may separate the first two: a finished row left at
+    # 'in_progress' is unreachable by both claim_crawl_queue_batch (no reclaim
+    # path) and enqueue_crawl_queue's revival (gated on status = 'done').
+    #
+    # In today's code neither ordering could actually strand a row -- the
+    # broadcasts use put_nowait, and even `await q.put()` on an unbounded queue
+    # does not suspend, so task.cancel() has no window to land in. This test
+    # pins the ordering anyway by making the broadcast itself raise, which is
+    # what a future await in that path would let a cancellation do.
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1")
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(return_value=[
+        {"url": "https://x", "price": 9.99, "shipping": None, "currency": "USD", "condition": None}
+    ])
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    # Cancellation delivered exactly at the broadcast await, which is where a
+    # shutdown lands once the unit's own write has already committed.
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("config.load_config", return_value={"crawl_delay_seconds": 0}), \
+         patch.object(manager, "_broadcast_listing_changed", new=AsyncMock(side_effect=asyncio.CancelledError())):
+        with pytest.raises(asyncio.CancelledError):
+            await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT status FROM crawl_queue WHERE discogs_id = 'r1'"
+        ).fetchone()
+        listing = conn.execute(
+            "SELECT price FROM listings WHERE release_id = 'r1'"
+        ).fetchone()
+    # Both the work and its status survive the cancellation.
+    assert listing["price"] == 9.99
+    assert row["status"] == "done"
+
+
+async def test_listing_broadcasts_reach_subscribers_without_awaiting_a_put(pg_schema):
+    # listing_changed is never buffered in _recent and _events_to_replay's gate
+    # closes once the row is 'done', so a dropped event is gone for good: the
+    # frontend drives its refetch off this event, and its SSE error path only
+    # reopens the stream. Hence put_nowait -- which also keeps a slow consumer
+    # from stalling a crawl worker. Delivery is what must not regress.
+    manager = CrawlManager()
+    q = manager.subscribe()
+
+    await manager._broadcast_listing_changed("r1", 7, "found")
+    await manager._broadcast_stock_listing_changed("key1", 8, "not_found")
+
+    # Both already queued, with no scheduler pass in between.
+    assert q.qsize() == 2
+    first, second = q.get_nowait(), q.get_nowait()
+    assert first == {"id": 1, "type": "listing_changed", "discogs_id": "r1", "crawler_id": 7, "status": "found"}
+    assert second == {"id": 2, "type": "listing_changed", "item_key": "key1", "crawler_id": 8, "status": "not_found"}
+
+
 async def test_drain_one_batch_records_failure_and_cools_down_after_limit(pg_schema):
     with db.get_admin_pool().connection() as conn:
         db.register_crawler(conn, "Amazon", "/x.py")
