@@ -128,6 +128,24 @@ _PREORDER_PRODUCT = {
     ],
 }
 
+# Hypothetical multi-variant product (none observed live as of 2026-08-14,
+# see design doc "Variants: always exactly one per product") -- proves a
+# future multi-variant product isn't silently reduced to its first variant,
+# and that an unavailable non-preorder variant doesn't drop the whole
+# product when a sibling variant is available.
+_MULTI_VARIANT_PRODUCT = {
+    "title": "Big Thief - Dragon New Warm Mountain I Believe In You",
+    "vendor": "4AD",
+    "handle": "big-thief-dragon-new-warm-mountain",
+    "product_type": "Vinyl",
+    "tags": ["Vinyl"],
+    "images": [{"src": "https://cdn.shopify.com/big-thief-fallback.jpg"}],
+    "variants": [
+        {"title": "Black Vinyl", "price": "29.99", "available": True, "featured_image": None},
+        {"title": "Indie Exclusive Colored Vinyl", "price": "34.99", "available": False, "featured_image": None},
+    ],
+}
+
 _DEFAULT_TITLE_PRODUCT = {
     "title": "Big Lebowski - Original Soundtrack (Vinyl)",
     "vendor": "Mobile Fidelity",
@@ -250,6 +268,17 @@ async def test_crawl_catalog_skips_product_with_null_variants(crawler):
     _mock_single_page([product])
     items = [item async for item in crawler.crawl_catalog()]
     assert items == []
+
+
+@respx.mock
+async def test_crawl_catalog_yields_all_available_variants_no_title_suffix(crawler):
+    _mock_single_page([_MULTI_VARIANT_PRODUCT])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert len(items) == 1
+    item = items[0]
+    assert item["artist"] == "Big Thief"
+    assert item["title"] == "Dragon New Warm Mountain I Believe In You"
+    assert item["price"] == 29.99
 
 
 @respx.mock
