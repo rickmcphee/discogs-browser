@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, memo } from 'react'
-import { getStock, getStockArtists } from '../api/client'
+import { getStock, getStockArtists, saveStockItem, unsaveStockItem } from '../api/client'
 import type { StockItem, StockSortField, SortOrder, StockScope, LibraryScope } from '../api/types'
 import { navButtonClass, dismissButtonClass } from '../styles/buttons'
 import { textInputClass, selectClass } from '../styles/inputs'
@@ -19,6 +19,14 @@ const TRACK_FILTERS = ['all', 'collection', 'wantlist'] as const satisfies reado
 
 function trackLibraryScope(value: string): LibraryScope | undefined {
   return (TRACK_FILTERS as readonly string[]).includes(value) ? (value as LibraryScope) : undefined
+}
+
+function BookmarkIcon({ filled }: { filled: boolean }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill={filled ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.5">
+      <path d="M4 2h8a1 1 0 0 1 1 1v11l-5-3-5 3V3a1 1 0 0 1 1-1Z" strokeLinejoin="round" />
+    </svg>
+  )
 }
 
 function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCrawlerIds = NO_HIDDEN_CRAWLER_IDS, syncGeneration, isAdmin = false }: Props) {
@@ -149,6 +157,16 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
     setPage(1)
   }
 
+  async function toggleSaved(item: StockItem) {
+    const next = !item.saved
+    setItems((prev) => {
+      const patched = prev.map((it) => (it.item_key === item.item_key ? { ...it, saved: next } : it))
+      return filter === 'saved' && !next ? patched.filter((it) => it.item_key !== item.item_key) : patched
+    })
+    if (filter === 'saved' && !next) setTotal((t) => t - 1)
+    await (next ? saveStockItem(item.item_key) : unsaveStockItem(item.item_key))
+  }
+
   // Sorting by artist is meaningless once the list is filtered down to a
   // single artist, so switching the artist filter resets to the sort that
   // makes sense for the new context: artist for "All", title for a specific
@@ -162,7 +180,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
   }
 
   const totalPages = Math.ceil(total / PER_PAGE)
-  const colCount = scope === 'track' ? 7 : 6
+  const colCount = scope === 'track' ? 7 : 7
   const priceSortable = scope === 'track' && filter !== 'wantlist'
   const emptyMessage =
     scope === 'store' && filter === 'recommended' ? 'Nothing recommended is in stock right now.'
@@ -282,15 +300,26 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
                     rel="noreferrer"
                     className="group"
                   >
-                    {item.cover_image_url ? (
-                      <img
-                        src={item.cover_image_url}
-                        alt={item.title}
-                        className="w-full aspect-square object-cover rounded"
-                      />
-                    ) : (
-                      <div className="w-full aspect-square bg-gray-800 rounded" />
-                    )}
+                    <div className="relative">
+                      {item.cover_image_url ? (
+                        <img
+                          src={item.cover_image_url}
+                          alt={item.title}
+                          className="w-full aspect-square object-cover rounded"
+                        />
+                      ) : (
+                        <div className="w-full aspect-square bg-gray-800 rounded" />
+                      )}
+                      {scope === 'store' && (
+                        <button
+                          onClick={(e) => { e.preventDefault(); toggleSaved(item) }}
+                          title={item.saved ? 'Remove from saved' : 'Save for later'}
+                          className="absolute top-1 right-1 p-1 rounded-full bg-gray-950/70 text-white hover:bg-gray-950"
+                        >
+                          <BookmarkIcon filled={item.saved} />
+                        </button>
+                      )}
+                    </div>
                     <div className="mt-1.5 text-sm text-gray-200 truncate group-hover:text-white" title={item.reason ?? undefined}>{item.artist}</div>
                     <div className="text-xs text-gray-400 truncate" title={item.reason ?? undefined}>{item.title}</div>
                   </a>
@@ -343,6 +372,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
                     Source {sort === 'source' ? (order === 'asc' ? '↑' : '↓') : ''}
                   </button>
                 </th>
+                {scope === 'store' && <th className="w-8 px-3 py-2"></th>}
               </tr>
             </thead>
             <tbody>
@@ -374,6 +404,17 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
                     </a>
                   </td>
                   <td className="px-3 py-2 text-gray-400">{item.source}</td>
+                  {scope === 'store' && (
+                    <td className="px-3 py-2">
+                      <button
+                        onClick={() => toggleSaved(item)}
+                        title={item.saved ? 'Remove from saved' : 'Save for later'}
+                        className={`p-1 ${dismissButtonClass()}`}
+                      >
+                        <BookmarkIcon filled={item.saved} />
+                      </button>
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>

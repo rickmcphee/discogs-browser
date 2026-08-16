@@ -3,21 +3,27 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import StockBrowser from '../views/StockBrowser'
 
 const items = [
-  { id: 1, item_key: 'k1', is_own: true, artist: 'Rob Zombie', title: 'The Great Satan — Ghostly Black Vinyl', format: 'Vinyl', price: 31.99, currency: 'USD', url: 'https://shop.nuclearblast.com/products/rob-zombie', cover_image_url: 'https://cdn.shopify.com/rz-black.png', source: 'Nuclear Blast', last_seen: '2026-07-05T00:00:00Z', discogs_price: null },
-  { id: 2, item_key: 'k2', is_own: true, artist: 'NAILS', title: 'Every Bridge Burning — Forest Green LP', format: 'Vinyl', price: 25.99, currency: 'USD', url: 'https://shop.nuclearblast.com/products/nails', cover_image_url: null, source: 'Nuclear Blast', last_seen: '2026-07-05T00:00:00Z', discogs_price: '42.50' },
+  { id: 1, item_key: 'k1', is_own: true, artist: 'Rob Zombie', title: 'The Great Satan — Ghostly Black Vinyl', format: 'Vinyl', price: 31.99, currency: 'USD', url: 'https://shop.nuclearblast.com/products/rob-zombie', cover_image_url: 'https://cdn.shopify.com/rz-black.png', source: 'Nuclear Blast', last_seen: '2026-07-05T00:00:00Z', discogs_price: null, saved: false },
+  { id: 2, item_key: 'k2', is_own: true, artist: 'NAILS', title: 'Every Bridge Burning — Forest Green LP', format: 'Vinyl', price: 25.99, currency: 'USD', url: 'https://shop.nuclearblast.com/products/nails', cover_image_url: null, source: 'Nuclear Blast', last_seen: '2026-07-05T00:00:00Z', discogs_price: '42.50', saved: false },
 ]
 
 const getStock = vi.fn()
 const getStockArtists = vi.fn()
+const saveStockItem = vi.fn()
+const unsaveStockItem = vi.fn()
 
 vi.mock('../api/client', () => ({
   getStock: (...args: unknown[]) => getStock(...args),
   getStockArtists: (...args: unknown[]) => getStockArtists(...args),
+  saveStockItem: (...args: unknown[]) => saveStockItem(...args),
+  unsaveStockItem: (...args: unknown[]) => unsaveStockItem(...args),
 }))
 
 beforeEach(() => {
   getStock.mockReset()
   getStockArtists.mockReset()
+  saveStockItem.mockReset()
+  unsaveStockItem.mockReset()
   getStock.mockResolvedValue({ total: 2, page: 1, per_page: 250, items })
   getStockArtists.mockResolvedValue(['NAILS', 'Rob Zombie'])
   localStorage.clear()
@@ -563,5 +569,43 @@ describe('StockBrowser', () => {
     await waitFor(() => expect(screen.getAllByText('The Great Satan — Ghostly Black Vinyl').length).toBe(2))
     fireEvent.click(screen.getByTitle('Tile view'))
     await waitFor(() => expect(screen.getAllByText('The Great Satan — Ghostly Black Vinyl').length).toBe(1))
+  })
+
+  it('renders a bookmark button per row in Store scope list view', async () => {
+    render(<StockBrowser scope="store" />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    expect(screen.getAllByTitle('Save for later').length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('does not render a bookmark button in Track scope', async () => {
+    render(<StockBrowser scope="track" />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    expect(screen.queryByTitle('Save for later')).toBeNull()
+    expect(screen.queryByTitle('Remove from saved')).toBeNull()
+  })
+
+  it('clicking the bookmark button calls saveStockItem with the item_key and flips the icon title', async () => {
+    saveStockItem.mockResolvedValue({ saved: true })
+    render(<StockBrowser scope="store" />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    const button = screen.getAllByTitle('Save for later')[0]
+    fireEvent.click(button)
+    expect(saveStockItem).toHaveBeenCalledWith('k1')
+    await waitFor(() => expect(screen.getAllByTitle('Remove from saved').length).toBeGreaterThanOrEqual(1))
+  })
+
+  it('unsaving under the Saved filter removes the row and decrements the count', async () => {
+    getStock.mockResolvedValue({
+      total: 1, page: 1, per_page: 250,
+      items: [{ ...items[0], saved: true }],
+    })
+    unsaveStockItem.mockResolvedValue({ saved: false })
+    render(<StockBrowser scope="store" />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'saved' } })
+    const button = await screen.findByTitle('Remove from saved')
+    fireEvent.click(button)
+    await waitFor(() => expect(screen.queryByText('The Great Satan — Ghostly Black Vinyl')).toBeNull())
+    expect(screen.getByText(/^0 items$/)).toBeTruthy()
   })
 })
