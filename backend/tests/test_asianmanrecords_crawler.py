@@ -239,6 +239,25 @@ _LEMURIA = {
 }
 
 
+# Real confirmed-live case: 3 genuine color-variant pressings, no CD/cassette/
+# slipmat sibling and no bundle-deal sizing -- the primary multi-variant case
+# (alternate pressings), which every other multi-variant fixture in this file
+# collapses away to a single survivor before reaching the suffix branch.
+_SMOKING_POPES_STAY_DOWN = {
+    "title": 'SMOKING POPES- "Stay Down" 12" VINYL',
+    "vendor": "Asian Man Records",
+    "handle": "smoking-popes-stay-down-12-vinyl",
+    "product_type": "12-INCH VINYL",
+    "tags": ["12-INCH VINYL"],
+    "images": [],
+    "variants": [
+        {"title": "CLEAR GREEN VINYL", "price": "20.99", "available": True, "featured_image": None},
+        {"title": "RANCOM COLOR", "price": "20.99", "available": True, "featured_image": None},
+        {"title": "COKE BOTTLE CLEAR", "price": "20.99", "available": True, "featured_image": None},
+    ],
+}
+
+
 def _page_response(products):
     return httpx.Response(200, json={"products": products})
 
@@ -283,6 +302,34 @@ async def test_crawl_catalog_collapses_apparel_bundle_sizes_to_cheapest(crawler)
     items = [item async for item in crawler.crawl_catalog()]
     assert len(items) == 1
     assert items[0]["price"] == 29.99
+
+
+@respx.mock
+async def test_crawl_catalog_bundle_collapse_skips_unavailable_cheapest_size(crawler):
+    product = {**_GRUMPSTER, "variants": [
+        {"title": "SMALL BUNDLE DEAL", "price": "29.99", "available": False, "featured_image": None},
+        {"title": "LARGE BUNDLE DEAL", "price": "29.99", "available": True, "featured_image": None},
+        {"title": "XXL BUNDLE DEAL", "price": "31.99", "available": True, "featured_image": None},
+    ]}
+    _mock_single_page([product])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert len(items) == 1
+    assert items[0]["price"] == 29.99
+
+
+@respx.mock
+async def test_crawl_catalog_suffixes_title_for_multiple_surviving_variants(crawler):
+    _mock_single_page([_SMOKING_POPES_STAY_DOWN])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert len(items) == 3
+    titles = {item["title"] for item in items}
+    assert titles == {
+        "Stay Down — CLEAR GREEN VINYL",
+        "Stay Down — RANCOM COLOR",
+        "Stay Down — COKE BOTTLE CLEAR",
+    }
+    assert all(item["artist"] == "SMOKING POPES" for item in items)
+    assert all(item["price"] == 20.99 for item in items)
 
 
 @respx.mock

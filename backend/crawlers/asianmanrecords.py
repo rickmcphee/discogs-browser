@@ -1,6 +1,6 @@
 import re
 from typing import AsyncIterator, Optional
-from shopify_catalog import iter_products, resolve_cover_image
+from shopify_catalog import iter_products, has_tag, resolve_cover_image
 
 _COLLECTION_SLUG = "all-products"
 _VINYL_TYPES = {"12-INCH VINYL", "7-INCH VINYL"}
@@ -50,7 +50,7 @@ class Crawler:
     def _is_vinyl(cls, product: dict) -> bool:
         if product.get("product_type") in _VINYL_TYPES:
             return True
-        return any(t in _VINYL_TYPES for t in (product.get("tags") or []))
+        return any(has_tag(product, t) for t in _VINYL_TYPES)
 
     @classmethod
     def _items(cls, product: dict) -> list[dict]:
@@ -63,15 +63,14 @@ class Crawler:
             survivors = [v for v in variants if not _EXCLUDED_VARIANT_RE.search(v.get("title", ""))]
         else:
             survivors = list(variants)
-        if survivors and all(_BUNDLE_DEAL_RE.search(v.get("title", "")) for v in survivors):
-            survivors = [min(survivors, key=cls._variant_price_sort_key)]
+        kept = [v for v in survivors if v.get("available") or is_preorder]
+        if kept and all(_BUNDLE_DEAL_RE.search(v.get("title", "")) for v in kept):
+            kept = [min(kept, key=cls._variant_price_sort_key)]
 
         handle = product.get("handle", "")
         items = []
-        for variant in survivors:
-            if not variant.get("available") and not is_preorder:
-                continue
-            title = album if len(survivors) == 1 else f"{album} — {variant.get('title', '')}"
+        for variant in kept:
+            title = album if len(kept) == 1 else f"{album} — {variant.get('title', '')}"
             items.append({
                 "artist": artist,
                 "title": title,
