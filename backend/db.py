@@ -1398,7 +1398,7 @@ def _canonical_artist_list(conn, artists) -> list:
     together."""
     labels = canonical_artist_labels(conn, artists)
     deduped = {labels.get(a, a) for a in artists if a}
-    return sorted(deduped, key=lambda a: (a.lower(), a))
+    return sorted(deduped, key=lambda a: (_artist_sort_key(a), a.lower(), a))
 
 
 def _apply_canonical_artists(conn, rows: list[dict]) -> None:

@@ -604,3 +604,20 @@ def test_get_library_releases_the_prefix_sort_leaves_false_positives_alone(admin
     # "The Who" -> sort key "who" (W). "The" and "Theatre of Hate" have no
     # word after "the " to strip, so they keep their literal spelling (T).
     assert [r["discogs_id"] for r in result["releases"]] == ["r1", "r2", "r3"]
+
+
+def test_get_distinct_artists_sorts_the_prefixed_artists_by_the_following_word(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "The Beatles", "Abbey Road")
+    _catalog(admin_conn, "r2", "Aphex Twin", "Selected Ambient Works")
+    _catalog(admin_conn, "r3", "Pavement", "Slanted and Enchanted")
+    _catalog(admin_conn, "r4", "Zappa", "Hot Rats")
+    for rid in ("r1", "r2", "r3", "r4"):
+        db.upsert_library_item(admin_conn, alice["id"], rid, in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        artists = db.get_distinct_artists(conn, alice["id"])
+    # "The Beatles" sorts ahead of "Pavement" only with article-stripping --
+    # the full-string key "the beatles" would put it after "pavement".
+    assert artists == ["Aphex Twin", "The Beatles", "Pavement", "Zappa"]

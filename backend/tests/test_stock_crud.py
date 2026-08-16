@@ -1382,3 +1382,19 @@ def test_get_stock_items_the_prefix_sort_leaves_false_positives_alone(admin_conn
     with db.user_scope(alice["id"]) as conn:
         result = db.get_stock_items(conn, alice["id"], sort="artist", order="asc")
     assert [i["title"] for i in result["items"]] == ["Untitled", "Westworld", "Tommy"]
+
+
+def test_get_distinct_stock_artists_sorts_the_prefixed_artists_by_the_following_word(admin_conn):
+    crawler_id = _register(admin_conn, "Amazon")
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "The Beatles", "title": "Abbey Road", "url": "https://x/1", "price": 20.0, "currency": "USD"},
+        {"artist": "Aphex Twin", "title": "Selected Ambient Works", "url": "https://x/2", "price": 15.0, "currency": "USD"},
+        {"artist": "Pavement", "title": "Slanted and Enchanted", "url": "https://x/3", "price": 12.0, "currency": "USD"},
+        {"artist": "Zappa", "title": "Hot Rats", "url": "https://x/4", "price": 18.0, "currency": "USD"},
+    ])
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        artists = db.get_distinct_stock_artists(conn, alice["id"])
+    assert artists == ["Aphex Twin", "The Beatles", "Pavement", "Zappa"]
