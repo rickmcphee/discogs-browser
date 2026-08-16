@@ -139,6 +139,7 @@ export interface StockItem {
   reason: string | null
   is_own: boolean
   discogs_price: string | null
+  saved: boolean
 }
 
 export interface StockResponse {
