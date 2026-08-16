@@ -1354,14 +1354,17 @@ def test_get_stock_items_sorts_the_prefixed_artists_by_the_following_word(admin_
     db.replace_stock_items(admin_conn, crawler_id, [
         {"artist": "The Beatles", "title": "Abbey Road", "url": "https://x/1", "price": 20.0, "currency": "USD"},
         {"artist": "Aphex Twin", "title": "Selected Ambient Works", "url": "https://x/2", "price": 15.0, "currency": "USD"},
-        {"artist": "Zappa", "title": "Hot Rats", "url": "https://x/3", "price": 18.0, "currency": "USD"},
+        {"artist": "Pavement", "title": "Slanted and Enchanted", "url": "https://x/3", "price": 12.0, "currency": "USD"},
+        {"artist": "Zappa", "title": "Hot Rats", "url": "https://x/4", "price": 18.0, "currency": "USD"},
     ])
     admin_conn.commit()
 
     with db.user_scope(alice["id"]) as conn:
         result = db.get_stock_items(conn, alice["id"], sort="artist", order="asc")
+    # "The Beatles" sorts ahead of "Pavement" only with article-stripping --
+    # the full-string key "the beatles" would put it after "pavement".
     assert [i["title"] for i in result["items"]] == [
-        "Selected Ambient Works", "Abbey Road", "Hot Rats",
+        "Selected Ambient Works", "Abbey Road", "Slanted and Enchanted", "Hot Rats",
     ]
     assert result["items"][1]["artist"] == "The Beatles"
 
