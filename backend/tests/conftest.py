@@ -236,15 +236,20 @@ def authed_client_factory_builder(pg_test_db):
 
 
 @pytest.fixture
-def tmp_config_dir(tmp_path):
-    """Patch CONFIG_DIR to a temp directory for all tests."""
+def tmp_config_dir(tmp_path, pg_test_db):
+    """Patch CONFIG_DIR to a temp directory for all tests, and give
+    load_config/save_config a real app_config table -- reset to empty so each
+    test starts from the same clean slate the old temp-file fixture gave for
+    free, since the Postgres-backed table is one row shared across the whole
+    session rather than a fresh file per test."""
     crawlers_dir = tmp_path / "crawlers"
     crawlers_dir.mkdir()
     (crawlers_dir / "__init__.py").touch()
+    db.init_global_schema()
+    config.save_config({})
     with patch("config.CONFIG_DIR", tmp_path), \
          patch("config.DB_FILE", tmp_path / "db.sqlite"), \
-         patch("config.CRAWLERS_DIR", crawlers_dir), \
-         patch("config.CONFIG_FILE", tmp_path / "config.json"):
+         patch("config.CRAWLERS_DIR", crawlers_dir):
         yield tmp_path
 
 

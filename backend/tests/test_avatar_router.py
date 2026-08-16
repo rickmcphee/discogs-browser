@@ -18,7 +18,6 @@ HDR = {"X-Requested-With": "fetch"}
 
 @pytest.fixture
 def client(pg_test_db, monkeypatch, tmp_path):
-    monkeypatch.setattr(avatar, "AVATAR_FILE", tmp_path / "avatar.png")
     db.init_global_schema()
     db.init_tenant_schema()
 
