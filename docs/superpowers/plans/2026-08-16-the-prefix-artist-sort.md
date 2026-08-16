@@ -292,7 +292,7 @@ def test_get_distinct_stock_artists_sorts_the_prefixed_artists_by_the_following_
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `cd backend && TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/discogs_browser_test IDENTITY_DB_PASSWORD=test APP_DB_PASSWORD=test pytest tests/test_catalog_crud.py::test_get_distinct_artists_sorts_the_prefixed_artists_by_the_following_word tests/test_stock_crud.py::test_get_distinct_stock_artists_sorts_the_prefixed_artists_by_the_following_word -v`
-Expected: FAIL — both fail their `assert` (current order is `["The Beatles", "Aphex Twin", "Pavement", "Zappa"]`, plain-alphabetical).
+Expected: FAIL — both fail their `assert` (current order is `["Aphex Twin", "Pavement", "The Beatles", "Zappa"]`, plain-alphabetical on the full string).
 
 - [ ] **Step 3: Wire `_artist_sort_key` into `_canonical_artist_list`**
 
