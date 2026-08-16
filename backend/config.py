@@ -1,11 +1,9 @@
-import json
 import os
 from pathlib import Path
 from urllib.parse import quote, urlsplit, urlunsplit
 
 _data_env = os.environ.get("DISCOGS_BROWSER_DATA", "")
 CONFIG_DIR = Path(_data_env) if _data_env else Path.home() / ".discogs-browser"
-CONFIG_FILE = CONFIG_DIR / "config.json"
 DB_FILE = CONFIG_DIR / "db.sqlite"
 CRAWLERS_DIR = CONFIG_DIR / "crawlers"
 SCREENSHOTS_DIR = CONFIG_DIR / "screenshots"
@@ -92,13 +90,24 @@ def ensure_dirs():
 
 
 def load_config() -> dict:
-    if not CONFIG_FILE.exists():
-        return {}
-    return json.loads(CONFIG_FILE.read_text())
+    import db
+
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute("SELECT data FROM app_config WHERE id = TRUE").fetchone()
+    return row["data"] if row else {}
 
 
 def save_config(data: dict):
-    CONFIG_FILE.write_text(json.dumps(data, indent=2))
+    import db
+    from psycopg.types.json import Jsonb
+
+    with db.get_admin_pool().connection() as conn:
+        conn.execute(
+            "INSERT INTO app_config (id, data) VALUES (TRUE, %s) "
+            "ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data",
+            [Jsonb(data)],
+        )
+        conn.commit()
 
 
 COOKIE_NAME = "db_session"
