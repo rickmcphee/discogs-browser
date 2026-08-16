@@ -1378,7 +1378,7 @@ def _artist_sort_sql(column: str) -> str:
     psycopg pyformat escaping for a literal `%`, required because both call
     sites execute this query with a non-empty params dict."""
     return (
-        f"CASE WHEN LOWER({column}) LIKE 'the %%' "
+        f"CASE WHEN LOWER({column}) LIKE '{_ARTIST_SORT_ARTICLE}%%' "
         f"THEN LOWER(SUBSTRING({column} FROM {len(_ARTIST_SORT_ARTICLE) + 1})) "
         f"ELSE LOWER({column}) END"
     )
