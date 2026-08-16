@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 import avatar as avatar_storage
@@ -238,23 +238,24 @@ def logout(request: Request, response: Response):
 
 
 @router.post("/auth/avatar")
-async def upload_avatar(file: UploadFile = File(...)):
+async def upload_avatar(request: Request, file: UploadFile = File(...)):
     data = await file.read(avatar_storage.MAX_UPLOAD_BYTES + 1)
     try:
-        avatar_storage.save_avatar(data)
+        avatar_storage.save_avatar(request.state.user_id, data)
     except avatar_storage.InvalidAvatarError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"ok": True}
 
 
 @router.get("/auth/avatar")
-def get_avatar():
-    if not avatar_storage.AVATAR_FILE.exists():
+def get_avatar(request: Request):
+    data = avatar_storage.get_avatar(request.state.user_id)
+    if data is None:
         raise HTTPException(status_code=404)
-    return FileResponse(str(avatar_storage.AVATAR_FILE))
+    return Response(content=data, media_type="image/png")
 
 
 @router.delete("/auth/avatar")
-def remove_avatar():
-    avatar_storage.delete_avatar()
+def remove_avatar(request: Request):
+    avatar_storage.delete_avatar(request.state.user_id)
     return {"ok": True}
