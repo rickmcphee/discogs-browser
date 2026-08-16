@@ -1424,3 +1424,45 @@ def test_get_distinct_stock_artists_merges_the_prefix_and_comma_suffix_spellings
     assert result["total"] == 2
     assert {i["title"] for i in result["items"]} == {"All Hail West Texas", "The Sunset Tree"}
     assert {i["artist"] for i in result["items"]} == {"Mountain Goats, The"}
+
+
+def test_get_stock_items_sorts_mixed_the_prefix_and_comma_suffix_the_same(admin_conn):
+    # Same interleaving hazard as the catalog test: a sort key that only
+    # strips the "The X" convention would land the "Amoeba" row between the
+    # two raw spellings of the same artist instead of adjacent to them.
+    amazon = _register(admin_conn, "Amazon")
+    amoeba = _register(admin_conn, "Amoeba")
+    asian_man = _register(admin_conn, "Asian Man Records")
+    db.replace_stock_items(admin_conn, amazon, [
+        {"artist": "The Beatles", "title": "Abbey Road", "url": "https://x/1",
+         "price": 20.0, "currency": "USD"},
+    ])
+    db.replace_stock_items(admin_conn, amoeba, [
+        {"artist": "Beatles A", "title": "Boundary Album", "url": "https://x/2",
+         "price": 10.0, "currency": "USD"},
+    ])
+    db.replace_stock_items(admin_conn, asian_man, [
+        {"artist": "Beatles, The", "title": "Let It Be", "url": "https://x/3",
+         "price": 22.0, "currency": "USD"},
+    ])
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], sort="artist", order="asc")
+    assert [i["title"] for i in result["items"]] == ["Abbey Road", "Let It Be", "Boundary Album"]
+
+
+def test_get_stock_items_search_matches_comma_form_against_the_prefixed_row(admin_conn):
+    crawler_id = _register(admin_conn, "Amazon")
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "The Beatles", "title": "Abbey Road", "url": "https://x/1",
+         "price": 20.0, "currency": "USD"},
+    ])
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], search="Beatles, The")
+    assert result["total"] == 1
+    assert result["items"][0]["title"] == "Abbey Road"

@@ -662,3 +662,38 @@ def test_get_library_releases_artist_filter_matches_comma_form_against_the_prefi
         result = db.get_library_releases(conn, alice["id"], artist="Beatles, The")
     assert result["total"] == 1
     assert result["releases"][0]["artist"] == "Beatles, The"
+
+
+def test_get_library_releases_sorts_mixed_the_prefix_and_comma_suffix_the_same(admin_conn):
+    # r1 and r3 are the two raw storage conventions for what canonicalizes to
+    # the same displayed artist; r2 is a distinct, unrelated artist that
+    # happens to sort between their *unstripped* spellings ("beatles" <
+    # "beatles a" < "beatles, the"). A sort key that only strips the "The X"
+    # convention lands r1 before r2 before r3 -- splitting one artist's rows
+    # across a different artist's. Stripping both conventions to the same
+    # bare key ("beatles") keeps r1 and r3 adjacent, both ahead of r2.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "The Beatles", "Abbey Road")
+    _catalog(admin_conn, "r2", "Beatles A", "Boundary Album")
+    _catalog(admin_conn, "r3", "Beatles, The", "Let It Be")
+    for rid in ("r1", "r2", "r3"):
+        db.upsert_library_item(admin_conn, alice["id"], rid, in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], sort="artist", order="asc")
+    assert [r["discogs_id"] for r in result["releases"]] == ["r1", "r3", "r2"]
+
+
+def test_get_library_releases_search_matches_comma_form_against_the_prefixed_row(admin_conn):
+    # The displayed artist is "Beatles, The"; a search for exactly what's on
+    # screen must find the row even though it's stored as "The Beatles".
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "The Beatles", "Abbey Road")
+    db.upsert_library_item(admin_conn, alice["id"], "r1", in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], search="Beatles, The")
+    assert result["total"] == 1
+    assert result["releases"][0]["discogs_id"] == "r1"

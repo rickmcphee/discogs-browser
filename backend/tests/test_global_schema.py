@@ -233,6 +233,21 @@ def test_crawl_queue_accepts_item_key_based_row_with_null_discogs_id(admin_conn)
     assert row["item_key"] == "key1"
 
 
+def test_the_comma_form_indexes_have_unescaped_like_pattern(admin_conn):
+    # GLOBAL_SCHEMA runs with no params, so _the_comma_form_sql's LIKE guard
+    # must land as a single '%' -- the doubled '%%' psycopg needs everywhere
+    # else (to collapse to one '%' during parameter substitution) would
+    # otherwise get baked into the index definition literally, so it could
+    # never match the single-'%' expression the parameterized queries send at
+    # runtime, and the index would silently never be chosen by the planner.
+    for idx in ("catalog_artist_the_lower_idx", "stock_items_artist_the_lower_idx"):
+        indexdef = admin_conn.execute(
+            "SELECT indexdef FROM pg_indexes WHERE indexname = %s", [idx]
+        ).fetchone()["indexdef"]
+        assert "the %%" not in indexdef.lower()
+        assert "the %" in indexdef.lower()
+
+
 def test_crawl_queue_unique_on_item_key(admin_conn):
     admin_conn.execute(
         "INSERT INTO stock_item_identities (item_key, artist, title) VALUES ('key1', 'A', 'T')"

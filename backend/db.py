@@ -61,21 +61,35 @@ def user_scope(user_id: int):
 
 # Shared with _artist_sort_sql/_artist_sort_key and canonical_artist_labels'
 # comma-suffix fold below, so the sort guard, the schema's expression indexes,
-# and the label fold all agree on exactly which prefix counts as "The".
+# and the label fold all agree on exactly which prefix/suffix counts as "The".
 _ARTIST_SORT_ARTICLE = "the "
+_ARTIST_SORT_SUFFIX = ", the"
 
 
-def _the_comma_form_sql(column: str) -> str:
+def _the_comma_form_sql(column: str, *, escape_percent: bool = True) -> str:
     """SQL fragment: fold a leading "The " (any case) to a trailing ", The"
     -- "The Beatles" becomes "Beatles, The", the library-catalog convention
     some stores already use directly. A column already in that form, or with
-    no leading article, passes through unchanged. Shares its `LIKE 'the %%'`
+    no leading article, passes through unchanged. Shares its `LIKE 'the %'`
     guard with `_artist_sort_sql` so a bare "The" or "Theatre of Hate" is left
     alone for the same reason. Used both to fold matching in SQL (schema
     indexes, canonical_artist_labels, the two artist-equality filters) and,
-    inside canonical_artist_labels, to format the winning label for display."""
+    inside canonical_artist_labels, to format the winning label for display.
+
+    escape_percent doubles the LIKE pattern's `%` to `%%`, which psycopg's
+    pyformat layer collapses back to a literal `%` -- required by every call
+    site that executes with a non-empty params dict (canonical_artist_labels,
+    both artist filters), the default here. GLOBAL_SCHEMA has no params, so
+    its two index definitions must pass escape_percent=False to keep the
+    single, unescaped `%` Postgres actually sees: otherwise the index bakes in
+    the literal two-character constant `'the %%'` while the query, after
+    substitution, compares against `'the %'` -- a different string literal to
+    the planner's expression-index matching, which requires an exact AST
+    match, not merely equivalent LIKE semantics. An index built with the wrong
+    constant is never used, silently."""
+    percent = "%%" if escape_percent else "%"
     return (
-        f"CASE WHEN LOWER({column}) LIKE '{_ARTIST_SORT_ARTICLE}%%' "
+        f"CASE WHEN LOWER({column}) LIKE '{_ARTIST_SORT_ARTICLE}{percent}' "
         f"THEN SUBSTRING({column} FROM {len(_ARTIST_SORT_ARTICLE) + 1}) || ', The' "
         f"ELSE {column} END"
     )
@@ -262,10 +276,13 @@ CREATE INDEX IF NOT EXISTS stock_items_artist_lower_idx ON stock_items (LOWER(ar
 -- LOWER(artist) indexes above still serve _library_match_fragment's
 -- owned-artist join, which doesn't use this fold -- see
 -- docs/specifications/shaping/2026-08-16-the-suffix-artist-display-design.md.
+-- escape_percent=False: this DDL runs with no params (see init_global_schema),
+-- so the expression must match, character for character, what the query
+-- sites see after psycopg's own substitution -- see _the_comma_form_sql.
 CREATE INDEX IF NOT EXISTS catalog_artist_the_lower_idx
-    ON catalog (LOWER({_the_comma_form_sql("artist")}));
+    ON catalog (LOWER({_the_comma_form_sql("artist", escape_percent=False)}));
 CREATE INDEX IF NOT EXISTS stock_items_artist_the_lower_idx
-    ON stock_items (LOWER({_the_comma_form_sql("artist")}));
+    ON stock_items (LOWER({_the_comma_form_sql("artist", escape_percent=False)}));
 """
 
 
@@ -827,7 +844,14 @@ def get_library_releases(
         conditions.append("c.discogs_id = %(release_id)s")
         params["release_id"] = release_id
     if search:
-        conditions.append("(c.artist ILIKE %(search)s OR c.title ILIKE %(search)s)")
+        # The displayed artist can now differ from the stored one (see
+        # canonical_artist_labels' comma-suffix fold below), so a search for
+        # what's on screen -- "Beatles, The" -- must also match a row still
+        # stored as "The Beatles", not just the raw column.
+        conditions.append(
+            f"(c.artist ILIKE %(search)s OR {_the_comma_form_sql('c.artist')} ILIKE %(search)s "
+            f"OR c.title ILIKE %(search)s)"
+        )
         params["search"] = f"%{search}%"
     if artist:
         # Both sides go through the same case fold and "The X" -> "X, The"
@@ -1417,28 +1441,49 @@ def canonical_artist_labels(conn, artists) -> dict:
 
 
 def _artist_sort_sql(column: str) -> str:
-    """SQL sort-key expression for `column`: a leading "The " (any case) is
-    dropped so "The Beatles" sorts under B, matching the library-catalog
-    convention "Beatles, The". This is ORDER BY only, on the raw un-canonicalized
-    column -- it runs before canonical_artist_labels' comma-suffix fold gets a
-    chance to relabel the row, so it needs its own stripping regardless of what
-    the row's eventual display label becomes. `LIKE 'the %%'` requires a
-    following word, so a bare "The" or a name like "Theatre of Hate" is
-    correctly left alone. The `%%` (not `%`) is psycopg pyformat escaping for a
-    literal `%`, required because both call sites execute this query with a
-    non-empty params dict."""
+    """SQL sort-key expression for `column`: a leading "The " or a trailing
+    ", The" (either case) is dropped to the bare remainder, so "The Beatles"
+    sorts under B like "Beatles, The" does, and -- now that both raw storage
+    conventions coexist -- the two spellings of the same artist produce the
+    *identical* key instead of merely landing in the same neighborhood. Only
+    one guard can ever fire per name (canonical_artist_labels' own fold means
+    a value is never both "The X" and "X, The" at once), so this stays a
+    two-branch CASE, not a composition. Stripping to the bare word rather than
+    to the comma-form ("beatles" rather than "beatles, the") matters: the
+    comma-form key would still be wrong relative to a third artist like
+    "Beatles A" ("beatles a" sorts before "beatles, the" but the bare key
+    "beatles" -- correctly -- doesn't). This is ORDER BY only, on the raw
+    un-canonicalized column -- it runs before canonical_artist_labels' fold
+    gets a chance to relabel the row, so it needs its own stripping regardless
+    of what the row's eventual display label becomes. `LIKE 'the %%'`/
+    `LIKE '%%, the'` each require a real word on the far side, so a bare "The"
+    or a name like "Theatre of Hate" is correctly left alone. The `%%` (not
+    `%`) is psycopg pyformat escaping for a literal `%`, required because both
+    call sites execute this query with a non-empty params dict."""
+    suffix_len = len(_ARTIST_SORT_SUFFIX)
     return (
-        f"CASE WHEN LOWER({column}) LIKE '{_ARTIST_SORT_ARTICLE}%%' "
+        f"CASE "
+        f"WHEN LOWER({column}) LIKE '{_ARTIST_SORT_ARTICLE}%%' "
         f"THEN LOWER(SUBSTRING({column} FROM {len(_ARTIST_SORT_ARTICLE) + 1})) "
+        f"WHEN LOWER({column}) LIKE '%%{_ARTIST_SORT_SUFFIX}' "
+        f"THEN LOWER(SUBSTRING({column} FROM 1 FOR LENGTH({column}) - {suffix_len})) "
         f"ELSE LOWER({column}) END"
     )
 
 
 def _artist_sort_key(name: str) -> str:
     """Python equivalent of _artist_sort_sql, for the sidebar list which sorts
-    in Python (see _canonical_artist_list) rather than SQL."""
+    in Python (see _canonical_artist_list) rather than SQL. In practice this
+    always sees already-comma-folded input (canonical_artist_labels' output),
+    so only the suffix branch normally fires -- the prefix branch stays for
+    parity with the SQL version and the defensive `labels.get(a, a)` fallback
+    in _canonical_artist_list."""
     lower = name.lower()
-    return lower[len(_ARTIST_SORT_ARTICLE):] if lower.startswith(_ARTIST_SORT_ARTICLE) else lower
+    if lower.startswith(_ARTIST_SORT_ARTICLE):
+        return lower[len(_ARTIST_SORT_ARTICLE):]
+    if lower.endswith(_ARTIST_SORT_SUFFIX):
+        return lower[: -len(_ARTIST_SORT_SUFFIX)]
+    return lower
 
 
 def _canonical_artist_list(conn, artists) -> list:
@@ -1583,7 +1628,12 @@ def get_stock_items(
     conditions = []
     params: dict = {"user_id": user_id}
     if search:
-        conditions.append("(s.artist ILIKE %(search)s OR s.title ILIKE %(search)s)")
+        # See the matching comment in get_library_releases: search must also
+        # match the comma-folded display form, not just the stored spelling.
+        conditions.append(
+            f"(s.artist ILIKE %(search)s OR {_the_comma_form_sql('s.artist')} ILIKE %(search)s "
+            f"OR s.title ILIKE %(search)s)"
+        )
         params["search"] = f"%{search}%"
     if artist:
         # See the matching clause in get_library_releases: the filter value is

@@ -45,15 +45,16 @@ to display, not that comma-form wins a popularity contest against it.
 
 This also folds `catalog`-sourced names, not just `stock_items` — Discogs
 itself spells bands "The Beatles", which is the actual case that motivated
-the request, not an edge case affined to store crawlers.
+the request, not an edge case confined to store crawlers.
 
 **Frontend selection reconciliation degrades, gracefully, for this label
 change specifically.** `frontend/src/views/artistSelection.ts`'s
 `reconcileSelectedArtist` (from the casing design) only follows a label to
 its re-cased equivalent when the two strings have equal length, since equal
 length is what a pure casing change looks like. A "The X" -> "X, The" flip
-changes length by construction (net +2, the `, ` added minus the `The `
-removed), so it can never satisfy that check — a sync that flips a
+changes length by construction (net +1: the 5-character `, The` suffix added
+minus the 4-character `The ` prefix removed), so it can never satisfy that
+check — a sync that flips a
 currently-selected The-prefixed artist's label falls through to the
 existing "artist vanished" path and clears the selection back to "All",
 same as any other label change the heuristic can't confirm is safe. This is
@@ -83,12 +84,46 @@ a sequential scan of `catalog` or `stock_items`. `catalog_artist_the_lower_idx`
 and `stock_items_artist_the_lower_idx` cover the new expression; built from
 the same `the_form` fragment so the query and the index can't drift apart.
 
-`_artist_sort_sql`/`_artist_sort_key` (the prior branch) are untouched. They
-still strip "The " purely for `ORDER BY` on the raw, un-canonicalized column
-— necessary because the SQL `ORDER BY` runs before `_apply_canonical_artists`
-relabels the fetched rows, so a row still literally stored as "The Beatles"
-needs its own sort-key stripping to land near "B" independent of what its
-display label becomes afterward.
+**These two index definitions execute with no query parameters** (`GLOBAL_SCHEMA`
+runs as a bare `conn.execute(GLOBAL_SCHEMA)`, no params dict), unlike every
+other `the_form` call site. `_the_comma_form_sql`'s `LIKE` guard embeds a `%`
+that must be written as `%%` for the parameterized call sites — psycopg's
+pyformat layer collapses that back to a literal `%` before the query reaches
+Postgres — but with no params dict that collapse never happens, so a naive
+reuse of the same fragment would bake the two-character literal `'the %%'`
+into the index while the query, post-substitution, compares against the
+one-character literal `'the %'`. Those are different string literals to
+Postgres's expression-index matching, which requires an exact AST match, not
+merely equivalent `LIKE` semantics — the index would build successfully and
+then silently never be chosen by the planner. `_the_comma_form_sql` takes an
+`escape_percent` keyword (default `True`) for this; the two schema
+definitions pass `escape_percent=False`.
+
+**`_artist_sort_sql`/`_artist_sort_key` (the prior branch) still run on the
+raw, un-canonicalized column** — necessary because the SQL `ORDER BY` runs
+before `_apply_canonical_artists` relabels the fetched rows, so a row still
+literally stored as "The Beatles" needs its own sort-key handling to land
+near "B" independent of what its display label becomes afterward. But their
+*rule* changes: stripping only the leading "The " (the prior branch's whole
+scope) is no longer enough once "X, The"-stored rows are a live case too —
+"The Beatles" would sort by the bare key `beatles` while a `stock_items` row
+literally stored as "Beatles, The" would sort by the untouched key
+`beatles, the`, and those two keys are not adjacent in general (a third
+artist like "Beatles A" sorts between them: `beatles` < `beatles a` <
+`beatles, the`), even though both rows now render as "Beatles, The". Both
+functions gain a second guard that strips a trailing ", The" the same way,
+so *either* raw convention reduces to the identical bare key (`beatles`) —
+matching what "ignore the article when alphabetizing" means in an actual
+library catalog, where the comma-suffix is punctuation for display, not part
+of the sort key.
+
+**Search gets the same fold as the equality filters, for the same reason.**
+`get_library_releases`/`get_stock_items`'s `search=` parameter runs
+`c.artist ILIKE %search%` (raw column only). Once a row can display as
+"Beatles, The" while stored as "The Beatles", typing the visible name into
+search must still find it — so the `OR` grows a second branch,
+`the_form(c.artist) ILIKE %search%`, alongside the existing raw-column and
+title branches.
 
 ## Out of scope
 
