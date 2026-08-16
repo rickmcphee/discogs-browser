@@ -1361,12 +1361,12 @@ def test_get_stock_items_sorts_the_prefixed_artists_by_the_following_word(admin_
 
     with db.user_scope(alice["id"]) as conn:
         result = db.get_stock_items(conn, alice["id"], sort="artist", order="asc")
-    # "The Beatles" sorts ahead of "Pavement" only with article-stripping --
+    # "Beatles, The" sorts ahead of "Pavement" only with article-stripping --
     # the full-string key "the beatles" would put it after "pavement".
     assert [i["title"] for i in result["items"]] == [
         "Selected Ambient Works", "Abbey Road", "Slanted and Enchanted", "Hot Rats",
     ]
-    assert result["items"][1]["artist"] == "The Beatles"
+    assert result["items"][1]["artist"] == "Beatles, The"
 
 
 def test_get_stock_items_the_prefix_sort_leaves_false_positives_alone(admin_conn):
@@ -1397,4 +1397,30 @@ def test_get_distinct_stock_artists_sorts_the_prefixed_artists_by_the_following_
 
     with db.user_scope(alice["id"]) as conn:
         artists = db.get_distinct_stock_artists(conn, alice["id"])
-    assert artists == ["Aphex Twin", "The Beatles", "Pavement", "Zappa"]
+    assert artists == ["Aphex Twin", "Beatles, The", "Pavement", "Zappa"]
+
+
+def test_get_distinct_stock_artists_merges_the_prefix_and_comma_suffix_spellings(admin_conn):
+    # Two crawlers disagreeing about convention for the same band must
+    # collapse to one sidebar entry, not two -- the actual motivation for the
+    # fold, not just a display cosmetic.
+    amazon = _register(admin_conn, "Amazon")
+    asian_man = _register(admin_conn, "Asian Man Records")
+    db.replace_stock_items(admin_conn, amazon, [
+        {"artist": "The Mountain Goats", "title": "All Hail West Texas", "url": "https://a/1",
+         "price": 15.0, "currency": "USD"},
+    ])
+    db.replace_stock_items(admin_conn, asian_man, [
+        {"artist": "Mountain Goats, The", "title": "The Sunset Tree", "url": "https://b/1",
+         "price": 12.0, "currency": "USD"},
+    ])
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        artists = db.get_distinct_stock_artists(conn, alice["id"])
+        result = db.get_stock_items(conn, alice["id"], artist="Mountain Goats, The")
+    assert artists == ["Mountain Goats, The"]
+    assert result["total"] == 2
+    assert {i["title"] for i in result["items"]} == {"All Hail West Texas", "The Sunset Tree"}
+    assert {i["artist"] for i in result["items"]} == {"Mountain Goats, The"}

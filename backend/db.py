@@ -59,6 +59,28 @@ def user_scope(user_id: int):
         yield conn
 
 
+# Shared with _artist_sort_sql/_artist_sort_key and canonical_artist_labels'
+# comma-suffix fold below, so the sort guard, the schema's expression indexes,
+# and the label fold all agree on exactly which prefix counts as "The".
+_ARTIST_SORT_ARTICLE = "the "
+
+
+def _the_comma_form_sql(column: str) -> str:
+    """SQL fragment: fold a leading "The " (any case) to a trailing ", The"
+    -- "The Beatles" becomes "Beatles, The", the library-catalog convention
+    some stores already use directly. A column already in that form, or with
+    no leading article, passes through unchanged. Shares its `LIKE 'the %%'`
+    guard with `_artist_sort_sql` so a bare "The" or "Theatre of Hate" is left
+    alone for the same reason. Used both to fold matching in SQL (schema
+    indexes, canonical_artist_labels, the two artist-equality filters) and,
+    inside canonical_artist_labels, to format the winning label for display."""
+    return (
+        f"CASE WHEN LOWER({column}) LIKE '{_ARTIST_SORT_ARTICLE}%%' "
+        f"THEN SUBSTRING({column} FROM {len(_ARTIST_SORT_ARTICLE) + 1}) || ', The' "
+        f"ELSE {column} END"
+    )
+
+
 GLOBAL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS catalog (
     discogs_id TEXT PRIMARY KEY,
@@ -233,6 +255,17 @@ CREATE UNIQUE INDEX IF NOT EXISTS stock_items_crawler_release_idx ON stock_items
 -- are sequential scans of the two largest tables on every browse request.
 CREATE INDEX IF NOT EXISTS catalog_artist_lower_idx ON catalog (LOWER(artist));
 CREATE INDEX IF NOT EXISTS stock_items_artist_lower_idx ON stock_items (LOWER(artist));
+""" + f"""
+-- Same reasoning as the two indexes above, for the "The X" -> "X, The"
+-- comma-suffix fold layered on top (see canonical_artist_labels and the
+-- artist filters in get_library_releases/get_stock_items). The plain
+-- LOWER(artist) indexes above still serve _library_match_fragment's
+-- owned-artist join, which doesn't use this fold -- see
+-- docs/specifications/shaping/2026-08-16-the-suffix-artist-display-design.md.
+CREATE INDEX IF NOT EXISTS catalog_artist_the_lower_idx
+    ON catalog (LOWER({_the_comma_form_sql("artist")}));
+CREATE INDEX IF NOT EXISTS stock_items_artist_the_lower_idx
+    ON stock_items (LOWER({_the_comma_form_sql("artist")}));
 """
 
 
@@ -797,10 +830,14 @@ def get_library_releases(
         conditions.append("(c.artist ILIKE %(search)s OR c.title ILIKE %(search)s)")
         params["search"] = f"%{search}%"
     if artist:
-        # LOWER on both sides: the sidebar sends back one canonical label per
-        # artist (see canonical_artist_labels), so an exact match would hide
-        # every release whose catalog row spells the artist differently.
-        conditions.append("LOWER(c.artist) = LOWER(%(artist)s)")
+        # Both sides go through the same case fold and "The X" -> "X, The"
+        # comma-suffix fold canonical_artist_labels applies: the sidebar always
+        # sends back a post-fold label, so a raw compare would hide every
+        # release whose catalog row spells the artist differently, including
+        # rows literally stored as "The X" once the label reads "X, The".
+        conditions.append(
+            f"LOWER({_the_comma_form_sql('c.artist')}) = LOWER({_the_comma_form_sql('%(artist)s')})"
+        )
         params["artist"] = artist
     if scope == "discogs":
         conditions.append("li.in_collection = TRUE")
@@ -1326,22 +1363,22 @@ _CANONICAL_ARTIST_SQL = """
         SELECT DISTINCT a AS artist FROM unnest(%(artists)s::text[]) AS a
     ),
     grouped AS (
-        SELECT LOWER(artist) AS key, artist AS label, COUNT(*) AS n
+        SELECT LOWER({the_bare}) AS key, artist AS label, COUNT(*) AS n
         FROM {table}
-        WHERE LOWER(artist) = ANY (ARRAY(SELECT LOWER(artist) FROM wanted))
-        GROUP BY LOWER(artist), artist
+        WHERE LOWER({the_bare}) = ANY (ARRAY(SELECT LOWER({the_bare}) FROM wanted))
+        GROUP BY LOWER({the_bare}), artist
     ),
     winner AS (
         SELECT DISTINCT ON (key) key, label FROM grouped
         ORDER BY key, n DESC, label COLLATE "C"
     )
-    SELECT w.artist AS input, winner.label AS label
-    FROM wanted w JOIN winner ON winner.key = LOWER(w.artist)
+    SELECT w.artist AS input, {the_label} AS label
+    FROM wanted w JOIN winner ON winner.key = LOWER({the_w})
 """
 
 
 def canonical_artist_labels(conn, artists) -> dict:
-    """Map each artist name, exactly as stored, to the casing the UI displays.
+    """Map each artist name, exactly as stored, to the label the UI displays.
 
     Stores disagree with each other and with Discogs on how to capitalize
     prepositions ("Jets to Brazil" vs "Jets To Brazil"), and
@@ -1350,6 +1387,13 @@ def canonical_artist_labels(conn, artists) -> dict:
     it. So the drift is resolved at read time instead, and `catalog` wins when
     it has the artist at all -- Discogs metadata is curated by hand, which no
     small-word list can reproduce ("The Jesus and Mary Chain", "clipping.").
+
+    A second, independent fold is layered on top of the casing rule: "The X"
+    and "X, The" -- the two conventions stores and Discogs disagree on -- are
+    folded to the same grouping key via `_the_comma_form_sql`, and the winning
+    casing (picked exactly as above) is then formatted to comma-suffix form
+    for display, regardless of which raw spelling won. See
+    docs/specifications/shaping/2026-08-16-the-suffix-artist-display-design.md.
 
     Both tables are global and un-RLS'd, so the label is app-wide: two users
     can't see one artist spelled two ways.
@@ -1360,23 +1404,29 @@ def canonical_artist_labels(conn, artists) -> dict:
         remaining = [a for a in inputs if a not in labels]
         if not remaining:
             break
-        rows = conn.execute(_CANONICAL_ARTIST_SQL.format(table=table), {"artists": remaining}).fetchall()
+        sql_text = _CANONICAL_ARTIST_SQL.format(
+            table=table,
+            the_bare=_the_comma_form_sql("artist"),
+            the_w=_the_comma_form_sql("w.artist"),
+            the_label=_the_comma_form_sql("winner.label"),
+        )
+        rows = conn.execute(sql_text, {"artists": remaining}).fetchall()
         for row in rows:
             labels[row["input"]] = row["label"]
     return labels
 
 
-_ARTIST_SORT_ARTICLE = "the "
-
-
 def _artist_sort_sql(column: str) -> str:
     """SQL sort-key expression for `column`: a leading "The " (any case) is
     dropped so "The Beatles" sorts under B, matching the library-catalog
-    convention "Beatles, The". Display text is untouched -- this is ORDER BY
-    only. `LIKE 'the %%'` requires a following word, so a bare "The" or a name
-    like "Theatre of Hate" is correctly left alone. The `%%` (not `%`) is
-    psycopg pyformat escaping for a literal `%`, required because both call
-    sites execute this query with a non-empty params dict."""
+    convention "Beatles, The". This is ORDER BY only, on the raw un-canonicalized
+    column -- it runs before canonical_artist_labels' comma-suffix fold gets a
+    chance to relabel the row, so it needs its own stripping regardless of what
+    the row's eventual display label becomes. `LIKE 'the %%'` requires a
+    following word, so a bare "The" or a name like "Theatre of Hate" is
+    correctly left alone. The `%%` (not `%`) is psycopg pyformat escaping for a
+    literal `%`, required because both call sites execute this query with a
+    non-empty params dict."""
     return (
         f"CASE WHEN LOWER({column}) LIKE '{_ARTIST_SORT_ARTICLE}%%' "
         f"THEN LOWER(SUBSTRING({column} FROM {len(_ARTIST_SORT_ARTICLE) + 1})) "
@@ -1538,7 +1588,9 @@ def get_stock_items(
     if artist:
         # See the matching clause in get_library_releases: the filter value is
         # a canonical label, not any one store's spelling.
-        conditions.append("LOWER(s.artist) = LOWER(%(artist)s)")
+        conditions.append(
+            f"LOWER({_the_comma_form_sql('s.artist')}) = LOWER({_the_comma_form_sql('%(artist)s')})"
+        )
         params["artist"] = artist
     in_library = _in_library_clause("%(user_id)s", library_scope)
     if in_library:
