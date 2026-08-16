@@ -164,7 +164,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
       return filter === 'saved' && !next ? patched.filter((it) => it.item_key !== item.item_key) : patched
     })
     if (filter === 'saved' && !next) setTotal((t) => t - 1)
-    await (next ? saveStockItem(item.item_key) : unsaveStockItem(item.item_key))
+    await (next ? saveStockItem(item.item_key) : unsaveStockItem(item.item_key)).catch(() => load())
   }
 
   // Sorting by artist is meaningless once the list is filtered down to a

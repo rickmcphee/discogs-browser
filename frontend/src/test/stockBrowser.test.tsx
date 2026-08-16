@@ -594,6 +594,39 @@ describe('StockBrowser', () => {
     await waitFor(() => expect(screen.getAllByTitle('Remove from saved').length).toBeGreaterThanOrEqual(1))
   })
 
+  it('renders a bookmark button on the tile in tile view', async () => {
+    render(<StockBrowser scope="store" />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByTitle('Tile view'))
+    await waitFor(() => expect(screen.getAllByTitle('Save for later').length).toBeGreaterThanOrEqual(1))
+  })
+
+  it('clicking the tile bookmark button calls saveStockItem and prevents the enclosing tile link from navigating', async () => {
+    saveStockItem.mockResolvedValue({ saved: true })
+    render(<StockBrowser scope="store" />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByTitle('Tile view'))
+    await waitFor(() => expect(screen.getAllByTitle('Save for later').length).toBeGreaterThanOrEqual(1))
+    const button = screen.getAllByTitle('Save for later')[0]
+    // The bookmark button sits inside an <a> that links out to the product
+    // page. Its onClick calls e.preventDefault() specifically so that click
+    // doesn't also trigger the anchor's navigation. preventDefault() on the
+    // bubbling click event suppresses the anchor's default action regardless
+    // of which descendant called it, so listening on the anchor itself and
+    // checking defaultPrevented after the click proves the guard actually
+    // ran -- a stronger assertion than just checking saveStockItem was
+    // called, which would still pass even if preventDefault silently did
+    // nothing.
+    const anchor = button.closest('a')
+    expect(anchor).not.toBeNull()
+    let capturedEvent: Event | null = null
+    anchor!.addEventListener('click', (e) => { capturedEvent = e })
+    fireEvent.click(button)
+    expect(saveStockItem).toHaveBeenCalledWith('k1')
+    expect(capturedEvent).not.toBeNull()
+    expect((capturedEvent as unknown as Event).defaultPrevented).toBe(true)
+  })
+
   it('unsaving under the Saved filter removes the row and decrements the count', async () => {
     getStock.mockResolvedValue({
       total: 1, page: 1, per_page: 250,
@@ -607,5 +640,29 @@ describe('StockBrowser', () => {
     fireEvent.click(button)
     await waitFor(() => expect(screen.queryByText('The Great Satan — Ghostly Black Vinyl')).toBeNull())
     expect(screen.getByText(/^0 items$/)).toBeTruthy()
+  })
+
+  it('re-fetches from the server when a toggle fails, undoing the optimistic removal under the Saved filter', async () => {
+    unsaveStockItem.mockRejectedValue(new Error('boom'))
+    getStock.mockResolvedValue({
+      total: 1, page: 1, per_page: 250,
+      items: [{ ...items[0], saved: true }],
+    })
+    render(<StockBrowser scope="store" />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'saved' } })
+    const button = await screen.findByTitle('Remove from saved')
+    const callsBefore = getStock.mock.calls.length
+    fireEvent.click(button)
+    // Optimistic update removes the row and decrements the count immediately.
+    await waitFor(() => expect(screen.queryByText('The Great Satan — Ghostly Black Vinyl')).toBeNull())
+    // unsaveStockItem rejects; the failure must trigger a re-fetch so the
+    // phantom deletion self-corrects rather than persisting until an
+    // unrelated refetch happens to occur. getStock keeps returning the same
+    // saved item, so the row (and count) coming back proves load() actually
+    // ran on failure, not just that it was called.
+    await waitFor(() => expect(getStock.mock.calls.length).toBeGreaterThan(callsBefore))
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    expect(screen.getByText(/^1 items$/)).toBeTruthy()
   })
 })
