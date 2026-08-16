@@ -1629,6 +1629,7 @@ def get_stock_items(
     per_page: int = 50,
     library_scope: Optional[str] = None,
     recommended: bool = False,
+    saved_only: bool = False,
     exclude_crawler_ids: Optional[list[int]] = None,
 ) -> dict:
     order_sql = "DESC" if order.lower() == "desc" else "ASC"
@@ -1674,6 +1675,11 @@ def get_stock_items(
             "WHERE user_id = %(user_id)s AND recommended = TRUE)"
         )
         conditions.append(_not_owned_clause("%(user_id)s"))
+    if saved_only:
+        conditions.append(
+            "s.item_key IN (SELECT item_key FROM stock_item_saves "
+            "WHERE user_id = %(user_id)s)"
+        )
     if exclude_crawler_ids:
         conditions.append("s.crawler_id != ALL(%(exclude_crawler_ids)s)")
         params["exclude_crawler_ids"] = exclude_crawler_ids
@@ -1689,10 +1695,12 @@ def get_stock_items(
         f"""
         SELECT s.id, s.artist, s.title, s.format, s.price, s.currency, s.url, s.cover_image_url, s.last_seen,
                s.item_key, cr.site_name AS source, j.reason AS reason,
+               (sv.item_key IS NOT NULL) AS saved,
                (SELECT li.price_paid {_library_match_fragment('%(user_id)s', 'collection')} LIMIT 1) AS discogs_price
         FROM stock_items s
         JOIN crawlers cr ON cr.id = s.crawler_id
         LEFT JOIN stock_item_judgments j ON j.item_key = s.item_key AND j.user_id = %(user_id)s
+        LEFT JOIN stock_item_saves sv ON sv.item_key = s.item_key AND sv.user_id = %(user_id)s
         {where}
         ORDER BY CASE WHEN {sort_expr} IS NULL THEN 1 ELSE 0 END {null_order}, {sort_expr} {order_sql}, s.id
         LIMIT %(limit)s OFFSET %(offset)s
@@ -1728,7 +1736,7 @@ def get_stock_items(
                 "id": f"{r['id']}:{c['source']}",
                 "item_key": r["item_key"], "artist": r["artist"], "title": r["title"],
                 "format": r["format"], "cover_image_url": r["cover_image_url"],
-                "discogs_price": r["discogs_price"],
+                "discogs_price": r["discogs_price"], "saved": r["saved"],
                 "price": c["price"], "currency": c["currency"], "url": c["url"],
                 "source": c["source"], "reason": r["reason"], "last_seen": c["last_checked"],
                 "is_own": False,
@@ -1738,6 +1746,7 @@ def get_stock_items(
 
 
 def get_distinct_stock_artists(conn, user_id: int, library_scope: Optional[str] = None, recommended: bool = False,
+    saved_only: bool = False,
     exclude_crawler_ids: Optional[list[int]] = None,
 ) -> list[str]:
     conditions = []
@@ -1751,6 +1760,11 @@ def get_distinct_stock_artists(conn, user_id: int, library_scope: Optional[str] 
             "WHERE user_id = %(user_id)s AND recommended = TRUE)"
         )
         conditions.append(_not_owned_clause("%(user_id)s"))
+    if saved_only:
+        conditions.append(
+            "s.item_key IN (SELECT item_key FROM stock_item_saves "
+            "WHERE user_id = %(user_id)s)"
+        )
     if exclude_crawler_ids:
         conditions.append("s.crawler_id != ALL(%(exclude_crawler_ids)s)")
         params["exclude_crawler_ids"] = exclude_crawler_ids
