@@ -149,5 +149,8 @@ title branches.
 
 `2026-08-16-the-prefix-artist-sort-design.md`'s "Out of scope: Display text
 — 'The Beatles' keeps rendering as 'The Beatles' everywhere" no longer holds;
-this doc replaces that decision. That doc's sort-key mechanism itself is
-still accurate and unchanged.
+this doc replaces that decision. That doc's sort-key mechanism is still the
+sort implementation, but no longer prefix-only: `_artist_sort_sql`/
+`_artist_sort_key` gained a second guard, stripping a trailing ", The" the
+same way, so a raw "The X" row and a raw "X, The" row produce the identical
+bare sort key (see "`_artist_sort_sql`/`_artist_sort_key`..." above).

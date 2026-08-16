@@ -54,9 +54,10 @@ can't drift apart.
 - Display text — "The Beatles" keeps rendering as "The Beatles" everywhere.
   **Superseded** by
   `docs/specifications/shaping/2026-08-16-the-suffix-artist-display-design.md`,
-  which folds display text to "Beatles, The" as well; this doc's sort-key
-  mechanism (`_artist_sort_sql`/`_artist_sort_key`) is otherwise unchanged
-  and still the sort implementation.
+  which folds display text to "Beatles, The" as well. That doc also extends
+  this doc's sort-key mechanism (`_artist_sort_sql`/`_artist_sort_key`) to
+  strip a trailing ", The" alongside the leading "The " stripped here — the
+  prefix-only version below is no longer the current implementation.
 - Articles other than "The" ("A", "An").
 - Anything beyond artist sort — release title sort, label sort, etc. are
   unaffected.
