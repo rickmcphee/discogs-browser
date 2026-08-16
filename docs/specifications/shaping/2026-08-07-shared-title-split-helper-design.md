@@ -42,9 +42,11 @@ the sole documented exception to the converging contract; there are now two.
 `backend/crawlers/asianmanrecords.py` is a third exception. It shares two
 divergences with the prior two: the same wider `[-–—]` separator class
 `cleorecs.py` and `jackpotrecords.py` both use, and no vendor fallback at all
-— `vendor` is `"Asian Man Records"` (the label's own name, not an artist) on
-every product, the same shape and the same reasoning `jackpotrecords.py`'s
-entry above gives for its own vendor field.
+— `vendor` is the label's own name, not an artist, on every product
+(case-insensitively `"asian man records"`; 250/251 products spell it
+`"Asian Man Records"`, one outlier is `"ASIAN MAN RECORDS"`), the same
+shape and the same reasoning `jackpotrecords.py`'s entry above gives for
+its own vendor field.
 
 It also introduces a divergence neither prior exception has: a **quoted-album
 primary parser**, `^(?P<artist>.+?)\s*[-–—]?\s*"(?P<album>[^"]+)"`, matching

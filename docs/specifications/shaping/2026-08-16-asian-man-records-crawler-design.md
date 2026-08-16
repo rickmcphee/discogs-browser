@@ -69,9 +69,13 @@ taxonomy.
 
 ### Format filtering
 
-**Gate:** `product_type in {"12-INCH VINYL", "7-INCH VINYL"}` OR either
-tag is present (case-sensitive exact match, both forms confirmed
-consistently uppercase on every observed product).
+**Gate:** `product_type in {"12-INCH VINYL", "7-INCH VINYL"}` (exact,
+case-sensitive) OR either tag is present, checked via
+`shopify_catalog.has_tag()` (case-insensitive, whitespace-stripped, same
+helper `jackpotrecords.py` uses) — both forms are confirmed consistently
+uppercase on every observed product, so the case-insensitivity has no
+effect on today's catalog, but costs nothing and matches fleet
+convention.
 
 | Measure | Count |
 |---|---|
@@ -237,13 +241,16 @@ loop — no wiring changes.
 
 149 gated products → 8 skipped (no artist/album split) → 141 parsed →
 variant filtering (CD/cassette/slipmat exclusion, apparel-bundle
-collapse, unavailable-variant skip) → **118 stock items**, × 3 eligible
-release crawlers (`amazon`, `ebay`, `ebay_general`;
-`discogs_marketplace` excluded by its `requires_discogs_release = True`)
-= **~354 `crawl_queue` jobs per sync** — two orders of magnitude smaller
-than `jackpotrecords.py`'s ~8,868, consistent with this being a single
-small label's own catalog rather than a multi-thousand-product record
-store.
+collapse, unavailable-variant skip) → **118 stock items**. Per this
+repo's per-item-crawler-fanout design, `_sync_stock` enqueues one
+`crawl_queue` **row** per `item_key` — 118 rows, not one row per
+eligible crawler — and each row is expanded across eligible release
+crawlers at dispatch time (`amazon`, `ebay`, `ebay_general`;
+`discogs_marketplace` excluded by its `requires_discogs_release = True`),
+for **~354 dispatch work units per sync**. Two orders of magnitude
+smaller than `jackpotrecords.py`'s ~8,868, consistent with this being a
+single small label's own catalog rather than a multi-thousand-product
+record store.
 
 ## Testing
 
@@ -301,8 +308,10 @@ This site's finding:
 - Both documents require checkout/payment to never complete without
   contemporaneous human approval. This crawler satisfies that trivially:
   it links out to the product page and never transacts.
-- Load: 2 GETs per sync (1 page of data at `limit=250` plus the
-  terminating short/empty page). Paced at
+- Load: 3 GETs per sync — `iter_products()` only terminates on an empty
+  page, not a short one, so 251 products at `limit=250` means a full
+  250-item page, a second 1-item page, then the terminating empty page.
+  Paced at
   `random.uniform(delay * 0.5, delay)` with `crawl_delay_seconds`
   defaulting to 30s. No detail-page fan-out. `iter_products()` fails
   fast on 429 and gives up after `consecutive_failure_limit` on anything
