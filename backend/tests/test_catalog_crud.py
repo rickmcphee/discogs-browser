@@ -586,8 +586,10 @@ def test_get_library_releases_sorts_the_prefixed_artists_by_the_following_word(a
     # ordering only holds with article-stripping applied, not by accident.
     assert [r["discogs_id"] for r in asc["releases"]] == ["r2", "r1", "r3", "r4"]
     assert [r["discogs_id"] for r in desc["releases"]] == ["r4", "r3", "r1", "r2"]
-    # Display text is untouched by the sort-key transform.
-    assert asc["releases"][1]["artist"] == "The Beatles"
+    # canonical_artist_labels folds "The Beatles" to "Beatles, The" separately
+    # from this sort-key stripping -- see
+    # test_get_distinct_artists_folds_the_prefix_to_comma_suffix.
+    assert asc["releases"][1]["artist"] == "Beatles, The"
 
 
 def test_get_library_releases_the_prefix_sort_leaves_false_positives_alone(admin_conn):
@@ -618,6 +620,80 @@ def test_get_distinct_artists_sorts_the_prefixed_artists_by_the_following_word(a
 
     with db.user_scope(alice["id"]) as conn:
         artists = db.get_distinct_artists(conn, alice["id"])
-    # "The Beatles" sorts ahead of "Pavement" only with article-stripping --
+    # "Beatles, The" sorts ahead of "Pavement" only with article-stripping --
     # the full-string key "the beatles" would put it after "pavement".
-    assert artists == ["Aphex Twin", "The Beatles", "Pavement", "Zappa"]
+    assert artists == ["Aphex Twin", "Beatles, The", "Pavement", "Zappa"]
+
+
+def test_get_distinct_artists_folds_the_prefix_to_comma_suffix(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "The Beatles", "Abbey Road")
+    db.upsert_library_item(admin_conn, alice["id"], "r1", in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.get_distinct_artists(conn, alice["id"]) == ["Beatles, The"]
+
+
+def test_get_library_releases_the_prefix_fold_leaves_false_positives_alone(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "The", "Untitled")
+    _catalog(admin_conn, "r2", "Theatre of Hate", "Westworld")
+    for rid in ("r1", "r2"):
+        db.upsert_library_item(admin_conn, alice["id"], rid, in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        artists = db.get_distinct_artists(conn, alice["id"])
+    assert artists == ["The", "Theatre of Hate"]
+
+
+def test_get_library_releases_artist_filter_matches_comma_form_against_the_prefixed_row(admin_conn):
+    # The sidebar always hands back the canonical (post-fold) label, so a
+    # click on "Beatles, The" must still find the catalog row literally
+    # stored as "The Beatles" -- this pins the filter side of the fold, not
+    # just the label side.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "The Beatles", "Abbey Road")
+    db.upsert_library_item(admin_conn, alice["id"], "r1", in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], artist="Beatles, The")
+    assert result["total"] == 1
+    assert result["releases"][0]["artist"] == "Beatles, The"
+
+
+def test_get_library_releases_sorts_mixed_the_prefix_and_comma_suffix_the_same(admin_conn):
+    # r1 and r3 are the two raw storage conventions for what canonicalizes to
+    # the same displayed artist; r2 is a distinct, unrelated artist that
+    # happens to sort between their *unstripped* spellings ("beatles" <
+    # "beatles a" < "beatles, the"). A sort key that only strips the "The X"
+    # convention lands r1 before r2 before r3 -- splitting one artist's rows
+    # across a different artist's. Stripping both conventions to the same
+    # bare key ("beatles") keeps r1 and r3 adjacent, both ahead of r2.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "The Beatles", "Abbey Road")
+    _catalog(admin_conn, "r2", "Beatles A", "Boundary Album")
+    _catalog(admin_conn, "r3", "Beatles, The", "Let It Be")
+    for rid in ("r1", "r2", "r3"):
+        db.upsert_library_item(admin_conn, alice["id"], rid, in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], sort="artist", order="asc")
+    assert [r["discogs_id"] for r in result["releases"]] == ["r1", "r3", "r2"]
+
+
+def test_get_library_releases_search_matches_comma_form_against_the_prefixed_row(admin_conn):
+    # The displayed artist is "Beatles, The"; a search for exactly what's on
+    # screen must find the row even though it's stored as "The Beatles".
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "The Beatles", "Abbey Road")
+    db.upsert_library_item(admin_conn, alice["id"], "r1", in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], search="Beatles, The")
+    assert result["total"] == 1
+    assert result["releases"][0]["discogs_id"] == "r1"

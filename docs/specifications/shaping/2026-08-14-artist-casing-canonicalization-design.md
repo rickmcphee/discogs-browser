@@ -136,6 +136,15 @@ base for both the row-list and sidebar sort keys — see
 `docs/specifications/shaping/2026-08-16-the-prefix-artist-sort-design.md`,
 which this doc does not attempt to re-document.)
 
+A still-later branch layers a second fold onto `canonical_artist_labels`
+itself: "The Beatles" and "Beatles, The" now collapse to one label ("Beatles,
+The"), not just one casing of a fixed spelling — see
+`docs/specifications/shaping/2026-08-16-the-suffix-artist-display-design.md`,
+which this doc also does not attempt to re-document. The casing rule above
+(most-frequent-wins, catalog-over-stock_items, byte-order tie-break) is
+otherwise unchanged; the new fold is applied to whichever spelling that rule
+picks, not instead of it.
+
 Sidebar ordering moves from the database collation to Python's case-folded
 ordering (`key=lambda a: (_artist_sort_key(a), a.lower(), a)`), because the
 label is chosen after the rows come back. The two orderings differ only for
