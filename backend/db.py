@@ -826,7 +826,7 @@ def get_library_releases(
         sort_col = sort if sort in _RELEASE_ALLOWED_SORT else "artist"
         # Case-insensitive so an artist's differently-cased catalog rows stay
         # adjacent even under a byte-ordering collation.
-        sort_expr = "LOWER(c.artist)" if sort_col == "artist" else f"c.{sort_col}"
+        sort_expr = _artist_sort_sql("c.artist") if sort_col == "artist" else f"c.{sort_col}"
 
     rows = conn.execute(
         f"""
@@ -1366,6 +1366,31 @@ def canonical_artist_labels(conn, artists) -> dict:
     return labels
 
 
+_ARTIST_SORT_ARTICLE = "the "
+
+
+def _artist_sort_sql(column: str) -> str:
+    """SQL sort-key expression for `column`: a leading "The " (any case) is
+    dropped so "The Beatles" sorts under B, matching the library-catalog
+    convention "Beatles, The". Display text is untouched -- this is ORDER BY
+    only. `LIKE 'the %%'` requires a following word, so a bare "The" or a name
+    like "Theatre of Hate" is correctly left alone. The `%%` (not `%`) is
+    psycopg pyformat escaping for a literal `%`, required because both call
+    sites execute this query with a non-empty params dict."""
+    return (
+        f"CASE WHEN LOWER({column}) LIKE '{_ARTIST_SORT_ARTICLE}%%' "
+        f"THEN LOWER(SUBSTRING({column} FROM {len(_ARTIST_SORT_ARTICLE) + 1})) "
+        f"ELSE LOWER({column}) END"
+    )
+
+
+def _artist_sort_key(name: str) -> str:
+    """Python equivalent of _artist_sort_sql, for the sidebar list which sorts
+    in Python (see _canonical_artist_list) rather than SQL."""
+    lower = name.lower()
+    return lower[len(_ARTIST_SORT_ARTICLE):] if lower.startswith(_ARTIST_SORT_ARTICLE) else lower
+
+
 def _canonical_artist_list(conn, artists) -> list:
     """One entry per artist for a sidebar, canonically cased. Ordering is done
     here rather than in SQL -- the label isn't known until the rows are back --
@@ -1375,7 +1400,7 @@ def _canonical_artist_list(conn, artists) -> list:
     together."""
     labels = canonical_artist_labels(conn, artists)
     deduped = {labels.get(a, a) for a in artists if a}
-    return sorted(deduped, key=lambda a: (a.lower(), a))
+    return sorted(deduped, key=lambda a: (_artist_sort_key(a), a.lower(), a))
 
 
 def _apply_canonical_artists(conn, rows: list[dict]) -> None:
@@ -1503,7 +1528,7 @@ def get_stock_items(
     else:
         sort_col = sort if sort in _STOCK_ALLOWED_SORT else "artist"
         # See get_library_releases: keeps casing variants of one artist together.
-        sort_expr = "LOWER(s.artist)" if sort_col == "artist" else f"s.{sort_col}"
+        sort_expr = _artist_sort_sql("s.artist") if sort_col == "artist" else f"s.{sort_col}"
 
     conditions = []
     params: dict = {"user_id": user_id}

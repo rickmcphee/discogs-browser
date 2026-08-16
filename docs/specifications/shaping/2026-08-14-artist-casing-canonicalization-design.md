@@ -131,12 +131,16 @@ artist spelled differently.
 
 The artist sorts move to `LOWER(...)` so that the two casings of one artist
 stay adjacent even under a byte-ordering collation; under `en_US` they already
-were.
+were. (A later branch layers a leading-"The" strip on top of this `LOWER(...)`
+base for both the row-list and sidebar sort keys — see
+`docs/specifications/shaping/2026-08-16-the-prefix-artist-sort-design.md`,
+which this doc does not attempt to re-document.)
 
 Sidebar ordering moves from the database collation to Python's case-folded
-ordering (`key=lambda s: (s.lower(), s)`), because the label is chosen after
-the rows come back. The two orderings differ only for accented and punctuated
-names, which the sidebar has no strong claim on either way.
+ordering (`key=lambda a: (_artist_sort_key(a), a.lower(), a)`), because the
+label is chosen after the rows come back. The two orderings differ only for
+accented and punctuated names, which the sidebar has no strong claim on
+either way.
 
 **Indexes.** `catalog (LOWER(artist))` and `stock_items (LOWER(artist))` are
 added to `GLOBAL_SCHEMA`. Every artist read path now case-folds — the two

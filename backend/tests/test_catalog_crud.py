@@ -566,3 +566,58 @@ def test_get_distinct_artists_collapses_casing_python_and_postgres_fold_differen
 
     with db.user_scope(alice["id"]) as conn:
         assert db.get_distinct_artists(conn, alice["id"]) == ["İsis"]
+
+
+def test_get_library_releases_sorts_the_prefixed_artists_by_the_following_word(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "The Beatles", "Abbey Road")
+    _catalog(admin_conn, "r2", "Aphex Twin", "Selected Ambient Works")
+    _catalog(admin_conn, "r3", "Pavement", "Slanted and Enchanted")
+    _catalog(admin_conn, "r4", "Zappa", "Hot Rats")
+    for rid in ("r1", "r2", "r3", "r4"):
+        db.upsert_library_item(admin_conn, alice["id"], rid, in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        asc = db.get_library_releases(conn, alice["id"], sort="artist", order="asc")
+        desc = db.get_library_releases(conn, alice["id"], sort="artist", order="desc")
+    # "The Beatles" sorts under B, ahead of "Pavement" -- the full-string
+    # key "the beatles" would instead sort it *after* "pavement", so this
+    # ordering only holds with article-stripping applied, not by accident.
+    assert [r["discogs_id"] for r in asc["releases"]] == ["r2", "r1", "r3", "r4"]
+    assert [r["discogs_id"] for r in desc["releases"]] == ["r4", "r3", "r1", "r2"]
+    # Display text is untouched by the sort-key transform.
+    assert asc["releases"][1]["artist"] == "The Beatles"
+
+
+def test_get_library_releases_the_prefix_sort_leaves_false_positives_alone(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "The", "Untitled")
+    _catalog(admin_conn, "r2", "Theatre of Hate", "Westworld")
+    _catalog(admin_conn, "r3", "The Who", "Tommy")
+    for rid in ("r1", "r2", "r3"):
+        db.upsert_library_item(admin_conn, alice["id"], rid, in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], sort="artist", order="asc")
+    # "The Who" -> sort key "who" (W). "The" and "Theatre of Hate" have no
+    # word after "the " to strip, so they keep their literal spelling (T).
+    assert [r["discogs_id"] for r in result["releases"]] == ["r1", "r2", "r3"]
+
+
+def test_get_distinct_artists_sorts_the_prefixed_artists_by_the_following_word(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "The Beatles", "Abbey Road")
+    _catalog(admin_conn, "r2", "Aphex Twin", "Selected Ambient Works")
+    _catalog(admin_conn, "r3", "Pavement", "Slanted and Enchanted")
+    _catalog(admin_conn, "r4", "Zappa", "Hot Rats")
+    for rid in ("r1", "r2", "r3", "r4"):
+        db.upsert_library_item(admin_conn, alice["id"], rid, in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        artists = db.get_distinct_artists(conn, alice["id"])
+    # "The Beatles" sorts ahead of "Pavement" only with article-stripping --
+    # the full-string key "the beatles" would put it after "pavement".
+    assert artists == ["Aphex Twin", "The Beatles", "Pavement", "Zappa"]
