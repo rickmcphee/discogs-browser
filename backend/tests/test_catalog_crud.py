@@ -572,18 +572,20 @@ def test_get_library_releases_sorts_the_prefixed_artists_by_the_following_word(a
     alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
     _catalog(admin_conn, "r1", "The Beatles", "Abbey Road")
     _catalog(admin_conn, "r2", "Aphex Twin", "Selected Ambient Works")
-    _catalog(admin_conn, "r3", "Zappa", "Hot Rats")
-    for rid in ("r1", "r2", "r3"):
+    _catalog(admin_conn, "r3", "Pavement", "Slanted and Enchanted")
+    _catalog(admin_conn, "r4", "Zappa", "Hot Rats")
+    for rid in ("r1", "r2", "r3", "r4"):
         db.upsert_library_item(admin_conn, alice["id"], rid, in_collection=True)
     admin_conn.commit()
 
     with db.user_scope(alice["id"]) as conn:
         asc = db.get_library_releases(conn, alice["id"], sort="artist", order="asc")
         desc = db.get_library_releases(conn, alice["id"], sort="artist", order="desc")
-    # "The Beatles" sorts under B, between "Aphex Twin" and "Zappa" -- not
-    # under T where a plain alphabetical sort would put it.
-    assert [r["discogs_id"] for r in asc["releases"]] == ["r2", "r1", "r3"]
-    assert [r["discogs_id"] for r in desc["releases"]] == ["r3", "r1", "r2"]
+    # "The Beatles" sorts under B, ahead of "Pavement" -- the full-string
+    # key "the beatles" would instead sort it *after* "pavement", so this
+    # ordering only holds with article-stripping applied, not by accident.
+    assert [r["discogs_id"] for r in asc["releases"]] == ["r2", "r1", "r3", "r4"]
+    assert [r["discogs_id"] for r in desc["releases"]] == ["r4", "r3", "r1", "r2"]
     # Display text is untouched by the sort-key transform.
     assert asc["releases"][1]["artist"] == "The Beatles"
 
