@@ -1346,3 +1346,36 @@ def test_get_stock_items_artist_filter_spans_casing_variants_and_labels_them_can
         "Orange Rhyming Dictionary", "Perfecting Loneliness", "Four Cornered Night",
     }
     assert {i["artist"] for i in result["items"]} == {"Jets To Brazil"}
+
+
+def test_get_stock_items_sorts_the_prefixed_artists_by_the_following_word(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    crawler_id = _register(admin_conn, "Amazon")
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "The Beatles", "title": "Abbey Road", "url": "https://x/1", "price": 20.0, "currency": "USD"},
+        {"artist": "Aphex Twin", "title": "Selected Ambient Works", "url": "https://x/2", "price": 15.0, "currency": "USD"},
+        {"artist": "Zappa", "title": "Hot Rats", "url": "https://x/3", "price": 18.0, "currency": "USD"},
+    ])
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], sort="artist", order="asc")
+    assert [i["title"] for i in result["items"]] == [
+        "Selected Ambient Works", "Abbey Road", "Hot Rats",
+    ]
+    assert result["items"][1]["artist"] == "The Beatles"
+
+
+def test_get_stock_items_the_prefix_sort_leaves_false_positives_alone(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    crawler_id = _register(admin_conn, "Amazon")
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "The", "title": "Untitled", "url": "https://x/1", "price": 5.0, "currency": "USD"},
+        {"artist": "Theatre of Hate", "title": "Westworld", "url": "https://x/2", "price": 6.0, "currency": "USD"},
+        {"artist": "The Who", "title": "Tommy", "url": "https://x/3", "price": 7.0, "currency": "USD"},
+    ])
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], sort="artist", order="asc")
+    assert [i["title"] for i in result["items"]] == ["Untitled", "Westworld", "Tommy"]

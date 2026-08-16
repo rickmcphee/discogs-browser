@@ -1526,7 +1526,7 @@ def get_stock_items(
     else:
         sort_col = sort if sort in _STOCK_ALLOWED_SORT else "artist"
         # See get_library_releases: keeps casing variants of one artist together.
-        sort_expr = "LOWER(s.artist)" if sort_col == "artist" else f"s.{sort_col}"
+        sort_expr = _artist_sort_sql("s.artist") if sort_col == "artist" else f"s.{sort_col}"
 
     conditions = []
     params: dict = {"user_id": user_id}
