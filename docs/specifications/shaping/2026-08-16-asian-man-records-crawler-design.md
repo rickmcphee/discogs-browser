@@ -128,11 +128,19 @@ a user's collection can just as easily include one of those records.
    titles with no quotes at all (`MU330 - S/T 12" VINYL`,
    `THE CHINKEES - Are Coming 12" VINYL`), followed by stripping a
    trailing format suffix from the album half:
-   `\s+(?:DOUBLE\s+)?(?:\d{1,2}\s*(?:"|INCH)\b|LP\b|EP\b).*$`. Covers 8
-   more products, including 3 self-titled releases where the "album" is
-   the literal `S/T` shorthand (`MU330 - S/T` → artist `MU330`, album
-   `S/T`) — kept as-is, same informal convention `jackpotrecords.py`
-   passes through unresolved when a title lacks a real album name.
+   `\s+(?:DOUBLE\s+)?\d{1,2}\s*(?:"|INCH\b).*$` — covers only the
+   digit+quote/digit+INCH forms actually confirmed live on this store's
+   no-quote titles (every one of the 8 matched products uses one of
+   these two forms; none uses a bare `LP`/`EP` suffix with no preceding
+   digit). A bare `LP`/`EP` branch was considered and dropped: checked
+   against the full 251-product catalog snapshot and no gated,
+   quote-free, hyphen-split title needs it, so adding it would be
+   untested speculative surface with nothing live to verify it against.
+   Covers 8 more products, including 3 self-titled releases where the
+   "album" is the literal `S/T` shorthand (`MU330 - S/T` → artist
+   `MU330`, album `S/T`) — kept as-is, same informal convention
+   `jackpotrecords.py` passes through unresolved when a title lacks a
+   real album name.
 4. Neither pattern matches → skip. 8/149 products (5.4%): bare
    artist-plus-format titles with no album at all (`MAGUMA TAISHI 7"`,
    `SMALL CRUSH 7 INCH`), unresolvable multi-artist splits with no album
