@@ -38,6 +38,32 @@ here is the store's own name or a reissue label, never the artist). It skips
 the paren-stripping pass, unlike `cleorecs.py`. `cleorecs.py` is no longer
 the sole documented exception to the converging contract; there are now two.
 
+**Third amendment (2026-08-16, branch `claude/asian-man-records-crawler-074aa7`):**
+`backend/crawlers/asianmanrecords.py` is a third exception. It shares two
+divergences with the prior two: the same wider `[-–—]` separator class
+`cleorecs.py` and `jackpotrecords.py` both use, and no vendor fallback at all
+— `vendor` is `"Asian Man Records"` (the label's own name, not an artist) on
+every product, the same shape and the same reasoning `jackpotrecords.py`'s
+entry above gives for its own vendor field.
+
+It also introduces a divergence neither prior exception has: a **quoted-album
+primary parser**, `^(?P<artist>.+?)\s*[-–—]?\s*"(?P<album>[^"]+)"`, matching
+this store's actual dominant title convention, `ARTIST "Album" FORMAT`
+(133/149 gated products) — a shape `cleorecs.py` and `jackpotrecords.py`
+never needed because neither store quotes its album titles. The hyphen-split
+regex both of those exceptions already use is still present here, but demoted
+to a fallback that only runs when the quoted-album parser doesn't match, for
+the minority of titles with no quoted album at all (8/149 gated products).
+Neither prior exception has this two-stage primary/fallback structure — each
+has exactly one parser.
+
+None of this retracts the doc's original convergence argument for the eight
+crawlers it still describes correctly, nor the first two amendments' verdicts
+on `cleorecs.py` and `jackpotrecords.py` — it records that
+`asianmanrecords.py` is a third documented exception to the converging
+contract, not a bug to fix into conformance, the same framing the first two
+amendments use.
+
 ## Problem
 
 Nine Shopify-storefront catalog crawlers each need to split a product's

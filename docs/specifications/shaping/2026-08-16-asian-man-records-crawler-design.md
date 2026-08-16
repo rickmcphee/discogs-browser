@@ -170,7 +170,7 @@ variants are used for two different purposes that both need handling:
    CD (`CD`, `GET FIRED CD`), a cassette (`Cassette`, `CS`), or a promo
    slipmat (`A3 SLIPMAT`) offered from the same product page as an
    alternative to the vinyl. **Excluded** via
-   `\bCD\b|\bCS\b|\bCASSETTE\b|SLIPMAT` (case-insensitive) matched
+   `\bCD\b|\bCS\b|\bCASSETTE\b|\bSLIPMAT\b` (case-insensitive) matched
    against the variant's own title, applied only when a product has more
    than one variant — a single-variant product's variant title is often
    just `Default Title` or a bare color word (`BLACK`, `YELLOW`) with no
@@ -277,6 +277,9 @@ confirmed-live products, no live site, no bot-detection risk. Cases:
   kept (no vinyl-word requirement on single-variant products)
 - apparel-bundle product with 6 size variants, none priced identically
   (`XXL`/`XXXL` upcharge) → collapsed to the cheapest
+- multi-variant product with 3 genuine color-pressing variants, no
+  CD/cassette/slipmat/bundle-deal signal → all 3 kept, each title suffixed
+  with its own variant name
 - an unavailable, non-pre-order variant → skipped
 - an unavailable, pre-order-flagged variant → kept
 - site metadata (`site_name`, `base_url`, `crawler_type`)
