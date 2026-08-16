@@ -14,7 +14,7 @@ interface Props {
 }
 
 const NO_HIDDEN_CRAWLER_IDS: number[] = []
-const STORE_FILTERS = ['all', 'recommended'] as const
+const STORE_FILTERS = ['all', 'recommended', 'saved'] as const
 const TRACK_FILTERS = ['all', 'collection', 'wantlist'] as const satisfies readonly LibraryScope[]
 
 function trackLibraryScope(value: string): LibraryScope | undefined {
@@ -59,6 +59,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
       sort, order, page, per_page: PER_PAGE,
       libraryScope: scope === 'track' ? trackLibraryScope(filter) : undefined,
       recommended: scope === 'store' && filter === 'recommended',
+      saved: scope === 'store' && filter === 'saved',
       hiddenCrawlerIds,
     })
     if (!isLatest()) return
@@ -95,6 +96,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
       scope === 'track' ? trackLibraryScope(filter) : undefined,
       scope === 'store' && filter === 'recommended',
       hiddenCrawlerIds,
+      scope === 'store' && filter === 'saved',
     ).then((list) => { if (latest) setArtists(list) })
     return () => { latest = false }
   }, [scope, filter, hiddenCrawlerIds, syncGeneration])
@@ -164,6 +166,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
   const priceSortable = scope === 'track' && filter !== 'wantlist'
   const emptyMessage =
     scope === 'store' && filter === 'recommended' ? 'Nothing recommended is in stock right now.'
+    : scope === 'store' && filter === 'saved' ? "You haven't saved anything yet."
     : scope === 'store' ? (isAdmin ? 'No in-stock items yet. Click Refresh under Store Management in Settings.' : 'No in-stock items yet. Check back after the next store sync.')
     : filter === 'collection' ? 'Nothing in your collection is in stock right now.'
     : filter === 'wantlist' ? 'Nothing on your wantlist is in stock right now.'
@@ -231,6 +234,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
                 <>
                   <option value="all">All</option>
                   <option value="recommended" disabled={!recommendedAvailable}>Recommended</option>
+                  <option value="saved">Saved</option>
                 </>
               )}
             </select>
