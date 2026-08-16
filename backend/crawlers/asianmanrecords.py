@@ -63,14 +63,22 @@ class Crawler:
             survivors = [v for v in variants if not _EXCLUDED_VARIANT_RE.search(v.get("title", ""))]
         else:
             survivors = list(variants)
+        # Bundle-ness and the multi-edition suffix decision are both derived from
+        # `survivors`, not from post-availability `kept` -- a stock item's title
+        # (and therefore its item_key, backend/db.py's replace_stock_items) must
+        # stay stable as individual variants sell in and out, or a durable
+        # stock_item_judgments row silently orphans every time availability shifts.
+        is_bundle = bool(survivors) and all(_BUNDLE_DEAL_RE.search(v.get("title", "")) for v in survivors)
+        multi_edition = len(survivors) > 1 and not is_bundle
+
         kept = [v for v in survivors if v.get("available") or is_preorder]
-        if kept and all(_BUNDLE_DEAL_RE.search(v.get("title", "")) for v in kept):
+        if is_bundle and kept:
             kept = [min(kept, key=cls._variant_price_sort_key)]
 
         handle = product.get("handle", "")
         items = []
         for variant in kept:
-            title = album if len(kept) == 1 else f"{album} — {variant.get('title', '')}"
+            title = f"{album} — {variant.get('title', '')}" if multi_edition else album
             items.append({
                 "artist": artist,
                 "title": title,

@@ -333,6 +333,25 @@ async def test_crawl_catalog_suffixes_title_for_multiple_surviving_variants(craw
 
 
 @respx.mock
+async def test_crawl_catalog_suffix_stays_stable_when_a_sibling_variant_sells_out(crawler):
+    # One of the three real color variants above goes unavailable -- the two
+    # still in stock must keep their disambiguating suffix (derived from the
+    # product's full edition set, not from what happens to be available this
+    # sync), so item_key stays stable across syncs instead of collapsing to a
+    # bare "Stay Down" the moment a sibling color sells out.
+    product = {**_SMOKING_POPES_STAY_DOWN, "variants": [
+        {**_SMOKING_POPES_STAY_DOWN["variants"][0], "available": False},
+        _SMOKING_POPES_STAY_DOWN["variants"][1],
+        _SMOKING_POPES_STAY_DOWN["variants"][2],
+    ]}
+    _mock_single_page([product])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert len(items) == 2
+    titles = {item["title"] for item in items}
+    assert titles == {"Stay Down — RANCOM COLOR", "Stay Down — COKE BOTTLE CLEAR"}
+
+
+@respx.mock
 async def test_crawl_catalog_strips_preorder_prefix_and_asymmetric_hyphen(crawler):
     _mock_single_page([_SMOKING_POPES_PREORDER])
     items = [item async for item in crawler.crawl_catalog()]
