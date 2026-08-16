@@ -826,7 +826,7 @@ def get_library_releases(
         sort_col = sort if sort in _RELEASE_ALLOWED_SORT else "artist"
         # Case-insensitive so an artist's differently-cased catalog rows stay
         # adjacent even under a byte-ordering collation.
-        sort_expr = "LOWER(c.artist)" if sort_col == "artist" else f"c.{sort_col}"
+        sort_expr = _artist_sort_sql("c.artist") if sort_col == "artist" else f"c.{sort_col}"
 
     rows = conn.execute(
         f"""
@@ -1364,6 +1364,29 @@ def canonical_artist_labels(conn, artists) -> dict:
         for row in rows:
             labels[row["input"]] = row["label"]
     return labels
+
+
+_ARTIST_SORT_ARTICLE = "the "
+
+
+def _artist_sort_sql(column: str) -> str:
+    """SQL sort-key expression for `column`: a leading "The " (any case) is
+    dropped so "The Beatles" sorts under B, matching the library-catalog
+    convention "Beatles, The". Display text is untouched -- this is ORDER BY
+    only. `LIKE 'the %%'` requires a following word, so a bare "The" or a name
+    like "Theatre of Hate" is correctly left alone."""
+    return (
+        f"CASE WHEN LOWER({column}) LIKE 'the %%' "
+        f"THEN LOWER(SUBSTRING({column} FROM {len(_ARTIST_SORT_ARTICLE) + 1})) "
+        f"ELSE LOWER({column}) END"
+    )
+
+
+def _artist_sort_key(name: str) -> str:
+    """Python equivalent of _artist_sort_sql, for the sidebar list which sorts
+    in Python (see _canonical_artist_list) rather than SQL."""
+    lower = name.lower()
+    return lower[len(_ARTIST_SORT_ARTICLE):] if lower.startswith(_ARTIST_SORT_ARTICLE) else lower
 
 
 def _canonical_artist_list(conn, artists) -> list:
