@@ -243,6 +243,50 @@ def test_get_stock_items_recommended_filters_to_calling_users_judgments(admin_co
         assert result["total"] == 0
 
 
+def test_save_stock_item_then_unsave_round_trips(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+
+    db.save_stock_item(admin_conn, alice["id"], "some-item-key")
+    admin_conn.commit()
+    row = admin_conn.execute(
+        "SELECT * FROM stock_item_saves WHERE user_id = %s AND item_key = %s",
+        [alice["id"], "some-item-key"],
+    ).fetchone()
+    assert row is not None
+
+    db.unsave_stock_item(admin_conn, alice["id"], "some-item-key")
+    admin_conn.commit()
+    row = admin_conn.execute(
+        "SELECT * FROM stock_item_saves WHERE user_id = %s AND item_key = %s",
+        [alice["id"], "some-item-key"],
+    ).fetchone()
+    assert row is None
+
+
+def test_save_stock_item_is_idempotent(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+
+    db.save_stock_item(admin_conn, alice["id"], "some-item-key")
+    db.save_stock_item(admin_conn, alice["id"], "some-item-key")
+    admin_conn.commit()
+
+    rows = admin_conn.execute(
+        "SELECT * FROM stock_item_saves WHERE user_id = %s AND item_key = %s",
+        [alice["id"], "some-item-key"],
+    ).fetchall()
+    assert len(rows) == 1
+
+
+def test_unsave_stock_item_never_saved_is_a_noop(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+
+    db.unsave_stock_item(admin_conn, alice["id"], "never-saved-key")
+    admin_conn.commit()  # must not raise
+
+
 def test_get_stock_items_excludes_hidden_crawler_ids(admin_conn):
     alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
     db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")

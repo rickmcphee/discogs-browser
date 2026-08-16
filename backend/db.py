@@ -403,6 +403,13 @@ CREATE TABLE IF NOT EXISTS stock_item_judgments (
     PRIMARY KEY (user_id, item_key)
 );
 
+CREATE TABLE IF NOT EXISTS stock_item_saves (
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    item_key TEXT NOT NULL,
+    saved_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, item_key)
+);
+
 CREATE TABLE IF NOT EXISTS invites (
     code TEXT PRIMARY KEY,
     created_by INTEGER REFERENCES users(id),
@@ -441,6 +448,8 @@ ALTER TABLE library_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE library_items FORCE ROW LEVEL SECURITY;
 ALTER TABLE stock_item_judgments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE stock_item_judgments FORCE ROW LEVEL SECURITY;
+ALTER TABLE stock_item_saves ENABLE ROW LEVEL SECURITY;
+ALTER TABLE stock_item_saves FORCE ROW LEVEL SECURITY;
 
 -- WITH CHECK is given explicitly (identical to USING) on all four policies
 -- below rather than left implicit. Postgres already defaults an omitted
@@ -477,6 +486,11 @@ CREATE POLICY library_items_isolation ON library_items
 
 DROP POLICY IF EXISTS stock_item_judgments_isolation ON stock_item_judgments;
 CREATE POLICY stock_item_judgments_isolation ON stock_item_judgments
+    USING (user_id = current_setting('app.user_id', true)::int)
+    WITH CHECK (user_id = current_setting('app.user_id', true)::int);
+
+DROP POLICY IF EXISTS stock_item_saves_isolation ON stock_item_saves;
+CREATE POLICY stock_item_saves_isolation ON stock_item_saves
     USING (user_id = current_setting('app.user_id', true)::int)
     WITH CHECK (user_id = current_setting('app.user_id', true)::int);
 """
@@ -552,6 +566,7 @@ def init_tenant_schema():
         conn.execute("GRANT USAGE, SELECT ON SEQUENCE listings_id_seq, stock_items_id_seq TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON library_items TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON stock_item_judgments TO app_user")
+        conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON stock_item_saves TO app_user")
         # crawl_queue needs DELETE for the same reason stock_items does:
         # delete_dead_stock_crawl_queue_rows(), run through get_app_pool() from
         # PATCH /api/crawlers/{id} and at the end of each stock sync.
@@ -1799,6 +1814,24 @@ def upsert_stock_judgments(conn, user_id: int, judgments: list[dict]):
             """,
             [(user_id, j["item_key"], j["recommended"], j.get("reason")) for j in judgments],
         )
+
+
+def save_stock_item(conn, user_id: int, item_key: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO stock_item_saves (user_id, item_key)
+        VALUES (%s, %s)
+        ON CONFLICT (user_id, item_key) DO NOTHING
+        """,
+        [user_id, item_key],
+    )
+
+
+def unsave_stock_item(conn, user_id: int, item_key: str) -> None:
+    conn.execute(
+        "DELETE FROM stock_item_saves WHERE user_id = %s AND item_key = %s",
+        [user_id, item_key],
+    )
 
 
 def has_any_stock_judgment(conn, user_id: int) -> bool:
