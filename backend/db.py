@@ -1374,7 +1374,9 @@ def _artist_sort_sql(column: str) -> str:
     dropped so "The Beatles" sorts under B, matching the library-catalog
     convention "Beatles, The". Display text is untouched -- this is ORDER BY
     only. `LIKE 'the %%'` requires a following word, so a bare "The" or a name
-    like "Theatre of Hate" is correctly left alone."""
+    like "Theatre of Hate" is correctly left alone. The `%%` (not `%`) is
+    psycopg pyformat escaping for a literal `%`, required because both call
+    sites execute this query with a non-empty params dict."""
     return (
         f"CASE WHEN LOWER({column}) LIKE 'the %%' "
         f"THEN LOWER(SUBSTRING({column} FROM {len(_ARTIST_SORT_ARTICLE) + 1})) "
