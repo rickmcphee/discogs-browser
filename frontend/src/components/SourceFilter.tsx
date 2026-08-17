@@ -113,15 +113,24 @@ function SourceFilter({ crawlers, hiddenCrawlerIds, onChange }: Props) {
           ))}
           <div className="border-t border-gray-800 my-3" />
           <span className="text-xs uppercase tracking-wider text-gray-500">By store</span>
-          {crawlers.map((c) => (
-            <FilterCheckbox
-              key={c.id}
-              label={c.site_name}
-              checked={!hiddenCrawlerIds.includes(c.id)}
-              indeterminate={false}
-              onToggle={() => toggleStore(c.id)}
-            />
-          ))}
+          {GENRES.map(({ key, label }) => {
+            const stores = byGenre.get(key) ?? []
+            if (stores.length === 0) return null
+            return (
+              <div key={key} className="mt-2">
+                <div className="text-xs text-gray-500 mb-1">{label}</div>
+                {stores.map((c) => (
+                  <FilterCheckbox
+                    key={c.id}
+                    label={c.site_name}
+                    checked={!hiddenCrawlerIds.includes(c.id)}
+                    indeterminate={false}
+                    onToggle={() => toggleStore(c.id)}
+                  />
+                ))}
+              </div>
+            )
+          })}
         </div>
       )}
     </div>
