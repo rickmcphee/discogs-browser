@@ -59,8 +59,6 @@ function renderSettings(overrides: Partial<ComponentProps<typeof Settings>> = {}
       onRefreshPrices={() => {}}
       onRefreshStock={() => {}}
       isAdmin
-      hiddenCrawlerIds={[]}
-      onToggleCrawlerView={() => {}}
       stockSyncBusy={false}
       stockSyncCrawlerId={null}
       onRefreshStoreCrawler={() => {}}
@@ -133,31 +131,17 @@ describe('Settings', () => {
     expect(screen.queryByText('Recommendations Management')).not.toBeInTheDocument()
   })
 
-  it('shows both View and Crawl columns to an admin, for every crawler regardless of enabled state', async () => {
+  it('shows the Crawl column to an admin, for every crawler regardless of enabled state', async () => {
     renderSettings({ crawlers: CRAWLERS })
     await waitFor(() => expect(getSettings).toHaveBeenCalled())
     expect(screen.getByText('Amazon')).toBeInTheDocument()
     expect(screen.getByText('Disabled Site')).toBeInTheDocument()
-    expect(screen.getAllByText('Visible').length).toBe(3)
+    expect(screen.queryByText('Visible')).not.toBeInTheDocument()
     expect(screen.getAllByText('Enabled').length).toBe(2)
     expect(screen.getAllByText('Disabled').length).toBe(1)
   })
 
-  it('marks a crawler in hiddenCrawlerIds as Hidden in the View column', async () => {
-    renderSettings({ crawlers: CRAWLERS, hiddenCrawlerIds: [1] })
-    await waitFor(() => expect(getSettings).toHaveBeenCalled())
-    const amazonRow = screen.getByText('Amazon').closest('tr') as HTMLElement
-    expect(amazonRow.textContent).toContain('Hidden')
-  })
 
-  it('calls onToggleCrawlerView when a View button is clicked', async () => {
-    const onToggleCrawlerView = vi.fn()
-    renderSettings({ crawlers: CRAWLERS, onToggleCrawlerView })
-    await waitFor(() => expect(getSettings).toHaveBeenCalled())
-    const amazonRow = screen.getByText('Amazon').closest('tr') as HTMLElement
-    fireEvent.click(screen.getAllByText('Visible').find((el) => amazonRow.contains(el))!)
-    expect(onToggleCrawlerView).toHaveBeenCalledWith(1)
-  })
 
   it('hides admin-only controls and the Crawl column for a non-admin, and only lists enabled crawlers', async () => {
     renderSettings({ crawlers: CRAWLERS, isAdmin: false })
@@ -178,13 +162,6 @@ describe('Settings', () => {
     expect(screen.queryByText('Crawler Management')).not.toBeInTheDocument()
   })
 
-  it('still shows View toggles to a non-admin', async () => {
-    const onToggleCrawlerView = vi.fn()
-    renderSettings({ crawlers: CRAWLERS, isAdmin: false, onToggleCrawlerView })
-    const amazonRow = screen.getByText('Amazon').closest('tr') as HTMLElement
-    fireEvent.click(screen.getAllByText('Visible').find((el) => amazonRow.contains(el))!)
-    expect(onToggleCrawlerView).toHaveBeenCalledWith(1)
-  })
 
   it('shows a per-row Refresh button only for catalog crawlers, and only to an admin', async () => {
     renderSettings({ crawlers: CRAWLERS })
