@@ -15,10 +15,13 @@ tab only.
 
 Touches:
 
-- `backend/db.py` — new `stock_item_saves` table in `TENANT_SCHEMA`;
+- `backend/db.py` — new `stock_item_saves` table in `TENANT_SCHEMA`; both
   `get_stock_items` and `get_distinct_stock_artists` gain a `saved_only:
-  bool` parameter and a join that adds `saved: bool` to every returned row;
-  new `save_stock_item`/`unsave_stock_item` functions.
+  bool` parameter and its WHERE condition, but only `get_stock_items` also
+  gains a join that adds `saved: bool` to every returned row —
+  `get_distinct_stock_artists` returns plain artist name strings, so there's
+  no per-row field for a join to populate; new `save_stock_item`/
+  `unsave_stock_item` functions.
 - `backend/routers/stock.py` — new `PUT /stock/saved/{item_key}` and
   `DELETE /stock/saved/{item_key}` endpoints; `GET /stock` and `GET
   /stock/artists` gain a `saved` query param.
@@ -174,8 +177,11 @@ if saved_only:
     )
 ```
 
-`get_distinct_stock_artists` gets the identical join and the identical
-`saved_only` condition, mirroring how it already mirrors `recommended`
+`get_distinct_stock_artists` gets the identical `saved_only` WHERE
+condition, but *not* the join — it returns a plain list of artist name
+strings with no per-row `saved` field to populate, so there's nothing for a
+join to feed. This mirrors how it already mirrors `recommended`: same
+WHERE-clause treatment, no join, no field
 (`backend/db.py:1590-1634`).
 
 ### Router
@@ -233,12 +239,16 @@ export interface StockItem {
 export function getStock(params: { /* ... */ saved?: boolean }): Promise<StockResponse>
 export function getStockArtists(libraryScope?, recommended?, hiddenCrawlerIds?, saved?: boolean): Promise<string[]>
 
-export function saveStockItem(itemKey: string): Promise<{ saved: boolean }> {
-  return apiFetch(`/stock/saved/${encodeURIComponent(itemKey)}`, { method: 'PUT' })
+export async function saveStockItem(itemKey: string): Promise<{ saved: boolean }> {
+  const r = await apiFetch(`/stock/saved/${encodeURIComponent(itemKey)}`, { method: 'PUT' })
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
 }
 
-export function unsaveStockItem(itemKey: string): Promise<{ saved: boolean }> {
-  return apiFetch(`/stock/saved/${encodeURIComponent(itemKey)}`, { method: 'DELETE' })
+export async function unsaveStockItem(itemKey: string): Promise<{ saved: boolean }> {
+  const r = await apiFetch(`/stock/saved/${encodeURIComponent(itemKey)}`, { method: 'DELETE' })
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
 }
 ```
 
@@ -429,7 +439,10 @@ test shapes):
   `saved_only=True` — confirms no `_not_owned_clause` gate.
 - Every row for one `item_key` (an "own" row plus comparison rows from
   other crawlers) carries the same `saved` value.
-- `get_distinct_stock_artists(saved_only=True)` mirrors the same cases.
+- `get_distinct_stock_artists(saved_only=True)` mirrors the filtering
+  cases above (inclusion/exclusion by save state, no not-owned gate) — it
+  has no per-row `saved` field, so the "same value on every row" case
+  doesn't apply to it.
 - Saves for one user are invisible to another user's `get_stock_items`
   call (RLS isolation), same shape as the existing
   `stock_item_judgments`-isolation test if one exists, otherwise a direct

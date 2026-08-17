@@ -51,6 +51,12 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
   // race-guarded refetch through the same effects load()/getStockArtists
   // already run under -- see toggleSaved.
   const [retryTick, setRetryTick] = useState(0)
+  // item_keys with a save/unsave request currently in flight. Guards against
+  // the reversed-completion-order race: a second click on the same item_key
+  // while its first request is still pending is a no-op (both in toggleSaved
+  // and via the disabled button), so at most one request per item_key is ever
+  // outstanding and there is nothing left to reconcile out of order.
+  const [pendingSaves, setPendingSaves] = useState<Set<string>>(new Set())
   const PER_PAGE = 250
   const tableScrollRef = useRef<HTMLDivElement>(null)
 
@@ -162,22 +168,39 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
   }
 
   async function toggleSaved(item: StockItem) {
+    // A quick save-then-unsave (or vice versa) before the first request
+    // settles would fire two independent, unordered requests for the same
+    // item_key -- whichever commits last on the server wins, which may not
+    // match the user's actual last click. Rather than queue/replace, the
+    // second click while one is in flight is a no-op: at most one request
+    // per item_key is ever outstanding, so there's no completion order to
+    // reconcile. The disabled button (see render) backs this up visually.
+    if (pendingSaves.has(item.item_key)) return
+    setPendingSaves((prev) => new Set(prev).add(item.item_key))
     const next = !item.saved
     setItems((prev) => {
       const patched = prev.map((it) => (it.item_key === item.item_key ? { ...it, saved: next } : it))
       return filter === 'saved' && !next ? patched.filter((it) => it.item_key !== item.item_key) : patched
     })
     if (filter === 'saved' && !next) setTotal((t) => t - 1)
-    // Bumping retryTick -- rather than calling load()/getStockArtists directly
-    // -- routes the refetch through the same isLatest-guarded effects every
-    // other trigger already uses, so a request that resolves after the user
-    // has since changed filter/search/sort/page can't clobber a newer
-    // response. This runs on both success and failure: a failure needs the
-    // items list to self-correct (undo the optimistic patch), and a success
-    // needs the Saved-filter artist sidebar to drop an artist whose last
-    // saved item was just unsaved.
-    await (next ? saveStockItem(item.item_key) : unsaveStockItem(item.item_key)).catch(() => {})
-    setRetryTick((t) => t + 1)
+    try {
+      // Bumping retryTick -- rather than calling load()/getStockArtists
+      // directly -- routes the refetch through the same isLatest-guarded
+      // effects every other trigger already uses, so a request that resolves
+      // after the user has since changed filter/search/sort/page can't
+      // clobber a newer response. This runs on both success and failure: a
+      // failure needs the items list to self-correct (undo the optimistic
+      // patch), and a success needs the Saved-filter artist sidebar to drop
+      // an artist whose last saved item was just unsaved.
+      await (next ? saveStockItem(item.item_key) : unsaveStockItem(item.item_key)).catch(() => {})
+    } finally {
+      setPendingSaves((prev) => {
+        const nextSet = new Set(prev)
+        nextSet.delete(item.item_key)
+        return nextSet
+      })
+      setRetryTick((t) => t + 1)
+    }
   }
 
   // Sorting by artist is meaningless once the list is filtered down to a
@@ -327,7 +350,8 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
                         <button
                           onClick={(e) => { e.preventDefault(); toggleSaved(item) }}
                           title={item.saved ? 'Remove from saved' : 'Save for later'}
-                          className="absolute top-1 right-1 p-1 rounded-full bg-gray-950/70 text-white hover:bg-gray-950"
+                          disabled={pendingSaves.has(item.item_key)}
+                          className="absolute top-1 right-1 p-1 rounded-full bg-gray-950/70 text-white hover:bg-gray-950 disabled:opacity-40"
                         >
                           <BookmarkIcon filled={item.saved} />
                         </button>
@@ -422,7 +446,8 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
                       <button
                         onClick={() => toggleSaved(item)}
                         title={item.saved ? 'Remove from saved' : 'Save for later'}
-                        className={`p-1 ${dismissButtonClass()}`}
+                        disabled={pendingSaves.has(item.item_key)}
+                        className={`p-1 disabled:opacity-40 ${dismissButtonClass()}`}
                       >
                         <BookmarkIcon filled={item.saved} />
                       </button>

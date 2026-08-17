@@ -594,6 +594,57 @@ describe('StockBrowser', () => {
     await waitFor(() => expect(screen.getAllByTitle('Remove from saved').length).toBeGreaterThanOrEqual(1))
   })
 
+  it('ignores a second click while a save/unsave request is still in flight, even if it resolves before the first (reversed completion order)', async () => {
+    // Regression test for the race Copilot flagged: click Save, then click
+    // again (to Unsave) before the PUT settles. Copilot's report describes
+    // the DELETE committing before the PUT, so the retry-driven reload would
+    // faithfully report "saved" even though unsave was the user's actual
+    // last action. The fix guards against the second click ever firing a
+    // request at all -- the button is disabled and toggleSaved no-ops -- so
+    // there is only ever one request in flight for a given item_key and
+    // nothing to reconcile out of order. Asserting only one of
+    // save/unsaveStockItem was called (not two, reconciled after the fact)
+    // is the point of this test.
+    let resolveSave: (v: unknown) => void = () => {}
+    saveStockItem.mockReturnValue(new Promise((resolve) => { resolveSave = resolve }))
+    // The initial load renders the item unsaved. The finally block bumps
+    // retryTick once the save settles, which triggers a second getStock
+    // call -- keep that response consistent with the optimistic "saved"
+    // state so the reload doesn't itself overwrite the row back to unsaved
+    // and confound the assertions below with an unrelated effect.
+    getStock.mockResolvedValueOnce({ total: 2, page: 1, per_page: 250, items })
+    getStock.mockResolvedValue({
+      total: 2, page: 1, per_page: 250,
+      items: [{ ...items[0], saved: true }, items[1]],
+    })
+    render(<StockBrowser scope="store" />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+
+    const button = screen.getAllByTitle('Save for later')[0]
+    fireEvent.click(button)
+    expect(saveStockItem).toHaveBeenCalledTimes(1)
+    // The button is disabled while the save is pending, so a second click
+    // does not fire unsaveStockItem (and the icon still shows the optimistic
+    // "saved" state from the first click).
+    await waitFor(() => expect(screen.getAllByTitle('Remove from saved').length).toBeGreaterThanOrEqual(1))
+    const pendingButton = screen.getAllByTitle('Remove from saved')[0]
+    expect(pendingButton).toBeDisabled()
+    fireEvent.click(pendingButton)
+    expect(unsaveStockItem).not.toHaveBeenCalled()
+    expect(saveStockItem).toHaveBeenCalledTimes(1)
+
+    // Now let the (only) in-flight request resolve -- even "late", after the
+    // user's attempted second click -- and confirm the item is left saved,
+    // matching the single request that was actually sent, not some
+    // out-of-order DELETE-before-PUT outcome that never happened because the
+    // second click was suppressed.
+    resolveSave({ saved: true })
+    await waitFor(() => expect(pendingButton).not.toBeDisabled())
+    expect(screen.getAllByTitle('Remove from saved').length).toBeGreaterThanOrEqual(1)
+    expect(saveStockItem).toHaveBeenCalledTimes(1)
+    expect(unsaveStockItem).not.toHaveBeenCalled()
+  })
+
   it('renders a bookmark button on the tile in tile view', async () => {
     render(<StockBrowser scope="store" />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
