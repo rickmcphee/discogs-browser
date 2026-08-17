@@ -81,6 +81,13 @@ function StockBrowser({
   // in flight, and that older filtered response arriving last would leave the
   // table showing a subset the sidebar no longer claims to be filtering by.
   const load = useCallback(async (isLatest: () => boolean = () => true) => {
+    // Until the caller's hidden-crawler set has actually loaded (App.tsx
+    // starts it false, flips it true once GET /api/user-hidden-crawlers
+    // resolves), hiddenCrawlerIds is a placeholder [] -- fetching now would
+    // briefly render items from a source the user has hidden, or do so
+    // indefinitely if that GET never resolves. Skip the request entirely;
+    // this effect re-runs once hiddenCrawlerIdsLoaded flips true.
+    if (!hiddenCrawlerIdsLoaded) return
     const result = await getStock({
       search: search || undefined,
       artist: selectedArtist || undefined,
@@ -94,7 +101,7 @@ function StockBrowser({
     setItems(result.items)
     setTotal(result.total)
     setHasLoaded(true)
-  }, [search, selectedArtist, sort, order, page, filter, hiddenCrawlerIds, scope])
+  }, [search, selectedArtist, sort, order, page, filter, hiddenCrawlerIds, scope, hiddenCrawlerIdsLoaded])
 
   // syncGeneration ticks on every stock_sync_progress/stock_sync_complete SSE
   // event so the store/track tabs repaint as crawlers add items, same as
@@ -115,6 +122,9 @@ function StockBrowser({
   // Also refetches on syncGeneration ticks, same as load() above -- otherwise
   // the sidebar's artist list would go stale mid-crawl.
   useEffect(() => {
+    // Same hiddenCrawlerIdsLoaded gate as load() above, and for the same
+    // reason: hiddenCrawlerIds is a placeholder [] until the real set loads.
+    if (!hiddenCrawlerIdsLoaded) return
     // syncGeneration ticks faster than a request round-trip, so these overlap.
     // Committing whichever response lands last would let a stale list drive
     // the reconciliation below -- re-casing the selection to an old label, or
@@ -127,7 +137,7 @@ function StockBrowser({
       scope === 'store' && filter === 'saved',
     ).then((list) => { if (latest) setArtists(list) })
     return () => { latest = false }
-  }, [scope, filter, hiddenCrawlerIds, syncGeneration, retryTick])
+  }, [scope, filter, hiddenCrawlerIds, syncGeneration, retryTick, hiddenCrawlerIdsLoaded])
   // A refetched list can re-case the selected artist's label, or drop it
   // entirely -- see reconcileSelectedArtist. A pure re-casing keeps the current
   // sort and page (it's still the same artist); losing the artist delegates to

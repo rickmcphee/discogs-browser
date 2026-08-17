@@ -813,4 +813,15 @@ describe('StockBrowser Source filter', () => {
     render(<StockBrowser crawlers={CRAWLERS} hiddenCrawlerIdsLoaded={false} />)
     await waitFor(() => expect(screen.getByRole('button', { name: 'Source' })).toBeDisabled())
   })
+
+  it('does not fetch stock or artists until the hidden set has loaded, then fetches once it does', async () => {
+    const { rerender } = render(<StockBrowser crawlers={CRAWLERS} hiddenCrawlerIdsLoaded={false} />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Source' })).toBeDisabled())
+    expect(getStock).not.toHaveBeenCalled()
+    expect(getStockArtists).not.toHaveBeenCalled()
+
+    rerender(<StockBrowser crawlers={CRAWLERS} hiddenCrawlerIdsLoaded={true} />)
+    await waitFor(() => expect(getStock).toHaveBeenCalled())
+    expect(getStockArtists).toHaveBeenCalled()
+  })
 })
