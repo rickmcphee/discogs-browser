@@ -243,6 +243,155 @@ def test_get_stock_items_recommended_filters_to_calling_users_judgments(admin_co
         assert result["total"] == 0
 
 
+def test_save_stock_item_then_unsave_round_trips(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+
+    db.save_stock_item(admin_conn, alice["id"], "some-item-key")
+    admin_conn.commit()
+    row = admin_conn.execute(
+        "SELECT * FROM stock_item_saves WHERE user_id = %s AND item_key = %s",
+        [alice["id"], "some-item-key"],
+    ).fetchone()
+    assert row is not None
+
+    db.unsave_stock_item(admin_conn, alice["id"], "some-item-key")
+    admin_conn.commit()
+    row = admin_conn.execute(
+        "SELECT * FROM stock_item_saves WHERE user_id = %s AND item_key = %s",
+        [alice["id"], "some-item-key"],
+    ).fetchone()
+    assert row is None
+
+
+def test_save_stock_item_is_idempotent(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+
+    db.save_stock_item(admin_conn, alice["id"], "some-item-key")
+    db.save_stock_item(admin_conn, alice["id"], "some-item-key")
+    admin_conn.commit()
+
+    rows = admin_conn.execute(
+        "SELECT * FROM stock_item_saves WHERE user_id = %s AND item_key = %s",
+        [alice["id"], "some-item-key"],
+    ).fetchall()
+    assert len(rows) == 1
+
+
+def test_unsave_stock_item_never_saved_is_a_noop(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+
+    db.unsave_stock_item(admin_conn, alice["id"], "never-saved-key")
+    admin_conn.commit()  # must not raise
+
+
+def _make_amazon_item(admin_conn, artist="Artist A", title="Album A", url="https://x/1", price=10.0):
+    # A distinct site_name per call: replace_stock_items deletes all
+    # stock_items for the given crawler_id before inserting, so reusing one
+    # "Amazon" crawler across calls would delete the previous call's item.
+    site_name = f"Amazon-{url}"
+    db.register_crawler(admin_conn, site_name, "/x.py", crawler_type="catalog")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = %s", [site_name]).fetchone()["id"]
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": artist, "title": title, "url": url, "price": price, "currency": "USD"},
+    ])
+    admin_conn.commit()
+    return db.compute_item_key(artist, title, url)
+
+
+def test_get_stock_items_saved_only_filters_to_calling_users_saves(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    bob = db.create_user(admin_conn, discogs_user_id=2, discogs_username="bob")
+    admin_conn.commit()
+    item_key = _make_amazon_item(admin_conn)
+
+    db.save_stock_item(admin_conn, alice["id"], item_key)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], saved_only=True)
+        assert result["total"] == 1
+
+    with db.user_scope(bob["id"]) as conn:
+        result = db.get_stock_items(conn, bob["id"], saved_only=True)
+        assert result["total"] == 0
+
+
+def test_get_stock_items_saved_only_does_not_exclude_owned_items(admin_conn):
+    # Unlike `recommended`, `saved_only` has no not-owned gate: a saved item
+    # the user already owns must still appear.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+    item_key = _make_amazon_item(admin_conn)
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r1", "artist": "Artist A", "title": "Album A", "year": None, "label": None,
+        "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+        "discogs_url": None,
+    })
+    db.upsert_library_item(admin_conn, alice["id"], "r1", in_collection=True)
+    db.save_stock_item(admin_conn, alice["id"], item_key)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], saved_only=True)
+        assert result["total"] == 1
+
+
+def test_get_stock_items_saved_field_present_on_every_row(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+    saved_key = _make_amazon_item(admin_conn, artist="Artist Saved", title="Album Saved", url="https://x/saved")
+    unsaved_key = _make_amazon_item(admin_conn, artist="Artist Unsaved", title="Album Unsaved", url="https://x/unsaved")
+    db.save_stock_item(admin_conn, alice["id"], saved_key)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"])
+        by_key = {r["item_key"]: r["saved"] for r in result["items"]}
+        assert by_key[saved_key] is True
+        assert by_key[unsaved_key] is False
+
+
+def test_get_stock_items_saved_state_shared_across_comparison_rows(admin_conn):
+    # A record's saved flag must be identical on its own row and every
+    # cross-crawler comparison row for the same item_key.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    db.register_crawler(admin_conn, "Nuclear Blast", "/x.py", crawler_type="catalog")
+    db.register_crawler(admin_conn, "Amazon", "/y.py", crawler_type="release")
+    admin_conn.commit()
+    store_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()["id"]
+    amazon_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+    item_key = db.replace_stock_items(admin_conn, store_id, [
+        {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+    ])[0]
+    db.upsert_stock_item_listing(admin_conn, item_key, amazon_id, "https://amazon/1", 12.5, None, "USD", "New")
+    admin_conn.commit()
+    db.save_stock_item(admin_conn, alice["id"], item_key)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"])
+        rows_for_item = [r for r in result["items"] if r["item_key"] == item_key]
+        assert len(rows_for_item) == 2  # own row + one comparison row
+        assert all(r["saved"] for r in rows_for_item)
+
+
+def test_get_distinct_stock_artists_saved_only_filters(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+    saved_key = _make_amazon_item(admin_conn, artist="Artist Saved", title="Album Saved", url="https://x/saved")
+    _make_amazon_item(admin_conn, artist="Artist Unsaved", title="Album Unsaved", url="https://x/unsaved")
+    db.save_stock_item(admin_conn, alice["id"], saved_key)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        artists = db.get_distinct_stock_artists(conn, alice["id"], saved_only=True)
+        assert artists == ["Artist Saved"]
+
+
 def test_get_stock_items_excludes_hidden_crawler_ids(admin_conn):
     alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
     db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")

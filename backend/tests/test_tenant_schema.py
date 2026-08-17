@@ -261,6 +261,80 @@ def test_stock_item_judgments_insert_with_mismatched_user_id_is_rejected(pg_test
             conn.commit()
 
 
+def test_stock_item_saves_is_rls_isolated_per_user(pg_test_db, monkeypatch):
+    # Same pattern as test_stock_item_judgments_is_rls_isolated_per_user
+    # above: init the schema first (this test must pass standalone), then
+    # point the app-role pool at the real app_user role instead of the
+    # admin/superuser DSN pg_test_db defaults it to -- a superuser
+    # connection always bypasses RLS, so db.user_scope() below would prove
+    # nothing without this.
+    db.init_global_schema()
+    db.init_tenant_schema()
+    monkeypatch.setattr(
+        config,
+        "APP_DATABASE_URL",
+        config._with_userinfo(
+            os.environ["TEST_DATABASE_URL"], "app_user", os.environ["APP_DB_PASSWORD"]
+        ),
+    )
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=906, discogs_username="rlssavetestalice")
+        bob = db.create_user(conn, discogs_user_id=907, discogs_username="rlssavetestbob")
+        conn.execute(
+            "INSERT INTO stock_item_saves (user_id, item_key) VALUES (%s, %s)",
+            [alice["id"], "key-1"],
+        )
+        conn.commit()
+
+    try:
+        with db.user_scope(bob["id"]) as conn:
+            rows = conn.execute("SELECT * FROM stock_item_saves").fetchall()
+        assert rows == []
+
+        with db.user_scope(alice["id"]) as conn:
+            rows = conn.execute("SELECT * FROM stock_item_saves").fetchall()
+        assert len(rows) == 1
+        assert rows[0]["item_key"] == "key-1"
+    finally:
+        with db.get_admin_pool().connection() as conn:
+            conn.execute("DELETE FROM stock_item_saves WHERE user_id IN (%s, %s)", [alice["id"], bob["id"]])
+            conn.execute("DELETE FROM users WHERE id IN (%s, %s)", [alice["id"], bob["id"]])
+            conn.commit()
+
+
+def test_stock_item_saves_insert_with_mismatched_user_id_is_rejected(pg_test_db, monkeypatch):
+    """WITH CHECK on stock_item_saves_isolation (backend/db.py) must reject
+    an INSERT for a user_id other than the scoped app.user_id -- the write-side
+    counterpart to test_stock_item_saves_is_rls_isolated_per_user above,
+    modeled on test_stock_item_judgments_insert_with_mismatched_user_id_is_rejected."""
+    db.init_global_schema()
+    db.init_tenant_schema()
+    monkeypatch.setattr(
+        config,
+        "APP_DATABASE_URL",
+        config._with_userinfo(
+            os.environ["TEST_DATABASE_URL"], "app_user", os.environ["APP_DB_PASSWORD"]
+        ),
+    )
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=908, discogs_username="rlssavewritealice")
+        bob = db.create_user(conn, discogs_user_id=909, discogs_username="rlssavewritebob")
+        conn.commit()
+
+    try:
+        with db.user_scope(alice["id"]) as conn:
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                conn.execute(
+                    "INSERT INTO stock_item_saves (user_id, item_key) VALUES (%s, %s)",
+                    [bob["id"], "key-mismatch"],
+                )
+    finally:
+        with db.get_admin_pool().connection() as conn:
+            conn.execute("DELETE FROM stock_item_saves WHERE user_id IN (%s, %s)", [alice["id"], bob["id"]])
+            conn.execute("DELETE FROM users WHERE id IN (%s, %s)", [alice["id"], bob["id"]])
+            conn.commit()
+
+
 def test_library_items_has_price_paid_column(admin_conn):
     row = admin_conn.execute(
         "SELECT data_type FROM information_schema.columns "

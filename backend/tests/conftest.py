@@ -181,6 +181,13 @@ def pg_test_db(monkeypatch):
     monkeypatch.setattr(
         db_module.config, "APP_DATABASE_URL", os.environ["TEST_DATABASE_URL"]
     )
+    # crawl_manager's stock-sync lock connects through this one, not the pooled
+    # APP_DATABASE_URL. Advisory locks are scoped to a database, so leaving it
+    # pointed at the developer's real DATABASE_URL would take the lock in the
+    # wrong database entirely.
+    monkeypatch.setattr(
+        db_module.config, "DIRECT_APP_DATABASE_URL", os.environ["TEST_DATABASE_URL"]
+    )
     db_module._admin_pool = None
     db_module._identity_pool = None
     db_module._app_pool = None
@@ -229,33 +236,56 @@ def authed_client_factory_builder(pg_test_db):
     # CASCADE also clears every table with a (possibly indirect) FK back to
     # catalog/users/crawlers -- library_items, listings, crawl_queue,
     # sessions, invites, etc. -- so each test file starts from a clean slate
-    # regardless of which of those it happened to touch.
+    # regardless of which of those it happened to touch. app_config is listed
+    # explicitly: it has no FK to any of them, so CASCADE never reaches it,
+    # and POST /api/settings tests write real rows to it through this fixture.
     with db.get_admin_pool().connection() as conn:
-        conn.execute("TRUNCATE catalog, users, crawlers CASCADE")
+        conn.execute("TRUNCATE catalog, users, crawlers, app_config CASCADE")
         conn.commit()
 
 
 @pytest.fixture
-def tmp_config_dir(tmp_path):
-    """Patch CONFIG_DIR to a temp directory for all tests."""
+def tmp_config_dir(tmp_path, pg_test_db):
+    """Patch CONFIG_DIR to a temp directory for all tests, and give
+    load_config/save_config a real app_config table -- reset to empty so each
+    test starts from the same clean slate the old temp-file fixture gave for
+    free, since the Postgres-backed table is one row shared across the whole
+    session rather than a fresh file per test."""
     crawlers_dir = tmp_path / "crawlers"
     crawlers_dir.mkdir()
     (crawlers_dir / "__init__.py").touch()
-    with patch("config.CONFIG_DIR", tmp_path), \
-         patch("config.DB_FILE", tmp_path / "db.sqlite"), \
-         patch("config.CRAWLERS_DIR", crawlers_dir), \
-         patch("config.CONFIG_FILE", tmp_path / "config.json"):
-        yield tmp_path
+    db.init_global_schema()
+    config.save_config({})
+    try:
+        with patch("config.CONFIG_DIR", tmp_path), \
+             patch("config.DB_FILE", tmp_path / "db.sqlite"), \
+             patch("config.CRAWLERS_DIR", crawlers_dir):
+            yield tmp_path
+    finally:
+        # Reset on the way out as well as on the way in. app_config is one row
+        # shared by the whole session, and a test that only asks for this
+        # fixture never goes near authed_client_factory_builder's TRUNCATE --
+        # so without this its settings leak into the next pg_test_db-only test.
+        config.save_config({})
 
 
 @pytest.fixture(autouse=True)
 def _fast_catalog_crawl_sleep(request, monkeypatch):
-    """crawl_catalog() sleeps real seconds per page; *_crawler.py tests check parsing, not timing."""
+    """crawl_catalog() sleeps real seconds per page, and reads how long to
+    sleep from load_config(); *_crawler.py tests check parsing, not timing or
+    settings."""
     if request.module.__name__.endswith("_crawler"):
         async def fake_sleep(seconds):
             pass
 
+        # {} is what these tests saw before settings moved into Postgres --
+        # load_config() read a config.json that doesn't exist in CI. Without
+        # it they now need a provisioned app_config table to look up a pacing
+        # delay fake_sleep has already made irrelevant. Patched per module for
+        # the same reason `sleep` is: each did `from config import load_config`
+        # at import, so patching config.load_config wouldn't reach them.
         monkeypatch.setattr("shopify_catalog.sleep", fake_sleep)
+        monkeypatch.setattr("shopify_catalog.load_config", lambda: {})
         # angryyoungandpoor.py, amoeba.py, and asbestosrecords.py pace their own
         # request directly rather than going through shopify_catalog.iter_products()
         # -- patch their module-local `sleep` bindings too, when importable.
@@ -263,7 +293,8 @@ def _fast_catalog_crawl_sleep(request, monkeypatch):
         # submodule), not a bare top-level name like the other two, which is why
         # its tuple entry carries the "crawlers." prefix.
         for module_name in ("angryyoungandpoor", "amoeba", "crawlers.asbestosrecords"):
-            try:
-                monkeypatch.setattr(f"{module_name}.sleep", fake_sleep)
-            except (ModuleNotFoundError, AttributeError):
-                pass
+            for attr, replacement in (("sleep", fake_sleep), ("load_config", lambda: {})):
+                try:
+                    monkeypatch.setattr(f"{module_name}.{attr}", replacement)
+                except (ModuleNotFoundError, AttributeError):
+                    pass

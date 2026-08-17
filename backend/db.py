@@ -120,6 +120,11 @@ CREATE TABLE IF NOT EXISTS crawlers (
 
 ALTER TABLE crawlers ADD COLUMN IF NOT EXISTS requires_discogs_release BOOLEAN NOT NULL DEFAULT FALSE;
 
+CREATE TABLE IF NOT EXISTS app_config (
+    id BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (id),
+    data JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
 CREATE TABLE IF NOT EXISTS listings (
     id SERIAL PRIMARY KEY,
     release_id TEXT NOT NULL REFERENCES catalog(discogs_id),
@@ -309,6 +314,8 @@ CREATE TABLE IF NOT EXISTS users (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_image BYTEA;
+
 CREATE TABLE IF NOT EXISTS sessions (
     token_hash TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id),
@@ -356,10 +363,11 @@ BEGIN
   -- the test suite and starved its event-loop timing tests.
   IF EXISTS (SELECT 1 FROM information_schema.columns
              WHERE table_name = 'catalog' AND column_name = 'discogs_price') THEN
-    -- Serialize the migration itself across concurrently booting instances.
-    -- Today there is only one (uvicorn with no --workers, fly.toml
-    -- min_machines_running = 1), but without this two sessions could both pass
-    -- the outer check and the loser would then UPDATE or DROP against a column
+    -- Serialize the migration itself across concurrently booting instances --
+    -- fly.toml's min_machines_running is 2 (see the multi-machine design doc),
+    -- so this is a real scenario, not a hypothetical one. Without this lock,
+    -- two sessions could both pass the outer check and the loser would then
+    -- UPDATE or DROP against a column
     -- the winner had already removed, failing the boot. The deployment spec
     -- claims multi-machine scaling needs no design change; this keeps that true.
     PERFORM pg_advisory_xact_lock(2026080901);
@@ -399,6 +407,13 @@ CREATE TABLE IF NOT EXISTS user_hidden_crawlers (
     user_id INTEGER NOT NULL REFERENCES users(id),
     crawler_id INTEGER NOT NULL REFERENCES crawlers(id),
     PRIMARY KEY (user_id, crawler_id)
+);
+
+CREATE TABLE IF NOT EXISTS stock_item_saves (
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    item_key TEXT NOT NULL,
+    saved_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, item_key)
 );
 
 CREATE TABLE IF NOT EXISTS invites (
@@ -441,6 +456,8 @@ ALTER TABLE stock_item_judgments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE stock_item_judgments FORCE ROW LEVEL SECURITY;
 ALTER TABLE user_hidden_crawlers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_hidden_crawlers FORCE ROW LEVEL SECURITY;
+ALTER TABLE stock_item_saves ENABLE ROW LEVEL SECURITY;
+ALTER TABLE stock_item_saves FORCE ROW LEVEL SECURITY;
 
 -- WITH CHECK is given explicitly (identical to USING) on all four policies
 -- below rather than left implicit. Postgres already defaults an omitted
@@ -482,6 +499,11 @@ CREATE POLICY stock_item_judgments_isolation ON stock_item_judgments
 
 DROP POLICY IF EXISTS user_hidden_crawlers_isolation ON user_hidden_crawlers;
 CREATE POLICY user_hidden_crawlers_isolation ON user_hidden_crawlers
+    USING (user_id = current_setting('app.user_id', true)::int)
+    WITH CHECK (user_id = current_setting('app.user_id', true)::int);
+
+DROP POLICY IF EXISTS stock_item_saves_isolation ON stock_item_saves;
+CREATE POLICY stock_item_saves_isolation ON stock_item_saves
     USING (user_id = current_setting('app.user_id', true)::int)
     WITH CHECK (user_id = current_setting('app.user_id', true)::int);
 """
@@ -558,6 +580,7 @@ def init_tenant_schema():
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON library_items TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON stock_item_judgments TO app_user")
         conn.execute("GRANT SELECT, INSERT, DELETE ON user_hidden_crawlers TO app_user")
+        conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON stock_item_saves TO app_user")
         # crawl_queue needs DELETE for the same reason stock_items does:
         # delete_dead_stock_crawl_queue_rows(), run through get_app_pool() from
         # PATCH /api/crawlers/{id} and at the end of each stock sync.
@@ -1622,6 +1645,7 @@ def get_stock_items(
     per_page: int = 50,
     library_scope: Optional[str] = None,
     recommended: bool = False,
+    saved_only: bool = False,
     exclude_crawler_ids: Optional[list[int]] = None,
 ) -> dict:
     order_sql = "DESC" if order.lower() == "desc" else "ASC"
@@ -1667,6 +1691,11 @@ def get_stock_items(
             "WHERE user_id = %(user_id)s AND recommended = TRUE)"
         )
         conditions.append(_not_owned_clause("%(user_id)s"))
+    if saved_only:
+        conditions.append(
+            "s.item_key IN (SELECT item_key FROM stock_item_saves "
+            "WHERE user_id = %(user_id)s)"
+        )
     if exclude_crawler_ids:
         conditions.append("s.crawler_id != ALL(%(exclude_crawler_ids)s)")
         params["exclude_crawler_ids"] = exclude_crawler_ids
@@ -1682,10 +1711,12 @@ def get_stock_items(
         f"""
         SELECT s.id, s.artist, s.title, s.format, s.price, s.currency, s.url, s.cover_image_url, s.last_seen,
                s.item_key, cr.site_name AS source, j.reason AS reason,
+               (sv.item_key IS NOT NULL) AS saved,
                (SELECT li.price_paid {_library_match_fragment('%(user_id)s', 'collection')} LIMIT 1) AS discogs_price
         FROM stock_items s
         JOIN crawlers cr ON cr.id = s.crawler_id
         LEFT JOIN stock_item_judgments j ON j.item_key = s.item_key AND j.user_id = %(user_id)s
+        LEFT JOIN stock_item_saves sv ON sv.item_key = s.item_key AND sv.user_id = %(user_id)s
         {where}
         ORDER BY CASE WHEN {sort_expr} IS NULL THEN 1 ELSE 0 END {null_order}, {sort_expr} {order_sql}, s.id
         LIMIT %(limit)s OFFSET %(offset)s
@@ -1721,7 +1752,7 @@ def get_stock_items(
                 "id": f"{r['id']}:{c['source']}",
                 "item_key": r["item_key"], "artist": r["artist"], "title": r["title"],
                 "format": r["format"], "cover_image_url": r["cover_image_url"],
-                "discogs_price": r["discogs_price"],
+                "discogs_price": r["discogs_price"], "saved": r["saved"],
                 "price": c["price"], "currency": c["currency"], "url": c["url"],
                 "source": c["source"], "reason": r["reason"], "last_seen": c["last_checked"],
                 "is_own": False,
@@ -1731,6 +1762,7 @@ def get_stock_items(
 
 
 def get_distinct_stock_artists(conn, user_id: int, library_scope: Optional[str] = None, recommended: bool = False,
+    saved_only: bool = False,
     exclude_crawler_ids: Optional[list[int]] = None,
 ) -> list[str]:
     conditions = []
@@ -1744,6 +1776,11 @@ def get_distinct_stock_artists(conn, user_id: int, library_scope: Optional[str] 
             "WHERE user_id = %(user_id)s AND recommended = TRUE)"
         )
         conditions.append(_not_owned_clause("%(user_id)s"))
+    if saved_only:
+        conditions.append(
+            "s.item_key IN (SELECT item_key FROM stock_item_saves "
+            "WHERE user_id = %(user_id)s)"
+        )
     if exclude_crawler_ids:
         conditions.append("s.crawler_id != ALL(%(exclude_crawler_ids)s)")
         params["exclude_crawler_ids"] = exclude_crawler_ids
@@ -1807,6 +1844,24 @@ def upsert_stock_judgments(conn, user_id: int, judgments: list[dict]):
             """,
             [(user_id, j["item_key"], j["recommended"], j.get("reason")) for j in judgments],
         )
+
+
+def save_stock_item(conn, user_id: int, item_key: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO stock_item_saves (user_id, item_key)
+        VALUES (%s, %s)
+        ON CONFLICT (user_id, item_key) DO NOTHING
+        """,
+        [user_id, item_key],
+    )
+
+
+def unsave_stock_item(conn, user_id: int, item_key: str) -> None:
+    conn.execute(
+        "DELETE FROM stock_item_saves WHERE user_id = %s AND item_key = %s",
+        [user_id, item_key],
+    )
 
 
 def has_any_stock_judgment(conn, user_id: int) -> bool:

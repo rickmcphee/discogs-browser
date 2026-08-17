@@ -186,9 +186,11 @@ Playwright uses `launch_persistent_context` with `DISCOGS_BROWSER_DATA/chrome_pr
 
 `scheduler.py` wraps APScheduler's `AsyncIOScheduler`. The `configure(cron, mode)` function removes any existing job and adds a new one if `cron` is non-empty. `start()` starts the scheduler.
 
-On startup, `main.py` calls `scheduler.start()` and then `scheduler.configure(...)` with the values from `config.json`, so any previously saved schedule is active immediately.
+On startup, `main.py` calls `scheduler.start()` and then `scheduler.configure(...)` with the values from ~~`config.json`~~ `app_config` (see "Crawl Configuration" below), so any previously saved schedule is active immediately.
 
 When the user saves settings, `POST /settings` calls `scheduler.configure(...)` with the new values — no restart required.
+
+**Amendment (2026-08-17, branch `fly-io-second-machine`):** `configure(cron, mode)` and `configure_stock(cron)` no longer remove the existing job *before* parsing the replacement, as the paragraph above describes — they parse first (`CronTrigger.from_crontab`) and only remove/re-add once the new expression is known valid, so a parse failure leaves the running job untouched. `POST /settings` likewise validates both cron strings *before* `save_config()` rather than after, returning 400 without persisting anything. An empty expression still clears the job, unchanged. Motivation: settings now live in a shared `app_config` row that every Machine re-reads on a 5-minute schedule resync, which turned a one-request wipe into a permanent, repeating one. See [`2026-08-16-fly-multi-machine-design.md`](../../specifications/shaping/2026-08-16-fly-multi-machine-design.md)'s "Schedule convergence" amendment.
 
 Scheduled crawls trigger `CrawlManager.start(mode)` exactly like a manual crawl. The frontend's persistent SSE connection receives the `"started"` event and resets the UI automatically.
 
@@ -196,7 +198,16 @@ Scheduled crawls trigger `CrawlManager.start(mode)` exactly like a manual crawl.
 
 ## Crawl Configuration
 
-All fields live in `DISCOGS_BROWSER_DATA/config.json`.
+~~All fields live in `DISCOGS_BROWSER_DATA/config.json`.~~
+
+**Amendment (2026-08-17, branch `fly-io-second-machine`):** the fields
+remaining in scope (per the 2026-08-01 amendment below) no longer live in a
+per-machine file at all — `config.load_config()`/`save_config()` now read and
+write a singleton `app_config` Postgres row instead of
+`DISCOGS_BROWSER_DATA/config.json`, so every Fly Machine reads consistent
+settings rather than each holding its own on-disk copy. Same flat-dict
+call-site shape; only the storage target moved. See
+[`2026-08-16-fly-multi-machine-design.md`](../../specifications/shaping/2026-08-16-fly-multi-machine-design.md).
 
 **Amendment (2026-07-31, crawl-queue-refactor Task 21):** this table describes the single-owner app. Under the multi-tenant refactor ([`2026-07-26-multi-tenant-architecture-design.md`](2026-07-26-multi-tenant-architecture-design.md), [`2026-07-27-crawl-queue-refactor-design.md`](2026-07-27-crawl-queue-refactor-design.md)'s "Settings split"), `discogs_token` is deleted (replaced entirely by per-user Discogs OAuth token pairs) and `collection_schedule`/`collection_schedule_mode` are removed (collection sync is manual-trigger-only per user, a non-goal of that plan). `GET`/`POST /settings` is now admin-only and covers only the remaining global fields below.
 

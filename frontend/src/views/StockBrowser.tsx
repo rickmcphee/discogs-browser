@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, memo } from 'react'
-import { getStock, getStockArtists } from '../api/client'
+import { getStock, getStockArtists, saveStockItem, unsaveStockItem } from '../api/client'
 import type { StockItem, StockSortField, SortOrder, StockScope, LibraryScope, Crawler } from '../api/types'
 import { navButtonClass, dismissButtonClass } from '../styles/buttons'
 import { textInputClass, selectClass } from '../styles/inputs'
@@ -20,11 +20,19 @@ interface Props {
 const NO_HIDDEN_CRAWLER_IDS: number[] = []
 const NO_CRAWLERS: Crawler[] = []
 const NOOP_HIDDEN_CRAWLER_IDS_CHANGE = () => {}
-const STORE_FILTERS = ['all', 'recommended'] as const
+const STORE_FILTERS = ['all', 'recommended', 'saved'] as const
 const TRACK_FILTERS = ['all', 'collection', 'wantlist'] as const satisfies readonly LibraryScope[]
 
 function trackLibraryScope(value: string): LibraryScope | undefined {
   return (TRACK_FILTERS as readonly string[]).includes(value) ? (value as LibraryScope) : undefined
+}
+
+function BookmarkIcon({ filled }: { filled: boolean }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill={filled ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.5">
+      <path d="M4 2h8a1 1 0 0 1 1 1v11l-5-3-5 3V3a1 1 0 0 1 1-1Z" strokeLinejoin="round" />
+    </svg>
+  )
 }
 
 function StockBrowser({
@@ -49,6 +57,16 @@ function StockBrowser({
     () => (localStorage.getItem(`collectionViewMode_${scope}`) === 'tiles' ? 'tiles' : 'list')
   )
   const [hasLoaded, setHasLoaded] = useState(false)
+  // Bumped after every toggleSaved attempt (success or failure) to trigger a
+  // race-guarded refetch through the same effects load()/getStockArtists
+  // already run under -- see toggleSaved.
+  const [retryTick, setRetryTick] = useState(0)
+  // item_keys with a save/unsave request currently in flight. Guards against
+  // the reversed-completion-order race: a second click on the same item_key
+  // while its first request is still pending is a no-op (both in toggleSaved
+  // and via the disabled button), so at most one request per item_key is ever
+  // outstanding and there is nothing left to reconcile out of order.
+  const [pendingSaves, setPendingSaves] = useState<Set<string>>(new Set())
   const PER_PAGE = 250
   const tableScrollRef = useRef<HTMLDivElement>(null)
 
@@ -69,6 +87,7 @@ function StockBrowser({
       sort, order, page, per_page: PER_PAGE,
       libraryScope: scope === 'track' ? trackLibraryScope(filter) : undefined,
       recommended: scope === 'store' && filter === 'recommended',
+      saved: scope === 'store' && filter === 'saved',
       hiddenCrawlerIds,
     })
     if (!isLatest()) return
@@ -87,7 +106,7 @@ function StockBrowser({
     let latest = true
     load(() => latest)
     return () => { latest = false }
-  }, [load, syncGeneration])
+  }, [load, syncGeneration, retryTick])
   useEffect(() => {
     if (!recommendedAvailable && filter === 'recommended') {
       setFilter('all')
@@ -105,9 +124,10 @@ function StockBrowser({
       scope === 'track' ? trackLibraryScope(filter) : undefined,
       scope === 'store' && filter === 'recommended',
       hiddenCrawlerIds,
+      scope === 'store' && filter === 'saved',
     ).then((list) => { if (latest) setArtists(list) })
     return () => { latest = false }
-  }, [scope, filter, hiddenCrawlerIds, syncGeneration])
+  }, [scope, filter, hiddenCrawlerIds, syncGeneration, retryTick])
   // A refetched list can re-case the selected artist's label, or drop it
   // entirely -- see reconcileSelectedArtist. A pure re-casing keeps the current
   // sort and page (it's still the same artist); losing the artist delegates to
@@ -157,6 +177,42 @@ function StockBrowser({
     setPage(1)
   }
 
+  async function toggleSaved(item: StockItem) {
+    // A quick save-then-unsave (or vice versa) before the first request
+    // settles would fire two independent, unordered requests for the same
+    // item_key -- whichever commits last on the server wins, which may not
+    // match the user's actual last click. Rather than queue/replace, the
+    // second click while one is in flight is a no-op: at most one request
+    // per item_key is ever outstanding, so there's no completion order to
+    // reconcile. The disabled button (see render) backs this up visually.
+    if (pendingSaves.has(item.item_key)) return
+    setPendingSaves((prev) => new Set(prev).add(item.item_key))
+    const next = !item.saved
+    setItems((prev) => {
+      const patched = prev.map((it) => (it.item_key === item.item_key ? { ...it, saved: next } : it))
+      return filter === 'saved' && !next ? patched.filter((it) => it.item_key !== item.item_key) : patched
+    })
+    if (filter === 'saved' && !next) setTotal((t) => t - 1)
+    try {
+      // Bumping retryTick -- rather than calling load()/getStockArtists
+      // directly -- routes the refetch through the same isLatest-guarded
+      // effects every other trigger already uses, so a request that resolves
+      // after the user has since changed filter/search/sort/page can't
+      // clobber a newer response. This runs on both success and failure: a
+      // failure needs the items list to self-correct (undo the optimistic
+      // patch), and a success needs the Saved-filter artist sidebar to drop
+      // an artist whose last saved item was just unsaved.
+      await (next ? saveStockItem(item.item_key) : unsaveStockItem(item.item_key)).catch(() => {})
+    } finally {
+      setPendingSaves((prev) => {
+        const nextSet = new Set(prev)
+        nextSet.delete(item.item_key)
+        return nextSet
+      })
+      setRetryTick((t) => t + 1)
+    }
+  }
+
   // Sorting by artist is meaningless once the list is filtered down to a
   // single artist, so switching the artist filter resets to the sort that
   // makes sense for the new context: artist for "All", title for a specific
@@ -170,10 +226,11 @@ function StockBrowser({
   }
 
   const totalPages = Math.ceil(total / PER_PAGE)
-  const colCount = scope === 'track' ? 7 : 6
+  const colCount = scope === 'track' ? 7 : 7
   const priceSortable = scope === 'track' && filter !== 'wantlist'
   const emptyMessage =
     scope === 'store' && filter === 'recommended' ? 'Nothing recommended is in stock right now.'
+    : scope === 'store' && filter === 'saved' ? "You haven't saved anything yet."
     : scope === 'store' ? (isAdmin ? 'No in-stock items yet. Click Refresh under Store Management in Settings.' : 'No in-stock items yet. Check back after the next store sync.')
     : filter === 'collection' ? 'Nothing in your collection is in stock right now.'
     : filter === 'wantlist' ? 'Nothing on your wantlist is in stock right now.'
@@ -242,6 +299,7 @@ function StockBrowser({
                 <>
                   <option value="all">All</option>
                   <option value="recommended" disabled={!recommendedAvailable}>Recommended</option>
+                  <option value="saved">Saved</option>
                 </>
               )}
             </select>
@@ -289,15 +347,27 @@ function StockBrowser({
                     rel="noreferrer"
                     className="group"
                   >
-                    {item.cover_image_url ? (
-                      <img
-                        src={item.cover_image_url}
-                        alt={item.title}
-                        className="w-full aspect-square object-cover rounded"
-                      />
-                    ) : (
-                      <div className="w-full aspect-square bg-gray-800 rounded" />
-                    )}
+                    <div className="relative">
+                      {item.cover_image_url ? (
+                        <img
+                          src={item.cover_image_url}
+                          alt={item.title}
+                          className="w-full aspect-square object-cover rounded"
+                        />
+                      ) : (
+                        <div className="w-full aspect-square bg-gray-800 rounded" />
+                      )}
+                      {scope === 'store' && (
+                        <button
+                          onClick={(e) => { e.preventDefault(); toggleSaved(item) }}
+                          title={item.saved ? 'Remove from saved' : 'Save for later'}
+                          disabled={pendingSaves.has(item.item_key)}
+                          className="absolute top-1 right-1 p-1 rounded-full bg-gray-950/70 text-white hover:bg-gray-950 disabled:opacity-40"
+                        >
+                          <BookmarkIcon filled={item.saved} />
+                        </button>
+                      )}
+                    </div>
                     <div className="mt-1.5 text-sm text-gray-200 truncate group-hover:text-white" title={item.reason ?? undefined}>{item.artist}</div>
                     <div className="text-xs text-gray-400 truncate" title={item.reason ?? undefined}>{item.title}</div>
                   </a>
@@ -350,6 +420,7 @@ function StockBrowser({
                     Source {sort === 'source' ? (order === 'asc' ? '↑' : '↓') : ''}
                   </button>
                 </th>
+                {scope === 'store' && <th className="w-8 px-3 py-2"></th>}
               </tr>
             </thead>
             <tbody>
@@ -381,6 +452,18 @@ function StockBrowser({
                     </a>
                   </td>
                   <td className="px-3 py-2 text-gray-400">{item.source}</td>
+                  {scope === 'store' && (
+                    <td className="px-3 py-2">
+                      <button
+                        onClick={() => toggleSaved(item)}
+                        title={item.saved ? 'Remove from saved' : 'Save for later'}
+                        disabled={pendingSaves.has(item.item_key)}
+                        className={`p-1 disabled:opacity-40 ${dismissButtonClass()}`}
+                      >
+                        <BookmarkIcon filled={item.saved} />
+                      </button>
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>

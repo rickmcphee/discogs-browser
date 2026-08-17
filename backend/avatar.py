@@ -1,19 +1,19 @@
 import io
+from typing import Optional
 
 from PIL import Image, ImageOps
 
-import config
+import db
 
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 AVATAR_SIZE = 512
-AVATAR_FILE = config.CONFIG_DIR / "avatar.png"
 
 
 class InvalidAvatarError(Exception):
     pass
 
 
-def save_avatar(data: bytes) -> None:
+def save_avatar(user_id: int, data: bytes) -> None:
     if len(data) > MAX_UPLOAD_BYTES:
         raise InvalidAvatarError("File too large")
     try:
@@ -29,9 +29,21 @@ def save_avatar(data: bytes) -> None:
     top = (image.height - side) // 2
     image = image.crop((left, top, left + side, top + side))
     image = image.resize((AVATAR_SIZE, AVATAR_SIZE))
-    AVATAR_FILE.parent.mkdir(parents=True, exist_ok=True)
-    image.save(AVATAR_FILE, format="PNG")
+
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    with db.get_identity_pool().connection() as conn:
+        conn.execute("UPDATE users SET avatar_image = %s WHERE id = %s", [buf.getvalue(), user_id])
+        conn.commit()
 
 
-def delete_avatar() -> None:
-    AVATAR_FILE.unlink(missing_ok=True)
+def get_avatar(user_id: int) -> Optional[bytes]:
+    with db.get_identity_pool().connection() as conn:
+        row = conn.execute("SELECT avatar_image FROM users WHERE id = %s", [user_id]).fetchone()
+    return bytes(row["avatar_image"]) if row and row["avatar_image"] is not None else None
+
+
+def delete_avatar(user_id: int) -> None:
+    with db.get_identity_pool().connection() as conn:
+        conn.execute("UPDATE users SET avatar_image = NULL WHERE id = %s", [user_id])
+        conn.commit()

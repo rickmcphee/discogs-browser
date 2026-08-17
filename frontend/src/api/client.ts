@@ -185,6 +185,7 @@ export async function getStock(params: {
   per_page?: number
   libraryScope?: LibraryScope
   recommended?: boolean
+  saved?: boolean
   hiddenCrawlerIds?: number[]
 }): Promise<StockResponse> {
   const q = new URLSearchParams()
@@ -196,22 +197,36 @@ export async function getStock(params: {
   if (params.per_page) q.set('per_page', String(params.per_page))
   if (params.libraryScope) q.set('library_scope', LIBRARY_SCOPE_PARAM[params.libraryScope])
   if (params.recommended) q.set('recommended', 'true')
+  if (params.saved) q.set('saved', 'true')
   if (params.hiddenCrawlerIds?.length) q.set('hidden_crawler_ids', params.hiddenCrawlerIds.join(','))
   const r = await apiFetch(`/stock?${q}`)
   if (!r.ok) throw new Error(await r.text())
   return r.json()
 }
 
-export async function getStockArtists(libraryScope?: LibraryScope, recommended?: boolean, hiddenCrawlerIds?: number[]): Promise<string[]> {
+export async function getStockArtists(libraryScope?: LibraryScope, recommended?: boolean, hiddenCrawlerIds?: number[], saved?: boolean): Promise<string[]> {
   const q = new URLSearchParams()
   if (libraryScope) q.set('library_scope', LIBRARY_SCOPE_PARAM[libraryScope])
   if (recommended) q.set('recommended', 'true')
+  if (saved) q.set('saved', 'true')
   if (hiddenCrawlerIds?.length) q.set('hidden_crawler_ids', hiddenCrawlerIds.join(','))
   const qs = q.toString() ? `?${q}` : ''
   const r = await apiFetch(`/stock/artists${qs}`)
   if (!r.ok) throw new Error(await r.text())
   const data = await r.json()
   return data.artists
+}
+
+export async function saveStockItem(itemKey: string): Promise<{ saved: boolean }> {
+  const r = await apiFetch(`/stock/saved/${encodeURIComponent(itemKey)}`, { method: 'PUT' })
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
+}
+
+export async function unsaveStockItem(itemKey: string): Promise<{ saved: boolean }> {
+  const r = await apiFetch(`/stock/saved/${encodeURIComponent(itemKey)}`, { method: 'DELETE' })
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
 }
 
 export async function postStockSyncStart(crawlerId?: number): Promise<{ started: boolean; running: boolean }> {

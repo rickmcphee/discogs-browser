@@ -7,6 +7,7 @@ import psycopg
 import pytest
 
 import db
+import scheduler
 from routers import settings as settings_router
 
 
@@ -40,6 +41,67 @@ def test_get_and_post_settings_as_admin(pg_test_db, authed_client_factory):
         "ebay_app_id": "", "ebay_cert_id": "", "stock_schedule": "",
     }, headers={"X-Requested-With": "fetch"})
     assert r.status_code == 200
+
+
+@pytest.fixture
+def _clear_scheduler_jobs():
+    yield
+    for job_id in ("crawl", "stock_sync"):
+        if scheduler._scheduler.get_job(job_id):
+            scheduler._scheduler.remove_job(job_id)
+
+
+def _admin_client(authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute("UPDATE users SET is_admin = TRUE WHERE id = %s", [user["id"]])
+        conn.commit()
+    return authed_client_factory(user["id"])
+
+
+def _stored_config():
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute("SELECT data FROM app_config WHERE id = TRUE").fetchone()
+    return (row["data"] if row else None) or {}
+
+
+@pytest.mark.parametrize("field", ["crawl_schedule", "stock_schedule"])
+def test_post_settings_rejects_an_invalid_cron_without_persisting_it(
+    pg_test_db, authed_client_factory, _clear_scheduler_jobs, field
+):
+    """The 400 was already there; what wasn't is that save_config() had run
+    first, so the bad expression stayed in app_config -- and every Machine
+    re-read it on its 5-minute schedule resync forever after."""
+    client = _admin_client(authed_client_factory)
+    good = {
+        "crawl_delay_seconds": 30, "consecutive_failure_limit": 10,
+        "crawl_schedule": "0 3 * * *", "crawl_schedule_mode": "missing",
+        "ebay_app_id": "keep-me", "ebay_cert_id": "", "stock_schedule": "0 4 * * *",
+    }
+    assert client.post("/api/settings", json=good, headers={"X-Requested-With": "fetch"}).status_code == 200
+
+    bad = dict(good, **{field: "not a cron expression"})
+    r = client.post("/api/settings", json=bad, headers={"X-Requested-With": "fetch"})
+
+    assert r.status_code == 400
+    assert "not a cron expression" in r.json()["detail"]
+    assert _stored_config() == good
+
+
+def test_post_settings_rejects_an_invalid_cron_before_any_field_is_written(
+    pg_test_db, authed_client_factory, _clear_scheduler_jobs
+):
+    """Rejection is all-or-nothing: the unrelated fields in the same body --
+    eBay credentials among them -- must not land either."""
+    client = _admin_client(authed_client_factory)
+    r = client.post("/api/settings", json={
+        "crawl_delay_seconds": 99, "consecutive_failure_limit": 3,
+        "crawl_schedule": "* * * *", "crawl_schedule_mode": "all",
+        "ebay_app_id": "should-not-be-saved", "ebay_cert_id": "", "stock_schedule": "",
+    }, headers={"X-Requested-With": "fetch"})
+
+    assert r.status_code == 400
+    assert _stored_config() == {}
 
 
 def test_get_settings_no_longer_includes_dead_fields(pg_test_db, authed_client_factory):

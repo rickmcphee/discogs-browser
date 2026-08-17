@@ -1,4 +1,5 @@
 import psycopg
+from apscheduler.triggers.cron import CronTrigger
 from fastapi import APIRouter, HTTPException, Request, Depends
 from pydantic import BaseModel, Field
 from config import load_config, save_config
@@ -50,6 +51,20 @@ def get_settings():
 
 @router.post("/settings", dependencies=[Depends(require_admin)])
 def update_settings(body: SettingsUpdate):
+    # Validate before persisting, not after: save_config() writes to app_config,
+    # which every Machine re-reads on its 5-minute schedule resync, so a bad
+    # cron string that got saved keeps failing everywhere long after the 400
+    # went back to the caller.
+    for expression in (body.crawl_schedule, body.stock_schedule):
+        if not expression:
+            continue
+        try:
+            CronTrigger.from_crontab(expression)
+        except Exception as e:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid cron expression: {expression}"
+            ) from e
+
     config = load_config()
     config["crawl_delay_seconds"] = body.crawl_delay_seconds
     config["consecutive_failure_limit"] = body.consecutive_failure_limit
@@ -59,6 +74,9 @@ def update_settings(body: SettingsUpdate):
     config["ebay_cert_id"] = body.ebay_cert_id
     config["stock_schedule"] = body.stock_schedule
     save_config(config)
+    # Both expressions already parsed above, so neither call can raise here.
+    # The handler is kept anyway: it costs nothing, and the alternative is a
+    # 500 if the two parses ever drift apart.
     try:
         scheduler.configure(body.crawl_schedule, body.crawl_schedule_mode)
         scheduler.configure_stock(body.stock_schedule)

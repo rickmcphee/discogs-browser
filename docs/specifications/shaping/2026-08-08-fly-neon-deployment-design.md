@@ -47,10 +47,14 @@ decided on the merits below.
   non-goals, still out of scope here — this spec's own small hardcoded-
   assumption fixes (`DATABASE_URL` handling, CORS origins, cross-origin API
   base) are config/deployment-target adaptations, not architecture changes.
-- Multi-region or multi-machine scaling. Single always-on machine is
+- ~~Multi-region or multi-machine scaling. Single always-on machine is
   sufficient at this scale; the worker pool's existing `SELECT ... FOR UPDATE
   SKIP LOCKED` claiming logic already tolerates adding more later without a
-  design change.
+  design change.~~ Superseded by
+  [`2026-08-16-fly-multi-machine-design.md`](2026-08-16-fly-multi-machine-design.md):
+  a second Machine turned out to need `config.json`/`avatar.png` moved off
+  the (per-machine) volume and into Postgres first. Multi-region is still a
+  non-goal.
 
 ## Architecture
 
@@ -60,7 +64,8 @@ Cloudflare (DNS for tracktempest.com)
     └── DNS CNAME: api.tracktempest.com → Fly app hostname
                 │   (Cloudflare proxy on, SSL/TLS mode "Full (strict)")
                 ▼
-Fly.io app (single always-on Machine, region near operator)
+Fly.io app (always-on Machine(s), region near operator — see
+    2026-08-16-fly-multi-machine-design.md for running two)
     ├── FastAPI + in-process crawl worker pool + shared Playwright/Chromium
     └── outbound TLS connection (sslmode=require) ──────────┐
                                                              ▼
@@ -84,16 +89,19 @@ docker-compose service.
 - Reuses `backend/Dockerfile` largely as-is — Playwright's own base image
   already provides Chromium and its OS-level dependencies, so no new system
   packages need adding for Fly specifically.
-- `fly.toml` sets `auto_stop_machines = false` and `min_machines_running = 1`.
+- `fly.toml` sets `auto_stop_machines = false` and `min_machines_running = 2`
+  (`1` until `2026-08-16-fly-multi-machine-design.md`).
   This is required, not optional: Fly's autostop/autostart is driven by
   fly-proxy's view of inbound traffic, not app-level activity. The worker pool
   (`CrawlManager.start_worker_pool()`) runs continuously draining
   `crawl_queue` with no inbound HTTP request in flight for long stretches —
   without disabling autostop, Fly would suspend the machine mid-crawl.
-- Single machine is sufficient. If a second is ever added, the existing
+- ~~Single machine is sufficient. If a second is ever added, the existing
   `claim_crawl_queue_batch` `SKIP LOCKED` claiming and per-crawler pacing
   locks (`docs/superpowers/plans/2026-08-01-worker-pool-pacing.md`) already
-  assume safe concurrent workers, so this isn't a new design surface.
+  assume safe concurrent workers, so this isn't a new design surface.~~ A
+  second Machine was added; see `2026-08-16-fly-multi-machine-design.md` for
+  `min_machines_running` and the local-disk state that had to move first.
 - Region: pick the Fly region geographically closest to the operator, since
   there's no multi-region requirement and it minimizes latency for the
   primary (and likely only, at least initially) user base.
@@ -126,6 +134,14 @@ docker-compose service.
 
 Set via `fly secrets set`, not committed to the repo:
 - `DATABASE_URL` (Neon pooled connection string)
+- `DIRECT_DATABASE_URL` (Neon's *unpooled* connection string) — **added
+  2026-08-17, branch `fly-io-second-machine`.** Required, not optional: the
+  stock-sync advisory lock is session-scoped, and a PgBouncer transaction
+  pooler can move that session between backends, so the lock must bypass the
+  pooler. Unset, it silently defaults to `DATABASE_URL` and the lock stops
+  being mutual exclusion. See
+  [`2026-08-16-fly-multi-machine-design.md`](2026-08-16-fly-multi-machine-design.md)'s
+  "Stock sync mutual exclusion" amendment.
 - Discogs OAuth consumer key/secret
 - Session cookie signing key
 - Symmetric key encrypting stored Discogs OAuth token pairs at rest, per the

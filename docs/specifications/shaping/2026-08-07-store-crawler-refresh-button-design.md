@@ -89,6 +89,18 @@ a second endpoint.
 - `start_stock_sync(self, crawler_id: Optional[int] = None) -> bool` — same
   `if self.stock_sync_running: return False` guard as today; passes
   `crawler_id` through to the task.
+
+  **Amendment (2026-08-17, branch `fly-io-second-machine`):** `start_stock_sync`
+  no longer only ever returns a bool. Supporting a second Fly Machine added a
+  cross-Machine Postgres advisory-lock acquisition before the in-process guard
+  above (`psycopg.connect` + `pg_try_advisory_lock`, off the event loop via
+  `run_in_threadpool`) — see
+  [`2026-08-16-fly-multi-machine-design.md`](2026-08-16-fly-multi-machine-design.md).
+  Lock-already-held still returns `False`, matching this section's "same guard"
+  framing, but a `connect()` failure (Postgres unreachable) now propagates as
+  an unhandled exception through `start_stock_sync` and, since
+  `POST /stock/sync/start` has no try/except around the call, out through the
+  endpoint as a generic FastAPI 500 rather than a `{"started": false}` response.
 - `_sync_stock(self, crawler_id: Optional[int] = None)`:
   - After `enabled = get_enabled_crawlers(conn, crawler_type="catalog")`,
     when `crawler_id is not None`, filter: `enabled = [c for c in enabled if

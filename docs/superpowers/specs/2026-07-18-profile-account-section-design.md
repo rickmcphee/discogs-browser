@@ -22,6 +22,24 @@ _2026-07-18_
 
 **Amendment (2026-08-17, branch `claude/store-crawler-filter-design-d16b80`):** the 2026-08-02 (`user-settings-store-filter`) amendment's claim that "Settings visible to every authenticated user" no longer holds. Settings is admin-only again — the personal display filter it referred to moved out of Settings into a per-tab "Source" button, and the Settings nav item was removed entirely for non-admins. See [`2026-08-16-store-track-source-filter-design.md`](2026-08-16-store-track-source-filter-design.md).
 
+**Amendment (2026-08-17, branch `fly-io-second-machine`):** the 2026-07-26
+amendment above claiming the avatar-upload design "remain[s] accurate as
+described below" no longer holds for the Backend changes section — avatar
+storage moved off a per-machine file. `POST`/`GET`/`DELETE /api/auth/avatar`
+now read/write a new `users.avatar_image BYTEA` column
+(`backend/avatar.py`'s `save_avatar`/`get_avatar`/`delete_avatar`, keyed by
+`user_id`) instead of `CONFIG_DIR / "avatar.png"`; `GET` returns the bytes via
+`Response(..., media_type="image/png", headers={"Cache-Control": "private"})`
+instead of `FileResponse`. This was forced by adding a second always-on Fly
+Machine: a Fly volume attaches to one Machine only, so a file-based avatar
+would fork into two independent copies the moment a second Machine existed —
+and it made the avatar a real per-user concept for the first time, since it
+had stayed a single shared file even after the app went multi-tenant. Upload
+validation/crop/resize (Pillow, 512×512, PNG re-encode) is unchanged. See
+[`2026-08-16-fly-multi-machine-design.md`](../../specifications/shaping/2026-08-16-fly-multi-machine-design.md).
+The "No database changes" line and file-based description in the Backend
+changes section below are accordingly historical, not current.
+
 ---
 
 ## Overview
