@@ -181,6 +181,13 @@ def pg_test_db(monkeypatch):
     monkeypatch.setattr(
         db_module.config, "APP_DATABASE_URL", os.environ["TEST_DATABASE_URL"]
     )
+    # crawl_manager's stock-sync lock connects through this one, not the pooled
+    # APP_DATABASE_URL. Advisory locks are scoped to a database, so leaving it
+    # pointed at the developer's real DATABASE_URL would take the lock in the
+    # wrong database entirely.
+    monkeypatch.setattr(
+        db_module.config, "DIRECT_APP_DATABASE_URL", os.environ["TEST_DATABASE_URL"]
+    )
     db_module._admin_pool = None
     db_module._identity_pool = None
     db_module._app_pool = None
@@ -249,10 +256,17 @@ def tmp_config_dir(tmp_path, pg_test_db):
     (crawlers_dir / "__init__.py").touch()
     db.init_global_schema()
     config.save_config({})
-    with patch("config.CONFIG_DIR", tmp_path), \
-         patch("config.DB_FILE", tmp_path / "db.sqlite"), \
-         patch("config.CRAWLERS_DIR", crawlers_dir):
-        yield tmp_path
+    try:
+        with patch("config.CONFIG_DIR", tmp_path), \
+             patch("config.DB_FILE", tmp_path / "db.sqlite"), \
+             patch("config.CRAWLERS_DIR", crawlers_dir):
+            yield tmp_path
+    finally:
+        # Reset on the way out as well as on the way in. app_config is one row
+        # shared by the whole session, and a test that only asks for this
+        # fixture never goes near authed_client_factory_builder's TRUNCATE --
+        # so without this its settings leak into the next pg_test_db-only test.
+        config.save_config({})
 
 
 @pytest.fixture(autouse=True)

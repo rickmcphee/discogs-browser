@@ -6,7 +6,7 @@ from typing import Optional
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from logging_config import setup_logging, get_logger
-from config import ensure_dirs, CRAWLERS_DIR, load_config, FRONTEND_ORIGINS
+from config import ensure_dirs, CRAWLERS_DIR, load_config, migrate_legacy_config_file, FRONTEND_ORIGINS
 from version import VERSION
 from crawler import load_crawler_from_path
 from crawl_manager import crawl_manager
@@ -119,6 +119,11 @@ async def startup():
     log.info("Discogs Browser backend v%s starting", VERSION)
     ensure_dirs()
     init_global_schema()
+    # Immediately after the CREATE TABLE that gives it somewhere to write, and
+    # before anything below reads load_config() for real work (worker count,
+    # schedules) -- the worker pool starting on an empty config is what would
+    # clear every eBay price.
+    migrate_legacy_config_file()
     init_tenant_schema()
     seed_bundled_crawlers()
     await crawl_manager.start_worker_pool(worker_count=int(load_config().get("crawl_worker_count", 2)))

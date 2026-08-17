@@ -134,6 +134,14 @@ docker-compose service.
 
 Set via `fly secrets set`, not committed to the repo:
 - `DATABASE_URL` (Neon pooled connection string)
+- `DIRECT_DATABASE_URL` (Neon's *unpooled* connection string) — **added
+  2026-08-17, branch `fly-io-second-machine`.** Required, not optional: the
+  stock-sync advisory lock is session-scoped, and a PgBouncer transaction
+  pooler can move that session between backends, so the lock must bypass the
+  pooler. Unset, it silently defaults to `DATABASE_URL` and the lock stops
+  being mutual exclusion. See
+  [`2026-08-16-fly-multi-machine-design.md`](2026-08-16-fly-multi-machine-design.md)'s
+  "Stock sync mutual exclusion" amendment.
 - Discogs OAuth consumer key/secret
 - Session cookie signing key
 - Symmetric key encrypting stored Discogs OAuth token pairs at rest, per the

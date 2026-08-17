@@ -716,9 +716,13 @@ class CrawlManager:
         # readmitting the exact concurrent replace_stock_items() this lock
         # exists to prevent. connect() + the lock query are both blocking
         # calls, so run them off the event loop the same way
-        # _sync_collection_blocking does above.
+        # _sync_collection_blocking does above. DIRECT_APP_DATABASE_URL, not
+        # APP_DATABASE_URL: the latter is derived from Neon's pooled DSN, and a
+        # transaction pooler can put this session's statements on different
+        # backends, so the lock could outlive the connection or be dropped
+        # early (see config.py).
         def _acquire_lock():
-            conn = psycopg.connect(config.APP_DATABASE_URL, autocommit=True)
+            conn = psycopg.connect(config.DIRECT_APP_DATABASE_URL, autocommit=True)
             got = conn.execute(
                 "SELECT pg_try_advisory_lock(%s)", [STOCK_SYNC_LOCK_KEY]
             ).fetchone()[0]

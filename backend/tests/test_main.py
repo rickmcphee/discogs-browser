@@ -33,7 +33,8 @@ import scheduler
 
 def test_app_boots_and_health_check_succeeds(pg_test_db):
     with patch("main.crawl_manager.start_worker_pool", new=AsyncMock()), \
-         patch("main.crawl_manager.stop_worker_pool", new=AsyncMock()):
+         patch("main.crawl_manager.stop_worker_pool", new=AsyncMock()), \
+         patch("main.migrate_legacy_config_file"):
         import main
         with TestClient(main.app) as client:
             r = client.get("/api/health")
@@ -42,7 +43,8 @@ def test_app_boots_and_health_check_succeeds(pg_test_db):
 
 def test_startup_seeds_bundled_crawlers(pg_test_db):
     with patch("main.crawl_manager.start_worker_pool", new=AsyncMock()), \
-         patch("main.crawl_manager.stop_worker_pool", new=AsyncMock()):
+         patch("main.crawl_manager.stop_worker_pool", new=AsyncMock()), \
+         patch("main.migrate_legacy_config_file"):
         import main
         with TestClient(main.app):
             with db.get_admin_pool().connection() as conn:
@@ -52,7 +54,8 @@ def test_startup_seeds_bundled_crawlers(pg_test_db):
 
 def test_startup_seeds_catalog_crawlers_with_genre_summary(pg_test_db):
     with patch("main.crawl_manager.start_worker_pool", new=AsyncMock()), \
-         patch("main.crawl_manager.stop_worker_pool", new=AsyncMock()):
+         patch("main.crawl_manager.stop_worker_pool", new=AsyncMock()), \
+         patch("main.migrate_legacy_config_file"):
         import main
         with TestClient(main.app):
             with db.get_admin_pool().connection() as conn:
@@ -69,6 +72,38 @@ def test_startup_seeds_catalog_crawlers_with_genre_summary(pg_test_db):
 
     century_media = next(c for c in catalog_crawlers if c["site_name"] == "Century Media")
     assert century_media["genre_summary"] == "Metal label spanning death, black, and gothic metal."
+
+
+def test_startup_migrates_legacy_config_before_anything_reads_it(pg_test_db):
+    """Ordering is the whole point of the migration: it needs app_config to
+    exist (so, after init_global_schema) and it needs to land before the first
+    load_config() -- startup() hands that straight to start_worker_pool, and a
+    worker pool draining crawl_queue with empty eBay credentials clears every
+    eBay price it touches."""
+    import main
+
+    calls = []
+
+    def _record(name, result=None):
+        def _fn(*args, **kwargs):
+            calls.append(name)
+            return result
+        return _fn
+
+    with patch("main.crawl_manager.start_worker_pool", new=AsyncMock()), \
+         patch("main.crawl_manager.stop_worker_pool", new=AsyncMock()), \
+         patch("main.init_global_schema", new=_record("init_global_schema")), \
+         patch("main.init_tenant_schema", new=_record("init_tenant_schema")), \
+         patch("main.seed_bundled_crawlers", new=_record("seed_bundled_crawlers")), \
+         patch("main.migrate_legacy_config_file", new=_record("migrate")), \
+         patch("main.load_config", new=_record("load_config", {})), \
+         patch("main.scheduler"):
+        with TestClient(main.app):
+            pass
+
+    assert "migrate" in calls and "load_config" in calls
+    assert calls.index("init_global_schema") < calls.index("migrate")
+    assert calls.index("migrate") < calls.index("load_config")
 
 
 @pytest.fixture
@@ -141,7 +176,8 @@ def test_shutdown_cancels_the_schedule_resync_task(pg_test_db):
     import main
 
     with patch("main.crawl_manager.start_worker_pool", new=AsyncMock()), \
-         patch("main.crawl_manager.stop_worker_pool", new=AsyncMock()):
+         patch("main.crawl_manager.stop_worker_pool", new=AsyncMock()), \
+         patch("main.migrate_legacy_config_file"):
         with TestClient(main.app):
             assert main._schedule_resync_task is not None
     assert main._schedule_resync_task is None
@@ -160,6 +196,7 @@ def test_cors_allows_configured_frontend_origin(pg_test_db, monkeypatch):
              patch("main.init_global_schema"), \
              patch("main.init_tenant_schema"), \
              patch("main.seed_bundled_crawlers"), \
+             patch("main.migrate_legacy_config_file"), \
              patch("main.load_config", return_value={}), \
              patch("main.scheduler"):
             with TestClient(main.app) as client:
@@ -190,6 +227,7 @@ def test_cors_rejects_unlisted_origin(pg_test_db, monkeypatch):
              patch("main.init_global_schema"), \
              patch("main.init_tenant_schema"), \
              patch("main.seed_bundled_crawlers"), \
+             patch("main.migrate_legacy_config_file"), \
              patch("main.load_config", return_value={}), \
              patch("main.scheduler"):
             with TestClient(main.app) as client:

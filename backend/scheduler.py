@@ -23,43 +23,54 @@ def shutdown():
         _scheduler.shutdown(wait=False)
 
 
+# Parse first, replace second, in both functions below. Removing the current
+# job before knowing the replacement parses left a bad expression with no job
+# at all -- and once main.py's 5-minute schedule resync re-reads the same
+# stored value on every Machine, that one-off wipe repeats forever instead of
+# costing a single request. A parse failure now leaves the running job alone.
 def configure(cron_expression: str, mode: str = "missing"):
-    if _scheduler.get_job("crawl"):
-        _scheduler.remove_job("crawl")
-
     if not cron_expression:
+        if _scheduler.get_job("crawl"):
+            _scheduler.remove_job("crawl")
         log.info("Crawl schedule cleared")
         return
+
+    try:
+        trigger = CronTrigger.from_crontab(cron_expression)
+    except Exception as e:
+        log.warning("Invalid schedule expression %r: %s", cron_expression, e)
+        raise ValueError(f"Invalid cron expression: {cron_expression}") from e
 
     async def _run():
         from crawl_manager import crawl_manager
         log.info("Scheduled crawl sweep starting (mode=%s)", mode)
         await crawl_manager.sweep_enqueue(mode)
 
-    try:
-        _scheduler.add_job(_run, CronTrigger.from_crontab(cron_expression), id="crawl")
-        log.info("Crawl scheduled: %s (mode=%s)", cron_expression, mode)
-    except Exception as e:
-        log.warning("Invalid schedule expression %r: %s", cron_expression, e)
-        raise ValueError(f"Invalid cron expression: {cron_expression}") from e
+    if _scheduler.get_job("crawl"):
+        _scheduler.remove_job("crawl")
+    _scheduler.add_job(_run, trigger, id="crawl")
+    log.info("Crawl scheduled: %s (mode=%s)", cron_expression, mode)
 
 
 def configure_stock(cron_expression: str):
-    if _scheduler.get_job("stock_sync"):
-        _scheduler.remove_job("stock_sync")
-
     if not cron_expression:
+        if _scheduler.get_job("stock_sync"):
+            _scheduler.remove_job("stock_sync")
         log.info("Stock sync schedule cleared")
         return
+
+    try:
+        trigger = CronTrigger.from_crontab(cron_expression)
+    except Exception as e:
+        log.warning("Invalid stock sync schedule expression %r: %s", cron_expression, e)
+        raise ValueError(f"Invalid cron expression: {cron_expression}") from e
 
     async def _run():
         from crawl_manager import crawl_manager
         log.info("Scheduled stock sync starting")
         await crawl_manager.start_stock_sync()
 
-    try:
-        _scheduler.add_job(_run, CronTrigger.from_crontab(cron_expression), id="stock_sync")
-        log.info("Stock sync scheduled: %s", cron_expression)
-    except Exception as e:
-        log.warning("Invalid stock sync schedule expression %r: %s", cron_expression, e)
-        raise ValueError(f"Invalid cron expression: {cron_expression}") from e
+    if _scheduler.get_job("stock_sync"):
+        _scheduler.remove_job("stock_sync")
+    _scheduler.add_job(_run, trigger, id="stock_sync")
+    log.info("Stock sync scheduled: %s", cron_expression)

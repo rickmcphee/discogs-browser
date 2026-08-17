@@ -190,6 +190,8 @@ On startup, `main.py` calls `scheduler.start()` and then `scheduler.configure(..
 
 When the user saves settings, `POST /settings` calls `scheduler.configure(...)` with the new values — no restart required.
 
+**Amendment (2026-08-17, branch `fly-io-second-machine`):** `configure(cron, mode)` and `configure_stock(cron)` no longer remove the existing job *before* parsing the replacement, as the paragraph above describes — they parse first (`CronTrigger.from_crontab`) and only remove/re-add once the new expression is known valid, so a parse failure leaves the running job untouched. `POST /settings` likewise validates both cron strings *before* `save_config()` rather than after, returning 400 without persisting anything. An empty expression still clears the job, unchanged. Motivation: settings now live in a shared `app_config` row that every Machine re-reads on a 5-minute schedule resync, which turned a one-request wipe into a permanent, repeating one. See [`2026-08-16-fly-multi-machine-design.md`](../../specifications/shaping/2026-08-16-fly-multi-machine-design.md)'s "Schedule convergence" amendment.
+
 Scheduled crawls trigger `CrawlManager.start(mode)` exactly like a manual crawl. The frontend's persistent SSE connection receives the `"started"` event and resets the UI automatically.
 
 ---

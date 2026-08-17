@@ -2646,6 +2646,34 @@ async def test_start_stock_sync_returns_true_when_idle(pg_test_db, manager):
     assert conns and conns[0] is not None
 
 
+async def test_start_stock_sync_takes_its_lock_on_the_unpooled_dsn(pg_test_db, manager, monkeypatch):
+    """APP_DATABASE_URL is derived from Neon's pooled (PgBouncer transaction-
+    mode) DSN, which can move a logical session between backends statement by
+    statement -- a session-scoped pg_try_advisory_lock through it is not mutual
+    exclusion at all. The lock connection must use DIRECT_APP_DATABASE_URL.
+    APP_DATABASE_URL is pointed at an unroutable DSN here so using it would
+    fail outright rather than pass by coincidence."""
+    seen = []
+    real_connect = psycopg.connect
+
+    def _spy(dsn, *args, **kwargs):
+        seen.append(dsn)
+        return real_connect(dsn, *args, **kwargs)
+
+    monkeypatch.setattr(psycopg, "connect", _spy)
+    monkeypatch.setattr(db.config, "DIRECT_APP_DATABASE_URL", os.environ["TEST_DATABASE_URL"])
+    monkeypatch.setattr(db.config, "APP_DATABASE_URL", "postgresql://nobody:nobody@127.0.0.1:1/nope")
+
+    async def _instant(crawler_id=None, lock_conn=None):
+        lock_conn.close()
+
+    manager._sync_stock = _instant  # type: ignore
+    assert await manager.start_stock_sync() is True
+    await asyncio.sleep(0.05)
+
+    assert seen == [os.environ["TEST_DATABASE_URL"]]
+
+
 async def test_start_stock_sync_returns_false_when_already_running(pg_test_db, manager):
     event = asyncio.Event()
 
