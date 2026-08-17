@@ -419,3 +419,67 @@ def test_patch_crawler_enable_does_not_500_on_deadlock(pg_test_db, authed_client
     with db.get_admin_pool().connection() as conn:
         row = conn.execute("SELECT enabled FROM crawlers WHERE id = %s", [crawler_id]).fetchone()
     assert row["enabled"] is True
+
+
+def test_get_user_hidden_crawlers_defaults_to_empty(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    client = authed_client_factory(user["id"])
+    r = client.get("/api/user-hidden-crawlers")
+    assert r.status_code == 200
+    assert r.json() == {"hidden_crawler_ids": []}
+
+
+def test_post_user_hidden_crawlers_round_trips(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    client = authed_client_factory(user["id"])
+
+    r = client.post(
+        "/api/user-hidden-crawlers",
+        json={"hidden_crawler_ids": [crawler_id]},
+        headers={"X-Requested-With": "fetch"},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+
+    r = client.get("/api/user-hidden-crawlers")
+    assert r.json() == {"hidden_crawler_ids": [crawler_id]}
+
+
+def test_post_user_hidden_crawlers_replaces_not_merges(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        db.register_crawler(conn, "eBay", "/y.py")
+        amazon_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        ebay_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'eBay'").fetchone()["id"]
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    client = authed_client_factory(user["id"])
+
+    client.post("/api/user-hidden-crawlers", json={"hidden_crawler_ids": [amazon_id]}, headers={"X-Requested-With": "fetch"})
+    r = client.post("/api/user-hidden-crawlers", json={"hidden_crawler_ids": [ebay_id]}, headers={"X-Requested-With": "fetch"})
+    assert r.status_code == 200
+
+    r = client.get("/api/user-hidden-crawlers")
+    assert r.json() == {"hidden_crawler_ids": [ebay_id]}
+
+
+def test_user_hidden_crawlers_are_isolated_between_users(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        bob = db.create_user(conn, discogs_user_id=2, discogs_username="bob")
+        conn.commit()
+
+    alice_client = authed_client_factory(alice["id"])
+    bob_client = authed_client_factory(bob["id"])
+    alice_client.post("/api/user-hidden-crawlers", json={"hidden_crawler_ids": [crawler_id]}, headers={"X-Requested-With": "fetch"})
+
+    r = bob_client.get("/api/user-hidden-crawlers")
+    assert r.json() == {"hidden_crawler_ids": []}

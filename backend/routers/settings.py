@@ -177,3 +177,23 @@ def update_user_settings(body: UserSettingsUpdate, request: Request):
         )
         conn.commit()
     return {"ok": True}
+
+
+class UserHiddenCrawlersUpdate(BaseModel):
+    hidden_crawler_ids: list[int] = []
+
+
+@router.get("/user-hidden-crawlers")
+def get_user_hidden_crawlers(request: Request):
+    user_id = request.state.user_id
+    with db.user_scope(user_id) as conn:
+        return {"hidden_crawler_ids": db.get_hidden_crawler_ids(conn, user_id)}
+
+
+@router.post("/user-hidden-crawlers")
+def update_user_hidden_crawlers(body: UserHiddenCrawlersUpdate, request: Request):
+    user_id = request.state.user_id
+    with db.user_scope(user_id) as conn:
+        db.set_hidden_crawler_ids(conn, user_id, body.hidden_crawler_ids)
+        conn.commit()
+    return {"ok": True}
