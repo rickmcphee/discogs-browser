@@ -252,7 +252,11 @@ def get_avatar(request: Request):
     data = avatar_storage.get_avatar(request.state.user_id)
     if data is None:
         raise HTTPException(status_code=404)
-    return Response(content=data, media_type="image/png")
+    # Per-user bytes on a single URL behind a shared CDN -- without this,
+    # Cloudflare is free to serve one user's avatar to the next caller.
+    return Response(
+        content=data, media_type="image/png", headers={"Cache-Control": "private"}
+    )
 
 
 @router.delete("/auth/avatar")

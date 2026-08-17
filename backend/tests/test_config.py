@@ -5,10 +5,16 @@ from urllib.parse import unquote, urlsplit
 import pytest
 
 import config as config_module
+import db
 from config import _with_userinfo, load_config, save_config, ensure_dirs
 
 
 def test_load_config_missing_returns_empty(tmp_config_dir):
+    # The fixture leaves an empty row behind; delete it so this covers
+    # load_config's "no row at all" branch, i.e. a fresh database.
+    with db.get_admin_pool().connection() as conn:
+        conn.execute("DELETE FROM app_config")
+        conn.commit()
     assert load_config() == {}
 
 

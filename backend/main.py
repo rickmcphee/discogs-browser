@@ -1,5 +1,8 @@
+import asyncio
+import contextlib
 import shutil
 from pathlib import Path
+from typing import Optional
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from logging_config import setup_logging, get_logger
@@ -17,6 +20,10 @@ setup_logging()
 log = get_logger("main")
 
 BUNDLED_CRAWLERS_DIR = Path(__file__).parent / "crawlers"
+
+SCHEDULE_RESYNC_INTERVAL_SECONDS = 300
+
+_schedule_resync_task: Optional[asyncio.Task] = None
 
 
 def _crawler_metadata(path: Path, fallback_site_name: str) -> tuple[str, str, bool]:
@@ -75,19 +82,35 @@ app.add_exception_handler(Exception, unhandled_exception_headers)
 
 
 def _configure_schedules(cfg: dict) -> None:
-    schedule = cfg.get("crawl_schedule", "")
-    if schedule:
-        try:
-            scheduler.configure(schedule, cfg.get("crawl_schedule_mode", "missing"))
-        except ValueError as e:
-            log.warning("Ignoring invalid saved crawl schedule: %s", e)
+    # Called unconditionally, empty string included: scheduler.configure and
+    # configure_stock both remove any existing job before looking at the
+    # expression, so "" clears the job. Guarding on a non-empty value here
+    # meant a schedule cleared on one Machine kept firing forever on every
+    # other Machine, which never handled the clearing request.
+    try:
+        scheduler.configure(
+            cfg.get("crawl_schedule", ""), cfg.get("crawl_schedule_mode", "missing")
+        )
+    except ValueError as e:
+        log.warning("Ignoring invalid saved crawl schedule: %s", e)
 
-    stock_schedule = cfg.get("stock_schedule", "")
-    if stock_schedule:
+    try:
+        scheduler.configure_stock(cfg.get("stock_schedule", ""))
+    except ValueError as e:
+        log.warning("Ignoring invalid saved stock schedule: %s", e)
+
+
+async def _schedule_resync_loop() -> None:
+    # app_config is shared by every Machine, but APScheduler state is not:
+    # without this, a Machine that didn't handle POST /api/settings keeps
+    # running the old cron expression until it's redeployed. Bounds that
+    # staleness to 5 minutes.
+    while True:
+        await asyncio.sleep(SCHEDULE_RESYNC_INTERVAL_SECONDS)
         try:
-            scheduler.configure_stock(stock_schedule)
-        except ValueError as e:
-            log.warning("Ignoring invalid saved stock schedule: %s", e)
+            _configure_schedules(load_config())
+        except Exception:
+            log.exception("Periodic schedule resync failed")
 
 
 @app.on_event("startup")
@@ -101,6 +124,8 @@ async def startup():
     await crawl_manager.start_worker_pool(worker_count=int(load_config().get("crawl_worker_count", 2)))
     scheduler.start()
     _configure_schedules(load_config())
+    global _schedule_resync_task
+    _schedule_resync_task = asyncio.create_task(_schedule_resync_loop())
 
     log.info("=" * 60)
     log.info("Discogs Browser backend v%s ready", VERSION)
@@ -108,6 +133,12 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown():
+    global _schedule_resync_task
+    if _schedule_resync_task is not None:
+        _schedule_resync_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await _schedule_resync_task
+        _schedule_resync_task = None
     await crawl_manager.stop_worker_pool()
     scheduler.shutdown()
 
