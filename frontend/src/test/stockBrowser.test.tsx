@@ -150,7 +150,7 @@ describe('StockBrowser', () => {
     })
   })
 
-  it('defaults to All, lists only All/Recommended (no Overlapping), and disables Recommended when unavailable', async () => {
+  it('defaults to All, lists All/Recommended/Saved (no Overlapping), and disables Recommended when unavailable', async () => {
     render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     const select = screen.getByRole('combobox') as HTMLSelectElement
@@ -663,6 +663,78 @@ describe('StockBrowser', () => {
     // ran on failure, not just that it was called.
     await waitFor(() => expect(getStock.mock.calls.length).toBeGreaterThan(callsBefore))
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    expect(screen.getByText(/^1 items$/)).toBeTruthy()
+  })
+
+  it('refreshes the artist sidebar after a successful unsave under the Saved filter', async () => {
+    // A successful unsave can drop an artist's only saved item, which should
+    // stop that artist from being clickable-but-empty in the Saved sidebar.
+    // That refresh only happens if toggleSaved's success path also bumps
+    // retryTick (not just its failure path) -- see StockBrowser.tsx.
+    getStock.mockResolvedValue({
+      total: 1, page: 1, per_page: 250,
+      items: [{ ...items[0], saved: true }],
+    })
+    unsaveStockItem.mockResolvedValue({ saved: false })
+    render(<StockBrowser scope="store" />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'saved' } })
+    const button = await screen.findByTitle('Remove from saved')
+    const artistCallsBefore = getStockArtists.mock.calls.length
+    fireEvent.click(button)
+    await waitFor(() => expect(getStockArtists.mock.calls.length).toBeGreaterThan(artistCallsBefore))
+  })
+
+  it('does not let a failed toggle retry clobber a newer search-driven load (race fix)', async () => {
+    // Regression test for the race Copilot flagged: a failure-recovery reload
+    // triggered by an in-flight toggle must not win against a load started
+    // under load-identity state (search, in this case) the user changed
+    // *after* the toggle failed. The fix routes the recovery through
+    // retryTick -> the same load effect -> the same isLatest guard every
+    // other trigger uses, so the retry's response is stale by the time a
+    // newer search-driven response lands and must not commit.
+    unsaveStockItem.mockRejectedValue(new Error('boom'))
+    const bothItems = [{ ...items[0], saved: true }, items[1]]
+    let callCount = 0
+    let resolveRetryCall: (v: unknown) => void = () => {}
+    let resolveSearchCall: (v: unknown) => void = () => {}
+    getStock.mockImplementation(() => {
+      callCount += 1
+      if (callCount === 1) {
+        return Promise.resolve({ total: 2, page: 1, per_page: 250, items: bothItems })
+      }
+      if (callCount === 2) {
+        // The retry load triggered by the failed toggle.
+        return new Promise((resolve) => { resolveRetryCall = resolve })
+      }
+      // The load triggered by the search box change that follows.
+      return new Promise((resolve) => { resolveSearchCall = resolve })
+    })
+
+    render(<StockBrowser scope="store" />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+
+    const button = screen.getAllByTitle('Remove from saved')[0]
+    fireEvent.click(button)
+    // Toggle failure bumps retryTick, which issues the second (retry) getStock call.
+    await waitFor(() => expect(callCount).toBe(2))
+
+    // Before the retry resolves, the user changes the search box -- a newer
+    // load-identity change that starts its own, newer request.
+    fireEvent.change(screen.getByPlaceholderText('Search artist or title…'), { target: { value: 'nails' } })
+    await waitFor(() => expect(callCount).toBe(3))
+
+    // Resolve the newer (search) request first, then let the stale retry
+    // request resolve after it.
+    resolveSearchCall({ total: 1, page: 1, per_page: 250, items: [items[1]] })
+    await waitFor(() => expect(screen.getByText('Every Bridge Burning — Forest Green LP')).toBeTruthy())
+    expect(screen.queryByText('The Great Satan — Ghostly Black Vinyl')).toBeNull()
+
+    resolveRetryCall({ total: 2, page: 1, per_page: 250, items: bothItems })
+    // Give the stale retry's resolution a chance to (wrongly) commit if the
+    // race guard were broken.
+    await new Promise((r) => setTimeout(r, 0))
+    expect(screen.queryByText('The Great Satan — Ghostly Black Vinyl')).toBeNull()
     expect(screen.getByText(/^1 items$/)).toBeTruthy()
   })
 })

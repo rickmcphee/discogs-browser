@@ -301,19 +301,36 @@ async function toggleSaved(item: StockItem) {
     return filter === 'saved' && !next ? patched.filter((it) => it.item_key !== item.item_key) : patched
   })
   if (filter === 'saved' && !next) setTotal((t) => t - 1)
-  await (next ? saveStockItem(item.item_key) : unsaveStockItem(item.item_key))
+  await (next ? saveStockItem(item.item_key) : unsaveStockItem(item.item_key)).catch(() => {})
+  setRetryTick((t) => t + 1)
 }
 ```
 
 Optimistic: the local patch happens before the network call resolves, same
-as the rest of `StockBrowser`'s interactions (none of which currently do
-optimistic updates, but this one is a single-field toggle with no
-plausible partial-failure UI to design for — a failed request just leaves
-the icon in a state the next `load()` will correct). Under the Saved
-filter, unsaving both removes matching rows/tiles from `items` and
-decrements `total` so the pagination footer and the "`N` items" count stay
-consistent without a refetch — this is the "disappears immediately"
-behavior confirmed with the user.
+as the rest of `StockBrowser`'s interactions. `retryTick` is a small piece
+of local state added to both the `load()` effect's and the artist-sidebar
+effect's dependency arrays; bumping it re-runs those effects exactly as a
+`syncGeneration` tick already does, including their existing `isLatest`
+race guard. `toggleSaved` bumps it unconditionally after every attempt,
+success or failure alike:
+
+- **On failure**, the bump forces a refetch that undoes the optimistic
+  patch through the same race-guarded path every other trigger in this
+  component uses — a request that fails after the user has since changed
+  filter/search/sort/page can't win against a newer response, because it's
+  going through the same `isLatest()` closure, not a bare, uncoordinated
+  `load()` call.
+- **On success**, the bump also refreshes the artist sidebar — needed so
+  that unsaving the last saved item by an artist, while viewing the Saved
+  filter, drops that artist from the sidebar rather than leaving it
+  clickable into an empty list. On every other filter/success case it's a
+  cheap, harmless redundant refetch.
+
+Under the Saved filter, unsaving both removes matching rows/tiles from
+`items` and decrements `total` immediately so the pagination footer and the
+"`N` items" count stay consistent without waiting on the retry-triggered
+refetch — this is the "disappears immediately" behavior confirmed with the
+user; the refetch is a correctness backstop, not the primary UI update.
 
 ### Table
 
@@ -383,9 +400,12 @@ is untouched — it already limits tiles to one per record, so this needs no
 - **No cross-device sync indicator.** Like every other piece of state in
   this app, saves are just rows in Postgres scoped to the user — this
   isn't a limitation specific to this feature, just noting there's no
-  optimistic-UI-vs-server-truth reconciliation beyond the existing
-  `load()`/`syncGeneration` refetch path, which will correct any drift on
-  the next natural reload.
+  push notification of a save/unsave made from another device or tab. A
+  failed toggle on *this* tab does self-correct promptly, though: it bumps
+  `retryTick`, which drives an immediate refetch through the same
+  race-guarded `load()`/artist-sidebar effects `syncGeneration` ticks
+  already use (see "Toggle handler" above) — it doesn't wait for an
+  unrelated reload.
 - **A saved item that stops being in stock stays saved, silently.**
   `stock_item_saves` rows are never swept when `stock_items` rows are
   replaced by a sync — same lifetime model as `stock_item_judgments`,
@@ -448,22 +468,47 @@ Playwright-dependent code is unaffected; nothing here changes crawling.
 
 Grepped `docs/superpowers/specs/` and `docs/specifications/shaping/` for
 `StockBrowser`, `stock_item_judgments`, `get_stock_items`, `/stock/`
-filter-shape references, and "Store tab". Two prior specs describe the
-Store tab's filter dropdown and `get_stock_items` signature in ways this
-branch extends:
+filter-shape references, and "Store tab". Four prior specs described the
+Store tab's filter dropdown (and, in one case, `colCount`) in ways this
+branch made stale — all four were amended in place, as required by the
+repo's pre-PR spec-drift check, rather than left to go silently out of
+date:
 
-- `2026-08-10-collection-wishlist-filter-design.md` documents
-  `STORE_FILTERS`/the Store dropdown as `All`/`Recommended` only,
-  `colCount` as `scope === 'track' ? 7 : 6`, and `get_stock_items`'s
-  parameter list without `saved_only`. This is now incomplete rather than
-  wrong — nothing it states about `recommended` or `library_scope`
-  changes — so no correction is needed there beyond what this document
-  adds on top; a reader following both documents in date order gets the
-  full current picture. No inline amendment made.
-- No other spec's prose becomes actively false. (The pre-PR grep will be
-  re-run against the final diff before opening the PR, per the repo's
-  required check, in case implementation deviates from this design in a
-  way that invalidates something not caught here.)
+- [`docs/superpowers/specs/2026-07-06-store-recommended-filter-design.md`](../../superpowers/specs/2026-07-06-store-recommended-filter-design.md)
+  (Amendment 12): its "now just All/Recommended" claim about the Store
+  dropdown is superseded by the new `Saved` option; `Recommended` itself
+  is unaffected.
+- [`docs/superpowers/specs/2026-07-05-in-stock-crawler-design.md`](../../superpowers/specs/2026-07-05-in-stock-crawler-design.md)
+  (amendment dated 2026-08-16, branch `store-saved-items`): its own
+  "Store's dropdown now offers only All/Recommended" line (added by an
+  earlier amendment for the Store/Collection split) is stale for the same
+  reason — a third `Saved` option was added, unrelated to
+  `Recommended`/`library_scope`.
+- [`docs/specifications/shaping/2026-08-08-store-collection-split-design.md`](2026-08-08-store-collection-split-design.md)
+  (amendment dated 2026-08-16): its statement that the Store dropdown's
+  options are "`All`/`Recommended`" (having already dropped
+  `overlapping`) is stale in the same way — now `All`/`Recommended`/`Saved`.
+- [`docs/specifications/shaping/2026-08-10-collection-wishlist-filter-design.md`](2026-08-10-collection-wishlist-filter-design.md)
+  (two amendments dated 2026-08-16): first, its "`All`/`Recommended` for
+  Store (unchanged...)" claim is superseded by the same `Saved` addition;
+  second, and initially missed in this document's first pass — its
+  separate claim that `colCount` "stays 7 for Track and 6 for Store" is
+  actively false, not just incomplete: the new bookmark column brings
+  Store's `colCount` to 7 as well (`scope === 'track' ? 7 : 7` in
+  `StockBrowser.tsx`). This is the one correction in the set that couldn't
+  be waved off as "incomplete rather than wrong" — it's a load-bearing
+  numeric claim that implementation contradicted, so it got its own
+  amendment rather than being folded into the first.
+
+This section originally (in this document's first-written version) named
+only the `2026-08-10-collection-wishlist-filter-design.md` dropdown claim,
+called it "incomplete rather than wrong," and said no inline amendment was
+needed. That assessment didn't survive the `colCount` claim in the same
+document turning out to be actively false, and it undercounted the other
+three specs describing the same Store-dropdown option list. All four are
+now amended, per the "actual amendment" links above — this section is
+corrected to match rather than rewritten silently, per this repo's own
+convention of layering corrections as visible amendments.
 
 ## Runtime/agent document impact
 

@@ -47,6 +47,10 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
     () => (localStorage.getItem(`collectionViewMode_${scope}`) === 'tiles' ? 'tiles' : 'list')
   )
   const [hasLoaded, setHasLoaded] = useState(false)
+  // Bumped after every toggleSaved attempt (success or failure) to trigger a
+  // race-guarded refetch through the same effects load()/getStockArtists
+  // already run under -- see toggleSaved.
+  const [retryTick, setRetryTick] = useState(0)
   const PER_PAGE = 250
   const tableScrollRef = useRef<HTMLDivElement>(null)
 
@@ -86,7 +90,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
     let latest = true
     load(() => latest)
     return () => { latest = false }
-  }, [load, syncGeneration])
+  }, [load, syncGeneration, retryTick])
   useEffect(() => {
     if (!recommendedAvailable && filter === 'recommended') {
       setFilter('all')
@@ -107,7 +111,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
       scope === 'store' && filter === 'saved',
     ).then((list) => { if (latest) setArtists(list) })
     return () => { latest = false }
-  }, [scope, filter, hiddenCrawlerIds, syncGeneration])
+  }, [scope, filter, hiddenCrawlerIds, syncGeneration, retryTick])
   // A refetched list can re-case the selected artist's label, or drop it
   // entirely -- see reconcileSelectedArtist. A pure re-casing keeps the current
   // sort and page (it's still the same artist); losing the artist delegates to
@@ -164,7 +168,16 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
       return filter === 'saved' && !next ? patched.filter((it) => it.item_key !== item.item_key) : patched
     })
     if (filter === 'saved' && !next) setTotal((t) => t - 1)
-    await (next ? saveStockItem(item.item_key) : unsaveStockItem(item.item_key)).catch(() => load())
+    // Bumping retryTick -- rather than calling load()/getStockArtists directly
+    // -- routes the refetch through the same isLatest-guarded effects every
+    // other trigger already uses, so a request that resolves after the user
+    // has since changed filter/search/sort/page can't clobber a newer
+    // response. This runs on both success and failure: a failure needs the
+    // items list to self-correct (undo the optimistic patch), and a success
+    // needs the Saved-filter artist sidebar to drop an artist whose last
+    // saved item was just unsaved.
+    await (next ? saveStockItem(item.item_key) : unsaveStockItem(item.item_key)).catch(() => {})
+    setRetryTick((t) => t + 1)
   }
 
   // Sorting by artist is meaningless once the list is filtered down to a
