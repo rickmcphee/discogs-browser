@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { postCrawlStart, postStockSyncStart, getUserSettings, saveUserSettings, logout, getStock, getStockArtists, getReleases, getArtists, postPlexMatchStart, refreshCollection, openCrawlStream, openLogsStream, importRecommendationsCsv, listInvites, createInvite } from '../api/client'
+import { postCrawlStart, postStockSyncStart, getUserSettings, saveUserSettings, logout, getStock, getStockArtists, getReleases, getArtists, postPlexMatchStart, refreshCollection, openCrawlStream, openLogsStream, importRecommendationsCsv, listInvites, createInvite, saveStockItem, unsaveStockItem } from '../api/client'
 
 describe('crawl/user-settings client functions', () => {
   let fetchMock: ReturnType<typeof vi.fn>
@@ -237,5 +237,37 @@ describe('crawl/user-settings client functions', () => {
     fetchMock.mockResolvedValue({ ok: true, json: async () => ({ code: 'XYZ789' }) })
     await createInvite()
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ note: null })
+  })
+
+  it('getStock forwards saved=true when saved is set', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ total: 0, page: 1, per_page: 250, items: [] }) })
+    await getStock({ saved: true })
+    expect(fetchMock.mock.calls[0][0]).toContain('saved=true')
+  })
+
+  it('getStock omits saved when unset', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ total: 0, page: 1, per_page: 250, items: [] }) })
+    await getStock({})
+    expect(fetchMock.mock.calls[0][0]).not.toContain('saved=')
+  })
+
+  it('getStockArtists forwards saved=true', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ artists: [] }) })
+    await getStockArtists(undefined, false, undefined, true)
+    expect(fetchMock.mock.calls[0][0]).toContain('saved=true')
+  })
+
+  it('saveStockItem PUTs to /stock/saved/:item_key', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ saved: true }) })
+    await saveStockItem('abc123')
+    expect(fetchMock.mock.calls[0][0]).toContain('/stock/saved/abc123')
+    expect(fetchMock.mock.calls[0][1].method).toBe('PUT')
+  })
+
+  it('unsaveStockItem DELETEs to /stock/saved/:item_key', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ saved: false }) })
+    await unsaveStockItem('abc123')
+    expect(fetchMock.mock.calls[0][0]).toContain('/stock/saved/abc123')
+    expect(fetchMock.mock.calls[0][1].method).toBe('DELETE')
   })
 })

@@ -484,8 +484,21 @@ existing `recommendedAvailable` reset effect needs no change —
 effect's `filter === 'recommended'` condition can never fire there and it
 cannot clobber a Track filter value.
 
+**Amendment (2026-08-16, branch `store-saved-items`):** "`All`/`Recommended`
+for Store (unchanged...)" is superseded — the Store dropdown gained a third
+option, `Saved`, for a per-user "save for later" bookmark unrelated to
+`Recommended`. See
+[`2026-08-16-store-saved-items-design.md`](2026-08-16-store-saved-items-design.md).
+
 `colCount` stays 7 for Track and 6 for Store — the Price column renders
 under every filter value, so no filter-dependent column math.
+
+**Amendment (2026-08-16, branch `store-saved-items`):** "6 for Store" is
+stale. The bookmark column the above amendment's `Saved` option shipped
+alongside brought Store's `colCount` to 7 as well — see
+`frontend/src/views/StockBrowser.tsx`'s `colCount` (now `scope === 'track'
+? 7 : 7`) and
+[`2026-08-16-store-saved-items-design.md`](2026-08-16-store-saved-items-design.md).
 
 Empty-state copy becomes filter-aware in both list and tile views. Today's
 "No in-stock items yet. Click "Refresh Stock Now" in Settings." is wrong

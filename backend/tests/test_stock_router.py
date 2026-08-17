@@ -376,6 +376,92 @@ def test_list_stock_artists_library_scope_narrows_the_sidebar(pg_test_db, authed
     assert r.json()["artists"] == []
 
 
+def test_put_stock_saved_marks_item_saved(pg_test_db, authed_client_factory):
+    crawler_id = _make_crawler()
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        db.replace_stock_items(conn, crawler_id, [
+            {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+        ])
+        conn.commit()
+    item_key = db.compute_item_key("Artist A", "Album A", "https://x/1")
+    client = authed_client_factory(user["id"])
+
+    r = client.put(f"/api/stock/saved/{item_key}", headers={"X-Requested-With": "fetch"})
+    assert r.status_code == 200
+    assert r.json() == {"saved": True}
+
+    r = client.get("/api/stock?saved=true", headers={"X-Requested-With": "fetch"})
+    assert r.json()["total"] == 1
+
+
+def test_delete_stock_saved_unmarks_item_saved(pg_test_db, authed_client_factory):
+    crawler_id = _make_crawler()
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        db.replace_stock_items(conn, crawler_id, [
+            {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+        ])
+        conn.commit()
+    item_key = db.compute_item_key("Artist A", "Album A", "https://x/1")
+    client = authed_client_factory(user["id"])
+    client.put(f"/api/stock/saved/{item_key}", headers={"X-Requested-With": "fetch"})
+
+    r = client.delete(f"/api/stock/saved/{item_key}", headers={"X-Requested-With": "fetch"})
+    assert r.status_code == 200
+    assert r.json() == {"saved": False}
+
+    r = client.get("/api/stock?saved=true", headers={"X-Requested-With": "fetch"})
+    assert r.json()["total"] == 0
+
+
+def test_delete_stock_saved_on_never_saved_item_is_a_noop(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    client = authed_client_factory(user["id"])
+
+    r = client.delete("/api/stock/saved/never-saved-key", headers={"X-Requested-With": "fetch"})
+    assert r.status_code == 200
+    assert r.json() == {"saved": False}
+
+
+def test_stock_saved_isolated_per_user(pg_test_db, authed_client_factory):
+    crawler_id = _make_crawler()
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        bob = db.create_user(conn, discogs_user_id=2, discogs_username="bob")
+        db.replace_stock_items(conn, crawler_id, [
+            {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+        ])
+        conn.commit()
+    item_key = db.compute_item_key("Artist A", "Album A", "https://x/1")
+    alice_client = authed_client_factory(alice["id"])
+    bob_client = authed_client_factory(bob["id"])
+
+    alice_client.put(f"/api/stock/saved/{item_key}", headers={"X-Requested-With": "fetch"})
+
+    r = bob_client.get("/api/stock?saved=true", headers={"X-Requested-With": "fetch"})
+    assert r.json()["total"] == 0
+
+
+def test_list_stock_artists_saved_filters(pg_test_db, authed_client_factory):
+    crawler_id = _make_crawler()
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        db.replace_stock_items(conn, crawler_id, [
+            {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+            {"artist": "Artist B", "title": "Album B", "url": "https://x/2", "price": 15.0, "currency": "USD"},
+        ])
+        conn.commit()
+    item_key = db.compute_item_key("Artist A", "Album A", "https://x/1")
+    client = authed_client_factory(user["id"])
+    client.put(f"/api/stock/saved/{item_key}", headers={"X-Requested-With": "fetch"})
+
+    r = client.get("/api/stock/artists?saved=true", headers={"X-Requested-With": "fetch"})
+    assert r.json()["artists"] == ["Artist A"]
+
+
 def test_list_stock_excludes_hidden_crawler_ids(pg_test_db, authed_client_factory):
     amazon_id = _make_crawler("Amazon")
     nb_id = _make_crawler("Nuclear Blast")
