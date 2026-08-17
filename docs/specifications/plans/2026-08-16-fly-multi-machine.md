@@ -229,12 +229,96 @@ not safe to interleave across processes.
   requires `TEST_DATABASE_URL` even though most of what they test has
   nothing to do with Postgres. Update the bullet to say so.
 
+## Task 11 — Direct (unpooled) DSN for the stock-sync lock
+
+Added after GitHub Copilot's PR review found the advisory lock connection
+uses `config.APP_DATABASE_URL`, which in production is derived from Neon's
+*pooled* `DATABASE_URL` — a session-scoped `pg_try_advisory_lock` through a
+PgBouncer transaction-mode pooler is not reliable mutual exclusion at all.
+
+`backend/config.py`:
+- Add `DIRECT_DATABASE_URL = os.environ.get("DIRECT_DATABASE_URL", DATABASE_URL)`.
+- Add `DIRECT_APP_DATABASE_URL`, derived the same way `APP_DATABASE_URL`
+  already is (`_with_userinfo(DIRECT_DATABASE_URL, "app_user", APP_DB_PASSWORD)`,
+  overridable via a `DIRECT_APP_DATABASE_URL` env var).
+
+`backend/crawl_manager.py`: `start_stock_sync()`'s `_acquire_lock()` uses
+`config.DIRECT_APP_DATABASE_URL` instead of `config.APP_DATABASE_URL`.
+
+Document `DIRECT_DATABASE_URL` as a required Fly secret in the spec's
+"Manual one-time Fly setup" (already done as part of this plan revision).
+
+## Task 12 — Validate cron before saving; don't destroy a valid job on parse failure
+
+Added after GitHub Copilot's PR review found the periodic resync (Task 8)
+turned a latent bug into a recurring one: `routers/settings.py`'s
+`update_settings()` persists the new cron string before validating it, and
+`scheduler.configure()`/`configure_stock()` remove the current job before
+attempting to parse the replacement — so an invalid cron saved once now
+gets re-read and re-fails every 5 minutes on every Machine, permanently
+discarding a previously-working schedule.
+
+`backend/scheduler.py`: reorder `configure()`/`configure_stock()` to parse
+the cron expression (`CronTrigger.from_crontab(cron_expression)`) *before*
+removing any existing job — only remove/replace once the replacement is
+known to parse. An empty string still takes the existing early-return path
+(remove if present, log "cleared", return) unchanged.
+
+`backend/routers/settings.py`: `update_settings()` validates
+`body.crawl_schedule`/`body.stock_schedule` (via the same
+`CronTrigger.from_crontab` parse, or by calling into the now-reordered
+`scheduler.configure`/`configure_stock` in a dry-run/no-op way — implementer's
+choice, whichever avoids duplicating the parse logic) *before* calling
+`save_config(config)`, returning 400 without persisting anything on an
+invalid value.
+
+## Task 13 — Automatic `config.json` migration (replaces the manual step)
+
+Added after GitHub Copilot's PR review found the originally-planned manual
+migration step doesn't work: `app_config` doesn't exist before this
+branch's `init_global_schema()` runs, and `startup()` starts draining
+`crawl_queue` in the same function that creates the table, racing ahead of
+any human-executed manual step.
+
+`backend/main.py`'s `startup()`, right after `init_global_schema()` and
+before `load_config()` is used for anything real (worker count, schedules):
+a one-shot migration function that — if `config.CONFIG_DIR / "config.json"`
+still exists on this Machine's local disk and `app_config`'s row is still
+empty (`data = '{}'::jsonb` or no row) — reads the file and upserts it into
+`app_config`, guarded by `pg_advisory_xact_lock` on a fixed bigint key
+(same numbering convention as `db.py`'s `pg_advisory_xact_lock(2026080901)`
+— pick the next unused one, e.g. `2026081702`), double-checking the
+empty-row condition under the lock (same double-checked-locking shape as
+`db.py`'s `discogs_price` migration — read that block for the exact
+pattern to match). A Machine with no local `config.json` (the second
+Machine, whose volume starts empty) is a no-op. Once `app_config` holds
+real data, every subsequent boot everywhere skips this immediately (cheap
+existence/emptiness check, no lock taken).
+
+This needs `import json` back in whichever module owns the migration
+function (removed from `config.py` in Task 2 since it stopped needing file
+I/O — check whether it makes more sense to live in `config.py`, next to
+`CONFIG_DIR`/`load_config`, or in `main.py` next to `startup()`).
+
+## Task 14 — Close the remaining `app_config` test-isolation gap
+
+Added after GitHub Copilot's PR review found Task 10's fix (adding
+`app_config` to `authed_client_factory_builder`'s teardown TRUNCATE) only
+covers tests that use *that* fixture. A test using `tmp_config_dir` alone
+(no `authed_client_factory_builder`) still writes to the same shared
+`app_config` row via the real `save_config()`, and nothing resets it
+afterward — it leaks into whatever `pg_test_db`-only test happens to run
+next in the same session.
+
+`backend/tests/conftest.py`: reset (delete or upsert to `{}}`) `app_config`
+in `tmp_config_dir`'s own teardown as well as its setup, not relying on
+`authed_client_factory_builder` to cover tests that never request it.
+
 ## Manual follow-up (not part of this PR)
 
 Note in the PR description, not executed by this plan: after merge, the
-operator runs the "Manual one-time Fly setup" section from the spec by hand,
-once, with their own Fly auth and `DATABASE_URL` — migrating the existing
-`config.json` content into `app_config` (step 1) *before or immediately
-after* deploying (skipping it silently stops both cron schedules and can
-wipe eBay listing prices — see the spec's "Existing `config.json`" section),
-then provisioning the second Machine and volume (step 2).
+operator runs the spec's "Manual one-time Fly setup" section by hand, once,
+with their own Fly auth — setting the new `DIRECT_DATABASE_URL` secret
+*before* scaling to a second Machine (skipping it silently defeats the
+stock-sync lock), then provisioning the second Machine and volume. The
+`config.json` migration is no longer a manual step (Task 13 automates it).

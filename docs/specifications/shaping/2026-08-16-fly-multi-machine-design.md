@@ -149,6 +149,26 @@ lets `scheduler.configure`/`configure_stock` handle the empty case.
 This bounds staleness to at most 5 minutes on the Machine that didn't handle
 the settings write, rather than "until next redeploy."
 
+**Amendment (2026-08-17, GitHub Copilot PR review):** the periodic resync
+turned a latent bug into a recurring one. `routers/settings.py`'s
+`update_settings()` calls `save_config(config)` — persisting the new cron
+string to `app_config` — *before* calling `scheduler.configure(...)` to
+validate it; an invalid cron still gets a 400 back to the caller, but the
+bad string is already saved. `scheduler.configure()` itself compounded
+this: it removed the *current* job unconditionally, before attempting to
+parse the replacement, so a parse failure left no job at all. Before this
+change that was a one-machine, one-request blast radius; with a 5-minute
+resync reading the same bad value from Postgres, it now repeats forever on
+every Machine, permanently discarding a previously-working schedule.
+
+Fixed both ends: `scheduler.configure()`/`configure_stock()` now parse the
+new cron expression *first* and only remove/replace the existing job once
+the replacement is known-valid — a parse failure leaves the current job
+untouched. `update_settings()` validates both cron strings (via the same
+`CronTrigger.from_crontab` parse) before calling `save_config()`, so an
+invalid value is rejected before it ever reaches Postgres, not just before
+it takes effect on the request's own Machine.
+
 ### Stock sync mutual exclusion (Postgres advisory lock)
 
 `CrawlManager.stock_sync_running` (`crawl_manager.py`) only guards against a
@@ -185,19 +205,64 @@ runs them via `run_in_threadpool`, matching the `_sync_collection_blocking`
 pattern already used elsewhere in `crawl_manager.py`, rather than calling them
 inline on the event loop as this section originally described.
 
-### Existing `config.json` on the current deployment (migration)
+**Amendment (2026-08-17, GitHub Copilot PR review):** `config.APP_DATABASE_URL`
+is derived from `DATABASE_URL`, and this deployment's `DATABASE_URL` is Neon's
+*pooled* (PgBouncer transaction-mode) connection string (see this repo's
+original deployment spec, "Neon (Postgres)" section). A session-scoped
+advisory lock is meaningless through a transaction pooler: PgBouncer can
+multiplex `lock_conn`'s logical session onto a different backend per
+statement, so `pg_try_advisory_lock` and the later `.close()` are not
+guaranteed to touch the same real Postgres session — the lock can outlive
+the connection that took it (wedging stock sync until a database-side
+timeout, if any, expires) or be silently dropped early. The lock connection
+must bypass the pooler entirely.
 
-Nothing in this change reads the current Machine's live `/data/config.json`
-and writes it into `app_config`. Deploying this branch as-is turns
-`load_config()` into `{}` the moment the new code boots, with concrete
-consequences: `crawl_schedule`/`stock_schedule` going empty means
-`_configure_schedules` stops both cron jobs with no error; `ebay_app_id`/
-`ebay_cert_id` going empty means eBay searches return `[]`, which this
-codebase's crawl invariant treats as "confirmed no listing" —
-**`_drain_one_batch` would then clear every existing eBay listing price**,
-not just stop finding new ones. See "Manual one-time Fly setup" below for
-the required migration step — it must happen before or immediately after
-this deploy, not as a follow-up.
+Fix: a new `config.DIRECT_APP_DATABASE_URL`, derived the same way
+`APP_DATABASE_URL` already is (`_with_userinfo` swapping in the `app_user`
+role) but from a new `DIRECT_DATABASE_URL` env var — Neon's *unpooled*
+connection string — instead of `DATABASE_URL`. Defaults to `DATABASE_URL`
+itself when unset, which is correct for local/CI Postgres (nothing pools
+in front of it there) but is a real gap if the operator forgets to set it
+against Neon: see "Secrets," below, and the Fly setup checklist — this is
+now a required secret, not optional. `start_stock_sync()`'s dedicated
+connection uses `config.DIRECT_APP_DATABASE_URL`.
+
+### Existing `config.json` on the current deployment (automatic migration)
+
+The current Machine's live `/data/config.json` has no automatic path into
+`app_config` unless something migrates it. Left undone, `load_config()`
+turns into `{}` the moment this branch boots, with concrete consequences:
+`crawl_schedule`/`stock_schedule` going empty means `_configure_schedules`
+stops both cron jobs with no error; `ebay_app_id`/`ebay_cert_id` going
+empty means eBay searches return `[]`, which this codebase's crawl
+invariant treats as "confirmed no listing" — **`_drain_one_batch` would
+then clear every existing eBay listing price**, not just stop finding new
+ones.
+
+**Amendment (2026-08-17, GitHub Copilot PR review):** the original version
+of this section put the migration on the operator as a manual step "before
+or immediately after" deploy. That doesn't actually work: `app_config`
+itself doesn't exist until this branch's `init_global_schema()` runs, so
+"before deploy" has no table to insert into, and "immediately after" races
+the worker pool — `startup()` creates the table and starts draining
+`crawl_queue` in the same function, before a human can plausibly run a
+manual `psql`/UI step, so eBay rows could already be cleared by the time
+the operator finishes typing.
+
+Fixed by making the migration automatic and race-safe instead of manual: a
+one-shot step in `startup()`, right after `init_global_schema()` and before
+anything reads `load_config()` for real work, that — if `/data/config.json`
+still exists on this Machine's local disk and `app_config`'s row is still
+empty — reads the file and writes it into `app_config`, guarded by
+`pg_advisory_xact_lock`, the same pattern (and the same lock-numbering
+convention) as `db.py`'s existing `discogs_price` one-shot migration:
+double-checked (empty-row check outside the lock, re-checked under it), so
+two Machines booting concurrently — the exact scenario this whole change
+is for — can't both migrate, and a Machine with no local `config.json` (the
+second Machine, which has its own empty volume) is a no-op. Once
+`app_config` holds real data, every subsequent boot on every Machine skips
+this entirely. No manual operator step is needed for this specific risk
+any more; removed from "Manual one-time Fly setup" below.
 
 ### `fly.toml`
 
@@ -214,23 +279,22 @@ bundled `crawlers/__init__.py` marker still need it, one volume per Machine.
 
 ### Manual one-time Fly setup (not committed, not run by CI)
 
-Machine count, volume provisioning, and the `config.json` migration are all
-imperative, one-time actions — not declared in `fly.toml`, and
-`flyctl deploy` won't create a Machine that doesn't already exist or migrate
-data on its own. Whoever operates this deployment runs, once, **in this
-order**:
+Machine count and volume provisioning are imperative, one-time actions —
+not declared in `fly.toml`, and `flyctl deploy` won't create a Machine that
+doesn't already exist. The `config.json` migration is no longer a manual
+step here (see "Automatic migration" above); what remains manual is the new
+secret the stock-sync lock needs and the Machine/volume provisioning
+itself. Whoever operates this deployment runs, once, **in this order**:
 
-1. Before or immediately after deploying this branch, capture the current
-   Machine's live settings and write them into `app_config` — either
-   re-enter each value through the admin Settings UI once the new code is
-   live (simplest, and exercises the real write path), or read
-   `/data/config.json` off the running Machine (`fly ssh console -a
-   tracktempest-api`, then `cat /data/config.json`) and insert it directly:
-   `psql "$DATABASE_URL" -c "INSERT INTO app_config (id, data) VALUES (TRUE,
-   '<paste the json>'::jsonb) ON CONFLICT (id) DO UPDATE SET data =
-   EXCLUDED.data"`. Skipping this step silently stops both cron schedules
-   and, if eBay credentials are among the lost values, clears every eBay
-   listing price on the next crawl sweep (see "Existing `config.json`" above).
+1. **Before scaling to a second Machine**, set the unpooled connection
+   string the advisory lock requires — get it from Neon's dashboard (the
+   connection string *without* `-pooler` in the hostname):
+   ```bash
+   fly secrets set DIRECT_DATABASE_URL="<Neon's unpooled connection string>" -a tracktempest-api
+   ```
+   Skipping this leaves `DIRECT_DATABASE_URL` defaulted to `DATABASE_URL`
+   (Neon's pooled endpoint), which silently defeats the stock-sync lock's
+   mutual exclusion — see "Stock sync mutual exclusion" above.
 2. Provision the second Machine and its volume:
    ```bash
    fly volumes create data --region ord --size 1 -a tracktempest-api
