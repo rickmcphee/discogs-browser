@@ -278,9 +278,9 @@ When `HEADLESS_AUTH=1` (Docker), `POST /api/crawler-auth/login` returns HTTP 501
 
 ---
 
-## Startup Health Check and Frontend Overlay
+## Backend Health Detection and Down State
 
-`GET /api/health` returns `{"ok": true}`. The frontend polls this endpoint on mount (2-second interval, status < 500 = ready) and displays a spinner overlay until the backend responds. Once ready, crawlers are fetched and the UI populates. This provides visual feedback during Docker container startup before the backend finishes initializing.
+`GET /api/health` returns `{"ok": true}`. The frontend polls this endpoint continuously (2-second interval, status < 500 = up) for the whole lifetime of the app, not just at startup — the same mechanism covers both "backend not up yet" and "backend went down after the app already loaded," since the frontend can't distinguish the two. A `backendUp: boolean | null` tri-state tracks it: `null` before the first check resolves (shown as a neutral loading state, since there's no evidence yet either way), `false` once 2 consecutive checks fail (avoids flicker from one dropped request), `true` on any single success (recovers fast). Once `backendUp` is `false`, the app shows a "Can't reach the server. Retrying…" state: a full-page takeover before the user is authenticated (nothing to preserve), or a fixed overlay on top of the still-mounted app once authenticated (preserving in-progress state like unsaved Settings fields or Collection/Store filters through a transient outage). It clears automatically once a poll succeeds again, with no reload or user action. Full design: [`docs/specifications/shaping/2026-08-17-backend-down-error-page-design.md`](../../specifications/shaping/2026-08-17-backend-down-error-page-design.md).
 
 ---
 
