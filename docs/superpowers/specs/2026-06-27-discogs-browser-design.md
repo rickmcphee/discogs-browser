@@ -186,7 +186,7 @@ Playwright uses `launch_persistent_context` with `DISCOGS_BROWSER_DATA/chrome_pr
 
 `scheduler.py` wraps APScheduler's `AsyncIOScheduler`. The `configure(cron, mode)` function removes any existing job and adds a new one if `cron` is non-empty. `start()` starts the scheduler.
 
-On startup, `main.py` calls `scheduler.start()` and then `scheduler.configure(...)` with the values from `config.json`, so any previously saved schedule is active immediately.
+On startup, `main.py` calls `scheduler.start()` and then `scheduler.configure(...)` with the values from ~~`config.json`~~ `app_config` (see "Crawl Configuration" below), so any previously saved schedule is active immediately.
 
 When the user saves settings, `POST /settings` calls `scheduler.configure(...)` with the new values — no restart required.
 

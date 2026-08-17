@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 from pathlib import Path
 from urllib.parse import quote, urlsplit, urlunsplit
@@ -59,6 +60,22 @@ DIRECT_APP_DATABASE_URL = os.environ.get(
     "DIRECT_APP_DATABASE_URL",
     _with_userinfo(DIRECT_DATABASE_URL, "app_user", APP_DB_PASSWORD),
 )
+# Not a RuntimeError like FRONTEND_ORIGINS's "*" check below: unlike that
+# case, this module can't yet tell a real misconfiguration from a
+# deliberately-unpooled local DSN that happens to omit "-pooler", and a
+# stock-sync mutual-exclusion gap degrades one feature rather than making
+# the whole app unsafe to serve traffic -- so this warns instead of
+# refusing to boot. Deliberately can't use logging_config.get_logger here:
+# logging_config imports config at module level, so calling it from here
+# would be the exact import cycle this file's other Postgres-URL derivations
+# already work around with function-local imports elsewhere in this codebase.
+if DIRECT_DATABASE_URL == DATABASE_URL and "-pooler" in (urlsplit(DATABASE_URL).hostname or ""):
+    logging.getLogger("config").warning(
+        "DIRECT_DATABASE_URL is unset and DATABASE_URL looks like a Neon pooled "
+        "endpoint (hostname contains '-pooler') -- the stock-sync advisory lock "
+        "will silently provide no mutual exclusion. Set DIRECT_DATABASE_URL to "
+        "Neon's unpooled connection string."
+    )
 
 # Empty in production (SPA served same-origin, so a relative redirect from
 # a backend-issued Location header lands on the SPA correctly). Set to
