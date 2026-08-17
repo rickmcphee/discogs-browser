@@ -10,6 +10,7 @@ class Crawler:
     site_name: str = "Equal Vision"
     base_url: str = "https://equalvision.com"
     genre_summary: str = "Punk, hardcore, and emo label."
+    genre: str = "punk"
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:

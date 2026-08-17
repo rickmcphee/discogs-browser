@@ -25,14 +25,14 @@ vi.mock('../api/client', () => ({
 }))
 
 const CRAWLERS: Crawler[] = [
-  { id: 1, site_name: 'Amazon', module_path: '', crawler_type: 'release', enabled: true, last_run: null, base_url: null, genre_summary: null },
-  { id: 2, site_name: 'Disabled Site', module_path: '', crawler_type: 'release', enabled: false, last_run: null, base_url: null, genre_summary: null },
-  { id: 3, site_name: 'Epitaph', module_path: '', crawler_type: 'catalog', enabled: true, last_run: null, base_url: 'https://www.epitaph.com', genre_summary: 'Punk rock label.' },
+  { id: 1, site_name: 'Amazon', module_path: '', crawler_type: 'release', enabled: true, last_run: null, base_url: null, genre_summary: null, genre: 'marketplace' },
+  { id: 2, site_name: 'Disabled Site', module_path: '', crawler_type: 'release', enabled: false, last_run: null, base_url: null, genre_summary: null, genre: 'marketplace' },
+  { id: 3, site_name: 'Epitaph', module_path: '', crawler_type: 'catalog', enabled: true, last_run: null, base_url: 'https://www.epitaph.com', genre_summary: 'Punk rock label.', genre: 'punk' },
 ]
 
 const CATALOG_CRAWLERS_WITH_DISABLED: Crawler[] = [
   ...CRAWLERS,
-  { id: 4, site_name: 'Disabled Catalog', module_path: '', crawler_type: 'catalog', enabled: false, last_run: null, base_url: null, genre_summary: null },
+  { id: 4, site_name: 'Disabled Catalog', module_path: '', crawler_type: 'catalog', enabled: false, last_run: null, base_url: null, genre_summary: null, genre: 'marketplace' },
 ]
 
 beforeEach(() => {
@@ -59,8 +59,6 @@ function renderSettings(overrides: Partial<ComponentProps<typeof Settings>> = {}
       onRefreshPrices={() => {}}
       onRefreshStock={() => {}}
       isAdmin
-      hiddenCrawlerIds={[]}
-      onToggleCrawlerView={() => {}}
       stockSyncBusy={false}
       stockSyncCrawlerId={null}
       onRefreshStoreCrawler={() => {}}
@@ -133,31 +131,17 @@ describe('Settings', () => {
     expect(screen.queryByText('Recommendations Management')).not.toBeInTheDocument()
   })
 
-  it('shows both View and Crawl columns to an admin, for every crawler regardless of enabled state', async () => {
+  it('shows the Crawl column to an admin, for every crawler regardless of enabled state', async () => {
     renderSettings({ crawlers: CRAWLERS })
     await waitFor(() => expect(getSettings).toHaveBeenCalled())
     expect(screen.getByText('Amazon')).toBeInTheDocument()
     expect(screen.getByText('Disabled Site')).toBeInTheDocument()
-    expect(screen.getAllByText('Visible').length).toBe(3)
+    expect(screen.queryByText('Visible')).not.toBeInTheDocument()
     expect(screen.getAllByText('Enabled').length).toBe(2)
     expect(screen.getAllByText('Disabled').length).toBe(1)
   })
 
-  it('marks a crawler in hiddenCrawlerIds as Hidden in the View column', async () => {
-    renderSettings({ crawlers: CRAWLERS, hiddenCrawlerIds: [1] })
-    await waitFor(() => expect(getSettings).toHaveBeenCalled())
-    const amazonRow = screen.getByText('Amazon').closest('tr') as HTMLElement
-    expect(amazonRow.textContent).toContain('Hidden')
-  })
 
-  it('calls onToggleCrawlerView when a View button is clicked', async () => {
-    const onToggleCrawlerView = vi.fn()
-    renderSettings({ crawlers: CRAWLERS, onToggleCrawlerView })
-    await waitFor(() => expect(getSettings).toHaveBeenCalled())
-    const amazonRow = screen.getByText('Amazon').closest('tr') as HTMLElement
-    fireEvent.click(screen.getAllByText('Visible').find((el) => amazonRow.contains(el))!)
-    expect(onToggleCrawlerView).toHaveBeenCalledWith(1)
-  })
 
   it('hides admin-only controls and the Crawl column for a non-admin, and only lists enabled crawlers', async () => {
     renderSettings({ crawlers: CRAWLERS, isAdmin: false })
@@ -178,13 +162,6 @@ describe('Settings', () => {
     expect(screen.queryByText('Crawler Management')).not.toBeInTheDocument()
   })
 
-  it('still shows View toggles to a non-admin', async () => {
-    const onToggleCrawlerView = vi.fn()
-    renderSettings({ crawlers: CRAWLERS, isAdmin: false, onToggleCrawlerView })
-    const amazonRow = screen.getByText('Amazon').closest('tr') as HTMLElement
-    fireEvent.click(screen.getAllByText('Visible').find((el) => amazonRow.contains(el))!)
-    expect(onToggleCrawlerView).toHaveBeenCalledWith(1)
-  })
 
   it('shows a per-row Refresh button only for catalog crawlers, and only to an admin', async () => {
     renderSettings({ crawlers: CRAWLERS })
@@ -233,7 +210,7 @@ describe('Settings', () => {
   it('buckets a catalog_browser crawler into the Stores table, not the Marketplaces table', () => {
     const crawlers: Crawler[] = [
       ...CRAWLERS,
-      { id: 4, site_name: 'Angry Young and Poor', module_path: '', crawler_type: 'catalog_browser', enabled: true, last_run: null, base_url: null, genre_summary: null },
+      { id: 4, site_name: 'Angry Young and Poor', module_path: '', crawler_type: 'catalog_browser', enabled: true, last_run: null, base_url: null, genre_summary: null, genre: 'punk' },
     ]
     renderSettings({ crawlers, isAdmin: false })
     const tables = screen.getAllByRole('table')

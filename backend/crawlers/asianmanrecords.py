@@ -37,6 +37,7 @@ class Crawler:
     site_name: str = "Asian Man Records"
     base_url: str = "https://asianmanrecords.com"
     genre_summary: str = "Mike Park's Bay Area punk/ska label store, selling its own catalog plus a small distro of other labels' releases."
+    genre: str = "punk"
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:

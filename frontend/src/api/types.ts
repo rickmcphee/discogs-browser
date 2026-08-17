@@ -21,6 +21,8 @@ export interface ReleasesResponse {
   releases: Release[]
 }
 
+export type CrawlerGenre = 'marketplace' | 'punk' | 'metal' | 'rock' | 'pop'
+
 export interface Crawler {
   id: number
   site_name: string
@@ -30,6 +32,7 @@ export interface Crawler {
   last_run: string | null
   base_url: string | null
   genre_summary?: string | null
+  genre: CrawlerGenre
 }
 
 export interface Settings {

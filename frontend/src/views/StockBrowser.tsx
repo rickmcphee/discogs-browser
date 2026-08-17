@@ -1,19 +1,25 @@
 import { useState, useEffect, useCallback, useRef, memo } from 'react'
 import { getStock, getStockArtists, saveStockItem, unsaveStockItem } from '../api/client'
-import type { StockItem, StockSortField, SortOrder, StockScope, LibraryScope } from '../api/types'
+import type { StockItem, StockSortField, SortOrder, StockScope, LibraryScope, Crawler } from '../api/types'
 import { navButtonClass, dismissButtonClass } from '../styles/buttons'
 import { textInputClass, selectClass } from '../styles/inputs'
 import { reconcileSelectedArtist } from './artistSelection'
+import SourceFilter from '../components/SourceFilter'
 
 interface Props {
   scope?: StockScope
   recommendedAvailable?: boolean
   hiddenCrawlerIds?: number[]
+  crawlers?: Crawler[]
+  onHiddenCrawlerIdsChange?: (hiddenCrawlerIds: number[]) => void
+  hiddenCrawlerIdsLoaded?: boolean
   syncGeneration?: number
   isAdmin?: boolean
 }
 
 const NO_HIDDEN_CRAWLER_IDS: number[] = []
+const NO_CRAWLERS: Crawler[] = []
+const NOOP_HIDDEN_CRAWLER_IDS_CHANGE = () => {}
 const STORE_FILTERS = ['all', 'recommended', 'saved'] as const
 const TRACK_FILTERS = ['all', 'collection', 'wantlist'] as const satisfies readonly LibraryScope[]
 
@@ -29,7 +35,11 @@ function BookmarkIcon({ filled }: { filled: boolean }) {
   )
 }
 
-function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCrawlerIds = NO_HIDDEN_CRAWLER_IDS, syncGeneration, isAdmin = false }: Props) {
+function StockBrowser({
+  scope = 'store', recommendedAvailable = false, hiddenCrawlerIds = NO_HIDDEN_CRAWLER_IDS,
+  crawlers = NO_CRAWLERS, onHiddenCrawlerIdsChange = NOOP_HIDDEN_CRAWLER_IDS_CHANGE,
+  hiddenCrawlerIdsLoaded = true, syncGeneration, isAdmin = false,
+}: Props) {
   const [items, setItems] = useState<StockItem[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -71,6 +81,13 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
   // in flight, and that older filtered response arriving last would leave the
   // table showing a subset the sidebar no longer claims to be filtering by.
   const load = useCallback(async (isLatest: () => boolean = () => true) => {
+    // Until the caller's hidden-crawler set has actually loaded (App.tsx
+    // starts it false, flips it true once GET /api/user-hidden-crawlers
+    // resolves), hiddenCrawlerIds is a placeholder [] -- fetching now would
+    // briefly render items from a source the user has hidden, or do so
+    // indefinitely if that GET never resolves. Skip the request entirely;
+    // this effect re-runs once hiddenCrawlerIdsLoaded flips true.
+    if (!hiddenCrawlerIdsLoaded) return
     const result = await getStock({
       search: search || undefined,
       artist: selectedArtist || undefined,
@@ -84,7 +101,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
     setItems(result.items)
     setTotal(result.total)
     setHasLoaded(true)
-  }, [search, selectedArtist, sort, order, page, filter, hiddenCrawlerIds, scope])
+  }, [search, selectedArtist, sort, order, page, filter, hiddenCrawlerIds, scope, hiddenCrawlerIdsLoaded])
 
   // syncGeneration ticks on every stock_sync_progress/stock_sync_complete SSE
   // event so the store/track tabs repaint as crawlers add items, same as
@@ -105,6 +122,9 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
   // Also refetches on syncGeneration ticks, same as load() above -- otherwise
   // the sidebar's artist list would go stale mid-crawl.
   useEffect(() => {
+    // Same hiddenCrawlerIdsLoaded gate as load() above, and for the same
+    // reason: hiddenCrawlerIds is a placeholder [] until the real set loads.
+    if (!hiddenCrawlerIdsLoaded) return
     // syncGeneration ticks faster than a request round-trip, so these overlap.
     // Committing whichever response lands last would let a stale list drive
     // the reconciliation below -- re-casing the selection to an old label, or
@@ -117,7 +137,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
       scope === 'store' && filter === 'saved',
     ).then((list) => { if (latest) setArtists(list) })
     return () => { latest = false }
-  }, [scope, filter, hiddenCrawlerIds, syncGeneration, retryTick])
+  }, [scope, filter, hiddenCrawlerIds, syncGeneration, retryTick, hiddenCrawlerIdsLoaded])
   // A refetched list can re-case the selected artist's label, or drop it
   // entirely -- see reconcileSelectedArtist. A pure re-casing keeps the current
   // sort and page (it's still the same artist); losing the artist delegates to
@@ -273,6 +293,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
           </div>
           <span className="ml-3 text-xs text-gray-500">{total} items</span>
           <div className="ml-auto flex items-center gap-2">
+            <SourceFilter crawlers={crawlers} hiddenCrawlerIds={hiddenCrawlerIds} onChange={onHiddenCrawlerIdsChange} disabled={!hiddenCrawlerIdsLoaded} />
             <select
               value={filter}
               onChange={(e) => changeFilter(e.target.value)}
@@ -405,7 +426,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
                   </button>
                 </th>
                 <th className="text-center" aria-sort={sort === 'source' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}>
-                  <button type="button" onClick={() => toggleSort('source')} className={`${sortButtonClass} text-center`}>
+                  <button type="button" onClick={() => toggleSort('source')} aria-label="Sort by source" className={`${sortButtonClass} text-center`}>
                     Source {sort === 'source' ? (order === 'asc' ? '↑' : '↓') : ''}
                   </button>
                 </th>

@@ -8,15 +8,19 @@ class MockEventSource {
   close = vi.fn()
 }
 
-const { getAuthStatus, getCrawlers } = vi.hoisted(() => ({
+const { getAuthStatus, getCrawlers, getUserHiddenCrawlers, postUserHiddenCrawlers } = vi.hoisted(() => ({
   getAuthStatus: vi.fn().mockResolvedValue({ state: 'authenticated', user: { discogs_username: 'test', is_admin: true } }),
   getCrawlers: vi.fn().mockResolvedValue([]),
+  getUserHiddenCrawlers: vi.fn().mockResolvedValue([]),
+  postUserHiddenCrawlers: vi.fn().mockResolvedValue(undefined),
 }))
 
 vi.mock('../api/client', () => ({
   checkHealth: vi.fn().mockResolvedValue(true),
   getAuthStatus,
   setUnauthorizedHandler: vi.fn(),
+  getUserHiddenCrawlers,
+  postUserHiddenCrawlers,
   refreshCollection: vi.fn().mockResolvedValue({ synced: 0, username: 'test' }),
   getCollectionStatus: vi.fn().mockResolvedValue({ total: 0, last_synced: null }),
   getCrawlStatus: vi.fn().mockResolvedValue({ total: 0, missing: 0, oldest_checked: null }),
@@ -75,15 +79,15 @@ describe('header profile navigation', () => {
     ).toBeTruthy()
   })
 
-  it('hides the Logs nav button but shows Settings for a non-admin user', async () => {
+  it('hides the Logs and Settings nav buttons for a non-admin user', async () => {
     getAuthStatus.mockResolvedValueOnce({ state: 'authenticated', user: { discogs_username: 'test', is_admin: false } })
     render(<App />)
     await screen.findByRole('button', { name: 'Store' })
-    expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Settings' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Logs' })).not.toBeInTheDocument()
   })
 
-  it('shows the role switch to an admin, and toggling it hides Logs (but not Settings) until toggled back', async () => {
+  it('shows the role switch to an admin, and toggling it hides Logs and Settings until toggled back', async () => {
     render(<App />)
     fireEvent.click(await screen.findByRole('button', { name: /profile/i }))
     const roleSwitch = await screen.findByRole('switch', { name: 'Toggle admin/user view' })
@@ -93,7 +97,7 @@ describe('header profile navigation', () => {
 
     fireEvent.click(roleSwitch)
     expect(roleSwitch).toHaveAttribute('aria-checked', 'true')
-    expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Settings' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Logs' })).not.toBeInTheDocument()
 
     fireEvent.click(roleSwitch)
@@ -111,7 +115,7 @@ describe('header profile navigation', () => {
 
     render(<App />)
     await screen.findByRole('button', { name: /profile/i })
-    expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Settings' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Logs' })).not.toBeInTheDocument()
   })
 
@@ -122,33 +126,42 @@ describe('header profile navigation', () => {
     await screen.findByRole('heading', { name: 'Recommendations' })
     expect(screen.queryByRole('switch')).not.toBeInTheDocument()
   })
+
+  it('does not show the Settings nav button to a non-admin', async () => {
+    getAuthStatus.mockResolvedValueOnce({ state: 'authenticated', user: { discogs_username: 'test', is_admin: false } })
+    render(<App />)
+    await screen.findByRole('button', { name: /profile/i })
+    expect(screen.queryByRole('button', { name: 'Settings' })).not.toBeInTheDocument()
+  })
 })
 
-describe('hiddenCrawlerIds persistence', () => {
-  const HIDDEN_CRAWLER_IDS_KEY = 'discogs-browser.hiddenCrawlerIds'
+describe('source filter persistence', () => {
   const crawler = {
     id: 7, site_name: 'TestStore', module_path: '', crawler_type: 'release' as const,
-    enabled: true, last_run: null, base_url: null,
+    enabled: true, last_run: null, base_url: null, genre: 'marketplace' as const,
   }
 
-  beforeEach(() => {
-    localStorage.removeItem(HIDDEN_CRAWLER_IDS_KEY)
-  })
-
-  it('toggling a crawler View button writes localStorage, and the hidden state survives a remount', async () => {
-    getCrawlers.mockResolvedValueOnce([crawler])
-    const { unmount } = render(<App />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Settings' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Visible' }))
-
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Hidden' })).toBeInTheDocument())
-    expect(JSON.parse(localStorage.getItem(HIDDEN_CRAWLER_IDS_KEY) ?? '[]')).toEqual([7])
-    unmount()
-
-    // A browser refresh remounts the app; the persisted hidden id must be re-read on init.
+  it('fetches the hidden set on mount and toggling a store in the Source dropdown posts the updated set', async () => {
     getCrawlers.mockResolvedValueOnce([crawler])
     render(<App />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Settings' }))
-    expect(await screen.findByRole('button', { name: 'Hidden' })).toBeInTheDocument()
+    await waitFor(() => expect(getUserHiddenCrawlers).toHaveBeenCalled())
+
+    fireEvent.click(await screen.findByText('Store'))
+    const sourceButtons = await screen.findAllByRole('button', { name: 'Source' })
+    fireEvent.click(sourceButtons[0])
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'TestStore' }))
+
+    await waitFor(() => expect(postUserHiddenCrawlers).toHaveBeenCalledWith([7]))
+  })
+
+  it('reflects a server-persisted hidden crawler as unchecked after mount', async () => {
+    getCrawlers.mockResolvedValueOnce([crawler])
+    getUserHiddenCrawlers.mockResolvedValueOnce([7])
+    render(<App />)
+
+    fireEvent.click(await screen.findByText('Store'))
+    const sourceButtons = await screen.findAllByRole('button', { name: 'Source' })
+    fireEvent.click(sourceButtons[0])
+    expect(await screen.findByRole('checkbox', { name: 'TestStore' })).not.toBeChecked()
   })
 })

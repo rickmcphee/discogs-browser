@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import RecordBrowser from './views/RecordBrowser'
 import StockBrowser from './views/StockBrowser'
 import Settings from './views/Settings'
@@ -8,7 +8,7 @@ import LoginScreen from './views/LoginScreen'
 import InviteCodeScreen from './views/InviteCodeScreen'
 import Avatar from './components/Avatar'
 import { navButtonClass, primaryButtonClass, secondaryButtonClass, dismissButtonClass } from './styles/buttons'
-import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, clearJudgments, exportRecommendationsCsv, importRecommendationsCsv, getCrawlers, getUserSettings, getJudgmentStatus, checkHealth, getAuthStatus, setUnauthorizedHandler, hasAvatar } from './api/client'
+import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, clearJudgments, exportRecommendationsCsv, importRecommendationsCsv, getCrawlers, getUserSettings, getUserHiddenCrawlers, postUserHiddenCrawlers, getJudgmentStatus, checkHealth, getAuthStatus, setUnauthorizedHandler, hasAvatar } from './api/client'
 import type { CrawlEvent, CrawlStatus, CollectionStatus, Crawler, AuthStatus } from './api/types'
 
 type View = 'collection' | 'wantlist' | 'store' | 'track' | 'settings' | 'logs' | 'account'
@@ -20,7 +20,6 @@ type View = 'collection' | 'wantlist' | 'store' | 'track' | 'settings' | 'logs' 
 const DISMISSED_SYNC_KEY = 'discogs-browser.dismissedSyncEventId'
 const DISMISSED_CRAWL_KEY = 'discogs-browser.dismissedCrawlEventId'
 const VIEW_AS_USER_KEY = 'discogs-browser.viewAsUser'
-const HIDDEN_CRAWLER_IDS_KEY = 'discogs-browser.hiddenCrawlerIds'
 
 export default function App() {
   const [view, setView] = useState<View>('collection')
@@ -34,14 +33,10 @@ export default function App() {
 
   const [collectionStatus, setCollectionStatus] = useState<CollectionStatus | null>(null)
   const [crawlers, setCrawlers] = useState<Crawler[]>([])
-  const [hiddenCrawlerIds, setHiddenCrawlerIds] = useState<number[]>(() => {
-    try {
-      const parsed = JSON.parse(localStorage.getItem(HIDDEN_CRAWLER_IDS_KEY) ?? '[]')
-      return Array.isArray(parsed) ? parsed.filter((n) => typeof n === 'number') : []
-    } catch {
-      return []
-    }
-  })
+  const [hiddenCrawlerIds, setHiddenCrawlerIds] = useState<number[]>([])
+  const [hiddenCrawlerIdsLoaded, setHiddenCrawlerIdsLoaded] = useState(false)
+  const hiddenCrawlerIdsSaveChain = useRef<Promise<void>>(Promise.resolve())
+  const latestHiddenCrawlerIdsSaveSeq = useRef(0)
   const [avatarVersion, setAvatarVersion] = useState(0)
   const [hasAnthropicKey, setHasAnthropicKey] = useState(false)
   const [hasJudgedItems, setHasJudgedItems] = useState(false)
@@ -68,17 +63,18 @@ export default function App() {
     setSyncMessageId(eventId)
   }, [])
 
-  const toggleCrawlerView = useCallback((crawlerId: number) => {
-    setHiddenCrawlerIds((current) =>
-      current.includes(crawlerId)
-        ? current.filter((id) => id !== crawlerId)
-        : [...current, crawlerId]
-    )
-  }, [])
-
-  useEffect(() => {
-    localStorage.setItem(HIDDEN_CRAWLER_IDS_KEY, JSON.stringify(hiddenCrawlerIds))
-  }, [hiddenCrawlerIds])
+  const updateHiddenCrawlerIds = useCallback((ids: number[]) => {
+    setHiddenCrawlerIds(ids)
+    const seq = ++latestHiddenCrawlerIdsSaveSeq.current
+    hiddenCrawlerIdsSaveChain.current = hiddenCrawlerIdsSaveChain.current.then(async () => {
+      try {
+        await postUserHiddenCrawlers(ids)
+      } catch {
+        if (seq !== latestHiddenCrawlerIdsSaveSeq.current) return
+        setSyncStatus('Could not save your source filter — try again.')
+      }
+    })
+  }, [setSyncStatus])
 
   // Poll /api/health until the backend is up, then load initial data.
   useEffect(() => {
@@ -91,6 +87,12 @@ export default function App() {
           if (!cancelled) {
             setServerReady(true)
             getCrawlers().then(setCrawlers).catch(() => {})
+            getUserHiddenCrawlers().then((ids) => {
+              setHiddenCrawlerIds(ids)
+              setHiddenCrawlerIdsLoaded(true)
+            }).catch(() => {
+              setSyncStatus('Could not load your source filter — reload the page to try again.')
+            })
             getUserSettings().then((s) => {
               setHasAnthropicKey(Boolean(s.anthropic_api_key))
             }).catch(() => {})
@@ -532,12 +534,14 @@ export default function App() {
               Logs
             </button>
           )}
-          <button
-            onClick={() => setView('settings')}
-            className={`px-3 py-1.5 text-sm font-medium ${navButtonClass(view === 'settings')}`}
-          >
-            Settings
-          </button>
+          {showAdminNav && (
+            <button
+              onClick={() => setView('settings')}
+              className={`px-3 py-1.5 text-sm font-medium ${navButtonClass(view === 'settings')}`}
+            >
+              Settings
+            </button>
+          )}
           <button
             onClick={() => setView('account')}
             aria-label="Profile"
@@ -569,10 +573,10 @@ export default function App() {
           />
         </div>
         <div className={view === 'store' ? 'h-full' : 'hidden'}>
-          <StockBrowser recommendedAvailable={recommendedAvailable} hiddenCrawlerIds={hiddenCrawlerIds} syncGeneration={stockSyncGeneration} isAdmin={showAdminNav} />
+          <StockBrowser recommendedAvailable={recommendedAvailable} hiddenCrawlerIds={hiddenCrawlerIds} crawlers={crawlers} onHiddenCrawlerIdsChange={updateHiddenCrawlerIds} hiddenCrawlerIdsLoaded={hiddenCrawlerIdsLoaded} syncGeneration={stockSyncGeneration} isAdmin={showAdminNav} />
         </div>
         <div className={view === 'track' ? 'h-full' : 'hidden'}>
-          <StockBrowser scope="track" hiddenCrawlerIds={hiddenCrawlerIds} syncGeneration={stockSyncGeneration} isAdmin={showAdminNav} />
+          <StockBrowser scope="track" hiddenCrawlerIds={hiddenCrawlerIds} crawlers={crawlers} onHiddenCrawlerIdsChange={updateHiddenCrawlerIds} hiddenCrawlerIdsLoaded={hiddenCrawlerIdsLoaded} syncGeneration={stockSyncGeneration} isAdmin={showAdminNav} />
         </div>
         <div className={view === 'settings' ? 'h-full overflow-y-auto' : 'hidden'}>
           <Settings
@@ -581,8 +585,6 @@ export default function App() {
             onRefreshPrices={handleRefreshPricesFromSettings}
             onRefreshStock={handleRefreshStock}
             isAdmin={showAdminNav}
-            hiddenCrawlerIds={hiddenCrawlerIds}
-            onToggleCrawlerView={toggleCrawlerView}
             stockSyncBusy={stockSyncTarget !== null}
             stockSyncCrawlerId={typeof stockSyncTarget === 'number' ? stockSyncTarget : null}
             onRefreshStoreCrawler={handleRefreshStoreCrawler}

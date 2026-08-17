@@ -16,6 +16,8 @@ Applies only to `catalog`/`catalog_browser` crawlers (the Store Management / Sto
 
 **UI:** in `Settings.tsx`'s `renderCrawlerTable`, add `title={c.genre_summary ?? undefined}` to the store `<a>` (and the plain-text fallback span, for consistency, though every catalog crawler currently has a `base_url`). This is the codebase's existing hover-tooltip convention — native `title` attribute, used elsewhere in this same file (the refresh button) and in RecordBrowser/StockBrowser. No custom tooltip component. Renders identically for admin and non-admin, since both see this table and both can hide stores.
 
+**Amendment (2026-08-17, branch `claude/store-crawler-filter-design-d16b80`):** the last sentence above no longer holds. Non-admins no longer see the Settings crawler table at all — the Settings nav item is admin-only again, and the table's "View" column (the "both can hide stores" part) is gone. Hiding stores is now done via the per-tab "Source" filter on Store/Track, which does not use this tooltip. `renderCrawlerTable`'s `title={c.genre_summary ?? undefined}` now only ever renders for an admin viewer. See [`2026-08-16-store-track-source-filter-design.md`](2026-08-16-store-track-source-filter-design.md).
+
 **Testing:** extend `test_crawler_crud.py`'s `get_all_crawlers` test with a `genre_summary` assertion. Add `genre_summary` to the mock crawlers in `settings.test.tsx` and assert the `title` attribute renders.
 
 ## Content

@@ -11,6 +11,7 @@ class Crawler:
     site_name: str = "Numero Group"
     base_url: str = "https://numerogroup.com"
     genre_summary: str = "Reissue label for obscure soul, funk, gospel, and outsider music."
+    genre: str = "marketplace"
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:

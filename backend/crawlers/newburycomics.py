@@ -8,6 +8,7 @@ class Crawler:
     site_name: str = "Newbury Comics"
     base_url: str = "https://www.newburycomics.com"
     genre_summary: str = "New England record store chain and pop-culture retailer with a broad new/exclusive vinyl selection."
+    genre: str = "marketplace"
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:
