@@ -305,16 +305,37 @@ function BookmarkIcon({ filled }: { filled: boolean }) {
 
 ```ts
 async function toggleSaved(item: StockItem) {
+  if (pendingSaves.has(item.item_key)) return
+  setPendingSaves((prev) => new Set(prev).add(item.item_key))
   const next = !item.saved
   setItems((prev) => {
     const patched = prev.map((it) => (it.item_key === item.item_key ? { ...it, saved: next } : it))
     return filter === 'saved' && !next ? patched.filter((it) => it.item_key !== item.item_key) : patched
   })
   if (filter === 'saved' && !next) setTotal((t) => t - 1)
-  await (next ? saveStockItem(item.item_key) : unsaveStockItem(item.item_key)).catch(() => {})
-  setRetryTick((t) => t + 1)
+  try {
+    await (next ? saveStockItem(item.item_key) : unsaveStockItem(item.item_key)).catch(() => {})
+  } finally {
+    setPendingSaves((prev) => {
+      const nextSet = new Set(prev)
+      nextSet.delete(item.item_key)
+      return nextSet
+    })
+    setRetryTick((t) => t + 1)
+  }
 }
 ```
+
+`pendingSaves` is a `Set<string>` of `item_key`s with a save/unsave request
+currently in flight. A second click on the same `item_key` while its first
+request is still pending is a no-op — `toggleSaved` returns immediately,
+and both the table and tile bookmark buttons render `disabled` for any
+`item_key` in the set, so the click doesn't even fire. This closes a race
+Copilot's PR review flagged: without it, a quick save-then-unsave (or vice
+versa) fires two independent, unordered requests for the same `item_key`,
+and whichever commits last on the server wins — possibly not the user's
+actual last action. With the guard, at most one request per `item_key` is
+ever outstanding, so there's no completion order to reconcile.
 
 Optimistic: the local patch happens before the network call resolves, same
 as the rest of `StockBrowser`'s interactions. `retryTick` is a small piece
