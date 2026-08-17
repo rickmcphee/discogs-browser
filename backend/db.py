@@ -120,6 +120,11 @@ CREATE TABLE IF NOT EXISTS crawlers (
 
 ALTER TABLE crawlers ADD COLUMN IF NOT EXISTS requires_discogs_release BOOLEAN NOT NULL DEFAULT FALSE;
 
+CREATE TABLE IF NOT EXISTS app_config (
+    id BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (id),
+    data JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
 CREATE TABLE IF NOT EXISTS listings (
     id SERIAL PRIMARY KEY,
     release_id TEXT NOT NULL REFERENCES catalog(discogs_id),
@@ -309,6 +314,8 @@ CREATE TABLE IF NOT EXISTS users (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_image BYTEA;
+
 CREATE TABLE IF NOT EXISTS sessions (
     token_hash TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id),
@@ -356,10 +363,11 @@ BEGIN
   -- the test suite and starved its event-loop timing tests.
   IF EXISTS (SELECT 1 FROM information_schema.columns
              WHERE table_name = 'catalog' AND column_name = 'discogs_price') THEN
-    -- Serialize the migration itself across concurrently booting instances.
-    -- Today there is only one (uvicorn with no --workers, fly.toml
-    -- min_machines_running = 1), but without this two sessions could both pass
-    -- the outer check and the loser would then UPDATE or DROP against a column
+    -- Serialize the migration itself across concurrently booting instances --
+    -- fly.toml's min_machines_running is 2 (see the multi-machine design doc),
+    -- so this is a real scenario, not a hypothetical one. Without this lock,
+    -- two sessions could both pass the outer check and the loser would then
+    -- UPDATE or DROP against a column
     -- the winner had already removed, failing the boot. The deployment spec
     -- claims multi-machine scaling needs no design change; this keeps that true.
     PERFORM pg_advisory_xact_lock(2026080901);

@@ -6,6 +6,12 @@ from logging_config import get_logger
 
 log = get_logger("crawl_manager")
 
+# Guards a stock sync against running on two Machines at once -- _sync_stock's
+# replace_stock_items() deletes and reinserts a crawler's whole stock table and
+# is not safe to interleave. Date-coded bigint, following db.py's
+# pg_advisory_xact_lock(2026080901) convention.
+STOCK_SYNC_LOCK_KEY = 2026081601
+
 class CrawlManager:
     def __init__(self):
         self._sync_tasks: dict[int, asyncio.Task] = {}
@@ -693,10 +699,42 @@ class CrawlManager:
         return self._stock_task is not None and not self._stock_task.done()
 
     async def start_stock_sync(self, crawler_id: Optional[int] = None) -> bool:
+        import psycopg
+        import config
+
         if self.stock_sync_running:
             log.warning("Stock sync already running, ignoring start request")
             return False
-        self._stock_task = asyncio.create_task(self._sync_stock(crawler_id))
+
+        # Deliberately not a pooled connection: the advisory lock is
+        # session-scoped, and a pooled connection gets handed back out for
+        # unrelated work while it still holds it. Closed in _sync_stock's
+        # finally, which releases the lock. autocommit=True so the session
+        # never sits idle-in-transaction for the sync's full duration --
+        # otherwise a managed Postgres's idle_in_transaction_session_timeout
+        # can kill the backend mid-sync, silently releasing the lock and
+        # readmitting the exact concurrent replace_stock_items() this lock
+        # exists to prevent. connect() + the lock query are both blocking
+        # calls, so run them off the event loop the same way
+        # _sync_collection_blocking does above. DIRECT_APP_DATABASE_URL, not
+        # APP_DATABASE_URL: the latter is derived from Neon's pooled DSN, and a
+        # transaction pooler can put this session's statements on different
+        # backends, so the lock could outlive the connection or be dropped
+        # early (see config.py).
+        def _acquire_lock():
+            conn = psycopg.connect(config.DIRECT_APP_DATABASE_URL, autocommit=True)
+            got = conn.execute(
+                "SELECT pg_try_advisory_lock(%s)", [STOCK_SYNC_LOCK_KEY]
+            ).fetchone()[0]
+            return conn, got
+
+        lock_conn, got_lock = await run_in_threadpool(_acquire_lock)
+        if not got_lock:
+            lock_conn.close()
+            log.info("Stock sync already running on another instance, ignoring start request")
+            return False
+
+        self._stock_task = asyncio.create_task(self._sync_stock(crawler_id, lock_conn))
         return True
 
     async def _run_catalog_crawler(self, crawler) -> list[dict]:
@@ -735,14 +773,19 @@ class CrawlManager:
         finally:
             reset_page_reporter(token)
 
-    async def _sync_stock(self, crawler_id: Optional[int] = None):
-        import httpx
-        from db import get_app_pool, get_enabled_crawlers, replace_stock_items, update_crawler_last_run, enqueue_crawl_queue_for_stock_item, delete_dead_stock_crawl_queue_rows
-        from crawler import load_enabled_crawlers
-
-        await self._broadcast({"status": "stock_sync_started", "crawler_id": crawler_id})
-        log.info("Stock sync started")
+    async def _sync_stock(self, crawler_id: Optional[int] = None, lock_conn=None):
+        # Imports, the broadcast, and the log line all live inside this try
+        # (not above it) so lock_conn's release in the finally below covers
+        # every exit path, including one of these raising before the sync
+        # itself starts -- otherwise that would leak the advisory lock for
+        # the life of the process.
         try:
+            import httpx
+            from db import get_app_pool, get_enabled_crawlers, replace_stock_items, update_crawler_last_run, enqueue_crawl_queue_for_stock_item, delete_dead_stock_crawl_queue_rows
+            from crawler import load_enabled_crawlers
+
+            await self._broadcast({"status": "stock_sync_started", "crawler_id": crawler_id})
+            log.info("Stock sync started")
             with get_app_pool().connection() as conn:
                 enabled = (
                     get_enabled_crawlers(conn, crawler_type="catalog")
@@ -883,6 +926,10 @@ class CrawlManager:
         except Exception as e:
             log.error("Stock sync failed: %s", e, exc_info=True)
             await self._broadcast({"status": "stock_sync_error", "error": str(e), "crawler_id": crawler_id})
+        finally:
+            # Releases the session-scoped advisory lock start_stock_sync took.
+            if lock_conn is not None:
+                lock_conn.close()
 
     def judgment_running(self, user_id: int) -> bool:
         task = self._judgment_tasks.get(user_id)

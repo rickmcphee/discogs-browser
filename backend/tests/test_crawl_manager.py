@@ -3,6 +3,7 @@ import asyncio
 import logging
 import os
 import time
+import psycopg
 import pytest
 import respx
 import httpx
@@ -10,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import db
 import recommendations
 import token_encryption
-from crawl_manager import CrawlManager
+from crawl_manager import CrawlManager, STOCK_SYNC_LOCK_KEY
 
 
 @pytest.fixture
@@ -2626,21 +2627,59 @@ async def test_stock_sync_not_running_initially(manager):
     assert manager.stock_sync_running is False
 
 
-async def test_start_stock_sync_returns_true_when_idle(manager):
-    async def _fake_sync(crawler_id=None):
+# pg_test_db, not just `manager`: start_stock_sync now opens a real
+# connection to take the cross-process advisory lock before creating the
+# task, so these can no longer run against no database at all. The fakes
+# close the lock connection the real _sync_stock's finally would have.
+async def test_start_stock_sync_returns_true_when_idle(pg_test_db, manager):
+    conns = []
+
+    async def _fake_sync(crawler_id=None, lock_conn=None):
+        conns.append(lock_conn)
         await asyncio.sleep(0)
+        lock_conn.close()
 
     manager._sync_stock = _fake_sync  # type: ignore
     started = await manager.start_stock_sync()
     assert started is True
     await asyncio.sleep(0.01)
+    assert conns and conns[0] is not None
 
 
-async def test_start_stock_sync_returns_false_when_already_running(manager):
+async def test_start_stock_sync_takes_its_lock_on_the_unpooled_dsn(pg_test_db, manager, monkeypatch):
+    """APP_DATABASE_URL is derived from Neon's pooled (PgBouncer transaction-
+    mode) DSN, which can move a logical session between backends statement by
+    statement -- a session-scoped pg_try_advisory_lock through it is not mutual
+    exclusion at all. The lock connection must use DIRECT_APP_DATABASE_URL.
+    APP_DATABASE_URL is pointed at an unroutable DSN here so using it would
+    fail outright rather than pass by coincidence."""
+    seen = []
+    real_connect = psycopg.connect
+
+    def _spy(dsn, *args, **kwargs):
+        seen.append(dsn)
+        return real_connect(dsn, *args, **kwargs)
+
+    monkeypatch.setattr(psycopg, "connect", _spy)
+    monkeypatch.setattr(db.config, "DIRECT_APP_DATABASE_URL", os.environ["TEST_DATABASE_URL"])
+    monkeypatch.setattr(db.config, "APP_DATABASE_URL", "postgresql://nobody:nobody@127.0.0.1:1/nope")
+
+    async def _instant(crawler_id=None, lock_conn=None):
+        lock_conn.close()
+
+    manager._sync_stock = _instant  # type: ignore
+    assert await manager.start_stock_sync() is True
+    await asyncio.sleep(0.05)
+
+    assert seen == [os.environ["TEST_DATABASE_URL"]]
+
+
+async def test_start_stock_sync_returns_false_when_already_running(pg_test_db, manager):
     event = asyncio.Event()
 
-    async def _fake_sync(crawler_id=None):
+    async def _fake_sync(crawler_id=None, lock_conn=None):
         await event.wait()
+        lock_conn.close()
 
     manager._sync_stock = _fake_sync  # type: ignore
     await manager.start_stock_sync()
@@ -2651,14 +2690,53 @@ async def test_start_stock_sync_returns_false_when_already_running(manager):
     await asyncio.sleep(0.01)
 
 
-async def test_stock_sync_running_false_after_completion(manager):
-    async def _instant(crawler_id=None):
-        pass
+async def test_stock_sync_running_false_after_completion(pg_test_db, manager):
+    async def _instant(crawler_id=None, lock_conn=None):
+        lock_conn.close()
 
     manager._sync_stock = _instant  # type: ignore
     await manager.start_stock_sync()
     await asyncio.sleep(0.05)
     assert manager.stock_sync_running is False
+
+
+async def test_start_stock_sync_returns_false_when_another_instance_holds_the_lock(pg_test_db, manager):
+    # The real cross-Machine case: stock_sync_running is per-process, so
+    # without the advisory lock both Machines' schedulers would start a sync
+    # on the same cron tick and interleave replace_stock_items().
+    calls = []
+
+    async def _fake_sync(crawler_id=None, lock_conn=None):
+        calls.append(lock_conn)
+
+    manager._sync_stock = _fake_sync  # type: ignore
+    holder = psycopg.connect(db.config.APP_DATABASE_URL)
+    try:
+        assert holder.execute(
+            "SELECT pg_try_advisory_lock(%s)", [STOCK_SYNC_LOCK_KEY]
+        ).fetchone()[0] is True
+        assert await manager.start_stock_sync() is False
+        await asyncio.sleep(0.01)
+        assert calls == []
+    finally:
+        holder.close()
+
+
+async def test_sync_stock_releases_the_advisory_lock_when_it_finishes(pg_schema, manager):
+    lock_conn = psycopg.connect(db.config.APP_DATABASE_URL)
+    assert lock_conn.execute(
+        "SELECT pg_try_advisory_lock(%s)", [STOCK_SYNC_LOCK_KEY]
+    ).fetchone()[0] is True
+
+    # No enabled catalog crawlers -> returns early, exercising that the
+    # finally releases the lock on every exit path, not just the happy one.
+    await manager._sync_stock(lock_conn=lock_conn)
+
+    assert lock_conn.closed
+    with psycopg.connect(db.config.APP_DATABASE_URL) as other:
+        assert other.execute(
+            "SELECT pg_try_advisory_lock(%s)", [STOCK_SYNC_LOCK_KEY]
+        ).fetchone()[0] is True
 
 
 async def test_sync_stock_replaces_items_for_each_enabled_catalog_crawler(pg_schema):
@@ -2985,11 +3063,12 @@ async def test_sync_stock_completion_log_names_failed_and_skipped_sources(pg_sch
     assert "Cooling Site" in complete[0]
 
 
-async def test_start_stock_sync_forwards_crawler_id_to_sync_stock(manager):
+async def test_start_stock_sync_forwards_crawler_id_to_sync_stock(pg_test_db, manager):
     calls = []
 
-    async def _fake_sync(crawler_id=None):
+    async def _fake_sync(crawler_id=None, lock_conn=None):
         calls.append(crawler_id)
+        lock_conn.close()
 
     manager._sync_stock = _fake_sync  # type: ignore
     await manager.start_stock_sync(42)
@@ -3709,7 +3788,7 @@ async def test_judgment_running_for_one_user_does_not_block_another_users_judgme
     await asyncio.sleep(0.01)
 
 
-async def test_start_stock_sync_and_start_judgment_only_run_independently(manager):
+async def test_start_stock_sync_and_start_judgment_only_run_independently(pg_test_db, manager):
     # Stock sync (global, no user context) and judgment (always per-user) no
     # longer share a mutex -- unlike the old single-owner build, one user
     # running a judgment pass must not block another crawl of the shared
@@ -3717,8 +3796,9 @@ async def test_start_stock_sync_and_start_judgment_only_run_independently(manage
     stock_event = asyncio.Event()
     judgment_event = asyncio.Event()
 
-    async def _fake_sync_stock(crawler_id=None):
+    async def _fake_sync_stock(crawler_id=None, lock_conn=None):
         await stock_event.wait()
+        lock_conn.close()
 
     async def _fake_judgment_phase(user_id):
         await judgment_event.wait()
@@ -3752,10 +3832,14 @@ async def test_paced_search_serializes_same_site_calls_across_concurrent_invocat
     pages = {1: (MagicMock(), MagicMock())}
 
     # Two "concurrent" calls for the SAME crawler_id (1) must not overlap.
-    await asyncio.gather(
-        manager._paced_search(1, plugin, {}, pages),
-        manager._paced_search(1, plugin, {}, pages),
-    )
+    # load_config is patched, as everywhere else in this file: _paced_search
+    # reads crawl_delay_seconds from it, and it's a Postgres query now, so
+    # an unpatched call needs a database this test otherwise has no use for.
+    with patch("config.load_config", return_value={"crawl_delay_seconds": 0}):
+        await asyncio.gather(
+            manager._paced_search(1, plugin, {}, pages),
+            manager._paced_search(1, plugin, {}, pages),
+        )
     # call_log should read start,end,start,end (serialized), never start,start,end,end.
     assert [entry[0] for entry in call_log] == ["start", "end", "start", "end"]
 
@@ -3778,10 +3862,11 @@ async def test_paced_search_does_not_serialize_different_sites():
     plugin_b.search = await make_fake_search("b")
     pages = {1: (MagicMock(), MagicMock()), 2: (MagicMock(), MagicMock())}
 
-    await asyncio.gather(
-        manager._paced_search(1, plugin_a, {}, pages),
-        manager._paced_search(2, plugin_b, {}, pages),
-    )
+    with patch("config.load_config", return_value={"crawl_delay_seconds": 0}):
+        await asyncio.gather(
+            manager._paced_search(1, plugin_a, {}, pages),
+            manager._paced_search(2, plugin_b, {}, pages),
+        )
     # Different crawler_ids run concurrently — both "start"s happen before either "end".
     assert call_log[0].endswith("start") and call_log[1].endswith("start")
 
@@ -3811,7 +3896,8 @@ async def test_paced_search_covers_bot_detection_retry_under_one_lock_acquisitio
     plugin.search = AsyncMock(side_effect=[BotDetectedError(), []])
     pages = {1: (MagicMock(), MagicMock())}
 
-    with patch("crawler._reset_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+    with patch("crawler._reset_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("config.load_config", return_value={"crawl_delay_seconds": 0}):
         # Must not raise -- the retry succeeds under the same _paced_search call.
         matches, bot_detected = await manager._paced_search(1, plugin, {}, pages)
     assert matches == []
@@ -3828,7 +3914,8 @@ async def test_paced_search_records_backoff_even_when_retry_also_fails():
     plugin.search = AsyncMock(side_effect=[BotDetectedError(), RuntimeError("still blocked")])
     pages = {1: (MagicMock(), MagicMock())}
 
-    with patch("crawler._reset_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+    with patch("crawler._reset_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("config.load_config", return_value={"crawl_delay_seconds": 30}):
         before = time.monotonic()
         with pytest.raises(RuntimeError):
             await manager._paced_search(1, plugin, {}, pages)

@@ -20,6 +20,24 @@ _2026-07-18_
 
 **Amendment (2026-08-09, branch `recommendations-import`):** the 2026-08-04 amendment's description of `Export` as "the last row in that section's table" no longer holds — a new "Import" row was inserted between `Export` and `Clear`, so the order is now `Refresh`, `Export`, `Import`, `Clear`, with `Import` the last row. `Import` is ungated, unlike its three siblings — having no judgments is the main reason to import. See [`2026-08-09-recommendations-import-design.md`](../../specifications/shaping/2026-08-09-recommendations-import-design.md).
 
+**Amendment (2026-08-17, branch `fly-io-second-machine`):** the 2026-07-26
+amendment above claiming the avatar-upload design "remain[s] accurate as
+described below" no longer holds for the Backend changes section — avatar
+storage moved off a per-machine file. `POST`/`GET`/`DELETE /api/auth/avatar`
+now read/write a new `users.avatar_image BYTEA` column
+(`backend/avatar.py`'s `save_avatar`/`get_avatar`/`delete_avatar`, keyed by
+`user_id`) instead of `CONFIG_DIR / "avatar.png"`; `GET` returns the bytes via
+`Response(..., media_type="image/png", headers={"Cache-Control": "private"})`
+instead of `FileResponse`. This was forced by adding a second always-on Fly
+Machine: a Fly volume attaches to one Machine only, so a file-based avatar
+would fork into two independent copies the moment a second Machine existed —
+and it made the avatar a real per-user concept for the first time, since it
+had stayed a single shared file even after the app went multi-tenant. Upload
+validation/crop/resize (Pillow, 512×512, PNG re-encode) is unchanged. See
+[`2026-08-16-fly-multi-machine-design.md`](../../specifications/shaping/2026-08-16-fly-multi-machine-design.md).
+The "No database changes" line and file-based description in the Backend
+changes section below are accordingly historical, not current.
+
 ---
 
 ## Overview
