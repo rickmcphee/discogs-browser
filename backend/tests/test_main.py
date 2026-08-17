@@ -61,6 +61,32 @@ def test_startup_seeds_catalog_crawlers_with_genre_summary(pg_test_db):
     assert century_media["genre_summary"] == "Metal label spanning death, black, and gothic metal."
 
 
+def test_startup_seeds_catalog_crawlers_with_genre(pg_test_db):
+    with patch("main.crawl_manager.start_worker_pool", new=AsyncMock()), \
+         patch("main.crawl_manager.stop_worker_pool", new=AsyncMock()):
+        import main
+        with TestClient(main.app):
+            with db.get_admin_pool().connection() as conn:
+                crawlers = db.get_all_crawlers(conn)
+
+    catalog_crawlers = [c for c in crawlers if c["crawler_type"] in ("catalog", "catalog_browser")]
+    release_crawlers = [c for c in crawlers if c["crawler_type"] == "release"]
+    valid_genres = {"marketplace", "punk", "metal", "rock", "pop"}
+
+    assert len(catalog_crawlers) >= 36
+    invalid = {c["site_name"]: c["genre"] for c in catalog_crawlers if c["genre"] not in valid_genres}
+    assert invalid == {}
+    assert len(release_crawlers) >= 4
+    assert all(c["genre"] == "marketplace" for c in release_crawlers)
+
+    century_media = next(c for c in catalog_crawlers if c["site_name"] == "Century Media")
+    assert century_media["genre"] == "metal"
+    epitaph = next(c for c in catalog_crawlers if c["site_name"] == "Epitaph")
+    assert epitaph["genre"] == "punk"
+    amoeba = next(c for c in catalog_crawlers if c["site_name"] == "Amoeba Music")
+    assert amoeba["genre"] == "marketplace"
+
+
 def test_cors_allows_configured_frontend_origin(pg_test_db, monkeypatch):
     import config
     import main

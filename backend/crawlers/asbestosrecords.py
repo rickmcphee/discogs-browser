@@ -34,6 +34,7 @@ class Crawler:
     site_name: str = "Asbestos Records"
     base_url: str = "https://asbestosrecords.bigcartel.com"
     genre_summary: str = "Ska, punk, and hardcore label and record store."
+    genre: str = "punk"
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:

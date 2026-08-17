@@ -13,6 +13,7 @@ class Crawler:
     site_name: str = "Secretly Store"
     base_url: str = "https://secretlystore.com"
     genre_summary: str = "Indie rock and singer-songwriter label group (Secretly Canadian / Jagjaguwar / Dead Oceans)."
+    genre: str = "rock"
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:

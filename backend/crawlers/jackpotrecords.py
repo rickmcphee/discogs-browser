@@ -26,6 +26,7 @@ class Crawler:
     site_name: str = "Jackpot Records"
     base_url: str = "https://jackpotrecords.com"
     genre_summary: str = "Portland, Oregon record store and label with a broad new-vinyl selection across genres."
+    genre: str = "marketplace"
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:
