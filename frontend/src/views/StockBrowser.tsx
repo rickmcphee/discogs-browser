@@ -1,19 +1,24 @@
 import { useState, useEffect, useCallback, useRef, memo } from 'react'
 import { getStock, getStockArtists } from '../api/client'
-import type { StockItem, StockSortField, SortOrder, StockScope, LibraryScope } from '../api/types'
+import type { StockItem, StockSortField, SortOrder, StockScope, LibraryScope, Crawler } from '../api/types'
 import { navButtonClass, dismissButtonClass } from '../styles/buttons'
 import { textInputClass, selectClass } from '../styles/inputs'
 import { reconcileSelectedArtist } from './artistSelection'
+import SourceFilter from '../components/SourceFilter'
 
 interface Props {
   scope?: StockScope
   recommendedAvailable?: boolean
   hiddenCrawlerIds?: number[]
+  crawlers?: Crawler[]
+  onHiddenCrawlerIdsChange?: (hiddenCrawlerIds: number[]) => void
   syncGeneration?: number
   isAdmin?: boolean
 }
 
 const NO_HIDDEN_CRAWLER_IDS: number[] = []
+const NO_CRAWLERS: Crawler[] = []
+const NOOP_HIDDEN_CRAWLER_IDS_CHANGE = () => {}
 const STORE_FILTERS = ['all', 'recommended'] as const
 const TRACK_FILTERS = ['all', 'collection', 'wantlist'] as const satisfies readonly LibraryScope[]
 
@@ -21,7 +26,11 @@ function trackLibraryScope(value: string): LibraryScope | undefined {
   return (TRACK_FILTERS as readonly string[]).includes(value) ? (value as LibraryScope) : undefined
 }
 
-function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCrawlerIds = NO_HIDDEN_CRAWLER_IDS, syncGeneration, isAdmin = false }: Props) {
+function StockBrowser({
+  scope = 'store', recommendedAvailable = false, hiddenCrawlerIds = NO_HIDDEN_CRAWLER_IDS,
+  crawlers = NO_CRAWLERS, onHiddenCrawlerIdsChange = NOOP_HIDDEN_CRAWLER_IDS_CHANGE,
+  syncGeneration, isAdmin = false,
+}: Props) {
   const [items, setItems] = useState<StockItem[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -216,6 +225,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
           </div>
           <span className="ml-3 text-xs text-gray-500">{total} items</span>
           <div className="ml-auto flex items-center gap-2">
+            <SourceFilter crawlers={crawlers} hiddenCrawlerIds={hiddenCrawlerIds} onChange={onHiddenCrawlerIdsChange} />
             <select
               value={filter}
               onChange={(e) => changeFilter(e.target.value)}
@@ -335,7 +345,7 @@ function StockBrowser({ scope = 'store', recommendedAvailable = false, hiddenCra
                   </button>
                 </th>
                 <th className="text-center" aria-sort={sort === 'source' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}>
-                  <button type="button" onClick={() => toggleSort('source')} className={`${sortButtonClass} text-center`}>
+                  <button type="button" onClick={() => toggleSort('source')} aria-label="Sort by source" className={`${sortButtonClass} text-center`}>
                     Source {sort === 'source' ? (order === 'asc' ? '↑' : '↓') : ''}
                   </button>
                 </th>

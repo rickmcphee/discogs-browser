@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import StockBrowser from '../views/StockBrowser'
+import type { Crawler } from '../api/types'
 
 const items = [
   { id: 1, item_key: 'k1', is_own: true, artist: 'Rob Zombie', title: 'The Great Satan — Ghostly Black Vinyl', format: 'Vinyl', price: 31.99, currency: 'USD', url: 'https://shop.nuclearblast.com/products/rob-zombie', cover_image_url: 'https://cdn.shopify.com/rz-black.png', source: 'Nuclear Blast', last_seen: '2026-07-05T00:00:00Z', discogs_price: null },
@@ -110,7 +111,7 @@ describe('StockBrowser', () => {
   it('sorts by source when the Source column header is clicked', async () => {
     render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    fireEvent.click(screen.getByText(/^Source/))
+    fireEvent.click(screen.getByRole('button', { name: 'Sort by source' }))
     await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ sort: 'source', order: 'asc' })))
   })
 
@@ -537,5 +538,24 @@ describe('StockBrowser', () => {
     await waitFor(() => expect(screen.getAllByText('The Great Satan — Ghostly Black Vinyl').length).toBe(2))
     fireEvent.click(screen.getByTitle('Tile view'))
     await waitFor(() => expect(screen.getAllByText('The Great Satan — Ghostly Black Vinyl').length).toBe(1))
+  })
+})
+
+const CRAWLERS: Crawler[] = [
+  { id: 5, site_name: 'Epitaph', module_path: '', crawler_type: 'catalog', enabled: true, last_run: null, base_url: null, genre: 'punk' },
+]
+
+describe('StockBrowser Source filter', () => {
+  it('renders the Source button in the header', async () => {
+    render(<StockBrowser crawlers={CRAWLERS} />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Source' })).toBeInTheDocument())
+  })
+
+  it('calls onHiddenCrawlerIdsChange when a store checkbox is toggled', async () => {
+    const onHiddenCrawlerIdsChange = vi.fn()
+    render(<StockBrowser crawlers={CRAWLERS} onHiddenCrawlerIdsChange={onHiddenCrawlerIdsChange} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Source' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Epitaph' }))
+    expect(onHiddenCrawlerIdsChange).toHaveBeenCalledWith([5])
   })
 })
