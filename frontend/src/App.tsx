@@ -48,7 +48,7 @@ export default function App() {
   const [hasJudgedItems, setHasJudgedItems] = useState(false)
   const [judgmentRunning, setJudgmentRunning] = useState(false)
   const [serverReady, setServerReady] = useState(false)
-  const [backendUp, setBackendUp] = useState(false)
+  const [backendUp, setBackendUp] = useState<boolean | null>(null)
   const [syncMessage, setSyncMessage] = useState<string | null>(null)
   const [syncMessageId, setSyncMessageId] = useState<number | null>(null)
   const [dismissedSyncId, setDismissedSyncId] = useState(() => Number(localStorage.getItem(DISMISSED_SYNC_KEY) ?? 0))
@@ -122,7 +122,9 @@ export default function App() {
     hasAvatar().then((exists) => setAvatarVersion(exists ? Date.now() : 0)).catch(() => {})
   }, [authState, backendUp, serverReady])
 
-  // Persistent SSE connection — reconnects on error. Waits for server to be ready.
+  // Persistent SSE connection — reconnects on error. Gated on authState only
+  // (not backendUp) -- it reconnects through any backend outage on its own
+  // 3s backoff, independent of the health-poll state machine.
   // Handles both user-triggered and scheduled crawls.
   useEffect(() => {
     if (authState?.state !== 'authenticated') return
@@ -479,7 +481,7 @@ export default function App() {
     })
   }, [])
 
-  if (!backendUp) {
+  if (backendUp === false && authState?.state !== 'authenticated') {
     return <BackendDownScreen />
   }
   if (authState === null) {
@@ -763,6 +765,11 @@ export default function App() {
           )}
         </div>
       )}
+
+      {/* Backend down overlay -- shown on top of the still-mounted app so
+          in-progress state (search filters, unsaved Settings fields)
+          survives a transient outage instead of being unmounted. */}
+      {backendUp === false && <BackendDownScreen />}
     </div>
   )
 }

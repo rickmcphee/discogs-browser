@@ -7,4 +7,9 @@ describe('BackendDownScreen', () => {
     render(<BackendDownScreen />)
     expect(screen.getByText("Can't reach the server. Retrying…")).toBeInTheDocument()
   })
+
+  it('has an accessible live region so screen readers announce the outage', () => {
+    render(<BackendDownScreen />)
+    expect(screen.getByRole('status')).toBeInTheDocument()
+  })
 })
