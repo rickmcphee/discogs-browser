@@ -39,9 +39,16 @@ Machines is just what server logs do — so they're left alone.
 - Move `config.json` (app-wide settings) and `avatar.png` (per-user) into
   Postgres, where every Machine already reads consistent state for
   everything else.
+- Converge both Machines' APScheduler cron schedules on whatever the latest
+  `app_config` write says, without requiring an operator to redeploy or
+  restart the Machine that didn't handle the settings write.
+- Prevent two Machines from ever running a stock sync for the same store
+  concurrently — `_sync_stock`'s `DELETE FROM stock_items WHERE crawler_id =
+  %s` + reinsert is not safe to interleave across processes.
 - Document the one-time, imperative Fly setup (second volume, machine count)
   that isn't part of `flyctl deploy` and so isn't expressible in a committed
-  file.
+  file — including migrating the current Machine's existing `config.json`
+  content, which nothing else in this change does automatically.
 
 ## Non-goals
 
@@ -50,12 +57,15 @@ Machines is just what server logs do — so they're left alone.
   original spec's assumption that this deployment doesn't need more.
 - Moving `app.log` or `screenshots/` off local disk. Both are per-machine by
   nature; forking them across Machines isn't a bug.
-- Coordinating APScheduler cron firing across Machines. Both Machines will
-  independently fire the same cron tick and both will call
-  `sweep_enqueue`/`start_stock_sync`, but every enqueue underneath is
-  `ON CONFLICT ... DO UPDATE` (see `db.py`'s `crawl_queue`/`stock_items`
-  upserts), so a duplicate fire just re-upserts the same rows. No new
-  coordination needed.
+- Cross-Machine SSE fan-out. `/api/crawl/stream` and `CrawlManager`'s
+  `_subscribers`/`_recent` are in-process (`crawl_manager.py`), and nothing
+  here changes that. A user whose stream connection lands on Machine A will
+  not see live progress events for work Machine B's pool is doing — only
+  the crawl's *eventual* effect (the resulting `listings`/`stock_items`
+  rows) is consistent, not the live narration of it. Fixing this needs a
+  cross-Machine broadcast bridge (e.g. Postgres `LISTEN`/`NOTIFY`), which is
+  a separate, larger piece of work, not folded into this change. Accepted
+  as a real, known gap rather than silently shipped.
 
 ## Design
 
@@ -112,6 +122,71 @@ column write. `routers/session.py`'s three `/auth/avatar` routes pass
 `request.state.user_id` through and `GET` returns the bytes via
 `Response(content=..., media_type="image/png")` instead of `FileResponse`.
 
+### Schedule convergence (periodic re-sync)
+
+Moving the cron *value* into `app_config` doesn't make an already-running
+Machine's `AsyncIOScheduler` (`scheduler.py`) notice a change another Machine
+wrote — `scheduler.configure()`/`configure_stock()` are only ever called at
+boot (`main.py`'s `startup()`) and from the Machine that handled
+`POST /api/settings` (`routers/settings.py`). The other Machine keeps firing
+the old cron expression indefinitely.
+
+Fix: a periodic background task (started in `main.py`'s `startup()`,
+cancelled in `shutdown()`, same pattern as `crawl_manager`'s worker-pool
+task) re-reads `load_config()` and re-applies it via the same
+`_configure_schedules()` used at boot, every 5 minutes. `scheduler.configure()`
+already removes any existing job before adding, so calling it repeatedly with
+an unchanged cron expression is a no-op in effect (same job re-registered) —
+safe to call on a timer rather than only on change. `_configure_schedules()`
+itself has one bug fixed as part of this: it previously only called
+`scheduler.configure(...)`/`configure_stock(...)` when the stored schedule
+string was non-empty, so a schedule *cleared* to `""` would never actually
+clear an existing job on a Machine that wasn't the one handling the clear —
+`scheduler.configure("")` already removes the job and returns early, so the
+guard at the call site was actively wrong. It now always calls through and
+lets `scheduler.configure`/`configure_stock` handle the empty case.
+
+This bounds staleness to at most 5 minutes on the Machine that didn't handle
+the settings write, rather than "until next redeploy."
+
+### Stock sync mutual exclusion (Postgres advisory lock)
+
+`CrawlManager.stock_sync_running` (`crawl_manager.py`) only guards against a
+second stock sync starting on the *same* process; it does nothing across
+Machines. Two Machines' schedulers converging on the same cron (previous
+section) makes simultaneous firing the common case, not an edge case, so
+this needs a real cross-process lock, not just a documented risk.
+
+`start_stock_sync()` takes a session-scoped Postgres advisory lock
+(`pg_try_advisory_lock`) on a dedicated connection opened outside the
+connection pool (`psycopg.connect(config.APP_DATABASE_URL)` — not a pooled
+connection, since a pool routinely reuses a physical connection for
+unrelated work, which would silently smuggle the lock's session-scoped state
+into whatever later request reused that connection). Follows this
+codebase's existing advisory-lock convention (`db.py`'s
+`pg_advisory_xact_lock(2026080901)`, guarding the `discogs_price` column
+migration against two Machines booting concurrently) — same numbering
+scheme, a fixed bigint key rather than a name. If the lock is already held
+(another Machine's sync is running), `start_stock_sync()` returns `False`
+without starting a task, exactly like today's in-process guard. The
+dedicated connection is closed when `_sync_stock()` finishes (in a `finally`
+block), which releases the session-scoped lock automatically — no explicit
+`pg_advisory_unlock` needed.
+
+### Existing `config.json` on the current deployment (migration)
+
+Nothing in this change reads the current Machine's live `/data/config.json`
+and writes it into `app_config`. Deploying this branch as-is turns
+`load_config()` into `{}` the moment the new code boots, with concrete
+consequences: `crawl_schedule`/`stock_schedule` going empty means
+`_configure_schedules` stops both cron jobs with no error; `ebay_app_id`/
+`ebay_cert_id` going empty means eBay searches return `[]`, which this
+codebase's crawl invariant treats as "confirmed no listing" —
+**`_drain_one_batch` would then clear every existing eBay listing price**,
+not just stop finding new ones. See "Manual one-time Fly setup" below for
+the required migration step — it must happen before or immediately after
+this deploy, not as a follow-up.
+
 ### `fly.toml`
 
 `min_machines_running` moves from `1` to `2` — with a single value, Fly's
@@ -127,19 +202,33 @@ bundled `crawlers/__init__.py` marker still need it, one volume per Machine.
 
 ### Manual one-time Fly setup (not committed, not run by CI)
 
-Machine count and volume provisioning are imperative `flyctl` actions, not
-declared in `fly.toml`, and `flyctl deploy` won't create a Machine that
-doesn't already exist. Whoever operates this deployment runs, once:
+Machine count, volume provisioning, and the `config.json` migration are all
+imperative, one-time actions — not declared in `fly.toml`, and
+`flyctl deploy` won't create a Machine that doesn't already exist or migrate
+data on its own. Whoever operates this deployment runs, once, **in this
+order**:
 
-```bash
-fly volumes create data --region ord --size 1 -a tracktempest-api
-fly scale count 2 -a tracktempest-api
-```
+1. Before or immediately after deploying this branch, capture the current
+   Machine's live settings and write them into `app_config` — either
+   re-enter each value through the admin Settings UI once the new code is
+   live (simplest, and exercises the real write path), or read
+   `/data/config.json` off the running Machine (`fly ssh console -a
+   tracktempest-api`, then `cat /data/config.json`) and insert it directly:
+   `psql "$DATABASE_URL" -c "INSERT INTO app_config (id, data) VALUES (TRUE,
+   '<paste the json>'::jsonb) ON CONFLICT (id) DO UPDATE SET data =
+   EXCLUDED.data"`. Skipping this step silently stops both cron schedules
+   and, if eBay credentials are among the lost values, clears every eBay
+   listing price on the next crawl sweep (see "Existing `config.json`" above).
+2. Provision the second Machine and its volume:
+   ```bash
+   fly volumes create data --region ord --size 1 -a tracktempest-api
+   fly scale count 2 -a tracktempest-api
+   ```
 
 After that, every subsequent `flyctl deploy` (including the existing
 `fly-deploy.yml` CI job, unchanged) rolls out to both Machines automatically.
 
 ## Open questions
 
-- None. The remaining forked state (`app.log`, `screenshots/`) is
-  intentionally left as-is per Non-goals above.
+- None. The remaining forked state (`app.log`, `screenshots/`) and the
+  cross-Machine SSE gap are intentionally left as-is per Non-goals above.
