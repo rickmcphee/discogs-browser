@@ -34,6 +34,7 @@ export default function App() {
   const [collectionStatus, setCollectionStatus] = useState<CollectionStatus | null>(null)
   const [crawlers, setCrawlers] = useState<Crawler[]>([])
   const [hiddenCrawlerIds, setHiddenCrawlerIds] = useState<number[]>([])
+  const [hiddenCrawlerIdsLoaded, setHiddenCrawlerIdsLoaded] = useState(false)
   const hiddenCrawlerIdsSaveChain = useRef<Promise<void>>(Promise.resolve())
   const latestHiddenCrawlerIdsSaveSeq = useRef(0)
   const [avatarVersion, setAvatarVersion] = useState(0)
@@ -86,7 +87,12 @@ export default function App() {
           if (!cancelled) {
             setServerReady(true)
             getCrawlers().then(setCrawlers).catch(() => {})
-            getUserHiddenCrawlers().then(setHiddenCrawlerIds).catch(() => {})
+            getUserHiddenCrawlers().then((ids) => {
+              setHiddenCrawlerIds(ids)
+              setHiddenCrawlerIdsLoaded(true)
+            }).catch(() => {
+              setSyncStatus('Could not load your source filter — reload the page to try again.')
+            })
             getUserSettings().then((s) => {
               setHasAnthropicKey(Boolean(s.anthropic_api_key))
             }).catch(() => {})
@@ -567,10 +573,10 @@ export default function App() {
           />
         </div>
         <div className={view === 'store' ? 'h-full' : 'hidden'}>
-          <StockBrowser recommendedAvailable={recommendedAvailable} hiddenCrawlerIds={hiddenCrawlerIds} crawlers={crawlers} onHiddenCrawlerIdsChange={updateHiddenCrawlerIds} syncGeneration={stockSyncGeneration} isAdmin={showAdminNav} />
+          <StockBrowser recommendedAvailable={recommendedAvailable} hiddenCrawlerIds={hiddenCrawlerIds} crawlers={crawlers} onHiddenCrawlerIdsChange={updateHiddenCrawlerIds} hiddenCrawlerIdsLoaded={hiddenCrawlerIdsLoaded} syncGeneration={stockSyncGeneration} isAdmin={showAdminNav} />
         </div>
         <div className={view === 'track' ? 'h-full' : 'hidden'}>
-          <StockBrowser scope="track" hiddenCrawlerIds={hiddenCrawlerIds} crawlers={crawlers} onHiddenCrawlerIdsChange={updateHiddenCrawlerIds} syncGeneration={stockSyncGeneration} isAdmin={showAdminNav} />
+          <StockBrowser scope="track" hiddenCrawlerIds={hiddenCrawlerIds} crawlers={crawlers} onHiddenCrawlerIdsChange={updateHiddenCrawlerIds} hiddenCrawlerIdsLoaded={hiddenCrawlerIdsLoaded} syncGeneration={stockSyncGeneration} isAdmin={showAdminNav} />
         </div>
         <div className={view === 'settings' ? 'h-full overflow-y-auto' : 'hidden'}>
           <Settings

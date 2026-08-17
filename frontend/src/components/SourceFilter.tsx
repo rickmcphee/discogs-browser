@@ -6,6 +6,7 @@ interface Props {
   crawlers: Crawler[]
   hiddenCrawlerIds: number[]
   onChange: (hiddenCrawlerIds: number[]) => void
+  disabled?: boolean
 }
 
 const GENRES: { key: CrawlerGenre; label: string }[] = [
@@ -37,7 +38,7 @@ function FilterCheckbox({ label, checked, indeterminate, onToggle }: {
   )
 }
 
-function SourceFilter({ crawlers, hiddenCrawlerIds, onChange }: Props) {
+function SourceFilter({ crawlers, hiddenCrawlerIds, onChange, disabled = false }: Props) {
   const [open, setOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
 
@@ -90,11 +91,14 @@ function SourceFilter({ crawlers, hiddenCrawlerIds, onChange }: Props) {
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className={`px-3 py-1.5 text-sm font-medium ${navButtonClass(open || hiddenCrawlerIds.length > 0)}`}
+        disabled={disabled}
+        aria-expanded={open}
+        title={disabled ? 'Loading your source filter…' : undefined}
+        className={`px-3 py-1.5 text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed ${navButtonClass(open || hiddenCrawlerIds.length > 0)}`}
       >
         Source
       </button>
-      {open && (
+      {open && !disabled && (
         <div className="absolute right-0 mt-2 w-72 max-h-[28rem] overflow-y-auto rounded-xl border border-gray-700 bg-gray-900 shadow-xl z-50 p-3 text-sm">
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs uppercase tracking-wider text-gray-500">By genre</span>

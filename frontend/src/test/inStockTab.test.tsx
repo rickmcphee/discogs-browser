@@ -27,12 +27,13 @@ const getJudgmentStatus = vi.fn()
 const getCrawlers = vi.fn()
 const getStock = vi.fn()
 const postUserHiddenCrawlers = vi.fn().mockResolvedValue(undefined)
+const getUserHiddenCrawlers = vi.fn()
 
 vi.mock('../api/client', () => ({
   checkHealth: vi.fn().mockResolvedValue(true),
   getAuthStatus: vi.fn().mockResolvedValue({ state: 'authenticated', user: { discogs_username: 'test', is_admin: true } }),
   setUnauthorizedHandler: vi.fn(),
-  getUserHiddenCrawlers: vi.fn().mockResolvedValue([]),
+  getUserHiddenCrawlers: (...args: unknown[]) => getUserHiddenCrawlers(...args),
   postUserHiddenCrawlers: (...args: unknown[]) => postUserHiddenCrawlers(...args),
   refreshCollection: vi.fn().mockResolvedValue({ synced: 0, username: 'test' }),
   getCollectionStatus: vi.fn().mockResolvedValue({ total: 0, last_synced: null }),
@@ -92,6 +93,7 @@ beforeEach(() => {
   getCrawlers.mockResolvedValue([])
   getStock.mockResolvedValue({ total: 0, page: 1, per_page: 250, items: [] })
   postUserHiddenCrawlers.mockResolvedValue(undefined)
+  getUserHiddenCrawlers.mockResolvedValue([])
 })
 
 describe('In Stock tab', () => {
@@ -475,5 +477,32 @@ describe('Source filter save chaining', () => {
     fireEvent.click(checkbox)
 
     await waitFor(() => expect(screen.getByText('Could not save your source filter — try again.')).toBeInTheDocument())
+  })
+})
+
+describe('Source filter initial load gating', () => {
+  it('keeps the Source button disabled until the initial hidden set loads, then enables it', async () => {
+    let resolveLoad!: (ids: number[]) => void
+    getUserHiddenCrawlers.mockImplementationOnce(() => new Promise<number[]>((resolve) => { resolveLoad = resolve }))
+    render(<App />)
+    await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Store'))
+
+    const sourceButtons = await screen.findAllByRole('button', { name: 'Source' })
+    expect(sourceButtons[0]).toBeDisabled()
+
+    resolveLoad([])
+    await waitFor(() => expect(sourceButtons[0]).not.toBeDisabled())
+  })
+
+  it('leaves the Source button disabled and surfaces an error when the initial load fails', async () => {
+    getUserHiddenCrawlers.mockRejectedValueOnce(new Error('boom'))
+    render(<App />)
+    await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Store'))
+
+    await waitFor(() => expect(screen.getByText('Could not load your source filter — reload the page to try again.')).toBeInTheDocument())
+    const sourceButtons = await screen.findAllByRole('button', { name: 'Source' })
+    expect(sourceButtons[0]).toBeDisabled()
   })
 })

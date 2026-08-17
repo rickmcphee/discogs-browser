@@ -10,13 +10,14 @@ const CRAWLERS: Crawler[] = [
   { id: 4, site_name: 'Century Media', module_path: '', crawler_type: 'catalog', enabled: true, last_run: null, base_url: null, genre: 'metal' },
 ]
 
-function renderFilter(overrides: Partial<{ crawlers: Crawler[]; hiddenCrawlerIds: number[]; onChange: (ids: number[]) => void }> = {}) {
+function renderFilter(overrides: Partial<{ crawlers: Crawler[]; hiddenCrawlerIds: number[]; onChange: (ids: number[]) => void; disabled: boolean }> = {}) {
   const onChange = overrides.onChange ?? vi.fn()
   render(
     <SourceFilter
       crawlers={overrides.crawlers ?? CRAWLERS}
       hiddenCrawlerIds={overrides.hiddenCrawlerIds ?? []}
       onChange={onChange}
+      disabled={overrides.disabled}
     />
   )
   return onChange
@@ -30,6 +31,22 @@ describe('SourceFilter', () => {
   it('renders a Source button and no dropdown until clicked', () => {
     renderFilter()
     expect(screen.getByRole('button', { name: 'Source' })).toBeInTheDocument()
+    expect(screen.queryByText('By genre')).not.toBeInTheDocument()
+  })
+
+  it('exposes aria-expanded reflecting the dropdown open state', () => {
+    renderFilter()
+    const button = screen.getByRole('button', { name: 'Source' })
+    expect(button).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(button)
+    expect(button).toHaveAttribute('aria-expanded', 'true')
+  })
+
+  it('disables the Source button and refuses to open when disabled', () => {
+    renderFilter({ disabled: true })
+    const button = screen.getByRole('button', { name: 'Source' })
+    expect(button).toBeDisabled()
+    fireEvent.click(button)
     expect(screen.queryByText('By genre')).not.toBeInTheDocument()
   })
 

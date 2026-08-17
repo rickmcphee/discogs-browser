@@ -558,4 +558,9 @@ describe('StockBrowser Source filter', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: 'Epitaph' }))
     expect(onHiddenCrawlerIdsChange).toHaveBeenCalledWith([5])
   })
+
+  it('disables the Source button while the hidden set has not loaded yet', async () => {
+    render(<StockBrowser crawlers={CRAWLERS} hiddenCrawlerIdsLoaded={false} />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Source' })).toBeDisabled())
+  })
 })

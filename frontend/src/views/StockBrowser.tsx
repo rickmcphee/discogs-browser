@@ -12,6 +12,7 @@ interface Props {
   hiddenCrawlerIds?: number[]
   crawlers?: Crawler[]
   onHiddenCrawlerIdsChange?: (hiddenCrawlerIds: number[]) => void
+  hiddenCrawlerIdsLoaded?: boolean
   syncGeneration?: number
   isAdmin?: boolean
 }
@@ -29,7 +30,7 @@ function trackLibraryScope(value: string): LibraryScope | undefined {
 function StockBrowser({
   scope = 'store', recommendedAvailable = false, hiddenCrawlerIds = NO_HIDDEN_CRAWLER_IDS,
   crawlers = NO_CRAWLERS, onHiddenCrawlerIdsChange = NOOP_HIDDEN_CRAWLER_IDS_CHANGE,
-  syncGeneration, isAdmin = false,
+  hiddenCrawlerIdsLoaded = true, syncGeneration, isAdmin = false,
 }: Props) {
   const [items, setItems] = useState<StockItem[]>([])
   const [total, setTotal] = useState(0)
@@ -225,7 +226,7 @@ function StockBrowser({
           </div>
           <span className="ml-3 text-xs text-gray-500">{total} items</span>
           <div className="ml-auto flex items-center gap-2">
-            <SourceFilter crawlers={crawlers} hiddenCrawlerIds={hiddenCrawlerIds} onChange={onHiddenCrawlerIdsChange} />
+            <SourceFilter crawlers={crawlers} hiddenCrawlerIds={hiddenCrawlerIds} onChange={onHiddenCrawlerIdsChange} disabled={!hiddenCrawlerIdsLoaded} />
             <select
               value={filter}
               onChange={(e) => changeFilter(e.target.value)}
