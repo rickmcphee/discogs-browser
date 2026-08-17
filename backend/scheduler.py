@@ -1,9 +1,21 @@
+import threading
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from logging_config import get_logger
 
 log = get_logger("scheduler")
 _scheduler = AsyncIOScheduler()
+# configure()/configure_stock() run from two different execution contexts on
+# the same process now: main.py's periodic resync task (the asyncio event
+# loop) and routers/settings.py's POST /settings handler (a sync def, so
+# FastAPI runs it in a worker thread). Their get_job/remove_job/add_job
+# sequence isn't atomic, so an unlucky interleaving between those two
+# contexts can raise JobLookupError/ConflictingIdError or leave the wrong
+# job registered. A plain threading.Lock (not asyncio.Lock, which only
+# serializes within one event loop) covers both contexts; the critical
+# section is a few in-memory dict operations, never worth blocking on.
+_lock = threading.Lock()
 
 
 def start():
@@ -30,8 +42,9 @@ def shutdown():
 # costing a single request. A parse failure now leaves the running job alone.
 def configure(cron_expression: str, mode: str = "missing"):
     if not cron_expression:
-        if _scheduler.get_job("crawl"):
-            _scheduler.remove_job("crawl")
+        with _lock:
+            if _scheduler.get_job("crawl"):
+                _scheduler.remove_job("crawl")
         log.info("Crawl schedule cleared")
         return
 
@@ -46,16 +59,18 @@ def configure(cron_expression: str, mode: str = "missing"):
         log.info("Scheduled crawl sweep starting (mode=%s)", mode)
         await crawl_manager.sweep_enqueue(mode)
 
-    if _scheduler.get_job("crawl"):
-        _scheduler.remove_job("crawl")
-    _scheduler.add_job(_run, trigger, id="crawl")
+    with _lock:
+        if _scheduler.get_job("crawl"):
+            _scheduler.remove_job("crawl")
+        _scheduler.add_job(_run, trigger, id="crawl")
     log.info("Crawl scheduled: %s (mode=%s)", cron_expression, mode)
 
 
 def configure_stock(cron_expression: str):
     if not cron_expression:
-        if _scheduler.get_job("stock_sync"):
-            _scheduler.remove_job("stock_sync")
+        with _lock:
+            if _scheduler.get_job("stock_sync"):
+                _scheduler.remove_job("stock_sync")
         log.info("Stock sync schedule cleared")
         return
 
@@ -70,7 +85,8 @@ def configure_stock(cron_expression: str):
         log.info("Scheduled stock sync starting")
         await crawl_manager.start_stock_sync()
 
-    if _scheduler.get_job("stock_sync"):
-        _scheduler.remove_job("stock_sync")
-    _scheduler.add_job(_run, trigger, id="stock_sync")
+    with _lock:
+        if _scheduler.get_job("stock_sync"):
+            _scheduler.remove_job("stock_sync")
+        _scheduler.add_job(_run, trigger, id="stock_sync")
     log.info("Stock sync scheduled: %s", cron_expression)

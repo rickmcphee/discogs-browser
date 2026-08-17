@@ -83,10 +83,11 @@ app.add_exception_handler(Exception, unhandled_exception_headers)
 
 def _configure_schedules(cfg: dict) -> None:
     # Called unconditionally, empty string included: scheduler.configure and
-    # configure_stock both remove any existing job before looking at the
-    # expression, so "" clears the job. Guarding on a non-empty value here
-    # meant a schedule cleared on one Machine kept firing forever on every
-    # other Machine, which never handled the clearing request.
+    # configure_stock treat "" as "clear the job" (their remove-then-return
+    # early path; a non-empty expression is parsed *before* touching the
+    # existing job). Guarding on a non-empty value here meant a schedule
+    # cleared on one Machine kept firing forever on every other Machine,
+    # which never handled the clearing request.
     try:
         scheduler.configure(
             cfg.get("crawl_schedule", ""), cfg.get("crawl_schedule_mode", "missing")
