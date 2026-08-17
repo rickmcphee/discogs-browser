@@ -196,7 +196,16 @@ Scheduled crawls trigger `CrawlManager.start(mode)` exactly like a manual crawl.
 
 ## Crawl Configuration
 
-All fields live in `DISCOGS_BROWSER_DATA/config.json`.
+~~All fields live in `DISCOGS_BROWSER_DATA/config.json`.~~
+
+**Amendment (2026-08-17, branch `fly-io-second-machine`):** the fields
+remaining in scope (per the 2026-08-01 amendment below) no longer live in a
+per-machine file at all — `config.load_config()`/`save_config()` now read and
+write a singleton `app_config` Postgres row instead of
+`DISCOGS_BROWSER_DATA/config.json`, so every Fly Machine reads consistent
+settings rather than each holding its own on-disk copy. Same flat-dict
+call-site shape; only the storage target moved. See
+[`2026-08-16-fly-multi-machine-design.md`](../../specifications/shaping/2026-08-16-fly-multi-machine-design.md).
 
 **Amendment (2026-07-31, crawl-queue-refactor Task 21):** this table describes the single-owner app. Under the multi-tenant refactor ([`2026-07-26-multi-tenant-architecture-design.md`](2026-07-26-multi-tenant-architecture-design.md), [`2026-07-27-crawl-queue-refactor-design.md`](2026-07-27-crawl-queue-refactor-design.md)'s "Settings split"), `discogs_token` is deleted (replaced entirely by per-user Discogs OAuth token pairs) and `collection_schedule`/`collection_schedule_mode` are removed (collection sync is manual-trigger-only per user, a non-goal of that plan). `GET`/`POST /settings` is now admin-only and covers only the remaining global fields below.
 

@@ -159,11 +159,11 @@ this needs a real cross-process lock, not just a documented risk.
 
 `start_stock_sync()` takes a session-scoped Postgres advisory lock
 (`pg_try_advisory_lock`) on a dedicated connection opened outside the
-connection pool (`psycopg.connect(config.APP_DATABASE_URL)` — not a pooled
-connection, since a pool routinely reuses a physical connection for
-unrelated work, which would silently smuggle the lock's session-scoped state
-into whatever later request reused that connection). Follows this
-codebase's existing advisory-lock convention (`db.py`'s
+connection pool (`psycopg.connect(config.APP_DATABASE_URL, autocommit=True)`
+— not a pooled connection, since a pool routinely reuses a physical
+connection for unrelated work, which would silently smuggle the lock's
+session-scoped state into whatever later request reused that connection).
+Follows this codebase's existing advisory-lock convention (`db.py`'s
 `pg_advisory_xact_lock(2026080901)`, guarding the `discogs_price` column
 migration against two Machines booting concurrently) — same numbering
 scheme, a fixed bigint key rather than a name. If the lock is already held
@@ -172,6 +172,18 @@ without starting a task, exactly like today's in-process guard. The
 dedicated connection is closed when `_sync_stock()` finishes (in a `finally`
 block), which releases the session-scoped lock automatically — no explicit
 `pg_advisory_unlock` needed.
+
+**Amendment (2026-08-17, commit `9cd886c`):** two corrections to the above,
+found in re-review. (1) The connection must be opened with
+`autocommit=True`, not left at psycopg's default — a default connection
+sits idle-in-transaction for the sync's full duration, and a managed
+Postgres's `idle_in_transaction_session_timeout` can kill that backend
+mid-sync, silently releasing the advisory lock and readmitting the exact
+concurrent `replace_stock_items()` this lock exists to prevent. (2) `connect()`
+and the `pg_try_advisory_lock` query are both blocking calls; `start_stock_sync()`
+runs them via `run_in_threadpool`, matching the `_sync_collection_blocking`
+pattern already used elsewhere in `crawl_manager.py`, rather than calling them
+inline on the event loop as this section originally described.
 
 ### Existing `config.json` on the current deployment (migration)
 
