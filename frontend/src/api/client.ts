@@ -130,6 +130,22 @@ export async function saveUserSettings(settings: UserSettings): Promise<void> {
   if (!r.ok) throw new Error(await r.text())
 }
 
+export async function getUserHiddenCrawlers(): Promise<number[]> {
+  const r = await apiFetch('/user-hidden-crawlers')
+  if (!r.ok) throw new Error(await r.text())
+  const data = await r.json()
+  return data.hidden_crawler_ids
+}
+
+export async function postUserHiddenCrawlers(hiddenCrawlerIds: number[]): Promise<void> {
+  const r = await apiFetch('/user-hidden-crawlers', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ hidden_crawler_ids: hiddenCrawlerIds }),
+  })
+  if (!r.ok) throw new Error(await r.text())
+}
+
 export async function setCrawlerEnabled(id: number, enabled: boolean): Promise<{ ok: boolean; discarded: number }> {
   const r = await apiFetch(`/crawlers/${id}`, {
     method: 'PATCH',

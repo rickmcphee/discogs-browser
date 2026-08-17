@@ -25,14 +25,14 @@ vi.mock('../api/client', () => ({
 }))
 
 const CRAWLERS: Crawler[] = [
-  { id: 1, site_name: 'Amazon', module_path: '', crawler_type: 'release', enabled: true, last_run: null, base_url: null, genre_summary: null },
-  { id: 2, site_name: 'Disabled Site', module_path: '', crawler_type: 'release', enabled: false, last_run: null, base_url: null, genre_summary: null },
-  { id: 3, site_name: 'Epitaph', module_path: '', crawler_type: 'catalog', enabled: true, last_run: null, base_url: 'https://www.epitaph.com', genre_summary: 'Punk rock label.' },
+  { id: 1, site_name: 'Amazon', module_path: '', crawler_type: 'release', enabled: true, last_run: null, base_url: null, genre_summary: null, genre: 'marketplace' },
+  { id: 2, site_name: 'Disabled Site', module_path: '', crawler_type: 'release', enabled: false, last_run: null, base_url: null, genre_summary: null, genre: 'marketplace' },
+  { id: 3, site_name: 'Epitaph', module_path: '', crawler_type: 'catalog', enabled: true, last_run: null, base_url: 'https://www.epitaph.com', genre_summary: 'Punk rock label.', genre: 'punk' },
 ]
 
 const CATALOG_CRAWLERS_WITH_DISABLED: Crawler[] = [
   ...CRAWLERS,
-  { id: 4, site_name: 'Disabled Catalog', module_path: '', crawler_type: 'catalog', enabled: false, last_run: null, base_url: null, genre_summary: null },
+  { id: 4, site_name: 'Disabled Catalog', module_path: '', crawler_type: 'catalog', enabled: false, last_run: null, base_url: null, genre_summary: null, genre: 'marketplace' },
 ]
 
 beforeEach(() => {
@@ -233,7 +233,7 @@ describe('Settings', () => {
   it('buckets a catalog_browser crawler into the Stores table, not the Marketplaces table', () => {
     const crawlers: Crawler[] = [
       ...CRAWLERS,
-      { id: 4, site_name: 'Angry Young and Poor', module_path: '', crawler_type: 'catalog_browser', enabled: true, last_run: null, base_url: null, genre_summary: null },
+      { id: 4, site_name: 'Angry Young and Poor', module_path: '', crawler_type: 'catalog_browser', enabled: true, last_run: null, base_url: null, genre_summary: null, genre: 'punk' },
     ]
     renderSettings({ crawlers, isAdmin: false })
     const tables = screen.getAllByRole('table')

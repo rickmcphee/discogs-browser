@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { postCrawlStart, postStockSyncStart, getUserSettings, saveUserSettings, logout, getStock, getStockArtists, getReleases, getArtists, postPlexMatchStart, refreshCollection, openCrawlStream, openLogsStream, importRecommendationsCsv, listInvites, createInvite } from '../api/client'
+import { postCrawlStart, postStockSyncStart, getUserSettings, saveUserSettings, logout, getStock, getStockArtists, getReleases, getArtists, postPlexMatchStart, refreshCollection, openCrawlStream, openLogsStream, importRecommendationsCsv, listInvites, createInvite, getUserHiddenCrawlers, postUserHiddenCrawlers } from '../api/client'
 
 describe('crawl/user-settings client functions', () => {
   let fetchMock: ReturnType<typeof vi.fn>
@@ -49,6 +49,21 @@ describe('crawl/user-settings client functions', () => {
     await saveUserSettings({ anthropic_api_key: 'sk-ant-test', recommendation_item_limit: 300, plex_base_url: '', plex_token: '', plex_match_threshold: 90 })
     expect(fetchMock.mock.calls[0][0]).toContain('/user-settings')
     expect(fetchMock.mock.calls[0][1].method).toBe('POST')
+  })
+
+  it('getUserHiddenCrawlers fetches /user-hidden-crawlers', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ hidden_crawler_ids: [3, 7] }) })
+    const result = await getUserHiddenCrawlers()
+    expect(fetchMock.mock.calls[0][0]).toContain('/user-hidden-crawlers')
+    expect(result).toEqual([3, 7])
+  })
+
+  it('postUserHiddenCrawlers posts the full id list to /user-hidden-crawlers', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ ok: true }) })
+    await postUserHiddenCrawlers([3, 7])
+    expect(fetchMock.mock.calls[0][0]).toContain('/user-hidden-crawlers')
+    expect(fetchMock.mock.calls[0][1].method).toBe('POST')
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ hidden_crawler_ids: [3, 7] })
   })
 
   it('logout resolves on a successful response', async () => {
