@@ -1829,11 +1829,13 @@ def get_hidden_crawler_ids(conn, user_id: int) -> list[int]:
 
 def set_hidden_crawler_ids(conn, user_id: int, crawler_ids: list[int]):
     conn.execute("DELETE FROM user_hidden_crawlers WHERE user_id = %s", [user_id])
-    if crawler_ids:
+    unique_ids = list(dict.fromkeys(crawler_ids))
+    if unique_ids:
         with conn.cursor() as cur:
             cur.executemany(
-                "INSERT INTO user_hidden_crawlers (user_id, crawler_id) VALUES (%s, %s)",
-                [(user_id, cid) for cid in crawler_ids],
+                "INSERT INTO user_hidden_crawlers (user_id, crawler_id) "
+                "SELECT %s, %s WHERE EXISTS (SELECT 1 FROM crawlers WHERE id = %s)",
+                [(user_id, cid, cid) for cid in unique_ids],
             )
 
 

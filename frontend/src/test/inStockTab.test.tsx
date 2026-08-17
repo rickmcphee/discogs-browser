@@ -26,13 +26,14 @@ const getUserSettings = vi.fn()
 const getJudgmentStatus = vi.fn()
 const getCrawlers = vi.fn()
 const getStock = vi.fn()
+const postUserHiddenCrawlers = vi.fn().mockResolvedValue(undefined)
 
 vi.mock('../api/client', () => ({
   checkHealth: vi.fn().mockResolvedValue(true),
   getAuthStatus: vi.fn().mockResolvedValue({ state: 'authenticated', user: { discogs_username: 'test', is_admin: true } }),
   setUnauthorizedHandler: vi.fn(),
   getUserHiddenCrawlers: vi.fn().mockResolvedValue([]),
-  postUserHiddenCrawlers: vi.fn().mockResolvedValue(undefined),
+  postUserHiddenCrawlers: (...args: unknown[]) => postUserHiddenCrawlers(...args),
   refreshCollection: vi.fn().mockResolvedValue({ synced: 0, username: 'test' }),
   getCollectionStatus: vi.fn().mockResolvedValue({ total: 0, last_synced: null }),
   getCrawlStatus: vi.fn().mockResolvedValue({ total: 0, missing: 0, oldest_checked: null }),
@@ -90,6 +91,7 @@ beforeEach(() => {
   getJudgmentStatus.mockResolvedValue({ any_judged: false })
   getCrawlers.mockResolvedValue([])
   getStock.mockResolvedValue({ total: 0, page: 1, per_page: 250, items: [] })
+  postUserHiddenCrawlers.mockResolvedValue(undefined)
 })
 
 describe('In Stock tab', () => {
@@ -414,5 +416,64 @@ describe('In Stock tab', () => {
     getLastCrawlSource().emit({ id: 1, type: 'listing_changed', status: 'found', discogs_id: 'r1', crawler_id: 9 })
 
     await waitFor(() => expect(getStock.mock.calls.length).toBeGreaterThan(callsBefore))
+  })
+})
+
+describe('Source filter save chaining', () => {
+  const GENRED_CATALOG_CRAWLER = { id: 9, site_name: 'Epitaph', module_path: '', crawler_type: 'catalog', enabled: true, last_run: null, base_url: null, genre: 'punk' }
+
+  async function openSourceDropdown() {
+    render(<App />)
+    await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Store'))
+    // Both the Store and Track panes render their own StockBrowser/SourceFilter
+    // (only one is visible via a `hidden` class, both stay mounted), so there
+    // are always two "Source" buttons in the DOM. The Store pane's div comes
+    // first in App.tsx's JSX, so index 0 is always the Store one.
+    const sourceButtons = await screen.findAllByRole('button', { name: 'Source' })
+    fireEvent.click(sourceButtons[0])
+    return screen.findByRole('checkbox', { name: 'Epitaph' })
+  }
+
+  it('does not fire the next save until the previous one settles, and resolves in issue order', async () => {
+    getCrawlers.mockResolvedValue([GENRED_CATALOG_CRAWLER])
+    let resolveFirst!: () => void
+    postUserHiddenCrawlers.mockImplementationOnce(() => new Promise<void>((resolve) => { resolveFirst = resolve }))
+    const checkbox = await openSourceDropdown()
+
+    fireEvent.click(checkbox) // hides Epitaph -> [9]
+    await waitFor(() => expect(postUserHiddenCrawlers).toHaveBeenCalledTimes(1))
+
+    fireEvent.click(checkbox) // un-hides Epitaph -> []
+    // second save must wait for the first (still-pending) save to settle
+    expect(postUserHiddenCrawlers).toHaveBeenCalledTimes(1)
+
+    resolveFirst()
+    await waitFor(() => expect(postUserHiddenCrawlers).toHaveBeenCalledTimes(2))
+    expect(postUserHiddenCrawlers).toHaveBeenNthCalledWith(1, [9])
+    expect(postUserHiddenCrawlers).toHaveBeenNthCalledWith(2, [])
+  })
+
+  it('surfaces a failed save in the status bar without clobbering a subsequent successful save', async () => {
+    getCrawlers.mockResolvedValue([GENRED_CATALOG_CRAWLER])
+    postUserHiddenCrawlers.mockRejectedValueOnce(new Error('boom'))
+    const checkbox = await openSourceDropdown()
+
+    fireEvent.click(checkbox) // save 1: rejects
+    fireEvent.click(checkbox) // save 2: resolves (chained after save 1)
+
+    await waitFor(() => expect(postUserHiddenCrawlers).toHaveBeenCalledTimes(2))
+    // save 2 succeeded and is the latest issued save, so its (non-)error must win
+    expect(screen.queryByText('Could not save your source filter — try again.')).not.toBeInTheDocument()
+  })
+
+  it('surfaces the failure when the most recently issued save is the one that fails', async () => {
+    getCrawlers.mockResolvedValue([GENRED_CATALOG_CRAWLER])
+    postUserHiddenCrawlers.mockRejectedValue(new Error('boom'))
+    const checkbox = await openSourceDropdown()
+
+    fireEvent.click(checkbox)
+
+    await waitFor(() => expect(screen.getByText('Could not save your source filter — try again.')).toBeInTheDocument())
   })
 })

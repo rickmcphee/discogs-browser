@@ -20,6 +20,8 @@ _2026-07-18_
 
 **Amendment (2026-08-09, branch `recommendations-import`):** the 2026-08-04 amendment's description of `Export` as "the last row in that section's table" no longer holds — a new "Import" row was inserted between `Export` and `Clear`, so the order is now `Refresh`, `Export`, `Import`, `Clear`, with `Import` the last row. `Import` is ungated, unlike its three siblings — having no judgments is the main reason to import. See [`2026-08-09-recommendations-import-design.md`](../../specifications/shaping/2026-08-09-recommendations-import-design.md).
 
+**Amendment (2026-08-17, branch `claude/store-crawler-filter-design-d16b80`):** the 2026-08-02 (`user-settings-store-filter`) amendment's claim that "Settings visible to every authenticated user" no longer holds. Settings is admin-only again — the personal display filter it referred to moved out of Settings into a per-tab "Source" button, and the Settings nav item was removed entirely for non-admins. See [`2026-08-16-store-track-source-filter-design.md`](2026-08-16-store-track-source-filter-design.md).
+
 ---
 
 ## Overview

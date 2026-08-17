@@ -186,3 +186,31 @@ def test_set_hidden_crawler_ids_with_mismatched_user_id_is_rejected(two_users_on
                 "INSERT INTO user_hidden_crawlers (user_id, crawler_id) VALUES (%s, %s)",
                 [bob_id, crawler_id],
             )
+
+
+def test_set_hidden_crawler_ids_dedupes_duplicate_ids(two_users_one_shared_crawler):
+    """A stale client double-posting (or a genuinely duplicated id in the
+    payload) must not hit the table's (user_id, crawler_id) primary key
+    twice in one executemany -- that raises UniqueViolation today and 500s
+    the endpoint."""
+    alice_id, _bob_id, crawler_id = two_users_one_shared_crawler
+    with db.user_scope(alice_id) as conn:
+        db.set_hidden_crawler_ids(conn, alice_id, [crawler_id, crawler_id])
+        conn.commit()
+
+    with db.user_scope(alice_id) as conn:
+        assert db.get_hidden_crawler_ids(conn, alice_id) == [crawler_id]
+
+
+def test_set_hidden_crawler_ids_drops_nonexistent_crawler_id(two_users_one_shared_crawler):
+    """A crawler id that no longer references a real row (renamed/deleted
+    crawler, stale tab) must be silently dropped rather than raising
+    ForeignKeyViolation and 500ing the endpoint."""
+    alice_id, _bob_id, crawler_id = two_users_one_shared_crawler
+    nonexistent_id = crawler_id + 1_000_000
+    with db.user_scope(alice_id) as conn:
+        db.set_hidden_crawler_ids(conn, alice_id, [crawler_id, nonexistent_id])
+        conn.commit()
+
+    with db.user_scope(alice_id) as conn:
+        assert db.get_hidden_crawler_ids(conn, alice_id) == [crawler_id]

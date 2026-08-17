@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import RecordBrowser from './views/RecordBrowser'
 import StockBrowser from './views/StockBrowser'
 import Settings from './views/Settings'
@@ -34,6 +34,8 @@ export default function App() {
   const [collectionStatus, setCollectionStatus] = useState<CollectionStatus | null>(null)
   const [crawlers, setCrawlers] = useState<Crawler[]>([])
   const [hiddenCrawlerIds, setHiddenCrawlerIds] = useState<number[]>([])
+  const hiddenCrawlerIdsSaveChain = useRef<Promise<void>>(Promise.resolve())
+  const latestHiddenCrawlerIdsSaveSeq = useRef(0)
   const [avatarVersion, setAvatarVersion] = useState(0)
   const [hasAnthropicKey, setHasAnthropicKey] = useState(false)
   const [hasJudgedItems, setHasJudgedItems] = useState(false)
@@ -62,8 +64,16 @@ export default function App() {
 
   const updateHiddenCrawlerIds = useCallback((ids: number[]) => {
     setHiddenCrawlerIds(ids)
-    postUserHiddenCrawlers(ids).catch(() => {})
-  }, [])
+    const seq = ++latestHiddenCrawlerIdsSaveSeq.current
+    hiddenCrawlerIdsSaveChain.current = hiddenCrawlerIdsSaveChain.current.then(async () => {
+      try {
+        await postUserHiddenCrawlers(ids)
+      } catch {
+        if (seq !== latestHiddenCrawlerIdsSaveSeq.current) return
+        setSyncStatus('Could not save your source filter — try again.')
+      }
+    })
+  }, [setSyncStatus])
 
   // Poll /api/health until the backend is up, then load initial data.
   useEffect(() => {
