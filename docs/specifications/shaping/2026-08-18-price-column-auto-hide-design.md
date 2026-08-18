@@ -87,6 +87,12 @@ gated off.
 - Persisting field-presence state anywhere. If a user configures the field on Discogs
   but syncs before entering any values, the column stays hidden until at least one
   value exists — accepted, since a column of nothing but `—` isn't useful either way.
+- Retrying a failed `getPriceStatus()` fetch. It's fetched via `.catch(() => {})`,
+  matching the pre-existing `getJudgmentStatus()` pattern it was modeled on — a
+  transient failure leaves `hasPriceData` at its `false` initial value for that
+  session, hiding the column from a user who does have price data. Accepted as a
+  trade-off symmetric with the alternative (defaulting `true` would show an all-dash
+  column to users who don't have price data on every transient failure instead).
 - Any per-row indication of *why* the column is hidden (e.g. a Settings hint pointing
   the user at Discogs' custom-field setup). Not requested; can follow later if wanted.
 
@@ -103,7 +109,9 @@ gated off.
 
 ## Documentation impact
 
-None of the existing specs describe the Price column as unconditionally rendered as a
-design decision (the collection-price-paid design doc's frontend section shows the
-markup as it existed at the time, not as a stated invariant), so no spec text
-contradicts this change. No update needed beyond this new doc.
+Three pre-existing specs described the Price column's presence as unconditional and
+needed amendment (each got a dated "Amendment (2026-08-18, ...)" note, not a rewrite):
+`2026-08-10-collection-wishlist-filter-design.md` (twice — the "stays present under
+every filter value" decision, and the flat `colCount` claim), `2026-08-09-collection-price-paid-design.md`
+("no conditional rendering"), and `2026-08-16-store-saved-items-design.md` (the flat
+`scope === 'track' ? 7 : 7` colCount claim).
