@@ -136,11 +136,19 @@ follow-ons from items 9 and 10.
     returns `None` without raising, and that is a real answer, not a failure.
     Covered by `tests/crawlers/test_amazon_search_errors.py`.
 12. **The cooldown notice is logged at INFO, not WARNING.** `routers/logs.py`'s
-    `_line_visible` filters by exact level membership rather than
-    level-and-above, so at WARNING the one line explaining a 30-minute crawl
-    pause was invisible to anyone watching the INFO stream that carries the
-    rest of the crawl narrative. Covered by
+    ~~`_line_visible` filters by exact level membership rather than
+    level-and-above~~ (see 2026-08-17 amendment below), so at WARNING the one
+    line explaining a 30-minute crawl pause was invisible to anyone watching
+    the INFO stream that carries the rest of the crawl narrative. Covered by
     `test_tripping_the_cooldown_is_logged_at_info`.
+
+    **Amendment (2026-08-17, branch `flyio-log-files-machines`):**
+    `_line_visible` no longer exists — `routers/logs.py` reads a Postgres
+    `app_logs` table with a real `level` column per row, and level filtering
+    is now a SQL `WHERE level = ANY(...)` clause, not a regex parsed off a
+    tailed text line. The "INFO not WARNING" reasoning above is unaffected:
+    the log viewer still filters by exact level set, not level-and-above. See
+    [`2026-08-17-unified-log-store-design.md`](../../specifications/shaping/2026-08-17-unified-log-store-design.md).
 13. **The breaker now covers catalog crawlers too, not just the worker pool.**
     `_sync_stock` had no consecutive-failure breaker at all — only the
     2-consecutive-429-sites run abort — so a site that hard-blocks us was
