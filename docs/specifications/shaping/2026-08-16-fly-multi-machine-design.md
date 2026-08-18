@@ -169,11 +169,13 @@ that hasn't started running yet — once the worker thread has picked it up,
 cancelling the awaiting task abandons the result without stopping the
 write. `stop_worker_pool()`'s `task.cancel()` can therefore let one of
 these commits land after the worker has already exited, with nothing left
-to act on the result. Unlike a hung or crashed worker (an accepted gap
-documented on `claim_crawl_queue_batch` — a crash rolls back the open
-transaction and self-heals), a commit that lands after cancellation is
-durable and orphaned: the row reads `'in_progress'` forever with no reclaim
-path.
+to act on the result: the row reads `'in_progress'` forever with no reclaim
+path, the same accepted gap `claim_crawl_queue_batch`'s docstring documents
+for a Machine crash or a genuinely hung worker (that docstring previously
+claimed a crash "rolls back the open transaction and self-heals" — wrong
+for this codebase, since the claim's own `UPDATE` commits immediately as a
+short, separate transaction from whatever processes the row afterward;
+fixed alongside this amendment, caught in a later review round).
 
 First pass fixed this with `_to_thread_uncancelable`, a wrapper that
 shields the underlying thread from cancellation and then awaits it anyway

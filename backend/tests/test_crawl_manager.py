@@ -2278,14 +2278,17 @@ async def test_drain_one_batch_reverts_a_cancelled_claim_instead_of_orphaning_it
 
     manager = CrawlManager()
     real_claim = db.claim_crawl_queue_batch
+    started = threading.Event()
 
     def slow_claim(conn, worker_id, limit):
+        started.set()
         time.sleep(0.05)
         return real_claim(conn, worker_id, limit)
 
     with patch("db.claim_crawl_queue_batch", side_effect=slow_claim):
         task = asyncio.ensure_future(manager._drain_one_batch("worker-test", {}, pages={}))
-        await asyncio.sleep(0.01)  # let the thread start committing the claim
+        while not started.is_set():  # deterministic: wait for the claim to actually start
+            await asyncio.sleep(0.005)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
