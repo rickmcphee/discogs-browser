@@ -6,6 +6,7 @@ import Account from './views/Account'
 import LogViewer from './views/LogViewer'
 import LoginScreen from './views/LoginScreen'
 import InviteCodeScreen from './views/InviteCodeScreen'
+import BackendDownScreen from './views/BackendDownScreen'
 import Avatar from './components/Avatar'
 import { navButtonClass, primaryButtonClass, secondaryButtonClass, dismissButtonClass } from './styles/buttons'
 import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, clearJudgments, exportRecommendationsCsv, importRecommendationsCsv, getCrawlers, getUserSettings, getUserHiddenCrawlers, postUserHiddenCrawlers, getJudgmentStatus, checkHealth, getAuthStatus, setUnauthorizedHandler, hasAvatar } from './api/client'
@@ -42,6 +43,8 @@ export default function App() {
   const [hasJudgedItems, setHasJudgedItems] = useState(false)
   const [judgmentRunning, setJudgmentRunning] = useState(false)
   const [serverReady, setServerReady] = useState(false)
+  const [backendUp, setBackendUp] = useState<boolean | null>(null)
+  const [authRevalidating, setAuthRevalidating] = useState(false)
   const [syncMessage, setSyncMessage] = useState<string | null>(null)
   const [syncMessageId, setSyncMessageId] = useState<number | null>(null)
   const [dismissedSyncId, setDismissedSyncId] = useState(() => Number(localStorage.getItem(DISMISSED_SYNC_KEY) ?? 0))
@@ -76,39 +79,71 @@ export default function App() {
     })
   }, [setSyncStatus])
 
-  // Poll /api/health until the backend is up, then load initial data.
+  // Continuous, unconditional health poll -- drives `backendUp`, which gates
+  // BackendDownScreen for both "backend not up yet" and "backend went down
+  // mid-session" the same way, since the frontend can't tell those apart.
+  // Asymmetric debounce: 2 consecutive failures before flipping down (avoids
+  // flicker from one dropped request), 1 success flips back up immediately.
   useEffect(() => {
-    if (authState?.state !== 'authenticated') return
     let cancelled = false
+    let consecutiveFailures = 0
+    let wasUp = false
     async function poll() {
       while (!cancelled) {
         const ok = await checkHealth()
-        if (ok) {
-          if (!cancelled) {
-            setServerReady(true)
-            getCrawlers().then(setCrawlers).catch(() => {})
-            getUserHiddenCrawlers().then((ids) => {
-              setHiddenCrawlerIds(ids)
-              setHiddenCrawlerIdsLoaded(true)
-            }).catch(() => {
-              setSyncStatus('Could not load your source filter — reload the page to try again.')
-            })
-            getUserSettings().then((s) => {
-              setHasAnthropicKey(Boolean(s.anthropic_api_key))
-            }).catch(() => {})
-            getJudgmentStatus().then((s) => setHasJudgedItems(s.any_judged)).catch(() => {})
-            hasAvatar().then((exists) => setAvatarVersion(exists ? Date.now() : 0)).catch(() => {})
+        if (!cancelled) {
+          if (ok) {
+            consecutiveFailures = 0
+            if (!wasUp) {
+              // Set together in the same commit as setBackendUp(true), and
+              // only on the down/null -> up transition (not every routine
+              // tick while already up) -- setting it separately, from the
+              // auth-status effect that only fires afterward (once it
+              // observes backendUp change), would leave a render in between
+              // where backendUp is already true but authRevalidating is
+              // still stale-false, briefly clearing the overlay/inert state
+              // before revalidation has even started.
+              setAuthRevalidating(true)
+            }
+            wasUp = true
+            setBackendUp(true)
+          } else {
+            consecutiveFailures += 1
+            if (consecutiveFailures >= 2) {
+              wasUp = false
+              setBackendUp(false)
+            }
           }
-          return
         }
         await new Promise(r => setTimeout(r, 2000))
       }
     }
     poll()
     return () => { cancelled = true }
-  }, [authState])
+  }, [])
 
-  // Persistent SSE connection — reconnects on error. Waits for server to be ready.
+  // One-time bootstrap once both auth and the backend are confirmed ready.
+  useEffect(() => {
+    if (authState?.state !== 'authenticated') return
+    if (!backendUp || serverReady) return
+    setServerReady(true)
+    getCrawlers().then(setCrawlers).catch(() => {})
+    getUserHiddenCrawlers().then((ids) => {
+      setHiddenCrawlerIds(ids)
+      setHiddenCrawlerIdsLoaded(true)
+    }).catch(() => {
+      setSyncStatus('Could not load your source filter — reload the page to try again.')
+    })
+    getUserSettings().then((s) => {
+      setHasAnthropicKey(Boolean(s.anthropic_api_key))
+    }).catch(() => {})
+    getJudgmentStatus().then((s) => setHasJudgedItems(s.any_judged)).catch(() => {})
+    hasAvatar().then((exists) => setAvatarVersion(exists ? Date.now() : 0)).catch(() => {})
+  }, [authState, backendUp, serverReady, setSyncStatus])
+
+  // Persistent SSE connection — reconnects on error. Gated on authState only
+  // (not backendUp) -- it reconnects through any backend outage on its own
+  // 3s backoff, independent of the health-poll state machine.
   // Handles both user-triggered and scheduled crawls.
   useEffect(() => {
     if (authState?.state !== 'authenticated') return
@@ -274,8 +309,29 @@ export default function App() {
 
   useEffect(() => {
     setUnauthorizedHandler(() => setAuthState({ state: 'unauthenticated' }))
-    getAuthStatus().then(setAuthState).catch(() => setAuthState({ state: 'unauthenticated' }))
   }, [])
+
+  // Re-checked every time the backend transitions from down to up -- covers
+  // both the first successful check and revalidating the session after an
+  // outage. A stale authState from before an outage is harmless to render
+  // in the meantime: pre-auth, the render guard still shows BackendDownScreen
+  // until this fetch gets a chance to run; post-auth, authRevalidating keeps
+  // the overlay/inert state active (see the bottom of this component) until
+  // this fetch actually resolves, not just until backendUp flips true --
+  // otherwise the frozen app would briefly un-freeze before its session is
+  // reconfirmed. The `cancelled` guard discards a response from a request
+  // superseded by a later down/up flap, so an older response can never
+  // overwrite a newer one.
+  useEffect(() => {
+    if (!backendUp) return
+    let cancelled = false
+    setAuthRevalidating(true)
+    getAuthStatus()
+      .then((status) => { if (!cancelled) setAuthState(status) })
+      .catch(() => { if (!cancelled) setAuthState({ state: 'unauthenticated' }) })
+      .finally(() => { if (!cancelled) setAuthRevalidating(false) })
+    return () => { cancelled = true }
+  }, [backendUp])
 
   const startRefresh = useCallback(async (mode: 'all' | 'new') => {
     setCollectionStatus(null)
@@ -456,6 +512,9 @@ export default function App() {
     })
   }, [])
 
+  if (backendUp === false && authState?.state !== 'authenticated') {
+    return <BackendDownScreen />
+  }
   if (authState === null) {
     return <div className="min-h-screen flex items-center justify-center text-gray-500">Loading…</div>
   }
@@ -497,6 +556,13 @@ export default function App() {
 
   return (
     <div className="h-screen bg-gray-950 text-gray-100 flex flex-col overflow-hidden">
+      {/* Wrapper is `inert` while the backend is confirmed down, or while a
+          post-recovery session revalidation is still in flight, so a
+          keyboard or screen-reader user can't tab into the frozen app
+          underneath the BackendDownScreen overlay. `display: contents` keeps
+          it invisible to layout -- header/main/etc. stay direct flex
+          children of the h-screen container above. */}
+      <div inert={backendUp === false || authRevalidating} className="contents">
       {/* Header */}
       <header className="bg-gray-900 border-b border-gray-800 px-6 py-3 flex items-center gap-4">
         <nav className="flex gap-2">
@@ -737,6 +803,14 @@ export default function App() {
           )}
         </div>
       )}
+      </div>
+
+      {/* Backend down overlay -- shown on top of the still-mounted (but now
+          inert) app so in-progress state (search filters, unsaved Settings
+          fields) survives a transient outage instead of being unmounted.
+          Stays up through authRevalidating too, so recovery never exposes
+          the stale authenticated app before its session is reconfirmed. */}
+      {(backendUp === false || authRevalidating) && <BackendDownScreen />}
     </div>
   )
 }

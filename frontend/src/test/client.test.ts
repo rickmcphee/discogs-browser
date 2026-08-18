@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { postCrawlStart, postStockSyncStart, getUserSettings, saveUserSettings, logout, getStock, getStockArtists, getReleases, getArtists, postPlexMatchStart, refreshCollection, openCrawlStream, openLogsStream, importRecommendationsCsv, listInvites, createInvite, getUserHiddenCrawlers, postUserHiddenCrawlers, saveStockItem, unsaveStockItem } from '../api/client'
+import { postCrawlStart, postStockSyncStart, getUserSettings, saveUserSettings, logout, getStock, getStockArtists, getReleases, getArtists, postPlexMatchStart, refreshCollection, openCrawlStream, openLogsStream, importRecommendationsCsv, listInvites, createInvite, getUserHiddenCrawlers, postUserHiddenCrawlers, saveStockItem, unsaveStockItem, checkHealth } from '../api/client'
 
 describe('crawl/user-settings client functions', () => {
   let fetchMock: ReturnType<typeof vi.fn>
@@ -22,6 +22,19 @@ describe('crawl/user-settings client functions', () => {
     fetchMock.mockResolvedValue({ ok: true, json: async () => ({ enqueued: 3 }) })
     const result = await postCrawlStart('all')
     expect(result.enqueued).toBe(3)
+  })
+
+  it('checkHealth passes an AbortSignal, and resolves false when the request is aborted', async () => {
+    let capturedSignal: AbortSignal | undefined
+    fetchMock.mockImplementation((_url: string, init: RequestInit) => {
+      capturedSignal = init.signal as AbortSignal
+      // Simulates what a hung connection's timeout firing does to fetch() --
+      // this is what a removed or miswired signal would fail to reproduce.
+      return Promise.reject(new DOMException('The operation was aborted.', 'TimeoutError'))
+    })
+
+    await expect(checkHealth()).resolves.toBe(false)
+    expect(capturedSignal).toBeInstanceOf(AbortSignal)
   })
 
   it('postStockSyncStart posts an empty crawler_id for a bulk call', async () => {
