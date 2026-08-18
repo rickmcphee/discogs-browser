@@ -112,6 +112,23 @@ def test_frontend_origins_rejects_wildcard(monkeypatch):
         importlib.reload(config_module)
 
 
+def test_machine_id_prefers_fly_machine_id(monkeypatch):
+    monkeypatch.setenv("FLY_MACHINE_ID", "3287561a1e4487")
+    import importlib
+    import config
+    importlib.reload(config)
+    assert config.MACHINE_ID == "3287561a1e4487"
+
+
+def test_machine_id_falls_back_to_hostname(monkeypatch):
+    monkeypatch.delenv("FLY_MACHINE_ID", raising=False)
+    import importlib
+    import socket
+    import config
+    importlib.reload(config)
+    assert config.MACHINE_ID == socket.gethostname()
+
+
 # ---------------------------------------------------------------------------
 # DIRECT_DATABASE_URL / DIRECT_APP_DATABASE_URL -- the unpooled DSN the
 # stock-sync advisory lock needs (a session-scoped lock through a transaction

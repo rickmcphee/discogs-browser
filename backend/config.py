@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import socket
 from pathlib import Path
 from urllib.parse import quote, urlsplit, urlunsplit
 
@@ -101,6 +102,15 @@ if "*" in FRONTEND_ORIGINS:
 # callback Discogs redirects back to. Defaults to the local dev backend
 # port; must be set to the real public URL in any non-local deployment.
 BACKEND_BASE_URL = os.environ.get("BACKEND_BASE_URL", "http://localhost:8000")
+
+# FLY_MACHINE_ID is set automatically by Fly for every Machine; checked
+# first only because it's the more precise, documented identifier when
+# present. socket.gethostname() covers every other case without any
+# deployment-specific assumption: it resolves to the container's own
+# hostname under Docker (unique per container automatically, so this is
+# already correct if docker-compose is ever scaled to multiple replicas)
+# and to the host machine's hostname for bare local dev.
+MACHINE_ID = os.environ.get("FLY_MACHINE_ID") or socket.gethostname()
 
 # "" in env → None → bundled Chromium (Docker); unset → "chrome" → real Chrome (local dev)
 _channel_env = os.environ.get("PLAYWRIGHT_CHANNEL", "chrome")
