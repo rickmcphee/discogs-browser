@@ -114,19 +114,23 @@ def test_frontend_origins_rejects_wildcard(monkeypatch):
 
 def test_machine_id_prefers_fly_machine_id(monkeypatch):
     monkeypatch.setenv("FLY_MACHINE_ID", "3287561a1e4487")
-    import importlib
-    import config
-    importlib.reload(config)
-    assert config.MACHINE_ID == "3287561a1e4487"
+    try:
+        importlib.reload(config_module)
+        assert config_module.MACHINE_ID == "3287561a1e4487"
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config_module)
 
 
 def test_machine_id_falls_back_to_hostname(monkeypatch):
     monkeypatch.delenv("FLY_MACHINE_ID", raising=False)
-    import importlib
-    import socket
-    import config
-    importlib.reload(config)
-    assert config.MACHINE_ID == socket.gethostname()
+    try:
+        import socket
+        importlib.reload(config_module)
+        assert config_module.MACHINE_ID == socket.gethostname()
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config_module)
 
 
 # ---------------------------------------------------------------------------
