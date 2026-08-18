@@ -177,6 +177,7 @@ export default function App() {
         } else {
           const wantlistPart = event.wishlist_synced != null ? `, ${event.wishlist_synced} wantlist items` : ''
           setSyncStatus(`Synced ${event.synced} records for ${event.username}${wantlistPart}`, event.id ?? null)
+          getPriceStatus().then((s) => setHasPriceData(s.any_price_paid)).catch(() => {})
         }
         setSyncGeneration(g => g + 1)
         return

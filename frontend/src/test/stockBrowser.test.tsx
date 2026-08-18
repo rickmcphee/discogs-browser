@@ -507,6 +507,13 @@ describe('StockBrowser', () => {
     expect(screen.queryByText(/Price/)).toBeNull()
   })
 
+  it('narrows the empty-state colSpan in Track scope when hasPriceField is false', async () => {
+    getStock.mockResolvedValue({ total: 0, page: 1, per_page: 250, items: [] })
+    render(<StockBrowser scope="track" hasPriceField={false} />)
+    const emptyRow = await screen.findByText(/Nothing you're tracking is in stock/)
+    expect(emptyRow.closest('td')).toHaveAttribute('colSpan', '6')
+  })
+
   it('does not render a Price column in Store scope even when hasPriceField is true', async () => {
     render(<StockBrowser hasPriceField />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())

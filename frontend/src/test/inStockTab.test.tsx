@@ -126,7 +126,7 @@ describe('In Stock tab', () => {
     expect(screen.queryByText(/Price/)).toBeNull()
   })
 
-  it('shows the Track Price column when the user has collection price data', async () => {
+  it('renders a Price element somewhere when the user has collection price data (paired with the hides test above, which proves it is wired everywhere)', async () => {
     getPriceStatus.mockResolvedValue({ any_price_paid: true })
     render(<App />)
     await waitFor(() => expect(screen.getByText('Track')).toBeInTheDocument())
@@ -136,6 +136,14 @@ describe('In Stock tab', () => {
     // alongside Track (only CSS-hidden), and Collection/Wantlist share the same
     // hasPriceData wiring, so "Price" legitimately matches more than once here.
     expect(screen.getAllByText(/Price/).length).toBeGreaterThan(0)
+  })
+
+  it('refetches price status after a non-wishlist sync completes', async () => {
+    render(<App />)
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    await waitFor(() => expect(getPriceStatus).toHaveBeenCalled())
+    getLastCrawlSource().emit({ status: 'sync_complete', synced: 42, wishlist_synced: 7, username: 'alice', id: 1 })
+    await waitFor(() => expect(getPriceStatus.mock.calls.length).toBeGreaterThan(1))
   })
 
   it('calls postStockSyncStart when Refresh is clicked in Settings', async () => {

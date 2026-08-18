@@ -116,3 +116,17 @@ def test_has_any_price_paid_ignores_other_users(admin_conn):
     admin_conn.commit()
 
     assert db.has_any_price_paid(admin_conn, bob["id"]) is False
+
+
+def test_has_any_price_paid_false_when_price_paid_is_on_a_wishlist_only_row(admin_conn):
+    user = db.create_user(admin_conn, discogs_user_id=42, discogs_username="alice")
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "d1", "artist": "A", "title": "T", "year": None, "label": None,
+        "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+        "discogs_url": None,
+    })
+    admin_conn.commit()
+    db.upsert_library_item(admin_conn, user_id=user["id"], discogs_id="d1", in_wishlist=True, price_paid="25.00")
+    admin_conn.commit()
+
+    assert db.has_any_price_paid(admin_conn, user["id"]) is False
