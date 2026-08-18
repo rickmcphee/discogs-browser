@@ -9,7 +9,7 @@ import InviteCodeScreen from './views/InviteCodeScreen'
 import BackendDownScreen from './views/BackendDownScreen'
 import Avatar from './components/Avatar'
 import { navButtonClass, primaryButtonClass, secondaryButtonClass, dismissButtonClass } from './styles/buttons'
-import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, clearJudgments, exportRecommendationsCsv, importRecommendationsCsv, getCrawlers, getUserSettings, getUserHiddenCrawlers, postUserHiddenCrawlers, getJudgmentStatus, checkHealth, getAuthStatus, setUnauthorizedHandler, hasAvatar } from './api/client'
+import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, clearJudgments, exportRecommendationsCsv, importRecommendationsCsv, getCrawlers, getUserSettings, getUserHiddenCrawlers, postUserHiddenCrawlers, getJudgmentStatus, getPriceStatus, checkHealth, getAuthStatus, setUnauthorizedHandler, hasAvatar } from './api/client'
 import type { CrawlEvent, CrawlStatus, CollectionStatus, Crawler, AuthStatus } from './api/types'
 
 type View = 'collection' | 'wantlist' | 'store' | 'track' | 'settings' | 'logs' | 'account'
@@ -41,6 +41,7 @@ export default function App() {
   const [avatarVersion, setAvatarVersion] = useState(0)
   const [hasAnthropicKey, setHasAnthropicKey] = useState(false)
   const [hasJudgedItems, setHasJudgedItems] = useState(false)
+  const [hasPriceData, setHasPriceData] = useState(false)
   const [judgmentRunning, setJudgmentRunning] = useState(false)
   const [serverReady, setServerReady] = useState(false)
   const [backendUp, setBackendUp] = useState<boolean | null>(null)
@@ -138,6 +139,7 @@ export default function App() {
       setHasAnthropicKey(Boolean(s.anthropic_api_key))
     }).catch(() => {})
     getJudgmentStatus().then((s) => setHasJudgedItems(s.any_judged)).catch(() => {})
+    getPriceStatus().then((s) => setHasPriceData(s.any_price_paid)).catch(() => {})
     hasAvatar().then((exists) => setAvatarVersion(exists ? Date.now() : 0)).catch(() => {})
   }, [authState, backendUp, serverReady, setSyncStatus])
 
@@ -628,6 +630,7 @@ export default function App() {
             syncing={syncing}
             onRefreshCollection={() => handleRefresh()}
             syncGeneration={syncGeneration}
+            hasPriceField={hasPriceData}
           />
         </div>
         <div className={view === 'wantlist' ? 'h-full' : 'hidden'}>
@@ -636,13 +639,14 @@ export default function App() {
             syncing={syncing}
             onRefreshCollection={() => handleRefreshWantlist()}
             syncGeneration={syncGeneration}
+            hasPriceField={hasPriceData}
           />
         </div>
         <div className={view === 'store' ? 'h-full' : 'hidden'}>
           <StockBrowser recommendedAvailable={recommendedAvailable} hiddenCrawlerIds={hiddenCrawlerIds} crawlers={crawlers} onHiddenCrawlerIdsChange={updateHiddenCrawlerIds} hiddenCrawlerIdsLoaded={hiddenCrawlerIdsLoaded} syncGeneration={stockSyncGeneration} isAdmin={showAdminNav} />
         </div>
         <div className={view === 'track' ? 'h-full' : 'hidden'}>
-          <StockBrowser scope="track" hiddenCrawlerIds={hiddenCrawlerIds} crawlers={crawlers} onHiddenCrawlerIdsChange={updateHiddenCrawlerIds} hiddenCrawlerIdsLoaded={hiddenCrawlerIdsLoaded} syncGeneration={stockSyncGeneration} isAdmin={showAdminNav} />
+          <StockBrowser scope="track" hiddenCrawlerIds={hiddenCrawlerIds} crawlers={crawlers} onHiddenCrawlerIdsChange={updateHiddenCrawlerIds} hiddenCrawlerIdsLoaded={hiddenCrawlerIdsLoaded} syncGeneration={stockSyncGeneration} isAdmin={showAdminNav} hasPriceField={hasPriceData} />
         </div>
         <div className={view === 'settings' ? 'h-full overflow-y-auto' : 'hidden'}>
           <Settings
