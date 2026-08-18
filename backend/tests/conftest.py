@@ -200,6 +200,18 @@ def pg_test_db(monkeypatch):
 
 
 @pytest.fixture
+def clean_app_logs_table(pg_test_db):
+    db.init_global_schema()
+    with db.get_admin_pool().connection() as conn:
+        conn.execute("TRUNCATE app_logs")
+        conn.commit()
+    yield
+    with db.get_admin_pool().connection() as conn:
+        conn.execute("TRUNCATE app_logs")
+        conn.commit()
+
+
+@pytest.fixture
 def authed_client_factory_builder(pg_test_db):
     """Generic base for router test files that need a real TestClient wired
     with AuthMiddleware against Postgres, pre-authenticated as a given user.
@@ -239,8 +251,10 @@ def authed_client_factory_builder(pg_test_db):
     # regardless of which of those it happened to touch. app_config is listed
     # explicitly: it has no FK to any of them, so CASCADE never reaches it,
     # and POST /api/settings tests write real rows to it through this fixture.
+    # app_logs is also listed explicitly: it has no FK back to any of those
+    # tables either, so CASCADE never reaches it.
     with db.get_admin_pool().connection() as conn:
-        conn.execute("TRUNCATE catalog, users, crawlers, app_config CASCADE")
+        conn.execute("TRUNCATE catalog, users, crawlers, app_config, app_logs CASCADE")
         conn.commit()
 
 
