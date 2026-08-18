@@ -495,6 +495,24 @@ describe('StockBrowser', () => {
     )
   })
 
+  it('renders the Price column by default in Track scope', async () => {
+    render(<StockBrowser scope="track" />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    expect(screen.getByText(/Price/)).toBeTruthy()
+  })
+
+  it('hides the Price column in Track scope when hasPriceField is false', async () => {
+    render(<StockBrowser scope="track" hasPriceField={false} />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    expect(screen.queryByText(/Price/)).toBeNull()
+  })
+
+  it('does not render a Price column in Store scope even when hasPriceField is true', async () => {
+    render(<StockBrowser hasPriceField />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    expect(screen.queryByText(/Price/)).toBeNull()
+  })
+
   it('does not render a Price column in Store scope', async () => {
     render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
