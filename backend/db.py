@@ -1236,10 +1236,18 @@ def enqueue_crawl_queue_for_stock_item(conn, item_key: str):
 # claim call being able to grab them.
 #
 # Known gap, not an oversight: there is no reclaim/timeout path for a row
-# stuck 'in_progress' because its claiming worker hung (as opposed to
-# crashed -- a crash rolls back the open transaction and self-heals). A
-# hung worker holding the transaction open leaves that row unclaimable by
-# anyone else indefinitely.
+# left 'in_progress' by a worker that never resolves it. This function's own
+# UPDATE commits immediately -- a short transaction, separate from whatever
+# processes the claimed rows afterward (see crawl_manager.py's
+# _drain_one_batch) -- so the claim itself is already durable by the time
+# this returns: a Machine crash or a genuinely hung worker during the
+# processing that follows does not roll it back. (Cancellation during
+# graceful shutdown is a different case, handled separately:
+# _drain_one_batch reverts an in-flight claim on cancellation, and shields
+# everything after a successful one, so that path isn't this gap.) A row
+# stranded this way stays unclaimable by anyone else indefinitely;
+# count_pending_crawl_queue_for_user counts it but has no way to tell it
+# apart from a row genuinely mid-crawl.
 def claim_crawl_queue_batch(conn, worker_id: str, limit: int) -> list[dict]:
     stock_source_gate = _enabled_stock_source_exists("crawl_queue.item_key")
     return conn.execute(
@@ -1292,6 +1300,27 @@ def defer_crawl_queue_row(conn, queue_id: int, crawler_ids: list, delay_seconds:
         WHERE id = %(queue_id)s
         """,
         {"queue_id": queue_id, "crawler_ids": list(crawler_ids), "delay_seconds": delay_seconds},
+    )
+
+
+# Undoes claim_crawl_queue_batch for rows the caller never got a chance to
+# act on -- e.g. stop_worker_pool()'s task.cancel() landing while the
+# claim's thread is still committing. crawl_manager.py's _drain_one_batch
+# awaits that claim under asyncio.shield(), which lets the cancellation
+# reach the caller immediately while the underlying commit keeps running in
+# the background; its except block then reads the already-committed rows
+# back from the shielded task and reverts them here before re-raising,
+# rather than leaving them orphaned 'in_progress'. Unlike
+# defer_crawl_queue_row, this doesn't touch pending_crawler_ids or
+# available_at -- nothing about the row's own eligibility state changed,
+# only its claim did, so it goes back to exactly as claimable as it was a
+# moment before.
+def revert_crawl_queue_claim(conn, queue_ids: list):
+    if not queue_ids:
+        return
+    conn.execute(
+        "UPDATE crawl_queue SET status = 'pending', claimed_by = NULL, claimed_at = NULL WHERE id = ANY(%(queue_ids)s)",
+        {"queue_ids": list(queue_ids)},
     )
 
 

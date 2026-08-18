@@ -102,7 +102,166 @@ async methods throughout this codebase (e.g. `routers/settings.py`'s
 in `06ed220` — that was an unbounded `httpx` call, not a local Postgres round
 trip.
 
-### `users.avatar_image` (per-user, replaces `avatar.png`)
+**Amendment (2026-08-17, production incident):** "no-network-hop" was wrong
+for this deployment. `get_admin_pool()` (`config.DATABASE_URL`) and
+`get_app_pool()` (`config.APP_DATABASE_URL`) both resolve to Neon, not a
+co-located Postgres — every call through either is a real network round
+trip through Neon's pooler, not a local one, and unlike the `06ed220`
+`httpx` call none of them has a timeout of its own.
+
+Two distinct call paths were involved, not one. `load_config()` (via
+`get_admin_pool()`) is read on every single crawl unit: once in
+`_paced_search`'s pacing delay and once in `_record_site_result`'s
+failure-limit check — two Neon round trips per unit, the highest-frequency
+offender since a batch can be several units. Separately, `_drain_one_batch`
+opens its own `get_app_pool()` connections for the crawl-queue writes —
+once to claim a batch, then per row for target resolution and again for
+its terminal status write, and per unit for the listing result write — a
+different pool, a coarser-but-still-repeated cadence, not tied to
+`load_config()` at all. Observed in production: a crawler tripping its
+consecutive-failure limit logged at 01:34:25; Fly reported `/api/health`
+failing at 01:34:36 on the same Machine — consistent with this process's
+single event loop stalling on a burst of blocking calls from either or
+both paths for long enough to miss the healthcheck's 5s timeout, since
+`/api/health` has no DB dependency of its own but still has to be
+dispatched through that same loop.
+
+Fixed by wrapping every `get_app_pool()`/`get_admin_pool()` call reachable
+from the worker loop (`start_worker_pool`, `_drain_one_batch`,
+`_paced_search`, `_record_site_result`) in `asyncio.to_thread`, matching the
+`_sync_collection_blocking`/`start_stock_sync` pattern already used
+elsewhere in this file (see the "Stock sync mutual exclusion" amendment
+above). `_sync_stock`'s own remaining inline `get_app_pool()` calls and
+`_sync_collection`'s blocking `time.sleep(1.1)` barcode pacing are not part
+of this fix — separate, longer-running background tasks, not the tight loop
+implicated in this incident.
+
+**Amendment (2026-08-17, GitHub Copilot PR review):** the first pass of this
+fix was incomplete and, separately, introduced a new bug — both caught in
+review before merge.
+
+Incomplete: `_paced_search` calls `plugin.search()`, and the two eBay
+plugins (`crawlers/ebay.py`, `crawlers/ebay_general.py`, pooled under
+`failure_domain = "ebay-browse-api"`) each call `load_config()` synchronously
+as the first line of their own `async def search`, before `_paced_search`'s
+own offloaded config read ever runs. Every eBay crawl unit could therefore
+still block the event loop on the same kind of Neon round trip this fix was
+meant to eliminate. Fixed by offloading those two calls the same way. (Four
+other crawlers' `load_config()` calls — `amoeba.py`, `angryyoungandpoor.py`,
+`sgrecordshop.py`, `asbestosrecords.py` — are `async def crawl_catalog`, only
+reachable from `_sync_stock`, not the worker loop; left blocking, same as
+`_sync_stock`'s own calls two paragraphs up.)
+
+New bug: making `_record_site_result` async gave its `load_config()` call a
+real yield point it didn't have before (the previous synchronous version
+ran to completion with no `await`, so two calls could never interleave).
+Two crawler_ids sharing a failure domain — the eBay pair is the only
+current example — can now have their `_record_site_result` calls
+interleave: a failure's read-modify-write can land after a chronologically
+later success's reset, resurrecting a stale failure count instead of the
+reset sticking. `_site_locks` (used by `_paced_search` to pace requests)
+does not already prevent this — it's keyed by `crawler_id`, so the two eBay
+crawler_ids get two separate locks and their *requests* can run
+concurrently; only their shared-counter *bookkeeping* needed serializing.
+Fixed by adding a second lock, `CrawlManager._site_result_locks`, keyed the
+same way `_domain_peers` groups crawler_ids (by domain, not crawler_id), so
+`_record_site_result` now runs its whole body — config read and counter
+mutation — under that per-domain lock.
+
+**Amendment (2026-08-17, GitHub Copilot PR review):** four more instances of
+the pattern this whole change is about, all in `_drain_one_batch`: the
+`asyncio.to_thread` calls that claim a batch (`_claim_batch`), mark a
+targetless row done (`_mark_done`), and write a row's terminal status or
+listing result (`resolve_row`'s `_write`, `_write_result`) all write to
+`crawl_queue`, and `asyncio.to_thread`'s cancellation only stops a callable
+that hasn't started running yet — once the worker thread has picked it up,
+cancelling the awaiting task abandons the result without stopping the
+write. `stop_worker_pool()`'s `task.cancel()` can therefore let one of
+these commits land after the worker has already exited, with nothing left
+to act on the result: the row reads `'in_progress'` forever with no reclaim
+path, the same accepted gap `claim_crawl_queue_batch`'s docstring documents
+for a Machine crash or a genuinely hung worker (that docstring previously
+claimed a crash "rolls back the open transaction and self-heals" — wrong
+for this codebase, since the claim's own `UPDATE` commits immediately as a
+short, separate transaction from whatever processes the row afterward;
+fixed alongside this amendment, caught in a later review round).
+
+First pass fixed this with `_to_thread_uncancelable`, a wrapper that
+shields the underlying thread from cancellation and then awaits it anyway
+before re-raising, guaranteeing the *write itself* finishes. Review caught
+that this was still incomplete for two of the four: guaranteeing a write
+finishes doesn't guarantee anything *depending on it* also runs before the
+cancellation propagates.
+
+- `_claim_batch`: `_to_thread_uncancelable` lets the claim's `UPDATE ...
+  SET status = 'in_progress'` commit, but the resulting `rows` are still
+  discarded the moment it re-raises — `_drain_one_batch` never receives
+  them, so nothing ever resolves the rows it just claimed. Fixed
+  differently: on cancellation, the (already-committed) claimed rows are
+  read back from the awaited task and explicitly reverted via a new
+  `db.revert_crawl_queue_claim(conn, queue_ids)` (`status = 'pending',
+  claimed_by = NULL, claimed_at = NULL`, leaving `pending_crawler_ids`/
+  `available_at` untouched) before the cancellation is allowed to
+  propagate — undoing the claim rather than trying to make it durable.
+- `_write_result`: `_to_thread_uncancelable` guarantees the listing commit
+  finishes, but the `resolve_row` call that must follow it (for the row's
+  last unit) is separate code after the `await` — a cancellation landing
+  in between skips it, leaving the row `'in_progress'` with its listing
+  already correct. Fixed by generalizing the shielding: a new `_shielded`
+  helper wraps an arbitrary coroutine (not just a single `to_thread` call)
+  to completion despite cancellation, and `_write_result` plus the
+  following `resolve_row` are now one coroutine passed to it, so a
+  cancellation landing anywhere in that pair still lets both finish before
+  propagating. (`_to_thread_uncancelable` itself became a thin wrapper —
+  `_shielded(asyncio.to_thread(func))` — for the two call sites,
+  `_mark_done` and `resolve_row`'s own `_write`, where the write already is
+  the entire terminal unit with nothing depending on it afterward.)
+
+Each fix has a regression test that reproduces the exact race (cancels
+`_drain_one_batch` mid-flight via a deliberately slowed DB call, using a
+`threading.Event` to cancel precisely once the slow call has started
+rather than guessing a sleep duration) and was verified to fail without
+its fix before the fix was added back.
+
+**Amendment (2026-08-17, GitHub Copilot PR review, architectural):** a
+fourth review round found the same class of gap again — this time in
+`_paced_search`'s own `load_config()` read, `_record_site_result`'s
+`load_config()` read, and `_resolve_target` — none of which write to
+`crawl_queue` themselves, but a cancellation landing during any of them
+still lets `CancelledError` propagate out of `_process_claimed_rows` (as
+it then was, inlined in `_drain_one_batch`) before that row's terminal
+write ever runs. Four rounds of finding the next unshielded `await` in the
+same claimed row's path is the "3+ narrow fixes each revealing a new
+instance elsewhere" signal for a wrong-grained fix, not a wrong-grained
+review: individually wrapping each write, as the two amendments above did,
+can never close this class of gap, because the vulnerability isn't in any
+one call — it's every `await` a claimed row's processing passes through
+before its terminal write.
+
+Restructured accordingly: `_drain_one_batch` now only claims the batch
+(reverting on cancellation, as before — cheap and immediate, since nothing
+is at stake yet). Everything after a successful claim — resolving targets,
+running each crawler, recording results, writing listings, resolving each
+row's terminal status — moved into a new method, `_process_claimed_rows`,
+and `_drain_one_batch` runs it as a single `_shielded()` call. A
+cancellation landing anywhere inside `_process_claimed_rows` now lets the
+*entire* claimed batch finish processing before propagating, not just
+whichever write happened to be in flight. This also let the per-call
+`_shielded`/`_to_thread_uncancelable` wrapping added in the two amendments
+above be removed — with the whole method shielded by its only caller,
+wrapping the individual DB calls inside it again was redundant, so they're
+back to plain `asyncio.to_thread` calls, and `_to_thread_uncancelable`
+itself was deleted as dead code.
+
+Trade-off, chosen deliberately over continuing to patch instances: once a
+batch is claimed, `stop_worker_pool()`'s `task.cancel()` no longer stops a
+worker until that batch (batch_size rows × their eligible crawlers,
+including real crawler network requests and pacing delays) finishes
+processing, rather than at whichever `await` cancellation happened to
+land on. Graceful shutdown gets correspondingly slower in the worst case,
+bounded by how long one claimed batch takes — accepted as the right price
+for actually closing this class of gap instead of leaving it open at
+whichever call site hasn't been reviewed yet.
 
 ```sql
 ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_image BYTEA;
