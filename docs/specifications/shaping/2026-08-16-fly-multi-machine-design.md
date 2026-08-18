@@ -103,18 +103,27 @@ in `06ed220` — that was an unbounded `httpx` call, not a local Postgres round
 trip.
 
 **Amendment (2026-08-17, production incident):** "no-network-hop" was wrong
-for this deployment. `config.APP_DATABASE_URL`/`ADMIN_DATABASE_URL` resolve
-to Neon, not a co-located Postgres — every `load_config()` call is a real
-network round trip through Neon's pooler, not a local one, and unlike the
-`06ed220` httpx call it has no timeout of its own. Observed in production:
-`crawl_manager.py`'s worker loop calls `load_config()` on every single crawl
-unit (`_paced_search`'s pacing delay, `_record_site_result`'s failure-limit
-check) as well as once per claimed batch for the crawl-queue writes
-themselves. A crawler tripping its consecutive-failure limit logged at
-01:34:25; Fly reported `/api/health` failing at 01:34:36 on the same Machine
-— consistent with this process's single event loop stalling on a burst of
-these blocking calls for long enough to miss the healthcheck's 5s timeout,
-since `/api/health` has no DB dependency of its own but still has to be
+for this deployment. `get_admin_pool()` (`config.DATABASE_URL`) and
+`get_app_pool()` (`config.APP_DATABASE_URL`) both resolve to Neon, not a
+co-located Postgres — every call through either is a real network round
+trip through Neon's pooler, not a local one, and unlike the `06ed220`
+`httpx` call none of them has a timeout of its own.
+
+Two distinct call paths were involved, not one. `load_config()` (via
+`get_admin_pool()`) is read on every single crawl unit: once in
+`_paced_search`'s pacing delay and once in `_record_site_result`'s
+failure-limit check — two Neon round trips per unit, the highest-frequency
+offender since a batch can be several units. Separately, `_drain_one_batch`
+opens its own `get_app_pool()` connections for the crawl-queue writes —
+once to claim a batch, then per row for target resolution and again for
+its terminal status write, and per unit for the listing result write — a
+different pool, a coarser-but-still-repeated cadence, not tied to
+`load_config()` at all. Observed in production: a crawler tripping its
+consecutive-failure limit logged at 01:34:25; Fly reported `/api/health`
+failing at 01:34:36 on the same Machine — consistent with this process's
+single event loop stalling on a burst of blocking calls from either or
+both paths for long enough to miss the healthcheck's 5s timeout, since
+`/api/health` has no DB dependency of its own but still has to be
 dispatched through that same loop.
 
 Fixed by wrapping every `get_app_pool()`/`get_admin_pool()` call reachable

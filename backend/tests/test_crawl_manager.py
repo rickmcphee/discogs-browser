@@ -2227,6 +2227,129 @@ async def test_record_site_result_serializes_concurrent_calls_for_the_same_domai
     assert entries == ["enter", "exit", "enter", "exit"]
 
 
+# Three separate load_config() calls sit on one claimed row's happy path,
+# in this order: the eBay plugin's own (inside its search()), _paced_search's
+# pacing read (its finally block, right after search() returns), and
+# _record_site_result's failure-limit read (right after _paced_search
+# returns). Slowing exactly one call by its 1-based position in that
+# sequence -- rather than every load_config() call -- isolates which of the
+# three offloads is actually under test: with the other two still fast, a
+# heartbeat ticking throughout proves nothing (there'd be plenty of ticks
+# regardless), but a heartbeat that stops precisely when the picked one goes
+# synchronous does not.
+async def _run_worker_crawl_with_slow_load_config_call(slow_call_number: int) -> int:
+    import config as config_module
+    from crawlers.ebay_general import Crawler as EbayCrawler
+
+    real_load_config = config_module.load_config
+    cfg = real_load_config()
+    cfg["ebay_app_id"] = "app-id"
+    cfg["ebay_cert_id"] = "cert-id"
+    cfg["crawl_delay_seconds"] = 0
+    config_module.save_config(cfg)
+
+    call_count = 0
+
+    def load_config_at_position():
+        nonlocal call_count
+        call_count += 1
+        if call_count == slow_call_number:
+            time.sleep(0.3)
+        return real_load_config()
+
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "eBay", "/ebay_general.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'eBay'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "Miles Davis", "title": "Kind of Blue", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1")
+        conn.commit()
+
+    respx.post("https://api.ebay.com/identity/v1/oauth2/token").mock(
+        return_value=httpx.Response(200, json={"access_token": "test-token", "expires_in": 7200})
+    )
+    respx.get("https://api.ebay.com/buy/browse/v1/item_summary/search").mock(
+        return_value=httpx.Response(200, json={"itemSummaries": []})
+    )
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    plugin = EbayCrawler()
+    plugin._db_id = crawler_id
+    plugin._db_site_name = "eBay"
+
+    heartbeat_count = 0
+
+    async def heartbeat():
+        nonlocal heartbeat_count
+        while True:
+            heartbeat_count += 1
+            await asyncio.sleep(0.02)
+
+    hb_task = asyncio.create_task(heartbeat())
+    try:
+        with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+             patch("config.load_config", side_effect=load_config_at_position), \
+             patch("crawlers.ebay_general.load_config", side_effect=load_config_at_position):
+            # crawlers/ebay_general.py does `from config import load_config` at
+            # module level, a one-time binding -- patching config.load_config
+            # alone (as everywhere else in this file) doesn't touch it, since
+            # crawl_manager.py's own two call sites instead re-resolve
+            # `from config import load_config` fresh on every call (a
+            # function-local import), which does pick up that patch. Both
+            # patches share load_config_at_position, so its call_count
+            # counts every load_config() call across both regardless of
+            # which name resolved it.
+            await manager._drain_one_batch("worker-test", {crawler_id: plugin}, pages={})
+    finally:
+        hb_task.cancel()
+
+    return heartbeat_count
+
+
+@respx.mock
+async def test_ebay_plugins_own_load_config_call_does_not_block_event_loop(pg_schema):
+    """The regression this whole PR targets: a synchronous load_config()
+    call anywhere in the worker path stalls the process's single event
+    loop for the length of that Postgres round trip, including
+    /api/health. test_record_site_result_serializes_concurrent_calls_...
+    above proves the per-domain lock is correct, but would still pass even
+    if load_config() were called synchronously -- a blocking call can't be
+    interleaved by another coroutine either, so serialization alone isn't
+    a regression guard for the offloading itself. This test (and the two
+    below it) isolate one specific load_config() call each so that
+    reverting any single one back to a bare call makes exactly that test
+    fail, not just an ambiguous shared threshold (caught in PR #146
+    review, including on an earlier attempt at this same test)."""
+    # Call #1 in the sequence: the eBay plugin's own, inside search().
+    heartbeat_count = await _run_worker_crawl_with_slow_load_config_call(slow_call_number=1)
+    assert heartbeat_count >= 10
+
+
+@respx.mock
+async def test_paced_search_load_config_call_does_not_block_event_loop(pg_schema):
+    """See test_ebay_plugins_own_load_config_call_does_not_block_event_loop
+    for the shared setup and why isolating one call at a time matters."""
+    # Call #2: _paced_search's pacing read, in its finally block right
+    # after plugin.search() returns.
+    heartbeat_count = await _run_worker_crawl_with_slow_load_config_call(slow_call_number=2)
+    assert heartbeat_count >= 10
+
+
+@respx.mock
+async def test_record_site_result_load_config_call_does_not_block_event_loop(pg_schema):
+    """See test_ebay_plugins_own_load_config_call_does_not_block_event_loop
+    for the shared setup and why isolating one call at a time matters."""
+    # Call #3: _record_site_result's failure-limit read, right after
+    # _paced_search returns.
+    heartbeat_count = await _run_worker_crawl_with_slow_load_config_call(slow_call_number=3)
+    assert heartbeat_count >= 10
+
+
 async def test_shielded_runs_the_coroutine_to_completion_despite_cancellation():
     """Plain asyncio.shield() only protects the shielded coroutine itself --
     the awaiting coroutine still gets CancelledError immediately. _shielded
