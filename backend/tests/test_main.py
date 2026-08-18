@@ -210,6 +210,19 @@ def test_shutdown_cancels_the_schedule_resync_task(pg_test_db):
     assert main._schedule_resync_task is None
 
 
+def test_startup_starts_log_writer_and_shutdown_stops_it(pg_test_db):
+    import logging_config
+    import main
+
+    with patch("main.crawl_manager.start_worker_pool", new=AsyncMock()), \
+         patch("main.crawl_manager.stop_worker_pool", new=AsyncMock()), \
+         patch("main.migrate_legacy_config_file"):
+        with TestClient(main.app):
+            assert logging_config._writer_thread is not None
+            assert logging_config._writer_thread.is_alive()
+    assert logging_config._writer_thread is None
+
+
 def test_cors_allows_configured_frontend_origin(pg_test_db, monkeypatch):
     import config
     import main

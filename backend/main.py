@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Optional
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from logging_config import setup_logging, get_logger
+from logging_config import setup_logging, get_logger, start_log_writer, stop_log_writer
 from config import ensure_dirs, CRAWLERS_DIR, load_config, migrate_legacy_config_file, FRONTEND_ORIGINS
 from version import VERSION
 from crawler import load_crawler_from_path
@@ -120,6 +120,7 @@ async def startup():
     log.info("Discogs Browser backend v%s starting", VERSION)
     ensure_dirs()
     init_global_schema()
+    start_log_writer()
     # Immediately after the CREATE TABLE that gives it somewhere to write, and
     # before anything below reads load_config() for real work (worker count,
     # schedules) -- the worker pool starting on an empty config is what would
@@ -147,6 +148,7 @@ async def shutdown():
         _schedule_resync_task = None
     await crawl_manager.stop_worker_pool()
     scheduler.shutdown()
+    stop_log_writer()
 
 
 app.include_router(health.router, prefix="/api")
