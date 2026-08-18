@@ -1,6 +1,7 @@
 import logging
 import logging.handlers
 import queue
+import sys
 import threading
 import time
 from typing import Optional
@@ -83,7 +84,7 @@ def flush_queue():
                 )
             conn.commit()
     except Exception as e:
-        print(f"logging_config: failed to write {len(rows)} log record(s) to Postgres: {e}")
+        print(f"logging_config: failed to write {len(rows)} log record(s) to Postgres: {e}", file=sys.stderr)
 
 
 def _prune_old_logs():
@@ -96,7 +97,7 @@ def _prune_old_logs():
             )
             conn.commit()
     except Exception as e:
-        print(f"logging_config: failed to prune old log rows: {e}")
+        print(f"logging_config: failed to prune old log rows: {e}", file=sys.stderr)
 
 
 def _writer_loop():
@@ -123,3 +124,4 @@ def stop_log_writer():
     if _writer_thread is not None:
         _writer_thread.join(timeout=5)
         _writer_thread = None
+    flush_queue()  # catch anything enqueued during the shutdown handoff
