@@ -146,6 +146,25 @@ describe('In Stock tab', () => {
     await waitFor(() => expect(getPriceStatus.mock.calls.length).toBeGreaterThan(1))
   })
 
+  it('does not let a slow bootstrap price-status response overwrite a newer post-sync one', async () => {
+    let resolveBootstrap: (v: { any_price_paid: boolean }) => void = () => {}
+    getPriceStatus
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveBootstrap = resolve }))
+      .mockResolvedValueOnce({ any_price_paid: true })
+
+    render(<App />)
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    await waitFor(() => expect(getPriceStatus).toHaveBeenCalledTimes(1))
+
+    getLastCrawlSource().emit({ status: 'sync_complete', synced: 1, wishlist_synced: null, username: 'alice', id: 1 })
+    await waitFor(() => expect(getPriceStatus).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.getAllByText(/Price/).length).toBeGreaterThan(0))
+
+    resolveBootstrap({ any_price_paid: false })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(screen.getAllByText(/Price/).length).toBeGreaterThan(0)
+  })
+
   it('calls postStockSyncStart when Refresh is clicked in Settings', async () => {
     render(<App />)
     await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())

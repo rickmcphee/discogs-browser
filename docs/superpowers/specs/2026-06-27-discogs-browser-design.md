@@ -347,7 +347,7 @@ Price column in that list is no longer unconditional — it renders only
 when the calling user has at least one collection item with a stored
 price; otherwise it's omitted from the table (and the empty-state
 `colSpan` narrows to match). See
-[`2026-08-18-price-column-auto-hide-design.md`](../specifications/shaping/2026-08-18-price-column-auto-hide-design.md).
+[`2026-08-18-price-column-auto-hide-design.md`](../../specifications/shaping/2026-08-18-price-column-auto-hide-design.md).
 
 `crawlers` state is fetched once in `App.tsx` and passed as props to both `CollectionBrowser` and `Settings`; neither view fetches crawlers independently.
 
