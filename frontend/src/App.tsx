@@ -527,6 +527,12 @@ export default function App() {
 
   return (
     <div className="h-screen bg-gray-950 text-gray-100 flex flex-col overflow-hidden">
+      {/* Wrapper is `inert` while the backend is confirmed down, so a keyboard
+          or screen-reader user can't tab into the frozen app underneath the
+          BackendDownScreen overlay. `display: contents` keeps it invisible
+          to layout -- header/main/etc. stay direct flex children of the
+          h-screen container above. */}
+      <div inert={backendUp === false} className="contents">
       {/* Header */}
       <header className="bg-gray-900 border-b border-gray-800 px-6 py-3 flex items-center gap-4">
         <nav className="flex gap-2">
@@ -767,10 +773,11 @@ export default function App() {
           )}
         </div>
       )}
+      </div>
 
-      {/* Backend down overlay -- shown on top of the still-mounted app so
-          in-progress state (search filters, unsaved Settings fields)
-          survives a transient outage instead of being unmounted. */}
+      {/* Backend down overlay -- shown on top of the still-mounted (but now
+          inert) app so in-progress state (search filters, unsaved Settings
+          fields) survives a transient outage instead of being unmounted. */}
       {backendUp === false && <BackendDownScreen />}
     </div>
   )

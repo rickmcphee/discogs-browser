@@ -142,7 +142,10 @@ describe('backend-down handling', () => {
     vi.useFakeTimers()
     render(<App />)
     await stabilize()
-    expect(screen.getByRole('button', { name: 'Collection' })).toBeInTheDocument()
+    const collectionButton = screen.getByRole('button', { name: 'Collection' })
+    expect(collectionButton).toBeInTheDocument()
+    // Not inert while the backend is up -- the app is fully interactive.
+    expect(collectionButton.closest('[inert]')).toBeNull()
 
     vi.mocked(checkHealth).mockResolvedValue(false)
     await advanceBy(2000)
@@ -151,8 +154,12 @@ describe('backend-down handling', () => {
     await advanceBy(2000)
     expect(screen.getByText(DOWN_MESSAGE)).toBeInTheDocument()
     // The authenticated app is still mounted underneath the overlay --
-    // its nav is still in the document, not torn down and rebuilt.
-    expect(screen.getByRole('button', { name: 'Collection' })).toBeInTheDocument()
+    // its nav is still in the document, not torn down and rebuilt --
+    // but marked inert so a keyboard/screen-reader user can't reach it.
+    expect(collectionButton).toBeInTheDocument()
+    expect(collectionButton.closest('[inert]')).not.toBeNull()
+    // The overlay itself must NOT be inert, or it'd be unreachable too.
+    expect(screen.getByRole('status').closest('[inert]')).toBeNull()
   })
 
   it('auto-recovers once the health check starts succeeding again, revalidating the session', async () => {
