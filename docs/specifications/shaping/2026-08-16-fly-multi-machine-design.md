@@ -127,6 +127,36 @@ above). `_sync_stock`'s own remaining inline `get_app_pool()` calls and
 of this fix — separate, longer-running background tasks, not the tight loop
 implicated in this incident.
 
+**Amendment (2026-08-17, GitHub Copilot PR review):** the first pass of this
+fix was incomplete and, separately, introduced a new bug — both caught in
+review before merge.
+
+Incomplete: `_paced_search` calls `plugin.search()`, and the two eBay
+plugins (`crawlers/ebay.py`, `crawlers/ebay_general.py`, pooled under
+`failure_domain = "ebay-browse-api"`) each call `load_config()` synchronously
+as the first line of their own `async def search`, before `_paced_search`'s
+own offloaded config read ever runs. Every eBay crawl unit could therefore
+still block the event loop on the same kind of Neon round trip this fix was
+meant to eliminate. Fixed by offloading those two calls the same way. (Four
+other crawlers' `load_config()` calls — `amoeba.py`, `angryyoungandpoor.py`,
+`sgrecordshop.py`, `asbestosrecords.py` — are `async def crawl_catalog`, only
+reachable from `_sync_stock`, not the worker loop; left blocking, same as
+`_sync_stock`'s own calls two paragraphs up.)
+
+New bug: making `_record_site_result` async gave its `load_config()` call a
+real yield point it didn't have before (the previous synchronous version
+ran to completion with no `await`, so two calls could never interleave).
+Two crawler_ids sharing a failure domain — the eBay pair is the only
+current example — can now have their `_record_site_result` calls
+interleave: a failure's read-modify-write can land after a chronologically
+later success's reset, resurrecting a stale failure count instead of the
+reset sticking. Fixed by serializing `_record_site_result` per failure
+domain (`CrawlManager._site_result_locks`, keyed the same way
+`_domain_peers` groups crawler_ids) — the eBay pair's requests were already
+serialized *within* `_paced_search` via `_site_locks`, but that only covers
+the network call, not the bookkeeping after it, which runs outside that
+lock.
+
 ### `users.avatar_image` (per-user, replaces `avatar.png`)
 
 ```sql

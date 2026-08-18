@@ -31,6 +31,12 @@ class CrawlManager:
         self._site_consecutive_failures: dict[int, int] = {}
         self._site_cooldown_until: dict[int, float] = {}
         self._failure_domains: dict[int, str] = {}
+        # Keyed by failure domain (or crawler_id for a crawler with no
+        # declared domain), not crawler_id alone -- domain peers share
+        # _site_consecutive_failures/_site_cooldown_until, so two peers'
+        # _record_site_result calls must not interleave their read-modify-
+        # write of those dicts. See _record_site_result.
+        self._site_result_locks: dict = {}
 
     @property
     def any_job_running(self) -> bool:
@@ -191,29 +197,42 @@ class CrawlManager:
         # keyed by crawler_id -- which is what _cooling_down_crawler_ids and
         # _cooldown_remaining_seconds need, and what a crawler with no declared
         # domain (every crawler but the two eBay ones) already was.
-        # load_config() is a blocking Postgres call, offloaded for the same
-        # reason as the one in _paced_search's finally block.
-        config = await asyncio.to_thread(load_config)
-        limit = int(config.get("consecutive_failure_limit", 10))
-        for cid in self._domain_peers(crawler_id):
-            if succeeded:
-                self._site_consecutive_failures[cid] = 0
-                continue
-            count = self._site_consecutive_failures.get(cid, 0) + 1
-            self._site_consecutive_failures[cid] = count
-            if limit and count >= limit:
-                self._site_cooldown_until[cid] = time.monotonic() + 1800
-                self._site_consecutive_failures[cid] = 0
-                # INFO, not WARNING: the log viewer filters by exact level
-                # membership rather than level-and-above (routers/logs.py's
-                # _line_visible), so at WARNING this was invisible to anyone
-                # watching the INFO stream that carries the rest of the crawl
-                # narrative -- the crawl would just go quiet for 30 minutes
-                # with no line explaining why.
-                log.info(
-                    "Crawler %d hit %d consecutive failures, cooling down for 30 minutes",
-                    cid, count,
-                )
+        #
+        # Locked per domain (not just awaited) because load_config() below is
+        # a real yield point now that it's offloaded -- without the lock, two
+        # concurrent calls for the same domain (e.g. both eBay crawlers, or
+        # two workers hitting the same crawler_id) could interleave their
+        # read-modify-write of these dicts: a failure's write can land after
+        # a chronologically later success's reset, resurrecting a stale
+        # failure count instead of the reset staying in effect.
+        domain_key = self._failure_domains.get(crawler_id, crawler_id)
+        if domain_key not in self._site_result_locks:
+            self._site_result_locks[domain_key] = asyncio.Lock()
+
+        async with self._site_result_locks[domain_key]:
+            # load_config() is a blocking Postgres call, offloaded for the
+            # same reason as the one in _paced_search's finally block.
+            config = await asyncio.to_thread(load_config)
+            limit = int(config.get("consecutive_failure_limit", 10))
+            for cid in self._domain_peers(crawler_id):
+                if succeeded:
+                    self._site_consecutive_failures[cid] = 0
+                    continue
+                count = self._site_consecutive_failures.get(cid, 0) + 1
+                self._site_consecutive_failures[cid] = count
+                if limit and count >= limit:
+                    self._site_cooldown_until[cid] = time.monotonic() + 1800
+                    self._site_consecutive_failures[cid] = 0
+                    # INFO, not WARNING: the log viewer filters by exact level
+                    # membership rather than level-and-above (routers/logs.py's
+                    # _line_visible), so at WARNING this was invisible to anyone
+                    # watching the INFO stream that carries the rest of the crawl
+                    # narrative -- the crawl would just go quiet for 30 minutes
+                    # with no line explaining why.
+                    log.info(
+                        "Crawler %d hit %d consecutive failures, cooling down for 30 minutes",
+                        cid, count,
+                    )
 
     async def _paced_search(self, crawler_id: int, plugin, target: dict, pages: dict) -> tuple:
         """Runs plugin.search() for one crawler_id under that site's lock,

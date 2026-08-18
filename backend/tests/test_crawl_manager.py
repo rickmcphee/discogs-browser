@@ -2193,6 +2193,39 @@ async def test_tripping_the_cooldown_is_logged_at_info(caplog):
     assert [r.levelname for r in cooldown_records] == ["INFO"]
 
 
+async def test_record_site_result_serializes_concurrent_calls_for_the_same_domain():
+    """load_config() being offloaded (asyncio.to_thread) makes it a real
+    yield point, unlike before it was async -- so two concurrent
+    _record_site_result calls for the same failure domain (e.g. both eBay
+    crawler_ids) must not interleave their read-modify-write of
+    _site_consecutive_failures/_site_cooldown_until. A failure's write
+    landing after a later success's reset would resurrect a stale count
+    (flagged in PR #146 review)."""
+    class DomainPlugin:
+        failure_domain = "shared-domain"
+
+    manager = CrawlManager()
+    manager._set_failure_domains({1: DomainPlugin(), 2: DomainPlugin()})
+
+    entries = []
+
+    def slow_load_config():
+        entries.append("enter")
+        time.sleep(0.05)
+        entries.append("exit")
+        return {"consecutive_failure_limit": 10}
+
+    with patch("config.load_config", side_effect=slow_load_config):
+        await asyncio.gather(
+            manager._record_site_result(1, succeeded=False),
+            manager._record_site_result(2, succeeded=True),
+        )
+
+    # If the two calls' critical sections overlapped, thread-scheduling would
+    # let a second "enter" land before the first "exit".
+    assert entries == ["enter", "exit", "enter", "exit"]
+
+
 def test_empty_failure_domain_does_not_pool_crawlers():
     """An empty string is an unset domain, not a domain every crawler that
     fumbled the declaration shares -- pooling two unrelated sites' failures
