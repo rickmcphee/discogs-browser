@@ -297,11 +297,18 @@ export default function App() {
   // Re-checked every time the backend transitions from down to up -- covers
   // both the first successful check and revalidating the session after an
   // outage. A stale authState from before an outage is harmless to render
-  // in the meantime: the `!backendUp` render guard below already hides
-  // everything behind BackendDownScreen until this fetch gets a chance to run.
+  // in the meantime: pre-auth, the render guard still shows BackendDownScreen
+  // until this fetch gets a chance to run; post-auth, the overlay sits on top
+  // of the (frozen but otherwise correct) authenticated app. The `cancelled`
+  // guard discards a response from a request superseded by a later
+  // down/up flap, so an older response can never overwrite a newer one.
   useEffect(() => {
     if (!backendUp) return
-    getAuthStatus().then(setAuthState).catch(() => setAuthState({ state: 'unauthenticated' }))
+    let cancelled = false
+    getAuthStatus()
+      .then((status) => { if (!cancelled) setAuthState(status) })
+      .catch(() => { if (!cancelled) setAuthState({ state: 'unauthenticated' }) })
+    return () => { cancelled = true }
   }, [backendUp])
 
   const startRefresh = useCallback(async (mode: 'all' | 'new') => {

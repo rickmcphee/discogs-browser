@@ -17,6 +17,7 @@ vi.mock('../api/client', () => ({
   setUnauthorizedHandler: vi.fn(),
   getUserHiddenCrawlers: vi.fn().mockResolvedValue([]),
   postUserHiddenCrawlers: vi.fn().mockResolvedValue(undefined),
+  discogsLoginUrl: vi.fn(() => '/api/auth/discogs/start'),
   refreshCollection: vi.fn().mockResolvedValue({ synced: 0, username: 'test' }),
   getCollectionStatus: vi.fn().mockResolvedValue({ total: 0, last_synced: null }),
   getCrawlStatus: vi.fn().mockResolvedValue({ total: 0, missing: 0, oldest_checked: null }),
@@ -178,5 +179,41 @@ describe('backend-down handling', () => {
     expect(screen.getByRole('button', { name: 'Collection' })).toBeInTheDocument()
     expect(screen.queryByText(DOWN_MESSAGE)).not.toBeInTheDocument()
     expect(getAuthStatus).toHaveBeenCalledTimes(2)
+  })
+
+  it('discards a stale getAuthStatus response superseded by a later recovery', async () => {
+    vi.useFakeTimers()
+    render(<App />)
+    await stabilize()
+    expect(getAuthStatus).toHaveBeenCalledTimes(1)
+
+    // First outage + recovery: its getAuthStatus call is deliberately left
+    // pending, simulating a slow response that outlives a second flap.
+    let resolveFirstRecovery: (v: unknown) => void = () => {}
+    const firstRecoveryCall = new Promise((resolve) => { resolveFirstRecovery = resolve })
+    vi.mocked(getAuthStatus).mockReturnValueOnce(firstRecoveryCall as ReturnType<typeof getAuthStatus>)
+
+    vi.mocked(checkHealth).mockResolvedValue(false)
+    await advanceBy(2000)
+    await advanceBy(2000) // backendUp -> false (2 consecutive failures)
+    vi.mocked(checkHealth).mockResolvedValue(true)
+    await advanceBy(2000) // backendUp -> true, fires the (still-pending) 2nd getAuthStatus call
+    expect(getAuthStatus).toHaveBeenCalledTimes(2)
+
+    // Second outage + recovery, resolving before the first call ever does.
+    vi.mocked(checkHealth).mockResolvedValue(false)
+    await advanceBy(2000)
+    await advanceBy(2000) // backendUp -> false again
+    vi.mocked(getAuthStatus).mockResolvedValueOnce({ state: 'unauthenticated' })
+    vi.mocked(checkHealth).mockResolvedValue(true)
+    await advanceBy(2000) // backendUp -> true again, fires the 3rd (fast) call
+    expect(getAuthStatus).toHaveBeenCalledTimes(3)
+    expect(screen.getByText('Continue with Discogs')).toBeInTheDocument()
+
+    // The first (now-stale) call finally resolves -- it must not clobber
+    // the newer 'unauthenticated' result with this older 'authenticated' one.
+    resolveFirstRecovery({ state: 'authenticated', user: { discogs_username: 'test', is_admin: true } })
+    await advanceBy(0)
+    expect(screen.getByText('Continue with Discogs')).toBeInTheDocument()
   })
 })
