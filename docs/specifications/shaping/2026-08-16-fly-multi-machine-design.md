@@ -57,6 +57,12 @@ Machines is just what server logs do — so they're left alone.
   original spec's assumption that this deployment doesn't need more.
 - Moving `app.log` or `screenshots/` off local disk. Both are per-machine by
   nature; forking them across Machines isn't a bug.
+  **Superseded for `app.log`** by
+  [`2026-08-17-unified-log-store-design.md`](2026-08-17-unified-log-store-design.md):
+  once the app had invited users beyond the operator, being able to see one
+  merged log across Machines (and retain history past a single process's
+  lifetime) outweighed the original reasoning. `screenshots/` is unaffected
+  and remains per-machine.
 - Cross-Machine SSE fan-out. `/api/crawl/stream` and `CrawlManager`'s
   `_subscribers`/`_recent` are in-process (`crawl_manager.py`), and nothing
   here changes that. A user whose stream connection lands on Machine A will
