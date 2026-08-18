@@ -280,8 +280,11 @@ from the original spec's reasoning: the worker pool runs continuously with
 no inbound HTTP request in flight, and Fly's autostop only looks at
 fly-proxy traffic).
 
-The `[[mounts]]` block is unchanged — `app.log`, `screenshots/`, and the
-bundled `crawlers/__init__.py` marker still need it, one volume per Machine.
+The `[[mounts]]` block is unchanged — `screenshots/` and the bundled
+`crawlers/__init__.py` marker still need it, one volume per Machine.
+(`app.log` no longer does: superseded by
+[`2026-08-17-unified-log-store-design.md`](2026-08-17-unified-log-store-design.md),
+which moved logs into Postgres.)
 
 ### Manual one-time Fly setup (not committed, not run by CI)
 
@@ -312,5 +315,6 @@ After that, every subsequent `flyctl deploy` (including the existing
 
 ## Open questions
 
-- None. The remaining forked state (`app.log`, `screenshots/`) and the
-  cross-Machine SSE gap are intentionally left as-is per Non-goals above.
+- None. The remaining forked state (`screenshots/`; `app.log` is no longer
+  forked, see the Non-goals amendment above) and the cross-Machine SSE gap
+  are intentionally left as-is per Non-goals above.
