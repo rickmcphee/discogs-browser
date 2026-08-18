@@ -102,6 +102,31 @@ async methods throughout this codebase (e.g. `routers/settings.py`'s
 in `06ed220` — that was an unbounded `httpx` call, not a local Postgres round
 trip.
 
+**Amendment (2026-08-17, production incident):** "no-network-hop" was wrong
+for this deployment. `config.APP_DATABASE_URL`/`ADMIN_DATABASE_URL` resolve
+to Neon, not a co-located Postgres — every `load_config()` call is a real
+network round trip through Neon's pooler, not a local one, and unlike the
+`06ed220` httpx call it has no timeout of its own. Observed in production:
+`crawl_manager.py`'s worker loop calls `load_config()` on every single crawl
+unit (`_paced_search`'s pacing delay, `_record_site_result`'s failure-limit
+check) as well as once per claimed batch for the crawl-queue writes
+themselves. A crawler tripping its consecutive-failure limit logged at
+01:34:25; Fly reported `/api/health` failing at 01:34:36 on the same Machine
+— consistent with this process's single event loop stalling on a burst of
+these blocking calls for long enough to miss the healthcheck's 5s timeout,
+since `/api/health` has no DB dependency of its own but still has to be
+dispatched through that same loop.
+
+Fixed by wrapping every `get_app_pool()`/`get_admin_pool()` call reachable
+from the worker loop (`start_worker_pool`, `_drain_one_batch`,
+`_paced_search`, `_record_site_result`) in `asyncio.to_thread`, matching the
+`_sync_collection_blocking`/`start_stock_sync` pattern already used
+elsewhere in this file (see the "Stock sync mutual exclusion" amendment
+above). `_sync_stock`'s own remaining inline `get_app_pool()` calls and
+`_sync_collection`'s blocking `time.sleep(1.1)` barcode pacing are not part
+of this fix — separate, longer-running background tasks, not the tight loop
+implicated in this incident.
+
 ### `users.avatar_image` (per-user, replaces `avatar.png`)
 
 ```sql

@@ -76,8 +76,10 @@ class CrawlManager:
         from config import PLAYWRIGHT_CHANNEL
         from db import get_app_pool, get_crawlers
 
-        with get_app_pool().connection() as conn:
-            all_crawlers = get_crawlers(conn)
+        def _load_crawlers():
+            with get_app_pool().connection() as conn:
+                return get_crawlers(conn)
+        all_crawlers = await asyncio.to_thread(_load_crawlers)
         plugins = load_enabled_crawlers(all_crawlers)
         plugins_by_crawler_id = {p._db_id: p for p in plugins}
         self._set_failure_domains(plugins_by_crawler_id)
@@ -181,7 +183,7 @@ class CrawlManager:
             return [crawler_id]
         return [cid for cid, d in self._failure_domains.items() if d == domain]
 
-    def _record_site_result(self, crawler_id: int, succeeded: bool):
+    async def _record_site_result(self, crawler_id: int, succeeded: bool):
         import time
         from config import load_config
         # Applied to every crawler in the domain rather than to one shared
@@ -189,7 +191,10 @@ class CrawlManager:
         # keyed by crawler_id -- which is what _cooling_down_crawler_ids and
         # _cooldown_remaining_seconds need, and what a crawler with no declared
         # domain (every crawler but the two eBay ones) already was.
-        limit = int(load_config().get("consecutive_failure_limit", 10))
+        # load_config() is a blocking Postgres call, offloaded for the same
+        # reason as the one in _paced_search's finally block.
+        config = await asyncio.to_thread(load_config)
+        limit = int(config.get("consecutive_failure_limit", 10))
         for cid in self._domain_peers(crawler_id):
             if succeeded:
                 self._site_consecutive_failures[cid] = 0
@@ -258,16 +263,30 @@ class CrawlManager:
                 # detection on both the initial attempt and the retry) would
                 # leave the next request to this same site free to fire
                 # immediately with zero backoff.
-                delay = float(load_config().get("crawl_delay_seconds", 30))
+                #
+                # load_config() is a blocking Postgres round trip (config.py
+                # reads app_config via get_admin_pool()); to_thread keeps it off
+                # this process's single event loop, which every worker and
+                # every /api request -- including /api/health -- shares.
+                site_config = await asyncio.to_thread(load_config)
+                delay = float(site_config.get("crawl_delay_seconds", 30))
                 self._site_next_allowed_at[crawler_id] = time.monotonic() + random.uniform(0.5, 1.0) * delay
 
     async def _drain_one_batch(self, worker_id: str, plugins_by_crawler_id: dict, pages: dict, batch_size: int = 2) -> int:
         from crawler import _new_context
         from db import get_app_pool, claim_crawl_queue_batch, mark_crawl_queue_done, defer_crawl_queue_row, upsert_listing, get_catalog_release, get_stock_item_identity, upsert_stock_item_listing, upsert_stock_item_from_release, delete_stock_item_for_release, clear_listing_price, get_eligible_crawlers
 
-        with get_app_pool().connection() as conn:
-            rows = claim_crawl_queue_batch(conn, worker_id, limit=batch_size)
-            conn.commit()
+        # Every get_app_pool().connection() call below is a blocking psycopg
+        # round trip; each is wrapped in asyncio.to_thread so it runs on a
+        # worker thread instead of this process's single event loop, which
+        # every worker task and every /api request (including /api/health)
+        # shares -- see the docstring on why this matters.
+        def _claim_batch():
+            with get_app_pool().connection() as conn:
+                rows = claim_crawl_queue_batch(conn, worker_id, limit=batch_size)
+                conn.commit()
+                return rows
+        rows = await asyncio.to_thread(_claim_batch)
         if not rows:
             return 0
 
@@ -281,16 +300,23 @@ class CrawlManager:
         units: list = []
         for row in rows:
             is_release = row["discogs_id"] is not None
-            with get_app_pool().connection() as conn:
-                if is_release:
-                    target = get_catalog_release(conn, row["discogs_id"])
-                else:
-                    target = get_stock_item_identity(conn, row["item_key"])
-                eligible = get_eligible_crawlers(conn, is_release, row["pending_crawler_ids"])
-            if target is None:
+
+            def _resolve_target():
                 with get_app_pool().connection() as conn:
-                    mark_crawl_queue_done(conn, row["id"])
-                    conn.commit()
+                    if is_release:
+                        target = get_catalog_release(conn, row["discogs_id"])
+                    else:
+                        target = get_stock_item_identity(conn, row["item_key"])
+                    eligible = get_eligible_crawlers(conn, is_release, row["pending_crawler_ids"])
+                return target, eligible
+            target, eligible = await asyncio.to_thread(_resolve_target)
+
+            if target is None:
+                def _mark_done():
+                    with get_app_pool().connection() as conn:
+                        mark_crawl_queue_done(conn, row["id"])
+                        conn.commit()
+                await asyncio.to_thread(_mark_done)
                 continue
             targets[row["id"]] = (row, target, is_release)
             for crawler in eligible:
@@ -302,7 +328,7 @@ class CrawlManager:
         # facing a cooling-down site moves to the next unit instead of idling.
         deferred: dict = {}
 
-        def resolve_row(row_id: int):
+        async def resolve_row(row_id: int):
             # Resolves one row's terminal crawl_queue status as soon as its
             # own last unit finishes, rather than in a single pass after the
             # whole batch drains. A row with nothing deferred is done; a row
@@ -314,15 +340,17 @@ class CrawlManager:
             # asyncio.CancelledError from stop_worker_pool's task.cancel(),
             # which the `except Exception` below deliberately does not catch)
             # can no longer strand an already-finished row at 'in_progress'.
-            with get_app_pool().connection() as conn:
-                if row_id in deferred:
-                    defer_crawl_queue_row(
-                        conn, row_id, deferred[row_id],
-                        self._cooldown_remaining_seconds(deferred[row_id]),
-                    )
-                else:
-                    mark_crawl_queue_done(conn, row_id)
-                conn.commit()
+            def _write():
+                with get_app_pool().connection() as conn:
+                    if row_id in deferred:
+                        defer_crawl_queue_row(
+                            conn, row_id, deferred[row_id],
+                            self._cooldown_remaining_seconds(deferred[row_id]),
+                        )
+                    else:
+                        mark_crawl_queue_done(conn, row_id)
+                    conn.commit()
+            await asyncio.to_thread(_write)
 
         # A row with zero eligible crawlers contributes no units, so it would
         # never reach the per-unit resolve_row calls below -- resolve it (as
@@ -330,7 +358,7 @@ class CrawlManager:
         row_ids_with_units = {row_id for row_id, _crawler_id in units}
         for row_id in targets:
             if row_id not in row_ids_with_units:
-                resolve_row(row_id)
+                await resolve_row(row_id)
 
         for i, (row_id, crawler_id) in enumerate(units):
             row, target, is_release = targets[row_id]
@@ -340,14 +368,14 @@ class CrawlManager:
                 # A crawler whose module failed to load at boot. Counted as a
                 # site failure but deliberately NOT deferred: a permanently
                 # broken module would otherwise defer its rows forever.
-                self._record_site_result(crawler_id, succeeded=False)
+                await self._record_site_result(crawler_id, succeeded=False)
                 if is_last_unit_for_row:
-                    resolve_row(row_id)
+                    await resolve_row(row_id)
                 continue
             if crawler_id in self._cooling_down_crawler_ids():
                 deferred.setdefault(row_id, []).append(crawler_id)
                 if is_last_unit_for_row:
-                    resolve_row(row_id)
+                    await resolve_row(row_id)
                 continue
 
             if crawler_id not in pages:
@@ -360,13 +388,13 @@ class CrawlManager:
                     "[%s] Crawl failed for %s - %s (%s): %s",
                     plugin._db_site_name, target["artist"], target["title"], row["discogs_id"] or row["item_key"], e,
                 )
-                self._record_site_result(crawler_id, succeeded=False)
+                await self._record_site_result(crawler_id, succeeded=False)
                 if is_last_unit_for_row:
-                    resolve_row(row_id)
+                    await resolve_row(row_id)
                 continue
 
             if is_release:
-                self._record_site_result(crawler_id, succeeded=bool(matches) and not bot_detected)
+                await self._record_site_result(crawler_id, succeeded=bool(matches) and not bot_detected)
             elif bot_detected or matches:
                 # A stock item's search failing to find anything carries no
                 # site-health signal -- most small-label stock isn't listed on
@@ -376,26 +404,28 @@ class CrawlManager:
                 # site currently works) is recorded; a plain empty result is
                 # silently excluded from the circuit breaker rather than counted
                 # as either outcome.
-                self._record_site_result(crawler_id, succeeded=not bot_detected)
+                await self._record_site_result(crawler_id, succeeded=not bot_detected)
 
-            with get_app_pool().connection() as conn:
-                if matches:
-                    best = matches[0]
-                    if is_release:
-                        upsert_listing(
-                            conn, row["discogs_id"], crawler_id, best["url"],
-                            best.get("price"), best.get("shipping"), best.get("currency"), best.get("condition"),
-                        )
-                        upsert_stock_item_from_release(conn, row["discogs_id"], crawler_id, target, best)
-                    else:
-                        upsert_stock_item_listing(
-                            conn, row["item_key"], crawler_id, best["url"],
-                            best.get("price"), best.get("shipping"), best.get("currency"), best.get("condition"),
-                        )
-                elif is_release and not bot_detected:
-                    delete_stock_item_for_release(conn, row["discogs_id"], crawler_id)
-                    clear_listing_price(conn, row["discogs_id"], crawler_id)
-                conn.commit()
+            def _write_result():
+                with get_app_pool().connection() as conn:
+                    if matches:
+                        best = matches[0]
+                        if is_release:
+                            upsert_listing(
+                                conn, row["discogs_id"], crawler_id, best["url"],
+                                best.get("price"), best.get("shipping"), best.get("currency"), best.get("condition"),
+                            )
+                            upsert_stock_item_from_release(conn, row["discogs_id"], crawler_id, target, best)
+                        else:
+                            upsert_stock_item_listing(
+                                conn, row["item_key"], crawler_id, best["url"],
+                                best.get("price"), best.get("shipping"), best.get("currency"), best.get("condition"),
+                            )
+                    elif is_release and not bot_detected:
+                        delete_stock_item_for_release(conn, row["discogs_id"], crawler_id)
+                        clear_listing_price(conn, row["discogs_id"], crawler_id)
+                    conn.commit()
+            await asyncio.to_thread(_write_result)
 
             # Before the broadcast, not after, so the status write cannot be
             # separated from the unit's commit by anything awaitable. Both are
@@ -409,7 +439,7 @@ class CrawlManager:
             # with its listing written and no reclaim path or re-enqueue able to
             # revive it.
             if is_last_unit_for_row:
-                resolve_row(row_id)
+                await resolve_row(row_id)
 
             status = "found" if matches else "not_found"
             if is_release:
@@ -858,7 +888,7 @@ class CrawlManager:
                         consecutive_429_sites.append(crawler._db_site_name)
                     else:
                         log.error("[%s] Stock crawl failed: %s", crawler._db_site_name, e, exc_info=True)
-                        self._record_site_result(crawler._db_id, succeeded=False)
+                        await self._record_site_result(crawler._db_id, succeeded=False)
                         failed_sources.append(crawler._db_site_name)
                         await self._broadcast({
                             "status": "stock_sync_error",
@@ -882,7 +912,7 @@ class CrawlManager:
                     continue
 
                 consecutive_429_sites = []
-                self._record_site_result(crawler._db_id, succeeded=True)
+                await self._record_site_result(crawler._db_id, succeeded=True)
                 with get_app_pool().connection() as conn:
                     item_keys = replace_stock_items(conn, crawler._db_id, items)
                     update_crawler_last_run(conn, crawler._db_id)
