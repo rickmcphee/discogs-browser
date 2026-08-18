@@ -212,7 +212,45 @@ Each fix has a regression test that reproduces the exact race (cancels
 rather than guessing a sleep duration) and was verified to fail without
 its fix before the fix was added back.
 
-### `users.avatar_image` (per-user, replaces `avatar.png`)
+**Amendment (2026-08-17, GitHub Copilot PR review, architectural):** a
+fourth review round found the same class of gap again — this time in
+`_paced_search`'s own `load_config()` read, `_record_site_result`'s
+`load_config()` read, and `_resolve_target` — none of which write to
+`crawl_queue` themselves, but a cancellation landing during any of them
+still lets `CancelledError` propagate out of `_process_claimed_rows` (as
+it then was, inlined in `_drain_one_batch`) before that row's terminal
+write ever runs. Four rounds of finding the next unshielded `await` in the
+same claimed row's path is the "3+ narrow fixes each revealing a new
+instance elsewhere" signal for a wrong-grained fix, not a wrong-grained
+review: individually wrapping each write, as the two amendments above did,
+can never close this class of gap, because the vulnerability isn't in any
+one call — it's every `await` a claimed row's processing passes through
+before its terminal write.
+
+Restructured accordingly: `_drain_one_batch` now only claims the batch
+(reverting on cancellation, as before — cheap and immediate, since nothing
+is at stake yet). Everything after a successful claim — resolving targets,
+running each crawler, recording results, writing listings, resolving each
+row's terminal status — moved into a new method, `_process_claimed_rows`,
+and `_drain_one_batch` runs it as a single `_shielded()` call. A
+cancellation landing anywhere inside `_process_claimed_rows` now lets the
+*entire* claimed batch finish processing before propagating, not just
+whichever write happened to be in flight. This also let the per-call
+`_shielded`/`_to_thread_uncancelable` wrapping added in the two amendments
+above be removed — with the whole method shielded by its only caller,
+wrapping the individual DB calls inside it again was redundant, so they're
+back to plain `asyncio.to_thread` calls, and `_to_thread_uncancelable`
+itself was deleted as dead code.
+
+Trade-off, chosen deliberately over continuing to patch instances: once a
+batch is claimed, `stop_worker_pool()`'s `task.cancel()` no longer stops a
+worker until that batch (batch_size rows × their eligible crawlers,
+including real crawler network requests and pacing delays) finishes
+processing, rather than at whichever `await` cancellation happened to
+land on. Graceful shutdown gets correspondingly slower in the worst case,
+bounded by how long one claimed batch takes — accepted as the right price
+for actually closing this class of gap instead of leaving it open at
+whichever call site hasn't been reviewed yet.
 
 ```sql
 ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_image BYTEA;
