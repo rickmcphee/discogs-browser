@@ -10,6 +10,7 @@ interface Props {
   syncing?: boolean
   onRefreshCollection?: () => void
   syncGeneration?: number
+  hasPriceField?: boolean
 }
 
 // Rendered from both the tile and table branches below, which would otherwise
@@ -17,7 +18,7 @@ interface Props {
 const WANTLIST_EMPTY = 'No wantlist items yet. Add records to your wantlist on Discogs, then sync.'
 const COLLECTION_EMPTY = 'No records found. Click the sync icon above to load your collection from Discogs.'
 
-export default function RecordBrowser({ scope, syncing, onRefreshCollection, syncGeneration }: Props) {
+export default function RecordBrowser({ scope, syncing, onRefreshCollection, syncGeneration, hasPriceField = true }: Props) {
   const [releases, setReleases] = useState<Release[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -302,14 +303,16 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
                     Format {sort === 'format' ? (order === 'asc' ? '↑' : '↓') : ''}
                   </button>
                 </th>
-                <th
-                  className="text-center"
-                  aria-sort={sort === 'discogs_price' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}
-                >
-                  <button type="button" onClick={() => toggleSort('discogs_price')} className={`${sortButtonClass} text-center`}>
-                    Price {sort === 'discogs_price' ? (order === 'asc' ? '↑' : '↓') : ''}
-                  </button>
-                </th>
+                {hasPriceField && (
+                  <th
+                    className="text-center"
+                    aria-sort={sort === 'discogs_price' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}
+                  >
+                    <button type="button" onClick={() => toggleSort('discogs_price')} className={`${sortButtonClass} text-center`}>
+                      Price {sort === 'discogs_price' ? (order === 'asc' ? '↑' : '↓') : ''}
+                    </button>
+                  </th>
+                )}
                 <th
                   className="text-center"
                   aria-sort={sort === 'date_added' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}
@@ -323,7 +326,7 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
             <tbody>
               {hasLoaded && releases.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="text-center py-8 text-gray-500">
+                  <td colSpan={hasPriceField ? 8 : 7} className="text-center py-8 text-gray-500">
                     {scope === 'wantlist' ? WANTLIST_EMPTY : COLLECTION_EMPTY}
                   </td>
                 </tr>
@@ -358,7 +361,7 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
                   <td className="px-3 py-2 text-gray-400">{r.year ?? '—'}</td>
                   <td className="px-3 py-2 text-gray-400 truncate max-w-32">{r.label}</td>
                   <td className="px-3 py-2 text-gray-400">{r.format}</td>
-                  <td className="px-3 py-2 text-gray-400">{r.discogs_price ?? '—'}</td>
+                  {hasPriceField && <td className="px-3 py-2 text-gray-400">{r.discogs_price ?? '—'}</td>}
                   <td className="px-3 py-2 text-gray-400">
                     {r.date_added ? new Date(r.date_added).toLocaleDateString() : '—'}
                   </td>
