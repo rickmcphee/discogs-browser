@@ -87,16 +87,32 @@ export default function App() {
   useEffect(() => {
     let cancelled = false
     let consecutiveFailures = 0
+    let wasUp = false
     async function poll() {
       while (!cancelled) {
         const ok = await checkHealth()
         if (!cancelled) {
           if (ok) {
             consecutiveFailures = 0
+            if (!wasUp) {
+              // Set together in the same commit as setBackendUp(true), and
+              // only on the down/null -> up transition (not every routine
+              // tick while already up) -- setting it separately, from the
+              // auth-status effect that only fires afterward (once it
+              // observes backendUp change), would leave a render in between
+              // where backendUp is already true but authRevalidating is
+              // still stale-false, briefly clearing the overlay/inert state
+              // before revalidation has even started.
+              setAuthRevalidating(true)
+            }
+            wasUp = true
             setBackendUp(true)
           } else {
             consecutiveFailures += 1
-            if (consecutiveFailures >= 2) setBackendUp(false)
+            if (consecutiveFailures >= 2) {
+              wasUp = false
+              setBackendUp(false)
+            }
           }
         }
         await new Promise(r => setTimeout(r, 2000))
