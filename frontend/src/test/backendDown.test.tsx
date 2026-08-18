@@ -216,4 +216,34 @@ describe('backend-down handling', () => {
     await advanceBy(0)
     expect(screen.getByText('Continue with Discogs')).toBeInTheDocument()
   })
+
+  it('keeps the overlay and inert state active until session revalidation actually resolves, not just once backendUp flips true', async () => {
+    vi.useFakeTimers()
+    render(<App />)
+    await stabilize()
+    const collectionButton = screen.getByRole('button', { name: 'Collection' })
+
+    vi.mocked(checkHealth).mockResolvedValue(false)
+    await advanceBy(2000)
+    await advanceBy(2000) // backendUp -> false
+    expect(screen.getByText(DOWN_MESSAGE)).toBeInTheDocument()
+
+    // Recovery: checkHealth succeeds (backendUp -> true), but the
+    // revalidation fetch it kicks off is left deliberately pending.
+    let resolveRevalidation: (v: unknown) => void = () => {}
+    const revalidation = new Promise((resolve) => { resolveRevalidation = resolve })
+    vi.mocked(getAuthStatus).mockReturnValueOnce(revalidation as ReturnType<typeof getAuthStatus>)
+    vi.mocked(checkHealth).mockResolvedValue(true)
+    await advanceBy(2000)
+
+    // backendUp is true now, but the overlay must still be up -- the app
+    // hasn't been reconfirmed reachable-with-a-valid-session yet.
+    expect(screen.getByText(DOWN_MESSAGE)).toBeInTheDocument()
+    expect(collectionButton.closest('[inert]')).not.toBeNull()
+
+    resolveRevalidation({ state: 'authenticated', user: { discogs_username: 'test', is_admin: true } })
+    await advanceBy(0)
+    expect(screen.queryByText(DOWN_MESSAGE)).not.toBeInTheDocument()
+    expect(collectionButton.closest('[inert]')).toBeNull()
+  })
 })

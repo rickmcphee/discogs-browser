@@ -44,6 +44,7 @@ export default function App() {
   const [judgmentRunning, setJudgmentRunning] = useState(false)
   const [serverReady, setServerReady] = useState(false)
   const [backendUp, setBackendUp] = useState<boolean | null>(null)
+  const [authRevalidating, setAuthRevalidating] = useState(false)
   const [syncMessage, setSyncMessage] = useState<string | null>(null)
   const [syncMessageId, setSyncMessageId] = useState<number | null>(null)
   const [dismissedSyncId, setDismissedSyncId] = useState(() => Number(localStorage.getItem(DISMISSED_SYNC_KEY) ?? 0))
@@ -298,16 +299,21 @@ export default function App() {
   // both the first successful check and revalidating the session after an
   // outage. A stale authState from before an outage is harmless to render
   // in the meantime: pre-auth, the render guard still shows BackendDownScreen
-  // until this fetch gets a chance to run; post-auth, the overlay sits on top
-  // of the (frozen but otherwise correct) authenticated app. The `cancelled`
-  // guard discards a response from a request superseded by a later
-  // down/up flap, so an older response can never overwrite a newer one.
+  // until this fetch gets a chance to run; post-auth, authRevalidating keeps
+  // the overlay/inert state active (see the bottom of this component) until
+  // this fetch actually resolves, not just until backendUp flips true --
+  // otherwise the frozen app would briefly un-freeze before its session is
+  // reconfirmed. The `cancelled` guard discards a response from a request
+  // superseded by a later down/up flap, so an older response can never
+  // overwrite a newer one.
   useEffect(() => {
     if (!backendUp) return
     let cancelled = false
+    setAuthRevalidating(true)
     getAuthStatus()
       .then((status) => { if (!cancelled) setAuthState(status) })
       .catch(() => { if (!cancelled) setAuthState({ state: 'unauthenticated' }) })
+      .finally(() => { if (!cancelled) setAuthRevalidating(false) })
     return () => { cancelled = true }
   }, [backendUp])
 
@@ -534,12 +540,13 @@ export default function App() {
 
   return (
     <div className="h-screen bg-gray-950 text-gray-100 flex flex-col overflow-hidden">
-      {/* Wrapper is `inert` while the backend is confirmed down, so a keyboard
-          or screen-reader user can't tab into the frozen app underneath the
-          BackendDownScreen overlay. `display: contents` keeps it invisible
-          to layout -- header/main/etc. stay direct flex children of the
-          h-screen container above. */}
-      <div inert={backendUp === false} className="contents">
+      {/* Wrapper is `inert` while the backend is confirmed down, or while a
+          post-recovery session revalidation is still in flight, so a
+          keyboard or screen-reader user can't tab into the frozen app
+          underneath the BackendDownScreen overlay. `display: contents` keeps
+          it invisible to layout -- header/main/etc. stay direct flex
+          children of the h-screen container above. */}
+      <div inert={backendUp === false || authRevalidating} className="contents">
       {/* Header */}
       <header className="bg-gray-900 border-b border-gray-800 px-6 py-3 flex items-center gap-4">
         <nav className="flex gap-2">
@@ -784,8 +791,10 @@ export default function App() {
 
       {/* Backend down overlay -- shown on top of the still-mounted (but now
           inert) app so in-progress state (search filters, unsaved Settings
-          fields) survives a transient outage instead of being unmounted. */}
-      {backendUp === false && <BackendDownScreen />}
+          fields) survives a transient outage instead of being unmounted.
+          Stays up through authRevalidating too, so recovery never exposes
+          the stale authenticated app before its session is reconfirmed. */}
+      {(backendUp === false || authRevalidating) && <BackendDownScreen />}
     </div>
   )
 }
