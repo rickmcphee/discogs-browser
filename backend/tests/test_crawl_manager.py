@@ -2259,6 +2259,29 @@ async def test_shielded_runs_the_coroutine_to_completion_despite_cancellation():
     assert finished.is_set()
 
 
+async def test_shielded_reraises_cancellation_even_if_the_coroutine_then_fails():
+    """`await task` inside _shielded's except block can itself raise -- if
+    the shielded coroutine fails with a real exception while a
+    cancellation is already pending, that exception must not replace the
+    CancelledError. _worker_loop checks `except asyncio.CancelledError`
+    before `except Exception` specifically so a cancelled worker actually
+    stops instead of being treated as a routine error and retried after a
+    5s sleep (caught in PR #146 review)."""
+    async def failing_sequence():
+        await asyncio.sleep(0.02)
+        raise ValueError("boom")
+
+    async def runner():
+        await _shielded(failing_sequence())
+
+    task = asyncio.ensure_future(runner())
+    await asyncio.sleep(0.005)  # cancel while failing_sequence is still asleep, before it raises
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
 async def test_drain_one_batch_reverts_a_cancelled_claim_instead_of_orphaning_it(pg_schema):
     """stop_worker_pool()'s task.cancel() landing while _claim_batch's
     thread is still committing must not leave the claimed row stuck

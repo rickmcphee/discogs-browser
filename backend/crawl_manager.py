@@ -32,7 +32,17 @@ async def _shielded(coro):
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:
-        await task
+        try:
+            await task
+        except Exception:
+            # A real failure surfacing here must not replace the pending
+            # cancellation -- _worker_loop checks `except asyncio.
+            # CancelledError` before `except Exception` specifically so a
+            # cancelled worker actually stops instead of being treated as
+            # a routine error and retried after a sleep. This is the only
+            # place that ever sees this exception, so it's logged here
+            # rather than silently dropped.
+            log.error("Exception in a _shielded coroutine during cancellation", exc_info=True)
         raise
 
 
