@@ -516,17 +516,15 @@ class CrawlManager:
                     conn.commit()
             await asyncio.to_thread(_write_result)
 
-            # Before the broadcast, not after, so the status write cannot be
-            # separated from the unit's commit by anything awaitable. Both are
-            # synchronous now (the broadcasts use put_nowait), so today neither
-            # ordering can strand a row -- `await q.put()` on an unbounded queue
-            # does not suspend, so stop_worker_pool()'s task.cancel() had no
-            # window to land in either. This ordering is what keeps that true
-            # without depending on Queue's internals: if the broadcast ever
-            # gains a real await, resolving first means a finished row's status
-            # is already committed, instead of the row being left 'in_progress'
-            # with its listing written and no reclaim path or re-enqueue able to
-            # revive it.
+            # Before the broadcast, not after, so a broadcast failure can't
+            # separate the listing write from the row's status write in the
+            # logs. `_write_result` and (for the row's last unit)
+            # resolve_row below are two separate to_thread awaits now, not
+            # one synchronous block -- what keeps a cancellation landing
+            # between them from stranding the row 'in_progress' with its
+            # listing already correct is that this whole method is run
+            # inside one _shielded() call by _drain_one_batch (see that
+            # method's docstring), not anything local to this ordering.
             if is_last_unit_for_row:
                 await resolve_row(row_id)
 
