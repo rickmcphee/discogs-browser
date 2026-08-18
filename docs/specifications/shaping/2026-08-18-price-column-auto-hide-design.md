@@ -66,13 +66,18 @@ def collection_price_status(request: Request):
 (`App.tsx:126-142`) alongside `getJudgmentStatus()`. New state `hasPriceData`, default
 `false`, passed as a `hasPriceField` prop to both `RecordBrowser` instances
 (`collection`, `wantlist` scopes) and the Track `StockBrowser` instance
-(`App.tsx:626-645`).
+(`App.tsx:626-645`). It's also refetched after every non-wishlist `sync_complete` SSE
+event, so a user's first sync (once it populates `price_paid`) reveals the column
+without a manual reload, and a sync that clears the user's last price hides it again in
+the same session.
 
-**`RecordBrowser.tsx`.** New required prop `hasPriceField: boolean`. Wrap the Price
+**`RecordBrowser.tsx`.** New optional prop `hasPriceField?: boolean`, defaulting to
+`true` (so every pre-existing caller and test renders exactly as before). Wrap the Price
 `<th>` (`:305`) and `<td>` (`:361`) in `{hasPriceField && (...)}`. The empty-state row's
 `colSpan={8}` (`:326`) becomes `colSpan={hasPriceField ? 8 : 7}`.
 
-**`StockBrowser.tsx`.** New required prop `hasPriceField: boolean`. Fold into the
+**`StockBrowser.tsx`.** New optional prop `hasPriceField?: boolean`, defaulting to
+`true` (so every pre-existing caller and test renders exactly as before). Fold into the
 existing `scope === 'track'` gates on the header (`:412`) and cell (`:456`) →
 `scope === 'track' && hasPriceField`. `colCount` (`:239`, currently
 `scope === 'track' ? 7 : 7`) becomes `scope === 'track' ? (hasPriceField ? 7 : 6) : 7`.
@@ -109,9 +114,16 @@ gated off.
 
 ## Documentation impact
 
-Three pre-existing specs described the Price column's presence as unconditional and
+Five pre-existing specs described the Price column's presence as unconditional and
 needed amendment (each got a dated "Amendment (2026-08-18, ...)" note, not a rewrite):
-`2026-08-10-collection-wishlist-filter-design.md` (twice — the "stays present under
-every filter value" decision, and the flat `colCount` claim), `2026-08-09-collection-price-paid-design.md`
-("no conditional rendering"), and `2026-08-16-store-saved-items-design.md` (the flat
-`scope === 'track' ? 7 : 7` colCount claim).
+`docs/specifications/shaping/2026-08-10-collection-wishlist-filter-design.md` (twice —
+the "stays present under every filter value" decision, and the flat `colCount` claim),
+`docs/specifications/shaping/2026-08-09-collection-price-paid-design.md` ("no
+conditional rendering"), `docs/specifications/shaping/2026-08-16-store-saved-items-design.md`
+(the flat `scope === 'track' ? 7 : 7` colCount claim), `docs/superpowers/specs/2026-07-05-in-stock-crawler-design.md`
+(the Track Price-column-under-every-filter-value claim), and
+`docs/superpowers/specs/2026-06-27-discogs-browser-design.md` (the base table's fixed
+column list). The original spec-drift check on this branch missed the two
+`docs/superpowers/specs/` files — this repo has two spec trees
+(`docs/superpowers/specs/` and `docs/specifications/shaping/`) and the check must cover
+both.

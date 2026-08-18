@@ -147,7 +147,8 @@ Out of scope:
   **Amendment (2026-08-18, branch `discogs-price-column-detection`):** the
   column's presence is now conditional after all, but on a different axis
   than what was rejected here — it hides only when the *user* has no
-  collection price data at all (once per session, not per filter toggle),
+  collection price data at all (refetched at app bootstrap and after every
+  non-wishlist collection sync, not per filter toggle),
   never in response to switching the Track filter. See
   [`2026-08-18-price-column-auto-hide-design.md`](2026-08-18-price-column-auto-hide-design.md).
   Its *sort header*, however, goes plain text under

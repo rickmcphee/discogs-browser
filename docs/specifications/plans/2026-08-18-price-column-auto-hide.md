@@ -1,6 +1,6 @@
 # Auto-hide Price column Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: this repo's `CLAUDE.md` mandates superpowers:subagent-driven-development for plan execution — do not offer superpowers:executing-plans as a default alternative. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Hide the `Price` column (Collection tab, Wantlist tab, Track tab) for any user who has no collection price data, instead of showing a column of nothing but `—`.
 

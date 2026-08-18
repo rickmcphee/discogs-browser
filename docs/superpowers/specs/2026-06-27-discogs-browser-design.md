@@ -342,6 +342,13 @@ Uses the persistent Chrome profile with `playwright_stealth`. Raises `BotDetecte
 
 Artist sidebar (independent scroll, `shrink-0` buttons) + main area with search bar, sortable table, and pagination (250/page). Table columns: thumbnail, Artist, Title, Year, Label, Format, Price (discogs_price), one column per enabled crawler. Crawler cells show `$X.XX` (green) if priced, a "View" link if URL exists but no price, or `—` if no listing. Live SSE events update cells in place. Per-row refresh button triggers a single-release crawl.
 
+**Amendment (2026-08-18, branch `discogs-price-column-detection`):** the
+Price column in that list is no longer unconditional — it renders only
+when the calling user has at least one collection item with a stored
+price; otherwise it's omitted from the table (and the empty-state
+`colSpan` narrows to match). See
+[`2026-08-18-price-column-auto-hide-design.md`](../specifications/shaping/2026-08-18-price-column-auto-hide-design.md).
+
 `crawlers` state is fetched once in `App.tsx` and passed as props to both `CollectionBrowser` and `Settings`; neither view fetches crawlers independently.
 
 **View toggle.** Two icon buttons, right-justified in the search bar row, switch `viewMode` between `list` (the table above) and `tiles`. Choice persists in `localStorage` (`collectionViewMode`), defaulting to `list`. Tile view is a responsive grid (`auto-fill, minmax(140px, 1fr)`) of uniform square covers with artist and title truncated underneath; each tile links to `discogs_url`, same as the artist link in list view. Tile view shows no price/crawler columns and no refresh button — cover art browsing only. Sidebar artist filter, search, and pagination behave identically in both modes.
