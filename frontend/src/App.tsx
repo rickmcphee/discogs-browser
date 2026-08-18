@@ -198,6 +198,10 @@ export default function App() {
       if (event.status === 'sync_error') {
         setSyncing(false)
         setSyncStatus(`Sync failed: ${event.error}`, event.id ?? null)
+        // Each page's writes (including price_paid) commit before the next page
+        // starts, so a sync that fails partway through can still have changed
+        // stored prices -- refetch regardless of which scope errored.
+        fetchPriceStatus()
         return
       }
       if (event.status === 'plex_match_started') {

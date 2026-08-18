@@ -146,6 +146,14 @@ describe('In Stock tab', () => {
     await waitFor(() => expect(getPriceStatus.mock.calls.length).toBeGreaterThan(1))
   })
 
+  it('refetches price status after a sync fails partway through', async () => {
+    render(<App />)
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    await waitFor(() => expect(getPriceStatus).toHaveBeenCalled())
+    getLastCrawlSource().emit({ status: 'sync_error', error: 'boom', id: 1 })
+    await waitFor(() => expect(getPriceStatus.mock.calls.length).toBeGreaterThan(1))
+  })
+
   it('does not let a slow bootstrap price-status response overwrite a newer post-sync one', async () => {
     let resolveBootstrap: (v: { any_price_paid: boolean }) => void = () => {}
     getPriceStatus
