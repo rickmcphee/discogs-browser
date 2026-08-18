@@ -12,6 +12,32 @@ log = get_logger("crawl_manager")
 # pg_advisory_xact_lock(2026080901) convention.
 STOCK_SYNC_LOCK_KEY = 2026081601
 
+
+async def _to_thread_uncancelable(func):
+    """Like asyncio.to_thread(func), except func still runs to completion
+    even if the awaiting task is cancelled while it's in flight.
+
+    asyncio.to_thread's own cancellation only stops a callable that hasn't
+    started running yet (concurrent.futures.Future.cancel() fails once a
+    worker thread has picked it up) -- once it's running, cancelling the
+    awaiting task just abandons the result, it doesn't stop the thread. For
+    a crawl_queue write (claim/mark-done/defer), that means the commit can
+    still land, but nothing is left to act on its result: the row reads
+    'in_progress' forever, and db.py's claim_crawl_queue_batch docstring is
+    explicit that there is no reclaim/timeout path for that. Shielding the
+    thread from cancellation and then awaiting it anyway in the except
+    block (rather than just shielding) makes sure that write finishes
+    before this function's own CancelledError is allowed to propagate, so
+    the caller's cancellation-safety invariants around terminal crawl_queue
+    writes (see resolve_row's docstring) hold for cancellation too, not
+    just for exceptions raised elsewhere in the same unit."""
+    task = asyncio.ensure_future(asyncio.to_thread(func))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        await task
+        raise
+
 class CrawlManager:
     def __init__(self):
         self._sync_tasks: dict[int, asyncio.Task] = {}
@@ -305,7 +331,7 @@ class CrawlManager:
                 rows = claim_crawl_queue_batch(conn, worker_id, limit=batch_size)
                 conn.commit()
                 return rows
-        rows = await asyncio.to_thread(_claim_batch)
+        rows = await _to_thread_uncancelable(_claim_batch)
         if not rows:
             return 0
 
@@ -335,7 +361,7 @@ class CrawlManager:
                     with get_app_pool().connection() as conn:
                         mark_crawl_queue_done(conn, row["id"])
                         conn.commit()
-                await asyncio.to_thread(_mark_done)
+                await _to_thread_uncancelable(_mark_done)
                 continue
             targets[row["id"]] = (row, target, is_release)
             for crawler in eligible:
@@ -369,7 +395,7 @@ class CrawlManager:
                     else:
                         mark_crawl_queue_done(conn, row_id)
                     conn.commit()
-            await asyncio.to_thread(_write)
+            await _to_thread_uncancelable(_write)
 
         # A row with zero eligible crawlers contributes no units, so it would
         # never reach the per-unit resolve_row calls below -- resolve it (as
@@ -444,7 +470,7 @@ class CrawlManager:
                         delete_stock_item_for_release(conn, row["discogs_id"], crawler_id)
                         clear_listing_price(conn, row["discogs_id"], crawler_id)
                     conn.commit()
-            await asyncio.to_thread(_write_result)
+            await _to_thread_uncancelable(_write_result)
 
             # Before the broadcast, not after, so the status write cannot be
             # separated from the unit's commit by anything awaitable. Both are

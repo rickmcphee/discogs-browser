@@ -150,12 +150,34 @@ Two crawler_ids sharing a failure domain — the eBay pair is the only
 current example — can now have their `_record_site_result` calls
 interleave: a failure's read-modify-write can land after a chronologically
 later success's reset, resurrecting a stale failure count instead of the
-reset sticking. Fixed by serializing `_record_site_result` per failure
-domain (`CrawlManager._site_result_locks`, keyed the same way
-`_domain_peers` groups crawler_ids) — the eBay pair's requests were already
-serialized *within* `_paced_search` via `_site_locks`, but that only covers
-the network call, not the bookkeeping after it, which runs outside that
-lock.
+reset sticking. `_site_locks` (used by `_paced_search` to pace requests)
+does not already prevent this — it's keyed by `crawler_id`, so the two eBay
+crawler_ids get two separate locks and their *requests* can run
+concurrently; only their shared-counter *bookkeeping* needed serializing.
+Fixed by adding a second lock, `CrawlManager._site_result_locks`, keyed the
+same way `_domain_peers` groups crawler_ids (by domain, not crawler_id), so
+`_record_site_result` now runs its whole body — config read and counter
+mutation — under that per-domain lock.
+
+**Amendment (2026-08-17, GitHub Copilot PR review):** four more instances of
+the pattern this whole change is about, all in `_drain_one_batch`: the
+`asyncio.to_thread` calls that claim a batch (`_claim_batch`), mark a
+targetless row done (`_mark_done`), and write a row's terminal status or
+listing result (`resolve_row`'s `_write`, `_write_result`) all write to
+`crawl_queue`, and `asyncio.to_thread`'s cancellation only stops a callable
+that hasn't started running yet — once the worker thread has picked it up,
+cancelling the awaiting task abandons the result without stopping the
+write. `stop_worker_pool()`'s `task.cancel()` can therefore let one of
+these commits land after the worker has already exited, with nothing left
+to act on the result. Unlike a hung or crashed worker (an accepted gap
+documented on `claim_crawl_queue_batch` — a crash rolls back the open
+transaction and self-heals), a commit that lands after cancellation is
+durable and orphaned: the row reads `'in_progress'` forever with no reclaim
+path. Fixed with `_to_thread_uncancelable`, a small wrapper that shields
+the underlying thread from the awaiting task's cancellation and then awaits
+it anyway before re-raising, so the write always finishes before
+cancellation is allowed to propagate — used at all four call sites in place
+of a bare `asyncio.to_thread`.
 
 ### `users.avatar_image` (per-user, replaces `avatar.png`)
 

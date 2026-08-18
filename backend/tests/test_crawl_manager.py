@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import os
+import threading
 import time
 import psycopg
 import pytest
@@ -11,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import db
 import recommendations
 import token_encryption
-from crawl_manager import CrawlManager, STOCK_SYNC_LOCK_KEY
+from crawl_manager import CrawlManager, STOCK_SYNC_LOCK_KEY, _to_thread_uncancelable
 
 
 @pytest.fixture
@@ -2224,6 +2225,32 @@ async def test_record_site_result_serializes_concurrent_calls_for_the_same_domai
     # If the two calls' critical sections overlapped, thread-scheduling would
     # let a second "enter" land before the first "exit".
     assert entries == ["enter", "exit", "enter", "exit"]
+
+
+async def test_to_thread_uncancelable_runs_the_callable_to_completion_despite_cancellation():
+    """asyncio.to_thread's own cancellation only stops a callable that
+    hasn't started running yet -- once a worker thread has picked it up,
+    cancelling the awaiting task abandons the result without stopping the
+    write. Used for crawl_queue writes with no reclaim path if orphaned
+    this way (flagged in PR #146 review, applies to _drain_one_batch's
+    _claim_batch/_mark_done/_write/_write_result)."""
+    finished = threading.Event()
+
+    def slow_write():
+        time.sleep(0.05)
+        finished.set()
+
+    async def runner():
+        await _to_thread_uncancelable(slow_write)
+
+    task = asyncio.ensure_future(runner())
+    await asyncio.sleep(0.01)  # let the thread pool actually start slow_write
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert finished.is_set()
 
 
 def test_empty_failure_domain_does_not_pool_crawlers():
