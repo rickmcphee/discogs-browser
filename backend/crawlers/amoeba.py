@@ -77,6 +77,7 @@ class Crawler:
     site_name: str = "Amoeba Music"
     base_url: str = "https://www.amoeba.com"
     genre_summary: str = "Large independent record store selling new and used vinyl and CDs across nearly every genre."
+    genre: str = "marketplace"
     crawler_type: str = "catalog_browser"
 
     @classmethod

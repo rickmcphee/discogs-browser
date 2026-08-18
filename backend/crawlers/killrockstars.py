@@ -17,6 +17,7 @@ class Crawler:
     site_name: str = "Kill Rock Stars"
     base_url: str = "https://killrockstars.com"
     genre_summary: str = "Indie rock and riot grrrl label."
+    genre: str = "rock"
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:

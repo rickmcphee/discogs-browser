@@ -17,6 +17,7 @@ class Crawler:
     site_name: str = "Craft Recordings"
     base_url: str = "https://craftrecordings.com"
     genre_summary: str = "Reissue label for jazz, soul, blues, and classic rock catalogs."
+    genre: str = "marketplace"
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:

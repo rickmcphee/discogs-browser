@@ -403,6 +403,12 @@ CREATE TABLE IF NOT EXISTS stock_item_judgments (
     PRIMARY KEY (user_id, item_key)
 );
 
+CREATE TABLE IF NOT EXISTS user_hidden_crawlers (
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    crawler_id INTEGER NOT NULL REFERENCES crawlers(id),
+    PRIMARY KEY (user_id, crawler_id)
+);
+
 CREATE TABLE IF NOT EXISTS stock_item_saves (
     user_id INTEGER NOT NULL REFERENCES users(id),
     item_key TEXT NOT NULL,
@@ -448,6 +454,8 @@ ALTER TABLE library_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE library_items FORCE ROW LEVEL SECURITY;
 ALTER TABLE stock_item_judgments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE stock_item_judgments FORCE ROW LEVEL SECURITY;
+ALTER TABLE user_hidden_crawlers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE user_hidden_crawlers FORCE ROW LEVEL SECURITY;
 ALTER TABLE stock_item_saves ENABLE ROW LEVEL SECURITY;
 ALTER TABLE stock_item_saves FORCE ROW LEVEL SECURITY;
 
@@ -486,6 +494,11 @@ CREATE POLICY library_items_isolation ON library_items
 
 DROP POLICY IF EXISTS stock_item_judgments_isolation ON stock_item_judgments;
 CREATE POLICY stock_item_judgments_isolation ON stock_item_judgments
+    USING (user_id = current_setting('app.user_id', true)::int)
+    WITH CHECK (user_id = current_setting('app.user_id', true)::int);
+
+DROP POLICY IF EXISTS user_hidden_crawlers_isolation ON user_hidden_crawlers;
+CREATE POLICY user_hidden_crawlers_isolation ON user_hidden_crawlers
     USING (user_id = current_setting('app.user_id', true)::int)
     WITH CHECK (user_id = current_setting('app.user_id', true)::int);
 
@@ -566,6 +579,7 @@ def init_tenant_schema():
         conn.execute("GRANT USAGE, SELECT ON SEQUENCE listings_id_seq, stock_items_id_seq TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON library_items TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON stock_item_judgments TO app_user")
+        conn.execute("GRANT SELECT, INSERT, DELETE ON user_hidden_crawlers TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON stock_item_saves TO app_user")
         # crawl_queue needs DELETE for the same reason stock_items does:
         # delete_dead_stock_crawl_queue_rows(), run through get_app_pool() from
@@ -988,15 +1002,17 @@ def get_all_crawlers(conn) -> list[dict]:
             spec.loader.exec_module(mod)
             d["base_url"] = getattr(mod.Crawler, "base_url", None)
             d["genre_summary"] = getattr(mod.Crawler, "genre_summary", None)
+            d["genre"] = getattr(mod.Crawler, "genre", "marketplace")
         except Exception as e:
             # base_url/genre_summary are cosmetic here (they only feed the
             # crawler list), so a broken plugin must not fail the whole
             # listing -- but stay consistent with crawler.py's loader and
             # leave a trace rather than silently reporting None for a
             # plugin that won't import.
-            log.warning("Could not load crawler plugin %s for base_url/genre_summary: %s", d["module_path"], e)
+            log.warning("Could not load crawler plugin %s for base_url/genre_summary/genre: %s", d["module_path"], e)
             d["base_url"] = None
             d["genre_summary"] = None
+            d["genre"] = "marketplace"
         result.append(d)
     return result
 
@@ -1857,6 +1873,25 @@ def has_any_stock_judgment(conn, user_id: int) -> bool:
 def clear_stock_judgments(conn, user_id: int) -> int:
     cursor = conn.execute("DELETE FROM stock_item_judgments WHERE user_id = %s", [user_id])
     return cursor.rowcount
+
+
+def get_hidden_crawler_ids(conn, user_id: int) -> list[int]:
+    rows = conn.execute(
+        "SELECT crawler_id FROM user_hidden_crawlers WHERE user_id = %s", [user_id]
+    ).fetchall()
+    return [row["crawler_id"] for row in rows]
+
+
+def set_hidden_crawler_ids(conn, user_id: int, crawler_ids: list[int]):
+    conn.execute("DELETE FROM user_hidden_crawlers WHERE user_id = %s", [user_id])
+    unique_ids = list(dict.fromkeys(crawler_ids))
+    if unique_ids:
+        with conn.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO user_hidden_crawlers (user_id, crawler_id) "
+                "SELECT %s, %s WHERE EXISTS (SELECT 1 FROM crawlers WHERE id = %s)",
+                [(user_id, cid, cid) for cid in unique_ids],
+            )
 
 
 def get_recommended_stock_items(conn, user_id: int) -> list[dict]:

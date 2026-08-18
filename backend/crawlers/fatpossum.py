@@ -10,6 +10,7 @@ class Crawler:
     site_name: str = "Fat Possum"
     base_url: str = "https://fatpossum.com"
     genre_summary: str = "Blues, garage rock, and Southern indie rock label."
+    genre: str = "rock"
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:

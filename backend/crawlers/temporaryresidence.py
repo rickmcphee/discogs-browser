@@ -12,6 +12,7 @@ class Crawler:
     site_name: str = "Temporary Residence Ltd"
     base_url: str = "https://temporaryresidence.com"
     genre_summary: str = "Post-rock, ambient, and experimental label."
+    genre: str = "rock"
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:

@@ -204,3 +204,32 @@ def test_get_all_crawlers_genre_summary_defaults_to_none(admin_conn, tmp_path):
     crawlers = db.get_all_crawlers(admin_conn)
     row = next(c for c in crawlers if c["site_name"] == "No Genre Test Store")
     assert row["genre_summary"] is None
+
+
+def test_get_all_crawlers_reads_genre(admin_conn, tmp_path):
+    crawler_file = tmp_path / "genre_field_test_crawler.py"
+    crawler_file.write_text(
+        "class Crawler:\n"
+        "    site_name = 'Genre Field Test Store'\n"
+        "    genre = 'punk'\n"
+    )
+    db.register_crawler(admin_conn, "Genre Field Test Store", str(crawler_file), crawler_type="catalog")
+    admin_conn.commit()
+
+    crawlers = db.get_all_crawlers(admin_conn)
+    row = next(c for c in crawlers if c["site_name"] == "Genre Field Test Store")
+    assert row["genre"] == "punk"
+
+
+def test_get_all_crawlers_genre_defaults_to_marketplace(admin_conn, tmp_path):
+    crawler_file = tmp_path / "no_genre_field_test_crawler.py"
+    crawler_file.write_text(
+        "class Crawler:\n"
+        "    site_name = 'No Genre Field Test Store'\n"
+    )
+    db.register_crawler(admin_conn, "No Genre Field Test Store", str(crawler_file))
+    admin_conn.commit()
+
+    crawlers = db.get_all_crawlers(admin_conn)
+    row = next(c for c in crawlers if c["site_name"] == "No Genre Field Test Store")
+    assert row["genre"] == "marketplace"

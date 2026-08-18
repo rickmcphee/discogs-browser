@@ -15,6 +15,7 @@ class Crawler:
     site_name: str = "Turntable Lab"
     base_url: str = "https://www.turntablelab.com"
     genre_summary: str = "Record store and hi-fi retailer with a broad new vinyl selection across genres."
+    genre: str = "marketplace"
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:

@@ -14,6 +14,7 @@ class Crawler:
     site_name: str = "Run For Cover"
     base_url: str = "https://runforcoverrecords.com"
     genre_summary: str = "Indie emo and pop-punk label."
+    genre: str = "punk"
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:

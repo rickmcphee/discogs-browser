@@ -33,6 +33,7 @@ class Crawler:
     site_name: str = "The Sound Garden"
     base_url: str = "https://www.sgrecordshop.com"
     genre_summary: str = "Independent record store with a broad new and used selection across genres."
+    genre: str = "marketplace"
     crawler_type: str = "catalog"
 
     # path + querystring exactly as sourced from the site's own nav --
