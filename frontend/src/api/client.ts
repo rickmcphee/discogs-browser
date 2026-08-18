@@ -257,6 +257,12 @@ export async function getJudgmentStatus(): Promise<{ any_judged: boolean }> {
   return r.json()
 }
 
+export async function getPriceStatus(): Promise<{ any_price_paid: boolean }> {
+  const r = await apiFetch('/collection/price-status')
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
+}
+
 export async function clearJudgments(): Promise<{ cleared: boolean; running: boolean; count?: number }> {
   const r = await apiFetch('/stock/judge/clear', { method: 'POST' })
   if (!r.ok) throw new Error(await r.text())

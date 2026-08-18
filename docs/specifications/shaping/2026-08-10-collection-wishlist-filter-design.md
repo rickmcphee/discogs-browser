@@ -142,7 +142,16 @@ Out of scope:
   there's no conditional column rendering and no filter-dependent
   `colCount`. Hiding the column under the Wantlist filter was considered
   and rejected: it would make the header row shift as the filter changes,
-  for a cosmetic gain. Its *sort header*, however, goes plain text under
+  for a cosmetic gain.
+
+  **Amendment (2026-08-18, branch `discogs-price-column-detection`):** the
+  column's presence is now conditional after all, but on a different axis
+  than what was rejected here — it hides only when the *user* has no
+  collection price data at all (refetched at app bootstrap and after every
+  non-wishlist collection sync, not per filter toggle),
+  never in response to switching the Track filter. See
+  [`2026-08-18-price-column-auto-hide-design.md`](2026-08-18-price-column-auto-hide-design.md).
+  Its *sort header*, however, goes plain text under
   the Wantlist filter — no button, no `aria-sort`, no handler — because the
   collection-pinned sort expression degrades to artist order there (see
   "Sort"), and a control that silently reorders by something other than
@@ -499,6 +508,11 @@ alongside brought Store's `colCount` to 7 as well — see
 `frontend/src/views/StockBrowser.tsx`'s `colCount` (now `scope === 'track'
 ? 7 : 7`) and
 [`2026-08-16-store-saved-items-design.md`](2026-08-16-store-saved-items-design.md).
+
+**Amendment (2026-08-18, branch `discogs-price-column-detection`):** Track's
+`colCount` is no longer flatly 7 — it's now `scope === 'track' ? (hasPriceField
+? 7 : 6) : 7`, dropping to 6 when the user has no collection price data. See
+[`2026-08-18-price-column-auto-hide-design.md`](2026-08-18-price-column-auto-hide-design.md).
 
 Empty-state copy becomes filter-aware in both list and tile views. Today's
 "No in-stock items yet. Click "Refresh Stock Now" in Settings." is wrong

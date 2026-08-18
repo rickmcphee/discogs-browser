@@ -495,6 +495,31 @@ describe('StockBrowser', () => {
     )
   })
 
+  it('renders the Price column by default in Track scope', async () => {
+    render(<StockBrowser scope="track" />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    expect(screen.getByText(/Price/)).toBeTruthy()
+  })
+
+  it('hides the Price column in Track scope when hasPriceField is false', async () => {
+    render(<StockBrowser scope="track" hasPriceField={false} />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    expect(screen.queryByText(/Price/)).toBeNull()
+  })
+
+  it('narrows the empty-state colSpan in Track scope when hasPriceField is false', async () => {
+    getStock.mockResolvedValue({ total: 0, page: 1, per_page: 250, items: [] })
+    render(<StockBrowser scope="track" hasPriceField={false} />)
+    const emptyRow = await screen.findByText(/Nothing you're tracking is in stock/)
+    expect(emptyRow.closest('td')).toHaveAttribute('colSpan', '6')
+  })
+
+  it('does not render a Price column in Store scope even when hasPriceField is true', async () => {
+    render(<StockBrowser hasPriceField />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    expect(screen.queryByText(/Price/)).toBeNull()
+  })
+
   it('does not render a Price column in Store scope', async () => {
     render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
@@ -514,6 +539,15 @@ describe('StockBrowser', () => {
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     fireEvent.click(screen.getByText(/Price/))
     await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ sort: 'discogs_price', order: 'asc' })))
+  })
+
+  it('resets a discogs_price sort to artist when hasPriceField flips to false in Track scope', async () => {
+    const { rerender } = render(<StockBrowser scope="track" hasPriceField={true} />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByText(/Price/))
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'discogs_price' })))
+    rerender(<StockBrowser scope="track" hasPriceField={false} />)
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'artist', order: 'asc' })))
   })
 
   it('persists the view mode to localStorage under collectionViewMode_store', async () => {

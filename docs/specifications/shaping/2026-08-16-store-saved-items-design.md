@@ -394,6 +394,12 @@ independently from each scope's actual column set, and should be written
 as `scope === 'track' ? 7 : 7` (not simplified to a bare `7`) so a future
 change to either scope's columns has an obvious place to diverge again.
 
+**Amendment (2026-08-18, branch `discogs-price-column-detection`):** Track's
+branch of `colCount` did diverge, exactly as this paragraph anticipated — it's
+now `scope === 'track' ? (hasPriceField ? 7 : 6) : 7`, dropping to 6 when the
+user has no collection price data. Store's branch is unaffected. See
+[`2026-08-18-price-column-auto-hide-design.md`](2026-08-18-price-column-auto-hide-design.md).
+
 Only rendered when `scope === 'store'` — the Track table keeps its current
 column set unchanged, matching the "Store scope only" decision. This means
 `colCount` and the header/row cells all gate on `scope === 'store'`

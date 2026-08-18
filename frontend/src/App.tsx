@@ -9,7 +9,7 @@ import InviteCodeScreen from './views/InviteCodeScreen'
 import BackendDownScreen from './views/BackendDownScreen'
 import Avatar from './components/Avatar'
 import { navButtonClass, primaryButtonClass, secondaryButtonClass, dismissButtonClass } from './styles/buttons'
-import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, clearJudgments, exportRecommendationsCsv, importRecommendationsCsv, getCrawlers, getUserSettings, getUserHiddenCrawlers, postUserHiddenCrawlers, getJudgmentStatus, checkHealth, getAuthStatus, setUnauthorizedHandler, hasAvatar } from './api/client'
+import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, clearJudgments, exportRecommendationsCsv, importRecommendationsCsv, getCrawlers, getUserSettings, getUserHiddenCrawlers, postUserHiddenCrawlers, getJudgmentStatus, getPriceStatus, checkHealth, getAuthStatus, setUnauthorizedHandler, hasAvatar } from './api/client'
 import type { CrawlEvent, CrawlStatus, CollectionStatus, Crawler, AuthStatus } from './api/types'
 
 type View = 'collection' | 'wantlist' | 'store' | 'track' | 'settings' | 'logs' | 'account'
@@ -41,6 +41,8 @@ export default function App() {
   const [avatarVersion, setAvatarVersion] = useState(0)
   const [hasAnthropicKey, setHasAnthropicKey] = useState(false)
   const [hasJudgedItems, setHasJudgedItems] = useState(false)
+  const [hasPriceData, setHasPriceData] = useState(false)
+  const latestPriceStatusSeq = useRef(0)
   const [judgmentRunning, setJudgmentRunning] = useState(false)
   const [serverReady, setServerReady] = useState(false)
   const [backendUp, setBackendUp] = useState<boolean | null>(null)
@@ -78,6 +80,18 @@ export default function App() {
       }
     })
   }, [setSyncStatus])
+
+  // Bootstrap and the post-sync refresh below can both have a getPriceStatus()
+  // request in flight at once; without a sequence guard, a slow-arriving
+  // bootstrap response can land after the newer post-sync one and overwrite it
+  // with stale data.
+  const fetchPriceStatus = useCallback(() => {
+    const seq = ++latestPriceStatusSeq.current
+    getPriceStatus().then((s) => {
+      if (seq !== latestPriceStatusSeq.current) return
+      setHasPriceData(s.any_price_paid)
+    }).catch(() => {})
+  }, [])
 
   // Continuous, unconditional health poll -- drives `backendUp`, which gates
   // BackendDownScreen for both "backend not up yet" and "backend went down
@@ -138,8 +152,9 @@ export default function App() {
       setHasAnthropicKey(Boolean(s.anthropic_api_key))
     }).catch(() => {})
     getJudgmentStatus().then((s) => setHasJudgedItems(s.any_judged)).catch(() => {})
+    fetchPriceStatus()
     hasAvatar().then((exists) => setAvatarVersion(exists ? Date.now() : 0)).catch(() => {})
-  }, [authState, backendUp, serverReady, setSyncStatus])
+  }, [authState, backendUp, serverReady, setSyncStatus, fetchPriceStatus])
 
   // Persistent SSE connection — reconnects on error. Gated on authState only
   // (not backendUp) -- it reconnects through any backend outage on its own
@@ -175,6 +190,7 @@ export default function App() {
         } else {
           const wantlistPart = event.wishlist_synced != null ? `, ${event.wishlist_synced} wantlist items` : ''
           setSyncStatus(`Synced ${event.synced} records for ${event.username}${wantlistPart}`, event.id ?? null)
+          fetchPriceStatus()
         }
         setSyncGeneration(g => g + 1)
         return
@@ -182,6 +198,10 @@ export default function App() {
       if (event.status === 'sync_error') {
         setSyncing(false)
         setSyncStatus(`Sync failed: ${event.error}`, event.id ?? null)
+        // Each page's writes (including price_paid) commit before the next page
+        // starts, so a sync that fails partway through can still have changed
+        // stored prices -- refetch regardless of which scope errored.
+        fetchPriceStatus()
         return
       }
       if (event.status === 'plex_match_started') {
@@ -305,7 +325,7 @@ export default function App() {
       source?.close()
       clearTimeout(reconnectTimer)
     }
-  }, [authState, setSyncStatus])
+  }, [authState, setSyncStatus, fetchPriceStatus])
 
   useEffect(() => {
     setUnauthorizedHandler(() => setAuthState({ state: 'unauthenticated' }))
@@ -628,6 +648,7 @@ export default function App() {
             syncing={syncing}
             onRefreshCollection={() => handleRefresh()}
             syncGeneration={syncGeneration}
+            hasPriceField={hasPriceData}
           />
         </div>
         <div className={view === 'wantlist' ? 'h-full' : 'hidden'}>
@@ -636,13 +657,14 @@ export default function App() {
             syncing={syncing}
             onRefreshCollection={() => handleRefreshWantlist()}
             syncGeneration={syncGeneration}
+            hasPriceField={hasPriceData}
           />
         </div>
         <div className={view === 'store' ? 'h-full' : 'hidden'}>
           <StockBrowser recommendedAvailable={recommendedAvailable} hiddenCrawlerIds={hiddenCrawlerIds} crawlers={crawlers} onHiddenCrawlerIdsChange={updateHiddenCrawlerIds} hiddenCrawlerIdsLoaded={hiddenCrawlerIdsLoaded} syncGeneration={stockSyncGeneration} isAdmin={showAdminNav} />
         </div>
         <div className={view === 'track' ? 'h-full' : 'hidden'}>
-          <StockBrowser scope="track" hiddenCrawlerIds={hiddenCrawlerIds} crawlers={crawlers} onHiddenCrawlerIdsChange={updateHiddenCrawlerIds} hiddenCrawlerIdsLoaded={hiddenCrawlerIdsLoaded} syncGeneration={stockSyncGeneration} isAdmin={showAdminNav} />
+          <StockBrowser scope="track" hiddenCrawlerIds={hiddenCrawlerIds} crawlers={crawlers} onHiddenCrawlerIdsChange={updateHiddenCrawlerIds} hiddenCrawlerIdsLoaded={hiddenCrawlerIdsLoaded} syncGeneration={stockSyncGeneration} isAdmin={showAdminNav} hasPriceField={hasPriceData} />
         </div>
         <div className={view === 'settings' ? 'h-full overflow-y-auto' : 'hidden'}>
           <Settings
