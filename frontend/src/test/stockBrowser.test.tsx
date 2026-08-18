@@ -541,6 +541,15 @@ describe('StockBrowser', () => {
     await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ sort: 'discogs_price', order: 'asc' })))
   })
 
+  it('resets a discogs_price sort to artist when hasPriceField flips to false in Track scope', async () => {
+    const { rerender } = render(<StockBrowser scope="track" hasPriceField={true} />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByText(/Price/))
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'discogs_price' })))
+    rerender(<StockBrowser scope="track" hasPriceField={false} />)
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'artist', order: 'asc' })))
+  })
+
   it('persists the view mode to localStorage under collectionViewMode_store', async () => {
     render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())

@@ -120,6 +120,15 @@ function StockBrowser({
       setFilter('all')
     }
   }, [recommendedAvailable, filter])
+  // Same hazard as changeFilter's discogs_price reset above, but for the
+  // hasPriceField prop itself flipping false (e.g. a sync clears the user's
+  // last price) rather than a user-driven filter change.
+  useEffect(() => {
+    if (!hasPriceField && sort === 'discogs_price') {
+      setSort('artist')
+      setOrder('asc')
+    }
+  }, [hasPriceField, sort])
   // Also refetches on syncGeneration ticks, same as load() above -- otherwise
   // the sidebar's artist list would go stale mid-crawl.
   useEffect(() => {

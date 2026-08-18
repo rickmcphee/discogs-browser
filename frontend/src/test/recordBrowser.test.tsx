@@ -202,4 +202,13 @@ describe('RecordBrowser', () => {
     expect(screen.queryByText(/Price/)).toBeNull()
     expect(emptyRow.closest('td')).toHaveAttribute('colSpan', '7')
   })
+
+  it('resets a discogs_price sort to artist when hasPriceField flips to false', async () => {
+    const { rerender } = render(<RecordBrowser scope="collection" hasPriceField={true} />)
+    await waitFor(() => expect(getReleases).toHaveBeenCalled())
+    fireEvent.click(screen.getByText(/Price/))
+    await waitFor(() => expect(getReleases).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'discogs_price' })))
+    rerender(<RecordBrowser scope="collection" hasPriceField={false} />)
+    await waitFor(() => expect(getReleases).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'artist', order: 'asc' })))
+  })
 })

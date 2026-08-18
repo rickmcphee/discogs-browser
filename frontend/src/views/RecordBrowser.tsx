@@ -95,6 +95,15 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
     else selectArtist('')
   }, [artists, selectedArtist])
   useEffect(() => { localStorage.setItem(`collectionViewMode_${scope}`, viewMode) }, [viewMode, scope])
+  // The Price column and its sort header disappear when hasPriceField goes
+  // false (e.g. a sync clears the user's last stored price) -- without this,
+  // sort would stay pinned to discogs_price with no visible control claiming it.
+  useEffect(() => {
+    if (!hasPriceField && sort === 'discogs_price') {
+      setSort('artist')
+      setOrder('asc')
+    }
+  }, [hasPriceField, sort])
 
   function toggleSort(field: SortField) {
     if (sort === field) {
