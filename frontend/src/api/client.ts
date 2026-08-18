@@ -35,7 +35,7 @@ async function apiFetch(path: string, init: RequestInit = {}): Promise<Response>
 
 export async function checkHealth(): Promise<boolean> {
   try {
-    const r = await apiFetch('/health')
+    const r = await apiFetch('/health', { signal: AbortSignal.timeout(4000) })
     // Any non-5xx means the backend is reachable (5xx = nginx gateway error)
     return r.status < 500
   } catch {
