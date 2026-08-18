@@ -1864,6 +1864,14 @@ def unsave_stock_item(conn, user_id: int, item_key: str) -> None:
     )
 
 
+def has_any_price_paid(conn, user_id: int) -> bool:
+    return conn.execute(
+        "SELECT EXISTS(SELECT 1 FROM library_items WHERE user_id = %s "
+        "AND in_collection = TRUE AND price_paid IS NOT NULL)",
+        [user_id],
+    ).fetchone()["exists"]
+
+
 def has_any_stock_judgment(conn, user_id: int) -> bool:
     return conn.execute(
         "SELECT EXISTS(SELECT 1 FROM stock_item_judgments WHERE user_id = %s)", [user_id]
