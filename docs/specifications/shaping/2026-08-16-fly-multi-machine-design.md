@@ -173,11 +173,44 @@ to act on the result. Unlike a hung or crashed worker (an accepted gap
 documented on `claim_crawl_queue_batch` — a crash rolls back the open
 transaction and self-heals), a commit that lands after cancellation is
 durable and orphaned: the row reads `'in_progress'` forever with no reclaim
-path. Fixed with `_to_thread_uncancelable`, a small wrapper that shields
-the underlying thread from the awaiting task's cancellation and then awaits
-it anyway before re-raising, so the write always finishes before
-cancellation is allowed to propagate — used at all four call sites in place
-of a bare `asyncio.to_thread`.
+path.
+
+First pass fixed this with `_to_thread_uncancelable`, a wrapper that
+shields the underlying thread from cancellation and then awaits it anyway
+before re-raising, guaranteeing the *write itself* finishes. Review caught
+that this was still incomplete for two of the four: guaranteeing a write
+finishes doesn't guarantee anything *depending on it* also runs before the
+cancellation propagates.
+
+- `_claim_batch`: `_to_thread_uncancelable` lets the claim's `UPDATE ...
+  SET status = 'in_progress'` commit, but the resulting `rows` are still
+  discarded the moment it re-raises — `_drain_one_batch` never receives
+  them, so nothing ever resolves the rows it just claimed. Fixed
+  differently: on cancellation, the (already-committed) claimed rows are
+  read back from the awaited task and explicitly reverted via a new
+  `db.revert_crawl_queue_claim(conn, queue_ids)` (`status = 'pending',
+  claimed_by = NULL, claimed_at = NULL`, leaving `pending_crawler_ids`/
+  `available_at` untouched) before the cancellation is allowed to
+  propagate — undoing the claim rather than trying to make it durable.
+- `_write_result`: `_to_thread_uncancelable` guarantees the listing commit
+  finishes, but the `resolve_row` call that must follow it (for the row's
+  last unit) is separate code after the `await` — a cancellation landing
+  in between skips it, leaving the row `'in_progress'` with its listing
+  already correct. Fixed by generalizing the shielding: a new `_shielded`
+  helper wraps an arbitrary coroutine (not just a single `to_thread` call)
+  to completion despite cancellation, and `_write_result` plus the
+  following `resolve_row` are now one coroutine passed to it, so a
+  cancellation landing anywhere in that pair still lets both finish before
+  propagating. (`_to_thread_uncancelable` itself became a thin wrapper —
+  `_shielded(asyncio.to_thread(func))` — for the two call sites,
+  `_mark_done` and `resolve_row`'s own `_write`, where the write already is
+  the entire terminal unit with nothing depending on it afterward.)
+
+Each fix has a regression test that reproduces the exact race (cancels
+`_drain_one_batch` mid-flight via a deliberately slowed DB call, using a
+`threading.Event` to cancel precisely once the slow call has started
+rather than guessing a sleep duration) and was verified to fail without
+its fix before the fix was added back.
 
 ### `users.avatar_image` (per-user, replaces `avatar.png`)
 

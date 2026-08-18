@@ -2253,6 +2253,98 @@ async def test_to_thread_uncancelable_runs_the_callable_to_completion_despite_ca
     assert finished.is_set()
 
 
+async def test_drain_one_batch_reverts_a_cancelled_claim_instead_of_orphaning_it(pg_schema):
+    """stop_worker_pool()'s task.cancel() landing while _claim_batch's
+    thread is still committing must not leave the claimed row stuck
+    'in_progress' forever -- db.py's claim_crawl_queue_batch docstring is
+    explicit there's no reclaim path for that (caught in PR #146 review):
+    _to_thread_uncancelable alone still discards `rows` on cancellation, so
+    _drain_one_batch must revert the claim instead."""
+    with db.get_admin_pool().connection() as conn:
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1")
+        conn.commit()
+
+    manager = CrawlManager()
+    real_claim = db.claim_crawl_queue_batch
+
+    def slow_claim(conn, worker_id, limit):
+        time.sleep(0.05)
+        return real_claim(conn, worker_id, limit)
+
+    with patch("db.claim_crawl_queue_batch", side_effect=slow_claim):
+        task = asyncio.ensure_future(manager._drain_one_batch("worker-test", {}, pages={}))
+        await asyncio.sleep(0.01)  # let the thread start committing the claim
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT status, claimed_by FROM crawl_queue WHERE discogs_id = 'r1'"
+        ).fetchone()
+    assert row["status"] == "pending"
+    assert row["claimed_by"] is None
+
+
+async def test_drain_one_batch_resolves_the_row_even_if_cancelled_during_the_result_write(pg_schema):
+    """A cancellation landing between _write_result's commit and the
+    resolve_row call that must follow it must not let the listing write
+    commit while the row's terminal crawl_queue status never gets written
+    -- that stranded the row 'in_progress' forever even though its data was
+    already correct (caught in PR #146 review)."""
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1")
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(return_value=[
+        {"url": "https://x", "price": 5.0, "shipping": None, "currency": "USD", "condition": None}
+    ])
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    real_upsert_listing = db.upsert_listing
+    started = threading.Event()
+
+    def slow_upsert_listing(*args, **kwargs):
+        started.set()
+        time.sleep(0.05)
+        return real_upsert_listing(*args, **kwargs)
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("config.load_config", return_value={"crawl_delay_seconds": 0, "consecutive_failure_limit": 10}), \
+         patch("db.upsert_listing", side_effect=slow_upsert_listing):
+        task = asyncio.ensure_future(manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={}))
+        while not started.is_set():  # deterministic: wait for the write to actually start
+            await asyncio.sleep(0.005)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute("SELECT status FROM crawl_queue WHERE discogs_id = 'r1'").fetchone()
+        listing = conn.execute(
+            "SELECT price FROM listings WHERE release_id = 'r1' AND crawler_id = %s", [crawler_id]
+        ).fetchone()
+    assert row["status"] == "done"
+    assert listing is not None and listing["price"] == 5.0
+
+
 def test_empty_failure_domain_does_not_pool_crawlers():
     """An empty string is an unset domain, not a domain every crawler that
     fumbled the declaration shares -- pooling two unrelated sites' failures

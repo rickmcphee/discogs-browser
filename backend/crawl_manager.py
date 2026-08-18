@@ -13,30 +13,36 @@ log = get_logger("crawl_manager")
 STOCK_SYNC_LOCK_KEY = 2026081601
 
 
-async def _to_thread_uncancelable(func):
-    """Like asyncio.to_thread(func), except func still runs to completion
-    even if the awaiting task is cancelled while it's in flight.
+async def _shielded(coro):
+    """Runs `coro` to completion even if the awaiting task is cancelled
+    while it's in flight, then re-raises the cancellation afterward.
 
-    asyncio.to_thread's own cancellation only stops a callable that hasn't
-    started running yet (concurrent.futures.Future.cancel() fails once a
-    worker thread has picked it up) -- once it's running, cancelling the
-    awaiting task just abandons the result, it doesn't stop the thread. For
-    a crawl_queue write (claim/mark-done/defer), that means the commit can
-    still land, but nothing is left to act on its result: the row reads
-    'in_progress' forever, and db.py's claim_crawl_queue_batch docstring is
-    explicit that there is no reclaim/timeout path for that. Shielding the
-    thread from cancellation and then awaiting it anyway in the except
-    block (rather than just shielding) makes sure that write finishes
-    before this function's own CancelledError is allowed to propagate, so
-    the caller's cancellation-safety invariants around terminal crawl_queue
-    writes (see resolve_row's docstring) hold for cancellation too, not
-    just for exceptions raised elsewhere in the same unit."""
-    task = asyncio.ensure_future(asyncio.to_thread(func))
+    Plain asyncio.shield() only protects `coro` itself from being cancelled
+    -- the *awaiting* coroutine still gets CancelledError immediately and,
+    left unhandled, moves on without `coro`'s result. For a sequence like
+    "write a crawl result, then resolve that row's terminal crawl_queue
+    status," splitting them at a cancellation boundary is exactly the bug:
+    the result can commit while the resolve that must follow it never runs,
+    leaving the row 'in_progress' forever with no reclaim path (db.py's
+    claim_crawl_queue_batch docstring). Catching the CancelledError and
+    awaiting the shielded task anyway before re-raising makes sure `coro`
+    -- run in full, not just its first blocking call -- finishes before
+    this function's own cancellation is allowed to propagate."""
+    task = asyncio.ensure_future(coro)
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:
         await task
         raise
+
+
+async def _to_thread_uncancelable(func):
+    """_shielded(asyncio.to_thread(func)) -- for a single blocking call
+    whose own commit is the entire unit that must not be orphaned (no
+    caller-side code depends on acting on its result afterward). Use
+    _shielded directly when a write must be paired with code that runs
+    after it, e.g. resolve_row -- see _drain_one_batch's _write_result."""
+    return await _shielded(asyncio.to_thread(func))
 
 class CrawlManager:
     def __init__(self):
@@ -319,7 +325,7 @@ class CrawlManager:
 
     async def _drain_one_batch(self, worker_id: str, plugins_by_crawler_id: dict, pages: dict, batch_size: int = 2) -> int:
         from crawler import _new_context
-        from db import get_app_pool, claim_crawl_queue_batch, mark_crawl_queue_done, defer_crawl_queue_row, upsert_listing, get_catalog_release, get_stock_item_identity, upsert_stock_item_listing, upsert_stock_item_from_release, delete_stock_item_for_release, clear_listing_price, get_eligible_crawlers
+        from db import get_app_pool, claim_crawl_queue_batch, mark_crawl_queue_done, defer_crawl_queue_row, revert_crawl_queue_claim, upsert_listing, get_catalog_release, get_stock_item_identity, upsert_stock_item_listing, upsert_stock_item_from_release, delete_stock_item_for_release, clear_listing_price, get_eligible_crawlers
 
         # Every get_app_pool().connection() call below is a blocking psycopg
         # round trip; each is wrapped in asyncio.to_thread so it runs on a
@@ -331,7 +337,26 @@ class CrawlManager:
                 rows = claim_crawl_queue_batch(conn, worker_id, limit=batch_size)
                 conn.commit()
                 return rows
-        rows = await _to_thread_uncancelable(_claim_batch)
+        # _to_thread_uncancelable isn't enough here on its own: it guarantees
+        # the claim's commit finishes before a cancellation is allowed to
+        # propagate, but the claimed rows are still lost the moment it
+        # re-raises -- _drain_one_batch never gets `rows` back, so nothing
+        # ever resolves them, and db.py's claim_crawl_queue_batch docstring
+        # is explicit there's no reclaim path for a row stuck 'in_progress'
+        # this way (caught in PR #146 review). If cancelled, undo the claim
+        # instead of leaving it orphaned.
+        claim_task = asyncio.ensure_future(asyncio.to_thread(_claim_batch))
+        try:
+            rows = await asyncio.shield(claim_task)
+        except asyncio.CancelledError:
+            claimed = await claim_task
+            if claimed:
+                def _revert():
+                    with get_app_pool().connection() as conn:
+                        revert_crawl_queue_claim(conn, [r["id"] for r in claimed])
+                        conn.commit()
+                await asyncio.to_thread(_revert)
+            raise
         if not rows:
             return 0
 
@@ -470,7 +495,6 @@ class CrawlManager:
                         delete_stock_item_for_release(conn, row["discogs_id"], crawler_id)
                         clear_listing_price(conn, row["discogs_id"], crawler_id)
                     conn.commit()
-            await _to_thread_uncancelable(_write_result)
 
             # Before the broadcast, not after, so the status write cannot be
             # separated from the unit's commit by anything awaitable. Both are
@@ -483,8 +507,18 @@ class CrawlManager:
             # is already committed, instead of the row being left 'in_progress'
             # with its listing written and no reclaim path or re-enqueue able to
             # revive it.
-            if is_last_unit_for_row:
-                await resolve_row(row_id)
+            #
+            # _write_result and (when this is the row's last unit) resolve_row
+            # are wrapped in one _shielded call, not two separate awaits: a
+            # cancellation landing between them would let the listing commit
+            # while the row's terminal crawl_queue status never gets written,
+            # leaving it 'in_progress' with no reclaim path even though its
+            # data is already correct (caught in PR #146 review).
+            async def _write_result_and_resolve():
+                await asyncio.to_thread(_write_result)
+                if is_last_unit_for_row:
+                    await resolve_row(row_id)
+            await _shielded(_write_result_and_resolve())
 
             status = "found" if matches else "not_found"
             if is_release:

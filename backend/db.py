@@ -1295,6 +1295,24 @@ def defer_crawl_queue_row(conn, queue_id: int, crawler_ids: list, delay_seconds:
     )
 
 
+# Undoes claim_crawl_queue_batch for rows the caller never got a chance to
+# act on -- e.g. stop_worker_pool()'s task.cancel() landing between the
+# claim's commit and _drain_one_batch receiving the claimed rows back from
+# CrawlManager._to_thread_uncancelable, which by design still lets the
+# already-in-flight commit finish before re-raising the cancellation.
+# Unlike defer_crawl_queue_row, this doesn't touch pending_crawler_ids or
+# available_at -- nothing about the row's own eligibility state changed,
+# only its claim did, so it goes back to exactly as claimable as it was a
+# moment before.
+def revert_crawl_queue_claim(conn, queue_ids: list):
+    if not queue_ids:
+        return
+    conn.execute(
+        "UPDATE crawl_queue SET status = 'pending', claimed_by = NULL, claimed_at = NULL WHERE id = ANY(%(queue_ids)s)",
+        {"queue_ids": list(queue_ids)},
+    )
+
+
 # Global rather than scoped to one crawler: idempotent, self-correcting, and it
 # also clears residue predating the source gate. The cost is that the count a
 # disable reports can include rows from another store's delisted items -- it
