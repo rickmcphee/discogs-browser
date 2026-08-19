@@ -202,8 +202,9 @@ and its grants re-run on every boot, so the grant lands on redeploy.
 INFO, not WARNING: `routers/logs.py`'s `_line_visible` filters by exact level
 membership rather than level-and-above, so a WARNING here would be invisible to
 anyone watching the INFO stream that carries the rest of the crawl narrative —
-the same reasoning already recorded on the cooldown log line in
-`_record_site_result`.
+the same reasoning previously recorded on the cooldown log line in
+`_record_site_result`, which as of 2026-08-18 has itself reverted to WARNING
+(see the amendment on `2026-08-01-worker-pool-pacing-design.md` item 12).
 
 `routers/settings.py` currently has no module logger; add the standard
 `log = get_logger("routers.settings")` used by the other routers.
