@@ -141,9 +141,12 @@ the 8 quote-less titles above, since nothing better exists.
   shared helper every Shopify sibling crawler uses.
 - **format** — `"Vinyl"` unconditionally, matching every sibling Shopify
   crawler (confirmed scope decision above).
-- **title** — `f"{album_title} — {variant_title}"` when a product has
-  more than one surviving vinyl variant (color/edition disambiguation,
-  same as `deathwishinc.py`); otherwise `album_title` alone.
+- **title** — `f"{album_title} — {variant_title}"` unconditionally,
+  matching `deathwishinc.py`'s own rule exactly (it suffixes every
+  variant, not just when a product has more than one survivor). Confirmed
+  live: no vinyl variant in `list` has an uninformative title like
+  `Default Title` (0/345), so the suffix is always a real descriptor
+  (e.g. `Partycrasher — RED VINYL + POSTER LP`).
 
 ### Crawler shape
 
