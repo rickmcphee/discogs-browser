@@ -175,7 +175,8 @@ pre-order does appear.
   `deathwishinc.py`'s unconditional-suffix one — this store's `Default
   Title` case is common (unlike `no_idea_records.py`'s 0/345), so
   suffixing it would produce a stream of meaningless `Album — Default
-  Title` titles.
+  Title` titles. For pre-order-tagged products, ` (Pre-Order)` is appended
+  to the title.
 
 ### Crawler shape
 

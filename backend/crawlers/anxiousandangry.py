@@ -1,5 +1,5 @@
 import re
-from typing import AsyncIterator, Optional
+from typing import AsyncIterator
 from shopify_catalog import iter_products, has_tag, resolve_cover_image
 
 _COLLECTION_SLUG = "record-store"
@@ -7,7 +7,7 @@ _PREORDER_TAG = "PREORDER"
 # Matches straight or curly quotes on either side independently, and doesn't
 # require the closing quote to end the string -- titles like 'Absent In
 # Body "Plague God" LP' have trailing format text after it.
-_TITLE_RE = re.compile('^(?P<artist>.+?)\\s*["“](?P<album>.+?)["”]')
+_TITLE_RE = re.compile(r'^(?P<artist>.+?)\s*["“](?P<album>.+?)["”]')
 # Applied to the text *after* the closing quote (or the whole title, for the
 # minority with no quotes at all) -- never to the whole title including the
 # album name. Several album titles end in a digit right before the closing

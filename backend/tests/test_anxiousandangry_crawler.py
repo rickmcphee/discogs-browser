@@ -171,6 +171,60 @@ _CURLY_QUOTE_TITLE = {
     ],
 }
 
+# Real confirmed-live case: bare inch mark (") in the title suffix, not
+# spelled out -- must be recognized as vinyl format indicator.
+_DANNY_CARNEY_7INCH = {
+    "title": 'Danny Carney Chainsaw Symphony "Songs That Clowns Hate" 7"',
+    "vendor": "Anxious and Angry",
+    "handle": "danny-carney-chainsaw-symphony-songs-that-clowns-hate-7",
+    "tags": ["Band Vinyl", "7\"", "Record Store", "VINYL"],
+    "images": [],
+    "variants": [
+        {"title": "Default Title", "price": "4.50", "available": True, "featured_image": None},
+    ],
+}
+
+# Real confirmed-live case: product whose title suffix matches neither the
+# vinyl regex NOR the non-vinyl regex (EP with no other format signal) --
+# must still be kept by the permissive product-level gate.
+_TOYGUITAR_MOVE_LIKE_GHOST = {
+    "title": 'toyGuitar "Move Like a Ghost" EP',
+    "vendor": "Anxious and Angry",
+    "handle": "toyguitar-move-like-a-ghost-ep",
+    "tags": ["12\"", "Record Store"],
+    "images": [],
+    "variants": [
+        {"title": "Default Title", "price": "18.00", "available": True, "featured_image": None},
+    ],
+}
+
+
+# Real confirmed-live case: bare inch mark (") in the title suffix, not
+# spelled out -- must be recognized as vinyl format indicator.
+_DANNY_CARNEY_7INCH = {
+    "title": 'Danny Carney Chainsaw Symphony “Songs That Clowns Hate” 7"',
+    "vendor": "Anxious and Angry",
+    "handle": "danny-carney-chainsaw-symphony-songs-that-clowns-hate-7",
+    "tags": ["Band Vinyl", "7\"", "Record Store", "VINYL"],
+    "images": [],
+    "variants": [
+        {"title": "Default Title", "price": "4.50", "available": True, "featured_image": None},
+    ],
+}
+
+# Real confirmed-live case: product whose title suffix matches neither the
+# vinyl regex NOR the non-vinyl regex (EP with no other format signal) --
+# must still be kept by the permissive product-level gate.
+_TOYGUITAR_MOVE_LIKE_GHOST = {
+    "title": 'toyGuitar “Move Like a Ghost” EP',
+    "vendor": "Anxious and Angry",
+    "handle": "toyguitar-move-like-a-ghost-ep",
+    "tags": ["12\"", "Record Store"],
+    "images": [],
+    "variants": [
+        {"title": "Default Title", "price": "18.00", "available": True, "featured_image": None},
+    ],
+}
 
 def _page_response(products):
     return httpx.Response(200, json={"products": products})
@@ -290,6 +344,40 @@ async def test_crawl_catalog_curly_quote_title_parsing(crawler):
     assert items[0]["artist"] == "Curly Quote Band"
     assert items[0]["title"] == "Album Title Here"
     assert items[0]["price"] == 18.00
+
+
+
+@respx.mock
+async def test_crawl_catalog_recognizes_bare_inch_mark(crawler):
+    _mock_single_page([_DANNY_CARNEY_7INCH])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert len(items) == 1
+    assert items[0]["title"] == "Songs That Clowns Hate"
+    assert items[0]["price"] == 4.50
+
+
+@respx.mock
+async def test_crawl_catalog_keeps_product_matching_neither_regex(crawler):
+    _mock_single_page([_TOYGUITAR_MOVE_LIKE_GHOST])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert len(items) == 1
+    assert items[0]["title"] == "Move Like a Ghost"
+
+@respx.mock
+async def test_crawl_catalog_recognizes_bare_inch_mark(crawler):
+    _mock_single_page([_DANNY_CARNEY_7INCH])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert len(items) == 1
+    assert items[0]["title"] == "Songs That Clowns Hate"
+    assert items[0]["price"] == 4.50
+
+
+@respx.mock
+async def test_crawl_catalog_keeps_product_matching_neither_regex(crawler):
+    _mock_single_page([_TOYGUITAR_MOVE_LIKE_GHOST])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert len(items) == 1
+    assert items[0]["title"] == "Move Like a Ghost"
 
 
 @respx.mock
