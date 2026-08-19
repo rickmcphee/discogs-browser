@@ -223,7 +223,7 @@ This site's finding:
 - Both documents require checkout/payment to never complete without
   contemporaneous human approval. This crawler satisfies that trivially:
   it links out to the product page and never transacts.
-- Load: 2 GETs per sync — `iter_products()` only terminates on an empty
+- Load: 3 GETs per sync — `iter_products()` only terminates on an empty
   page, not a short one, so 360 products at `limit=250` means a full
   250-item page, a 110-item page, then a terminating empty page (3 GETs
   total). Paced at `random.uniform(delay * 0.5, delay)` with

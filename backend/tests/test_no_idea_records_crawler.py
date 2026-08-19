@@ -99,7 +99,7 @@ _ASSHOLEPARADE = {
 }
 
 # Real confirmed-live case: this store's curly right double quotation mark
-# (U+201D, "") used for the inch mark on a 7" variant -- must still be
+# (U+201D, "”") used for the inch mark on a 7" variant -- must still be
 # recognized as vinyl, not dropped as an unrecognized format.
 _AGAINST_ME_CURLY_QUOTE = {
     "title": 'AGAINST ME! "Sink, Florida, Sink / Unsubstantiated Rumors"',
