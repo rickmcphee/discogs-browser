@@ -122,6 +122,23 @@ _AMPERE_RAEIN_SPLIT = {
     ],
 }
 
+# Synthetic case (not confirmed live on this store): the third inch-mark
+# alternative in _VINYL_RE's character class, the double-prime mark
+# (U+2033, "″"), distinct from both the curly right double quotation
+# mark (U+201D) and the straight quote already covered above. Added per
+# code review so this branch of the character class can't be silently
+# dropped by a future edit -- the same failure mode that already hit
+# _TITLE_RE once on this branch.
+_DOUBLE_PRIME_INCH_MARK = {
+    "title": 'REPLICATOR "Test Pattern"',
+    "vendor": "No Idea Records",
+    "handle": "replicator-test-pattern",
+    "images": [],
+    "variants": [
+        {"title": "GREEN 10″", "price": "16.00", "available": True, "featured_image": None},
+    ],
+}
+
 # Real confirmed-live case: a genuine vinyl pressing whose only variant-title
 # signal is a bare color name -- no "LP"/"vinyl"/inch-mark token anywhere.
 # No structural signal distinguishes this from real non-vinyl noise, so it's
@@ -253,6 +270,14 @@ async def test_crawl_catalog_recognizes_straight_quote_inch_mark(crawler):
     items = [item async for item in crawler.crawl_catalog()]
     assert len(items) == 1
     assert items[0]["title"] == 'Split — BLUE 8"'
+
+
+@respx.mock
+async def test_crawl_catalog_recognizes_double_prime_inch_mark(crawler):
+    _mock_single_page([_DOUBLE_PRIME_INCH_MARK])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert len(items) == 1
+    assert items[0]["title"] == "Test Pattern — GREEN 10″"
 
 
 @respx.mock
