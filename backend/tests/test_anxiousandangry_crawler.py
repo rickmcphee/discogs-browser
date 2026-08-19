@@ -11,6 +11,7 @@ _ABSENT_IN_BODY = {
     "title": 'Absent In Body "Plague God" LP',
     "vendor": "Anxious and Angry",
     "handle": "absent-in-body-plague-god-lp",
+    "product_type": "Band Vinyl",
     "tags": ["Band Vinyl", "LPs", "Record Store", "VINYL"],
     "images": [{"src": "https://cdn.shopify.com/s/files/1/0046/3142/9190/products/4062656-2795494.jpg"}],
     "variants": [
@@ -24,6 +25,7 @@ _ARRIVALS_PAYLOAD = {
     "title": 'Arrivals, The "Payload" LP',
     "vendor": "Arrivals Payload Pre",
     "handle": "arrivals-the-payload-lp",
+    "product_type": "Band Vinyl",
     "tags": ["Band Vinyl", "LP", "Record Store", "VINYL"],
     "images": [],
     "variants": [
@@ -39,6 +41,7 @@ _HALLOWEEN_KILLS = {
     "title": "Halloween Kills Original Motion Picture Soundtrack LP",
     "vendor": "Anxious and Angry",
     "handle": "halloween-kills-original-motion-picture-soundtrack-lp",
+    "product_type": "Record Store",
     "tags": ["Record Store", "Soundtrack", "VINYL"],
     "images": [],
     "variants": [
@@ -53,6 +56,7 @@ _ARRIVALS_MARVELS_CD = {
     "title": 'Arrivals, The "Marvels of Industry" CD',
     "vendor": "Anxious and Angry",
     "handle": "arrivals-the-marvels-of-industry-cd",
+    "product_type": "Band Vinyl",
     "tags": ["Band Vinyl", "CD", "Record Store"],
     "images": [],
     "variants": [
@@ -60,12 +64,14 @@ _ARRIVALS_MARVELS_CD = {
     ],
 }
 
-# Real confirmed-live case: no quoted album, no vinyl signal anywhere --
-# gift card must be excluded entirely by the product-level gate.
+# Real confirmed-live case: product_type "GIft Card" (sic, this store's own
+# typo) -- must be excluded entirely by the product_type allowlist, before
+# title parsing is even attempted.
 _GIFT_CARD = {
     "title": "Anxious and Angry Gift Card",
     "vendor": "Anxious and Angry",
     "handle": "anxious-and-angry-gift-card",
+    "product_type": "GIft Card",
     "tags": ["Gift Card", "Record Store"],
     "images": [],
     "variants": [
@@ -81,6 +87,7 @@ _COPYRIGHTS_CD_LP = {
     "title": 'Copyrights, The "Alone In A Dome" CD/LP',
     "vendor": "Copyrights",
     "handle": "copyrights-the-alone-in-a-dome-cd-lp",
+    "product_type": "Band Vinyl",
     "tags": ["Band Vinyl", "CD", "LP", "Record Store", "VINYL"],
     "images": [{"src": "https://cdn.shopify.com/s/files/1/0046/3142/9190/products/a2570152274_10.jpg"}],
     "variants": [
@@ -97,6 +104,7 @@ _FYP_INCOMPLETE_CRAP = {
     "title": 'F.Y.P "Incomplete Crap Vol. 2" CD',
     "vendor": "Anxious and Angry",
     "handle": "f-y-p-incomplete-crap-vol-2-cd",
+    "product_type": "Band Vinyl",
     "tags": ["Band Vinyl", "CD", "Record Store"],
     "images": [],
     "variants": [
@@ -110,6 +118,7 @@ _WESTERN_ADDICTION_7INCH = {
     "title": 'Western Addiction "Pines" 7 Inch',
     "vendor": "Western Addiction",
     "handle": "western-addiction-pines-7-inch-1",
+    "product_type": "Band Vinyl",
     "tags": ["Band Vinyl", "LP", "Record Store"],
     "images": [],
     "variants": [
@@ -123,6 +132,7 @@ _OWTH_PICTURE_DISC = {
     "title": 'Off With Their Heads "I Will Follow You" Shaped Picture Disc',
     "vendor": "Anxious and Angry",
     "handle": "off-with-their-heads-i-will-follow-you-shaped-picture-disc",
+    "product_type": "Band Vinyl",
     "tags": ["Band Vinyl", "LPs", "Record Store", "VINYL"],
     "images": [],
     "variants": [
@@ -136,6 +146,7 @@ _SAMIAM_BILLY_UNAVAILABLE = {
     "title": 'Samiam "Billy" LP (Color Vinyl)',
     "vendor": "Anxious and Angry",
     "handle": "samiam-billy-lp",
+    "product_type": "Band Vinyl",
     "tags": ["Band Vinyl", "Record Store", "Samiam", "VINYL"],
     "images": [],
     "variants": [
@@ -150,6 +161,7 @@ _PREORDER_VINYL = {
     "title": 'Some Band "Upcoming Album" LP',
     "vendor": "Anxious and Angry",
     "handle": "some-band-upcoming-album-lp",
+    "product_type": "Band Vinyl",
     "tags": ["Band Vinyl", "PREORDER", "Record Store", "VINYL"],
     "images": [],
     "variants": [
@@ -164,6 +176,7 @@ _CURLY_QUOTE_TITLE = {
     "title": 'Curly Quote Band “Album Title Here” LP',
     "vendor": "Curly Quote Band",
     "handle": "curly-quote-band-album-title-here-lp",
+    "product_type": "Band Vinyl",
     "tags": ["Band Vinyl", "LP", "Record Store", "VINYL"],
     "images": [],
     "variants": [
@@ -177,6 +190,7 @@ _DANNY_CARNEY_7INCH = {
     "title": 'Danny Carney Chainsaw Symphony "Songs That Clowns Hate" 7"',
     "vendor": "Anxious and Angry",
     "handle": "danny-carney-chainsaw-symphony-songs-that-clowns-hate-7",
+    "product_type": "Record Store",
     "tags": ["Band Vinyl", "7\"", "Record Store", "VINYL"],
     "images": [],
     "variants": [
@@ -186,15 +200,38 @@ _DANNY_CARNEY_7INCH = {
 
 # Real confirmed-live case: product whose title suffix matches neither the
 # vinyl regex NOR the non-vinyl regex (EP with no other format signal) --
-# must still be kept by the permissive product-level gate.
+# must still be kept, since its product_type ("Band Vinyl") passes the
+# allowlist. The permissive suffix gate only decides format among products
+# the allowlist already let through.
 _TOYGUITAR_MOVE_LIKE_GHOST = {
     "title": 'toyGuitar "Move Like a Ghost" EP',
     "vendor": "Anxious and Angry",
     "handle": "toyguitar-move-like-a-ghost-ep",
+    "product_type": "Band Vinyl",
     "tags": ["12\"", "Record Store"],
     "images": [],
     "variants": [
         {"title": "Default Title", "price": "18.00", "available": True, "featured_image": None},
+    ],
+}
+
+# Real confirmed-live case: this store's `clothing` collection uses
+# product_type "Clothing" (confirmed via a separate live fetch), and its
+# titles follow the exact same 'Artist "Album" FORMAT'-shaped convention
+# ('"ARF ARF" Tee Shirt') -- a title-only filter cannot tell this apart
+# from a real release. Must be excluded by the product_type allowlist even
+# though the suffix ("Tee Shirt") matches neither format regex, and even
+# though this exact product isn't in `record-store` today -- this is the
+# scenario the allowlist exists to guard against if one is ever mis-added.
+_MERCH_WRONG_PRODUCT_TYPE = {
+    "title": '"ARF ARF" Tee Shirt',
+    "vendor": "Anxious and Angry",
+    "handle": "arf-arf-tee-shirt",
+    "product_type": "Clothing",
+    "tags": ["Clothing", "Record Store"],
+    "images": [],
+    "variants": [
+        {"title": "Medium", "price": "20.00", "available": True, "featured_image": None},
     ],
 }
 
@@ -335,6 +372,13 @@ async def test_crawl_catalog_keeps_product_matching_neither_regex(crawler):
     items = [item async for item in crawler.crawl_catalog()]
     assert len(items) == 1
     assert items[0]["title"] == "Move Like a Ghost"
+
+
+@respx.mock
+async def test_crawl_catalog_excludes_merch_with_release_shaped_title(crawler):
+    _mock_single_page([_MERCH_WRONG_PRODUCT_TYPE])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert items == []
 
 
 @respx.mock

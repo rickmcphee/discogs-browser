@@ -49,10 +49,10 @@ plugin, iterating the site's `record-store` collection via
   vinyl-only by convention (`format: "Vinyl"` hardcoded across every
   sibling Shopify crawler); the product-level gate and per-variant filter
   below exclude them.
-- **No merch/gift-card coverage.** Gift cards and apparel/accessories
-  occasionally appear in `record-store` (see product-level gate below);
-  excluded by the same title-suffix gate that excludes CD/cassette
-  products.
+- **No merch/gift-card coverage.** Excluded by the `product_type`
+  allowlist gate (see below), not by the title-suffix regexes — see
+  "Product-level format gate" for why the suffix regexes alone are not a
+  reliable merch filter.
 
 ## Technical grounding
 
@@ -84,17 +84,40 @@ Steel "Rogues March" LP` → vendor `American Steel`) — unlike
 store's own name here, but it's still only used as the *fallback*, never
 overriding a quote match.
 
-### Product-level format gate: text after the closing quote, not the whole title
+### Product-level gate, part 1: `product_type` allowlist
 
-`record-store` mixes real vinyl products with CD-only, cassette-only, and
-a gift-card product. A regex applied to the *whole* title produces false
-positives: several album titles end in a digit immediately before the
-closing quote (`F.Y.P "Incomplete Crap Vol. 2" CD`), and `\d+\s*"` matches
-that digit against the title's own closing quotation mark, not a real
-inch mark. Restricting the format regexes to the text *after* the
-`_TITLE_RE` match (or the whole title, for the 4 quote-less titles)
-avoids this collision entirely — confirmed empirically: the false
-positive above disappears once the album text is excluded.
+`record-store` is a manually curated Shopify collection, not one scoped by
+`product_type` — so nothing structurally prevents a mis-added merch item
+from landing in it. Confirmed live: every one of the 128 products in
+`record-store` today carries `product_type` `"Band Vinyl"`, `"Record
+Store"`, or `"GIft Card"` (sic, the store's own typo) — no
+apparel/accessory type appears. But this store's `clothing` collection
+(confirmed via a separate live fetch) uses `product_type: "Clothing"`,
+and its titles follow the *exact same* `'Artist "Album" FORMAT'`-shaped
+convention as real releases (`'"ARF ARF" Tee Shirt'`) — a title-only
+filter cannot distinguish that from a real release title whose suffix
+happens to match neither format regex (see part 2 below). A
+`product_type` allowlist is applied first, before any title parsing:
+
+```
+_ALLOWED_PRODUCT_TYPES = {"band vinyl", "record store"}
+```
+
+Any product whose `product_type` isn't in this set — the gift card today,
+and any future mis-added merch — is excluded outright.
+
+### Product-level gate, part 2: format suffix, text after the closing quote
+
+Among products that pass the `product_type` allowlist, `record-store`
+still mixes real vinyl with CD-only and cassette-only products, so a
+second gate decides format. A regex applied to the *whole* title produces
+false positives: several album titles end in a digit immediately before
+the closing quote (`F.Y.P "Incomplete Crap Vol. 2" CD`), and `\d+\s*"`
+matches that digit against the title's own closing quotation mark, not a
+real inch mark. Restricting the format regexes to the text *after* the
+`_TITLE_RE` match (or the whole title, for the 4 quote-less titles) avoids
+this collision entirely — confirmed empirically: the false positive above
+disappears once the album text is excluded.
 
 ```
 _VINYL_RE = re.compile(r'\bvinyl\b|\blps?\b|\d{1,2}\s*(?:"|\binch\b)|\bpicture disc\b', re.IGNORECASE)
@@ -102,21 +125,27 @@ _NON_VINYL_RE = re.compile(r'\bcds?\b|\bcassette\b|\btape\b|\bgift card\b', re.I
 ```
 
 Gate rule: exclude the product only when the suffix matches
-`_NON_VINYL_RE` and *not* `_VINYL_RE` — i.e. a clean CD/cassette/gift-card
-product with no vinyl signal at all. Everything else (vinyl-only, and the
-4 dual-format `CD/LP` products where both regexes match) passes the gate
+`_NON_VINYL_RE` and *not* `_VINYL_RE` — i.e. a clean CD/cassette product
+with no vinyl signal at all. Everything else (vinyl-only, and the 4
+dual-format `CD/LP` products where both regexes match) passes the gate
 and falls through to the per-variant filter below. A handful of suffixes
 match neither regex (`toyGuitar "Move Like a Ghost" EP` — no format word
-beyond "EP"; confirmed live vinyl via its `12"` tag) — the gate is
+beyond "EP"; confirmed live vinyl via its `12"` tag) — this gate is
 deliberately permissive here (only excludes on a *positive* non-vinyl
-signal), so these pass through rather than being silently dropped.
+signal). That permissiveness is safe only because the `product_type`
+allowlist above has already excluded anything that isn't actually music
+stock — relying on the suffix regexes alone to also catch merch (as an
+earlier version of this design did) was flagged as unsound during review:
+a merch title landing in this collection with a suffix matching neither
+regex would otherwise pass through and ship as `format: "Vinyl"`.
 
 Measured against all 128 products in `record-store`:
 
 | Result | Count |
 |---|---|
-| Product-level: passes gate | 107 |
-| Product-level: excluded (CD-only, Cassette-only, or Gift Card) | 21 |
+| Excluded — `product_type` allowlist (Gift Card) | 1 |
+| Excluded — format suffix (CD-only, Cassette-only) | 20 |
+| Passes both gates | 107 |
 | Stock items after per-variant filter (below) | 120 |
 
 ### Per-variant filter: negative, `bigscarymonstersusa.py`/`closedcasketactivities.py`'s pattern
@@ -222,7 +251,11 @@ confirmed-live products, no live site, no bot-detection risk. Cases:
   `vendor` as artist
 - CD-only product (`Default Title` variant, title suffix "CD") → product
   excluded entirely by the gate
-- Gift Card product → excluded entirely by the gate
+- Gift Card product (`product_type: "GIft Card"`) → excluded entirely by
+  the `product_type` allowlist
+- merch product whose title is shaped like a real release but whose
+  `product_type` is `"Clothing"` → excluded entirely by the `product_type`
+  allowlist, even though its title suffix matches neither format regex
 - dual-format product with `LP`/`CD` variants → `CD` variant dropped,
   `LP` variant kept
 - a title whose album text ends in a digit immediately before the

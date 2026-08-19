@@ -4,6 +4,17 @@ from shopify_catalog import iter_products, has_tag, resolve_cover_image
 
 _COLLECTION_SLUG = "record-store"
 _PREORDER_TAG = "PREORDER"
+# Confirmed live: every one of the 128 products in `record-store` carries
+# product_type "Band Vinyl", "Record Store", or "GIft Card" (sic) -- no
+# apparel/accessory product_type appears today. But the collection is a
+# manually curated Shopify list, not one scoped by product_type itself, so
+# a future mis-added merch item (this store's own `clothing` collection
+# confirmed live to use product_type "Clothing") would otherwise slip past
+# a title-only filter -- a shirt titled '"Some Slogan" Tee Shirt' parses
+# exactly like a real release title. This allowlist is the actual mechanism
+# excluding non-music merchandise; the suffix regexes below only decide
+# format (vinyl vs. CD/cassette) among products that already pass it.
+_ALLOWED_PRODUCT_TYPES = {"band vinyl", "record store"}
 # Matches straight or curly quotes on either side independently, and doesn't
 # require the closing quote to end the string -- titles like 'Absent In
 # Body "Plague God" LP' have trailing format text after it.
@@ -37,6 +48,10 @@ class Crawler:
 
     @classmethod
     def _items(cls, product: dict) -> list[dict]:
+        product_type = (product.get("product_type") or "").strip().lower()
+        if product_type not in _ALLOWED_PRODUCT_TYPES:
+            return []
+
         artist, album_title, suffix = cls._parse_artist_title(
             product.get("title", ""), product.get("vendor", "")
         )
