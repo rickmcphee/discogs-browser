@@ -161,7 +161,7 @@ _PREORDER_VINYL = {
 # live catalog uses straight quotes, but some titles historically carried
 # curly quotes that the regex must handle).
 _CURLY_QUOTE_TITLE = {
-    "title": 'Curly Quote Band "Album Title Here" LP',
+    "title": 'Curly Quote Band “Album Title Here” LP',
     "vendor": "Curly Quote Band",
     "handle": "curly-quote-band-album-title-here-lp",
     "tags": ["Band Vinyl", "LP", "Record Store", "VINYL"],
