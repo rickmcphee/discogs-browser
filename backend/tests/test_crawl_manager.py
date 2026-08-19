@@ -2181,7 +2181,7 @@ async def test_a_crawler_with_no_failure_domain_keeps_its_own_counter(pg_schema)
 
 def test_tripping_the_cooldown_is_logged_at_info(caplog):
     """The log viewer filters by exact level membership, not level-and-above
-    (`routers/logs.py:_line_visible`), so a WARNING-only cooloff notice is
+    (`routers/logs.py`'s SQL `WHERE level = ANY(...)`), so a WARNING-only cooloff notice is
     invisible to anyone watching INFO -- which is where the rest of the crawl
     narrative is."""
     manager = CrawlManager()

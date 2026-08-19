@@ -201,7 +201,7 @@ class CrawlManager:
                 self._site_consecutive_failures[cid] = 0
                 # INFO, not WARNING: the log viewer filters by exact level
                 # membership rather than level-and-above (routers/logs.py's
-                # _line_visible), so at WARNING this was invisible to anyone
+                # WHERE level = ANY(...)), so at WARNING this was invisible to anyone
                 # watching the INFO stream that carries the rest of the crawl
                 # narrative -- the crawl would just go quiet for 30 minutes
                 # with no line explaining why.
@@ -897,8 +897,9 @@ class CrawlManager:
                 swept = delete_dead_stock_crawl_queue_rows(conn)
                 conn.commit()
             if swept:
-                # INFO, not WARNING: routers/logs.py's _line_visible filters by
-                # exact level membership, so at WARNING this would be invisible
+                # INFO, not WARNING: routers/logs.py filters in SQL by exact
+                # level membership (WHERE level = ANY(...)), not
+                # level-and-above, so at WARNING this would be invisible
                 # to anyone watching the INFO stream carrying the rest of the
                 # crawl narrative.
                 log.info("Discarded %d queued price lookups with no enabled source", swept)

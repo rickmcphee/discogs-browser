@@ -37,7 +37,7 @@ body:
     id: logs
     attributes:
       label: Relevant log output
-      description: From the in-app log viewer or `~/.discogs-browser/app.log`. Redact tokens.
+      description: Copied from the in-app log viewer (Logs tab, admin only). Redact tokens.
       render: text
     validations:
       required: false

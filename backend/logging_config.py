@@ -34,6 +34,11 @@ def setup_logging():
     )
     app_only = _AppOnlyFilter()
 
+    # No setFormatter() here, deliberately: QueueHandler.prepare() formats with
+    # the default formatter, producing the bare message that belongs in the
+    # `message` column -- ts/level/logger_name/machine_id are separate columns.
+    # Attaching `fmt` to match console_handler below would duplicate the
+    # timestamp/level/name prefix into every stored message.
     queue_handler = logging.handlers.QueueHandler(_log_queue)
     queue_handler.addFilter(app_only)
 
@@ -101,13 +106,23 @@ def _prune_old_logs():
 
 
 def _writer_loop():
-    last_prune = time.monotonic()
+    # Backdated a full interval so the first iteration prunes: seeding it with
+    # "now" means retention only ever runs after an hour of uptime, and every
+    # Fly rolling deploy or restart resets that clock.
+    last_prune = time.monotonic() - _PRUNE_INTERVAL_SECONDS
     while not _stop_event.wait(timeout=_FLUSH_INTERVAL_SECONDS):
-        flush_queue()
-        now = time.monotonic()
-        if now - last_prune >= _PRUNE_INTERVAL_SECONDS:
-            _prune_old_logs()
-            last_prune = now
+        # Nothing below is allowed to kill this thread: it's a daemon nobody
+        # watches, _writer_thread stays non-None, and a dead writer means the
+        # queue silently fills to _QUEUE_MAXSIZE and then throws queue.Full on
+        # every log call for the rest of the process's life.
+        try:
+            flush_queue()
+            now = time.monotonic()
+            if now - last_prune >= _PRUNE_INTERVAL_SECONDS:
+                _prune_old_logs()
+                last_prune = now
+        except Exception as e:
+            print(f"logging_config: log writer iteration failed: {e}", file=sys.stderr)
     flush_queue()  # final drain so nothing queued right before shutdown is lost
 
 

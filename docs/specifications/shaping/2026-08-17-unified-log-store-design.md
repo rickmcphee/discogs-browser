@@ -184,6 +184,34 @@ debug scrollback, not data worth migrating. `app.log` and its
 backwards-compat shim): nothing else in the codebase reads the file
 (confirmed — only `logging_config.py` and `routers/logs.py` reference it).
 
+## Amendments (2026-08-18, final whole-branch review)
+
+- **Both `/logs` routes are admin-only.** `GET /api/logs/stream` and
+  `DELETE /api/logs` carry `dependencies=[Depends(require_admin)]`, matching
+  `routers/settings.py`. The read path is the operator's whole application
+  log and the delete path wipes 30 days of shared history for everyone; neither
+  is per-user data. `App.tsx` also gates the `<LogViewer />` *mount* (not just
+  the nav button) on `showAdminNav`, since the component opens its SSE stream
+  from a mount effect regardless of whether its container is CSS-hidden.
+- **The history seed is ordered by `ts`, not `id`.** `ORDER BY id DESC LIMIT
+  100` stays as an inner query (cheap, and it correctly picks the last N rows),
+  wrapped in an outer `ORDER BY ts, id`. Across Machines, id order is not time
+  order — each Machine's ~1s batch lands as one contiguous id block, so an
+  id-ordered seed renders a visibly zig-zagging `time` column. The live poll is
+  still `id`-ordered; `id` is a cursor there, not a sort key. When the seed
+  comes back empty (a level filter matching nothing yet), the cursor is seeded
+  from `max(id)` rather than left at 0, so the poll doesn't scan the whole
+  table twice a second until the first matching row appears.
+- **The first prune happens at writer start, not an hour in.** `last_prune` is
+  seeded a full interval in the past. Seeding it with "now" meant retention only
+  ever ran after an hour of uptime, and every rolling deploy or restart reset
+  that clock.
+- **The writer loop body is wrapped in `try/except Exception`.** `flush_queue()`
+  guards only its DB block; anything else in the loop raising would unwind the
+  `while`, kill the daemon thread unnoticed (`_writer_thread` stays non-None, so
+  `stop_log_writer()`'s `join()` returns instantly), and leave the queue to fill
+  to `_QUEUE_MAXSIZE` and then throw `queue.Full` on every subsequent log call.
+
 ## Open questions
 
 None.

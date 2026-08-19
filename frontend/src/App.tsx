@@ -604,7 +604,10 @@ export default function App() {
             hasJudgedItems={hasJudgedItems}
           />
         </div>
-        <div className={view === 'logs' ? 'h-full' : 'hidden'}><LogViewer /></div>
+        {/* Gated on showAdminNav, not just hidden: LogViewer opens its SSE
+            stream on mount regardless of visibility, so mounting it for every
+            user would hand each one an open stream of the operator's log. */}
+        {showAdminNav && <div className={view === 'logs' ? 'h-full' : 'hidden'}><LogViewer /></div>}
       </main>
 
       {/* Collection refresh modal */}

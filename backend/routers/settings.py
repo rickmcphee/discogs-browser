@@ -150,8 +150,9 @@ def update_crawler(crawler_id: int, body: CrawlerUpdate):
             discarded = db.delete_dead_stock_crawl_queue_rows(conn)
             conn.commit()
     if discarded:
-        # INFO, not WARNING: routers/logs.py's _line_visible filters by exact
-        # level membership, so at WARNING this is invisible to anyone watching
+        # INFO, not WARNING: routers/logs.py filters in SQL by exact level
+        # membership (WHERE level = ANY(...)), not level-and-above, so at
+        # WARNING this is invisible to anyone watching
         # the INFO stream that carries the rest of the crawl narrative.
         log.info("Crawler %d disabled: %d pending crawl jobs discarded", crawler_id, discarded)
     if backfilled:

@@ -1,4 +1,5 @@
 import os
+import queue
 import uuid
 from datetime import datetime, timedelta
 from urllib.parse import urlsplit, urlunsplit
@@ -12,6 +13,7 @@ from fastapi.testclient import TestClient
 
 import config
 import db
+import logging_config
 import session_tokens
 from auth_middleware import AuthMiddleware
 
@@ -202,6 +204,16 @@ def pg_test_db(monkeypatch):
 @pytest.fixture
 def clean_app_logs_table(pg_test_db):
     db.init_global_schema()
+    # main.py's import-time setup_logging() attaches a QueueHandler to the root
+    # logger for the whole session, so records from any earlier test file sit in
+    # the process-wide _log_queue until something drains it. Drain it here so a
+    # test asserting on app_logs sees only what it queued itself, rather than
+    # depending on which files pytest happened to run first.
+    while True:
+        try:
+            logging_config._log_queue.get_nowait()
+        except queue.Empty:
+            break
     with db.get_admin_pool().connection() as conn:
         conn.execute("TRUNCATE app_logs")
         conn.commit()
