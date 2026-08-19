@@ -157,6 +157,20 @@ _PREORDER_VINYL = {
     ],
 }
 
+# Synthetic -- confirms curly-quote parsing works (defensive test; the store's
+# live catalog uses straight quotes, but some titles historically carried
+# curly quotes that the regex must handle).
+_CURLY_QUOTE_TITLE = {
+    "title": 'Curly Quote Band "Album Title Here" LP',
+    "vendor": "Curly Quote Band",
+    "handle": "curly-quote-band-album-title-here-lp",
+    "tags": ["Band Vinyl", "LP", "Record Store", "VINYL"],
+    "images": [],
+    "variants": [
+        {"title": "Default Title", "price": "18.00", "available": True, "featured_image": None},
+    ],
+}
+
 
 def _page_response(products):
     return httpx.Response(200, json={"products": products})
@@ -266,6 +280,16 @@ async def test_crawl_catalog_preorder_keeps_unavailable_variant(crawler):
     assert len(items) == 1
     assert items[0]["title"] == "Upcoming Album (Pre-Order)"
     assert items[0]["price"] == 22.00
+
+
+@respx.mock
+async def test_crawl_catalog_curly_quote_title_parsing(crawler):
+    _mock_single_page([_CURLY_QUOTE_TITLE])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert len(items) == 1
+    assert items[0]["artist"] == "Curly Quote Band"
+    assert items[0]["title"] == "Album Title Here"
+    assert items[0]["price"] == 18.00
 
 
 @respx.mock
