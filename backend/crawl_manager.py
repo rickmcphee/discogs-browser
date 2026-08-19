@@ -258,13 +258,7 @@ class CrawlManager:
                 if limit and count >= limit:
                     self._site_cooldown_until[cid] = time.monotonic() + 1800
                     self._site_consecutive_failures[cid] = 0
-                    # INFO, not WARNING: the log viewer filters by exact level
-                    # membership rather than level-and-above (routers/logs.py's
-                    # _line_visible), so at WARNING this was invisible to anyone
-                    # watching the INFO stream that carries the rest of the crawl
-                    # narrative -- the crawl would just go quiet for 30 minutes
-                    # with no line explaining why.
-                    log.info(
+                    log.warning(
                         "Crawler %d hit %d consecutive failures, cooling down for 30 minutes",
                         cid, count,
                     )

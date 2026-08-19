@@ -141,6 +141,11 @@ follow-ons from items 9 and 10.
     pause was invisible to anyone watching the INFO stream that carries the
     rest of the crawl narrative. Covered by
     `test_tripping_the_cooldown_is_logged_at_info`.
+    **Amendment (2026-08-18):** reverted to WARNING; the filtering quirk this
+    item describes still applies (the line is now invisible to an INFO-only
+    view), but WARNING better matches the severity for viewers who filter by
+    level-and-above. Test renamed to
+    `test_tripping_the_cooldown_is_logged_at_warning`.
 13. **The breaker now covers catalog crawlers too, not just the worker pool.**
     `_sync_stock` had no consecutive-failure breaker at all — only the
     2-consecutive-429-sites run abort — so a site that hard-blocks us was
