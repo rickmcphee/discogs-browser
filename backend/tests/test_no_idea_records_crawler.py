@@ -99,7 +99,7 @@ _ASSHOLEPARADE = {
 }
 
 # Real confirmed-live case: this store's curly right double quotation mark
-# (U+201D, """) used for the inch mark on a 7" variant -- must still be
+# (U+201D, "") used for the inch mark on a 7" variant -- must still be
 # recognized as vinyl, not dropped as an unrecognized format.
 _AGAINST_ME_CURLY_QUOTE = {
     "title": 'AGAINST ME! "Sink, Florida, Sink / Unsubstantiated Rumors"',
@@ -145,6 +145,20 @@ _UNAVAILABLE_VARIANT = {
     "images": [],
     "variants": [
         {"title": "TEST PRESSING LP", "price": "20.99", "available": False, "featured_image": None},
+    ],
+}
+
+# Regression case for the _TITLE_RE fix: curly quotes used as the
+# artist/album delimiter in the product title itself (not just in a
+# variant's inch mark) -- must still parse correctly, not fall back to
+# vendor.
+_CURLY_QUOTE_TITLE = {
+    "title": 'SOME BAND “Album Name” + POSTER',
+    "vendor": "No Idea Records",
+    "handle": "some-band-album-name-poster",
+    "images": [],
+    "variants": [
+        {"title": "RED VINYL LP", "price": "18.00", "available": True, "featured_image": None},
     ],
 }
 
@@ -270,6 +284,15 @@ async def test_crawl_catalog_skips_product_with_null_variants(crawler):
     _mock_single_page([product])
     items = [item async for item in crawler.crawl_catalog()]
     assert items == []
+
+
+@respx.mock
+async def test_crawl_catalog_parses_curly_quote_title_delimiter(crawler):
+    _mock_single_page([_CURLY_QUOTE_TITLE])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert len(items) == 1
+    assert items[0]["artist"] == "SOME BAND"
+    assert items[0]["title"] == "Album Name — RED VINYL LP"
 
 
 def test_site_metadata():

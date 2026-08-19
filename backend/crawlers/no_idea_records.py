@@ -6,7 +6,7 @@ _COLLECTION_SLUG = "list"
 # Matches straight or curly quotes on either side independently, and doesn't
 # require the closing quote to end the string -- titles like 'A WILHELM
 # SCREAM "Partycrasher" + POSTER' have trailing format text after it.
-_TITLE_RE = re.compile(r'^(?P<artist>.+?)\s*[""](?P<album>.+?)[""]')
+_TITLE_RE = re.compile(r'^(?P<artist>.+?)\s*["“](?P<album>.+?)["”]')
 # This store uses the curly right double quotation mark (U+201D) for the inch
 # mark on some 7"/8" variants alongside straight quotes on others -- both
 # forms confirmed live. 4/345 kept variants are accepted noise: a genuine
