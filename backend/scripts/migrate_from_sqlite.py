@@ -136,7 +136,9 @@ if __name__ == "__main__":
     # Without this the log.info() skip-notice below goes nowhere: get_logger()
     # only names a logger, it doesn't attach handlers. Called here rather than
     # at import time (which is capture_fixture.py's pattern) because
-    # setup_logging() truncates app.log, and tests import this module.
+    # setup_logging() attaches handlers to the root logger as a side effect,
+    # and tests import this module -- doing that at import time would mutate
+    # global logging state during test collection.
     setup_logging()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("sqlite_path", type=Path)

@@ -8,11 +8,12 @@ class MockEventSource {
   close = vi.fn()
 }
 
-const { getAuthStatus, getCrawlers, getUserHiddenCrawlers, postUserHiddenCrawlers } = vi.hoisted(() => ({
+const { getAuthStatus, getCrawlers, getUserHiddenCrawlers, postUserHiddenCrawlers, openLogsStream } = vi.hoisted(() => ({
   getAuthStatus: vi.fn().mockResolvedValue({ state: 'authenticated', user: { discogs_username: 'test', is_admin: true } }),
   getCrawlers: vi.fn().mockResolvedValue([]),
   getUserHiddenCrawlers: vi.fn().mockResolvedValue([]),
   postUserHiddenCrawlers: vi.fn().mockResolvedValue(undefined),
+  openLogsStream: vi.fn(),
 }))
 
 vi.mock('../api/client', () => ({
@@ -43,7 +44,7 @@ vi.mock('../api/client', () => ({
   uploadAvatar: vi.fn(),
   deleteAvatar: vi.fn(),
   avatarUrl: vi.fn((v: number) => `/api/auth/avatar?v=${v}`),
-  openLogsStream: vi.fn(() => new MockEventSource()),
+  openLogsStream,
   screenshotUrl: vi.fn((path: string) => `/api/screenshots/${path}`),
   clearLogs: vi.fn(),
   getStock: vi.fn().mockResolvedValue({ total: 0, page: 1, per_page: 250, items: [] }),
@@ -58,6 +59,7 @@ vi.mock('../api/client', () => ({
 
 beforeEach(() => {
   vi.clearAllMocks()
+  openLogsStream.mockImplementation(() => new MockEventSource())
   localStorage.clear()
 })
 
@@ -126,6 +128,22 @@ describe('header profile navigation', () => {
     fireEvent.click(await screen.findByRole('button', { name: /profile/i }))
     await screen.findByRole('heading', { name: 'Recommendations' })
     expect(screen.queryByRole('switch')).not.toBeInTheDocument()
+  })
+
+  it('does not mount the log viewer -- or open its stream -- for a non-admin', async () => {
+    // The hidden-div mount pattern the other views use would still run
+    // LogViewer's mount effect, handing every invited user an open SSE stream
+    // of the operator's application log.
+    getAuthStatus.mockResolvedValueOnce({ state: 'authenticated', user: { discogs_username: 'test', is_admin: false } })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Store' })
+    expect(openLogsStream).not.toHaveBeenCalled()
+  })
+
+  it('mounts the log viewer and opens its stream for an admin', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'Logs' })
+    await waitFor(() => expect(openLogsStream).toHaveBeenCalled())
   })
 
   it('does not show the Settings nav button to a non-admin', async () => {

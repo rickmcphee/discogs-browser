@@ -57,6 +57,12 @@ Machines is just what server logs do — so they're left alone.
   original spec's assumption that this deployment doesn't need more.
 - Moving `app.log` or `screenshots/` off local disk. Both are per-machine by
   nature; forking them across Machines isn't a bug.
+  **Superseded for `app.log`** by
+  [`2026-08-17-unified-log-store-design.md`](2026-08-17-unified-log-store-design.md):
+  once the app had invited users beyond the operator, being able to see one
+  merged log across Machines (and retain history past a single process's
+  lifetime) outweighed the original reasoning. `screenshots/` is unaffected
+  and remains per-machine.
 - Cross-Machine SSE fan-out. `/api/crawl/stream` and `CrawlManager`'s
   `_subscribers`/`_recent` are in-process (`crawl_manager.py`), and nothing
   here changes that. A user whose stream connection lands on Machine A will
@@ -433,8 +439,11 @@ from the original spec's reasoning: the worker pool runs continuously with
 no inbound HTTP request in flight, and Fly's autostop only looks at
 fly-proxy traffic).
 
-The `[[mounts]]` block is unchanged — `app.log`, `screenshots/`, and the
-bundled `crawlers/__init__.py` marker still need it, one volume per Machine.
+The `[[mounts]]` block is unchanged — `screenshots/` and the bundled
+`crawlers/__init__.py` marker still need it, one volume per Machine.
+(`app.log` no longer does: superseded by
+[`2026-08-17-unified-log-store-design.md`](2026-08-17-unified-log-store-design.md),
+which moved logs into Postgres.)
 
 ### Manual one-time Fly setup (not committed, not run by CI)
 
@@ -465,5 +474,6 @@ After that, every subsequent `flyctl deploy` (including the existing
 
 ## Open questions
 
-- None. The remaining forked state (`app.log`, `screenshots/`) and the
-  cross-Machine SSE gap are intentionally left as-is per Non-goals above.
+- None. The remaining forked state (`screenshots/`; `app.log` is no longer
+  forked, see the Non-goals amendment above) and the cross-Machine SSE gap
+  are intentionally left as-is per Non-goals above.

@@ -199,12 +199,23 @@ including one with nothing pending — and the rollback takes the `enabled` flip
 down with it, leaving the crawler running. No migration file: `TENANT_SCHEMA`
 and its grants re-run on every boot, so the grant lands on redeploy.
 
-INFO, not WARNING: `routers/logs.py`'s `_line_visible` filters by exact level
-membership rather than level-and-above, so a WARNING here would be invisible to
+INFO, not WARNING: `routers/logs.py`'s ~~`_line_visible` filters by exact level
+membership rather than level-and-above~~ (see 2026-08-17 amendment below — the
+log viewer still filters by exact level membership, just not via
+`_line_visible` any more), so a WARNING here would be invisible to
 anyone watching the INFO stream that carries the rest of the crawl narrative —
 the same reasoning previously recorded on the cooldown log line in
 `_record_site_result`, which as of 2026-08-18 has itself reverted to WARNING
 (see the amendment on `2026-08-01-worker-pool-pacing-design.md` item 12).
+
+**Amendment (2026-08-17, branch `flyio-log-files-machines`):** `_line_visible`
+no longer exists — `routers/logs.py` reads a Postgres `app_logs` table with a
+real `level` column per row, and level filtering is now a SQL `WHERE level =
+ANY(...)` clause, not a regex parsed off a tailed text line. The "INFO not
+WARNING" reasoning above is unaffected: the log viewer still filters by exact
+level set, not level-and-above, so a WARNING-only line is still invisible to
+anyone watching the INFO stream. See
+[`2026-08-17-unified-log-store-design.md`](2026-08-17-unified-log-store-design.md).
 
 `routers/settings.py` currently has no module logger; add the standard
 `log = get_logger("routers.settings")` used by the other routers.

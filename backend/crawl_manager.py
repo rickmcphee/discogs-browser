@@ -1008,8 +1008,9 @@ class CrawlManager:
                 swept = delete_dead_stock_crawl_queue_rows(conn)
                 conn.commit()
             if swept:
-                # INFO, not WARNING: routers/logs.py's _line_visible filters by
-                # exact level membership, so at WARNING this would be invisible
+                # INFO, not WARNING: routers/logs.py filters in SQL by exact
+                # level membership (WHERE level = ANY(...)), not
+                # level-and-above, so at WARNING this would be invisible
                 # to anyone watching the INFO stream carrying the rest of the
                 # crawl narrative.
                 log.info("Discarded %d queued price lookups with no enabled source", swept)

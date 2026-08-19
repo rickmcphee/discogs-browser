@@ -125,6 +125,16 @@ CREATE TABLE IF NOT EXISTS app_config (
     data JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
+CREATE TABLE IF NOT EXISTS app_logs (
+    id BIGSERIAL PRIMARY KEY,
+    ts TIMESTAMPTZ NOT NULL DEFAULT now(),
+    level TEXT NOT NULL,
+    logger_name TEXT NOT NULL,
+    machine_id TEXT NOT NULL,
+    message TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS app_logs_ts_idx ON app_logs (ts);
+
 CREATE TABLE IF NOT EXISTS listings (
     id SERIAL PRIMARY KEY,
     release_id TEXT NOT NULL REFERENCES catalog(discogs_id),

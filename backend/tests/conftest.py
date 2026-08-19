@@ -1,4 +1,5 @@
 import os
+import queue
 import uuid
 from datetime import datetime, timedelta
 from urllib.parse import urlsplit, urlunsplit
@@ -12,6 +13,7 @@ from fastapi.testclient import TestClient
 
 import config
 import db
+import logging_config
 import session_tokens
 from auth_middleware import AuthMiddleware
 
@@ -200,6 +202,28 @@ def pg_test_db(monkeypatch):
 
 
 @pytest.fixture
+def clean_app_logs_table(pg_test_db):
+    db.init_global_schema()
+    # main.py's import-time setup_logging() attaches a QueueHandler to the root
+    # logger for the whole session, so records from any earlier test file sit in
+    # the process-wide _log_queue until something drains it. Drain it here so a
+    # test asserting on app_logs sees only what it queued itself, rather than
+    # depending on which files pytest happened to run first.
+    while True:
+        try:
+            logging_config._log_queue.get_nowait()
+        except queue.Empty:
+            break
+    with db.get_admin_pool().connection() as conn:
+        conn.execute("TRUNCATE app_logs")
+        conn.commit()
+    yield
+    with db.get_admin_pool().connection() as conn:
+        conn.execute("TRUNCATE app_logs")
+        conn.commit()
+
+
+@pytest.fixture
 def authed_client_factory_builder(pg_test_db):
     """Generic base for router test files that need a real TestClient wired
     with AuthMiddleware against Postgres, pre-authenticated as a given user.
@@ -239,8 +263,10 @@ def authed_client_factory_builder(pg_test_db):
     # regardless of which of those it happened to touch. app_config is listed
     # explicitly: it has no FK to any of them, so CASCADE never reaches it,
     # and POST /api/settings tests write real rows to it through this fixture.
+    # app_logs is also listed explicitly: it has no FK back to any of those
+    # tables either, so CASCADE never reaches it.
     with db.get_admin_pool().connection() as conn:
-        conn.execute("TRUNCATE catalog, users, crawlers, app_config CASCADE")
+        conn.execute("TRUNCATE catalog, users, crawlers, app_config, app_logs CASCADE")
         conn.commit()
 
 

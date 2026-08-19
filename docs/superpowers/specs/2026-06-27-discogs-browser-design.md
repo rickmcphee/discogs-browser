@@ -31,6 +31,8 @@ FastAPI (:8000)
     └── Application log  (DISCOGS_BROWSER_DATA/app.log, rotating 5 MB × 2)
 ```
 
+**Amendment (2026-08-17, branch `flyio-log-files-machines`):** the "Application log" line above is gone — see the "Logging" section's amendment below; the log now lives in a Postgres `app_logs` table, not a local file. The rest of this diagram (SQLite, `config.json`) predates the later Postgres/multi-tenant migration and is left as historical record, not current behavior — out of scope for this amendment.
+
 ### Docker / production mode
 
 nginx serves the React SPA on `:8080` and reverse-proxies `/api/` to the backend service on `:8000`. A bind-mounted host directory (`./workspace`) is mounted at `/data` and holds all persistent state.
@@ -294,7 +296,9 @@ Uses the persistent Chrome profile with `playwright_stealth`. Raises `BotDetecte
 
 ## Logging
 
-`logging_config.py` configures a rotating file handler (`app.log`, 5 MB × 2 backups) and a stdout handler. The root logger is set to `DEBUG` so the application's own loggers emit every level, and both handlers carry an application-only filter: only records from loggers created via `get_logger(name)` are written, so dependency/third-party logging is excluded and does not drown the log viewer. `GET /api/logs/stream` is a persistent SSE endpoint that tails the log file; it accepts a `levels` query param (comma-separated) and filters both the history seed (the last 100 *matching* lines) and the live tail server-side, so a high-volume level cannot crowd the others out of the stream. Lines with no recognisable level (e.g. tracebacks) always pass through. `DELETE /api/logs` clears `app.log` and removes all screenshot session directories. `app.log` is truncated to empty on every application startup (before the file handler is attached).
+~~`logging_config.py` configures a rotating file handler (`app.log`, 5 MB × 2 backups) and a stdout handler. The root logger is set to `DEBUG` so the application's own loggers emit every level, and both handlers carry an application-only filter: only records from loggers created via `get_logger(name)` are written, so dependency/third-party logging is excluded and does not drown the log viewer. `GET /api/logs/stream` is a persistent SSE endpoint that tails the log file; it accepts a `levels` query param (comma-separated) and filters both the history seed (the last 100 *matching* lines) and the live tail server-side, so a high-volume level cannot crowd the others out of the stream. Lines with no recognisable level (e.g. tracebacks) always pass through. `DELETE /api/logs` clears `app.log` and removes all screenshot session directories. `app.log` is truncated to empty on every application startup (before the file handler is attached).~~
+
+**Amendment (2026-08-17, branch `flyio-log-files-machines`):** `app.log` and its `RotatingFileHandler` are gone — logs now write to a global `app_logs` Postgres table (30-day retention, pruned hourly) via a non-blocking `QueueHandler` + background writer thread, so history survives restarts and is merged across both Fly Machines instead of forking per-Machine. The stdout handler is unchanged. `GET /api/logs/stream` reads `app_logs` (history seed + polled tail) instead of tailing a file, sending structured JSON rows (`id`, `time`, `level`, `logger`, `message`, `machine`) instead of flattened text lines; every row now carries a real level, so the "lines with no recognisable level pass through" fallback no longer applies. `DELETE /api/logs` now runs `DELETE FROM app_logs` (still followed by clearing screenshot session directories). Nothing is truncated on startup any more — that was the specific problem this change fixed. See [`2026-08-17-unified-log-store-design.md`](../../specifications/shaping/2026-08-17-unified-log-store-design.md).
 
 ---
 
@@ -410,7 +414,7 @@ discogs-browser/
 │   ├── pyproject.toml
 │   ├── config.py               # CONFIG_DIR, env var overrides, load/save_config
 │   ├── version.py              # VERSION string
-│   ├── logging_config.py       # rotating file + stdout, get_logger()
+│   ├── logging_config.py       # Postgres `app_logs` (queued, batched) + stdout, get_logger()
 │   ├── db.py                   # schema, all DB helpers; thread-local connection singleton (WAL, 60s timeout)
 │   ├── discogs.py              # httpx-based Discogs API client; fetch_release_barcode() fetches /releases/{id}
 │   ├── crawler.py              # BotDetectedError, clean_search_text(), plugin loader, crawl_releases()

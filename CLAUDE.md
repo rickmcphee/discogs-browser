@@ -49,11 +49,10 @@ discogs-browser/
 
 ## Data directory
 
-App settings, avatars, catalog, listings, and per-user data live in Postgres (see `DATABASE_URL` below). Local filesystem state under `DISCOGS_BROWSER_DATA` (default `~/.discogs-browser/`) is now limited to:
+App settings, avatars, catalog, listings, logs, and per-user data live in Postgres (see `DATABASE_URL` below). Local filesystem state under `DISCOGS_BROWSER_DATA` (default `~/.discogs-browser/`) is now limited to:
 
 ```
 ~/.discogs-browser/
-├── app.log              # rotating application log
 ├── crawlers/            # bundled crawler plugins only — no runtime plugin loading from user-writable paths in the hosted deployment
 └── screenshots/         # debug screenshots, YYYYMMDD_HHMMSS/
 ```
