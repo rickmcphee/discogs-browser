@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import os
+import threading
 import time
 import psycopg
 import pytest
@@ -11,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import db
 import recommendations
 import token_encryption
-from crawl_manager import CrawlManager, STOCK_SYNC_LOCK_KEY
+from crawl_manager import CrawlManager, STOCK_SYNC_LOCK_KEY, _shielded
 
 
 @pytest.fixture
@@ -2179,7 +2180,7 @@ async def test_a_crawler_with_no_failure_domain_keeps_its_own_counter(pg_schema)
     assert manager._site_consecutive_failures.get(ebay_id, 0) == 0
 
 
-def test_tripping_the_cooldown_is_logged_at_info(caplog):
+async def test_tripping_the_cooldown_is_logged_at_info(caplog):
     """The log viewer filters by exact level membership, not level-and-above
     (`routers/logs.py`'s SQL `WHERE level = ANY(...)`), so a WARNING-only cooloff notice is
     invisible to anyone watching INFO -- which is where the rest of the crawl
@@ -2187,10 +2188,361 @@ def test_tripping_the_cooldown_is_logged_at_info(caplog):
     manager = CrawlManager()
     with patch("config.load_config", return_value={"consecutive_failure_limit": 1}), \
          caplog.at_level(logging.INFO, logger="crawl_manager"):
-        manager._record_site_result(7, succeeded=False)
+        await manager._record_site_result(7, succeeded=False)
 
     cooldown_records = [r for r in caplog.records if "cooling down" in r.getMessage()]
     assert [r.levelname for r in cooldown_records] == ["INFO"]
+
+
+async def test_record_site_result_serializes_concurrent_calls_for_the_same_domain():
+    """load_config() being offloaded (asyncio.to_thread) makes it a real
+    yield point, unlike before it was async -- so two concurrent
+    _record_site_result calls for the same failure domain (e.g. both eBay
+    crawler_ids) must not interleave their read-modify-write of
+    _site_consecutive_failures/_site_cooldown_until. A failure's write
+    landing after a later success's reset would resurrect a stale count
+    (flagged in PR #146 review)."""
+    class DomainPlugin:
+        failure_domain = "shared-domain"
+
+    manager = CrawlManager()
+    manager._set_failure_domains({1: DomainPlugin(), 2: DomainPlugin()})
+
+    entries = []
+
+    def slow_load_config():
+        entries.append("enter")
+        time.sleep(0.05)
+        entries.append("exit")
+        return {"consecutive_failure_limit": 10}
+
+    with patch("config.load_config", side_effect=slow_load_config):
+        await asyncio.gather(
+            manager._record_site_result(1, succeeded=False),
+            manager._record_site_result(2, succeeded=True),
+        )
+
+    # If the two calls' critical sections overlapped, thread-scheduling would
+    # let a second "enter" land before the first "exit".
+    assert entries == ["enter", "exit", "enter", "exit"]
+
+
+# Three separate load_config() calls sit on one claimed row's happy path,
+# in this order: the eBay plugin's own (inside its search()), _paced_search's
+# pacing read (its finally block, right after search() returns), and
+# _record_site_result's failure-limit read (right after _paced_search
+# returns). Slowing exactly one call by its 1-based position in that
+# sequence -- rather than every load_config() call -- isolates which of the
+# three offloads is actually under test: with the other two still fast, a
+# heartbeat ticking throughout proves nothing (there'd be plenty of ticks
+# regardless), but a heartbeat that stops precisely when the picked one goes
+# synchronous does not.
+async def _run_worker_crawl_with_slow_load_config_call(slow_call_number: int) -> int:
+    import config as config_module
+    from crawlers.ebay_general import Crawler as EbayCrawler
+
+    real_load_config = config_module.load_config
+    cfg = real_load_config()
+    cfg["ebay_app_id"] = "app-id"
+    cfg["ebay_cert_id"] = "cert-id"
+    cfg["crawl_delay_seconds"] = 0
+    config_module.save_config(cfg)
+
+    call_count = 0
+
+    def load_config_at_position():
+        nonlocal call_count
+        call_count += 1
+        if call_count == slow_call_number:
+            time.sleep(0.3)
+        return real_load_config()
+
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "eBay", "/ebay_general.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'eBay'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "Miles Davis", "title": "Kind of Blue", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1")
+        conn.commit()
+
+    respx.post("https://api.ebay.com/identity/v1/oauth2/token").mock(
+        return_value=httpx.Response(200, json={"access_token": "test-token", "expires_in": 7200})
+    )
+    respx.get("https://api.ebay.com/buy/browse/v1/item_summary/search").mock(
+        return_value=httpx.Response(200, json={"itemSummaries": []})
+    )
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    plugin = EbayCrawler()
+    plugin._db_id = crawler_id
+    plugin._db_site_name = "eBay"
+
+    heartbeat_count = 0
+
+    async def heartbeat():
+        nonlocal heartbeat_count
+        while True:
+            heartbeat_count += 1
+            await asyncio.sleep(0.02)
+
+    hb_task = asyncio.create_task(heartbeat())
+    try:
+        with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+             patch("config.load_config", side_effect=load_config_at_position), \
+             patch("crawlers.ebay_general.load_config", side_effect=load_config_at_position):
+            # crawlers/ebay_general.py does `from config import load_config` at
+            # module level, a one-time binding -- patching config.load_config
+            # alone (as everywhere else in this file) doesn't touch it, since
+            # crawl_manager.py's own two call sites instead re-resolve
+            # `from config import load_config` fresh on every call (a
+            # function-local import), which does pick up that patch. Both
+            # patches share load_config_at_position, so its call_count
+            # counts every load_config() call across both regardless of
+            # which name resolved it.
+            await manager._drain_one_batch("worker-test", {crawler_id: plugin}, pages={})
+    finally:
+        hb_task.cancel()
+
+    return heartbeat_count
+
+
+@respx.mock
+async def test_ebay_plugins_own_load_config_call_does_not_block_event_loop(pg_schema):
+    """The regression this whole PR targets: a synchronous load_config()
+    call anywhere in the worker path stalls the process's single event
+    loop for the length of that Postgres round trip, including
+    /api/health. test_record_site_result_serializes_concurrent_calls_...
+    above proves the per-domain lock is correct, but would still pass even
+    if load_config() were called synchronously -- a blocking call can't be
+    interleaved by another coroutine either, so serialization alone isn't
+    a regression guard for the offloading itself. This test (and the two
+    below it) isolate one specific load_config() call each so that
+    reverting any single one back to a bare call makes exactly that test
+    fail, not just an ambiguous shared threshold (caught in PR #146
+    review, including on an earlier attempt at this same test)."""
+    # Call #1 in the sequence: the eBay plugin's own, inside search().
+    heartbeat_count = await _run_worker_crawl_with_slow_load_config_call(slow_call_number=1)
+    assert heartbeat_count >= 10
+
+
+@respx.mock
+async def test_paced_search_load_config_call_does_not_block_event_loop(pg_schema):
+    """See test_ebay_plugins_own_load_config_call_does_not_block_event_loop
+    for the shared setup and why isolating one call at a time matters."""
+    # Call #2: _paced_search's pacing read, in its finally block right
+    # after plugin.search() returns.
+    heartbeat_count = await _run_worker_crawl_with_slow_load_config_call(slow_call_number=2)
+    assert heartbeat_count >= 10
+
+
+@respx.mock
+async def test_record_site_result_load_config_call_does_not_block_event_loop(pg_schema):
+    """See test_ebay_plugins_own_load_config_call_does_not_block_event_loop
+    for the shared setup and why isolating one call at a time matters."""
+    # Call #3: _record_site_result's failure-limit read, right after
+    # _paced_search returns.
+    heartbeat_count = await _run_worker_crawl_with_slow_load_config_call(slow_call_number=3)
+    assert heartbeat_count >= 10
+
+
+async def test_shielded_runs_the_coroutine_to_completion_despite_cancellation():
+    """Plain asyncio.shield() only protects the shielded coroutine itself --
+    the awaiting coroutine still gets CancelledError immediately. _shielded
+    additionally waits for the shielded coroutine before re-raising, so a
+    sequence of awaits inside it (not just a single blocking call) always
+    finishes before cancellation propagates. Used to protect
+    _process_claimed_rows in full, since a claimed crawl_queue row has no
+    reclaim path if cancellation interrupts it before its terminal write
+    (flagged across four rounds of PR #146 review)."""
+    finished = threading.Event()
+
+    def slow_write():
+        time.sleep(0.05)
+        finished.set()
+
+    async def slow_sequence():
+        await asyncio.sleep(0)  # a first await, distinct from the to_thread below
+        await asyncio.to_thread(slow_write)
+
+    async def runner():
+        await _shielded(slow_sequence())
+
+    task = asyncio.ensure_future(runner())
+    await asyncio.sleep(0.01)  # let the thread pool actually start slow_write
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert finished.is_set()
+
+
+async def test_shielded_reraises_cancellation_even_if_the_coroutine_then_fails():
+    """`await task` inside _shielded's except block can itself raise -- if
+    the shielded coroutine fails with a real exception while a
+    cancellation is already pending, that exception must not replace the
+    CancelledError. _worker_loop checks `except asyncio.CancelledError`
+    before `except Exception` specifically so a cancelled worker actually
+    stops instead of being treated as a routine error and retried after a
+    5s sleep (caught in PR #146 review)."""
+    async def failing_sequence():
+        await asyncio.sleep(0.02)
+        raise ValueError("boom")
+
+    async def runner():
+        await _shielded(failing_sequence())
+
+    task = asyncio.ensure_future(runner())
+    await asyncio.sleep(0.005)  # cancel while failing_sequence is still asleep, before it raises
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_drain_one_batch_reverts_a_cancelled_claim_instead_of_orphaning_it(pg_schema):
+    """stop_worker_pool()'s task.cancel() landing while _claim_batch's
+    thread is still committing must not leave the claimed row stuck
+    'in_progress' forever -- db.py's claim_crawl_queue_batch docstring is
+    explicit there's no reclaim path for that (caught in PR #146 review):
+    the claim's own commit finishing doesn't help if the claimed rows are
+    discarded on cancellation, so _drain_one_batch must revert the claim
+    instead."""
+    with db.get_admin_pool().connection() as conn:
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1")
+        conn.commit()
+
+    manager = CrawlManager()
+    real_claim = db.claim_crawl_queue_batch
+    started = threading.Event()
+
+    def slow_claim(conn, worker_id, limit):
+        started.set()
+        time.sleep(0.05)
+        return real_claim(conn, worker_id, limit)
+
+    with patch("db.claim_crawl_queue_batch", side_effect=slow_claim):
+        task = asyncio.ensure_future(manager._drain_one_batch("worker-test", {}, pages={}))
+        while not started.is_set():  # deterministic: wait for the claim to actually start
+            await asyncio.sleep(0.005)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT status, claimed_by FROM crawl_queue WHERE discogs_id = 'r1'"
+        ).fetchone()
+    assert row["status"] == "pending"
+    assert row["claimed_by"] is None
+
+
+async def test_drain_one_batch_resolves_the_row_even_if_cancelled_during_the_result_write(pg_schema):
+    """A cancellation landing between _write_result's commit and the
+    resolve_row call that must follow it must not let the listing write
+    commit while the row's terminal crawl_queue status never gets written
+    -- that stranded the row 'in_progress' forever even though its data was
+    already correct (caught in PR #146 review)."""
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1")
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(return_value=[
+        {"url": "https://x", "price": 5.0, "shipping": None, "currency": "USD", "condition": None}
+    ])
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    real_upsert_listing = db.upsert_listing
+    started = threading.Event()
+
+    def slow_upsert_listing(*args, **kwargs):
+        started.set()
+        time.sleep(0.05)
+        return real_upsert_listing(*args, **kwargs)
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("config.load_config", return_value={"crawl_delay_seconds": 0, "consecutive_failure_limit": 10}), \
+         patch("db.upsert_listing", side_effect=slow_upsert_listing):
+        task = asyncio.ensure_future(manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={}))
+        while not started.is_set():  # deterministic: wait for the write to actually start
+            await asyncio.sleep(0.005)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute("SELECT status FROM crawl_queue WHERE discogs_id = 'r1'").fetchone()
+        listing = conn.execute(
+            "SELECT price FROM listings WHERE release_id = 'r1' AND crawler_id = %s", [crawler_id]
+        ).fetchone()
+    assert row["status"] == "done"
+    assert listing is not None and listing["price"] == 5.0
+
+
+async def test_drain_one_batch_resolves_the_row_even_if_cancelled_right_after_the_claim(pg_schema):
+    """Earlier fixes each protected one specific write _drain_one_batch
+    makes (the claim, then the result write) after review kept finding the
+    next unprotected await in between. This proves the general fix instead
+    of one more instance of it: a cancellation landing at the *earliest*
+    point after a row is claimed -- during _resolve_target, before
+    anything else has run -- must still leave the row resolved, not
+    orphaned 'in_progress', because _process_claimed_rows now runs to
+    completion as one shielded unit regardless of where cancellation
+    lands."""
+    with db.get_admin_pool().connection() as conn:
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1")
+        conn.commit()
+
+    manager = CrawlManager()
+    real_get_catalog_release = db.get_catalog_release
+    started = threading.Event()
+
+    def slow_get_catalog_release(*args, **kwargs):
+        started.set()
+        time.sleep(0.05)
+        return real_get_catalog_release(*args, **kwargs)
+
+    with patch("db.get_catalog_release", side_effect=slow_get_catalog_release):
+        task = asyncio.ensure_future(manager._drain_one_batch("worker-test", {}, pages={}))
+        while not started.is_set():  # deterministic: wait for the read to actually start
+            await asyncio.sleep(0.005)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute("SELECT status FROM crawl_queue WHERE discogs_id = 'r1'").fetchone()
+    # No eligible crawlers were registered, so a resolved row lands 'done'
+    # (mark_crawl_queue_done via the zero-eligible-crawlers path), not
+    # 'in_progress'.
+    assert row["status"] == "done"
 
 
 def test_empty_failure_domain_does_not_pool_crawlers():

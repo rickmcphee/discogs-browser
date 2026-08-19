@@ -95,6 +95,7 @@ vi.mock('../api/client', () => ({
   postStockSyncStart: vi.fn().mockResolvedValue({ started: true, running: true }),
   postJudgmentStart: vi.fn().mockResolvedValue({ started: true, running: true }),
   getJudgmentStatus: vi.fn().mockResolvedValue({ any_judged: false }),
+  getPriceStatus: vi.fn().mockResolvedValue({ any_price_paid: false }),
 }))
 
 function getLastCrawlSource() {

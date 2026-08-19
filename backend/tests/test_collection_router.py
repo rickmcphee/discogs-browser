@@ -43,6 +43,27 @@ def test_collection_status_scoped_to_calling_user(pg_test_db, authed_client_fact
     assert r.json()["total"] == 0
 
 
+def test_collection_price_status_scoped_to_calling_user(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        bob = db.create_user(conn, discogs_user_id=2, discogs_username="bob")
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.upsert_library_item(conn, alice["id"], "r1", in_collection=True, price_paid="25.00")
+        conn.commit()
+
+    client = authed_client_factory(alice["id"])
+    r = client.get("/api/collection/price-status")
+    assert r.json() == {"any_price_paid": True}
+
+    client = authed_client_factory(bob["id"])
+    r = client.get("/api/collection/price-status")
+    assert r.json() == {"any_price_paid": False}
+
+
 def test_refresh_collection_starts_a_sync_for_the_calling_user(pg_test_db, authed_client_factory, monkeypatch):
     async def _fake_sync(user_id, mode, scope="all"):
         await asyncio.sleep(0)

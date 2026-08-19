@@ -24,6 +24,7 @@ const exportRecommendationsCsv = vi.fn()
 const getSettings = vi.fn()
 const getUserSettings = vi.fn()
 const getJudgmentStatus = vi.fn()
+const getPriceStatus = vi.fn()
 const getCrawlers = vi.fn()
 const getStock = vi.fn()
 const postUserHiddenCrawlers = vi.fn().mockResolvedValue(undefined)
@@ -63,6 +64,7 @@ vi.mock('../api/client', () => ({
   clearJudgments: (...args: unknown[]) => clearJudgments(...args),
   exportRecommendationsCsv: (...args: unknown[]) => exportRecommendationsCsv(...args),
   getJudgmentStatus: (...args: unknown[]) => getJudgmentStatus(...args),
+  getPriceStatus: (...args: unknown[]) => getPriceStatus(...args),
   listInvites: vi.fn().mockResolvedValue([]),
   createInvite: vi.fn().mockResolvedValue({ code: '' }),
 }))
@@ -90,6 +92,7 @@ beforeEach(() => {
   getSettings.mockResolvedValue(defaultSettings)
   getUserSettings.mockResolvedValue(defaultUserSettings)
   getJudgmentStatus.mockResolvedValue({ any_judged: false })
+  getPriceStatus.mockResolvedValue({ any_price_paid: false })
   getCrawlers.mockResolvedValue([])
   getStock.mockResolvedValue({ total: 0, page: 1, per_page: 250, items: [] })
   postUserHiddenCrawlers.mockResolvedValue(undefined)
@@ -112,6 +115,62 @@ describe('In Stock tab', () => {
     fireEvent.click(trackButton)
     await waitFor(() => expect(trackButton.className).toContain('bg-white'))
     await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ libraryScope: 'all' })))
+  })
+
+  it('hides the Track Price column when the user has no collection price data', async () => {
+    getPriceStatus.mockResolvedValue({ any_price_paid: false })
+    render(<App />)
+    await waitFor(() => expect(screen.getByText('Track')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Track'))
+    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ libraryScope: 'all' })))
+    expect(screen.queryByText(/Price/)).toBeNull()
+  })
+
+  it('renders a Price element somewhere when the user has collection price data (paired with the hides test above, which proves it is wired everywhere)', async () => {
+    getPriceStatus.mockResolvedValue({ any_price_paid: true })
+    render(<App />)
+    await waitFor(() => expect(screen.getByText('Track')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Track'))
+    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ libraryScope: 'all' })))
+    // Collection/Wantlist RecordBrowser and the Store StockBrowser all stay mounted
+    // alongside Track (only CSS-hidden), and Collection/Wantlist share the same
+    // hasPriceData wiring, so "Price" legitimately matches more than once here.
+    expect(screen.getAllByText(/Price/).length).toBeGreaterThan(0)
+  })
+
+  it('refetches price status after a non-wishlist sync completes', async () => {
+    render(<App />)
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    await waitFor(() => expect(getPriceStatus).toHaveBeenCalled())
+    getLastCrawlSource().emit({ status: 'sync_complete', synced: 42, wishlist_synced: 7, username: 'alice', id: 1 })
+    await waitFor(() => expect(getPriceStatus.mock.calls.length).toBeGreaterThan(1))
+  })
+
+  it('refetches price status after a sync fails partway through', async () => {
+    render(<App />)
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    await waitFor(() => expect(getPriceStatus).toHaveBeenCalled())
+    getLastCrawlSource().emit({ status: 'sync_error', error: 'boom', id: 1 })
+    await waitFor(() => expect(getPriceStatus.mock.calls.length).toBeGreaterThan(1))
+  })
+
+  it('does not let a slow bootstrap price-status response overwrite a newer post-sync one', async () => {
+    let resolveBootstrap: (v: { any_price_paid: boolean }) => void = () => {}
+    getPriceStatus
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveBootstrap = resolve }))
+      .mockResolvedValueOnce({ any_price_paid: true })
+
+    render(<App />)
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    await waitFor(() => expect(getPriceStatus).toHaveBeenCalledTimes(1))
+
+    getLastCrawlSource().emit({ status: 'sync_complete', synced: 1, wishlist_synced: null, username: 'alice', id: 1 })
+    await waitFor(() => expect(getPriceStatus).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.getAllByText(/Price/).length).toBeGreaterThan(0))
+
+    resolveBootstrap({ any_price_paid: false })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(screen.getAllByText(/Price/).length).toBeGreaterThan(0)
   })
 
   it('calls postStockSyncStart when Refresh is clicked in Settings', async () => {

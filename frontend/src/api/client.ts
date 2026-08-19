@@ -35,7 +35,7 @@ async function apiFetch(path: string, init: RequestInit = {}): Promise<Response>
 
 export async function checkHealth(): Promise<boolean> {
   try {
-    const r = await apiFetch('/health')
+    const r = await apiFetch('/health', { signal: AbortSignal.timeout(4000) })
     // Any non-5xx means the backend is reachable (5xx = nginx gateway error)
     return r.status < 500
   } catch {
@@ -253,6 +253,12 @@ export async function postJudgmentStart(): Promise<{ started: boolean; running: 
 
 export async function getJudgmentStatus(): Promise<{ any_judged: boolean }> {
   const r = await apiFetch('/stock/judge/status')
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
+}
+
+export async function getPriceStatus(): Promise<{ any_price_paid: boolean }> {
+  const r = await apiFetch('/collection/price-status')
   if (!r.ok) throw new Error(await r.text())
   return r.json()
 }

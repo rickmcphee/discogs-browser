@@ -12,6 +12,41 @@ log = get_logger("crawl_manager")
 # pg_advisory_xact_lock(2026080901) convention.
 STOCK_SYNC_LOCK_KEY = 2026081601
 
+
+async def _shielded(coro):
+    """Runs `coro` to completion even if the awaiting task is cancelled
+    while it's in flight, then re-raises the cancellation afterward.
+
+    Plain asyncio.shield() only protects `coro` itself from being cancelled
+    -- the *awaiting* coroutine still gets CancelledError immediately and,
+    left unhandled, moves on without `coro`'s result. For a sequence like
+    "write a crawl result, then resolve that row's terminal crawl_queue
+    status," splitting them at a cancellation boundary is exactly the bug:
+    the result can commit while the resolve that must follow it never runs,
+    leaving the row 'in_progress' forever with no reclaim path (db.py's
+    claim_crawl_queue_batch docstring). Catching the CancelledError and
+    awaiting the shielded task anyway before re-raising makes sure `coro`
+    -- run in full, not just its first blocking call -- finishes before
+    this function's own cancellation is allowed to propagate."""
+    task = asyncio.ensure_future(coro)
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        try:
+            await task
+        except Exception:
+            # A real failure surfacing here must not replace the pending
+            # cancellation -- _worker_loop checks `except asyncio.
+            # CancelledError` before `except Exception` specifically so a
+            # cancelled worker actually stops instead of being treated as
+            # a routine error and retried after a sleep. This is the only
+            # place that ever sees this exception, so it's logged here
+            # rather than silently dropped.
+            log.error("Exception in a _shielded coroutine during cancellation", exc_info=True)
+        raise
+
+
+
 class CrawlManager:
     def __init__(self):
         self._sync_tasks: dict[int, asyncio.Task] = {}
@@ -31,6 +66,12 @@ class CrawlManager:
         self._site_consecutive_failures: dict[int, int] = {}
         self._site_cooldown_until: dict[int, float] = {}
         self._failure_domains: dict[int, str] = {}
+        # Keyed by failure domain (or crawler_id for a crawler with no
+        # declared domain), not crawler_id alone -- domain peers share
+        # _site_consecutive_failures/_site_cooldown_until, so two peers'
+        # _record_site_result calls must not interleave their read-modify-
+        # write of those dicts. See _record_site_result.
+        self._site_result_locks: dict = {}
 
     @property
     def any_job_running(self) -> bool:
@@ -76,8 +117,10 @@ class CrawlManager:
         from config import PLAYWRIGHT_CHANNEL
         from db import get_app_pool, get_crawlers
 
-        with get_app_pool().connection() as conn:
-            all_crawlers = get_crawlers(conn)
+        def _load_crawlers():
+            with get_app_pool().connection() as conn:
+                return get_crawlers(conn)
+        all_crawlers = await asyncio.to_thread(_load_crawlers)
         plugins = load_enabled_crawlers(all_crawlers)
         plugins_by_crawler_id = {p._db_id: p for p in plugins}
         self._set_failure_domains(plugins_by_crawler_id)
@@ -181,7 +224,7 @@ class CrawlManager:
             return [crawler_id]
         return [cid for cid, d in self._failure_domains.items() if d == domain]
 
-    def _record_site_result(self, crawler_id: int, succeeded: bool):
+    async def _record_site_result(self, crawler_id: int, succeeded: bool):
         import time
         from config import load_config
         # Applied to every crawler in the domain rather than to one shared
@@ -189,26 +232,42 @@ class CrawlManager:
         # keyed by crawler_id -- which is what _cooling_down_crawler_ids and
         # _cooldown_remaining_seconds need, and what a crawler with no declared
         # domain (every crawler but the two eBay ones) already was.
-        limit = int(load_config().get("consecutive_failure_limit", 10))
-        for cid in self._domain_peers(crawler_id):
-            if succeeded:
-                self._site_consecutive_failures[cid] = 0
-                continue
-            count = self._site_consecutive_failures.get(cid, 0) + 1
-            self._site_consecutive_failures[cid] = count
-            if limit and count >= limit:
-                self._site_cooldown_until[cid] = time.monotonic() + 1800
-                self._site_consecutive_failures[cid] = 0
-                # INFO, not WARNING: the log viewer filters by exact level
-                # membership rather than level-and-above (routers/logs.py's
-                # WHERE level = ANY(...)), so at WARNING this was invisible to anyone
-                # watching the INFO stream that carries the rest of the crawl
-                # narrative -- the crawl would just go quiet for 30 minutes
-                # with no line explaining why.
-                log.info(
-                    "Crawler %d hit %d consecutive failures, cooling down for 30 minutes",
-                    cid, count,
-                )
+        #
+        # Locked per domain (not just awaited) because load_config() below is
+        # a real yield point now that it's offloaded -- without the lock, two
+        # concurrent calls for the same domain (e.g. both eBay crawlers, or
+        # two workers hitting the same crawler_id) could interleave their
+        # read-modify-write of these dicts: a failure's write can land after
+        # a chronologically later success's reset, resurrecting a stale
+        # failure count instead of the reset staying in effect.
+        domain_key = self._failure_domains.get(crawler_id, crawler_id)
+        if domain_key not in self._site_result_locks:
+            self._site_result_locks[domain_key] = asyncio.Lock()
+
+        async with self._site_result_locks[domain_key]:
+            # load_config() is a blocking Postgres call, offloaded for the
+            # same reason as the one in _paced_search's finally block.
+            config = await asyncio.to_thread(load_config)
+            limit = int(config.get("consecutive_failure_limit", 10))
+            for cid in self._domain_peers(crawler_id):
+                if succeeded:
+                    self._site_consecutive_failures[cid] = 0
+                    continue
+                count = self._site_consecutive_failures.get(cid, 0) + 1
+                self._site_consecutive_failures[cid] = count
+                if limit and count >= limit:
+                    self._site_cooldown_until[cid] = time.monotonic() + 1800
+                    self._site_consecutive_failures[cid] = 0
+                    # INFO, not WARNING: the log viewer filters by exact level
+                    # membership rather than level-and-above (routers/logs.py's
+                    # WHERE level = ANY(...)), so at WARNING this was invisible to anyone
+                    # watching the INFO stream that carries the rest of the crawl
+                    # narrative -- the crawl would just go quiet for 30 minutes
+                    # with no line explaining why.
+                    log.info(
+                        "Crawler %d hit %d consecutive failures, cooling down for 30 minutes",
+                        cid, count,
+                    )
 
     async def _paced_search(self, crawler_id: int, plugin, target: dict, pages: dict) -> tuple:
         """Runs plugin.search() for one crawler_id under that site's lock,
@@ -258,18 +317,69 @@ class CrawlManager:
                 # detection on both the initial attempt and the retry) would
                 # leave the next request to this same site free to fire
                 # immediately with zero backoff.
-                delay = float(load_config().get("crawl_delay_seconds", 30))
+                #
+                # load_config() is a blocking Postgres round trip (config.py
+                # reads app_config via get_admin_pool()); to_thread keeps it off
+                # this process's single event loop, which every worker and
+                # every /api request -- including /api/health -- shares.
+                site_config = await asyncio.to_thread(load_config)
+                delay = float(site_config.get("crawl_delay_seconds", 30))
                 self._site_next_allowed_at[crawler_id] = time.monotonic() + random.uniform(0.5, 1.0) * delay
 
     async def _drain_one_batch(self, worker_id: str, plugins_by_crawler_id: dict, pages: dict, batch_size: int = 2) -> int:
-        from crawler import _new_context
-        from db import get_app_pool, claim_crawl_queue_batch, mark_crawl_queue_done, defer_crawl_queue_row, upsert_listing, get_catalog_release, get_stock_item_identity, upsert_stock_item_listing, upsert_stock_item_from_release, delete_stock_item_for_release, clear_listing_price, get_eligible_crawlers
+        from db import get_app_pool, claim_crawl_queue_batch, revert_crawl_queue_claim
 
-        with get_app_pool().connection() as conn:
-            rows = claim_crawl_queue_batch(conn, worker_id, limit=batch_size)
-            conn.commit()
+        def _claim_batch():
+            with get_app_pool().connection() as conn:
+                rows = claim_crawl_queue_batch(conn, worker_id, limit=batch_size)
+                conn.commit()
+                return rows
+        # Claiming and processing are two different cancellation boundaries.
+        # Before the claim commits there is nothing yet to protect, so on
+        # cancellation here it's cheap to just undo it and exit fast: the
+        # claimed rows are read back from the awaited task and reverted via
+        # revert_crawl_queue_claim before the cancellation is allowed to
+        # propagate. Once a batch IS claimed, though, every row in it is
+        # 'in_progress' in Postgres with no reclaim path
+        # (claim_crawl_queue_batch's docstring) -- from that point on the
+        # whole batch has to run to completion regardless of cancellation,
+        # which is what _process_claimed_rows (wrapped in _shielded, below)
+        # guarantees. Earlier attempts at this shielded only the specific
+        # write closest to each bug report (PR #146 review, four rounds) --
+        # every round found the next unshielded await in the same claimed
+        # row's path, because any of them can let a cancellation skip the
+        # row's terminal write. Shielding the whole per-batch method closes
+        # that class of gap in one place instead of chasing instances of it.
+        claim_task = asyncio.ensure_future(asyncio.to_thread(_claim_batch))
+        try:
+            rows = await asyncio.shield(claim_task)
+        except asyncio.CancelledError:
+            claimed = await claim_task
+            if claimed:
+                def _revert():
+                    with get_app_pool().connection() as conn:
+                        revert_crawl_queue_claim(conn, [r["id"] for r in claimed])
+                        conn.commit()
+                await asyncio.to_thread(_revert)
+            raise
         if not rows:
             return 0
+
+        return await _shielded(self._process_claimed_rows(rows, plugins_by_crawler_id, pages))
+
+    async def _process_claimed_rows(self, rows: list, plugins_by_crawler_id: dict, pages: dict) -> int:
+        """Processes a batch _drain_one_batch has already claimed, through
+        to every row's terminal crawl_queue write (done or deferred).
+
+        Always run wrapped in _shielded() by its only caller -- a claimed
+        row has no reclaim path if cancellation interrupts it before that
+        terminal write (claim_crawl_queue_batch's docstring), so nothing in
+        here needs its own individual cancellation protection; the caller
+        guarantees this whole method runs to completion. That's why every
+        DB call below is a plain asyncio.to_thread rather than wrapped
+        again -- protecting the same thing twice would be redundant."""
+        from crawler import _new_context
+        from db import get_app_pool, mark_crawl_queue_done, defer_crawl_queue_row, upsert_listing, get_catalog_release, get_stock_item_identity, upsert_stock_item_listing, upsert_stock_item_from_release, delete_stock_item_for_release, clear_listing_price, get_eligible_crawlers
 
         # Two passes: resolve every claimed row's target and eligible crawler
         # set first, then drain the resulting work units in target-major order.
@@ -281,16 +391,23 @@ class CrawlManager:
         units: list = []
         for row in rows:
             is_release = row["discogs_id"] is not None
-            with get_app_pool().connection() as conn:
-                if is_release:
-                    target = get_catalog_release(conn, row["discogs_id"])
-                else:
-                    target = get_stock_item_identity(conn, row["item_key"])
-                eligible = get_eligible_crawlers(conn, is_release, row["pending_crawler_ids"])
-            if target is None:
+
+            def _resolve_target():
                 with get_app_pool().connection() as conn:
-                    mark_crawl_queue_done(conn, row["id"])
-                    conn.commit()
+                    if is_release:
+                        target = get_catalog_release(conn, row["discogs_id"])
+                    else:
+                        target = get_stock_item_identity(conn, row["item_key"])
+                    eligible = get_eligible_crawlers(conn, is_release, row["pending_crawler_ids"])
+                return target, eligible
+            target, eligible = await asyncio.to_thread(_resolve_target)
+
+            if target is None:
+                def _mark_done():
+                    with get_app_pool().connection() as conn:
+                        mark_crawl_queue_done(conn, row["id"])
+                        conn.commit()
+                await asyncio.to_thread(_mark_done)
                 continue
             targets[row["id"]] = (row, target, is_release)
             for crawler in eligible:
@@ -302,7 +419,7 @@ class CrawlManager:
         # facing a cooling-down site moves to the next unit instead of idling.
         deferred: dict = {}
 
-        def resolve_row(row_id: int):
+        async def resolve_row(row_id: int):
             # Resolves one row's terminal crawl_queue status as soon as its
             # own last unit finishes, rather than in a single pass after the
             # whole batch drains. A row with nothing deferred is done; a row
@@ -310,19 +427,19 @@ class CrawlManager:
             # those, until the earliest cooldown expires. Resolving here --
             # inline in the unit loop, per row -- means an earlier row's
             # status write is already committed before a later row's unit
-            # runs, so a BaseException that escapes that later unit (e.g.
-            # asyncio.CancelledError from stop_worker_pool's task.cancel(),
-            # which the `except Exception` below deliberately does not catch)
-            # can no longer strand an already-finished row at 'in_progress'.
-            with get_app_pool().connection() as conn:
-                if row_id in deferred:
-                    defer_crawl_queue_row(
-                        conn, row_id, deferred[row_id],
-                        self._cooldown_remaining_seconds(deferred[row_id]),
-                    )
-                else:
-                    mark_crawl_queue_done(conn, row_id)
-                conn.commit()
+            # runs, so an exception escaping a later unit can no longer
+            # strand an already-finished row at 'in_progress'.
+            def _write():
+                with get_app_pool().connection() as conn:
+                    if row_id in deferred:
+                        defer_crawl_queue_row(
+                            conn, row_id, deferred[row_id],
+                            self._cooldown_remaining_seconds(deferred[row_id]),
+                        )
+                    else:
+                        mark_crawl_queue_done(conn, row_id)
+                    conn.commit()
+            await asyncio.to_thread(_write)
 
         # A row with zero eligible crawlers contributes no units, so it would
         # never reach the per-unit resolve_row calls below -- resolve it (as
@@ -330,7 +447,7 @@ class CrawlManager:
         row_ids_with_units = {row_id for row_id, _crawler_id in units}
         for row_id in targets:
             if row_id not in row_ids_with_units:
-                resolve_row(row_id)
+                await resolve_row(row_id)
 
         for i, (row_id, crawler_id) in enumerate(units):
             row, target, is_release = targets[row_id]
@@ -340,14 +457,14 @@ class CrawlManager:
                 # A crawler whose module failed to load at boot. Counted as a
                 # site failure but deliberately NOT deferred: a permanently
                 # broken module would otherwise defer its rows forever.
-                self._record_site_result(crawler_id, succeeded=False)
+                await self._record_site_result(crawler_id, succeeded=False)
                 if is_last_unit_for_row:
-                    resolve_row(row_id)
+                    await resolve_row(row_id)
                 continue
             if crawler_id in self._cooling_down_crawler_ids():
                 deferred.setdefault(row_id, []).append(crawler_id)
                 if is_last_unit_for_row:
-                    resolve_row(row_id)
+                    await resolve_row(row_id)
                 continue
 
             if crawler_id not in pages:
@@ -360,13 +477,13 @@ class CrawlManager:
                     "[%s] Crawl failed for %s - %s (%s): %s",
                     plugin._db_site_name, target["artist"], target["title"], row["discogs_id"] or row["item_key"], e,
                 )
-                self._record_site_result(crawler_id, succeeded=False)
+                await self._record_site_result(crawler_id, succeeded=False)
                 if is_last_unit_for_row:
-                    resolve_row(row_id)
+                    await resolve_row(row_id)
                 continue
 
             if is_release:
-                self._record_site_result(crawler_id, succeeded=bool(matches) and not bot_detected)
+                await self._record_site_result(crawler_id, succeeded=bool(matches) and not bot_detected)
             elif bot_detected or matches:
                 # A stock item's search failing to find anything carries no
                 # site-health signal -- most small-label stock isn't listed on
@@ -376,40 +493,40 @@ class CrawlManager:
                 # site currently works) is recorded; a plain empty result is
                 # silently excluded from the circuit breaker rather than counted
                 # as either outcome.
-                self._record_site_result(crawler_id, succeeded=not bot_detected)
+                await self._record_site_result(crawler_id, succeeded=not bot_detected)
 
-            with get_app_pool().connection() as conn:
-                if matches:
-                    best = matches[0]
-                    if is_release:
-                        upsert_listing(
-                            conn, row["discogs_id"], crawler_id, best["url"],
-                            best.get("price"), best.get("shipping"), best.get("currency"), best.get("condition"),
-                        )
-                        upsert_stock_item_from_release(conn, row["discogs_id"], crawler_id, target, best)
-                    else:
-                        upsert_stock_item_listing(
-                            conn, row["item_key"], crawler_id, best["url"],
-                            best.get("price"), best.get("shipping"), best.get("currency"), best.get("condition"),
-                        )
-                elif is_release and not bot_detected:
-                    delete_stock_item_for_release(conn, row["discogs_id"], crawler_id)
-                    clear_listing_price(conn, row["discogs_id"], crawler_id)
-                conn.commit()
+            def _write_result():
+                with get_app_pool().connection() as conn:
+                    if matches:
+                        best = matches[0]
+                        if is_release:
+                            upsert_listing(
+                                conn, row["discogs_id"], crawler_id, best["url"],
+                                best.get("price"), best.get("shipping"), best.get("currency"), best.get("condition"),
+                            )
+                            upsert_stock_item_from_release(conn, row["discogs_id"], crawler_id, target, best)
+                        else:
+                            upsert_stock_item_listing(
+                                conn, row["item_key"], crawler_id, best["url"],
+                                best.get("price"), best.get("shipping"), best.get("currency"), best.get("condition"),
+                            )
+                    elif is_release and not bot_detected:
+                        delete_stock_item_for_release(conn, row["discogs_id"], crawler_id)
+                        clear_listing_price(conn, row["discogs_id"], crawler_id)
+                    conn.commit()
+            await asyncio.to_thread(_write_result)
 
-            # Before the broadcast, not after, so the status write cannot be
-            # separated from the unit's commit by anything awaitable. Both are
-            # synchronous now (the broadcasts use put_nowait), so today neither
-            # ordering can strand a row -- `await q.put()` on an unbounded queue
-            # does not suspend, so stop_worker_pool()'s task.cancel() had no
-            # window to land in either. This ordering is what keeps that true
-            # without depending on Queue's internals: if the broadcast ever
-            # gains a real await, resolving first means a finished row's status
-            # is already committed, instead of the row being left 'in_progress'
-            # with its listing written and no reclaim path or re-enqueue able to
-            # revive it.
+            # Before the broadcast, not after, so a broadcast failure can't
+            # separate the listing write from the row's status write in the
+            # logs. `_write_result` and (for the row's last unit)
+            # resolve_row below are two separate to_thread awaits now, not
+            # one synchronous block -- what keeps a cancellation landing
+            # between them from stranding the row 'in_progress' with its
+            # listing already correct is that this whole method is run
+            # inside one _shielded() call by _drain_one_batch (see that
+            # method's docstring), not anything local to this ordering.
             if is_last_unit_for_row:
-                resolve_row(row_id)
+                await resolve_row(row_id)
 
             status = "found" if matches else "not_found"
             if is_release:
@@ -858,7 +975,7 @@ class CrawlManager:
                         consecutive_429_sites.append(crawler._db_site_name)
                     else:
                         log.error("[%s] Stock crawl failed: %s", crawler._db_site_name, e, exc_info=True)
-                        self._record_site_result(crawler._db_id, succeeded=False)
+                        await self._record_site_result(crawler._db_id, succeeded=False)
                         failed_sources.append(crawler._db_site_name)
                         await self._broadcast({
                             "status": "stock_sync_error",
@@ -882,7 +999,7 @@ class CrawlManager:
                     continue
 
                 consecutive_429_sites = []
-                self._record_site_result(crawler._db_id, succeeded=True)
+                await self._record_site_result(crawler._db_id, succeeded=True)
                 with get_app_pool().connection() as conn:
                     item_keys = replace_stock_items(conn, crawler._db_id, items)
                     update_crawler_last_run(conn, crawler._db_id)

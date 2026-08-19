@@ -830,6 +830,12 @@ Using `vendor` as artist here, the way every other site's crawler does, would mi
 
   **Amendment (2026-08-10, branch `worktree-collection-wishlist-filter`):** the two amendments above are stale on three points. The intersection tab is now labeled **Track** (`StockBrowser` with `scope="track"`), and "Collection" went back to naming the plain Discogs collection tab. The `overlapping` query param and its `get_stock_items`/`get_distinct_stock_artists` implementation — described above as "unchanged" — were replaced by `library_scope` (`'collection'`/`'wishlist'`/`'all'`/`None`), which also matches wantlist items. Track does render a dropdown after all (All/Collection/Wantlist), and its `Price` column renders under every one of those values, not only the collection one. See [`2026-08-10-collection-wishlist-filter-design.md`](../../specifications/shaping/2026-08-10-collection-wishlist-filter-design.md).
 
+  **Amendment (2026-08-18, branch `discogs-price-column-detection`):** the
+  Price column's presence is no longer purely per-filter-value — it also
+  hides entirely, across every filter value, when the calling user has no
+  collection price data at all. See
+  [`2026-08-18-price-column-auto-hide-design.md`](../../specifications/shaping/2026-08-18-price-column-auto-hide-design.md).
+
   **Amendment (2026-08-16, branch `store-saved-items`):** "Store's dropdown now offers only All/Recommended," above, is stale — a third option, `Saved`, was added for a per-user "save for later" bookmark, unrelated to `Recommended`/`library_scope`. See [`2026-08-16-store-saved-items-design.md`](../../specifications/shaping/2026-08-16-store-saved-items-design.md).
 - **Artist casing (added later, branch `store-tab-overlapping-filter`):** `replace_stock_items` applies Python's `str.title()` to `item["artist"]` before insert — the single write path for `stock_items` (called from `CrawlManager._sync_stock`), so every catalog crawler gets normalized casing for free without per-crawler changes. Known tradeoff: `.title()` mangles some real band-name stylings (all-caps names like "NAILS" become "Nails"; it also mis-cases text after apostrophes) — accepted for consistent, predictable display over exact stylization fidelity. Applies at crawl time only; existing rows keep whatever casing they had until the next sync.
 

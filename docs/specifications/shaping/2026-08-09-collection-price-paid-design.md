@@ -80,7 +80,14 @@ change that).
   now **Track**. The Price column renders under all three of its filter
   values, not just the collection one — the price subquery is pinned to
   `'collection'` scope, so a wantlist-only row returns NULL and renders
-  `—` with no conditional rendering. "Out of scope: any change to wishlist
+  `—` with no conditional rendering.
+
+  **Amendment (2026-08-18, branch `discogs-price-column-detection`):** "no
+  conditional rendering" is superseded — the column is now conditional on
+  whether the calling user has any collection `price_paid` value at all,
+  independent of which filter is selected. See
+  [`2026-08-18-price-column-auto-hide-design.md`](2026-08-18-price-column-auto-hide-design.md).
+  "Out of scope: any change to wishlist
   items (they never carry a `discogs_price` today and this doesn't change
   that)" is superseded: wantlist items are now matched, and still never
   carry a `discogs_price`, deliberately. The `sort == "discogs_price" and

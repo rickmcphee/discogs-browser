@@ -15,6 +15,7 @@ interface Props {
   hiddenCrawlerIdsLoaded?: boolean
   syncGeneration?: number
   isAdmin?: boolean
+  hasPriceField?: boolean
 }
 
 const NO_HIDDEN_CRAWLER_IDS: number[] = []
@@ -38,7 +39,7 @@ function BookmarkIcon({ filled }: { filled: boolean }) {
 function StockBrowser({
   scope = 'store', recommendedAvailable = false, hiddenCrawlerIds = NO_HIDDEN_CRAWLER_IDS,
   crawlers = NO_CRAWLERS, onHiddenCrawlerIdsChange = NOOP_HIDDEN_CRAWLER_IDS_CHANGE,
-  hiddenCrawlerIdsLoaded = true, syncGeneration, isAdmin = false,
+  hiddenCrawlerIdsLoaded = true, syncGeneration, isAdmin = false, hasPriceField = true,
 }: Props) {
   const [items, setItems] = useState<StockItem[]>([])
   const [total, setTotal] = useState(0)
@@ -119,6 +120,15 @@ function StockBrowser({
       setFilter('all')
     }
   }, [recommendedAvailable, filter])
+  // Same hazard as changeFilter's discogs_price reset above, but for the
+  // hasPriceField prop itself flipping false (e.g. a sync clears the user's
+  // last price) rather than a user-driven filter change.
+  useEffect(() => {
+    if (!hasPriceField && sort === 'discogs_price') {
+      setSort('artist')
+      setOrder('asc')
+    }
+  }, [hasPriceField, sort])
   // Also refetches on syncGeneration ticks, same as load() above -- otherwise
   // the sidebar's artist list would go stale mid-crawl.
   useEffect(() => {
@@ -236,7 +246,7 @@ function StockBrowser({
   }
 
   const totalPages = Math.ceil(total / PER_PAGE)
-  const colCount = scope === 'track' ? 7 : 7
+  const colCount = scope === 'track' ? (hasPriceField ? 7 : 6) : 7
   const priceSortable = scope === 'track' && filter !== 'wantlist'
   const emptyMessage =
     scope === 'store' && filter === 'recommended' ? 'Nothing recommended is in stock right now.'
@@ -409,7 +419,7 @@ function StockBrowser({
                     Format {sort === 'format' ? (order === 'asc' ? '↑' : '↓') : ''}
                   </button>
                 </th>
-                {scope === 'track' && (
+                {scope === 'track' && hasPriceField && (
                   priceSortable ? (
                     <th className="text-center" aria-sort={sort === 'discogs_price' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}>
                       <button type="button" onClick={() => toggleSort('discogs_price')} className={`${sortButtonClass} text-center`}>
@@ -453,7 +463,7 @@ function StockBrowser({
                   <td className="px-3 py-2 text-right text-gray-200" title={item.reason ?? undefined}>{item.artist}</td>
                   <td className="px-3 py-2 text-left text-gray-300" title={item.reason ?? undefined}>{item.title}</td>
                   <td className="px-3 py-2 text-gray-400">{item.format ?? '—'}</td>
-                  {scope === 'track' && (
+                  {scope === 'track' && hasPriceField && (
                     <td className="px-3 py-2 text-gray-400">{item.discogs_price ?? '—'}</td>
                   )}
                   <td className="px-3 py-2">
