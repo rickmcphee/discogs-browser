@@ -204,8 +204,9 @@ membership rather than level-and-above~~ (see 2026-08-17 amendment below — the
 log viewer still filters by exact level membership, just not via
 `_line_visible` any more), so a WARNING here would be invisible to
 anyone watching the INFO stream that carries the rest of the crawl narrative —
-the same reasoning already recorded on the cooldown log line in
-`_record_site_result`.
+the same reasoning previously recorded on the cooldown log line in
+`_record_site_result`, which as of 2026-08-18 has itself reverted to WARNING
+(see the amendment on `2026-08-01-worker-pool-pacing-design.md` item 12).
 
 **Amendment (2026-08-17, branch `flyio-log-files-machines`):** `_line_visible`
 no longer exists — `routers/logs.py` reads a Postgres `app_logs` table with a
