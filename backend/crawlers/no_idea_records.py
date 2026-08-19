@@ -7,14 +7,18 @@ _COLLECTION_SLUG = "list"
 # require the closing quote to end the string -- titles like 'A WILHELM
 # SCREAM "Partycrasher" + POSTER' have trailing format text after it.
 _TITLE_RE = re.compile(r'^(?P<artist>.+?)\s*["“](?P<album>.+?)["”]')
-# This store uses the curly right double quotation mark (U+201D) and the
-# double-prime mark (U+2033) for inch marks on some 7"/8" variants
-# alongside straight quotes on others -- both forms confirmed live. 4 of
-# the 345 variants this filter keeps are accepted noise the other
-# direction: a genuine vinyl pressing whose only variant-title signal is a
-# bare color name (no "LP"/"vinyl"/inch-mark token at all) is
-# indistinguishable from real non-vinyl noise on this store and is dropped
-# along with it.
+# This store uses the curly right double quotation mark (U+201D) for inch
+# marks on some 7"/8" variants alongside straight quotes on others -- both
+# forms confirmed live. The double-prime mark (U+2033) is defensive
+# support, not confirmed live on this store, added so a future edit can't
+# silently drop it (see backend/tests/test_no_idea_records_crawler.py's
+# regression test for the same character).
+#
+# Even with both quote forms covered, 4 of the ~570 variants in this
+# store's Music collection are dropped as accepted false negatives: a
+# genuine vinyl pressing whose only variant-title signal is a bare color
+# name (no "LP"/"vinyl"/inch-mark token at all) is indistinguishable from
+# real non-vinyl noise here, so it's dropped along with it.
 _VINYL_RE = re.compile(r'\bvinyl\b|\b\d*x?lp\b|\d+\s*[”″"]', re.IGNORECASE)
 
 
