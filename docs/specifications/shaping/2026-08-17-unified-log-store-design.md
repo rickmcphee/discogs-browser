@@ -197,8 +197,7 @@ backwards-compat shim): nothing else in the codebase reads the file
   100` stays as an inner query (cheap, and it correctly picks the last N rows),
   wrapped in an outer `ORDER BY ts, id`. Across Machines, id order is not time
   order — each Machine's ~1s batch lands as one contiguous id block, so an
-  id-ordered seed renders a visibly zig-zagging `time` column. The live poll is
-  still `id`-ordered; `id` is a cursor there, not a sort key. When the seed
+  id-ordered seed renders a visibly zig-zagging `time` column. When the seed
   comes back empty (a level filter matching nothing yet), the cursor is seeded
   from `max(id)` rather than left at 0, so the poll doesn't scan the whole
   table twice a second until the first matching row appears.
@@ -212,6 +211,44 @@ backwards-compat shim): nothing else in the codebase reads the file
   `stop_log_writer()`'s `join()` returns instantly), and leave the queue to fill
   to `_QUEUE_MAXSIZE` and then throw `queue.Full` on every subsequent log call.
 
+## Amendments (2026-08-18, GitHub Copilot PR review)
+
+- **The live poll is also `ts`-ordered, not just the history seed.** The
+  amendment above left `_fetch_new` `id`-ordered on the reasoning that `id` is
+  a cursor there, not a sort key — true for correctness (no row is skipped or
+  re-sent), but the same cross-Machine batch interleaving that motivated the
+  history-seed fix applies equally to one poll's freshly-fetched batch: it can
+  contain rows whose `id` and `ts` order disagree, and a viewer watching the
+  live tail would see the same zig-zag the seed fix was meant to remove.
+  `_fetch_new` now also orders `ts, id`; the cursor itself is unaffected —
+  `last_id` advances to the batch's `max(id)` computed before the (now
+  ts-ordered) yield loop, not to whichever row happens to be yielded last.
+- **`DELETE /logs` flushes this Machine's own queue first.** Records already
+  logged but sitting in `logging_config._log_queue`, not yet inserted, would
+  otherwise reappear moments after a clear, looking like the clear silently
+  failed. `clear_logs()` now calls `flush_queue()` before the `DELETE`. This
+  only covers the Machine that served the DELETE request — a record already
+  queued on the *other* Machine's writer thread can still land after this
+  returns, since the request only reaches one Machine. Not fixed: closing
+  that needs real cross-Machine coordination (a shared cutoff both writers
+  honor), not justified for a debug "Clear" button.
+
 ## Open questions
 
-None.
+- **Screenshot links embedded in a log message can point to a file that only
+  exists on the other Machine.** `SCREENSHOT:` markers in `message` link to
+  `GET /api/screenshots/{path}`, which serves purely from this Machine's local
+  `screenshots/` volume with no Machine-awareness — a pre-existing property
+  the original multi-machine spec explicitly left alone (`screenshots/` was
+  never moved off local disk). That was fine when the Log Viewer only ever
+  showed one Machine's own log; now that `app_logs` merges both Machines'
+  rows, a link from Machine B's crawl session can be clicked while the
+  request happens to route (via Fly's proxy) to Machine A, 404ing — or, if
+  both Machines happen to have a same-named session folder (the path is a
+  second-granularity timestamp, plausible under concurrent crawling on both
+  Machines), silently serving the wrong file. Accepted as a known gap rather
+  than fixed here: a real fix needs Machine-aware routing (e.g. embedding
+  `machine_id` in the URL and having a mismatched Machine respond with Fly's
+  `fly-replay` header so the proxy retries against the right one) — Fly-specific,
+  degrades to a plain 404 under local `docker-compose`, and a large enough
+  change to warrant its own design pass rather than folding into this one.

@@ -6,6 +6,7 @@ from sse_starlette.sse import EventSourceResponse
 from starlette.concurrency import run_in_threadpool
 from admin import require_admin
 import db
+from logging_config import flush_queue
 from screenshots import clear_screenshots
 
 router = APIRouter()
@@ -57,12 +58,17 @@ def _fetch_max_id() -> int:
 
 
 def _fetch_new(last_id: int, levels: Optional[set]) -> list:
+    # ORDER BY ts, id -- same reasoning as _fetch_history: two Machines' writer
+    # threads flush independently, so a batch polled in one pass can contain
+    # rows whose id order and ts order disagree. Sorting the batch here means
+    # the frontend receives (and the cursor advances past) rows in time order,
+    # not insertion order.
     level_list = list(levels) if levels else None
     with db.get_admin_pool().connection() as conn:
         return conn.execute(
             "SELECT id, ts, level, logger_name, machine_id, message FROM app_logs "
             "WHERE id > %(last_id)s AND (%(levels)s::text[] IS NULL OR level = ANY(%(levels)s)) "
-            "ORDER BY id",
+            "ORDER BY ts, id",
             {"last_id": last_id, "levels": level_list},
         ).fetchall()
 
@@ -80,6 +86,14 @@ def _row_to_payload(row: dict) -> dict:
 
 @router.delete("/logs", dependencies=[Depends(require_admin)])
 def clear_logs():
+    # Flush this Machine's own queued-but-not-yet-inserted records first, so a
+    # clear doesn't leave them to land moments later looking like they survived
+    # it. Only covers this Machine -- the request only reaches one of the two
+    # Fly Machines, so records already queued on the other one's writer thread
+    # can still reappear after this returns. Not fixed: closing that needs
+    # real cross-Machine coordination (a shared cutoff both writers honor),
+    # not justified for a debug "Clear" button.
+    flush_queue()
     with db.get_admin_pool().connection() as conn:
         conn.execute("DELETE FROM app_logs")
         conn.commit()
@@ -104,8 +118,13 @@ async def logs_stream(levels: Optional[str] = Query(None)):
 
         while True:
             new_rows = await run_in_threadpool(_fetch_new, last_id, wanted)
+            # Advance to the batch's max id up front, not per-row during the
+            # ts-ordered loop below -- iterating in ts order does not visit
+            # ids monotonically, so setting last_id per-row could set it to a
+            # row's id that's lower than one already yielded this batch.
+            if new_rows:
+                last_id = max(row["id"] for row in new_rows)
             for row in new_rows:
-                last_id = row["id"]
                 yield {"data": json.dumps(_row_to_payload(row))}
             await asyncio.sleep(_POLL_INTERVAL_SECONDS)
 
