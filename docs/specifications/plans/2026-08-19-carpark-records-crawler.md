@@ -351,7 +351,7 @@ async def test_crawl_catalog_skips_product_with_null_variants(crawler):
 def test_site_metadata():
     assert Crawler.site_name == "Carpark Records"
     assert Crawler.base_url == "https://store.carparkrecords.com"
-    assert Crawler.genre == "indie"
+    assert Crawler.genre == "rock"
     assert Crawler.crawler_type == "catalog"
 ```
 
@@ -395,8 +395,8 @@ _NON_VINYL_SUFFIX_RE = re.compile(r'\btape\b|\bcassette\b|\bdigital\b|\bcds?\b',
 class Crawler:
     site_name: str = "Carpark Records"
     base_url: str = "https://store.carparkrecords.com"
-    genre_summary: str = "Annandale/Baltimore indie label -- Toro y Moi, Beach House, Dan Deacon, Speedy Ortiz, The Beths."
-    genre: str = "indie"
+    genre_summary: str = "Annandale/Baltimore indie label — Toro y Moi, Beach House, Dan Deacon, Speedy Ortiz, The Beths."
+    genre: str = "rock"
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:
@@ -475,7 +475,7 @@ c = Crawler()
 print(c.site_name, c.base_url, c.genre, c.crawler_type, c.genre_summary)
 "
 ```
-Expected: prints `Carpark Records https://store.carparkrecords.com indie catalog Annandale/Baltimore indie label -- Toro y Moi, Beach House, Dan Deacon, Speedy Ortiz, The Beths.` — confirms the module is importable and exposes the attributes `main.py`'s startup loop reads (`site_name`, `crawler_type`, `requires_discogs_release` — absent here, which `register_crawler()` treats as `False`, matching every other `catalog` plugin). No change to `main.py` or any router is needed.
+Expected: prints `Carpark Records https://store.carparkrecords.com rock catalog Annandale/Baltimore indie label — Toro y Moi, Beach House, Dan Deacon, Speedy Ortiz, The Beths.` — confirms the module is importable and exposes the attributes `main.py`'s startup loop reads (`site_name`, `crawler_type`, `requires_discogs_release` — absent here, which `register_crawler()` treats as `False`, matching every other `catalog` plugin). No change to `main.py` or any router is needed.
 
 - [ ] **Step 7: Commit**
 

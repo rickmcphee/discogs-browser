@@ -152,6 +152,13 @@ kept as vinyl. Confirmed live: this correctly excludes all 10 non-vinyl
 variant titles present in the collection and keeps every one of the
 no-keyword vinyl-color variants sampled above.
 
+`_NON_VINYL_SUFFIX_RE`'s suffix match has no vinyl-signal check of its own,
+so a bundle variant that pairs a vinyl format with a non-vinyl one (e.g. a
+hypothetical `LP + Cassette`) would otherwise be wrongly dropped, the same
+shape of collision `anxiousandangry.py` guards against at its product-level
+gate. A third regex, `_VINYL_RE` (`vinyl`/`lp`/an inch mark), overrides the
+suffix match when present, mirroring that guard at the variant level.
+
 ### Pre-order tag
 
 `has_tag(product, "preorder")` (lowercase, unlike `anxiousandangry.py`'s
@@ -184,7 +191,7 @@ class Crawler:
     site_name: str = "Carpark Records"
     base_url: str = "https://store.carparkrecords.com"
     genre_summary: str = "Annandale/Baltimore indie label — Toro y Moi, Beach House, Dan Deacon, Speedy Ortiz, The Beths."
-    genre: str = "indie"
+    genre: str = "rock"
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]: ...
