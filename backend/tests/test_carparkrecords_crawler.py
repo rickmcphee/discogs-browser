@@ -83,10 +83,12 @@ _SWEET_SIXTEEN = {
 }
 
 # Real confirmed-live case: a genuine vinyl variant with no vinyl/LP
-# keyword at all ("Eco Mix Red") alongside an unavailable, non-preorder
-# Christmas Ornament bonus-item variant and a Digital variant -- both of
-# the latter must be dropped while the keyword-less vinyl variant and the
-# real LP variant are both kept.
+# keyword at all ("Eco Mix Red") alongside a Christmas Ornament bonus-item
+# variant and a Digital variant -- both of the latter must be dropped while
+# the keyword-less vinyl variant and the real LP variant are both kept.
+# Live, Christmas Ornament is unavailable ("available": False); it's flipped
+# to True here so this test actually exercises the non-vinyl exact-match
+# regex exclusion, not just the unrelated unavailable-variant skip.
 _PEACE_OF_US = {
     "title": "CAK177 - Dean & Britta & Sonic Boom - A Peace of Us",
     "vendor": "Carpark",
@@ -96,7 +98,7 @@ _PEACE_OF_US = {
     "images": [],
     "variants": [
         {"title": "LP", "price": "26.99", "available": True, "featured_image": None},
-        {"title": "Christmas Ornament", "price": "20.00", "available": False, "featured_image": None},
+        {"title": "Christmas Ornament", "price": "20.00", "available": True, "featured_image": None},
         {"title": "Digital", "price": "9.99", "available": True, "featured_image": None},
         {"title": "Eco Mix Red", "price": "25.99", "available": True, "featured_image": None},
     ],
@@ -200,6 +202,26 @@ _SOLO_RELEASE_DEFAULT_TITLE = {
 }
 
 
+# Synthetic (this store's live catalog has no product with a suffix-matched
+# non-vinyl bundle variant today). "LP + DVD" above can't exercise the
+# _VINYL_RE override: "dvd" only lives in the exact-match regex, which can
+# never match a compound title, so that item survives even without the
+# override. "LP + Cassette" does hit the suffix regex (\bcassette\b) --
+# only the vinyl-signal override (\blp\b) keeps it, so this is the case
+# that actually proves the override does something.
+_SYNTHETIC_LP_PLUS_CASSETTE = {
+    "title": "CAK999 Synthetic Artist - Synthetic Bundle",
+    "vendor": "Carpark",
+    "handle": "cak999-synthetic-artist-synthetic-bundle",
+    "product_type": "Music",
+    "tags": ["Synthetic Artist"],
+    "images": [],
+    "variants": [
+        {"title": "LP + Cassette", "price": "29.99", "available": True, "featured_image": None},
+    ],
+}
+
+
 def _page_response(products):
     return httpx.Response(200, json={"products": products})
 
@@ -266,6 +288,15 @@ async def test_crawl_catalog_no_catalog_code_and_no_available_variant(crawler):
     assert items == []
 
 
+def test_parse_artist_title_no_catalog_code():
+    # The crawl_catalog test above can't tell a correct parse from a broken
+    # one -- its only variant is unavailable and dropped either way, so the
+    # empty result says nothing about parsing. Assert the parse directly.
+    artist, title = Crawler._parse_artist_title("Tanukichan - Make Believe", "Carpark")
+    assert artist == "Tanukichan"
+    assert title == "Make Believe"
+
+
 @respx.mock
 async def test_crawl_catalog_no_dash_falls_back_to_vendor(crawler):
     _mock_single_page([_SWEET_SIXTEEN])
@@ -303,6 +334,14 @@ async def test_crawl_catalog_lp_plus_dvd_kept_as_vinyl(crawler):
     items = [item async for item in crawler.crawl_catalog()]
     assert len(items) == 1
     assert items[0]["title"] == "Black Beach — LP + DVD"
+
+
+@respx.mock
+async def test_crawl_catalog_vinyl_signal_overrides_suffix_regex(crawler):
+    _mock_single_page([_SYNTHETIC_LP_PLUS_CASSETTE])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert len(items) == 1
+    assert items[0]["title"] == "Synthetic Bundle — LP + Cassette"
 
 
 @respx.mock
