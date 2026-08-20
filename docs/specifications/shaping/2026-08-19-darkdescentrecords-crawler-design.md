@@ -138,12 +138,14 @@ changes.
 
 ## Queue fan-out
 
-738 products in `vinyl-lp` → 737 parse (1 skipped, no separator) → 666
-simple products yield one row each, 72 variable products yield one row
-per in-stock variation (confirmed live: 0 out-of-stock/unpurchasable
-products or variations at scan time, so no rows are dropped on that gate
-today; the check stays in as a correctness guard against future stock
-changes). Comparable in scale to `no_idea_records.py`'s ~345 rows.
+738 products in `vinyl-lp`: 666 simple + 72 variable. The one title with
+no separator (`Regere Sinister / Reptile Womb Split LP`, confirmed live
+`type: "simple"`) is skipped, leaving 665 simple products that each yield
+one row, plus 72 variable products that each yield one row per in-stock
+variation (confirmed live: 0 out-of-stock/unpurchasable products or
+variations at scan time, so no rows are dropped on that gate today; the
+check stays in as a correctness guard against future stock changes).
+Comparable in scale to `no_idea_records.py`'s ~345 rows.
 
 ## Testing
 
@@ -174,7 +176,10 @@ no bot-detection risk. Cases:
 ## Crawl citizenship and `robots.txt` compliance
 
 Per the normative section of
-`2026-08-09-amoeba-store-crawler-design.md`. This site's finding:
+`2026-08-09-amoeba-store-crawler-design.md`, which requires checking
+`robots.txt` for the specific paths a new crawler will request, and
+recording the finding here, plus the load-discipline standard every
+sibling crawler in this repo follows. This site's finding:
 
 - **No `robots.txt` exists on this domain.** `GET
   https://www.darkdescentrecords.com/robots.txt` (following the
@@ -184,11 +189,11 @@ Per the normative section of
   the 404 page itself, not a robots.txt directive), confirmed via `curl`.
   With no file present, there is no `Disallow` to violate.
 - **No `/agents.md` exists either** (`404` at both
-  `darkdescentrecords.com/agents.md` and the `/shop`-prefixed path).
-- Both documents required by the Amoeba precedent to never complete
-  checkout/payment without human approval — this crawler satisfies that
-  trivially: it only links out to each product's own page and never
-  transacts.
+  `darkdescentrecords.com/agents.md` and the `/shop`-prefixed path) —
+  checked for completeness, not because the Amoeba precedent requires it;
+  no policy document of either kind constrains this crawler.
+- This crawler never transacts on its own: it only links out to each
+  product's own page, matching every sibling crawler in this repo.
 - Load: 8 GETs to page the `vinyl-lp` collection (738 products,
   `per_page=100`) plus ~72 GETs for variable-product variation detail —
   ~80 requests per full sync. Paced at `random.uniform(delay * 0.5,
