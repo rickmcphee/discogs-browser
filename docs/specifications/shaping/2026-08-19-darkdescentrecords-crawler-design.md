@@ -93,8 +93,10 @@ _VARIATIONS_RE = re.compile(r'data-product_variations="([^"]*)"')
 Each decoded variation carries its own `display_price` (already in whole
 dollars, unlike the collection endpoint's minor-unit `prices.price`),
 `is_purchasable`, `is_in_stock`, `attributes` (e.g. `{"attribute_variant":
-"Black"}`), and optionally its own `image`. ~738 + ~72 = ~810 requests per
-full sync, paced identically to every sibling crawler.
+"Black"}`), and optionally its own `image`. The 738 products are paged 100
+at a time (8 collection-page requests), plus one request per variable
+product (~72) — ~80 requests per full sync, paced identically to every
+sibling crawler.
 
 ### Fields
 
@@ -160,7 +162,8 @@ no bot-detection risk. Cases:
   parsed `display_price`
 - a variation that is unpurchasable/out of stock → excluded
 - a variation with no `image` → falls back to the parent product's image
-- markup drift (no `data-product_variations` found) → skipped, not raised
+- markup drift (no `data-product_variations` found) → raises, rather than
+  silently dropping the product as if the site had nothing to offer
 - catalog pagination: short page stops the loop without an extra request;
   a full page continues to the next
 - HTTP failure on the listing endpoint → raises (circuit-breaker

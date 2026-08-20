@@ -92,7 +92,10 @@ class Crawler:
                          url: str, currency: str) -> list:
         m = _VARIATIONS_RE.search(page_html)
         if not m:
-            return []  # markup drift -- no variation data, skip rather than yield blanks
+            # Not "the site has nothing" -- a variable product's page always
+            # carries this data live, so a miss is a parser/markup failure
+            # and must raise, not silently drop the product from the batch.
+            raise RuntimeError(f"no data-product_variations found on {url}")
         variations = json.loads(html.unescape(m.group(1)))
 
         items = []

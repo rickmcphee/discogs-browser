@@ -142,19 +142,34 @@ def test_variable_items_skips_unpurchasable_or_out_of_stock_variations():
 
 
 def test_variable_items_falls_back_to_parent_image_when_variation_has_none():
+    # A purchasable, in-stock variation with an empty `image` -- distinct
+    # from the Test Pressing fixture, which is filtered out before image
+    # selection ever runs and so never exercises this fallback branch.
+    no_image_variation = {
+        "attributes": {"attribute_variant": "White"},
+        "display_price": 27,
+        "is_purchasable": True,
+        "is_in_stock": True,
+        "image": {},
+    }
     items = Crawler._variable_items(
-        _variation_page_html([_VARIATIONS_PAYLOAD[0], _VARIATIONS_PAYLOAD[2]]),
+        _variation_page_html([no_image_variation]),
         _VARIABLE_PRODUCT, "Candarian", "Trepanacion LP", _VARIABLE_PRODUCT["permalink"], "USD",
     )
-    # only the Black variation survives (Test Pressing is filtered out above)
-    assert items[0]["cover_image_url"] == "https://www.darkdescentrecords.com/shop/media/candarian-black.jpg"
+    assert items[0]["cover_image_url"] == "https://www.darkdescentrecords.com/shop/media/fallback.jpg"
 
 
-def test_variable_items_returns_empty_on_markup_drift():
-    assert Crawler._variable_items(
-        "<html>no variation data here</html>", _VARIABLE_PRODUCT,
-        "Candarian", "Trepanacion LP", _VARIABLE_PRODUCT["permalink"], "USD",
-    ) == []
+def test_variable_items_raises_on_markup_drift():
+    # Not "the site has nothing" -- a missing data-product_variations blob
+    # on a variable product's own page is a parser/markup failure and must
+    # raise, not silently drop the product from the batch (a swallowed []
+    # here would let replace_stock_items() wipe this crawler's previous
+    # rows while recording the source as healthy).
+    with pytest.raises(RuntimeError):
+        Crawler._variable_items(
+            "<html>no variation data here</html>", _VARIABLE_PRODUCT,
+            "Candarian", "Trepanacion LP", _VARIABLE_PRODUCT["permalink"], "USD",
+        )
 
 
 def test_price_converts_minor_units_to_a_float():
