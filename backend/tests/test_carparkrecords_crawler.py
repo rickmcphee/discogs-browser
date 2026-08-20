@@ -183,6 +183,22 @@ _MERCH_BUNDLE = {
     ],
 }
 
+# Single-variant product whose only variant title is literally "Default
+# Title" (Shopify's placeholder for a product with no real options) -- the
+# resulting item's title must be the album title alone, with no " —
+# Default Title" suffix.
+_SOLO_RELEASE_DEFAULT_TITLE = {
+    "title": "CAK210 Solo Artist - Solo Release",
+    "vendor": "Carpark",
+    "handle": "cak210-solo-artist-solo-release",
+    "product_type": "Music",
+    "tags": ["Solo Artist"],
+    "images": [],
+    "variants": [
+        {"title": "Default Title", "price": "22.99", "available": True, "featured_image": None},
+    ],
+}
+
 
 def _page_response(products):
     return httpx.Response(200, json={"products": products})
@@ -209,6 +225,19 @@ async def test_crawl_catalog_preorder_keeps_unavailable_drops_non_vinyl(crawler)
         "The Big One — Limited Edition Olive LP (Pre-Order)",
     }
     assert all(item["artist"] == "Dent May" for item in items)
+    assert all(item["format"] == "Vinyl" for item in items)
+    assert all(item["currency"] == "USD" for item in items)
+    assert all(
+        item["url"] == "https://store.carparkrecords.com/products/cak188-dent-may-the-big-one"
+        for item in items
+    )
+    assert all(
+        item["cover_image_url"] == "https://cdn.shopify.com/s/files/1/0805/4266/2938/files/dentmay.jpg"
+        for item in items
+    )
+    by_title = {item["title"]: item for item in items}
+    assert by_title["The Big One — Limited Edition Carpark Exclusive Red LP (Pre-Order)"]["price"] == 27.99
+    assert by_title["The Big One — Limited Edition Olive LP (Pre-Order)"]["price"] == 26.99
 
 
 @respx.mock
@@ -305,8 +334,17 @@ async def test_crawl_catalog_skips_product_with_null_variants(crawler):
     assert items == []
 
 
+@respx.mock
+async def test_crawl_catalog_default_title_variant_not_suffixed(crawler):
+    _mock_single_page([_SOLO_RELEASE_DEFAULT_TITLE])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert len(items) == 1
+    assert items[0]["title"] == "Solo Release"
+    assert items[0]["artist"] == "Solo Artist"
+
+
 def test_site_metadata():
     assert Crawler.site_name == "Carpark Records"
     assert Crawler.base_url == "https://store.carparkrecords.com"
-    assert Crawler.genre == "indie"
+    assert Crawler.genre == "rock"
     assert Crawler.crawler_type == "catalog"

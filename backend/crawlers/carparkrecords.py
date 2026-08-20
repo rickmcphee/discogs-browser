@@ -7,9 +7,9 @@ _PREORDER_TAG = "preorder"
 _ALLOWED_PRODUCT_TYPES = {"music"}
 # Matches an optional catalog-number prefix ("CAK188", "CAKD067", "CAK087X",
 # and the one dual-catalog-number "WIX04/05") immediately followed by the
-# artist/title text -- a no-op when a title has no such prefix, since the
-# class only matches an all-caps run immediately followed by digits, which
-# no artist name in this catalog's live title set does.
+# artist/title text -- matches only a 2-5 letter all-caps run immediately
+# followed by 1-4 digits, so a band name shaped like that (e.g. "MC5") would
+# collide with it if used as a title prefix.
 _CODE_RE = re.compile(r'^[A-Z]{2,5}\d{1,4}[A-Z]?(?:/\d{1,4})?\s*-?\s*')
 # Splits on the first whitespace-dash-whitespace run, not a bare "-", so an
 # unspaced hyphen inside an album title (e.g. "2001-2005") isn't mistaken
@@ -23,13 +23,16 @@ _SPLIT_RE = re.compile(r'\s+-\s+')
 # this catalog contains "cd", "tape", "cassette", or "digital" as a word).
 _NON_VINYL_RE = re.compile(r'^(cd|cs|cassette|tape|digital|christmas ornament|playing cards|dvd)$', re.IGNORECASE)
 _NON_VINYL_SUFFIX_RE = re.compile(r'\btape\b|\bcassette\b|\bdigital\b|\bcds?\b', re.IGNORECASE)
+# Overrides the suffix regex above when a vinyl bundle variant (e.g.
+# "LP + Cassette") happens to also carry a non-vinyl format word.
+_VINYL_RE = re.compile(r'\bvinyl\b|\blp\b|\d{1,2}\s*"', re.IGNORECASE)
 
 
 class Crawler:
     site_name: str = "Carpark Records"
     base_url: str = "https://store.carparkrecords.com"
-    genre_summary: str = "Annandale/Baltimore indie label -- Toro y Moi, Beach House, Dan Deacon, Speedy Ortiz, The Beths."
-    genre: str = "indie"
+    genre_summary: str = "Annandale/Baltimore indie label — Toro y Moi, Beach House, Dan Deacon, Speedy Ortiz, The Beths."
+    genre: str = "rock"
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:
@@ -56,7 +59,7 @@ class Crawler:
                 continue
             variant_title = variant.get("title", "")
             stripped = variant_title.strip()
-            if _NON_VINYL_RE.match(stripped) or _NON_VINYL_SUFFIX_RE.search(stripped):
+            if _NON_VINYL_RE.match(stripped) or (_NON_VINYL_SUFFIX_RE.search(stripped) and not _VINYL_RE.search(stripped)):
                 continue
             try:
                 price = float(variant["price"])
