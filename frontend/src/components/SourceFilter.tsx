@@ -116,12 +116,12 @@ function SourceFilter({ crawlers, hiddenCrawlerIds, onChange, disabled = false }
             />
           ))}
           <div className="border-t border-gray-800 my-3" />
-          <span className="text-xs uppercase tracking-wider text-gray-500">By store</span>
+          <span className="block text-left text-xs uppercase tracking-wider text-gray-500">By store</span>
           {GENRES.map(({ key, label }) => {
             const stores = byGenre.get(key) ?? []
             if (stores.length === 0) return null
             return (
-              <div key={key} className="mt-2">
+              <div key={key} className="mt-2 text-left">
                 <div className="text-xs text-gray-500 mb-1">{label}</div>
                 {stores.map((c) => (
                   <FilterCheckbox
