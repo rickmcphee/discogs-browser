@@ -185,11 +185,12 @@ first in a given title wins — no per-title branching needed:
 _SEPARATOR_RE = re.compile(r"\s*-\s+|\s+(?=['‘])")
 ```
 
-The dash alternative consumes the surrounding `" - "` entirely (title
-starts clean, no leading dash). The quote alternative is a zero-width
-lookahead on whitespace only, so the opening quote mark stays part of the
-title rather than being consumed — the two runtime cases are not the
-same shape and shouldn't produce a title formatted as if they were.
+The dash alternative consumes the surrounding `" - "` entirely, so its
+remainder is already the final title. The quote alternative is a
+zero-width lookahead on whitespace only, so its remainder still opens
+with the quote mark — this is *not* the final title yet, only the input
+to the quote-stripping step below (`_QUOTED_RE`), which is what actually
+produces the clean, quote-free title used downstream.
 Requiring whitespace *immediately before* the punctuation in both
 alternatives is what keeps this safe against mid-word apostrophes/dashes
 that are not real separators — confirmed against every apostrophe in the
