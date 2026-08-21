@@ -148,6 +148,21 @@ def test_parse_product_falls_back_to_list_price_when_sale_price_is_unparsable():
     assert item["price"] == 25.99
 
 
+def test_parse_product_raises_when_list_price_itself_is_unparsable():
+    # _EXTRACT_JS's malformedCount only checks that listPrice is a
+    # non-empty string, not that it still parses as "$X.XX" -- so a price
+    # format change (e.g. "25.99 USD" instead of "$25.99") would pass that
+    # check and land here. Returning None (a silent skip) would look
+    # identical to the artist-parse skip for messy titles, but a genuinely
+    # present, unparsable price is a much stronger drift signal than a
+    # garbled title -- must raise, not skip.
+    with pytest.raises(RuntimeError):
+        Crawler._parse_product({
+            "id": "X1", "name": "Band - Title LP", "href": "/product/X1/band-title",
+            "image": None, "listPrice": "25.99 USD", "salePrice": "",
+        })
+
+
 async def test_crawl_catalog_excludes_out_of_stock_product(fake_page):
     crawler = Crawler()
     items = [item async for item in crawler.crawl_catalog(fake_page)]

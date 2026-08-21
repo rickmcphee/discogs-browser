@@ -143,7 +143,23 @@ class Crawler:
         if price is None:
             price = cls._price(product.get("listPrice"))
         if price is None:
-            return None
+            # _EXTRACT_JS already guaranteed listPrice is a non-empty
+            # string (its malformedCount check requires it) -- it just
+            # checked *presence*, not that it still parses as "$X.XX".
+            # Returning None here (a silent skip) would look identical to
+            # the artist-parse skip above, but it isn't the same kind of
+            # gap: a garbled title is normal, messy real-world data, while
+            # a genuinely present but unparsable price is a strong signal
+            # the site changed its price format. Every one of the 93 live
+            # titles confirmed data-listprice as "$X.XX" with no exception,
+            # so this must raise, not skip -- the same reasoning as
+            # malformedCount above, just for a drift `_EXTRACT_JS` can't
+            # detect on its own since it only checks for a non-empty
+            # string, not a well-formed one.
+            raise RuntimeError(
+                f"in-stock product {product.get('id')!r} has an unparsable price "
+                f"(listPrice={product.get('listPrice')!r}) -- markup/format drift"
+            )
 
         image = product.get("image")
         return {

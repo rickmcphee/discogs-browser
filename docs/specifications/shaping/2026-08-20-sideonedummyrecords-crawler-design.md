@@ -279,8 +279,18 @@ locks this in.
 
 ### Fields
 
-- **price** — `salePrice or listPrice`, `"$"`/`,` stripped, `float()`.
-  `None` (skip) if neither parses.
+- **price** — tries `salePrice` first (`"$"`/`,` stripped, `float()`),
+  falls back to `listPrice` the same way if that fails to parse. If
+  *both* fail, raises rather than skipping: `_EXTRACT_JS`'s
+  `malformedCount` check only confirms `listPrice` is a non-empty string,
+  not that it's still `"$X.XX"`-shaped, so a price-format change on the
+  site would pass that check and only surface here. Every one of the 93
+  live titles confirmed `data-listprice` as `"$X.XX"` with no exception,
+  so an unparsable-but-present price is a much stronger drift signal than
+  a garbled title (which is expected, messy real-world data and is
+  legitimately skipped) — raising here closes the same
+  `replace_stock_items` stock-wipe gap as `rawCount`/`malformedCount`,
+  just for price-format drift specifically rather than missing fields.
 - **currency** — `"USD"` unconditionally, confirmed on every sampled
   product.
 - **url** — `base_url + href`, with the `?cp=...` tracking query string
@@ -333,6 +343,9 @@ return. Cases:
 - sale price present → preferred over list price
 - a non-empty but unparsable sale price → falls back to list price
   rather than dropping the product
+- an unparsable *list* price too (the fallback itself fails) →
+  `RuntimeError`, not a silent skip — a genuinely present but unparsable
+  price is a much stronger drift signal than a garbled title
 - out-of-stock product (no `.PricingContainer`) → excluded
 - no-separator title → skipped
 - `wait_for_selector` never finds the listing (empty DOM), normal title →
