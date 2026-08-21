@@ -66,6 +66,37 @@ on `cleorecs.py` and `jackpotrecords.py` — it records that
 contract, not a bug to fix into conformance, the same framing the first two
 amendments use.
 
+**Fourth amendment (2026-08-19, branch `claude/carpark-records-crawler-0adc27`):**
+`backend/crawlers/carparkrecords.py` is a fourth exception, for reasons
+distinct from all three prior ones. It runs a mandatory preprocessing pass
+over the title before the artist/album split is even attempted — stripping
+an optional leading catalog-code prefix (`CAK188`, `CAKD067`, and the one
+dual-number case `WIX04/05`) via `_CODE_RE`. This is the same *shape* of
+divergence as `cleorecs.py`'s paren-stripping preprocessing pass (first
+amendment, divergence (2)) — a step that has to run before the split regex
+can even see the artist/title text — but for a different reason: a
+catalog-number prefix, not a trailing parenthetical. Its separator regex,
+`_SPLIT_RE = re.compile(r'\s+-\s+')`, is narrower than both this doc's own
+proposed shared regex (`[-–]`) and the wider `[-–—]` class all three prior
+exceptions use — whitespace-bounded hyphen only, no en-dash or em-dash
+support at all. And unlike all three prior exceptions, none of which has a
+vendor fallback, `carparkrecords.py` does fall back to `vendor` when no
+separator is found — on this one axis it actually matches the original
+eight-crawler convergence this doc describes, not the three exceptions. But
+the mandatory catalog-code strip still means it can't be expressed as a
+plain call to `split_artist_title(title)` plus a one-line vendor-fallback
+wrapper, this design's proposed pattern for the original eight — the
+code-prefix strip has to happen inside the same function, before the split
+is even attempted, exactly the same structural reason `cleorecs.py`'s
+paren-strip is inexpressible that way.
+
+None of this retracts the doc's original convergence argument for the eight
+crawlers it still describes correctly, nor the first three amendments'
+verdicts on `cleorecs.py`, `jackpotrecords.py`, and `asianmanrecords.py` —
+it records that `carparkrecords.py` is a fourth documented exception to the
+converging contract, not a bug to fix into conformance, the same framing the
+first three amendments use.
+
 ## Problem
 
 Nine Shopify-storefront catalog crawlers each need to split a product's
