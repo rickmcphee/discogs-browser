@@ -306,11 +306,16 @@ return. Cases:
   rather than dropping the product
 - out-of-stock product (no `.PricingContainer`) → excluded
 - no-separator title → skipped
-- empty listing with a normal title → `RuntimeError`, rather than
-  yielding `[]` and risking a stock wipe
-- empty listing with the Cloudflare interstitial's title still showing →
+- `wait_for_selector` never finds the listing (empty DOM), normal title →
+  `RuntimeError`, rather than yielding `[]` and risking a stock wipe
+- same, but the Cloudflare interstitial's title is still showing →
   `BotDetectedError` specifically (not `RuntimeError`), since only that
   type gets `crawl_manager`'s fresh-context retry
+- `rawCount == 0` from `_EXTRACT_JS` itself, isolated with a mocked
+  `evaluate()` result (real DOM can't produce this case directly, since
+  `wait_for_selector` and `_EXTRACT_JS` query the identical selector back
+  to back) → `RuntimeError`, covering the defense-in-depth guard on its
+  own terms
 - site metadata (`site_name`, `base_url`, `crawler_type`, `genre`)
 
 The title regex was additionally exercised against the live site's full

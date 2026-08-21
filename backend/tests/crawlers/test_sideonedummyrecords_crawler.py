@@ -34,10 +34,18 @@ async def browser_page():
 
 
 class _FakePage:
-    def __init__(self, real_page, html=None, page_title="Vinyl | Shop the SideOneDummy Records Official Store"):
+    def __init__(self, real_page, html=None, page_title="Vinyl | Shop the SideOneDummy Records Official Store",
+                 evaluate_result=None):
         self._real_page = real_page
         self._html = html if html is not None else FIXTURE.read_text(encoding="utf-8")
         self._page_title = page_title
+        # When set, evaluate() returns this directly instead of running the
+        # real _EXTRACT_JS -- lets a test isolate the rawCount == 0 branch,
+        # which real DOM can't produce here: wait_for_selector() and
+        # _EXTRACT_JS query the exact same selector back to back with no
+        # navigation in between, so if the former ever finds something, the
+        # latter necessarily will too.
+        self._evaluate_result = evaluate_result
 
     async def goto(self, url, timeout=None):
         await self._real_page.set_content(self._html, wait_until="domcontentloaded")
@@ -46,6 +54,8 @@ class _FakePage:
         return self._page_title
 
     async def evaluate(self, script):
+        if self._evaluate_result is not None:
+            return self._evaluate_result
         return await self._real_page.evaluate(script)
 
     async def wait_for_selector(self, selector, timeout=None):
@@ -162,15 +172,32 @@ async def test_crawl_catalog_yields_exactly_the_in_stock_fixture_rows(fake_page)
     assert len(items) == 3
 
 
-async def test_crawl_catalog_raises_when_no_products_found(browser_page):
+async def test_crawl_catalog_raises_when_listing_selector_never_appears(browser_page):
     # No li.ProductElementsDisplay at all, and a normal (non-interstitial)
     # title, must raise rather than yield [] -- an empty product list is
     # otherwise indistinguishable from "genuinely sold out" to
     # replace_stock_items() (db.py), which would wipe every previously
     # known in-stock row for this crawler on a false "nothing to see"
     # (e.g. markup drift). Since the title isn't the interstitial's, this
-    # is the RuntimeError branch, not BotDetectedError.
+    # is the wait_for_selector-timeout -> RuntimeError branch, not
+    # BotDetectedError.
     fake_page = _FakePage(browser_page, html="<html><body><ul class=\"ProductGrid\"></ul></body></html>")
+    crawler = Crawler()
+    with pytest.raises(RuntimeError):
+        async for _ in crawler.crawl_catalog(fake_page):
+            pass
+
+
+async def test_crawl_catalog_raises_when_extraction_finds_zero_raw_products(browser_page):
+    # Isolates the rawCount == 0 guard specifically -- real DOM can't
+    # exercise it directly, since wait_for_selector() and _EXTRACT_JS query
+    # the identical selector back to back with no navigation in between, so
+    # if the former succeeds (as it does here, against the normal fixture),
+    # the latter can't come back with a zero raw count. This is
+    # defense-in-depth for exactly that coupling ever breaking (e.g. the
+    # two selectors drifting apart) -- still must raise, not yield [], for
+    # the same replace_stock_items() reason as the test above.
+    fake_page = _FakePage(browser_page, evaluate_result={"rawCount": 0, "products": []})
     crawler = Crawler()
     with pytest.raises(RuntimeError):
         async for _ in crawler.crawl_catalog(fake_page):
