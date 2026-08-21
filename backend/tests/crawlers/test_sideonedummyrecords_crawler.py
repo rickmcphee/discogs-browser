@@ -197,7 +197,24 @@ async def test_crawl_catalog_raises_when_extraction_finds_zero_raw_products(brow
     # defense-in-depth for exactly that coupling ever breaking (e.g. the
     # two selectors drifting apart) -- still must raise, not yield [], for
     # the same replace_stock_items() reason as the test above.
-    fake_page = _FakePage(browser_page, evaluate_result={"rawCount": 0, "products": []})
+    fake_page = _FakePage(browser_page, evaluate_result={"rawCount": 0, "malformedCount": 0, "products": []})
+    crawler = Crawler()
+    with pytest.raises(RuntimeError):
+        async for _ in crawler.crawl_catalog(fake_page):
+            pass
+
+
+async def test_crawl_catalog_raises_when_in_stock_cards_are_missing_expected_fields(browser_page):
+    # li.ProductElementsDisplay staying intact (rawCount > 0) doesn't mean
+    # each card extracted cleanly -- .ProductName, its <a>, or the pricing
+    # attributes could drift independently, silently dropping every card
+    # from `products` while rawCount looks fine. That would present as a
+    # false "sold out" to replace_stock_items() (db.py), wiping the
+    # store's existing rows, exactly like the rawCount == 0 case but via a
+    # different path -- must raise instead, and must not be confused with a
+    # genuinely out-of-stock card (which _EXTRACT_JS excludes up front via
+    # .OutOfStockMsg, before this count is ever incremented).
+    fake_page = _FakePage(browser_page, evaluate_result={"rawCount": 3, "malformedCount": 2, "products": []})
     crawler = Crawler()
     with pytest.raises(RuntimeError):
         async for _ in crawler.crawl_catalog(fake_page):

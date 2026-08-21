@@ -30,24 +30,38 @@ _SEPARATOR_RE = re.compile(r"\s*-\s+|\s+(?=['‘])")
 _QUOTED_RE = re.compile(r"^['‘](?P<quoted>.+?)['’](?=\s|$)\s*(?P<rest>.*)$")
 
 # No .Pricing block at all for an out-of-stock product (an .OutOfStockMsg
-# div replaces it), so filtering on listPrice here doubles as the
-# in-stock check -- no separate out-of-stock marker to inspect. rawCount is
-# the unfiltered <li> count, kept separate from the in-stock rows so
-# crawl_catalog can tell "the site has nothing" (rawCount > 0, no rows pass
-# the filter -- a real sellout) apart from "our selectors broke or an
-# interstitial slipped past the title check" (rawCount == 0) -- the two
-# must not be conflated, since the former is a normal, patient crawl and the
-# latter must raise so replace_stock_items() (backend/db.py) never wipes
-# every known-in-stock row for this site on a false "nothing to see".
+# div replaces it), so filtering on listPrice here doubles as the in-stock
+# check -- no separate out-of-stock marker to inspect on the happy path.
+# rawCount is the unfiltered <li> count, kept separate from the in-stock
+# rows so crawl_catalog can tell "the site has nothing" (rawCount > 0, no
+# rows pass the filter -- a real sellout) apart from "our selectors broke
+# or an interstitial slipped past the title check" (rawCount == 0) -- the
+# two must not be conflated, since the former is a normal, patient crawl
+# and the latter must raise so replace_stock_items() (backend/db.py) never
+# wipes every known-in-stock row for this site on a false "nothing to see".
+#
+# rawCount alone isn't enough, though: a card can still be missing (only
+# some of) id/name/href/listPrice while li.ProductElementsDisplay itself
+# stays intact -- e.g. .ProductName or its <a> restructures, or the
+# .PricingContainer markup changes shape -- which would silently drop that
+# card from `products` even though it's genuinely in stock, with rawCount
+# unaffected. malformedCount separates that case (real drift, must raise)
+# from a card explicitly marked .OutOfStockMsg (legitimately excluded, not
+# malformed) -- distinguished up front per card, not inferred from what's
+# missing afterward.
 _EXTRACT_JS = """
 () => {
   const lis = Array.from(document.querySelectorAll('li.ProductElementsDisplay'));
-  const products = lis.map(li => {
+  const products = [];
+  let malformedCount = 0;
+  for (const li of lis) {
+    if (li.querySelector('.OutOfStockMsg')) continue;
+
     const nameEl = li.querySelector('.ProductName');
     const linkEl = nameEl ? nameEl.querySelector('a') : null;
     const imgEl = li.querySelector('img.ProductImg');
     const pricingEl = li.querySelector('.PricingContainer');
-    return {
+    const product = {
       id: nameEl ? nameEl.getAttribute('data-productid') : null,
       name: nameEl ? nameEl.getAttribute('data-productname') : null,
       href: linkEl ? linkEl.getAttribute('href') : null,
@@ -55,8 +69,13 @@ _EXTRACT_JS = """
       listPrice: pricingEl ? pricingEl.getAttribute('data-listprice') : null,
       salePrice: pricingEl ? pricingEl.getAttribute('data-saleprice') : null,
     };
-  }).filter(p => p.id && p.name && p.href && p.listPrice);
-  return {rawCount: lis.length, products: products};
+    if (product.id && product.name && product.href && product.listPrice) {
+      products.push(product);
+    } else {
+      malformedCount++;
+    }
+  }
+  return {rawCount: lis.length, malformedCount: malformedCount, products: products};
 }
 """
 
@@ -98,6 +117,10 @@ class Crawler:
         result = await page.evaluate(_EXTRACT_JS)
         if result["rawCount"] == 0:
             raise RuntimeError("no products found in vinyl listing -- markup drift or missed interstitial")
+        if result["malformedCount"] > 0:
+            raise RuntimeError(
+                f"{result['malformedCount']} in-stock product card(s) missing expected fields -- markup drift"
+            )
 
         products = result["products"]
         await report_page(1, len(products))

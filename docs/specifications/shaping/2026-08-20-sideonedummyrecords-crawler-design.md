@@ -104,12 +104,16 @@ Each product is `li.ProductElementsDisplay > div.ProductContainer`, with:
 ```js
 () => {
   const lis = Array.from(document.querySelectorAll('li.ProductElementsDisplay'));
-  const products = lis.map(li => {
+  const products = [];
+  let malformedCount = 0;
+  for (const li of lis) {
+    if (li.querySelector('.OutOfStockMsg')) continue;
+
     const nameEl = li.querySelector('.ProductName');
     const linkEl = nameEl ? nameEl.querySelector('a') : null;
     const imgEl = li.querySelector('img.ProductImg');
     const pricingEl = li.querySelector('.PricingContainer');
-    return {
+    const product = {
       id: nameEl ? nameEl.getAttribute('data-productid') : null,
       name: nameEl ? nameEl.getAttribute('data-productname') : null,
       href: linkEl ? linkEl.getAttribute('href') : null,
@@ -117,14 +121,19 @@ Each product is `li.ProductElementsDisplay > div.ProductContainer`, with:
       listPrice: pricingEl ? pricingEl.getAttribute('data-listprice') : null,
       salePrice: pricingEl ? pricingEl.getAttribute('data-saleprice') : null,
     };
-  }).filter(p => p.id && p.name && p.href && p.listPrice);
-  return {rawCount: lis.length, products: products};
+    if (product.id && product.name && product.href && product.listPrice) {
+      products.push(product);
+    } else {
+      malformedCount++;
+    }
+  }
+  return {rawCount: lis.length, malformedCount: malformedCount, products: products};
 }
 ```
 
 Confirmed live via `page.evaluate()` against the real listing: 93 total
-`li`s (`rawCount`), 76 pass the filter (in stock), matching the 17
-`.OutOfStockMsg` products by inspection.
+`li`s (`rawCount`), 76 pass as in-stock, 17 excluded as `.OutOfStockMsg`,
+0 `malformedCount`.
 
 `rawCount` exists to separate two states that look identical downstream
 otherwise: a genuinely sold-out catalog (`rawCount > 0`, zero rows pass
@@ -152,6 +161,25 @@ case is what `wait_for_selector`'s own timeout handles. Either way, the
 circuit breaker sees a failure and the sync loop never reaches
 `replace_stock_items` for this
 run.
+
+**`malformedCount` covers a narrower version of the same failure mode
+that `rawCount` doesn't reach.** `li.ProductElementsDisplay` staying
+intact (`rawCount > 0`) says nothing about whether the markup *inside*
+each card is still what this crawler expects — `.ProductName`, its `<a>`,
+or `.PricingContainer`'s attributes could independently restructure while
+the outer `<li>` itself doesn't change at all. Before this fix, that
+would have silently dropped every card from `products` (none pass the
+`id && name && href && listPrice` filter), while `rawCount` stayed
+positive — indistinguishable downstream from a real, patient sellout, and
+routed straight into the same `replace_stock_items` stock-wipe this whole
+guard chain exists to prevent, just through a different path than
+`rawCount == 0`. `_EXTRACT_JS` now excludes `.OutOfStockMsg` cards
+*before* checking for required fields, and separately counts any
+remaining (i.e. not-explicitly-out-of-stock) card that's still missing
+one — the two must stay distinguished up front, not inferred from what's
+missing afterward, since a genuinely out-of-stock card is expected to be
+field-less and must never count as drift. `crawl_catalog` raises the same
+`RuntimeError` as the `rawCount == 0` case when `malformedCount > 0`.
 
 ### Title parsing: two separator shapes, resolved by leftmost position
 
@@ -317,6 +345,12 @@ return. Cases:
   `wait_for_selector` and `_EXTRACT_JS` query the identical selector back
   to back) → `RuntimeError`, covering the defense-in-depth guard on its
   own terms
+- `malformedCount > 0` from `_EXTRACT_JS`, also isolated with a mocked
+  `evaluate()` result → `RuntimeError`, covering the nested-selector-drift
+  guard (a live-DOM version would need a fixture card whose `.ProductName`
+  or pricing markup drifts while `li.ProductElementsDisplay` stays intact
+  — the existing out-of-stock and full-yield-count tests already confirm
+  live DOM excludes `.OutOfStockMsg` cards without incrementing this count)
 - site metadata (`site_name`, `base_url`, `crawler_type`, `genre`)
 
 The title regex was additionally exercised against the live site's full
