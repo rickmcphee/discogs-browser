@@ -98,8 +98,10 @@ Each product is `li.ProductElementsDisplay > div.ProductContainer`, with:
 - **Out-of-stock products have no `.PricingContainer` at all** — an
   `.OutOfStockMsg` div takes its place instead (confirmed live: 17 of 93
   products, e.g. "Walter Etc. - When The Band Breaks Up Again Teal
-  Vinyl"). Filtering the extracted list on a truthy `listPrice` therefore
-  doubles as the in-stock gate — no separate stock flag to inspect.
+  Vinyl"). `_EXTRACT_JS` checks for that marker explicitly, per card,
+  before anything else — the in-stock gate is that check, not an inferred
+  side effect of `id`/`name`/`href`/`listPrice` happening to be present
+  (see "malformedCount" below for why that distinction matters).
 
 ```js
 () => {
@@ -219,13 +221,21 @@ zero-width lookahead on whitespace only, so its remainder still opens
 with the quote mark — this is *not* the final title yet, only the input
 to the quote-stripping step below (`_QUOTED_RE`), which is what actually
 produces the clean, quote-free title used downstream.
-Requiring whitespace *immediately before* the punctuation in both
-alternatives is what keeps this safe against mid-word apostrophes/dashes
-that are not real separators — confirmed against every apostrophe in the
-live title set: `"Swingin' Utters"`, `"Can't"`, `"That's"`, `"You're"`,
-and the `7'`/`7"` inch-mark suffixes all have the punctuation glued
-directly onto the adjacent letter/digit with no preceding whitespace, so
-none of them false-match.
+The two alternatives are asymmetric on purpose. The quote alternative
+requires whitespace *immediately before* the punctuation — that's what
+keeps it safe against mid-word apostrophes that are not real separators,
+confirmed against every apostrophe in the live title set: `"Swingin'
+Utters"`, `"Can't"`, `"That's"`, `"You're"`, and the `7'`/`7"` inch-mark
+suffixes all have the punctuation glued directly onto the adjacent
+letter/digit with no preceding whitespace, so none of them false-match.
+The dash alternative (`\s*-\s+`) makes the *opposite* choice on its left
+side — it allows *zero* whitespace before the dash, not just tolerating
+none — because a real live title needs exactly that: "Walter Etc.- When
+The Band Breaks Up Again..." glues the dash straight onto the artist name
+with no space at all (the "rejected fix" note further below has the full
+story, including the sibling title that does have a space, and the
+regression test that locks this asymmetry in against a plausible-looking
+`\s+-\s+` tightening).
 
 The quote form's raw remainder still opens with the quote mark at this
 point (e.g. `"'All. Right. Now' 2xLP/CD - Orange Vinyl w Black Smoke"`) —

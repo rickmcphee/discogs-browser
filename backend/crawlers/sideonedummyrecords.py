@@ -12,9 +12,13 @@ from crawler import BotDetectedError
 # Orange Vinyl w Black Smoke"). Matches whichever separator appears first --
 # the dash form consumes the surrounding " - " entirely, the quote form is a
 # zero-width lookahead so the opening quote stays part of the raw remainder
-# (peeled off separately below by _QUOTED_RE). Bare apostrophes inside words
-# ("Swingin'", "Can't") never match: both require whitespace immediately
-# before the punctuation, which mid-word apostrophes don't have.
+# (peeled off separately below by _QUOTED_RE). The quote alternative
+# requires whitespace immediately before the punctuation, which is why
+# bare apostrophes inside words ("Swingin'", "Can't") never match it. The
+# dash alternative is intentionally asymmetric -- \s* allows *zero*
+# whitespace before the dash, not just requiring none after -- because a
+# real live title glues the dash straight onto the artist name with no
+# space at all ("Walter Etc.- When..."; see the dash-glued-to-name test).
 _SEPARATOR_RE = re.compile(r"\s*-\s+|\s+(?=['‘])")
 
 # Peels the quote delimiters off a quote-form remainder, e.g. "'All. Right.
@@ -29,9 +33,10 @@ _SEPARATOR_RE = re.compile(r"\s*-\s+|\s+(?=['‘])")
 # delimiter instead of the real one, truncating the quoted text mid-word.
 _QUOTED_RE = re.compile(r"^['‘](?P<quoted>.+?)['’](?=\s|$)\s*(?P<rest>.*)$")
 
-# No .Pricing block at all for an out-of-stock product (an .OutOfStockMsg
-# div replaces it), so filtering on listPrice here doubles as the in-stock
-# check -- no separate out-of-stock marker to inspect on the happy path.
+# An out-of-stock product has no .Pricing block at all -- an
+# .OutOfStockMsg div takes its place instead -- so that marker is checked
+# explicitly, up front, per card: this is the in-stock gate, not an
+# inferred side effect of id/name/href/listPrice happening to be present.
 # rawCount is the unfiltered <li> count, kept separate from the in-stock
 # rows so crawl_catalog can tell "the site has nothing" (rawCount > 0, no
 # rows pass the filter -- a real sellout) apart from "our selectors broke
