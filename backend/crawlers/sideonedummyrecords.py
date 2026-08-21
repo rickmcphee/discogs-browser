@@ -60,6 +60,11 @@ _EXTRACT_JS = """
 }
 """
 
+# How long to wait for the listing selector after goto() before deciding
+# the Cloudflare interstitial is genuinely stuck rather than just still
+# running its (asynchronous) JS challenge.
+_LISTING_SELECTOR_TIMEOUT_MS = 30_000
+
 
 class Crawler:
     site_name: str = "SideOneDummy Records"
@@ -72,8 +77,23 @@ class Crawler:
         delay = float(load_config().get("crawl_delay_seconds", 30))
         await sleep(random.uniform(delay * 0.5, delay))
         await page.goto(f"{self.base_url}/dept/vinyl", timeout=120_000)
-        if "Just a moment" in await page.title():
-            raise BotDetectedError("Cloudflare interstitial")
+
+        # goto() returns once the interstitial's own "load" event fires --
+        # not once Cloudflare's managed-challenge JS has actually run and
+        # redirected to the real page, which happens asynchronously after
+        # that. Checking the title immediately here would catch the
+        # interstitial mid-challenge on essentially every run, not just a
+        # genuinely blocked one. Waiting on the real listing selector
+        # (bounded, so a truly stuck challenge still fails instead of
+        # hanging) covers both: it resolves the moment the challenge clears
+        # and the real page renders, and only times out when the challenge
+        # never clears.
+        try:
+            await page.wait_for_selector("li.ProductElementsDisplay", timeout=_LISTING_SELECTOR_TIMEOUT_MS)
+        except Exception:
+            if "Just a moment" in await page.title():
+                raise BotDetectedError("Cloudflare interstitial did not clear within 30s")
+            raise RuntimeError("vinyl listing did not render -- no li.ProductElementsDisplay found within 30s")
 
         result = await page.evaluate(_EXTRACT_JS)
         if result["rawCount"] == 0:

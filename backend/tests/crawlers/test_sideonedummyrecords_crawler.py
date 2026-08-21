@@ -34,18 +34,27 @@ async def browser_page():
 
 
 class _FakePage:
-    def __init__(self, real_page, html=None):
+    def __init__(self, real_page, html=None, page_title="Vinyl | Shop the SideOneDummy Records Official Store"):
         self._real_page = real_page
         self._html = html if html is not None else FIXTURE.read_text(encoding="utf-8")
+        self._page_title = page_title
 
     async def goto(self, url, timeout=None):
         await self._real_page.set_content(self._html, wait_until="domcontentloaded")
 
     async def title(self):
-        return "Vinyl | Shop the SideOneDummy Records Official Store"
+        return self._page_title
 
     async def evaluate(self, script):
         return await self._real_page.evaluate(script)
+
+    async def wait_for_selector(self, selector, timeout=None):
+        # set_content() already finished rendering everything the fixture
+        # has -- nothing will appear later -- so check presence once and
+        # fail immediately rather than genuinely honoring `timeout` (which
+        # would make a "selector never appears" test really wait that long).
+        if await self._real_page.locator(selector).count() == 0:
+            raise TimeoutError(f"selector not found in fixture: {selector}")
 
 
 @pytest.fixture
@@ -154,15 +163,35 @@ async def test_crawl_catalog_yields_exactly_the_in_stock_fixture_rows(fake_page)
 
 
 async def test_crawl_catalog_raises_when_no_products_found(browser_page):
-    # rawCount == 0 must raise rather than yield [] -- an empty product
-    # list is otherwise indistinguishable from "genuinely sold out" to
+    # No li.ProductElementsDisplay at all, and a normal (non-interstitial)
+    # title, must raise rather than yield [] -- an empty product list is
+    # otherwise indistinguishable from "genuinely sold out" to
     # replace_stock_items() (db.py), which would wipe every previously
     # known in-stock row for this crawler on a false "nothing to see"
-    # (e.g. markup drift, or a Cloudflare interstitial the title check
-    # missed).
+    # (e.g. markup drift). Since the title isn't the interstitial's, this
+    # is the RuntimeError branch, not BotDetectedError.
     fake_page = _FakePage(browser_page, html="<html><body><ul class=\"ProductGrid\"></ul></body></html>")
     crawler = Crawler()
     with pytest.raises(RuntimeError):
+        async for _ in crawler.crawl_catalog(fake_page):
+            pass
+
+
+async def test_crawl_catalog_raises_bot_detected_when_interstitial_never_clears(browser_page):
+    # Same empty-listing symptom as above, but with the Cloudflare
+    # interstitial's own title still showing -- must be classified as
+    # BotDetectedError specifically, since crawl_manager retries that one
+    # with a fresh browser context (backend/crawl_manager.py
+    # _run_catalog_crawler), which a generic RuntimeError doesn't get.
+    from crawler import BotDetectedError
+
+    fake_page = _FakePage(
+        browser_page,
+        html="<html><head><title>Just a moment...</title></head><body></body></html>",
+        page_title="Just a moment...",
+    )
+    crawler = Crawler()
+    with pytest.raises(BotDetectedError):
         async for _ in crawler.crawl_catalog(fake_page):
             pass
 

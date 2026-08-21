@@ -38,11 +38,37 @@ challenge`, HTTP 403) to a plain `curl`/`httpx` request. A real browser
 (this session's Playwright-driven preview) passes the challenge
 automatically with no interaction required, matching the established
 `catalog_browser` crawlers (`angryyoungandpoor.py`, `amoeba.py`) rather
-than the `httpx`-based ones. Bot detection: `page.title()` contains "Just
-a moment" while still on the interstitial, mirroring
+than the `httpx`-based ones.
+
+Bot detection is not a bare post-`goto()` title check, unlike
 `angryyoungandpoor.py`'s `"Cloudflare" in title` / `amoeba.py`'s
-`"Attention Required" in title` checks — raises `BotDetectedError` so the
-circuit breaker handles it rather than silently yielding nothing.
+`"Attention Required" in title`. Those two check a *block* page, which is
+static — no further JS runs, so the title is stable the instant `goto()`
+returns. This site's `cType: 'managed'` challenge is different: it's
+JS-orchestrated (the interstitial's own inline script appends a
+`<script src="/cdn-cgi/challenge-platform/...">` tag *after* its own load
+event, which then has to fetch, execute, and trigger the real redirect —
+all asynchronous). `page.goto()` only waits for the interstitial
+document's own load event, not for that follow-up work, so a bare title
+check immediately after `goto()` would catch the challenge document
+mid-flight essentially every time, not just when genuinely blocked —
+turning this into a crawler that fails on every run instead of only
+blocked ones. (Caught in review, not by a live regression — the
+site-exploration steps that informed this design used multiple separate,
+naturally-spaced tool calls, which happened to give the challenge enough
+wall-clock time to clear before anything checked the title; a single
+crawl_catalog() invocation has no such gap unless one is added
+deliberately.)
+
+Instead, `crawl_catalog` waits on the real listing selector itself
+(`page.wait_for_selector("li.ProductElementsDisplay", timeout=30_000)`)
+after `goto()`: this resolves the moment the challenge clears and the
+real page renders (whether that takes 200ms or 20s), and only times out
+if the challenge is genuinely stuck. On timeout, the title is checked
+once more to classify the failure — `BotDetectedError` if still on the
+interstitial (`crawl_manager._run_catalog_crawler` retries that once with
+a fresh browser context), a plain `RuntimeError` otherwise (e.g. the page
+loaded but the listing markup itself changed shape).
 
 ### One page, no pagination
 
@@ -102,20 +128,29 @@ Confirmed live via `page.evaluate()` against the real listing: 93 total
 
 `rawCount` exists to separate two states that look identical downstream
 otherwise: a genuinely sold-out catalog (`rawCount > 0`, zero rows pass
-the filter — a normal, patient result) versus markup drift or an
-interstitial the title check missed (`rawCount == 0` — no `li`s at all).
-Both would otherwise present as an empty `items` list to
-`crawl_manager._sync_stock`, which calls `replace_stock_items` (`db.py`)
-— and that function unconditionally `DELETE`s every existing
-`stock_items` row for this crawler *before* checking whether the new list
-is empty, so a false "nothing to see" would wipe every previously known
-in-stock row for the whole store. `crawl_catalog` raises a plain
-`RuntimeError` when `rawCount == 0` (not `BotDetectedError` — the title
-check already covers the actual bot-interstitial case; a zero raw count
-after passing that check points at a markup change instead, the same
-distinction `darkdescentrecords.py` draws for its own
-`data-product_variations` parse failure) so the circuit breaker sees a
-failure and the sync loop never reaches `replace_stock_items` for this
+the filter — a normal, patient result) versus a listing that rendered
+with no products in it at all (`rawCount == 0`). Both would otherwise
+present as an empty `items` list to `crawl_manager._sync_stock`, which
+calls `replace_stock_items` (`db.py`) — and that function unconditionally
+`DELETE`s every existing `stock_items` row for this crawler *before*
+checking whether the new list is empty, so a false "nothing to see" would
+wipe every previously known in-stock row for the whole store.
+`crawl_catalog` raises a plain `RuntimeError` when `rawCount == 0`. In
+practice this is now defense-in-depth rather than the primary guard —
+`wait_for_selector("li.ProductElementsDisplay", ...)` (see "Cloudflare-
+gated" above) already has to find at least one matching element before
+`_EXTRACT_JS` ever runs, so `rawCount` reaching zero here would mean the
+selector matched something that then vanished between the two calls in
+the same synchronous flow, not the ordinary failure mode. Kept anyway,
+the same way `darkdescentrecords.py` keeps its own always-raise guard
+around `data-product_variations` parsing even though it's never actually
+been observed missing live — the guard is cheap, and the failure mode
+it's guarding is a silent, permanent data-loss bug, not a crawl error.
+`RuntimeError` (not `BotDetectedError`) here, since by the time this
+check runs, the listing selector already resolved — the bot-interstitial
+case is what `wait_for_selector`'s own timeout handles. Either way, the
+circuit breaker sees a failure and the sync loop never reaches
+`replace_stock_items` for this
 run.
 
 ### Title parsing: two separator shapes, resolved by leftmost position
@@ -249,19 +284,33 @@ browser loads a saved static fixture
 (`backend/tests/fixtures/crawlers/sideonedummyrecords/vinyl.html`, a
 handful of representative `<li>`s trimmed from the real markup) via
 `page.set_content()` — no live site, no bot-detection risk — while a
-`_FakePage` wrapper routes `goto()` to that fixture and lets `evaluate()`
-run against the real page, so the actual `_EXTRACT_JS` string executes
-against real DOM, not a Python mock of what it might return. Cases:
+`_FakePage` wrapper routes `goto()` to that fixture, `wait_for_selector()`
+to a fast presence check against the real page (rather than genuinely
+honoring the real 30s timeout on the "never appears" case), and
+`evaluate()` straight to the real page, so the actual `_EXTRACT_JS`
+string executes against real DOM, not a Python mock of what it might
+return. Cases:
 
 - dash-title in-stock product → correct artist/title/price/url/image
 - quote-title product → title has the quote delimiters stripped (the
   `db.py` stock-matching fix)
+- a quoted album name containing a contraction (`"Can't"`) → the
+  apostrophe inside it is not mistaken for the closing delimiter
+- a dash glued directly onto the artist name with no preceding space
+  (the real "Walter Etc.-..." title) → still splits correctly; locks in
+  `_SEPARATOR_RE`'s `\s*-\s+` against a plausible-looking but wrong
+  tightening to `\s+-\s+`
 - a title with a second, later dash → splits on the first one only
 - sale price present → preferred over list price
+- a non-empty but unparsable sale price → falls back to list price
+  rather than dropping the product
 - out-of-stock product (no `.PricingContainer`) → excluded
 - no-separator title → skipped
-- `rawCount == 0` (empty fixture) → raises, rather than yielding `[]` and
-  risking a stock wipe
+- empty listing with a normal title → `RuntimeError`, rather than
+  yielding `[]` and risking a stock wipe
+- empty listing with the Cloudflare interstitial's title still showing →
+  `BotDetectedError` specifically (not `RuntimeError`), since only that
+  type gets `crawl_manager`'s fresh-context retry
 - site metadata (`site_name`, `base_url`, `crawler_type`, `genre`)
 
 The title regex was additionally exercised against the live site's full
