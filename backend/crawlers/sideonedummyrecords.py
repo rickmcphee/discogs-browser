@@ -22,7 +22,12 @@ _SEPARATOR_RE = re.compile(r"\s*-\s+|\s+(?=['‘])")
 # rest="2xLP/CD - Orange Vinyl w Black Smoke". Left as-is (with its leading
 # quote) if this doesn't match -- e.g. an unpaired quote mark -- rather than
 # raising, since the title is still usable, just imperfectly delimited.
-_QUOTED_RE = re.compile(r"^['‘](?P<quoted>.+?)['’]\s*(?P<rest>.*)$")
+#
+# The closing-quote lookahead requires whitespace or end-of-string right
+# after it -- a bare `['’]` would treat an apostrophe *inside* the album
+# name (a contraction, e.g. "Band 'Can't Stop' LP") as the closing
+# delimiter instead of the real one, truncating the quoted text mid-word.
+_QUOTED_RE = re.compile(r"^['‘](?P<quoted>.+?)['’](?=\s|$)\s*(?P<rest>.*)$")
 
 # No .Pricing block at all for an out-of-stock product (an .OutOfStockMsg
 # div replaces it), so filtering on listPrice here doubles as the

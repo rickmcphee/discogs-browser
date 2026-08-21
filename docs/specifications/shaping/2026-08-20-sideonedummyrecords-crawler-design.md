@@ -178,7 +178,7 @@ delimiters off and re-composes the title so it starts with the album name
 itself:
 
 ```python
-_QUOTED_RE = re.compile(r"^['‘](?P<quoted>.+?)['’]\s*(?P<rest>.*)$")
+_QUOTED_RE = re.compile(r"^['‘](?P<quoted>.+?)['’](?=\s|$)\s*(?P<rest>.*)$")
 ```
 
 `"'All. Right. Now' 2xLP/CD - Orange Vinyl w Black Smoke"` becomes `"All.
@@ -186,6 +186,32 @@ Right. Now 2xLP/CD - Orange Vinyl w Black Smoke"` — a valid prefix match
 against a catalog title of `All. Right. Now`. Left as its original
 quote-leading form if `_QUOTED_RE` doesn't match (e.g. an unpaired quote
 mark) — still usable, just imperfectly delimited, not worth raising over.
+
+The closing-quote lookahead (`(?=\s|$)`) matters for any future
+quote-form title containing a contraction: without it, a bare `['’]`
+treats the apostrophe *inside* the album name as the closing delimiter
+too — e.g. `"Band 'Can't Stop' LP"` would parse as `quoted="Can"`,
+`rest="t Stop' LP"`, garbling the title — since a closing quote is only
+real when followed by whitespace or the end of the string. None of the
+4 live quote-form titles happen to contain a contraction today, so this
+was caught in review, not by a live regression, but the fix is cheap and
+the failure mode (a garbled title silently breaking catalog matching, not
+a crawl error) is exactly the kind this repo treats as worth guarding
+against pre-emptively.
+
+**A related-looking "fix" to `_SEPARATOR_RE`'s dash branch was
+considered and rejected.** `\s*-\s+` (zero-or-more whitespace before the
+dash) looks like it could over-match a hyphenated word before reaching
+a later, real ` - ` separator. But on this store the zero-whitespace case
+is not hypothetical — it's the confirmed-live shape of "Walter Etc.- When
+The Band Breaks Up Again ..." (the band name is literally "Walter Etc.",
+and this particular product's markup glues the dash straight onto it
+with no space, unlike a sibling product for the same band that does have
+one: "Walter Etc. - When The Band Breaks Up Again Teal Vinyl"). Requiring
+whitespace before the dash (`\s+-\s+`) finds no separator at all in the
+first title and wrongly skips it — confirmed by running both regexes
+against it directly. `test_parse_artist_title_splits_on_dash_glued_directly_to_artist_name`
+locks this in.
 
 ### Fields
 

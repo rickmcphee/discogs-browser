@@ -78,6 +78,32 @@ async def test_crawl_catalog_strips_quote_delimiters_so_title_matches_catalog(fa
     assert not item["title"].startswith("'")
 
 
+def test_parse_artist_title_keeps_contraction_inside_quoted_album_name():
+    # Regression: a bare closing-quote match (no lookahead) treats the
+    # apostrophe in "Can't" as the delimiter, truncating to quoted="Can"
+    # and leaving "t Stop' LP" as garbage. The real closing quote must
+    # only match when followed by whitespace or end-of-string.
+    artist, title = Crawler._parse_artist_title("Band 'Can't Stop' LP")
+    assert artist == "Band"
+    assert title == "Can't Stop LP"
+
+
+def test_parse_artist_title_splits_on_dash_glued_directly_to_artist_name():
+    # Real live title: the band name is "Walter Etc." (with the period),
+    # and this store's markup glues the dash straight onto it with no
+    # space ("Etc.- When..."), while a sibling product for the same band
+    # has the more common "Etc. - When..." with a space. Both must parse
+    # to the same artist -- _SEPARATOR_RE's dash branch intentionally
+    # allows zero whitespace *before* the dash for exactly this case, so
+    # requiring whitespace there (a plausible-looking tightening) would
+    # wrongly skip this title instead of parsing it.
+    artist, title = Crawler._parse_artist_title(
+        'Walter Etc.- When The Band Breaks Up Again "Pink Acid Wash" Vinyl'
+    )
+    assert artist == "Walter Etc."
+    assert title == 'When The Band Breaks Up Again "Pink Acid Wash" Vinyl'
+
+
 async def test_crawl_catalog_splits_on_first_dash_not_a_later_one(fake_page):
     crawler = Crawler()
     items = [item async for item in crawler.crawl_catalog(fake_page)]
