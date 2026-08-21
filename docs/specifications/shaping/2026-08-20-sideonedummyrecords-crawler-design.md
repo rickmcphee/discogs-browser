@@ -368,12 +368,18 @@ return. Cases:
   `wait_for_selector` and `_EXTRACT_JS` query the identical selector back
   to back) → `RuntimeError`, covering the defense-in-depth guard on its
   own terms
-- `malformedCount > 0` from `_EXTRACT_JS`, also isolated with a mocked
-  `evaluate()` result → `RuntimeError`, covering the nested-selector-drift
-  guard (a live-DOM version would need a fixture card whose `.ProductName`
-  or pricing markup drifts while `li.ProductElementsDisplay` stays intact
-  — the existing out-of-stock and full-yield-count tests already confirm
-  live DOM excludes `.OutOfStockMsg` cards without incrementing this count)
+- `malformedCount > 0` against a real, small DOM fixture (a well-formed
+  card plus a second card missing `data-productid` and carrying no
+  `.OutOfStockMsg`) → `RuntimeError`. Deliberately *not* mocked like the
+  `rawCount == 0` case above: mocking `evaluate()`'s return value here
+  would only prove Python reacts to a supplied counter, not that
+  `_EXTRACT_JS` itself still increments it correctly on real markup — a
+  regression that stopped the JS from counting a malformed card would
+  pass a mocked test but silently reintroduce the stock-wipe risk this
+  guard exists to close. The existing out-of-stock and full-yield-count
+  tests separately confirm live DOM excludes genuine `.OutOfStockMsg`
+  cards without incrementing this count, so the two failure shapes stay
+  distinguished on real DOM, not just in the mocked branch logic.
 - site metadata (`site_name`, `base_url`, `crawler_type`, `genre`)
 
 The title regex was additionally exercised against the live site's full

@@ -181,9 +181,10 @@ async def test_crawl_catalog_yields_exactly_the_in_stock_fixture_rows(fake_page)
     crawler = Crawler()
     items = [item async for item in crawler.crawl_catalog(fake_page)]
     # 5 products in the fixture: 4 in-stock + parseable, 1 out-of-stock
-    # (no .PricingContainer -- excluded by the listPrice filter), 1 of the
-    # 4 in-stock has no separator (Flogging Molly LP Bundle -- excluded by
-    # the artist-parse skip). Net: 3.
+    # (has .OutOfStockMsg -- excluded by that explicit marker, checked
+    # before any field is read), 1 of the 4 in-stock has no separator
+    # (Flogging Molly LP Bundle -- excluded by the artist-parse skip).
+    # Net: 3.
     assert len(items) == 3
 
 
@@ -219,17 +220,50 @@ async def test_crawl_catalog_raises_when_extraction_finds_zero_raw_products(brow
             pass
 
 
+_MALFORMED_CARD_HTML = """
+<html><body>
+<ul class="ProductGrid">
+<li class="ProductElementsDisplay">
+<div class="ProductContainer">
+  <div class="ProductName" data-productid="X1" data-productname="Band - Title LP">
+    <a href="/product/X1/band-title">Band - Title LP</a>
+  </div>
+  <div class="Pricing">
+    <ul class="PricingContainer" data-listprice="$10.00" data-saleprice=""></ul>
+  </div>
+</div>
+</li>
+<li class="ProductElementsDisplay">
+<div class="ProductContainer">
+  <div class="ProductName" data-productname="Broken Card LP">
+    <a href="/product/X2/broken-card">Broken Card LP</a>
+  </div>
+  <div class="Pricing">
+    <ul class="PricingContainer" data-listprice="$5.00" data-saleprice=""></ul>
+  </div>
+</div>
+</li>
+</ul>
+</body></html>
+"""
+
+
 async def test_crawl_catalog_raises_when_in_stock_cards_are_missing_expected_fields(browser_page):
     # li.ProductElementsDisplay staying intact (rawCount > 0) doesn't mean
     # each card extracted cleanly -- .ProductName, its <a>, or the pricing
-    # attributes could drift independently, silently dropping every card
+    # attributes could drift independently, silently dropping that card
     # from `products` while rawCount looks fine. That would present as a
     # false "sold out" to replace_stock_items() (db.py), wiping the
     # store's existing rows, exactly like the rawCount == 0 case but via a
-    # different path -- must raise instead, and must not be confused with a
-    # genuinely out-of-stock card (which _EXTRACT_JS excludes up front via
-    # .OutOfStockMsg, before this count is ever incremented).
-    fake_page = _FakePage(browser_page, evaluate_result={"rawCount": 3, "malformedCount": 2, "products": []})
+    # different path -- must raise instead. This exercises the real
+    # _EXTRACT_JS against real DOM (not a mocked evaluate() result), so a
+    # regression that stops it incrementing malformedCount would fail this
+    # test even if the Python-side raise itself stayed intact.
+    #
+    # The second card here has no data-productid on .ProductName and no
+    # .OutOfStockMsg either -- a genuinely in-stock card whose markup just
+    # drifted, not a legitimately-excluded out-of-stock one.
+    fake_page = _FakePage(browser_page, html=_MALFORMED_CARD_HTML)
     crawler = Crawler()
     with pytest.raises(RuntimeError):
         async for _ in crawler.crawl_catalog(fake_page):
