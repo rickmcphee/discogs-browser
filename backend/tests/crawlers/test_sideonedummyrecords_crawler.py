@@ -1,0 +1,137 @@
+"""
+Tests for the SideOneDummy Records catalog crawler using a saved page
+fixture.
+
+Mirrors test_angryyoungandpoor_crawler.py's pattern: a real local headless
+browser loads a saved static fixture via page.set_content() (no navigation,
+no live site, no bot-detection risk). Here, a _FakePage wraps the real page
+so goto() loads the fixture instead of navigating, while evaluate()
+delegates straight to the real page -- this exercises the actual
+_EXTRACT_JS extraction plus the downstream Python parsing.
+"""
+
+import sys
+from pathlib import Path
+
+import pytest
+from playwright.async_api import async_playwright
+
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "crawlers"))
+
+from sideonedummyrecords import Crawler
+
+FIXTURE = Path(__file__).parent.parent / "fixtures" / "crawlers" / "sideonedummyrecords" / "vinyl.html"
+
+
+@pytest.fixture
+async def browser_page():
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch()
+        page = await browser.new_page()
+        yield page
+        await browser.close()
+
+
+class _FakePage:
+    def __init__(self, real_page, html=None):
+        self._real_page = real_page
+        self._html = html if html is not None else FIXTURE.read_text(encoding="utf-8")
+
+    async def goto(self, url, timeout=None):
+        await self._real_page.set_content(self._html, wait_until="domcontentloaded")
+
+    async def title(self):
+        return "Vinyl | Shop the SideOneDummy Records Official Store"
+
+    async def evaluate(self, script):
+        return await self._real_page.evaluate(script)
+
+
+@pytest.fixture
+def fake_page(browser_page):
+    return _FakePage(browser_page)
+
+
+async def test_crawl_catalog_parses_dash_title(fake_page):
+    crawler = Crawler()
+    items = [item async for item in crawler.crawl_catalog(fake_page)]
+    item = next(i for i in items if i["artist"] == "Kerosene Heights")
+    assert item["title"] == "Blame It On The Weather Limited Edition Watermelon Splash LP"
+    assert item["format"] == "Vinyl"
+    assert item["price"] == 25.99
+    assert item["currency"] == "USD"
+    assert item["url"] == "https://sideonedummyrecords.shop.musictoday.com/product/XTLPSO123/kerosene-heights-blame-it-on-the-weather-lp"
+    assert item["cover_image_url"] == "https://static.musictoday.com/store/bands/6255/product_small/XTLPSO123.PNG"
+
+
+async def test_crawl_catalog_strips_quote_delimiters_so_title_matches_catalog(fake_page):
+    # Regression for the db.py title-match bug: a title left as
+    # "'All. Right. Now' 2xLP/CD - ..." (leading quote intact) can never
+    # equal-or-prefix-match a catalog title of "All. Right. Now", silently
+    # orphaning the stock row from the release. The quote marks must be
+    # peeled off so the title starts with the album name itself.
+    crawler = Crawler()
+    items = [item async for item in crawler.crawl_catalog(fake_page)]
+    item = next(i for i in items if i["artist"] == "Satsang")
+    assert item["title"] == "All. Right. Now 2xLP/CD - Orange Vinyl w Black Smoke"
+    assert not item["title"].startswith("'")
+
+
+async def test_crawl_catalog_splits_on_first_dash_not_a_later_one(fake_page):
+    crawler = Crawler()
+    items = [item async for item in crawler.crawl_catalog(fake_page)]
+    item = next(i for i in items if i["artist"] == "Violent Soho")
+    assert item["title"] == "Hungry Ghost 10 Year Anniversary LP - Standard Version 1"
+
+
+async def test_crawl_catalog_prefers_sale_price_over_list_price(fake_page):
+    crawler = Crawler()
+    items = [item async for item in crawler.crawl_catalog(fake_page)]
+    item = next(i for i in items if i["artist"] == "Violent Soho")
+    assert item["price"] == 29.99
+
+
+async def test_crawl_catalog_excludes_out_of_stock_product(fake_page):
+    crawler = Crawler()
+    items = [item async for item in crawler.crawl_catalog(fake_page)]
+    assert not [i for i in items if i["artist"] == "Walter Etc."]
+
+
+async def test_crawl_catalog_skips_title_with_no_separator(fake_page):
+    crawler = Crawler()
+    items = [item async for item in crawler.crawl_catalog(fake_page)]
+    assert not [i for i in items if "Flogging Molly" in i.get("title", "")]
+    titles = {i["title"] for i in items}
+    assert "LP Bundle" not in titles
+
+
+async def test_crawl_catalog_yields_exactly_the_in_stock_fixture_rows(fake_page):
+    crawler = Crawler()
+    items = [item async for item in crawler.crawl_catalog(fake_page)]
+    # 5 products in the fixture: 4 in-stock + parseable, 1 out-of-stock
+    # (no .PricingContainer -- excluded by the listPrice filter), 1 of the
+    # 4 in-stock has no separator (Flogging Molly LP Bundle -- excluded by
+    # the artist-parse skip). Net: 3.
+    assert len(items) == 3
+
+
+async def test_crawl_catalog_raises_when_no_products_found(browser_page):
+    # rawCount == 0 must raise rather than yield [] -- an empty product
+    # list is otherwise indistinguishable from "genuinely sold out" to
+    # replace_stock_items() (db.py), which would wipe every previously
+    # known in-stock row for this crawler on a false "nothing to see"
+    # (e.g. markup drift, or a Cloudflare interstitial the title check
+    # missed).
+    fake_page = _FakePage(browser_page, html="<html><body><ul class=\"ProductGrid\"></ul></body></html>")
+    crawler = Crawler()
+    with pytest.raises(RuntimeError):
+        async for _ in crawler.crawl_catalog(fake_page):
+            pass
+
+
+def test_site_metadata():
+    assert Crawler.site_name == "SideOneDummy Records"
+    assert Crawler.base_url == "https://sideonedummyrecords.shop.musictoday.com"
+    assert Crawler.crawler_type == "catalog_browser"
+    assert Crawler.genre == "punk"
