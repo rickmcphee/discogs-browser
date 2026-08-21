@@ -163,6 +163,16 @@ def test_parse_product_raises_when_list_price_itself_is_unparsable():
         })
 
 
+@pytest.mark.parametrize("bad_price", ["nan", "inf", "-inf", "-5.00", "-$5.00"])
+def test_price_rejects_non_finite_and_negative_values(bad_price):
+    # float() parses "nan"/"inf"/"-inf" and negative numeric text without
+    # raising -- none of those are a real price, but returning one as-is
+    # would bypass _parse_product's drift guards (which only trigger on a
+    # parse *failure*) as if it were a genuine, valid price. A NaN in
+    # particular can also break JSON serialization further downstream.
+    assert Crawler._price(bad_price) is None
+
+
 async def test_crawl_catalog_excludes_out_of_stock_product(fake_page):
     crawler = Crawler()
     items = [item async for item in crawler.crawl_catalog(fake_page)]
@@ -175,6 +185,28 @@ async def test_crawl_catalog_skips_title_with_no_separator(fake_page):
     assert not [i for i in items if "Flogging Molly" in i.get("title", "")]
     titles = {i["title"] for i in items}
     assert "LP Bundle" not in titles
+
+
+async def test_crawl_catalog_raises_when_every_product_fails_to_parse(browser_page):
+    # Neither rawCount nor malformedCount can see a site-wide title-format
+    # change: every card still extracts cleanly (both counters stay
+    # clean), but if _parse_artist_title finds no separator on any of
+    # them, the yield loop produces nothing despite `products` being
+    # non-empty -- indistinguishable from a real sellout to
+    # replace_stock_items() otherwise. Confirmed live 92/93 titles parse,
+    # so this must be all-or-nothing: a single known no-separator outlier
+    # (Flogging Molly LP Bundle, covered above) is still skipped
+    # individually and does NOT raise, only a total, implausible 0-parsed
+    # batch does.
+    products = [
+        {"id": "X1", "name": "No Separator Here", "href": "/product/X1/a", "image": None, "listPrice": "$10.00", "salePrice": ""},
+        {"id": "X2", "name": "Also No Separator", "href": "/product/X2/b", "image": None, "listPrice": "$12.00", "salePrice": ""},
+    ]
+    fake_page = _FakePage(browser_page, evaluate_result={"rawCount": 2, "malformedCount": 0, "products": products})
+    crawler = Crawler()
+    with pytest.raises(RuntimeError):
+        async for _ in crawler.crawl_catalog(fake_page):
+            pass
 
 
 async def test_crawl_catalog_yields_exactly_the_in_stock_fixture_rows(fake_page):

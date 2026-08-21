@@ -1,3 +1,4 @@
+import math
 import random
 import re
 from asyncio import sleep
@@ -129,10 +130,30 @@ class Crawler:
 
         products = result["products"]
         await report_page(1, len(products))
+        yielded = 0
         for product in products:
             item = self._parse_product(product)
             if item is not None:
+                yielded += 1
                 yield item
+
+        # Neither DOM guard above (rawCount, malformedCount) can see this
+        # failure mode: they only check the card markup, not whether its
+        # *content* still parses. If the site changes its title format
+        # site-wide, every card still extracts cleanly -- both counters
+        # stay clean -- but _parse_artist_title finds no separator on any
+        # of them, so this loop yields nothing despite `products` being
+        # non-empty. That's indistinguishable from a real sellout to
+        # replace_stock_items() otherwise. Confirmed live: 92/93 real
+        # titles parse (only "Flogging Molly LP Bundle" legitimately has
+        # no separator), so *zero* parsing out of a non-empty batch is
+        # never a plausible real-world result -- only a site-wide format
+        # change gets there, and that must raise, not silently skip every
+        # item one at a time the way the single known outlier does.
+        if products and yielded == 0:
+            raise RuntimeError(
+                f"parsed 0 of {len(products)} in-stock products -- title-format drift"
+            )
 
     @classmethod
     def _parse_product(cls, product: dict) -> Optional[dict]:
@@ -207,6 +228,16 @@ class Crawler:
         if not raw:
             return None
         try:
-            return float(raw.replace("$", "").replace(",", "").strip())
+            value = float(raw.replace("$", "").replace(",", "").strip())
         except ValueError:
             return None
+        # float() accepts "nan"/"inf"/"-inf" and negative numeric text
+        # without raising -- none of those are a real price, but they'd
+        # otherwise slide past this as if they were, bypassing the
+        # sale-price-fallback/list-price-error drift guards in
+        # _parse_product that exist specifically to catch an unparsable
+        # price. A NaN in particular can also break JSON serialization
+        # further downstream.
+        if not math.isfinite(value) or value < 0:
+            return None
+        return value

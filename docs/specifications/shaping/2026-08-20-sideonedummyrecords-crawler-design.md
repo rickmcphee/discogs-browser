@@ -207,6 +207,20 @@ depending on product, confirmed against the full live 93-title set:
   matching this repo's established "no artist source → skip" convention
   (`darkdescentrecords.py`, `asbestosrecords.py`).
 
+That per-item skip is only safe *because* it's rare. Neither DOM guard
+above (`rawCount`, `malformedCount`) can see a site-wide title-format
+change — every card still extracts cleanly, both counters stay clean —
+but if `_parse_artist_title` finds no separator on *any* of them,
+`crawl_catalog`'s yield loop produces nothing despite `products` being
+non-empty, which is indistinguishable from a real sellout to
+`replace_stock_items()` otherwise. Confirmed live: 92/93 titles parse, so
+a zero-parsed result from a non-empty batch is never a plausible
+real-world outcome — only a site-wide format change gets there.
+`crawl_catalog` raises when `products` is non-empty but nothing was
+successfully parsed, leaving the single-outlier skip (Flogging Molly)
+untouched — it's an all-or-nothing check, not a threshold, so one known
+outlier among many successes still doesn't trip it.
+
 Resolved with one regex whose two alternatives are tried at every
 position left-to-right, so whichever separator shape actually occurs
 first in a given title wins — no per-title branching needed:
@@ -289,15 +303,19 @@ locks this in.
 
 ### Fields
 
-- **price** — tries `salePrice` first (`"$"`/`,` stripped, `float()`),
-  falls back to `listPrice` the same way if that fails to parse. If
-  *both* fail, raises rather than skipping: `_EXTRACT_JS`'s
-  `malformedCount` check only confirms `listPrice` is a non-empty string,
-  not that it's still `"$X.XX"`-shaped, so a price-format change on the
-  site would pass that check and only surface here. Every one of the 93
-  live titles confirmed `data-listprice` as `"$X.XX"` with no exception,
-  so an unparsable-but-present price is a much stronger drift signal than
-  a garbled title (which is expected, messy real-world data and is
+- **price** — tries `salePrice` first (`"$"`/`,` stripped, `float()`,
+  then required to be finite and non-negative — `float()` itself accepts
+  `"nan"`/`"inf"`/`"-inf"`/negative numeric text without raising, none of
+  which is a real price, and a `NaN` specifically can break JSON
+  serialization further downstream), falls back to `listPrice` the same
+  way if that fails to parse. If *both* fail, raises rather than
+  skipping: `_EXTRACT_JS`'s `malformedCount` check only confirms
+  `listPrice` is a non-empty string, not that it's still
+  `"$X.XX"`-shaped, so a price-format change on the site would pass that
+  check and only surface here. Every one of the 93 live titles confirmed
+  `data-listprice` as `"$X.XX"` with no exception, so an
+  unparsable-but-present price is a much stronger drift signal than a
+  garbled title (which is expected, messy real-world data and is
   legitimately skipped) — raising here closes the same
   `replace_stock_items` stock-wipe gap as `rawCount`/`malformedCount`,
   just for price-format drift specifically rather than missing fields.
@@ -356,8 +374,17 @@ return. Cases:
 - an unparsable *list* price too (the fallback itself fails) →
   `RuntimeError`, not a silent skip — a genuinely present but unparsable
   price is a much stronger drift signal than a garbled title
+- `"nan"`, `"inf"`, `"-inf"`, and negative price strings → all rejected
+  by `_price` directly (not real prices even though `float()` parses them
+  without raising), parametrized over that same set
 - out-of-stock product (no `.PricingContainer`) → excluded
-- no-separator title → skipped
+- no-separator title → skipped, single outlier among otherwise-parseable
+  products does not raise
+- every product in a batch fails to parse an artist (a mocked
+  all-unparseable `products` list) → `RuntimeError` — the title-format
+  drift guard neither `rawCount` nor `malformedCount` can see, since both
+  only check DOM structure, not whether the extracted content still
+  parses
 - `wait_for_selector` never finds the listing (empty DOM), normal title →
   `RuntimeError`, rather than yielding `[]` and risking a stock wipe
 - same, but the Cloudflare interstitial's title is still showing →
