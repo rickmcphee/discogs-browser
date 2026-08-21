@@ -312,8 +312,10 @@ locks this in.
   skipping: `_EXTRACT_JS`'s `malformedCount` check only confirms
   `listPrice` is a non-empty string, not that it's still
   `"$X.XX"`-shaped, so a price-format change on the site would pass that
-  check and only surface here. Every one of the 93 live titles confirmed
-  `data-listprice` as `"$X.XX"` with no exception, so an
+  check and only surface here. Every one of the 76 live in-stock products
+  confirmed `data-listprice` as `"$X.XX"` with no exception (the other 17
+  are out of stock and have no `.PricingContainer` at all, so no
+  `data-listprice` to check), so an
   unparsable-but-present price is a much stronger drift signal than a
   garbled title (which is expected, messy real-world data and is
   legitimately skipped) — raising here closes the same

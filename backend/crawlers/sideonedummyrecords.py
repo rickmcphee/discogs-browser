@@ -176,9 +176,11 @@ class Crawler:
             # the artist-parse skip above, but it isn't the same kind of
             # gap: a garbled title is normal, messy real-world data, while
             # a genuinely present but unparsable price is a strong signal
-            # the site changed its price format. Every one of the 93 live
-            # titles confirmed data-listprice as "$X.XX" with no exception,
-            # so this must raise, not skip -- the same reasoning as
+            # the site changed its price format. Every one of the 76 live
+            # in-stock products confirmed data-listprice as "$X.XX" with no
+            # exception (the other 17 are out of stock and have no
+            # .PricingContainer at all, so no data-listprice to check), so
+            # this must raise, not skip -- the same reasoning as
             # malformedCount above, just for a drift `_EXTRACT_JS` can't
             # detect on its own since it only checks for a non-empty
             # string, not a well-formed one.
