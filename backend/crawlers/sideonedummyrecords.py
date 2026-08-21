@@ -87,7 +87,13 @@ class Crawler:
         if artist is None:
             return None
 
-        price = cls._price(product.get("salePrice") or product.get("listPrice"))
+        # Falls back to listPrice on a parse failure too, not just an empty
+        # salePrice string -- a malformed (rather than merely absent)
+        # salePrice must not drop an otherwise-valid, in-stock product that
+        # the extraction filter already confirmed has a real listPrice.
+        price = cls._price(product.get("salePrice"))
+        if price is None:
+            price = cls._price(product.get("listPrice"))
         if price is None:
             return None
 

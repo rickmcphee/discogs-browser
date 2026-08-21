@@ -92,6 +92,17 @@ async def test_crawl_catalog_prefers_sale_price_over_list_price(fake_page):
     assert item["price"] == 29.99
 
 
+def test_parse_product_falls_back_to_list_price_when_sale_price_is_unparsable():
+    # Not just an empty salePrice string -- a malformed one must not drop an
+    # otherwise-valid product that the extraction filter already confirmed
+    # has a real listPrice.
+    item = Crawler._parse_product({
+        "id": "X1", "name": "Band - Title LP", "href": "/product/X1/band-title",
+        "image": None, "listPrice": "$25.99", "salePrice": "not-a-price",
+    })
+    assert item["price"] == 25.99
+
+
 async def test_crawl_catalog_excludes_out_of_stock_product(fake_page):
     crawler = Crawler()
     items = [item async for item in crawler.crawl_catalog(fake_page)]
