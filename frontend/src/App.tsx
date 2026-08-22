@@ -43,7 +43,6 @@ export default function App() {
   const [hasJudgedItems, setHasJudgedItems] = useState(false)
   const [hasPriceData, setHasPriceData] = useState(false)
   const latestPriceStatusSeq = useRef(0)
-  const [judgmentRunning, setJudgmentRunning] = useState(false)
   const [serverReady, setServerReady] = useState(false)
   const [backendUp, setBackendUp] = useState<boolean | null>(null)
   const [authRevalidating, setAuthRevalidating] = useState(false)
@@ -267,7 +266,6 @@ export default function App() {
       }
       if (event.status === 'stock_judgment_started') {
         setSyncing(true)
-        setJudgmentRunning(true)
         setSyncStatus('Finding recommendations for Store items…', event.id ?? null)
         return
       }
@@ -277,14 +275,12 @@ export default function App() {
       }
       if (event.status === 'stock_judgment_complete') {
         setSyncing(false)
-        setJudgmentRunning(false)
         setHasJudgedItems(true)
         setSyncStatus(`Finished finding recommendations — ${event.judged} items checked`, event.id ?? null)
         return
       }
       if (event.status === 'stock_judgment_error') {
         setSyncing(false)
-        setJudgmentRunning(false)
         setSyncStatus(`Finding recommendations failed: ${event.error}`, event.id ?? null)
         return
       }
