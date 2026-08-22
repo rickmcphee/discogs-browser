@@ -270,12 +270,15 @@ export default function App() {
         return
       }
       if (event.status === 'stock_judgment_progress') {
+        if ((event.judged ?? 0) > 0) setHasJudgedItems(true)
+        setStockSyncGeneration(g => g + 1)
         setSyncStatus(`Finding recommendations for Store items… ${event.judged}/${event.total}`, event.id ?? null)
         return
       }
       if (event.status === 'stock_judgment_complete') {
         setSyncing(false)
         setHasJudgedItems(true)
+        setStockSyncGeneration(g => g + 1)
         setSyncStatus(`Finished finding recommendations — ${event.judged} items checked`, event.id ?? null)
         return
       }
