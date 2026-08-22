@@ -493,6 +493,20 @@ describe('In Stock tab', () => {
     await waitFor(() => expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(false))
   })
 
+  it('keeps Recommended disabled when a first-ever run completes with zero judgments', async () => {
+    getUserSettings.mockResolvedValue({ ...defaultUserSettings, anthropic_api_key: 'sk-ant-test' })
+    getJudgmentStatus.mockResolvedValue({ any_judged: false })
+    render(<App />)
+    await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Store'))
+    await waitFor(() => expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(true))
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    const source = getLastCrawlSource()
+    source.emit({ status: 'stock_judgment_started' })
+    source.emit({ status: 'stock_judgment_complete', judged: 0, id: 1 })
+    await waitFor(() => expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(true))
+  })
+
   it('refetches stock items on stock_judgment_progress and stock_judgment_complete SSE events', async () => {
     render(<App />)
     await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
