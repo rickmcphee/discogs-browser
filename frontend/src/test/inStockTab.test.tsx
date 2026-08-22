@@ -455,7 +455,7 @@ describe('In Stock tab', () => {
     })
   })
 
-  it('disables Recommended in Store again while a judgment run is in progress', async () => {
+  it('keeps Recommended enabled in Store while a judgment run is in progress', async () => {
     getUserSettings.mockResolvedValue({ ...defaultUserSettings, anthropic_api_key: 'sk-ant-test' })
     getJudgmentStatus.mockResolvedValue({ any_judged: true })
     render(<App />)
@@ -465,7 +465,7 @@ describe('In Stock tab', () => {
     await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
     const source = getLastCrawlSource()
     source.emit({ status: 'stock_judgment_started' })
-    await waitFor(() => expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(true))
+    await waitFor(() => expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(false))
   })
 
   it('refetches stock items on a listing_changed SSE event', async () => {

@@ -557,7 +557,7 @@ export default function App() {
   const isRealAdmin = authState.user.is_admin
   const showAdminNav = isRealAdmin && !viewAsUser
 
-  const recommendedAvailable = hasAnthropicKey && hasJudgedItems && !judgmentRunning
+  const recommendedAvailable = hasAnthropicKey && hasJudgedItems
   const syncBannerVisible = syncMessage !== null && (syncMessageId === null || syncMessageId > dismissedSyncId)
   const crawlBannerVisible = crawlBannerId > dismissedCrawlId
 
