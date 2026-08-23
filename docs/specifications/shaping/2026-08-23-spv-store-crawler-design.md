@@ -87,7 +87,7 @@ before this crawler is enabled in production:**
 | Prices are EUR | German store, ships from EU | Prices display under the wrong currency — one-line fix |
 | `vendor` carries the label, not the artist | Matches `seasonofmist.py`, whose vendor is the label | Nothing — the crawler never reads `vendor`. This assumption is why it doesn't (see "Title parsing"); if it turned out to hold the artist, an unparseable title would be a missed row rather than a wrong one |
 | Pre-order products carry a `pre-order`/`preorder` tag | Sibling convention; exact casing/spelling varies per store, so the check is a case-insensitive regex over both spellings rather than an exact `has_tag()` match | Pre-orders lose their ` (Pre-Order)` suffix and their unavailable variants are dropped |
-| The `vinyl` collection is vinyl-only | It is titled "LP" | Non-vinyl bleed, caught by the negative blurb gate below |
+| The `vinyl` collection is vinyl-only | It is titled "LP" | Split: a bleed item whose blurb names a *recognised* non-vinyl format (`CD`, `2xCD`, `Cassette`) is dropped by the gate below; one whose descriptor the gate doesn't recognise is deliberately **kept** and published as `format: "Vinyl"`. That second half is one of the two silent failure modes named under the table — an earlier draft of this row said only "caught by the gate", which contradicted it |
 | Typographic quotes (`“ ”`) may appear alongside straight ones | Not observed in the sample; cheap to accept both | Nothing — the parser handles both |
 
 Most of these fail safe — but not all of them, and an earlier draft of this
@@ -364,8 +364,13 @@ crawler_type = "catalog"
 
 ## Tests
 
-`backend/tests/test_spv_crawler.py`, 38 cases, `respx`-mocked — the same
-shape as the sibling crawler tests. Product titles and handles in the
+`backend/tests/test_spv_crawler.py`, `respx`-mocked — the same
+shape as the sibling crawler tests. No case count is quoted here on purpose:
+it went stale four times across this branch's review rounds (19 → 22 → 24 →
+27 → 30 → 38 → 40), drawing a finding each time, and the number carries no
+information the coverage list below doesn't. Run
+`grep -c '^def test_\|^async def test_' backend/tests/test_spv_crawler.py`
+for the current figure. Product titles and handles in the
 fixtures are real store listings; prices, tags, variants, and image URLs are
 synthesized, and the file says so at the top rather than implying a live
 capture.
