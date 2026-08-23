@@ -412,47 +412,31 @@ Screenshot browser showing session directories and per-search screenshots. Only 
 discogs-browser/
 ├── backend/
 │   ├── pyproject.toml
-│   ├── config.py               # CONFIG_DIR, env var overrides, load/save_config
-│   ├── version.py              # VERSION string
-│   ├── logging_config.py       # Postgres `app_logs` (queued, batched) + stdout, get_logger()
-│   ├── db.py                   # schema, all DB helpers; thread-local connection singleton (WAL, 60s timeout)
-│   ├── discogs.py              # httpx-based Discogs API client; fetch_release_barcode() fetches /releases/{id}
-│   ├── crawler.py              # BotDetectedError, clean_search_text(), plugin loader, crawl_releases()
-│   ├── crawl_manager.py        # CrawlManager singleton: asyncio task, broadcast queues, 500-event buffer
-│   ├── scheduler.py            # AsyncIOScheduler wrapper, configure(cron, mode)
-│   ├── screenshots.py          # CrawlScreenshotter, session dirs
-│   ├── main.py                 # FastAPI app, startup (init_db, seed crawlers, prepopulate, start scheduler)
 │   ├── Dockerfile              # python:3.11-slim + playwright install chromium
-│   ├── crawlers/
-│   │   ├── amazon.py           # Playwright-based Amazon crawler
-│   │   └── ebay.py             # eBay Browse API crawler (CC Music seller, OAuth)
-│   ├── routers/
-│   │   ├── health.py           # GET /health
-│   │   ├── collection.py       # POST /collection/refresh, GET /collection/status
-│   │   ├── releases.py         # GET /releases, /artists, /crawlers
-│   │   ├── crawl.py            # POST /crawl/start, POST /crawl/stop, GET /crawl/stream, GET /crawl/status
-│   │   ├── settings.py         # GET/POST /settings, PATCH /crawlers/{id}
-│   │   ├── auth.py             # GET /auth/status, POST /auth/login, POST /auth/done, DELETE /auth/state
-│   │   ├── logs.py             # GET /logs/stream, DELETE /logs
-│   │   └── screenshots.py      # GET /screenshots, GET /screenshots/{path}
-│   ├── scripts/
-│   │   └── capture_fixture.py  # Playwright-based HTML fixture capture for tests
-│   └── tests/
-│       ├── test_config.py
-│       ├── test_crawler.py
-│       ├── test_crawler_utils.py
-│       ├── test_crawl_manager.py
-│       ├── test_db.py
-│       ├── test_ebay_crawler.py
-│       ├── test_discogs.py
-│       ├── crawlers/
-│       │   └── test_amazon_price_extraction.py
-│       └── fixtures/
-│           └── crawlers/
-│               └── amazon/
-│                   ├── 311_mosaic.html
-│                   ├── 311_evolver.html
-│                   └── adam_and_the_ants_prince_charming.html
+│   ├── fly.toml
+│   ├── main.py                 # FastAPI app, startup (init_global_schema/init_tenant_schema,
+│   │                           #   seed_bundled_crawlers, crawl_manager.start_worker_pool, scheduler.start)
+│   ├── config.py               # env var overrides, load/save_config (settings live in Postgres)
+│   ├── db.py                   # schema and all DB helpers, psycopg pools
+│   ├── auth_middleware.py      # guards every /api request
+│   ├── session_tokens.py       # session issue/verify
+│   ├── oauth_discogs.py        # Discogs OAuth 1.0a flow
+│   ├── token_encryption.py     # Fernet at-rest encryption for stored tokens
+│   ├── crawler.py              # BotDetectedError, clean_search_text(), plugin loader,
+│   │                           #   _new_context/_reset_context (crawl_releases() is deleted)
+│   ├── crawl_manager.py        # worker pool draining crawl_queue, SSE fan-out
+│   ├── scheduler.py            # AsyncIOScheduler wrapper
+│   ├── discogs.py              # httpx-based Discogs API client
+│   ├── logging_config.py       # Postgres `app_logs` (queued, batched) + stdout
+│   ├── screenshots.py          # CrawlScreenshotter, session dirs
+│   ├── version.py              # VERSION, derived not edited
+│   ├── ... (admin, avatar, discover, ebay_api, plex, rate_limit,
+│   │        recommendations, shopify_catalog, and other modules)
+│   ├── crawlers/               # ~50 bundled plugins (amazon.py, ebay.py, label and store crawlers)
+│   ├── routers/                # one per domain (collection, crawl, discover, health, logs,
+│   │                           #   plex, releases, screenshots, session, settings, stock)
+│   ├── scripts/                # capture_fixture.py, drop_leaked_test_dbs.py, migrate_from_sqlite.py
+│   └── tests/                  # ~100 pytest files, plus tests/fixtures/crawlers/amazon/*.html
 ├── frontend/
 │   ├── package.json
 │   ├── vite.config.ts
@@ -461,20 +445,19 @@ discogs-browser/
 │   └── src/
 │       ├── main.tsx
 │       ├── App.tsx
-│       ├── index.css
-│       ├── api/
-│       │   ├── types.ts
-│       │   └── client.ts
-│       └── views/
-│           ├── CollectionBrowser.tsx
-│           ├── Settings.tsx
-│           ├── LogViewer.tsx
-│           └── DebugView.tsx
+│       ├── api/                # types.ts, client.ts
+│       ├── components/         # Avatar, SourceFilter, TornadoBackground
+│       ├── views/              # RecordBrowser, StockBrowser, Settings, LogViewer, Account,
+│       │                       #   LoginScreen, InviteCodeScreen, BackendDownScreen, DebugView
+│       └── test/               # vitest suites
+├── docs/                       # specs and plans; read before touching code
 ├── scripts/
 │   └── cloud-setup.sh          # provisions a Claude Code cloud session for the test suite
 ├── docker-compose.yml          # backend + frontend services, ./workspace bind mount
-├── bootstrap.sh                # creates workspace/, runs docker-compose build
+├── bootstrap.sh                # git pull + docker-compose build/up; never destroys the data volume
 ├── Makefile
+├── CLAUDE.md
+├── README.md
 ├── .claude/
 │   └── settings.json           # SessionStart hook that runs scripts/cloud-setup.sh
 └── .gitignore
