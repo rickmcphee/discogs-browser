@@ -279,8 +279,11 @@ for ~804 dispatch work units per sync. Somewhat larger than
 
 `backend/tests/test_realgonemusic_crawler.py`, on
 `test_carparkrecords_crawler.py`'s pattern — hand-written product literals
-taken from confirmed-live products, exercising `Crawler._items(product)`
-directly, no live site and no bot-detection risk. Cases:
+taken from confirmed-live products, served through `respx`-mocked
+`products.json` responses and driven via `crawl_catalog()`; no live site
+and no bot-detection risk. `Crawler._items()` is called directly only for
+the artist-gap assertion, whose anchor product has no available variant
+and so yields nothing through the public path. Cases:
 
 - `artist` is the vendor verbatim on a product whose title clearly
   contains an artist name — pins the accepted gap so a future reader
