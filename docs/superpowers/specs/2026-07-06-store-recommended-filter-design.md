@@ -410,6 +410,10 @@ CSV shape and its "rows exactly match the current `Recommended` filter
 results" acceptance criterion no longer hold. `GET /api/stock/export` now
 emits ten columns —
 `artist,title,format,price,source,link,reason,item_key,recommended,judged_at`
+— (**2026-08-23, branch `claude/stock-export-currency`:** eleven now, with
+`currency` appended after `judged_at`, so a non-USD price is no longer an
+ambiguous bare number; see that branch's amendment in
+[`2026-08-09-recommendations-import-design.md`](../../specifications/shaping/2026-08-09-recommendations-import-design.md))
 — and every judgment for the calling user, recommended and not, with no
 `_not_owned_clause` filter. It is a portable backup consumed by the new
 `POST /api/stock/import`, not a view of the Recommended tab. The query moved
