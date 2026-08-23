@@ -48,8 +48,15 @@ _PREORDER_RE = re.compile(r'pre[\s_-]?order', re.IGNORECASE)
 # test_temporaryresidence_crawler.py). Siblings already spell it \b\d*x?lp\b;
 # the × is added because a store that types the real multiplication sign should
 # not silently fall through the gate.
+# The inch alternative is deliberately spelled the same way as
+# _TRAILING_FORMAT_RE's. They disagreed before: this gate took only an
+# unspaced mark on three specific sizes (7/10/12"), while the stripper also
+# accepted a space and the word INCH -- so `10 INCH + CD` lost the vinyl
+# override and was dropped as a CD, while `12" + CD` was kept. Same shape of
+# bug as the 2xLP+CD one: a bundle is only safe if the override recognises
+# every vinyl spelling the rest of the module does.
 _VINYL_RE = re.compile(
-    r'\b\d*[x×]?lp\b|\bvinyl\b|\b(?:7|10|12)"|\bpicture disc\b', re.IGNORECASE
+    r'\b\d*[x×]?lp\b|\bvinyl\b|\b\d{1,2}\s*(?:"|inch\b)|\bpicture disc\b', re.IGNORECASE
 )
 # The \d* on cd/dvd is load-bearing: a disc count binds to the format word with
 # no word boundary between them, so a bare \bcds?\b cannot match the "CD" in

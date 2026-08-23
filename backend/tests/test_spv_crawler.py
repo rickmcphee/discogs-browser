@@ -176,6 +176,21 @@ def _variant(title, available=True, price="27.99"):
     return {"title": title, "price": price, "available": available, "featured_image": None}
 
 
+def test_spelled_and_spaced_inch_markers_take_the_vinyl_override():
+    # Regression: the gate took only an unspaced mark on 7/10/12, while
+    # _TRAILING_FORMAT_RE also accepted a space and the word INCH. A bundle
+    # like "10 INCH + CD" therefore lost the override and was dropped as a CD,
+    # while "12\" + CD" was kept -- the same shape as the 2xLP+CD bug.
+    for title in ('Sodom "1982" 10 INCH + CD', 'Sodom "1982" 12 " + CD',
+                  'Sodom "1982" 10 Inch + CD'):
+        assert len(Crawler._items({**_SODOM, "title": title})) == 1, title
+
+
+def test_inch_markers_alone_are_still_vinyl():
+    for title in ('Sodom "1982" 10 INCH', 'Sodom "1982" 12"', 'Sodom "1982" 7"'):
+        assert len(Crawler._items({**_SODOM, "title": title})) == 1, title
+
+
 def test_multiplier_notation_non_vinyl_is_dropped():
     # "2xCD" is real Shopify notation -- this repo's own temporaryresidence
     # fixtures carry it -- and the plain \d* prefix does not reach across the x.

@@ -209,7 +209,7 @@ the test it replaced only passed because it blanked `vendor`.
 ### Format gate: negative, on the title blurb
 
 ```python
-_VINYL_RE     = re.compile(r'\b\d*[x×]?lp\b|\bvinyl\b|\b(?:7|10|12)"|\bpicture disc\b', re.IGNORECASE)
+_VINYL_RE     = re.compile(r'\b\d*[x×]?lp\b|\bvinyl\b|\b\d{1,2}\s*(?:"|inch\b)|\bpicture disc\b', re.IGNORECASE)
 _NON_VINYL_RE = re.compile(r'\b(\d*[x×]?cds?|digipa[kc]k?|cassette|tape|mc|\d*[x×]?dvd|blu-?ray|shirt|t-shirt|hoodie|longsleeve|poster|patch|flag|mug|book)\b', re.IGNORECASE)
 ```
 
@@ -227,6 +227,14 @@ fixtures carry the x form), and without it `2xCD` is published as vinyl *and*
 the override while its `CD` half still matches the negative side. `_VINYL_RE`,
 `_NON_VINYL_RE`, and `_TRAILING_FORMAT_RE` all carry the same allowance so the
 two gates and the dash-path splitter cannot disagree.
+
+The inch alternative had the same disagreement, found a round later: this gate
+took only an unspaced mark on three sizes (`7|10|12"`) while the stripper
+already accepted a space and the spelled word, so `10 INCH + CD` lost the
+vinyl override and was dropped as a CD while `12" + CD` was kept. Both now
+read `\d{1,2}\s*(?:"|inch\b)`. The rule this keeps arriving at: a bundle is
+only safe when the override recognises every vinyl spelling the rest of the
+module does, so the three expressions are maintained as one vocabulary.
 
 Negative rather than positive, and deliberately so: the source is the store's
 own vinyl collection, so an *unrecognised* blurb (`Deluxe Edition`) is kept.
