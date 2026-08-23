@@ -482,8 +482,11 @@ Backend, `test_judgment_crud.py`:
 
 Backend, `test_stock_router.py`:
 
-- export emits the 10-column header and a round-trip
+- export emits the 11-column header (10 as originally shipped; `currency` was
+  appended on 2026-08-23, see the amendment at the end) and a round-trip
   export → import → export is byte-identical.
+- a non-USD row exports its currency code, and a judgment with no live stock
+  row exports an empty one rather than a defaulted `USD`.
 - import returns the documented counts; returns `running: true` and writes
   nothing while a judgment run is active; `413`/`422` on oversize and on a
   bad header.
