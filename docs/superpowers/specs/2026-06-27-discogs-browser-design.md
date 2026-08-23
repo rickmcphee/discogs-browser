@@ -475,6 +475,8 @@ discogs-browser/
 ├── docker-compose.yml          # backend + frontend services, ./workspace bind mount
 ├── bootstrap.sh                # creates workspace/, runs docker-compose build
 ├── Makefile
+├── .claude/
+│   └── settings.json           # SessionStart hook that runs scripts/cloud-setup.sh
 └── .gitignore
 ```
 
