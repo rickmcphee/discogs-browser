@@ -53,11 +53,10 @@ class Crawler:
 
     @classmethod
     def _items(cls, product: dict) -> list[dict]:
-        artist, album_title, extra = cls._parse_title(
-            product.get("title", ""), product.get("vendor", "")
-        )
-        # No artist source at all -> skip rather than publish a row that can
-        # never match a Discogs release (darkdescentrecords.py's convention).
+        artist, album_title, extra = cls._parse_title(product.get("title", ""))
+        # No artist parsed out of the title -> skip rather than publish a row
+        # that can never match a Discogs release (darkdescentrecords.py's
+        # convention).
         if not artist or not album_title:
             return []
         if not cls._is_vinyl(extra):
@@ -88,13 +87,15 @@ class Crawler:
         return items
 
     @staticmethod
-    def _parse_title(title: str, vendor: str) -> tuple:
+    def _parse_title(title: str) -> tuple:
         """Split `Artist "Album" FORMAT` into its three parts.
 
-        `vendor` is the last resort only: on this store it is expected to carry
-        the label (SPV / Steamhammer / Long Branch), not the artist, so a title
-        that yields no artist of its own is better dropped by the caller than
-        published under the label's name.
+        No `vendor` fallback, deliberately, matching cleorecs.py /
+        jackpotrecords.py / asianmanrecords.py: `vendor` is expected to hold the
+        label here (SPV / Steamhammer / Long Branch), so falling back to it
+        would publish the label as the artist -- a row that can never match a
+        Discogs release. A title neither regex can parse returns no artist and
+        is dropped by the caller instead.
         """
         title = (title or "").strip()
         m = _TITLE_RE.match(title)
@@ -103,7 +104,7 @@ class Crawler:
         m = _DASH_RE.match(title)
         if m:
             return m.group("artist").strip(), m.group("album").strip(), ""
-        return (vendor or "").strip(), title, ""
+        return "", title, ""
 
     @staticmethod
     def _is_vinyl(extra: str) -> bool:

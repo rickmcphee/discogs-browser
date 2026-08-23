@@ -199,9 +199,23 @@ def test_dash_split_does_not_clip_hyphenated_artist():
     assert items[0]["title"] == "Age Of Quarrel"
 
 
-def test_title_with_no_artist_source_is_skipped():
+def test_unparseable_title_is_skipped_even_when_vendor_is_populated():
+    # Regression: an earlier draft fell back to `vendor` here, and this test
+    # only passed because it blanked it. `vendor` holds the label on this store,
+    # so the fallback published "Steamhammer" as the artist -- a row that can
+    # never match a Discogs release. Assert against a realistic label vendor.
+    product = {**_SODOM, "title": "Label Sampler 2026", "vendor": "Steamhammer"}
+    assert Crawler._items(product) == []
+
+
+def test_unparseable_title_is_skipped_with_no_vendor_either():
     product = {**_SODOM, "title": "Label Sampler 2026", "vendor": ""}
     assert Crawler._items(product) == []
+
+
+def test_vendor_is_never_used_as_an_artist_source():
+    # The parser takes the title only -- no vendor argument to fall back to.
+    assert Crawler._parse_title("Label Sampler 2026") == ("", "Label Sampler 2026", "")
 
 
 def test_null_variants_yield_nothing():

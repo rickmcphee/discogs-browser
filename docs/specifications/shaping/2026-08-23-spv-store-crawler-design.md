@@ -9,8 +9,10 @@ SPV Entertainment (`store.spv.de`) — the official store of SPV GmbH, the
 German independent label and distributor founded in 1984, home to the
 Steamhammer and Long Branch Records imprints (Sodom, Magnum, Agent Fresco,
 Siamese, The Wild!, Satan's Fall) — is not covered by any existing crawler.
-It is a Shopify storefront, the same family as the ~36 label-store `catalog`
-plugins already in `backend/crawlers/`.
+It is a Shopify storefront, the same family as the 47 other `catalog`-kind
+plugins already in `backend/crawlers/`, 41 of which are Shopify stores crawled
+through `shopify_catalog.iter_products()` (counted directly: `grep -l
+iter_products backend/crawlers/*.py` returns 42 including this one).
 
 It is the first EU-domiciled Shopify store in the set: prices are EUR, not
 the USD every sibling Shopify crawler hardcodes. `darkdescentrecords.py` is
@@ -78,9 +80,9 @@ before this crawler is enabled in production:**
 
 | Assumption | Why | If wrong |
 |---|---|---|
-| `products.json` is served unauthenticated and paginates on `?limit=250&page=N` | Shopify default; true on all 36 sibling stores | `iter_products()` raises; no silent bad data |
+| `products.json` is served unauthenticated and paginates on `?limit=250&page=N` | Shopify default; true on all 41 sibling stores using `iter_products()` | `iter_products()` raises; no silent bad data |
 | Prices are EUR | German store, ships from EU | Prices display under the wrong currency — one-line fix |
-| `vendor` carries the label, not the artist | Matches `seasonofmist.py`, whose vendor is the label | Only affects the fallback path (see below), which the title parse should almost never reach |
+| `vendor` carries the label, not the artist | Matches `seasonofmist.py`, whose vendor is the label | Nothing — the crawler never reads `vendor`. This assumption is why it doesn't (see "Title parsing"); if it turned out to hold the artist, an unparseable title would be a missed row rather than a wrong one |
 | Pre-order products carry a `pre-order`/`preorder` tag | Sibling convention; exact casing/spelling varies per store, so the check is a case-insensitive regex over both spellings rather than an exact `has_tag()` match | Pre-orders lose their ` (Pre-Order)` suffix and their unavailable variants are dropped |
 | The `vinyl` collection is vinyl-only | It is titled "LP" | Non-vinyl bleed, caught by the negative blurb gate below |
 | Typographic quotes (`“ ”`) may appear alongside straight ones | Not observed in the sample; cheap to accept both | Nothing — the parser handles both |
@@ -104,8 +106,8 @@ that here, and the check needs the live feed.
 ### Title parsing: quoted album, with two fallbacks
 
 ```python
-_TITLE_RE = re.compile(r'^(?P<artist>[^"“”]+?)\s*["“](?P<album>[^"“”]+)["”]\s*(?P<extra>.*)$')
-_DASH_RE  = re.compile(r'^(?P<artist>.+?)(?:\s+-\s*|\s*-\s+)(?P<album>.+)$')
+_TITLE_RE = re.compile(r'^(?P<artist>[^"“”]+?)\s*[-–—]?\s*["“](?P<album>[^"“”]+)["”]\s*(?P<extra>.*)$')
+_DASH_RE  = re.compile(r'^(?P<artist>.+?)(?:\s+[-–—]\s*|\s*[-–—]\s+)(?P<album>.+)$')
 ```
 
 `asianmanrecords.py`'s equivalent pair is
@@ -132,13 +134,21 @@ adopted, with `seasonofmist.py`'s whitespace anchoring on at least one side of
 the separator, so hyphenated artist names (`Cro-Mags`, `Vio-lence`) aren't
 clipped at their internal hyphen the way a plain `\s*-\s*` split clips them.
 
-A title that matches neither falls back to `vendor` as artist and, since
-`vendor` is expected to be the label here, is then **dropped** by the
-`not artist or not album_title` guard — `darkdescentrecords.py`'s
-"no artist source -> skip" convention, chosen over
-`carparkrecords.py`/`no_idea_records.py`'s publish-under-vendor fallback
-because a row attributed to "Steamhammer" can never match a Discogs release
-and would just be catalog noise.
+A title neither regex can parse returns **no artist at all** and is dropped by
+the `not artist or not album_title` guard. `_parse_title()` takes only the
+title — there is no `vendor` parameter to fall back to, matching
+`cleorecs.py`/`jackpotrecords.py`/`asianmanrecords.py`, and unlike
+`carparkrecords.py`/`no_idea_records.py`'s publish-under-vendor fallback.
+`darkdescentrecords.py`'s "no artist source -> skip" convention: a row
+attributed to "Steamhammer" can never match a Discogs release and would just
+be catalog noise.
+
+An earlier revision of this branch did thread `vendor` in as a last resort,
+which made that guard dead code for this store — a non-empty label vendor
+always satisfied it, so unparseable titles published under the label's name,
+the exact outcome the guard exists to prevent. Caught in review on PR #165;
+`test_unparseable_title_is_skipped_even_when_vendor_is_populated` pins it, and
+the test it replaced only passed because it blanked `vendor`.
 
 ### Format gate: negative, on the title blurb
 
@@ -197,7 +207,7 @@ crawler_type = "catalog"
 
 ## Tests
 
-`backend/tests/test_spv_crawler.py`, 19 cases, `respx`-mocked — the same
+`backend/tests/test_spv_crawler.py`, 24 cases, `respx`-mocked — the same
 shape as the sibling crawler tests. Product titles and handles in the
 fixtures are real store listings; prices, tags, variants, and image URLs are
 synthesized, and the file says so at the top rather than implying a live
