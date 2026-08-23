@@ -97,6 +97,47 @@ it records that `carparkrecords.py` is a fourth documented exception to the
 converging contract, not a bug to fix into conformance, the same framing the
 first three amendments use.
 
+**Fifth amendment (2026-08-23, branch `claude/spv-store-crawler-2mdf0z`):**
+`backend/crawlers/spv.py` is a fifth exception, and the first that is a near-copy
+of a prior one rather than a new shape. It takes `asianmanrecords.py`'s
+two-stage structure wholesale — quoted-album primary parser, hyphen/en-dash/em-dash
+split demoted to a fallback, optional `[-–—]?` separator before the opening
+quote, no vendor fallback (`vendor` is expected to be the label here:
+SPV/Steamhammer/Long Branch) — and diverges from it on three points:
+
+1. **Typographic quotes.** The quote classes are `["“]`/`["”]` rather than the
+   sibling's straight `"` only. Not observed on this store; accepted because
+   it costs one character class and a German storefront is a likelier place
+   to meet them than the sibling's.
+2. **An `extra` capture group.** `asianmanrecords.py` needs only artist and
+   album, because it gates format on the *variant* title. This store carries
+   its format in the title's trailing blurb (`LP (exclusive)`,
+   `LP (white & black marbled vinyl)`), so the parser returns a third group
+   and the crawler gates on it. No prior exception's parser returns more than
+   two groups.
+3. **Quote-free character classes instead of `.+?`.** The sibling's
+   `^(?P<artist>.+?)\s*[-–—]?\s*"(?P<album>[^"]+)"` already stops the album
+   at the first closing quote via `[^"]+`, but its artist half is `.+?`.
+   Because divergence (2) makes the trailing blurb part of the match here, and
+   because this store's blurbs can contain an inch mark — the same character
+   as a straight quote (`Sodom "1982" 12" (exclusive)`) — the artist half is
+   `[^"“”]+?`, so it can never swallow an opening quote no matter what
+   follows the album.
+
+None of the three is expressible as a call to this doc's proposed
+`split_artist_title(title)`, for the same reason the four prior exceptions
+aren't. What is new here is a weaker form of the doc's original convergence
+claim holding after all, one level down: `spv.py` did not need a new parser
+shape, it needed a parameterisation of an existing exception's shape. If a
+sixth quoted-album store ever appears, *that* — a shared quoted-album parser
+with a quote-class and a return-the-blurb flag, not the dash-splitting
+`split_artist_title` this doc proposes — is the helper worth extracting. Two
+stores is not yet that case: the parser is nine lines, and the two crawlers
+agree on none of the parsing that follows it.
+
+Records `spv.py` as a fifth documented exception, not a bug to fix into
+conformance — the same framing the first four amendments use.
+
 ## Problem
 
 Nine Shopify-storefront catalog crawlers each need to split a product's
