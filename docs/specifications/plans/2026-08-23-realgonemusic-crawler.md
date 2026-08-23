@@ -529,7 +529,7 @@ The plugin loader imports every module in `backend/crawlers/`, so a syntax or im
 cd backend && pytest tests/ -k crawler -v
 ```
 
-Expected: all pass, with the 12 new ones among them. If anything unrelated fails, stop and investigate before committing — do not commit over a pre-existing red suite without saying so.
+Expected: all pass, with the 13 new ones among them. If anything unrelated fails, stop and investigate before committing — do not commit over a pre-existing red suite without saying so.
 
 - [ ] **Step 6: Commit**
 
