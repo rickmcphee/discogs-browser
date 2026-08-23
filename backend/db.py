@@ -95,6 +95,51 @@ def _the_comma_form_sql(column: str, *, escape_percent: bool = True) -> str:
     )
 
 
+def _artist_sort_sql(column: str, *, escape_percent: bool = True) -> str:
+    """SQL sort-key expression for `column`: a leading "The " or a trailing
+    ", The" (either case) is dropped to the bare remainder, so "The Beatles"
+    sorts under B like "Beatles, The" does, and -- now that both raw storage
+    conventions coexist -- the two spellings of the same artist produce the
+    *identical* key instead of merely landing in the same neighborhood. Only
+    one guard can ever fire per name (canonical_artist_labels' own fold means
+    a value is never both "The X" and "X, The" at once), so this stays a
+    two-branch CASE, not a composition. Stripping to the bare word rather than
+    to the comma-form ("beatles" rather than "beatles, the") matters: the
+    comma-form key would still be wrong relative to a third artist like
+    "Beatles A" ("beatles a" sorts before "beatles, the" but the bare key
+    "beatles" -- correctly -- doesn't). This is ORDER BY only, on the raw
+    un-canonicalized column -- it runs before canonical_artist_labels' fold
+    gets a chance to relabel the row, so it needs its own stripping regardless
+    of what the row's eventual display label becomes. `LIKE 'the %%'`/
+    `LIKE '%%, the'` each require a real word on the far side, so a bare "The"
+    or a name like "Theatre of Hate" is correctly left alone.
+
+    This same bare, article-stripped key is also what the artist equality
+    filters in get_library_releases/get_stock_items compare on (see
+    docs/specifications/shaping/2026-08-22-bare-form-artist-fold-design.md):
+    "The Beatles", "Beatles, The", and bare "Beatles" all reduce to the
+    identical key "beatles", so a filter click matches all three raw
+    spellings, not just the two _the_comma_form_sql folds together.
+
+    escape_percent mirrors _the_comma_form_sql's parameter and exists for the
+    same reason: doubled `%%` is required by every call site that executes
+    with a non-empty params dict (both ORDER BY call sites, the two artist
+    filters), but the unparameterized GLOBAL_SCHEMA index DDL needs the
+    single, unescaped `%` Postgres actually sees, or the index bakes in a
+    different string literal than the query compares against and is never
+    chosen by the planner."""
+    percent = "%%" if escape_percent else "%"
+    suffix_len = len(_ARTIST_SORT_SUFFIX)
+    return (
+        f"(CASE "
+        f"WHEN LOWER({column}) LIKE '{_ARTIST_SORT_ARTICLE}{percent}' "
+        f"THEN LOWER(SUBSTRING({column} FROM {len(_ARTIST_SORT_ARTICLE) + 1})) "
+        f"WHEN LOWER({column}) LIKE '{percent}{_ARTIST_SORT_SUFFIX}' "
+        f"THEN LOWER(SUBSTRING({column} FROM 1 FOR (LENGTH({column}) - {suffix_len}))) "
+        f"ELSE LOWER({column}) END)"
+    )
+
+
 GLOBAL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS catalog (
     discogs_id TEXT PRIMARY KEY,
@@ -298,6 +343,21 @@ CREATE INDEX IF NOT EXISTS catalog_artist_the_lower_idx
     ON catalog (LOWER({_the_comma_form_sql("artist", escape_percent=False)}));
 CREATE INDEX IF NOT EXISTS stock_items_artist_the_lower_idx
     ON stock_items (LOWER({_the_comma_form_sql("artist", escape_percent=False)}));
+""" + f"""
+-- Bare-form artist fold (2026-08-22-bare-form-artist-fold-design.md): the
+-- artist filters in get_library_releases/get_stock_items now compare
+-- _artist_sort_sql's bare, article-stripped key instead of
+-- _the_comma_form_sql's, so a bare "Beatles" row matches a "Beatles, The"
+-- filter value too. Without a matching index that comparison is a
+-- sequential scan of catalog or stock_items on every artist-filtered
+-- listing page. _artist_sort_sql already lowers every branch of its own
+-- CASE expression, so -- unlike the _the_comma_form_sql indexes above --
+-- this isn't wrapped in an extra LOWER(). escape_percent=False for the same
+-- reason as the comma-form indexes: this DDL runs with no params.
+CREATE INDEX IF NOT EXISTS catalog_artist_bare_lower_idx
+    ON catalog ({_artist_sort_sql("artist", escape_percent=False)});
+CREATE INDEX IF NOT EXISTS stock_items_artist_bare_lower_idx
+    ON stock_items ({_artist_sort_sql("artist", escape_percent=False)});
 """
 
 
@@ -1516,37 +1576,6 @@ def canonical_artist_labels(conn, artists) -> dict:
         for row in rows:
             labels[row["input"]] = row["label"]
     return labels
-
-
-def _artist_sort_sql(column: str) -> str:
-    """SQL sort-key expression for `column`: a leading "The " or a trailing
-    ", The" (either case) is dropped to the bare remainder, so "The Beatles"
-    sorts under B like "Beatles, The" does, and -- now that both raw storage
-    conventions coexist -- the two spellings of the same artist produce the
-    *identical* key instead of merely landing in the same neighborhood. Only
-    one guard can ever fire per name (canonical_artist_labels' own fold means
-    a value is never both "The X" and "X, The" at once), so this stays a
-    two-branch CASE, not a composition. Stripping to the bare word rather than
-    to the comma-form ("beatles" rather than "beatles, the") matters: the
-    comma-form key would still be wrong relative to a third artist like
-    "Beatles A" ("beatles a" sorts before "beatles, the" but the bare key
-    "beatles" -- correctly -- doesn't). This is ORDER BY only, on the raw
-    un-canonicalized column -- it runs before canonical_artist_labels' fold
-    gets a chance to relabel the row, so it needs its own stripping regardless
-    of what the row's eventual display label becomes. `LIKE 'the %%'`/
-    `LIKE '%%, the'` each require a real word on the far side, so a bare "The"
-    or a name like "Theatre of Hate" is correctly left alone. The `%%` (not
-    `%`) is psycopg pyformat escaping for a literal `%`, required because both
-    call sites execute this query with a non-empty params dict."""
-    suffix_len = len(_ARTIST_SORT_SUFFIX)
-    return (
-        f"CASE "
-        f"WHEN LOWER({column}) LIKE '{_ARTIST_SORT_ARTICLE}%%' "
-        f"THEN LOWER(SUBSTRING({column} FROM {len(_ARTIST_SORT_ARTICLE) + 1})) "
-        f"WHEN LOWER({column}) LIKE '%%{_ARTIST_SORT_SUFFIX}' "
-        f"THEN LOWER(SUBSTRING({column} FROM 1 FOR LENGTH({column}) - {suffix_len})) "
-        f"ELSE LOWER({column}) END"
-    )
 
 
 def _artist_sort_key(name: str) -> str:

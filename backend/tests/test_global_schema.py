@@ -248,6 +248,21 @@ def test_the_comma_form_indexes_have_unescaped_like_pattern(admin_conn):
         assert "the %" in indexdef.lower()
 
 
+def test_bare_form_indexes_have_unescaped_like_pattern(admin_conn):
+    # Same rationale as test_the_comma_form_indexes_have_unescaped_like_pattern,
+    # for _artist_sort_sql's two LIKE guards (leading "the " and trailing
+    # ", the") instead of _the_comma_form_sql's one -- see
+    # docs/specifications/shaping/2026-08-22-bare-form-artist-fold-design.md.
+    for idx in ("catalog_artist_bare_lower_idx", "stock_items_artist_bare_lower_idx"):
+        indexdef = admin_conn.execute(
+            "SELECT indexdef FROM pg_indexes WHERE indexname = %s", [idx]
+        ).fetchone()["indexdef"]
+        assert "the %%" not in indexdef.lower()
+        assert "the %" in indexdef.lower()
+        assert ", the%%" not in indexdef.lower()
+        assert "%, the" in indexdef.lower()
+
+
 def test_crawl_queue_unique_on_item_key(admin_conn):
     admin_conn.execute(
         "INSERT INTO stock_item_identities (item_key, artist, title) VALUES ('key1', 'A', 'T')"
