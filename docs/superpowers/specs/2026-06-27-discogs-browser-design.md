@@ -470,6 +470,8 @@ discogs-browser/
 │           ├── Settings.tsx
 │           ├── LogViewer.tsx
 │           └── DebugView.tsx
+├── scripts/
+│   └── cloud-setup.sh          # provisions a Claude Code cloud session for the test suite
 ├── docker-compose.yml          # backend + frontend services, ./workspace bind mount
 ├── bootstrap.sh                # creates workspace/, runs docker-compose build
 ├── Makefile
