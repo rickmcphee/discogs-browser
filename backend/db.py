@@ -961,13 +961,17 @@ def get_library_releases(
         )
         params["search"] = f"%{search}%"
     if artist:
-        # Both sides go through the same case fold and "The X" -> "X, The"
-        # comma-suffix fold canonical_artist_labels applies: the sidebar always
-        # sends back a post-fold label, so a raw compare would hide every
-        # release whose catalog row spells the artist differently, including
-        # rows literally stored as "The X" once the label reads "X, The".
+        # Both sides go through the same bare, article-stripped fold
+        # canonical_artist_labels' bare-form lookup relies on: the sidebar
+        # always sends back a post-fold label, so a raw compare -- or even
+        # _the_comma_form_sql's narrower The/comma-only fold -- would hide a
+        # release whose catalog row spells the artist a third way, with no
+        # article at all. _artist_sort_sql already lowers internally, so
+        # this isn't wrapped in an extra LOWER() the way the comma-form fold
+        # needs. See
+        # docs/specifications/shaping/2026-08-22-bare-form-artist-fold-design.md.
         conditions.append(
-            f"LOWER({_the_comma_form_sql('c.artist')}) = LOWER({_the_comma_form_sql('%(artist)s')})"
+            f"{_artist_sort_sql('c.artist')} = {_artist_sort_sql('%(artist)s')}"
         )
         params["artist"] = artist
     if scope == "discogs":
