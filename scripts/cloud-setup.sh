@@ -74,15 +74,18 @@ python3 -m pip install -e ".[dev]" >/dev/null || python3 -m pip install -e ".[de
 
 # Five crawler test files launch a real headless Chromium against local HTML
 # fixtures, so the browser is required for a full green run, not optional.
-# install-deps is the apt half and needs root; the browser download does not,
-# and must stay unprivileged so it lands in the cache of the user that runs
-# the tests.
+# Runs as the session user, never under as_root: the driver escalates the apt
+# half itself (transformCommandsForRoot wraps it in `sudo -- sh -c` when not
+# root), whereas `sudo python3` would resolve to root's interpreter, where
+# playwright is not installed. Same invocation as CI. The marker skips the
+# apt half on later sessions, leaving just the browser download.
 echo "==> Installing Playwright Chromium..."
-if [ ! -f /var/tmp/.playwright-deps-installed ]; then
-  as_root python3 -m playwright install-deps chromium
-  as_root touch /var/tmp/.playwright-deps-installed
+if [ -f /var/tmp/.playwright-deps-installed ]; then
+  python3 -m playwright install chromium
+else
+  python3 -m playwright install --with-deps chromium
+  touch /var/tmp/.playwright-deps-installed
 fi
-python3 -m playwright install chromium
 
 echo "==> Installing frontend dependencies..."
 cd "$REPO_ROOT/frontend"
