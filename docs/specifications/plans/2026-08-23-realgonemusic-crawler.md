@@ -4,7 +4,7 @@
 
 **Goal:** Add `backend/crawlers/realgonemusic.py`, a `crawler_type="catalog"` Shopify plugin covering Real Gone Music's (`realgonemusic.com`) `vinyl` collection.
 
-**Architecture:** Iterate the store's `vinyl` collection via the existing `shopify_catalog.iter_products()` helper. Set `artist` to `vendor` unconditionally — this store exposes no artist field anywhere and its titles have no artist/album delimiter, so the label name is used as an explicit accepted gap on `numerogroup.py`'s precedent, with the full product title preserved. Filter *variants* on two gates only: availability, then a `\bbundle\b` drop for multi-item packs. Apply **no** format filter — the collection tag already gates format and every live variant title is a colour/edition name. Fan out one stock item per surviving variant, titled with the variant descriptor unless that descriptor is a Shopify placeholder or repeats the product title.
+**Architecture:** Iterate the store's `vinyl` collection via the existing `shopify_catalog.iter_products()` helper. Set `artist` to `vendor` unconditionally — this store exposes no artist field anywhere and its titles have no artist/album delimiter, so the label name is used as an explicit accepted gap on `numerogroup.py`'s precedent, with the full product title preserved. Filter *variants* on two gates only: availability, then a `\bbundle\b` drop for multi-item packs. Apply **no** format filter in either direction — a positive vinyl regex would match only 77 of the 279 live variant titles and discard the other 202 bare colour/edition names, while a negative non-vinyl regex has nothing to match, since the collection tag already gates format at the product level. Fan out one stock item per surviving variant, titled with the variant descriptor unless that descriptor is a Shopify placeholder or repeats the product title.
 
 **Tech Stack:** Python ≥3.9, `httpx` (via `shopify_catalog.iter_products`), `pytest`/`pytest-asyncio`, `respx` for HTTP mocking.
 
@@ -15,7 +15,7 @@
 - `format` is hardcoded `"Vinyl"` on every yielded item; `currency` is hardcoded `"USD"`.
 - `_COLLECTION_SLUG = "vinyl"`. Do not switch to `all` or add a second collection — the design spec's "Collection choice" section records that `rarities`/`halloween`/`upcoming`/`new-releases`/`real-gone-collectibles` are cross-cuts already present as tags on `vinyl` products.
 - **`artist` is `product["vendor"]` verbatim, always.** Never attempt to split the product title. This is the spec's central decision, not an oversight — see its "Artist attribution" section for the three rejected alternatives. A reviewer who "fixes" this reintroduces confidently-wrong attributions.
-- **No per-variant format filter, positive or negative.** This is a deliberate departure from every sibling Shopify crawler. Not one of the 279 live variant titles names a format: 229 are colour/edition names, 48 are bundles, 2 are Shopify's `Default` placeholder. A positive vinyl regex would drop the large majority of real stock, and a negative one would have nothing to match.
+- **No per-variant format filter, positive or negative.** This is a deliberate departure from every sibling Shopify crawler, for two separate reasons. A *positive* vinyl regex matches only 77 of the 279 live variant titles — the other 202 are bare colour/edition names with no format word (`Wax Mage`, `Hellfire`) — so it would discard 72% of real stock. A *negative* non-vinyl regex has nothing to match: zero titles name CD, cassette, tape, digital, or DVD, because the `vinyl` collection tag gates format at the product level. Note that 77 titles *do* carry a vinyl token (`Black Vinyl`, `Wax Mage Vinyl`); the point is that they are the minority, not that no title names a format.
 - **No pre-order handling.** The `Upcoming` tag is a real pre-order signal and is deliberately unused — see the spec's "Pre-orders (not implemented)" section. Do not add a ` (Pre-Order)` suffix and do not bypass the availability gate.
 - No comments except where the WHY is non-obvious (a hidden constraint, a confirmed-live edge case) — no comments describing WHAT the code does.
 - Registration is automatic via `main.py`'s `seed_bundled_crawlers()`, which walks `backend/crawlers/` at startup and calls `register_crawler` — no wiring changes anywhere else.
@@ -467,14 +467,16 @@ class Crawler:
         handle = product.get("handle", "")
         url = f"{cls.base_url}/products/{handle}"
 
-        # No format filter, deliberately: the `vinyl` collection tag
-        # already gates format at the product level, and not one of the
-        # 279 live variant titles names a format at all -- 229 are
-        # colour/edition names ("Wax Mage", "Blue-Green 'Ocean Spray'"),
-        # 48 are bundles, and 2 are Shopify's Default placeholder. So a
-        # positive vinyl regex -- the sibling convention -- would drop the
-        # large majority of real stock, and a negative one would have
-        # nothing to match.
+        # No format filter, deliberately -- neither direction earns its
+        # place here. Confirmed live across all 279 distinct variant
+        # titles: a positive vinyl regex (the sibling convention) matches
+        # only 77 of them ("Black Vinyl", "Wax Mage Vinyl") and would
+        # discard the other 202, which are bare colour/edition names
+        # carrying no format token at all ("Wax Mage", "Hellfire",
+        # "Blue-Green 'Ocean Spray'") -- 72% of real stock. A negative
+        # non-vinyl regex has nothing to match: zero titles name CD,
+        # cassette, tape, digital, or DVD, because the `vinyl` collection
+        # tag already gates format at the product level.
         items = []
         for variant in product.get("variants") or []:
             if not variant.get("available"):
@@ -553,8 +555,9 @@ library. Colon-splitting, prefix clustering, and Discogs UPC lookup were
 each considered and rejected -- see the design spec.
 
 Two deliberate departures from the sibling Shopify crawlers, both pinned
-by tests: no per-variant format filter (not one of the 279 live variant
-titles names a format; the collection tag already gates it), and no
+by tests: no per-variant format filter (a positive vinyl regex matches
+only 77 of 279 live variant titles and would drop the other 202; a
+negative one has nothing to match), and no
 pre-order handling (the Upcoming tag is a real signal, but the sibling
 availability-bypass half would only admit sold-out variants here).
 

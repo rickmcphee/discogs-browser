@@ -150,11 +150,26 @@ _BUNDLE_RE = re.compile(r'\bbundle\b', re.IGNORECASE)
 
 **No format filter, deliberately.** This is a departure from every
 sibling Shopify crawler, all of which apply a positive or negative
-per-variant format regex. Confirmed live across all 279 distinct variant
-titles in this collection: not one names a format. 229 are colour or
-edition names (`Black`, `Wax Mage`, `Clear with Red Green & Purple
-"Dracula" Swirl Web EX.`, `Blue-Green "Ocean Spray"`), 48 are bundles, and
-2 are Shopify's `Default`/`Default Title` placeholder. There is not one CD, cassette, digital, or merch variant in the
+per-variant format regex. Neither direction earns its place here, for two
+separate reasons, both confirmed live across all 279 distinct variant
+titles in this collection.
+
+**A positive vinyl regex would discard most of the catalog.** Only 77 of
+the 279 titles carry a vinyl token at all (`Black Vinyl`, `Purple PET
+Vinyl`, `Wax Mage Vinyl`). The other 202 are bare colour/edition names with
+no format word anywhere in them (`Wax Mage`, `Hellfire`, `Blue-Green
+"Ocean Spray"`, `Clear with Red Green & Purple "Dracula" Swirl Web EX.`),
+plus the 48 bundles and 2 `Default`/`Default Title` placeholders. The
+sibling convention would therefore drop 72% of real stock — the same trap
+`carparkrecords.py`'s spec documents.
+
+**A negative non-vinyl regex has nothing to match.** Zero of the 279 name
+CD, cassette, tape, digital, or DVD. The `vinyl` collection tag already
+gates format at the product level, so there is no non-vinyl variant to
+exclude.
+
+By category the 279 break down as 229 colour/edition names (65 of which
+happen to include a vinyl token), 48 bundles, and 2 Shopify placeholders. There is not one CD, cassette, digital, or merch variant in the
 collection — the collection tag already gates format at the product level.
 A positive vinyl regex would drop the large majority of real stock
 (`carparkrecords.py`'s spec documents the same trap), and a negative one
