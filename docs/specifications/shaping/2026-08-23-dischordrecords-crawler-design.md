@@ -138,11 +138,31 @@ matching `carparkrecords.py`'s existing exclude-list approach, rather than
 a positive vinyl-format matcher that would need updating for every new
 color name.
 
-A release with more than one surviving vinyl-format button (rare — e.g. a
-plain LP alongside a "damaged packaging" discount variant) gets each
-format's own item, titled `"{title} — {format}"`, matching
-`asianmanrecords.py`'s `multi_edition` convention. A release with exactly
-one survives as `title` unchanged.
+Each surviving vinyl-format button becomes its own item, titled
+`"{title} — {format}"` — **unconditionally, including when it is the only
+format**. This is deliberately *not* `asianmanrecords.py`'s
+`multi_edition` convention, and the difference is forced by this site's
+markup.
+
+Every format of a release shares one URL, so the format suffix is the only
+thing separating two editions' `item_key`s (`db.py`'s
+`replace_stock_items` hashes artist + title + url). Deciding the suffix
+from the number of formats currently on sale would therefore rewrite an
+edition's title the moment a sibling format sold out — `"The Mark — 12\"
+LP"` collapsing to `"The Mark"` — changing its `item_key` and silently
+orphaning that item's durable `stock_item_judgments` row.
+
+`asianmanrecords.py` dodges this by deciding `multi_edition` from its
+pre-availability `survivors` list, so the title stays stable as individual
+variants sell in and out. That option does not exist here: this site omits
+an unavailable format's button *entirely* (see above), so the full edition
+set is never observable and there is no pre-availability list to count.
+Suffixing unconditionally makes an edition's identity depend only on its
+own format, never on its siblings' stock.
+
+Prefix-based library matching still works — `db.py`'s
+`_library_match_fragment` accepts a stock title that equals the catalog
+title or begins with it followed by a space, and `"The Mark — 7\""` does.
 
 ### Cover image
 
@@ -263,9 +283,13 @@ itself directly via `config.load_config()`, the same mechanism
   listing defaults to 1 page; listing page 1 is fetched exactly once
 - artist/title parsed from the `<h1>` band-link/`<cite>` pair, including a
   Various Artists compilation
-- a single vinyl format button → one item, correct title/price/format
+- a single vinyl format button → one item, correct title/price/format,
+  with the format suffix still applied
 - multiple vinyl format buttons on one release → one item per format, each
   titled `"{title} — {format}"`
+- identity stability: the surviving edition's title is byte-identical
+  whether or not a sibling format is currently for sale, so its
+  `item_key` cannot drift as stock changes
 - a non-vinyl-only release (CD/Digital buttons only) → zero items, not an
   error
 - an out-of-print release (target format's button entirely absent) → zero

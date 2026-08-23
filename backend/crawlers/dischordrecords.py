@@ -135,12 +135,21 @@ class Crawler:
             vinyl_formats.append((fmt, cls._price(button_m.group("price"))))
 
         url = f"{cls.base_url}{href}"
-        multi_edition = len(vinyl_formats) > 1
+        # Suffixed unconditionally, never only when siblings happen to exist.
+        # Every format of a release shares one URL, so the suffix is the only
+        # thing separating two editions' item_keys (db.py's replace_stock_items
+        # hashes the title). Deciding it from the *current* format count would
+        # rewrite an edition's title -- and orphan its durable
+        # stock_item_judgments row -- the moment a sibling format sold out.
+        # asianmanrecords.py avoids that by deciding before its availability
+        # filter, but that option doesn't exist here: this site omits an
+        # unavailable format's button entirely, so the full edition set is
+        # never observable.
         items = []
         for fmt, price in vinyl_formats:
             items.append({
                 "artist": artist,
-                "title": f"{title} — {fmt}" if multi_edition else title,
+                "title": f"{title} — {fmt}",
                 "format": "Vinyl",
                 "price": price,
                 "currency": "USD",

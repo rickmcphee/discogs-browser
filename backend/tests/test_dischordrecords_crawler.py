@@ -110,7 +110,7 @@ def test_parse_release_single_vinyl_format():
     items = Crawler._parse_release(html, "/release/203/the-mark")
     assert items == [{
         "artist": "Bed Maker",
-        "title": "The Mark",
+        "title": "The Mark — 7\"",
         "format": "Vinyl",
         "price": 8.0,
         "currency": "USD",
@@ -119,11 +119,28 @@ def test_parse_release_single_vinyl_format():
     }]
 
 
+def test_parse_release_suffixes_format_even_when_it_is_the_only_one():
+    # The suffix must not depend on how many formats are currently for sale.
+    # This site omits an unavailable format's button entirely, so a release
+    # that today shows one format may have shown two yesterday -- deciding
+    # the suffix from the live count would rewrite the surviving edition's
+    # title, changing its item_key (db.py hashes the title) and orphaning
+    # any durable stock_item_judgments row pointing at it.
+    one = Crawler._parse_release(_detail_page(_H1_SINGLE, _ONE_VINYL_BUTTON),
+                                 "/release/203/the-mark")
+    two = Crawler._parse_release(_detail_page(_H1_SINGLE, _TWO_VINYL_BUTTONS),
+                                 "/release/203/the-mark")
+    # The plain-LP edition carries an identical title in both worlds.
+    assert one[0]["title"] == "The Mark — 7\""
+    assert two[0]["title"] == "The Mark — 12\" LP"
+    assert all(" — " in i["title"] for i in one + two)
+
+
 def test_parse_release_various_artists_band_link():
     html = _detail_page(_H1_VARIOUS_ARTISTS, _ONE_VINYL_BUTTON)
     items = Crawler._parse_release(html, "/release/202/plays")
     assert items[0]["artist"] == "Various Artists"
-    assert items[0]["title"] == "Plays"
+    assert items[0]["title"] == "Plays — 7\""
 
 
 def test_parse_release_skips_non_vinyl_formats():
@@ -131,6 +148,7 @@ def test_parse_release_skips_non_vinyl_formats():
     items = Crawler._parse_release(html, "/release/203/the-mark")
     assert len(items) == 1
     assert items[0]["price"] == 18.0
+    assert items[0]["title"] == "The Mark — 12\" LP"
 
 
 def test_parse_release_multiple_vinyl_formats_get_suffixed_titles():
