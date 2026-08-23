@@ -1990,12 +1990,12 @@ def get_all_stock_judgments(conn, user_id: int) -> list[dict]:
             COALESCE(i.artist, '') AS artist,
             COALESCE(i.title, '')  AS title,
             COALESCE(i.format, '') AS format,
-            d.price, d.source, d.url,
+            d.price, d.currency, d.source, d.url,
             j.reason, j.item_key, j.recommended, j.judged_at
         FROM stock_item_judgments j
         LEFT JOIN stock_item_identities i ON i.item_key = j.item_key
         LEFT JOIN LATERAL (
-            SELECT s.price, cr.site_name AS source, s.url
+            SELECT s.price, s.currency, cr.site_name AS source, s.url
             FROM stock_items s
             JOIN crawlers cr ON cr.id = s.crawler_id
             WHERE s.item_key = j.item_key

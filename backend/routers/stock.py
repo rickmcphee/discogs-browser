@@ -122,9 +122,14 @@ def clear_stock_judgment(request: Request):
     return {"cleared": True, "count": count}
 
 
+# `currency` is appended rather than slotted next to `price`, where it would
+# read better. Every existing column keeps its index, so a consumer reading the
+# file positionally -- a spreadsheet, a script -- is unaffected by the addition.
+# Import is name-based (csv.DictReader against REQUIRED_COLUMNS), so an older
+# file without the column still imports and a newer one still round-trips.
 EXPORT_COLUMNS = [
     "artist", "title", "format", "price", "source", "link", "reason",
-    "item_key", "recommended", "judged_at",
+    "item_key", "recommended", "judged_at", "currency",
 ]
 
 
@@ -145,6 +150,10 @@ def export_stock_judgments(request: Request):
             # format even though the importer would still accept it.
             "true" if row["recommended"] else "false",
             row["judged_at"].isoformat(),
+            # Empty rather than a guessed "USD" when the row predates the
+            # column or its item is no longer in stock: the export's job is to
+            # record what was there, not to assert a currency nothing stored.
+            row["currency"] or "",
         ])
     return Response(
         content=buffer.getvalue(),
