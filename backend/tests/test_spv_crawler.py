@@ -199,6 +199,33 @@ def test_dash_split_does_not_clip_hyphenated_artist():
     assert items[0]["title"] == "Age Of Quarrel"
 
 
+def test_dash_fallback_drops_non_vinyl_trailing_format():
+    # Regression: the format gate reads only the quoted parser's `extra` group,
+    # so before the trailing-format split the dash path bypassed it entirely --
+    # 'Sodom - 1982 CD' published as Vinyl with "CD" left in the title, while
+    # the quoted equivalent was correctly dropped.
+    for title in ("Sodom - 1982 CD", "Sodom - 1982 Cassette", "Sodom - 1982 DVD"):
+        assert Crawler._items({**_SODOM, "title": title}) == [], title
+
+
+def test_dash_fallback_strips_vinyl_trailing_format_from_title():
+    for title, expected in (
+        ("Sodom - 1982 LP", "1982"),
+        ("Sodom - 1982 2LP", "1982"),
+        ('Sodom - 1982 12"', "1982"),
+        ("Sodom - 1982 10 INCH", "1982"),
+    ):
+        items = Crawler._items({**_SODOM, "title": title})
+        assert items and items[0]["title"] == expected, title
+
+
+def test_dash_fallback_keeps_album_that_is_itself_a_format_word():
+    # The leading \s+ means a single-word album has nothing before it to match,
+    # so an album genuinely named "Tape" survives.
+    items = Crawler._items({**_SODOM, "title": "Sodom - Tape"})
+    assert items and items[0]["title"] == "Tape"
+
+
 def test_unparseable_title_is_skipped_even_when_vendor_is_populated():
     # Regression: an earlier draft fell back to `vendor` here, and this test
     # only passed because it blanked it. `vendor` holds the label on this store,

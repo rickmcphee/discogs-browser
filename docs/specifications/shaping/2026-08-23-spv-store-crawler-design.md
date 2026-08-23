@@ -168,6 +168,21 @@ store, where a positive filter would have dropped every bare-colour variant
 name. A blurb naming both formats (`LP+CD`) is vinyl: `_VINYL_RE` short-
 circuits ahead of `_NON_VINYL_RE`, mirroring that sibling's collision guard.
 
+The gate reads `extra`, which only the quoted parser produces — so on the dash
+fallback it was initially inert, and `Sodom - 1982 CD` published as Vinyl with
+the format left in the title while the quoted equivalent was correctly dropped.
+Same class of defect as the vendor fallback above: a safety check silently
+disabled on one code path. `_split_trailing_format()` now splits a trailing
+format marker off the dash-path album and hands it to the gate, mirroring
+`asianmanrecords.py`'s `_FORMAT_SUFFIX_RE`, which does the same for its own
+no-quote titles.
+
+Its vocabulary is deliberately narrower than `_NON_VINYL_RE` — unambiguous
+markers only, no bare `MC` or `EP` — because it rewrites the stored title
+rather than merely gating on it. The required leading `\s+` means a single-word
+album that *is* one of these words (`Sodom - Tape`) has nothing preceding it to
+match and survives untouched.
+
 This gate is the one piece of the design that is pure insurance. If the
 `vinyl` collection turns out to be strictly vinyl, it never fires.
 
@@ -207,7 +222,7 @@ crawler_type = "catalog"
 
 ## Tests
 
-`backend/tests/test_spv_crawler.py`, 24 cases, `respx`-mocked — the same
+`backend/tests/test_spv_crawler.py`, 27 cases, `respx`-mocked — the same
 shape as the sibling crawler tests. Product titles and handles in the
 fixtures are real store listings; prices, tags, variants, and image URLs are
 synthesized, and the file says so at the top rather than implying a live

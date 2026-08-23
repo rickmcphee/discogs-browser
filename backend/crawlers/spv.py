@@ -27,6 +27,20 @@ _TITLE_RE = re.compile(
 # least one side of the separator so hyphenated artist names ("Cro-Mags")
 # aren't clipped at their internal hyphen.
 _DASH_RE = re.compile(r'^(?P<artist>.+?)(?:\s+[-–—]\s*|\s*[-–—]\s+)(?P<album>.+)$')
+# The dash fallback has no `extra` group of its own, so a format marker
+# trailing the album half ("Sodom - 1982 CD") would otherwise reach neither the
+# format gate nor the stored title. Split it off and feed it to the gate,
+# mirroring asianmanrecords.py's _FORMAT_SUFFIX_RE, which does the same for its
+# own no-quote titles. The leading \s+ means a single-word album that IS one of
+# these words ("Tape") has nothing before it to match and is left alone.
+# Deliberately narrower than _NON_VINYL_RE: only unambiguous format markers,
+# no bare "MC"/"EP", since this rewrites the stored title rather than just
+# gating on it.
+_TRAILING_FORMAT_RE = re.compile(
+    r'\s+((?:(?:\d*LP|\d*CDS?|VINYL|CASSETTE|TAPE|DVD|BLU-?RAY|DIGIPA[KC]K?|'
+    r'PICTURE\s+DISC)\b|\d{1,2}\s*(?:"|INCH\b)).*)$',
+    re.IGNORECASE,
+)
 _PREORDER_RE = re.compile(r'pre[\s_-]?order', re.IGNORECASE)
 _VINYL_RE = re.compile(r'\b\d*lp\b|\bvinyl\b|\b(?:7|10|12)"|\bpicture disc\b', re.IGNORECASE)
 _NON_VINYL_RE = re.compile(
@@ -34,6 +48,17 @@ _NON_VINYL_RE = re.compile(
     r'longsleeve|poster|patch|flag|mug|book)\b',
     re.IGNORECASE,
 )
+
+
+def _split_trailing_format(album: str) -> tuple:
+    """Split a trailing format marker off an album title -> (album, format)."""
+    m = _TRAILING_FORMAT_RE.search(album)
+    if not m:
+        return album, ""
+    remainder = album[:m.start()].strip()
+    if not remainder:
+        return album, ""
+    return remainder, m.group(1).strip()
 
 
 class Crawler:
@@ -103,7 +128,7 @@ class Crawler:
             return m.group("artist").strip(), m.group("album").strip(), m.group("extra").strip()
         m = _DASH_RE.match(title)
         if m:
-            return m.group("artist").strip(), m.group("album").strip(), ""
+            return (m.group("artist").strip(),) + _split_trailing_format(m.group("album").strip())
         return "", title, ""
 
     @staticmethod
