@@ -1,0 +1,234 @@
+# SPV Entertainment store crawler design
+
+Date: 2026-08-23
+Branch: `claude/spv-store-crawler-2mdf0z`
+
+## Problem
+
+SPV Entertainment (`store.spv.de`) — the official store of SPV GmbH, the
+German independent label and distributor founded in 1984, home to the
+Steamhammer and Long Branch Records imprints (Sodom, Magnum, Agent Fresco,
+Siamese, The Wild!, Satan's Fall) — is not covered by any existing crawler.
+It is a Shopify storefront, the same family as the ~36 label-store `catalog`
+plugins already in `backend/crawlers/`.
+
+It is the first EU-domiciled Shopify store in the set: prices are EUR, not
+the USD every sibling Shopify crawler hardcodes. `darkdescentrecords.py` is
+the precedent for a non-USD `currency`, which is a pass-through string end to
+end.
+
+Its title convention quotes the album — `Sodom "1982" LP (exclusive)`,
+`Magnum "The Monster Roars" LP (white & black marbled vinyl)` — rather than
+naming the artist in `vendor` (`centurymedia.py`, `napalmrecords.py`,
+`nuclearblast.py`) or splitting the title on a dash (`seasonofmist.py`,
+`carparkrecords.py`). That is **not** new to the fleet:
+`asianmanrecords.py` already ships a quoted-album primary parser with a
+dash-split fallback, recorded as the third exception in
+[`2026-08-07-shared-title-split-helper-design.md`](2026-08-07-shared-title-split-helper-design.md).
+This crawler reuses that two-stage shape rather than inventing a parallel
+one — see "Title parsing" below for the two places it widens it, and that
+doc's fifth amendment for the divergence record.
+
+## Scope
+
+Add `backend/crawlers/spv.py` as a `crawler_type="catalog"` plugin, iterating
+the store's `vinyl` collection via `shopify_catalog.iter_products()` — no new
+shared code needed. `main.py`'s `seed_bundled_crawlers()` picks it up from
+`backend/crawlers/` at boot with no registry edit.
+
+**Non-goals**
+
+- **No browser.** Same as every sibling Shopify crawler: `products.json` is a
+  plain JSON endpoint, fetched with `httpx` through `shopify_catalog`.
+- **No CD/cassette/merch coverage.** This app's stock pipeline is vinyl-only
+  by convention (`format: "Vinyl"` hardcoded across every sibling); the title
+  blurb gate below excludes them.
+- **No release-crawler (`search()`) mode.** Catalog-only, like every other
+  label store.
+
+## ⚠️ Unverified against the live feed
+
+**Every sibling crawler's design doc in this directory records figures
+confirmed by fetching the store's live feed. This one cannot.** The session
+this crawler was written in runs behind an egress proxy that answers `403` to
+`CONNECT store.spv.de:443` (and to every other record-store domain — the
+policy allowlist covers GitHub, the Anthropic API, and package registries
+only). Routing around an organization egress denial is prohibited, so no
+figure below is live-confirmed, and none is presented as if it were.
+
+**Confirmed** (from indexed store pages, i.e. the store's own rendered
+titles and URLs, not the JSON feed):
+
+- The storefront is Shopify: collection URLs are `/collections/<slug>`
+  (`/collections/vinyl`, `/collections/sodom`) and product URLs are
+  `/products/<handle>`.
+- A `vinyl` collection exists, titled "LP".
+- Product titles follow `Artist "Album" FORMAT`, with straight double quotes
+  and a trailing format/edition blurb:
+  `Sodom "1982" LP (exclusive)`,
+  `Magnum "The Monster Roars" LP (white & black marbled vinyl)`,
+  `Siamese "Home" LP`, `The Wild! "Wild At Heart" LP`,
+  `Agent Fresco "Destrier" LP`,
+  `Satan's Fall "Destination Destruction" LP (exclusive)`. All six sampled
+  titles match the pattern.
+- The store ships from the EU.
+
+**Assumed, and to be checked against `/collections/vinyl/products.json`
+before this crawler is enabled in production:**
+
+| Assumption | Why | If wrong |
+|---|---|---|
+| `products.json` is served unauthenticated and paginates on `?limit=250&page=N` | Shopify default; true on all 36 sibling stores | `iter_products()` raises; no silent bad data |
+| Prices are EUR | German store, ships from EU | Prices display under the wrong currency — one-line fix |
+| `vendor` carries the label, not the artist | Matches `seasonofmist.py`, whose vendor is the label | Only affects the fallback path (see below), which the title parse should almost never reach |
+| Pre-order products carry a `pre-order`/`preorder` tag | Sibling convention; exact casing/spelling varies per store, so the check is a case-insensitive regex over both spellings rather than an exact `has_tag()` match | Pre-orders lose their ` (Pre-Order)` suffix and their unavailable variants are dropped |
+| The `vinyl` collection is vinyl-only | It is titled "LP" | Non-vinyl bleed, caught by the negative blurb gate below |
+| Typographic quotes (`“ ”`) may appear alongside straight ones | Not observed in the sample; cheap to accept both | Nothing — the parser handles both |
+
+Everything below is written to fail safe against these: each unknown either
+degrades to a documented fallback or raises rather than publishing wrong data
+silently.
+
+## Technical grounding
+
+### Collection choice: `vinyl`
+
+The store curates its own vinyl collection, so the crawler trusts it rather
+than crawling a broad collection and filtering — the same call
+`centurymedia.py`, `napalmrecords.py`, `peaceville.py`, and `seasonofmist.py`
+make. `carparkrecords.py`'s opposite choice (crawl `music`, filter per
+variant) was driven by that store's format-specific collections being
+confirmed *not* to be supersets of its vinyl stock; there is no evidence of
+that here, and the check needs the live feed.
+
+### Title parsing: quoted album, with two fallbacks
+
+```python
+_TITLE_RE = re.compile(r'^(?P<artist>[^"“”]+?)\s*["“](?P<album>[^"“”]+)["”]\s*(?P<extra>.*)$')
+_DASH_RE  = re.compile(r'^(?P<artist>.+?)(?:\s+-\s*|\s*-\s+)(?P<album>.+)$')
+```
+
+`asianmanrecords.py`'s equivalent pair is
+`^(?P<artist>.+?)\s*[-–—]?\s*"(?P<album>[^"]+)"` and a byte-identical
+`_DASH_RE`. Two deliberate widenings, no other differences: typographic
+quotes are accepted alongside straight ones (unobserved here, free to
+support), and an `extra` group captures the text after the closing quote,
+which that sibling has no use for — it gates format per variant, whereas
+this store carries format in the title blurb.
+
+Both captures are quote-free character classes, not the sibling's `.+?`. That
+matters in both directions: the artist capture cannot swallow the album's opening quote,
+and the album capture stops at the *first* closing quote rather than running
+to the last quote in the string — so a blurb that quotes a word
+(`Sodom "1982" LP (the "exclusive" pressing)`) still yields `1982`.
+
+The optional `[-–—]?` before the opening quote is the sibling's too, for the
+`Artist - "Album"` variant; without it the dash is left dangling on the
+artist, which would never match a Discogs release.
+
+`_DASH_RE` is the fallback for an unquoted title: the hyphen/en-dash/em-dash
+class `cleorecs.py` established and `jackpotrecords.py`/`asianmanrecords.py`
+adopted, with `seasonofmist.py`'s whitespace anchoring on at least one side of
+the separator, so hyphenated artist names (`Cro-Mags`, `Vio-lence`) aren't
+clipped at their internal hyphen the way a plain `\s*-\s*` split clips them.
+
+A title that matches neither falls back to `vendor` as artist and, since
+`vendor` is expected to be the label here, is then **dropped** by the
+`not artist or not album_title` guard — `darkdescentrecords.py`'s
+"no artist source -> skip" convention, chosen over
+`carparkrecords.py`/`no_idea_records.py`'s publish-under-vendor fallback
+because a row attributed to "Steamhammer" can never match a Discogs release
+and would just be catalog noise.
+
+### Format gate: negative, on the title blurb
+
+```python
+_VINYL_RE     = re.compile(r'\b\d*lp\b|\bvinyl\b|\b(?:7|10|12)"|\bpicture disc\b', re.IGNORECASE)
+_NON_VINYL_RE = re.compile(r'\b(cds?|digipa[kc]k?|cassette|tape|mc|dvd|blu-?ray|shirt|t-shirt|hoodie|longsleeve|poster|patch|flag|mug|book)\b', re.IGNORECASE)
+```
+
+The gate reads the trailing blurb only, never the artist or album, so a
+record named *Tape* or *Book* is not mistaken for one.
+
+Negative rather than positive, and deliberately so: the source is the store's
+own vinyl collection, so an *unrecognised* blurb (`Deluxe Edition`) is kept.
+A positive filter would silently drop stock whose descriptor this list didn't
+anticipate — the failure mode `carparkrecords.py`'s doc records for its own
+store, where a positive filter would have dropped every bare-colour variant
+name. A blurb naming both formats (`LP+CD`) is vinyl: `_VINYL_RE` short-
+circuits ahead of `_NON_VINYL_RE`, mirroring that sibling's collision guard.
+
+This gate is the one piece of the design that is pure insurance. If the
+`vinyl` collection turns out to be strictly vinyl, it never fires.
+
+### Pre-order
+
+`_PREORDER_RE = re.compile(r'pre[\s_-]?order', re.IGNORECASE)`, searched over
+the product's tags, covering `pre-order`, `preorder`, and `Pre Order` in one
+check rather than betting on one spelling — the sibling crawlers each
+hardcode the single spelling their store was confirmed to use
+(`"preorder"` on Century Media and Carpark, `"pre-order"` on Nuclear Blast),
+and that confirmation is exactly what's unavailable here. Shopify normally
+serves `tags` as an array; the string form is also accepted and split on
+commas, since which one a store returns varies with the API version.
+
+Behaviour is the sibling carve-out: skip unavailable variants unless the
+product is pre-order tagged, and append ` (Pre-Order)` to the title when it
+is.
+
+### Fields
+
+- **artist / title** — from the title parse above.
+- **price** — `float(variant["price"])`, `None` when unparseable.
+- **currency** — `"EUR"` (see the assumption table).
+- **url** — `f"{base_url}/products/{handle}"`.
+- **cover_image_url** — `resolve_cover_image(product, variant)`.
+- **format** — `"Vinyl"` unconditionally, matching every sibling.
+
+### Metadata
+
+```python
+site_name = "SPV Entertainment"
+base_url  = "https://store.spv.de"
+genre     = "metal"          # in test_main.py's valid_genres set
+genre_summary = "German independent label and distributor — Steamhammer and Long Branch metal, hard rock, and prog."
+crawler_type = "catalog"
+```
+
+## Tests
+
+`backend/tests/test_spv_crawler.py`, 19 cases, `respx`-mocked — the same
+shape as the sibling crawler tests. Product titles and handles in the
+fixtures are real store listings; prices, tags, variants, and image URLs are
+synthesized, and the file says so at the top rather than implying a live
+capture.
+
+Covered: per-variant yield and field mapping, product-image fallback,
+pagination to an empty page, typographic quotes, an apostrophe in the artist
+name (`Satan's Fall`), the first-closing-quote stop, all three pre-order tag
+spellings including the comma-string form, unavailable-variant drop, the
+non-vinyl blurb gate, the `LP+CD` override, the unrecognised-blurb keep, both
+dash fallbacks including `Cro-Mags`, the no-artist-source skip, null
+variants, and an unparseable price.
+
+No `conftest.py` change is needed: this crawler paces itself through
+`shopify_catalog.iter_products()`, whose `sleep` and `load_config` the
+existing `_fast_catalog_crawl_sleep` fixture already patches for any test
+module named `*_crawler`.
+
+## Verification still owed
+
+Before enabling this crawler on a real deployment, from a host that can reach
+`store.spv.de`:
+
+1. `GET /collections/vinyl/products.json?limit=250&page=1` — confirm it is
+   served, and page until empty to get the product count.
+2. Confirm `currency` on the shop, and what `vendor` actually holds.
+3. Confirm the pre-order tag spelling, and whether pre-orders instead rely on
+   `available: true` with a body-copy release date (`seasonofmist.py` reads
+   `body_html` for exactly that reason).
+4. Measure what fraction of titles the quoted-title regex matches, and read
+   the residue — the dash fallback and the skip path are sized for a handful
+   of stragglers, not a second convention.
+5. Check whether the `vinyl` collection carries non-vinyl products, and
+   whether the blurb gate catches them.
