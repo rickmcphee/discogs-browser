@@ -524,7 +524,7 @@ written into the new column on both insert and the existing `ON CONFLICT
   cases it already covers.
 - `backend/tests/test_crawl_router.py` — a `listing_changed` event with no
   `discogs_id` key (the shape `_broadcast_stock_listing_changed` produces)
-  is replayed/streamed to a user with no relationship to it. **(2026-08-23:**
+  is streamed to a user with no relationship to it. **(2026-08-23:**
   as the amendment above notes, the mechanism that makes this true today is
   not `_event_touches_user` (deleted in `5e1890e`) but the simple fact that
   `listing_changed` is never filtered at all — `_visible_to()` only acts on

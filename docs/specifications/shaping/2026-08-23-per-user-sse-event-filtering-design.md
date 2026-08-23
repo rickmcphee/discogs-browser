@@ -52,9 +52,13 @@ this design closes, just correctly scoped this time.
 - No frontend changes. The client already keys its UI state off event `status`/`type`, never off
   who else might be running a job; filtering at the source removes the leak without the frontend
   needing to know a `user_id` field exists.
-- No live-stream integration test. Existing coverage exercises `_events_to_replay` and its helpers
-  directly, never the actual `EventSourceResponse` generator — this design follows that precedent
-  rather than introducing new test machinery for it.
+- ~~No live-stream integration test.~~ **Reversed during PR review (2026-08-23).** The original
+  reasoning was that existing coverage exercises `_events_to_replay` and its helpers directly,
+  never the `EventSourceResponse` generator, so this design would follow that precedent. Review
+  pointed out what that precedent costs here: deleting `crawl_stream`'s own
+  `if not _visible_to(...): continue` left the entire suite green while restoring the cross-user
+  leak — on the live path, which is the one the original bug report was about. `test_crawl_stream_live_loop_drops_another_users_tagged_event`
+  now drives the real generator and is the only test that fails when that line goes. See Testing.
 - No wire-format cleanup. The `user_id` tag rides along in the JSON reaching its owning client;
   nothing reads it there, and stripping it before yield would be extra code for no behavioral
   benefit.
@@ -145,6 +149,14 @@ function, same as it had before `5e1890e` removed the earlier filtering.
   but scoped correctly this time — `sync_started`/`stock_judgment_progress`-shaped dicts, not
   `listing_changed`: seed `_recent` with events tagged for Alice, for Bob, and untagged; assert
   Alice's replay includes her own and the untagged ones, excludes Bob's.
+- **New live-stream test** (added during PR review, reversing the original non-goal above):
+  `test_crawl_stream_live_loop_drops_another_users_tagged_event` awaits `crawl_stream` for Alice
+  and drives the returned `EventSourceResponse.body_iterator` directly — Bob's tagged event is
+  dropped, Alice's own and an untagged global one are delivered, in order. The generator is lazy,
+  so the test must wait for its subscription to appear before broadcasting; broadcasting first
+  reaches no queue and the reads collect 15s keepalive pings instead. Verified in both directions:
+  it passes as written and is the *only* test that fails when `crawl_stream`'s
+  `if not _visible_to(event, user_id): continue` is deleted.
 - **Fix existing exact-dict assertion**: `test_run_judgment_phase_broadcasts_complete_when_nothing_unjudged`
   (`test_crawl_manager.py:3942`) asserts
   `events == [{"status": "stock_judgment_complete", "judged": 0, "id": 2}]`; update the expected
