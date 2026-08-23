@@ -310,10 +310,24 @@ async def test_crawl_stream_live_loop_drops_another_users_tagged_event(pg_test_d
     # reach no queue at all and the reads below would collect 15s keepalive
     # pings instead. Advance it in a task and wait for its subscription to
     # appear, which is the observable signal that it has reached `q.get()`.
+    # Bounded, and it re-raises rather than spinning: if the generator ever
+    # dies before subscribing (or stops subscribing at all), an unbounded
+    # wait here would hang the whole suite instead of failing this test.
     subscriber_count = len(crawl_manager._subscribers)
     first = asyncio.ensure_future(stream.__anext__())
-    while len(crawl_manager._subscribers) == subscriber_count:
-        await asyncio.sleep(0)
+
+    async def _await_subscription():
+        while len(crawl_manager._subscribers) == subscriber_count:
+            if first.done():
+                await first  # re-raises whatever killed the generator
+                raise AssertionError("stream yielded before subscribing")
+            await asyncio.sleep(0.001)
+
+    try:
+        await asyncio.wait_for(_await_subscription(), timeout=5)
+    except BaseException:
+        first.cancel()
+        raise
 
     await crawl_manager._broadcast({"status": "sync_started", "user_id": bob["id"]})
     await crawl_manager._broadcast({"status": "sync_started", "user_id": alice["id"]})
