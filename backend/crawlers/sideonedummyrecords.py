@@ -113,8 +113,21 @@ class Crawler:
         # hanging) covers both: it resolves the moment the challenge clears
         # and the real page renders, and only times out when the challenge
         # never clears.
+        #
+        # state="attached" (not the wait_for_selector default of "visible")
+        # deliberately: the listing is server-rendered, so once the <li>s
+        # are attached, _EXTRACT_JS's attribute reads are already safe --
+        # nothing about extraction needs the elements to be visually
+        # painted, and this Cloudflare-fronted site (Rocket Loader-deferred
+        # scripts) can occasionally take a while to finish painting well
+        # after the DOM itself is complete. Confirmed live in production: a
+        # crawl timed out on "visible" with Playwright's own error log
+        # showing "locator resolved to 93 elements" -- the DOM was already
+        # complete, only the paint hadn't caught up within the 30s budget.
         try:
-            await page.wait_for_selector("li.ProductElementsDisplay", timeout=_LISTING_SELECTOR_TIMEOUT_MS)
+            await page.wait_for_selector(
+                "li.ProductElementsDisplay", state="attached", timeout=_LISTING_SELECTOR_TIMEOUT_MS
+            )
         except Exception:
             if "Just a moment" in await page.title():
                 raise BotDetectedError("Cloudflare interstitial did not clear within 30s")
