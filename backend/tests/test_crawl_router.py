@@ -227,7 +227,7 @@ async def test_events_to_replay_gate_opens_for_a_running_job_even_with_no_pendin
 ):
     """_events_to_replay's `any_active` gate has two independent ways to open:
     the calling user having their own pending crawl_queue rows (covered by
-    test_crawl_stream_replay_only_includes_events_relevant_to_calling_user),
+    test_crawl_stream_replay_only_includes_per_user_events_relevant_to_calling_user),
     or a sync/stock/judgment/plex-match job being active regardless of
     whether this particular user has anything queued. Collection sync,
     judgment, and Plex match gate open only for the calling user's own job
@@ -263,7 +263,7 @@ def test_visible_to_untagged_event_is_visible_to_everyone():
     assert crawl_router._visible_to(event, 99) is True
 
 
-def test_crawl_stream_replay_only_includes_per_user_events_relevant_to_calling_user(pg_test_db, authed_client_factory):
+def test_crawl_stream_replay_only_includes_per_user_events_relevant_to_calling_user(pg_test_db):
     # sync_*/stock_judgment_*/plex_match_* events are tagged with the
     # broadcasting user's id (crawl_manager.py's per-function `broadcast`
     # closures) and must not leak another user's job status -- unlike
@@ -282,7 +282,5 @@ def test_crawl_stream_replay_only_includes_per_user_events_relevant_to_calling_u
     events = crawl_router._events_to_replay(_FakeRequest(alice["id"]))
 
     ids = [e["id"] for e in events]
-    assert 1 in ids
-    assert 2 not in ids
-    assert 3 in ids
+    assert ids == [1, 3]
 

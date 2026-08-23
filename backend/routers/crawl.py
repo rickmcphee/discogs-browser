@@ -92,7 +92,10 @@ def _events_to_replay(request: Request) -> list[dict]:
 def _visible_to(event: dict, user_id: int) -> bool:
     """A per-user event (sync/judgment/plex-match, tagged with the broadcasting
     user's id) is visible only to that user. An untagged event (stock sync,
-    listing_changed, ping) has no owner and is visible to everyone."""
+    listing_changed, ping) has no owner and is visible to everyone. A missing
+    "user_id" key and an explicit `"user_id": None` are treated identically as
+    "no owner" -- every current caller tags with a real int, so this distinction
+    is unreachable today, not a guarded case."""
     owner = event.get("user_id")
     return owner is None or owner == user_id
 
