@@ -437,14 +437,28 @@ async def _broadcast_stock_listing_changed(self, item_key: str, crawler_id: int,
         await q.put(event)
 ```
 
-This is deliberate, not an oversight: `routers/crawl.py`'s
-`_event_touches_user` already does `if not discogs_id: return True` — an
-event carrying no `discogs_id` key is replayed/streamed to every connected
-user unconditionally. That's exactly the right behavior for a stock-item
-event: stock inventory is global (no per-user ownership the way a Discogs
+**Amendment (2026-08-23):** `_event_touches_user`, named throughout this
+section as the mechanism, was deleted by commit `5e1890e` (2026-08-12) —
+it does not exist anywhere in `backend/` today. Its deletion went further
+than this document assumed: `listing_changed` is now unconditionally
+global for *every* target, release or stock-item, with no `discogs_id`
+check of any kind gating it. Per-user filtering does still exist in
+`routers/crawl.py`, as `_visible_to()`, but it applies only to events
+explicitly tagged with a `user_id` (the `sync_*`/`stock_judgment_*`/
+`plex_match_*` events tagged by closures in `crawl_manager.py`) —
+`listing_changed` carries no `user_id` and is never filtered by it. The
+conclusion in the paragraph below — that a stock-item `listing_changed`
+event reaches every connected user, including one with no relationship to
+it — is still correct; only the named mechanism is stale.
+
+This is deliberate, not an oversight: `routers/crawl.py` streams
+`listing_changed` events unconditionally to every connected user
+regardless of `discogs_id` — an event carrying no `discogs_id` key is
+replayed/streamed to every connected user unconditionally, same as one
+that does. That's exactly the right behavior for a stock-item event:
+stock inventory is global (no per-user ownership the way a Discogs
 release has via `library_items`), so every user's Store tab should see the
-same price updates. Zero changes needed to `_event_touches_user` or the SSE
-router itself.
+same price updates.
 
 ### `discogs_marketplace.py`
 
@@ -507,10 +521,11 @@ written into the new column on both insert and the existing `ON CONFLICT
   cases it already covers.
 - `backend/tests/test_crawl_router.py` — a `listing_changed` event with no
   `discogs_id` key (the shape `_broadcast_stock_listing_changed` produces)
-  is replayed/streamed to a user with no relationship to it, verifying the
-  existing `_event_touches_user`'s `if not discogs_id: return True` fallback
-  already does the right thing for stock-item events without any change to
-  that function.
+  is replayed/streamed to a user with no relationship to it. **(2026-08-23:**
+  as the amendment above notes, the mechanism that makes this true today is
+  not `_event_touches_user` (deleted in `5e1890e`) but the simple fact that
+  `listing_changed` is never filtered at all — `_visible_to()` only acts on
+  `user_id`-tagged events. The test's conclusion is unchanged.)**
 - `discogs_marketplace.py` needs no test changes — it's simply never
   invoked with a stock-item target, by construction.
 
