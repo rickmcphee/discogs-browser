@@ -9,7 +9,7 @@ SPV Entertainment (`store.spv.de`) — the official store of SPV GmbH, the
 German independent label and distributor founded in 1984, home to the
 Steamhammer and Long Branch Records imprints (Sodom, Magnum, Agent Fresco,
 Siamese, The Wild!, Satan's Fall) — is not covered by any existing crawler.
-It is a Shopify storefront, the same family as the 47 other `catalog`-kind
+It is a Shopify storefront, the same family as the 48 other `catalog`-kind
 plugins already in `backend/crawlers/`, 41 of which are Shopify stores crawled
 through `shopify_catalog.iter_products()` (counted directly: `grep -l
 iter_products backend/crawlers/*.py` returns 42 including this one).
@@ -290,7 +290,7 @@ price render site, which comparison rows share. A symbol map rather than
 `Intl.NumberFormat`: `Intl` would also start inserting thousands separators
 into USD prices, changing how every existing source renders in order to fix a
 bug in one of them. `toFixed(2)` is kept exactly as it was, so USD output is
-byte-for-byte unchanged. A null `currency` defaults to USD — of the 48 stock
+byte-for-byte unchanged. A null `currency` defaults to USD — of the 49 stock
 sources, only `jetglowrecordings.py` (hardcoded EUR), `darkdescentrecords.py`
 (feed pass-through) and this crawler are anything else — so defaulting avoids
 regressing pre-existing rows to a bare number. An unmapped-but-real code prints as `27.99 SEK` rather than
