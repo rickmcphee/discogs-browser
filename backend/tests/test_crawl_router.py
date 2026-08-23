@@ -249,3 +249,40 @@ async def test_events_to_replay_gate_opens_for_a_running_job_even_with_no_pendin
     events = crawl_router._events_to_replay(_FakeRequest(alice["id"]))
 
     assert events == [{"id": 1, "status": "sync_started"}]
+
+
+def test_visible_to_owned_event_is_visible_only_to_its_owner():
+    event = {"status": "sync_started", "user_id": 42}
+    assert crawl_router._visible_to(event, 42) is True
+    assert crawl_router._visible_to(event, 99) is False
+
+
+def test_visible_to_untagged_event_is_visible_to_everyone():
+    event = {"status": "stock_sync_progress", "synced": 3}
+    assert crawl_router._visible_to(event, 42) is True
+    assert crawl_router._visible_to(event, 99) is True
+
+
+def test_crawl_stream_replay_only_includes_per_user_events_relevant_to_calling_user(pg_test_db, authed_client_factory):
+    # sync_*/stock_judgment_*/plex_match_* events are tagged with the
+    # broadcasting user's id (crawl_manager.py's per-function `broadcast`
+    # closures) and must not leak another user's job status -- unlike
+    # listing_changed (tested above), which is deliberately global.
+    alice, bob, _crawler_id = _setup_two_users_each_with_a_different_release()
+
+    crawl_manager._recent = [
+        {"id": 1, "status": "sync_started", "user_id": alice["id"]},
+        {"id": 2, "status": "sync_started", "user_id": bob["id"]},
+        {"id": 3, "status": "stock_sync_progress", "synced": 5},
+    ]
+    with db.user_scope(alice["id"]) as conn:
+        db.enqueue_crawl_queue(conn, "r1")
+        conn.commit()
+
+    events = crawl_router._events_to_replay(_FakeRequest(alice["id"]))
+
+    ids = [e["id"] for e in events]
+    assert 1 in ids
+    assert 2 not in ids
+    assert 3 in ids
+
