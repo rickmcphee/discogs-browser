@@ -535,6 +535,33 @@ describe('In Stock tab', () => {
     expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(false)
   })
 
+  it('does not let a slow bootstrap judgment-status response overwrite an explicit Clear', async () => {
+    let resolveBootstrap: (v: { any_judged: boolean }) => void = () => {}
+    getJudgmentStatus.mockImplementationOnce(() => new Promise((resolve) => { resolveBootstrap = resolve }))
+    clearJudgments.mockResolvedValue({ cleared: true, running: false, count: 3 })
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+    render(<App />)
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    // SSE, not the still-pending bootstrap fetch, is what enables Clear here.
+    getLastCrawlSource().emit({ status: 'stock_judgment_complete', judged: 5, id: 1 })
+
+    fireEvent.click(await screen.findByRole('button', { name: /profile/i }))
+    const description = await screen.findByText('Remove all recommendation judgments, recommended and not-recommended, so every Store item is re-evaluated from scratch on the next run.')
+    const row = description.closest('tr') as HTMLElement
+    await waitFor(() => expect(within(row).getByText('Clear').closest('button')).not.toBeDisabled())
+    fireEvent.click(within(row).getByText('Clear'))
+    await waitFor(() => expect(clearJudgments).toHaveBeenCalled())
+    await waitFor(() => expect(within(row).getByText('Clear').closest('button')).toBeDisabled())
+
+    // The original bootstrap fetch was still in flight the whole time and
+    // only resolves now, with a stale any_judged: true snapshot from before
+    // the clear.
+    resolveBootstrap({ any_judged: true })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(within(row).getByText('Clear').closest('button')).toBeDisabled()
+  })
+
   it('refetches stock items on stock_judgment_progress and stock_judgment_complete SSE events', async () => {
     render(<App />)
     await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
