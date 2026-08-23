@@ -137,17 +137,23 @@ _DASH_RE  = re.compile(r'^(?P<artist>.+?)(?:\s+[-–—]\s*|\s*[-–—]\s+)(?P<
 
 `asianmanrecords.py`'s equivalent pair is
 `^(?P<artist>.+?)\s*[-–—]?\s*"(?P<album>[^"]+)"` and a byte-identical
-`_DASH_RE`. Two deliberate widenings, no other differences: typographic
-quotes are accepted alongside straight ones (unobserved here, free to
-support), and an `extra` group captures the text after the closing quote,
-which that sibling has no use for — it gates format per variant, whereas
-this store carries format in the title blurb.
+`_DASH_RE`. Two widenings and one narrowing:
 
-Both captures are quote-free character classes, not the sibling's `.+?`. That
-matters in both directions: the artist capture cannot swallow the album's opening quote,
-and the album capture stops at the *first* closing quote rather than running
-to the last quote in the string — so a blurb that quotes a word
-(`Sodom "1982" LP (the "exclusive" pressing)`) still yields `1982`.
+**Widened** — typographic quotes are accepted alongside straight ones
+(unobserved here, free to support), and an `extra` group captures the text
+after the closing quote, which that sibling has no use for: it gates format
+per variant, whereas this store carries format in the title blurb.
+
+**Narrowed** — the *artist* capture is `[^"“”]+?` rather than the sibling's
+`.+?`, so it cannot swallow the album's opening quote. The album capture is
+**not** a divergence: the sibling's `[^"]+` already stops at the first closing
+quote, so both parsers handle a blurb that quotes a word
+(`Sodom "1982" LP (the "exclusive" pressing)` → `1982`) identically. An
+earlier draft of this section claimed both captures diverged and that the
+album behaviour "matters in both directions"; that overstated it, and
+contradicted this branch's own fifth amendment to
+[`2026-08-07-shared-title-split-helper-design.md`](2026-08-07-shared-title-split-helper-design.md),
+which describes the divergence correctly. Corrected in review on PR #165.
 
 The optional `[-–—]?` before the opening quote is the sibling's too, for the
 `Artist - "Album"` variant; without it the dash is left dangling on the
