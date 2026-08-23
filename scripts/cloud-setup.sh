@@ -78,13 +78,17 @@ python3 -m pip install -e ".[dev]" >/dev/null || python3 -m pip install -e ".[de
 # half itself (transformCommandsForRoot wraps it in `sudo -- sh -c` when not
 # root), whereas `sudo python3` would resolve to root's interpreter, where
 # playwright is not installed. Same invocation as CI. The marker skips the
-# apt half on later sessions, leaving just the browser download.
+# apt half on later sessions, and is keyed to the installed version because
+# pyproject.toml floats playwright>=1.62.0: an upgrade can add newly required
+# OS packages, and a version-blind marker would skip them and leave Chromium
+# unable to launch.
 echo "==> Installing Playwright Chromium..."
-if [ -f /var/tmp/.playwright-deps-installed ]; then
+PLAYWRIGHT_VERSION="$(python3 -c "import importlib.metadata; print(importlib.metadata.version('playwright'))")"
+if [ -f "/var/tmp/.playwright-deps-${PLAYWRIGHT_VERSION}" ]; then
   python3 -m playwright install chromium
 else
   python3 -m playwright install --with-deps chromium
-  touch /var/tmp/.playwright-deps-installed
+  touch "/var/tmp/.playwright-deps-${PLAYWRIGHT_VERSION}"
 fi
 
 echo "==> Installing frontend dependencies..."
