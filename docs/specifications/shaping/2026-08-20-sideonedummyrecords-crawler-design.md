@@ -61,14 +61,29 @@ crawl_catalog() invocation has no such gap unless one is added
 deliberately.)
 
 Instead, `crawl_catalog` waits on the real listing selector itself
-(`page.wait_for_selector("li.ProductElementsDisplay", timeout=30_000)`)
-after `goto()`: this resolves the moment the challenge clears and the
-real page renders (whether that takes 200ms or 20s), and only times out
-if the challenge is genuinely stuck. On timeout, the title is checked
-once more to classify the failure — `BotDetectedError` if still on the
-interstitial (`crawl_manager._run_catalog_crawler` retries that once with
-a fresh browser context), a plain `RuntimeError` otherwise (e.g. the page
-loaded but the listing markup itself changed shape).
+(`page.wait_for_selector("li.ProductElementsDisplay", state="attached",
+timeout=30_000)`) after `goto()`: this resolves the moment the challenge
+clears and the real page renders (whether that takes 200ms or 20s), and
+only times out if the challenge is genuinely stuck. On timeout, the title
+is checked once more to classify the failure — `BotDetectedError` if
+still on the interstitial (`crawl_manager._run_catalog_crawler` retries
+that once with a fresh browser context), a plain `RuntimeError` otherwise
+(e.g. the page loaded but the listing markup itself changed shape).
+
+**`state="attached"`, not the `wait_for_selector` default of `"visible"`
+(post-launch fix, 2026-08-23).** The initial version of this crawler used
+the default `"visible"` state and hit a real production failure: Playwright's
+own error log showed `locator resolved to 93 elements` immediately before
+the wait timed out — the DOM was already complete, but this Cloudflare-
+fronted site (Rocket Loader-deferred scripts) can occasionally take longer
+than 30s to finish *painting* the already-attached grid. Since the listing
+is server-rendered (see "One page, no pagination" below), `_EXTRACT_JS`'s
+attribute reads never depended on visual paint completion in the first
+place — only on the `<li>` nodes being attached to the DOM — so `"visible"`
+was waiting on a strictly stronger, unrelated condition than what
+extraction actually needs. `state="attached"` still discriminates the
+blocked-interstitial case exactly as before: the interstitial's own markup
+never contains `li.ProductElementsDisplay` at all, attached or not.
 
 ### One page, no pagination
 
@@ -389,6 +404,10 @@ return. Cases:
   parses
 - `wait_for_selector` never finds the listing (empty DOM), normal title →
   `RuntimeError`, rather than yielding `[]` and risking a stock wipe
+- listing is attached but hidden (`display:none`) → still extracts
+  normally, against a real (not faked) `wait_for_selector` call, locking
+  in `state="attached"` against a regression back to the default
+  `"visible"` (the production failure described above)
 - same, but the Cloudflare interstitial's title is still showing →
   `BotDetectedError` specifically (not `RuntimeError`), since only that
   type gets `crawl_manager`'s fresh-context retry
