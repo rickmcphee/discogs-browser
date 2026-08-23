@@ -1539,6 +1539,43 @@ _CANONICAL_ARTIST_SQL = """
 """
 
 
+def _is_bare_artist_input(name: str) -> bool:
+    """True when `name` carries neither the "The X" nor "X, The" marker, so
+    canonical_artist_labels' pure string fold (_the_comma_form_sql) can't
+    tell it apart from an artist genuinely named without an article -- the
+    case its bare-form lookup phase exists to resolve via a data lookup
+    instead. See
+    docs/specifications/shaping/2026-08-22-bare-form-artist-fold-design.md."""
+    lower = name.lower()
+    return not lower.startswith(_ARTIST_SORT_ARTICLE) and not lower.endswith(_ARTIST_SORT_SUFFIX)
+
+
+# Bare-form lookup: for an input with neither marker (_is_bare_artist_input),
+# does a "The X"/"X, The" spelling of the same name exist anywhere in this
+# table? Reuses _CANONICAL_ARTIST_SQL's grouped/winner shape exactly, but the
+# `wanted`/`winner` join key is the input's *implied* The-form
+# (LOWER(artist) || ', the') rather than the input's own folded key -- a bare
+# "Beatles" input never has a row literally matching its own key end in
+# ", the", so this can't reuse the plain join in _CANONICAL_ARTIST_SQL as-is.
+_CANONICAL_ARTIST_BARE_SQL = """
+    WITH wanted AS (
+        SELECT DISTINCT a AS artist FROM unnest(%(artists)s::text[]) AS a
+    ),
+    grouped AS (
+        SELECT LOWER({the_bare}) AS key, artist AS label, COUNT(*) AS n
+        FROM {table}
+        WHERE LOWER({the_bare}) = ANY (ARRAY(SELECT LOWER(artist) || ', the' FROM wanted))
+        GROUP BY LOWER({the_bare}), artist
+    ),
+    winner AS (
+        SELECT DISTINCT ON (key) key, label FROM grouped
+        ORDER BY key, n DESC, label COLLATE "C"
+    )
+    SELECT w.artist AS input, {the_label} AS label
+    FROM wanted w JOIN winner ON winner.key = LOWER(w.artist) || ', the'
+"""
+
+
 def canonical_artist_labels(conn, artists) -> dict:
     """Map each artist name, exactly as stored, to the label the UI displays.
 
@@ -1557,11 +1594,37 @@ def canonical_artist_labels(conn, artists) -> dict:
     for display, regardless of which raw spelling won. See
     docs/specifications/shaping/2026-08-16-the-suffix-artist-display-design.md.
 
+    A third, independent lookup runs before either of the above for inputs
+    with neither marker (_is_bare_artist_input): a bare "Beatles" carries no
+    string transform that says it's the same artist as "The Beatles", so this
+    checks whether a "The X"/"X, The" spelling of the same name exists
+    anywhere in `catalog` or `stock_items` (catalog checked first, same
+    preference as the casing fold) and, if so, resolves straight to that
+    variant's label -- skipping the casing-only resolution below entirely.
+    A bare input with no such variant anywhere falls through unresolved into
+    the casing-only loop, unaffected. See
+    docs/specifications/shaping/2026-08-22-bare-form-artist-fold-design.md.
+
     Both tables are global and un-RLS'd, so the label is app-wide: two users
     can't see one artist spelled two ways.
     """
     inputs = sorted({a for a in artists if a})
     labels: dict = {}
+
+    bare_inputs = [a for a in inputs if _is_bare_artist_input(a)]
+    for table in ("catalog", "stock_items"):
+        remaining = [a for a in bare_inputs if a not in labels]
+        if not remaining:
+            break
+        sql_text = _CANONICAL_ARTIST_BARE_SQL.format(
+            table=table,
+            the_bare=_the_comma_form_sql("artist"),
+            the_label=_the_comma_form_sql("winner.label"),
+        )
+        rows = conn.execute(sql_text, {"artists": remaining}).fetchall()
+        for row in rows:
+            labels[row["input"]] = row["label"]
+
     for table in ("catalog", "stock_items"):
         remaining = [a for a in inputs if a not in labels]
         if not remaining:

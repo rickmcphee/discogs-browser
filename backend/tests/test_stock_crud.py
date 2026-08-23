@@ -1615,3 +1615,34 @@ def test_get_stock_items_search_matches_comma_form_against_the_prefixed_row(admi
         result = db.get_stock_items(conn, alice["id"], search="Beatles, The")
     assert result["total"] == 1
     assert result["items"][0]["title"] == "Abbey Road"
+
+
+def test_get_distinct_stock_artists_folds_bare_form_across_tables(admin_conn):
+    # The bare "Beatles" row lives only in stock_items; the "The Beatles"
+    # spelling lives only in catalog. canonical_artist_labels' bare lookup
+    # must check both tables before falling back to the bare input's own
+    # casing group -- a naive single-table-first resolution would stop at
+    # stock_items (which already has a winner for bare "Beatles" itself) and
+    # never check catalog for the variant. See
+    # docs/specifications/shaping/2026-08-22-bare-form-artist-fold-design.md.
+    # Deliberately does not also assert on get_stock_items(artist=...) here:
+    # that filter's own bare-form fold is Task 4's scope
+    # (test_get_stock_items_artist_filter_matches_bare_form_row), not this
+    # task's -- this test is about canonical_artist_labels'/
+    # get_distinct_stock_artists' grouping alone, which the assertion below
+    # already fully exercises.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r1", "artist": "The Beatles", "title": "Abbey Road",
+        "year": None, "label": None, "format": None, "barcode": None,
+        "cover_image_url": None, "discogs_url": None,
+    })
+    crawler_id = _register(admin_conn, "Amazon")
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "Beatles", "title": "Let It Be", "url": "https://x/1", "price": 20.0, "currency": "USD"},
+    ])
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        artists = db.get_distinct_stock_artists(conn, alice["id"])
+    assert artists == ["Beatles, The"]
