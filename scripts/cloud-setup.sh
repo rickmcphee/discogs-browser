@@ -22,6 +22,10 @@ fi
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
+# What a later shell will have; this script modifies its own PATH below and
+# must not judge resolvability against the modified copy.
+ORIGINAL_PATH="$PATH"
+
 # Cloud setup scripts run as root, but a SessionStart hook runs as whatever
 # user Claude Code runs as, which is not guaranteed to be root.
 as_root() {
@@ -71,6 +75,38 @@ cd "$REPO_ROOT/backend"
 # fallback covers a session whose default interpreter is that one rather than
 # a virtualenv.
 python3 -m pip install -e ".[dev]" >/dev/null || python3 -m pip install -e ".[dev]" --break-system-packages >/dev/null
+
+# That install is a user install whenever the interpreter is not writable, so
+# the console scripts land in site.USER_BASE/bin -- absent from PATH in a
+# non-login shell. The modules import fine and a bare `pytest` still fails
+# with command not found, which is the one thing this script exists to
+# prevent. Put the directory on PATH here and for later shells, and fall back
+# to a symlink somewhere already on PATH if those profiles go unread.
+USER_BIN="$(python3 -c 'import site, os; print(os.path.join(site.USER_BASE, "bin"))')"
+case ":$PATH:" in
+  *":$USER_BIN:"*) ;;
+  *)
+    export PATH="$USER_BIN:$PATH"
+    for profile in "$HOME/.profile" "$HOME/.bashrc"; do
+      [ -f "$profile" ] || continue
+      grep -qs "discogs-browser cloud setup" "$profile" && continue
+      printf '\n# discogs-browser cloud setup\nexport PATH="%s:$PATH"\n' "$USER_BIN" >> "$profile"
+    done
+    ;;
+esac
+
+# Judged against ORIGINAL_PATH, not the export above: the shell that later
+# runs the tests is a fresh one, and a non-interactive shell reads neither
+# ~/.profile nor ~/.bashrc past its early return, so both the export and the
+# profile lines miss it. A symlink into a directory already on every PATH is
+# what actually makes `pytest` resolve.
+if [ -x "$USER_BIN/pytest" ] && ! PATH="$ORIGINAL_PATH" command -v pytest >/dev/null 2>&1; then
+  as_root ln -sf "$USER_BIN/pytest" /usr/local/bin/pytest
+fi
+if ! PATH="$ORIGINAL_PATH" command -v pytest >/dev/null 2>&1; then
+  echo "==> ERROR: pytest installed but not resolvable on PATH" >&2
+  exit 1
+fi
 
 # Five crawler test files launch a real headless Chromium against local HTML
 # fixtures, so the browser is required for a full green run, not optional.
