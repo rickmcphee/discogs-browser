@@ -1646,3 +1646,43 @@ def test_get_distinct_stock_artists_folds_bare_form_across_tables(admin_conn):
     with db.user_scope(alice["id"]) as conn:
         artists = db.get_distinct_stock_artists(conn, alice["id"])
     assert artists == ["Beatles, The"]
+
+
+def test_get_distinct_artists_bare_in_catalog_folds_to_stock_items_variant(admin_conn):
+    # The discriminating case for the bare lookup being its own pass rather
+    # than a check folded into the existing per-table casing loop. The two
+    # tables are deliberately the opposite way round from
+    # test_get_distinct_stock_artists_folds_bare_form_across_tables above:
+    # the BARE spelling is in `catalog` (the table checked first) and the
+    # marked "The Beatles" spelling exists only in `stock_items` (checked
+    # second).
+    #
+    # That ordering is what makes this test able to fail. A merged
+    # implementation -- one that resolved each input at the first table
+    # having any winner for it -- would, at the catalog stage, find bare
+    # "Beatles" a winner for its own key and resolve to "Beatles", never
+    # reaching stock_items to discover the "The Beatles" variant. With the
+    # bare lookup as its own catalog-then-stock_items pass, the catalog
+    # stage finds nothing folding to "beatles, the", so the pass continues
+    # to stock_items and picks up the variant. See the design doc's
+    # "Running the bare lookup as its own ... pass" paragraph.
+    #
+    # The sibling test above cannot catch this: it puts the marked spelling
+    # in catalog, which is checked first under either implementation, so
+    # both produce "Beatles, The" and the test passes either way.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r1", "artist": "Beatles", "title": "Let It Be",
+        "year": None, "label": None, "format": None, "barcode": None,
+        "cover_image_url": None, "discogs_url": None,
+    })
+    db.upsert_library_item(admin_conn, alice["id"], "r1", in_collection=True)
+    crawler_id = _register(admin_conn, "Amazon")
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "The Beatles", "title": "Abbey Road", "url": "https://x/1", "price": 20.0, "currency": "USD"},
+    ])
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        artists = db.get_distinct_artists(conn, alice["id"])
+    assert artists == ["Beatles, The"]
