@@ -87,9 +87,31 @@ before this crawler is enabled in production:**
 | The `vinyl` collection is vinyl-only | It is titled "LP" | Non-vinyl bleed, caught by the negative blurb gate below |
 | Typographic quotes (`“ ”`) may appear alongside straight ones | Not observed in the sample; cheap to accept both | Nothing — the parser handles both |
 
-Everything below is written to fail safe against these: each unknown either
-degrades to a documented fallback or raises rather than publishing wrong data
-silently.
+Most of these fail safe — but not all of them, and an earlier draft of this
+section claimed otherwise ("each unknown either degrades to a documented
+fallback or raises rather than publishing wrong data silently"). That was an
+overclaim, flagged in review on PR #165. The honest split:
+
+**Fails loudly.** A wrong endpoint or pagination assumption makes
+`iter_products()` raise; the consecutive-failure breaker cools the source off
+and no rows are written. A title the parser can't read yields no artist and is
+dropped. These cost coverage, never correctness.
+
+**Fails silently, and would need a human to notice.** Two:
+
+- **The currency.** If prices are not EUR, every SPV row displays under the
+  wrong currency. Nothing in the pipeline can detect this — `currency` is a
+  pass-through string the crawler asserts rather than derives.
+- **The format gate.** It is deliberately negative (see below), so an
+  unrecognised descriptor is *kept*. That is the right trade against silently
+  dropping stock, but it means non-vinyl bleed in the `vinyl` collection would
+  publish as `format: "Vinyl"` rather than being rejected.
+
+Both are bounded and reversible: `replace_stock_items` only ever replaces this
+crawler's own rows, so disabling the source in Settings and re-syncing removes
+them. Neither can corrupt another source. But neither announces itself, which
+is the reason the "Verification still owed" section at the end exists and why
+this crawler should be treated as unverified until those checks are run.
 
 ## Technical grounding
 
@@ -209,6 +231,24 @@ is.
 - **url** — `f"{base_url}/products/{handle}"`.
 - **cover_image_url** — `resolve_cover_image(product, variant)`.
 - **format** — `"Vinyl"` unconditionally, matching every sibling.
+
+### Frontend: the price cell had to learn about currency
+
+`currency` was already stored per row, selected by `get_stock_items`, and typed
+on `StockItem` — but `StockBrowser.tsx` ignored it and hardcoded a `$`. Every
+existing source hardcodes `"USD"`, so the gap was invisible until this branch
+added the first EU-domiciled store; SPV's `27.99` would have rendered as
+`$27.99`. Found in review on PR #165.
+
+`views/formatPrice.ts` maps the code to a symbol and is used at the single
+price render site, which comparison rows share. A symbol map rather than
+`Intl.NumberFormat`: `Intl` would also start inserting thousands separators
+into USD prices, changing how every existing source renders in order to fix a
+bug in one of them. `toFixed(2)` is kept exactly as it was, so USD output is
+byte-for-byte unchanged. A null `currency` defaults to USD — 45 of the 46
+sources hardcode it, so defaulting avoids regressing pre-existing rows to a
+bare number. An unmapped-but-real code prints as `27.99 SEK` rather than
+guessing a symbol.
 
 ### Metadata
 
