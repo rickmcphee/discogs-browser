@@ -170,7 +170,7 @@ Playwright uses `launch_persistent_context` with `DISCOGS_BROWSER_DATA/chrome_pr
 
 ## CrawlManager
 
-**Amendment (2026-07-31, branch `crawl-queue-refactor`):** the single foreground crawl this section describes no longer exists, and this note governs the API list, the SSE paragraph, the Key Flows below, and the file-layout tree. `crawl_releases()` is deleted from `crawler.py` (only the plugin loader, `clean_search_text()`, `BotDetectedError`, `_new_context`/`_reset_context` remain), and `CrawlManager.start`/`stop`/`_run` are replaced by an always-on in-process worker pool: `start_worker_pool(worker_count)` → N `_worker_loop` tasks → `_drain_one_batch`, each claiming rows off a shared `crawl_queue` table with `SELECT … FOR UPDATE SKIP LOCKED`. See [`2026-07-27-crawl-queue-refactor-design.md`](2026-07-27-crawl-queue-refactor-design.md). Consequences: **`POST /crawl/stop` is removed** (there is no single job to stop, and the frontend's Stop button went with it), so the `routers/crawl.py` entry in the file tree is stale; `POST /crawl/start` is a per-user enqueue returning `{"enqueued": N}`, not a job launch, and validates `release_id` against the caller's own `library_items`; `GET /crawl/status` returns the caller's pending queue count plus `pool_running`; the `started`/`complete`/`stopped` events no longer exist, replaced by per-write `{"type": "listing_changed", …}` events filtered per user in `routers/crawl.py`; `any_job_running` still exists but has no callers — replay is gated on `pending > 0 or sync_running(user_id) or stock_sync_running or judgment_running(user_id)`. `scheduler.configure(cron, mode)` now runs `crawl_manager.sweep_enqueue(mode)` across all users, and `scheduler.configure_sync` is deleted (automatic per-user collection sync is an explicit non-goal); `start_sync` is now `start_sync(user_id, mode)` with per-user `_sync_tasks`. `main.py`'s startup is `init_global_schema()`/`init_tenant_schema()`/`seed_bundled_crawlers()`/`start_worker_pool()`/`scheduler.start()` — no `init_db`, no listings pre-population. Text below is left as historical record, not current behavior.
+**Amendment (2026-07-31, branch `crawl-queue-refactor`):** the single foreground crawl this section describes no longer exists, and this note governs the API list, the SSE paragraph, the Key Flows below, and the file-layout tree. `crawl_releases()` is deleted from `crawler.py` (only the plugin loader, `clean_search_text()`, `BotDetectedError`, `_new_context`/`_reset_context` remain), and `CrawlManager.start`/`stop`/`_run` are replaced by an always-on in-process worker pool: `start_worker_pool(worker_count)` → N `_worker_loop` tasks → `_drain_one_batch`, each claiming rows off a shared `crawl_queue` table with `SELECT … FOR UPDATE SKIP LOCKED`. See [`2026-07-27-crawl-queue-refactor-design.md`](2026-07-27-crawl-queue-refactor-design.md). Consequences: **`POST /crawl/stop` is removed** (there is no single job to stop, and the frontend's Stop button went with it), so the `routers/crawl.py` entry in the file tree was stale (2026-08-23: moot — #162 replaced that per-file tree with a summarized one that no longer lists individual router endpoints); `POST /crawl/start` is a per-user enqueue returning `{"enqueued": N}`, not a job launch, and validates `release_id` against the caller's own `library_items`; `GET /crawl/status` returns the caller's pending queue count plus `pool_running`; the `started`/`complete`/`stopped` events no longer exist, replaced by per-write `{"type": "listing_changed", …}` events. **(2026-08-23 correction:** this sentence originally said those events were "filtered per user in `routers/crawl.py`" — accurate the day it was written (`357d4a0` added `_event_touches_user`, filtering `listing_changed` by library ownership), but false since `5e1890e` (2026-08-12) deleted that helper for wrongly starving every user's Store/Track tab. `listing_changed` is global by design today (any user's Store/Track tab can show any release-crawler match) and is no longer filtered by library ownership. Per-user filtering in this file is now `_visible_to()`, which acts only on events explicitly tagged with a `user_id` (the `sync_*`/`stock_judgment_*`/`plex_match_*` events tagged by closures in `crawl_manager.py`) — never on `listing_changed`. Separately, the replay gate below was missing a conjunct — it's corrected in place to include `plex_match_running(user_id)`.)** `any_job_running` still exists but has no callers — replay is gated on `pending > 0 or sync_running(user_id) or stock_sync_running or judgment_running(user_id) or plex_match_running(user_id)`. `scheduler.configure(cron, mode)` now runs `crawl_manager.sweep_enqueue(mode)` across all users, and `scheduler.configure_sync` is deleted (automatic per-user collection sync is an explicit non-goal); `start_sync` is now `start_sync(user_id, mode)` with per-user `_sync_tasks`. `main.py`'s startup is `init_global_schema()`/`init_tenant_schema()`/`seed_bundled_crawlers()`/`start_worker_pool()`/`scheduler.start()` — no `init_db`, no listings pre-population. Text below is left as historical record, not current behavior.
 
 `crawl_manager.py` is a singleton that decouples the crawl from the SSE connection.
 
@@ -412,47 +412,31 @@ Screenshot browser showing session directories and per-search screenshots. Only 
 discogs-browser/
 ├── backend/
 │   ├── pyproject.toml
-│   ├── config.py               # CONFIG_DIR, env var overrides, load/save_config
-│   ├── version.py              # VERSION string
-│   ├── logging_config.py       # Postgres `app_logs` (queued, batched) + stdout, get_logger()
-│   ├── db.py                   # schema, all DB helpers; thread-local connection singleton (WAL, 60s timeout)
-│   ├── discogs.py              # httpx-based Discogs API client; fetch_release_barcode() fetches /releases/{id}
-│   ├── crawler.py              # BotDetectedError, clean_search_text(), plugin loader, crawl_releases()
-│   ├── crawl_manager.py        # CrawlManager singleton: asyncio task, broadcast queues, 500-event buffer
-│   ├── scheduler.py            # AsyncIOScheduler wrapper, configure(cron, mode)
-│   ├── screenshots.py          # CrawlScreenshotter, session dirs
-│   ├── main.py                 # FastAPI app, startup (init_db, seed crawlers, prepopulate, start scheduler)
 │   ├── Dockerfile              # python:3.11-slim + playwright install chromium
-│   ├── crawlers/
-│   │   ├── amazon.py           # Playwright-based Amazon crawler
-│   │   └── ebay.py             # eBay Browse API crawler (CC Music seller, OAuth)
-│   ├── routers/
-│   │   ├── health.py           # GET /health
-│   │   ├── collection.py       # POST /collection/refresh, GET /collection/status
-│   │   ├── releases.py         # GET /releases, /artists, /crawlers
-│   │   ├── crawl.py            # POST /crawl/start, POST /crawl/stop, GET /crawl/stream, GET /crawl/status
-│   │   ├── settings.py         # GET/POST /settings, PATCH /crawlers/{id}
-│   │   ├── auth.py             # GET /auth/status, POST /auth/login, POST /auth/done, DELETE /auth/state
-│   │   ├── logs.py             # GET /logs/stream, DELETE /logs
-│   │   └── screenshots.py      # GET /screenshots, GET /screenshots/{path}
-│   ├── scripts/
-│   │   └── capture_fixture.py  # Playwright-based HTML fixture capture for tests
-│   └── tests/
-│       ├── test_config.py
-│       ├── test_crawler.py
-│       ├── test_crawler_utils.py
-│       ├── test_crawl_manager.py
-│       ├── test_db.py
-│       ├── test_ebay_crawler.py
-│       ├── test_discogs.py
-│       ├── crawlers/
-│       │   └── test_amazon_price_extraction.py
-│       └── fixtures/
-│           └── crawlers/
-│               └── amazon/
-│                   ├── 311_mosaic.html
-│                   ├── 311_evolver.html
-│                   └── adam_and_the_ants_prince_charming.html
+│   ├── fly.toml
+│   ├── main.py                 # FastAPI app, startup (init_global_schema/init_tenant_schema,
+│   │                           #   seed_bundled_crawlers, crawl_manager.start_worker_pool, scheduler.start)
+│   ├── config.py               # env var overrides, load/save_config (settings live in Postgres)
+│   ├── db.py                   # schema and all DB helpers, psycopg pools
+│   ├── auth_middleware.py      # guards every /api request
+│   ├── session_tokens.py       # session issue/verify
+│   ├── oauth_discogs.py        # Discogs OAuth 1.0a flow
+│   ├── token_encryption.py     # Fernet at-rest encryption for stored tokens
+│   ├── crawler.py              # BotDetectedError, clean_search_text(), plugin loader,
+│   │                           #   _new_context/_reset_context (crawl_releases() is deleted)
+│   ├── crawl_manager.py        # worker pool draining crawl_queue, SSE fan-out
+│   ├── scheduler.py            # AsyncIOScheduler wrapper
+│   ├── discogs.py              # httpx-based Discogs API client
+│   ├── logging_config.py       # Postgres `app_logs` (queued, batched) + stdout
+│   ├── screenshots.py          # CrawlScreenshotter, session dirs
+│   ├── version.py              # VERSION, derived not edited
+│   ├── ... (admin, avatar, discover, ebay_api, plex, rate_limit,
+│   │        recommendations, shopify_catalog, and other modules)
+│   ├── crawlers/               # ~50 bundled plugins (amazon.py, ebay.py, label and store crawlers)
+│   ├── routers/                # one per domain (collection, crawl, discover, health, logs,
+│   │                           #   plex, releases, screenshots, session, settings, stock)
+│   ├── scripts/                # capture_fixture.py, drop_leaked_test_dbs.py, migrate_from_sqlite.py
+│   └── tests/                  # ~100 pytest files, plus tests/fixtures/crawlers/amazon/*.html
 ├── frontend/
 │   ├── package.json
 │   ├── vite.config.ts
@@ -461,18 +445,21 @@ discogs-browser/
 │   └── src/
 │       ├── main.tsx
 │       ├── App.tsx
-│       ├── index.css
-│       ├── api/
-│       │   ├── types.ts
-│       │   └── client.ts
-│       └── views/
-│           ├── CollectionBrowser.tsx
-│           ├── Settings.tsx
-│           ├── LogViewer.tsx
-│           └── DebugView.tsx
+│       ├── api/                # types.ts, client.ts
+│       ├── components/         # Avatar, SourceFilter, TornadoBackground
+│       ├── views/              # RecordBrowser, StockBrowser, Settings, LogViewer, Account,
+│       │                       #   LoginScreen, InviteCodeScreen, BackendDownScreen, DebugView
+│       └── test/               # vitest suites
+├── docs/                       # specs and plans; read before touching code
+├── scripts/
+│   └── cloud-setup.sh          # provisions a Claude Code cloud session for the test suite
 ├── docker-compose.yml          # backend + frontend services, ./workspace bind mount
-├── bootstrap.sh                # creates workspace/, runs docker-compose build
+├── bootstrap.sh                # git pull + docker-compose build/up; never destroys the data volume
 ├── Makefile
+├── CLAUDE.md
+├── README.md
+├── .claude/
+│   └── settings.json           # SessionStart hook that runs scripts/cloud-setup.sh
 └── .gitignore
 ```
 
