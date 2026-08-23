@@ -1,6 +1,6 @@
 # Per-User SSE Event Filtering — Design
 
-**Status:** proposed
+**Status:** implemented
 **Date:** 2026-08-23
 **Verified against:** `main` @ `6fc4684`
 
@@ -90,7 +90,9 @@ justification for shielding whole methods rather than individual awaits (`_shiel
   async def broadcast(event: dict):
       await self._broadcast({**event, "user_id": user_id})
   ```
-  and its six `await self._broadcast({...})` calls become `await broadcast({...})`.
+  and its seven `await self._broadcast({...})` calls become `await broadcast({...})` (started,
+  the two early-return errors, the empty-run completion, progress, normal completion, and the
+  exception handler).
 
 - `_run_plex_match(user_id, base_url, token, threshold)`: same shape as `_run_judgment_phase`,
   applied to its six `self._broadcast(...)` calls.
