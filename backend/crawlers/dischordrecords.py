@@ -21,8 +21,18 @@ _OG_IMAGE_RE = re.compile(r"<meta content='(?P<url>[^']*)' property='og:image'>"
 _PRICES_DIV_RE = re.compile(
     r"<div class='productGeneral' id='productPrices'>(?P<body>.*?)</div>", re.DOTALL
 )
+# Matches a cart anchor by its href alone -- any attribute order, any extra
+# attributes -- rather than pinning the exact attribute string Rails emits
+# today. Pinning it made attribute drift *invisible*: a reordered or extra
+# attribute matched nothing, so the release yielded no vinyl and was silently
+# cleared by replace_stock_items instead of raising. The whole-crawl
+# zero-vinyl guard can't cover that, since other releases still yield items.
+# Text is deliberately [^<]* rather than [^<]+ so an empty anchor still
+# matches here and fails _BUTTON_TEXT_RE below -- drift must reach a raise,
+# never disappear. Safe to loosen because the search is already scoped to the
+# #productPrices block, so no unrelated cart link on the page is in range.
 _BUTTON_RE = re.compile(
-    r'<a rel="nofollow" data-method="post" href="/cart/add/\d+">(?P<text>[^<]+)</a>'
+    r'<a\b[^>]*\bhref="/cart/add/\d+"[^>]*>(?P<text>[^<]*)</a>'
 )
 _BUTTON_TEXT_RE = re.compile(
     r'^(?:Buy|Preorder)\s+(?P<format>.+?)\s+\$(?P<price>[\d,]+(?:\.\d+)?)$'

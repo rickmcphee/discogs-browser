@@ -104,6 +104,14 @@ _CD_AND_DIGITAL_ONLY = (
     '<a rel="nofollow" data-method="post" href="/cart/add/2">Buy Digital $7</a>'
 )
 
+# Same button, attributes reordered and an extra class added -- the shape a
+# Rails template change (or a Turbo migration swapping data-method for
+# data-turbo-method) would produce.
+_REORDERED_ATTR_BUTTON = (
+    '<a href="/cart/add/4190" class="btn" data-turbo-method="post" rel="nofollow">'
+    'Preorder 7&quot; $8</a>'
+)
+
 
 def test_parse_release_single_vinyl_format():
     html = _detail_page(_H1_SINGLE, _ONE_VINYL_BUTTON)
@@ -175,6 +183,26 @@ def test_parse_release_missing_cover_image_is_none():
     html = _detail_page(_H1_SINGLE, _ONE_VINYL_BUTTON, og_image=None)
     items = Crawler._parse_release(html, "/release/203/the-mark")
     assert items[0]["cover_image_url"] is None
+
+
+def test_parse_release_finds_cart_anchor_regardless_of_attribute_order():
+    # Attribute drift must not make a button invisible. Pinning the exact
+    # attribute string meant a reordered/extra attribute matched nothing, so
+    # the release yielded no vinyl and replace_stock_items cleared its rows
+    # while recording the source healthy -- and the whole-crawl zero-vinyl
+    # guard can't see it, because other releases still yield items.
+    html = _detail_page(_H1_SINGLE, _REORDERED_ATTR_BUTTON)
+    items = Crawler._parse_release(html, "/release/203/the-mark")
+    assert [i["title"] for i in items] == ["The Mark — 7\""]
+    assert items[0]["price"] == 8.0
+
+
+def test_parse_release_raises_on_cart_anchor_with_empty_text():
+    # An empty cart anchor is drift, and drift must reach a raise rather than
+    # vanish: _BUTTON_RE matches it so _BUTTON_TEXT_RE can reject it.
+    html = _detail_page(_H1_SINGLE, '<a href="/cart/add/1"></a>')
+    with pytest.raises(RuntimeError):
+        Crawler._parse_release(html, "/release/203/the-mark")
 
 
 def test_parse_release_raises_when_h1_does_not_parse():

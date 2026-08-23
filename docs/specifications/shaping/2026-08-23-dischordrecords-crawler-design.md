@@ -207,6 +207,23 @@ convention:
   mirroring `sideonedummyrecords.py`'s site-wide-format-drift guard, since
   a genuine zero-vinyl result across the whole label catalog is
   implausible.
+
+  **Cart anchors are matched by href alone**, in any attribute order and
+  tolerating extra attributes, rather than by the exact attribute string
+  Rails emits today. This matters because it decides whether drift is
+  *visible*: pinning the attribute string meant a reordered or added
+  attribute (a template tweak, or a Turbo migration swapping `data-method`
+  for `data-turbo-method`) matched nothing, so the release silently
+  reported no vinyl and `replace_stock_items` cleared its rows while
+  recording the source healthy. The whole-crawl zero-vinyl guard cannot
+  cover that case — other releases still yield items, so the crawl looks
+  fine. Matching on href and letting the *text* pattern do the validating
+  routes that drift into the existing raise instead. For the same reason
+  the anchor's text group is `[^<]*` rather than `[^<]+`: an empty cart
+  anchor still matches, then fails text validation and raises, instead of
+  disappearing. Safe to match loosely because the search is already scoped
+  to the `#productPrices` block, so unrelated cart links elsewhere on the
+  page are out of range.
 - **Skips (not an error)**: `#productPrices` present but empty (no
   purchasable formats at all — legitimate for sub-track pages and
   fully-out-of-print releases); a release whose only surviving formats are
@@ -297,6 +314,9 @@ itself directly via `config.load_config()`, the same mechanism
 - a release with an empty `#productPrices` div → zero items, not an error
 - markup drift: missing artist/title, missing `#productPrices` div
   entirely, or an unparsable buy-button string → each raises
+- a cart anchor with reordered/extra attributes → still found and parsed
+  (attribute drift must not make a button invisible)
+- a cart anchor with empty text → raises rather than being skipped
 - HTTP failure on a listing page → raises; a non-404 failure (500) on a
   detail page → raises
 - a 404 on a detail page → that release is skipped, the crawl continues
