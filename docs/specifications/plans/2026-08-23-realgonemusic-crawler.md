@@ -567,7 +567,7 @@ grep -rl "numerogroup\|shopify_catalog\|iter_products\|resolve_cover_image\|mark
 
 One is known to need attention before the PR opens:
 
-1. `docs/specifications/shaping/2026-08-07-shared-title-split-helper-design.md` — this doc tracks every crawler that diverges from the proposed shared `split_artist_title()` contract, and carries three dated amendments naming `cleorecs.py`, `jackpotrecords.py`, and `asianmanrecords.py` as exceptions. `realgonemusic.py` is a fourth, and a stronger one than any of those three: it does not split titles *at all*. Add a fourth amendment recording that, dated 2026-08-23, branch `claude/realgonemusic-crawler-84feaf`.
+1. `docs/specifications/shaping/2026-08-07-shared-title-split-helper-design.md` — this doc tracks every crawler that diverges from the proposed shared `split_artist_title()` contract, and carries three dated amendments naming `cleorecs.py`, `jackpotrecords.py`, and `asianmanrecords.py` as exceptions. `realgonemusic.py` is a further exception, and a stronger one than any prior: it does not split titles *at all*. Add the next amendment in sequence recording that, dated 2026-08-23, branch `claude/realgonemusic-crawler-84feaf`. Count the existing amendments before labelling it — as of 2026-08-23 there are four (the fourth, for `carparkrecords.py`, landed 2026-08-19), so the new one is the **fifth**.
 
 (This crawler's own design spec had a second drift — its "Testing" section described direct `_items()` calls — but that was corrected in commit `a060093` before implementation began, so it needs no action here.)
 

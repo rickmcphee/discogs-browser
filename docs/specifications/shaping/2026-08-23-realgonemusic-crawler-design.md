@@ -196,7 +196,7 @@ pattern.
 f"{product_title} — {variant_title}"
 ```
 
-with two collapses to the bare product title:
+with three collapses to the bare product title:
 
 - variant title is `Default` or `Default Title`, case-insensitively — 10
   products live, 9 of them one-off test pressings in the
@@ -212,6 +212,13 @@ with two collapses to the bare product title:
   today — it is defensive against a shape Shopify has demonstrably
   produced here, not a rule the live catalog currently exercises. Kept
   because it costs one comparison and the product can restock at any time.
+
+- variant title is empty or whitespace-only. No live variant has this
+  shape, and none is expected to; the arm exists so a future empty
+  descriptor renders as the bare product title rather than a dangling
+  `Product Title — `. It is the same "no meaningful variant descriptor"
+  principle as the two arms above, at the cost of one `or` term, and it is
+  the one branch of `_compose_title` no test drives.
 
 All 9 collapsed titles among the 268 emitted rows therefore come from the
 `Default`/`Default Title` branch. Confirmed live that the 268 `(artist,
