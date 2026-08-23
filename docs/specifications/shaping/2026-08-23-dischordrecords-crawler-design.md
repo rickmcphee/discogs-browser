@@ -57,11 +57,21 @@ two-phase:
    pagination nav (`<a class="page-link" href="/label/dischord?page=8">`)
    to get `total_pages` (8, confirmed live). Falls back to 1 page if no
    pagination nav is found (e.g. if the catalog ever shrinks to fit one
-   page).
+   page). `total_pages` is then raised (never lowered) if a later page's
+   own nav reports more — defensive against a future windowed pagination
+   nav that only reveals a few pages ahead at a time.
 2. For each page 1..total_pages, extract every `/release/<id>/<slug>` href
    (each release row links it twice — cover image and title — so hrefs are
-   deduped, order-preserved, per page).
-3. For each release href, fetch the detail page and parse it (below).
+   deduped, order-preserved). Dedup is **crawl-wide, not per page**: the
+   same release can appear on two adjacent listing pages. Confirmed live —
+   `/release/125/20-years-of-dischord` is simultaneously the last row of
+   page 3 and the first row of page 4, making 285 total hrefs across the 8
+   pages but only 284 distinct ones. Deduping per page would fetch it
+   twice and emit it twice, and `db.replace_stock_items` INSERTs without
+   an applicable unique constraint for catalog rows, so the duplicate
+   would land as two identical `stock_items` rows.
+3. For each not-yet-seen release href, fetch the detail page and parse it
+   (below).
 
 Release ids are opaque strings, not a clean numeric sequence usable to
 construct URLs directly — confirmed live values include `"001"`, `"007-0"`
@@ -172,27 +182,68 @@ convention:
   `<h1>` doesn't parse into artist+title; `#productPrices` itself is
   missing from the page entirely (as opposed to present-but-empty); a buy
   button's text doesn't match the `Buy|Preorder <format> $<price>` shape;
-  any HTTP error status. Also raises if the *entire* crawl (all pages, all
-  releases) yields zero vinyl items — mirroring `sideonedummyrecords.py`'s
-  site-wide-format-drift guard, since a genuine zero-vinyl result across
-  the whole label catalog is implausible.
+  any HTTP error status other than the one exception below. Also raises if
+  the *entire* crawl (all pages, all releases) yields zero vinyl items —
+  mirroring `sideonedummyrecords.py`'s site-wide-format-drift guard, since
+  a genuine zero-vinyl result across the whole label catalog is
+  implausible.
 - **Skips (not an error)**: `#productPrices` present but empty (no
   purchasable formats at all — legitimate for sub-track pages and
   fully-out-of-print releases); a release whose only surviving formats are
   non-vinyl (CD/digital-only reissue).
+- **A 404 on a release detail page is skipped, not raised** — the one
+  deliberate departure from this repo's otherwise-universal "any HTTP
+  failure raises" crawler convention, and the reason is this crawler's
+  unusual request count. Sibling crawlers issue ~8 requests per sync, so
+  aborting the whole run on any HTTP error costs almost nothing. This one
+  issues ~290 over roughly 108 minutes (see Pacing below), and because
+  `crawl_manager._run_catalog_crawler` materializes the generator into a
+  list before handing it to `replace_stock_items`, a raise anywhere
+  discards every item already parsed. A release pulled from the store
+  mid-crawl is ordinary site churn, not markup drift, but under a blanket
+  raise it is indistinguishable from real breakage and counts against
+  `consecutive_failure_limit`. Only 404 is special-cased; 5xx, connection
+  failures, and every other status still raise via `raise_for_status()`,
+  so genuine breakage still trips the circuit breaker.
+
+  **How this stays inside `CLAUDE.md`'s "any failure must raise" rule.**
+  That rule exists so the breaker can tell "the site answered and has
+  nothing" apart from "the request failed" — a crawler that swallows
+  errors into `[]` never cools its site off. This exemption does not
+  swallow a crawl-level failure into `[]`: a 404 skips one release out of
+  284 and the crawl returns the rest as real data, and if *every* detail
+  page 404s, `total_yielded` is 0 and the whole-crawl zero-vinyl guard
+  raises — so a total outage still trips the breaker.
+
+  The residual bound, stated plainly: a *partial* mass-404 (say half the
+  detail pages 404 at once) would emit partial stock and let
+  `replace_stock_items` clear the rest while recording the source as
+  healthy. This is accepted rather than guarded because a real partial
+  outage on this Rails app presents as 5xx or a connection error — both of
+  which still raise — while a 404 specifically means "this URL is gone,"
+  which for a subset of releases genuinely is the removal case this
+  exemption is for. If Dischord ever starts serving 404s for transient
+  reasons, revisit this by bounding the skip (raise once skips exceed some
+  fraction of the catalog) rather than by removing it.
 
 ## Pacing and queue fan-out
 
 Sleeps `random.uniform(delay * 0.5, delay)` (from `crawl_delay_seconds`,
 default 30s) before every request — both the 8 listing-page requests and
-each release's detail-page request. With ~280 release links across the 8
-listing pages (confirmed live href count, inflated above the ~203 numbered
-catalog entries by half-label sub-releases and individual-track sub-pages),
-that's on the order of 290 total requests per full sync — slower than most
-crawlers in this repo, but the same per-item pacing convention
-`darkdescentrecords.py` already applies to its variable-product detail
-fetches, just applied to every release here since none of the pricing data
-is available from the listing pages alone.
+each release's detail-page request. 285 release links across the 8 listing
+pages resolve to 284 distinct releases (confirmed live; the count runs well
+above the ~203 numbered catalog entries because half-label sub-releases and
+individual-track sub-pages each get their own release page). That's ~292
+requests per full sync, roughly 108 minutes at the default delay — slower
+than any other crawler in this repo, but the same per-item pacing
+convention `darkdescentrecords.py` already applies to its variable-product
+detail fetches, just applied to every release here since none of the
+pricing data is available from the listing pages alone.
+
+Of the 284 releases, only a minority carry a currently-sellable vinyl
+format: a live sample of 88 detail pages spread across all 8 listing pages
+parsed to 33 vinyl items with zero raises, so expect on the order of ~100
+stock rows, not ~284.
 
 ## Testing
 
@@ -206,8 +257,10 @@ itself directly via `config.load_config()`, the same mechanism
 
 - release-link extraction from a listing page, deduped across the
   image-link/title-link pair per row
+- crawl-wide dedup: a release appearing on two adjacent listing pages is
+  fetched once and emitted once
 - pagination: `total_pages` read from the nav; a single-page (no nav)
-  listing defaults to 1 page
+  listing defaults to 1 page; listing page 1 is fetched exactly once
 - artist/title parsed from the `<h1>` band-link/`<cite>` pair, including a
   Various Artists compilation
 - a single vinyl format button → one item, correct title/price/format
@@ -220,7 +273,9 @@ itself directly via `config.load_config()`, the same mechanism
 - a release with an empty `#productPrices` div → zero items, not an error
 - markup drift: missing artist/title, missing `#productPrices` div
   entirely, or an unparsable buy-button string → each raises
-- HTTP failure on a listing or detail page → raises
+- HTTP failure on a listing page → raises; a non-404 failure (500) on a
+  detail page → raises
+- a 404 on a detail page → that release is skipped, the crawl continues
 - whole-crawl zero-vinyl-items guard → raises
 - site metadata (`site_name`, `base_url`, `genre`, `crawler_type`)
 
@@ -238,11 +293,21 @@ will request, and recording the finding here:
   policy document constrains this crawler.
 - This crawler never transacts on its own: it only links out to each
   release's own page, matching every sibling crawler in this repo.
-- Load: 8 GETs to page `/label/dischord`, plus one GET per release
-  (~280) — ~290 requests per full sync, paced at `random.uniform(delay *
-  0.5, delay)` between every request, `crawl_delay_seconds` defaulting to
-  30s. Any HTTP failure raises rather than yielding an empty result,
-  preserving the repo's circuit-breaker contract.
+- Load: 8 GETs to page `/label/dischord`, plus one GET per distinct
+  release (284) — ~292 requests per full sync, paced at
+  `random.uniform(delay * 0.5, delay)` between every request,
+  `crawl_delay_seconds` defaulting to 30s (so ~108 minutes end to end).
+  Every HTTP failure except a detail-page 404 raises rather than yielding
+  an empty result, preserving the repo's circuit-breaker contract; see
+  Error handling above for why that one case is exempt.
+- **This crawler roughly doubles a typical stock-sync run's duration.**
+  `_sync_stock` iterates all catalog crawlers sequentially under one
+  advisory lock, and at ~108 minutes this one dwarfs its ~8-request
+  siblings. Nothing breaks — overlapping runs skip cleanly on the lock
+  rather than stacking — but if the stock cron interval is ever tightened,
+  this is the crawler that will start causing skipped runs, and the lever
+  to reach for is a lower per-request delay for this site specifically
+  (defensible given its empty `robots.txt`), not a shorter catalog.
 - If Dischord Records blocks this crawler, adds a `robots.txt` covering
   these paths, or asks us to stop, the response is to disable the plugin.
 
