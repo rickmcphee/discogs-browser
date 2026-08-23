@@ -3,6 +3,30 @@
 Date: 2026-08-13
 Branch: `claude/realgonemusic-store-crawler-68d8ae`
 
+**Amendment (2026-08-23, branch `claude/competent-saha-636e61`):**
+`backend/crawlers/jetglowrecordings.py` is a second Big Cartel store, so
+this doc is no longer describing the only one. Two clarifications, neither
+retracting anything below:
+
+1. The Scope section's "this is the first Bigcartel store, so a
+   `bigcartel_catalog.py` helper would be premature abstraction" still
+   holds, but no longer for the reason given. With two stores the count
+   argument is spent; what keeps the abstraction premature now is that the
+   two crawlers agree only on the *fetch* (one unpaginated `/products.json`
+   GET) and diverge on every parsing decision after it — see
+   [`2026-08-23-jetglow-recordings-crawler-design.md`](2026-08-23-jetglow-recordings-crawler-design.md).
+   A shared helper would cover the one line that is already trivial. The
+   nine-Shopify-crawler bar cited below is still the right one.
+2. The observations here are store-specific, not Big Cartel platform
+   behaviour, and two in particular do not generalise: the `Vinyl`
+   *category* (Jetglow's single media category is `Vinyl - Cassette - CD`,
+   which lumps all three formats and so cannot gate vinyl at all), and
+   option-level `sold_out` (populated here — 19 true — but inert on
+   Jetglow, where all 114 options report `false` and product-level
+   `status` carries availability instead). The "entire catalog in one
+   response, `page=`/`limit=` ignored" behaviour *did* reproduce on the
+   second store.
+
 ## Problem
 
 Asbestos Records (`asbestosrecords.bigcartel.com`) is a ska/punk/hardcore
