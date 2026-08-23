@@ -1812,9 +1812,10 @@ def get_stock_items(
         params["search"] = f"%{search}%"
     if artist:
         # See the matching clause in get_library_releases: the filter value is
-        # a canonical label, not any one store's spelling.
+        # a canonical label, not any one store's spelling -- including, now,
+        # a spelling with no article at all.
         conditions.append(
-            f"LOWER({_the_comma_form_sql('s.artist')}) = LOWER({_the_comma_form_sql('%(artist)s')})"
+            f"{_artist_sort_sql('s.artist')} = {_artist_sort_sql('%(artist)s')}"
         )
         params["artist"] = artist
     in_library = _in_library_clause("%(user_id)s", library_scope)
