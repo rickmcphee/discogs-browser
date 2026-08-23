@@ -1,6 +1,8 @@
 # Dischord Records Crawler Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+>
+> This repo's `CLAUDE.md` ("Plan execution mode") requires subagent-driven execution for every written plan, without asking which mode to use. Inline execution (`superpowers:executing-plans`) is deliberately *not* offered here — fall back to it only if the user explicitly asks for it.
 
 **Goal:** Add an `httpx`-based `catalog` crawler plugin for Dischord Records (`dischord.com`), scoped to Dischord's own label catalog at `/label/dischord`, yielding vinyl-format stock items only.
 
