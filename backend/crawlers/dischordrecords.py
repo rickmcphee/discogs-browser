@@ -1,6 +1,13 @@
 import html
+import random
 import re
+from asyncio import sleep
 from typing import AsyncIterator, Optional
+
+import httpx
+
+from config import load_config
+from crawl_progress import report_page
 
 _PAGE_LINK_RE = re.compile(r'/label/dischord\?page=(\d+)')
 _RELEASE_LINK_RE = re.compile(r'href="(/release/[^"]+)"')
@@ -27,6 +34,8 @@ _NON_VINYL_FORMAT_RE = re.compile(
     re.IGNORECASE,
 )
 
+_LABEL_PATH = "/label/dischord"
+
 
 class Crawler:
     site_name: str = "Dischord Records"
@@ -37,6 +46,43 @@ class Crawler:
     )
     genre: str = "punk"
     crawler_type: str = "catalog"
+
+    async def crawl_catalog(self) -> AsyncIterator[dict]:
+        delay = float(load_config().get("crawl_delay_seconds", 30))
+
+        async with httpx.AsyncClient(base_url=self.base_url, follow_redirects=True) as client:
+            await sleep(random.uniform(delay * 0.5, delay))
+            r = await client.get(_LABEL_PATH, params={"page": 1})
+            r.raise_for_status()
+            page_html = r.text
+            total_pages = self._max_page(page_html)
+
+            total_yielded = 0
+            for page in range(1, total_pages + 1):
+                if page > 1:
+                    await sleep(random.uniform(delay * 0.5, delay))
+                    r = await client.get(_LABEL_PATH, params={"page": page})
+                    r.raise_for_status()
+                    page_html = r.text
+
+                hrefs = self._release_hrefs(page_html)
+                if not hrefs:
+                    raise RuntimeError(f"no release links found on {_LABEL_PATH}?page={page} -- markup drift")
+
+                page_items = []
+                for href in hrefs:
+                    await sleep(random.uniform(delay * 0.5, delay))
+                    r = await client.get(href)
+                    r.raise_for_status()
+                    page_items.extend(self._parse_release(r.text, href))
+
+                await report_page(page, len(page_items))
+                total_yielded += len(page_items)
+                for item in page_items:
+                    yield item
+
+        if total_yielded == 0:
+            raise RuntimeError("parsed 0 vinyl items across the entire Dischord catalog -- format drift")
 
     @staticmethod
     def _max_page(html_text: str) -> int:
