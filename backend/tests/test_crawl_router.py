@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 
@@ -263,7 +264,7 @@ def test_visible_to_untagged_event_is_visible_to_everyone():
     assert crawl_router._visible_to(event, 99) is True
 
 
-def test_crawl_stream_replay_only_includes_per_user_events_relevant_to_calling_user(pg_test_db):
+def test_crawl_stream_replay_only_includes_per_user_events_relevant_to_calling_user(pg_test_db, authed_client_factory):
     # sync_*/stock_judgment_*/plex_match_* events are tagged with the
     # broadcasting user's id (crawl_manager.py's per-function `broadcast`
     # closures) and must not leak another user's job status -- unlike
@@ -283,4 +284,47 @@ def test_crawl_stream_replay_only_includes_per_user_events_relevant_to_calling_u
 
     ids = [e["id"] for e in events]
     assert ids == [1, 3]
+
+
+async def test_crawl_stream_live_loop_drops_another_users_tagged_event(pg_test_db, authed_client_factory):
+    """The live half of the filter, exercised through the real SSE generator.
+
+    Every other test here calls `_visible_to`/`_events_to_replay` directly,
+    so deleting `crawl_stream`'s own `if not _visible_to(...): continue`
+    left the whole suite green while restoring exactly the cross-user leak
+    this filtering exists to close -- the live path, not the replay buffer,
+    is what the original bug report was about. Driving the generator is the
+    only assertion that fails when that line goes.
+
+    `_recent` is emptied so the replay pass contributes nothing and every
+    event asserted on below arrives over the live path alone.
+    """
+    alice, bob, _crawler_id = _setup_two_users_each_with_a_different_release()
+    crawl_manager._recent = []
+
+    response = await crawl_router.crawl_stream(_FakeRequest(alice["id"]))
+    stream = response.body_iterator
+
+    # The generator is lazy -- it does not subscribe (nor run its replay
+    # pass) until first advanced -- so broadcasting before this point would
+    # reach no queue at all and the reads below would collect 15s keepalive
+    # pings instead. Advance it in a task and wait for its subscription to
+    # appear, which is the observable signal that it has reached `q.get()`.
+    subscriber_count = len(crawl_manager._subscribers)
+    first = asyncio.ensure_future(stream.__anext__())
+    while len(crawl_manager._subscribers) == subscriber_count:
+        await asyncio.sleep(0)
+
+    await crawl_manager._broadcast({"status": "sync_started", "user_id": bob["id"]})
+    await crawl_manager._broadcast({"status": "sync_started", "user_id": alice["id"]})
+    await crawl_manager._broadcast({"status": "stock_sync_progress", "synced": 5})
+
+    received = [json.loads((await first)["data"])]
+    received.append(json.loads((await stream.__anext__())["data"]))
+    await stream.aclose()
+
+    # Bob's event is dropped outright: the first thing Alice sees is her own,
+    # then the untagged global one.
+    assert [e.get("user_id") for e in received] == [alice["id"], None]
+    assert [e["status"] for e in received] == ["sync_started", "stock_sync_progress"]
 

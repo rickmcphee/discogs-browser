@@ -454,8 +454,11 @@ it — is still correct; only the named mechanism is stale.
 This is deliberate, not an oversight: `routers/crawl.py` streams
 `listing_changed` events unconditionally to every connected user
 regardless of `discogs_id` — an event carrying no `discogs_id` key is
-replayed/streamed to every connected user unconditionally, same as one
-that does. That's exactly the right behavior for a stock-item event:
+delivered to every connected user, same as one that does. (2026-08-23: the
+original wording here said "replayed/streamed". Only *streamed* is right —
+both listing broadcasters deliberately bypass `_recent`, putting events
+straight onto subscriber queues (`crawl_manager.py:533-557`), so a
+reconnecting client never replays a `listing_changed` event at all.) That's exactly the right behavior for a stock-item event:
 stock inventory is global (no per-user ownership the way a Discogs
 release has via `library_items`), so every user's Store tab should see the
 same price updates.

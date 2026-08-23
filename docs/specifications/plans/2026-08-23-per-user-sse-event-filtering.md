@@ -1,6 +1,6 @@
 # Per-User SSE Event Filtering Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. This repo mandates it for every written plan (root `CLAUDE.md`, "Plan execution mode") — inline execution only if the user explicitly asks for it. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Stop `sync_*`/`stock_judgment_*`/`plex_match_*` SSE events from one user's background job reaching every other connected user.
 
@@ -277,7 +277,20 @@ Expected: PASS (all tests, including the 4 from Step 1). If any other test in th
 
 ```bash
 git add backend/crawl_manager.py backend/tests/test_crawl_manager.py
-git commit -m "Tag sync/judgment/plex-match SSE broadcasts with the owning user_id"
+# `-F`, never `-m`: this repo requires AI-attribution trailers on every
+# commit and they are easy to drop through shell quoting (root CLAUDE.md,
+# "Commits — AI attribution trailers").
+cat > /tmp/msg.txt <<'EOF'
+Tag sync/judgment/plex-match SSE broadcasts with the owning user_id
+
+Note: This commit message was created by AI
+ai-generated: true
+ai-model: <this session's model id>
+ai-tool: claude-code
+ai-surface: claude-code-cli
+ai-executor: local-agent
+EOF
+git commit -F /tmp/msg.txt
 ```
 
 ---
@@ -425,7 +438,20 @@ Expected: PASS. This catches any other test in the suite that happened to assert
 
 ```bash
 git add backend/routers/crawl.py backend/tests/test_crawl_router.py CLAUDE.md
-git commit -m "Filter SSE replay and live stream by the broadcasting event's user_id"
+# `-F`, never `-m`: this repo requires AI-attribution trailers on every
+# commit and they are easy to drop through shell quoting (root CLAUDE.md,
+# "Commits — AI attribution trailers").
+cat > /tmp/msg.txt <<'EOF'
+Filter SSE replay and live stream by the broadcasting event's user_id
+
+Note: This commit message was created by AI
+ai-generated: true
+ai-model: <this session's model id>
+ai-tool: claude-code
+ai-surface: claude-code-cli
+ai-executor: local-agent
+EOF
+git commit -F /tmp/msg.txt
 ```
 
 ---
