@@ -57,11 +57,11 @@ artist-sorted listings. This is a strict generalization of the existing
 `_the_comma_form_sql`-based filter (every match it made, the new fold still
 makes, plus the bare case), not an additional OR branch.
 
-Search needs no change. `ILIKE %search%` against the raw `artist` column
-already substring-matches a bare "Beatles" row when searching "Beatles" (or
-"Beatles, The" — the substring "Beatles" is still present); the existing
-`_the_comma_form_sql`-folded branch continues to cover the "The Beatles" raw
-row against a "Beatles, The" search string, unchanged.
+Search is left unchanged, but not because it already works — see "Out of
+scope" below for the asymmetry this leaves. Typing the *bare* name finds
+every spelling (`'Beatles' ILIKE '%Beatles%'` matches the bare row, and the
+`_the_comma_form_sql`-folded branch catches the "The Beatles" row), which is
+the common case; what it does not cover is typing the full canonical label.
 
 **Indexes**: switching the equality filter to `_artist_sort_sql`'s expression
 needs a matching expression index, same reasoning as
@@ -96,4 +96,21 @@ lookup phase both still query through `_the_comma_form_sql`, unchanged.
   same carve-out the prior design already made for the The/comma case: a
   catalog row "The Beatles" and a stock row bare "Beatles" for the same
   release still won't be recognized as owned by that match.
+- **Search does not match a bare-stored row against the full canonical
+  label.** `search=` runs `ILIKE '%<term>%'`, which requires the *term* to be
+  a substring of the *column*, so searching the displayed label "Beatles,
+  The" misses a row stored bare as "Beatles" — the raw branch fails
+  ("Beatles" does not contain the longer string) and the
+  `_the_comma_form_sql` branch leaves a bare value unchanged, so it fails
+  identically. The equality filter *does* match that row for the same input,
+  so search and filter disagree for this one input shape. Searching the bare
+  name ("Beatles") finds all three spellings, which is the ordinary way to
+  use the box; the gap needs the user to type or paste the full comma-suffix
+  label. Closing it means folding both sides of the comparison (e.g.
+  `_artist_sort_sql(artist) ILIKE '%' || _artist_sort_sql(term) || '%'`),
+  which changes the meaning of every artist search, not just this case —
+  deliberately left for its own change rather than smuggled in here.
+  (An earlier draft of this document claimed search already covered this
+  because "the substring 'Beatles' is still present"; that reasoning had the
+  substring direction backwards and was wrong.)
 - **Articles other than "The"** — unchanged from both prior branches' scope.

@@ -73,6 +73,15 @@ rows. Both conditions change to
 used in the grouping key, so a filter click can never disagree with the
 label that produced it.
 
+**Amended 2026-08-23** (`2026-08-22-bare-form-artist-fold-design.md`): both
+conditions now read `_artist_sort_sql(c.artist) = _artist_sort_sql(%(artist)s)`
+instead. `the_form`'s fold cannot match a row stored with no article at all
+("Beatles") against the label "Beatles, The"; `_artist_sort_sql`'s
+article-stripped key reduces all three spellings to the same key, and is a
+strict superset of the fold described here — every pair this paragraph's
+condition matched, the new one still matches. No outer `LOWER()`:
+`_artist_sort_sql` already lowers each branch of its own `CASE`.
+
 **New expression indexes**, additive to the existing `LOWER(artist)` ones
 (`catalog_artist_lower_idx`, `stock_items_artist_lower_idx`), which stay —
 `_library_match_fragment`'s owned-artist join (`LOWER(c.artist) =
@@ -83,6 +92,13 @@ without a new index every canonicalized listing and artist-filtered page is
 a sequential scan of `catalog` or `stock_items`. `catalog_artist_the_lower_idx`
 and `stock_items_artist_the_lower_idx` cover the new expression; built from
 the same `the_form` fragment so the query and the index can't drift apart.
+
+**Amended 2026-08-23** (`2026-08-22-bare-form-artist-fold-design.md`): the
+two indexes named here still exist and are still required, but now serve the
+grouping WHERE only — the equality filters moved off `LOWER(the_form(...))`
+(see the amendment above) and are covered by
+`catalog_artist_bare_lower_idx`/`stock_items_artist_bare_lower_idx`, built
+from `_artist_sort_sql` for the same query-and-index-can't-drift reason.
 
 **These two index definitions execute with no query parameters** (`GLOBAL_SCHEMA`
 runs as a bare `conn.execute(GLOBAL_SCHEMA)`, no params dict), unlike every
@@ -124,6 +140,14 @@ of the sort key.
 search must still find it — so the `OR` grows a second branch,
 `the_form(c.artist) ILIKE %search%`, alongside the existing raw-column and
 title branches.
+
+**Amended 2026-08-23** (`2026-08-22-bare-form-artist-fold-design.md`): the
+heading no longer holds. Search still uses the `the_form` branch described
+here, unchanged, while the equality filters moved to `_artist_sort_sql` —
+so the two now use *different* folds, and a row stored bare as "Beatles" is
+matched by the filter but not by a search for the full label "Beatles, The".
+That asymmetry is documented as a known gap in the 2026-08-22 design's "Out
+of scope"; closing it would change the meaning of every artist search.
 
 ## Out of scope
 
