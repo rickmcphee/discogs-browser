@@ -312,14 +312,16 @@ def _fast_catalog_crawl_sleep(request, monkeypatch):
         # at import, so patching config.load_config wouldn't reach them.
         monkeypatch.setattr("shopify_catalog.sleep", fake_sleep)
         monkeypatch.setattr("shopify_catalog.load_config", lambda: {})
-        # angryyoungandpoor.py, amoeba.py, asbestosrecords.py, and
-        # sideonedummyrecords.py pace their own request directly rather than
-        # going through shopify_catalog.iter_products() -- patch their
-        # module-local `sleep` bindings too, when importable. asbestosrecords
-        # is imported as "crawlers.asbestosrecords" (a package submodule),
-        # not a bare top-level name like the others, which is why its tuple
-        # entry carries the "crawlers." prefix.
-        for module_name in ("angryyoungandpoor", "amoeba", "crawlers.asbestosrecords", "sideonedummyrecords"):
+        # angryyoungandpoor.py, amoeba.py, asbestosrecords.py,
+        # jetglowrecordings.py, and sideonedummyrecords.py pace their own
+        # request directly rather than going through
+        # shopify_catalog.iter_products() -- patch their module-local `sleep`
+        # bindings too, when importable. asbestosrecords and jetglowrecordings
+        # are imported as "crawlers.<name>" (package submodules), not bare
+        # top-level names like the others, which is why their tuple entries
+        # carry the "crawlers." prefix.
+        for module_name in ("angryyoungandpoor", "amoeba", "crawlers.asbestosrecords",
+                            "crawlers.jetglowrecordings", "sideonedummyrecords"):
             for attr, replacement in (("sleep", fake_sleep), ("load_config", lambda: {})):
                 try:
                     monkeypatch.setattr(f"{module_name}.{attr}", replacement)
