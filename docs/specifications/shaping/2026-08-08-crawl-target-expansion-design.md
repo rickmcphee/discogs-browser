@@ -524,11 +524,21 @@ written into the new column on both insert and the existing `ON CONFLICT
   cases it already covers.
 - `backend/tests/test_crawl_router.py` — a `listing_changed` event with no
   `discogs_id` key (the shape `_broadcast_stock_listing_changed` produces)
-  is streamed to a user with no relationship to it. **(2026-08-23:**
-  as the amendment above notes, the mechanism that makes this true today is
-  not `_event_touches_user` (deleted in `5e1890e`) but the simple fact that
-  `listing_changed` is never filtered at all — `_visible_to()` only acts on
-  `user_id`-tagged events. The test's conclusion is unchanged.)**
+  reaches a user with no relationship to it. **(2026-08-23:** two
+  corrections. The mechanism is no longer `_event_touches_user` (deleted in
+  `5e1890e`) but the plain fact that `listing_changed` is never filtered at
+  all — `_visible_to()` acts only on `user_id`-tagged events. And the
+  coverage is not what this bullet implies: `test_crawl_stream_replay_includes_listing_changed_events_for_every_release`
+  hand-seeds `_recent` and calls `_events_to_replay`, exercising the replay
+  path on state production never actually produces, since both listing
+  broadcasters bypass `_recent` entirely (`crawl_manager.py:547-557`). No
+  test streams a `listing_changed` event through the live generator. What
+  covers live global delivery is compositional:
+  `test_crawl_stream_live_loop_drops_another_users_tagged_event` streams an
+  *untagged* event and asserts it reaches a user it isn't addressed to, and
+  the manager tests assert `listing_changed` events carry no `user_id` — so
+  they fall in the untagged class the router test covers. The conclusion
+  holds; the route to it is indirect.)**
 - `discogs_marketplace.py` needs no test changes — it's simply never
   invoked with a stock-item target, by construction.
 
