@@ -43,6 +43,7 @@ export default function App() {
   const [hasJudgedItems, setHasJudgedItems] = useState(false)
   const [hasPriceData, setHasPriceData] = useState(false)
   const latestPriceStatusSeq = useRef(0)
+  const latestHasJudgedItemsSeq = useRef(0)
   const [serverReady, setServerReady] = useState(false)
   const [backendUp, setBackendUp] = useState<boolean | null>(null)
   const [authRevalidating, setAuthRevalidating] = useState(false)
@@ -150,7 +151,15 @@ export default function App() {
     getUserSettings().then((s) => {
       setHasAnthropicKey(Boolean(s.anthropic_api_key))
     }).catch(() => {})
-    getJudgmentStatus().then((s) => setHasJudgedItems(s.any_judged)).catch(() => {})
+    // A slow-arriving bootstrap response can resolve after a judgment SSE
+    // event has already set hasJudgedItems true (see the seq bumps in the
+    // stock_judgment_progress/stock_judgment_complete handlers below) --
+    // same race class as fetchPriceStatus above, same seq-guard fix.
+    const judgmentStatusSeq = ++latestHasJudgedItemsSeq.current
+    getJudgmentStatus().then((s) => {
+      if (judgmentStatusSeq !== latestHasJudgedItemsSeq.current) return
+      setHasJudgedItems(s.any_judged)
+    }).catch(() => {})
     fetchPriceStatus()
     hasAvatar().then((exists) => setAvatarVersion(exists ? Date.now() : 0)).catch(() => {})
   }, [authState, backendUp, serverReady, setSyncStatus, fetchPriceStatus])
@@ -270,14 +279,20 @@ export default function App() {
         return
       }
       if (event.status === 'stock_judgment_progress') {
-        if ((event.judged ?? 0) > 0) setHasJudgedItems(true)
+        if ((event.judged ?? 0) > 0) {
+          latestHasJudgedItemsSeq.current++
+          setHasJudgedItems(true)
+        }
         setStockSyncGeneration(g => g + 1)
         setSyncStatus(`Finding recommendations for Store items… ${event.judged}/${event.total}`, event.id ?? null)
         return
       }
       if (event.status === 'stock_judgment_complete') {
         setSyncing(false)
-        if ((event.judged ?? 0) > 0) setHasJudgedItems(true)
+        if ((event.judged ?? 0) > 0) {
+          latestHasJudgedItemsSeq.current++
+          setHasJudgedItems(true)
+        }
         setStockSyncGeneration(g => g + 1)
         setSyncStatus(`Finished finding recommendations — ${event.judged} items checked`, event.id ?? null)
         return
