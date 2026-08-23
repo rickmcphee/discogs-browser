@@ -455,7 +455,7 @@ describe('In Stock tab', () => {
     })
   })
 
-  it('disables Recommended in Store again while a judgment run is in progress', async () => {
+  it('keeps Recommended enabled in Store while a judgment run is in progress', async () => {
     getUserSettings.mockResolvedValue({ ...defaultUserSettings, anthropic_api_key: 'sk-ant-test' })
     getJudgmentStatus.mockResolvedValue({ any_judged: true })
     render(<App />)
@@ -465,7 +465,7 @@ describe('In Stock tab', () => {
     await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
     const source = getLastCrawlSource()
     source.emit({ status: 'stock_judgment_started' })
-    await waitFor(() => expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(true))
+    await waitFor(() => expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(false))
   })
 
   it('refetches stock items on a listing_changed SSE event', async () => {
@@ -477,6 +477,104 @@ describe('In Stock tab', () => {
     getLastCrawlSource().emit({ id: 1, type: 'listing_changed', status: 'found', discogs_id: 'r1', crawler_id: 9 })
 
     await waitFor(() => expect(getStock.mock.calls.length).toBeGreaterThan(callsBefore))
+  })
+
+  it('enables Recommended progressively on a first-ever run, as soon as the first batch lands', async () => {
+    getUserSettings.mockResolvedValue({ ...defaultUserSettings, anthropic_api_key: 'sk-ant-test' })
+    getJudgmentStatus.mockResolvedValue({ any_judged: false })
+    render(<App />)
+    await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Store'))
+    await waitFor(() => expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(true))
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    const source = getLastCrawlSource()
+    source.emit({ status: 'stock_judgment_started' })
+    source.emit({ status: 'stock_judgment_progress', judged: 40, total: 120, id: 1 })
+    await waitFor(() => expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(false))
+  })
+
+  it('keeps Recommended disabled when a first-ever run completes with zero judgments', async () => {
+    getUserSettings.mockResolvedValue({ ...defaultUserSettings, anthropic_api_key: 'sk-ant-test' })
+    getJudgmentStatus.mockResolvedValue({ any_judged: false })
+    render(<App />)
+    await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Store'))
+    await waitFor(() => expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(true))
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    const source = getLastCrawlSource()
+    source.emit({ status: 'stock_judgment_started' })
+    // A real fully-failed run emits zero-judged progress events per batch
+    // before completion -- exercise that path too, not just the completion
+    // event, so a regression in the progress handler's own guard is caught
+    // here rather than only in the completion handler's.
+    source.emit({ status: 'stock_judgment_progress', judged: 0, total: 120, id: 1 })
+    await waitFor(() => expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(true))
+    source.emit({ status: 'stock_judgment_complete', judged: 0, id: 1 })
+    await waitFor(() => expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(true))
+  })
+
+  it('does not let a slow bootstrap judgment-status response overwrite a newer SSE-driven one', async () => {
+    getUserSettings.mockResolvedValue({ ...defaultUserSettings, anthropic_api_key: 'sk-ant-test' })
+    let resolveBootstrap: (v: { any_judged: boolean }) => void = () => {}
+    getJudgmentStatus.mockImplementationOnce(() => new Promise((resolve) => { resolveBootstrap = resolve }))
+
+    render(<App />)
+    await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Store'))
+    await waitFor(() => expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(true))
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    const source = getLastCrawlSource()
+    source.emit({ status: 'stock_judgment_started' })
+    source.emit({ status: 'stock_judgment_progress', judged: 40, total: 120, id: 1 })
+    await waitFor(() => expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(false))
+
+    // The bootstrap fetch was in flight the whole time and only resolves now,
+    // with a stale any_judged: false snapshot taken before the SSE event.
+    resolveBootstrap({ any_judged: false })
+    await new Promise((r) => setTimeout(r, 0))
+    expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(false)
+  })
+
+  it('does not let a slow bootstrap judgment-status response overwrite an explicit Clear', async () => {
+    let resolveBootstrap: (v: { any_judged: boolean }) => void = () => {}
+    getJudgmentStatus.mockImplementationOnce(() => new Promise((resolve) => { resolveBootstrap = resolve }))
+    clearJudgments.mockResolvedValue({ cleared: true, running: false, count: 3 })
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+    render(<App />)
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    // SSE, not the still-pending bootstrap fetch, is what enables Clear here.
+    getLastCrawlSource().emit({ status: 'stock_judgment_complete', judged: 5, id: 1 })
+
+    fireEvent.click(await screen.findByRole('button', { name: /profile/i }))
+    const description = await screen.findByText('Remove all recommendation judgments, recommended and not-recommended, so every Store item is re-evaluated from scratch on the next run.')
+    const row = description.closest('tr') as HTMLElement
+    await waitFor(() => expect(within(row).getByText('Clear').closest('button')).not.toBeDisabled())
+    fireEvent.click(within(row).getByText('Clear'))
+    await waitFor(() => expect(clearJudgments).toHaveBeenCalled())
+    await waitFor(() => expect(within(row).getByText('Clear').closest('button')).toBeDisabled())
+
+    // The original bootstrap fetch was still in flight the whole time and
+    // only resolves now, with a stale any_judged: true snapshot from before
+    // the clear.
+    resolveBootstrap({ any_judged: true })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(within(row).getByText('Clear').closest('button')).toBeDisabled()
+  })
+
+  it('refetches stock items on stock_judgment_progress and stock_judgment_complete SSE events', async () => {
+    render(<App />)
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    await waitFor(() => expect(getStock).toHaveBeenCalled())
+    const source = getLastCrawlSource()
+
+    const callsBeforeProgress = getStock.mock.calls.length
+    source.emit({ status: 'stock_judgment_progress', judged: 40, total: 120, id: 1 })
+    await waitFor(() => expect(getStock.mock.calls.length).toBeGreaterThan(callsBeforeProgress))
+
+    const callsBeforeComplete = getStock.mock.calls.length
+    source.emit({ status: 'stock_judgment_complete', judged: 120, id: 1 })
+    await waitFor(() => expect(getStock.mock.calls.length).toBeGreaterThan(callsBeforeComplete))
   })
 })
 

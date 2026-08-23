@@ -35,7 +35,7 @@ async def browser_page():
 
 class _FakePage:
     def __init__(self, real_page, html=None, page_title="Vinyl | Shop the SideOneDummy Records Official Store",
-                 evaluate_result=None):
+                 evaluate_result=None, real_wait=False):
         self._real_page = real_page
         self._html = html if html is not None else FIXTURE.read_text(encoding="utf-8")
         self._page_title = page_title
@@ -46,6 +46,11 @@ class _FakePage:
         # navigation in between, so if the former ever finds something, the
         # latter necessarily will too.
         self._evaluate_result = evaluate_result
+        # When True, delegates wait_for_selector() to the real page instead
+        # of the presence-only shortcut below -- needed to exercise genuine
+        # Playwright `state` semantics (e.g. state="attached" resolving
+        # against a hidden element that state="visible" would time out on).
+        self._real_wait = real_wait
 
     async def goto(self, url, timeout=None):
         await self._real_page.set_content(self._html, wait_until="domcontentloaded")
@@ -58,11 +63,18 @@ class _FakePage:
             return self._evaluate_result
         return await self._real_page.evaluate(script)
 
-    async def wait_for_selector(self, selector, timeout=None):
+    async def wait_for_selector(self, selector, state=None, timeout=None):
+        if self._real_wait:
+            await self._real_page.wait_for_selector(selector, state=state, timeout=timeout)
+            return
         # set_content() already finished rendering everything the fixture
         # has -- nothing will appear later -- so check presence once and
         # fail immediately rather than genuinely honoring `timeout` (which
         # would make a "selector never appears" test really wait that long).
+        # `state` is accepted (matching the real call's state="attached")
+        # but not otherwise exercised here: the fixture is fully painted by
+        # the time set_content() returns, so attached vs. visible can't be
+        # distinguished against it.
         if await self._real_page.locator(selector).count() == 0:
             raise TimeoutError(f"selector not found in fixture: {selector}")
 
@@ -300,6 +312,44 @@ async def test_crawl_catalog_raises_when_in_stock_cards_are_missing_expected_fie
     with pytest.raises(RuntimeError):
         async for _ in crawler.crawl_catalog(fake_page):
             pass
+
+
+_HIDDEN_CARD_HTML = """
+<html><body>
+<ul class="ProductGrid" style="display:none">
+<li class="ProductElementsDisplay">
+<div class="ProductContainer">
+  <div class="ProductName" data-productid="X1" data-productname="Band - Title LP">
+    <a href="/product/X1/band-title">Band - Title LP</a>
+  </div>
+  <div class="Pricing">
+    <ul class="PricingContainer" data-listprice="$10.00" data-saleprice=""></ul>
+  </div>
+</div>
+</li>
+</ul>
+</body></html>
+"""
+
+
+async def test_crawl_catalog_extracts_products_that_are_attached_but_not_yet_visible(browser_page):
+    # Regression for a real production failure: Playwright's own error log
+    # showed "locator resolved to 93 elements" immediately before a
+    # wait_for_selector timeout -- the DOM was already complete, but the
+    # default state="visible" wait was still blocked on this Cloudflare-
+    # fronted site's occasionally-slow post-attach paint. Since the listing
+    # is server-rendered, _EXTRACT_JS's attribute reads don't need the
+    # elements to be visually painted at all, so crawl_catalog must succeed
+    # against a hidden-but-attached grid rather than timing out. Uses
+    # real_wait=True so this exercises the actual page.wait_for_selector()
+    # call (including its state="attached" argument), not the fixture's
+    # presence-only shortcut.
+    fake_page = _FakePage(browser_page, html=_HIDDEN_CARD_HTML, real_wait=True)
+    crawler = Crawler()
+    items = [item async for item in crawler.crawl_catalog(fake_page)]
+    assert len(items) == 1
+    assert items[0]["artist"] == "Band"
+    assert items[0]["title"] == "Title LP"
 
 
 async def test_crawl_catalog_raises_bot_detected_when_interstitial_never_clears(browser_page):

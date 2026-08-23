@@ -40,6 +40,8 @@ validation/crop/resize (Pillow, 512×512, PNG re-encode) is unchanged. See
 The "No database changes" line and file-based description in the Backend
 changes section below are accordingly historical, not current.
 
+**Amendment (2026-08-22, branch `store-filter-recommendations-refresh`):** the 2026-08-04 and 2026-08-07 amendments' description of `hasJudgedItems` as gating `Export`/`Clear` "disabled until a judgment run has completed" is no longer fully accurate. `hasJudgedItems` now also flips true progressively, off the first non-zero-judged `stock_judgment_progress` batch, not only off `stock_judgment_complete` — so both buttons can become enabled mid-run, on a user's very first-ever refresh, once at least one item has been judged. See [`2026-08-22-live-recommended-filter-design.md`](2026-08-22-live-recommended-filter-design.md).
+
 ---
 
 ## Overview

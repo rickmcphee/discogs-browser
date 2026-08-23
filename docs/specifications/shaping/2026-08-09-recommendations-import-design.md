@@ -433,6 +433,22 @@ introducing inline state in `Account`:
 Export's help text updates to the new column list and drops the
 "recommended items" framing — it is now every judgment.
 
+**Amendment (2026-08-23, branch `store-filter-recommendations-refresh`):**
+the `[setSyncStatus]` dep list and the direct `getJudgmentStatus()` →
+`setHasJudgedItems` update described above are superseded. A mount-time
+bootstrap fetch and this handler's post-import fetch can both have a
+`getJudgmentStatus()` request in flight at once, and a slow-arriving
+bootstrap response landing after the newer import-driven one would
+overwrite it with stale data — the same race class as the pre-existing
+`fetchPriceStatus`/`latestPriceStatusSeq` pair. `handleImportRecommendations`
+now calls a shared `refreshJudgmentStatus()` helper instead (mirrors
+`fetchPriceStatus`'s shape, backed by a `latestHasJudgedItemsSeq` ref),
+so its dep list is `[setSyncStatus, refreshJudgmentStatus]`. The two
+judgment SSE handlers and `handleClearRecommendations` participate in the
+same guard, bumping the shared counter before their own direct writes.
+See [`2026-08-22-live-recommended-filter-design.md`](../../superpowers/specs/2026-08-22-live-recommended-filter-design.md)
+for the full design.
+
 ## Testing
 
 Backend, `test_recommendations_import.py` (pure parsing, no DB):

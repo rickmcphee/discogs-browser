@@ -43,7 +43,7 @@ export default function App() {
   const [hasJudgedItems, setHasJudgedItems] = useState(false)
   const [hasPriceData, setHasPriceData] = useState(false)
   const latestPriceStatusSeq = useRef(0)
-  const [judgmentRunning, setJudgmentRunning] = useState(false)
+  const latestHasJudgedItemsSeq = useRef(0)
   const [serverReady, setServerReady] = useState(false)
   const [backendUp, setBackendUp] = useState<boolean | null>(null)
   const [authRevalidating, setAuthRevalidating] = useState(false)
@@ -90,6 +90,22 @@ export default function App() {
     getPriceStatus().then((s) => {
       if (seq !== latestPriceStatusSeq.current) return
       setHasPriceData(s.any_price_paid)
+    }).catch(() => {})
+  }, [])
+
+  // Same race, same fix, for hasJudgedItems: the bootstrap fetch below and
+  // handleImportRecommendations's post-import refresh can both have a
+  // getJudgmentStatus() request in flight, and the judgment SSE handlers and
+  // handleClearRecommendations's explicit write are two more sources that
+  // can land in between. Every writer shares this one counter -- the SSE
+  // handlers and the clear handler bump it before writing directly (they
+  // already know the answer, no fetch needed), so a slower fetch that was
+  // already in flight loses the race and its stale result is discarded.
+  const refreshJudgmentStatus = useCallback(() => {
+    const seq = ++latestHasJudgedItemsSeq.current
+    getJudgmentStatus().then((s) => {
+      if (seq !== latestHasJudgedItemsSeq.current) return
+      setHasJudgedItems(s.any_judged)
     }).catch(() => {})
   }, [])
 
@@ -151,10 +167,10 @@ export default function App() {
     getUserSettings().then((s) => {
       setHasAnthropicKey(Boolean(s.anthropic_api_key))
     }).catch(() => {})
-    getJudgmentStatus().then((s) => setHasJudgedItems(s.any_judged)).catch(() => {})
+    refreshJudgmentStatus()
     fetchPriceStatus()
     hasAvatar().then((exists) => setAvatarVersion(exists ? Date.now() : 0)).catch(() => {})
-  }, [authState, backendUp, serverReady, setSyncStatus, fetchPriceStatus])
+  }, [authState, backendUp, serverReady, setSyncStatus, fetchPriceStatus, refreshJudgmentStatus])
 
   // Persistent SSE connection — reconnects on error. Gated on authState only
   // (not backendUp) -- it reconnects through any backend outage on its own
@@ -267,24 +283,30 @@ export default function App() {
       }
       if (event.status === 'stock_judgment_started') {
         setSyncing(true)
-        setJudgmentRunning(true)
         setSyncStatus('Finding recommendations for Store items…', event.id ?? null)
         return
       }
       if (event.status === 'stock_judgment_progress') {
+        if ((event.judged ?? 0) > 0) {
+          latestHasJudgedItemsSeq.current++
+          setHasJudgedItems(true)
+        }
+        setStockSyncGeneration(g => g + 1)
         setSyncStatus(`Finding recommendations for Store items… ${event.judged}/${event.total}`, event.id ?? null)
         return
       }
       if (event.status === 'stock_judgment_complete') {
         setSyncing(false)
-        setJudgmentRunning(false)
-        setHasJudgedItems(true)
+        if ((event.judged ?? 0) > 0) {
+          latestHasJudgedItemsSeq.current++
+          setHasJudgedItems(true)
+        }
+        setStockSyncGeneration(g => g + 1)
         setSyncStatus(`Finished finding recommendations — ${event.judged} items checked`, event.id ?? null)
         return
       }
       if (event.status === 'stock_judgment_error') {
         setSyncing(false)
-        setJudgmentRunning(false)
         setSyncStatus(`Finding recommendations failed: ${event.error}`, event.id ?? null)
         return
       }
@@ -490,8 +512,7 @@ export default function App() {
         }
         setSyncStatus(`${message}${skippedClause}.`)
       }
-      const status = await getJudgmentStatus()
-      setHasJudgedItems(status.any_judged)
+      refreshJudgmentStatus()
     } catch (e: any) {
       let message = e.message || 'Import failed'
       try {
@@ -502,7 +523,7 @@ export default function App() {
       }
       setSyncStatus(`Import recommendations failed: ${message}`)
     }
-  }, [setSyncStatus])
+  }, [setSyncStatus, refreshJudgmentStatus])
 
   const handleClearRecommendations = useCallback(async () => {
     if (!window.confirm('Clear all recommendations? This removes every recommended and not-recommended judgment from the database — every Store item will need to be re-evaluated from scratch, which costs Anthropic API calls to redo.')) {
@@ -514,6 +535,7 @@ export default function App() {
         setSyncStatus('Cannot clear recommendations while a sync or recommendation run is in progress')
         return
       }
+      latestHasJudgedItemsSeq.current++
       setHasJudgedItems(false)
       setSyncStatus(`Cleared ${result.count} recommendation judgments`)
     } catch (e: any) {
@@ -557,7 +579,7 @@ export default function App() {
   const isRealAdmin = authState.user.is_admin
   const showAdminNav = isRealAdmin && !viewAsUser
 
-  const recommendedAvailable = hasAnthropicKey && hasJudgedItems && !judgmentRunning
+  const recommendedAvailable = hasAnthropicKey && hasJudgedItems
   const syncBannerVisible = syncMessage !== null && (syncMessageId === null || syncMessageId > dismissedSyncId)
   const crawlBannerVisible = crawlBannerId > dismissedCrawlId
 
