@@ -110,9 +110,34 @@ dropped. These cost coverage, never correctness.
   dropping stock, but it means non-vinyl bleed in the `vinyl` collection would
   publish as `format: "Vinyl"` rather than being rejected.
 
-Both are bounded and reversible: `replace_stock_items` only ever replaces this
-crawler's own rows, so disabling the source in Settings and re-syncing removes
-them. Neither can corrupt another source. But neither announces itself, which
+Both are bounded to this source — `replace_stock_items` only ever touches this
+crawler's own rows, so neither can corrupt another source.
+
+**They are not reversible by disabling the source, and an earlier draft of this
+section wrongly said they were.** Caught in review on PR #165, and verified
+against the code: disabling a store calls `set_crawler_enabled` plus
+`db.delete_dead_stock_crawl_queue_rows`, which sweeps `crawl_queue` rows, not
+`stock_items` rows. `_sync_stock` then loads only *enabled* crawlers, so
+`replace_stock_items` is never called for the disabled one and its rows are
+never deleted; and `get_stock_items` has no `cr.enabled` condition, so they stay
+visible. Disabling stops future crawls and nothing else.
+
+The rollbacks that do work:
+
+- **Hide the source per user** — `get_stock_items` honours an
+  `exclude_crawler_ids` parameter, which is what the UI's hidden-sources toggle
+  drives. This removes the rows from that user's view without deleting them.
+- **Delete the rows** — `DELETE FROM stock_items WHERE crawler_id = <id>`, a
+  deliberate sysadmin action. Note `replace_stock_items` deletes before it
+  checks for an empty item list, so a sync that legitimately yields zero items
+  also clears them — but only while the crawler is enabled.
+
+This matters more than a documentation nit: the decision to ship this crawler
+enabled-by-default (see the auto-enable discussion on PR #165) was taken partly
+on the strength of the reversibility claim above. The blast radius is still one
+source's rows, but undoing it is a manual step, not a toggle.
+
+Neither failure mode announces itself, which
 is the reason the "Verification still owed" section at the end exists and why
 this crawler should be treated as unverified until those checks are run.
 
@@ -225,6 +250,23 @@ markers only, no bare `MC` or `EP` — because it rewrites the stored title
 rather than merely gating on it. The required leading `\s+` means a single-word
 album that *is* one of these words (`Sodom - Tape`) has nothing preceding it to
 match and survives untouched.
+
+**Known limitation, not fixed.** That `\s+` guard only protects a *one-word*
+album. A multi-word album ending in a format word is still misread on the dash
+path: `Artist - The Tape` splits to album `The` + format `Tape` and is then
+dropped by the negative gate, and `Artist - The Vinyl` is stored as `The`.
+Raised in review on PR #165 and deliberately left alone, for two reasons.
+First, there is no syntax that separates the two cases — `1982 CD` and
+`The Tape` are the same shape, and every disambiguation tried (require a
+multi-word remainder, exclude a preceding article) either breaks the real
+format case or invents a rule this store's data has never been checked
+against. Second, tightening the stripper to unambiguous forms only
+(count-prefixed, inch-marked) would reopen the `Artist - Album CD` hole fixed
+earlier on this branch. The trade taken is: correct on `Album FORMAT`, wrong on
+an album whose last word is a format word, on the fallback path only — the
+quoted path, which is this store's observed convention, is unaffected because
+its format lives in a separate capture group. Whether the store has any
+unquoted titles at all is one more thing the live feed would settle.
 
 This gate is the one piece of the design that is pure insurance. If the
 `vinyl` collection turns out to be strictly vinyl, it never fires.
@@ -350,6 +392,9 @@ Before enabling this crawler on a real deployment, from a host that can reach
    `body_html` for exactly that reason).
 4. Measure what fraction of titles the quoted-title regex matches, and read
    the residue — the dash fallback and the skip path are sized for a handful
-   of stragglers, not a second convention.
+   of stragglers, not a second convention. If unquoted titles turn out to be
+   common, re-examine the dash path's known limitation above (a multi-word
+   album ending in a format word is misread); it is an accepted risk only
+   while that path is rare.
 5. Check whether the `vinyl` collection carries non-vinyl products, and
    whether the blurb gate catches them.
