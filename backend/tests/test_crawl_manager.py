@@ -665,6 +665,7 @@ async def test_sync_collection_broadcasts_page_fetched_before_that_pages_progres
     first_page_fetched = statuses.index("sync_page_fetched")
     first_progress = statuses.index("sync_progress")
     assert first_page_fetched < first_progress
+    assert all(e.get("user_id") == user["id"] for e in events)
 
 
 @respx.mock
@@ -996,6 +997,7 @@ async def test_run_plex_match_broadcasts_error_when_no_music_section_found(pg_sc
 
     statuses = [e["status"] for e in manager.recent_events()]
     assert statuses == ["plex_match_started", "plex_match_error"]
+    assert all(e.get("user_id") == user["id"] for e in manager.recent_events())
 
 
 @respx.mock
@@ -3728,6 +3730,7 @@ async def test_run_judgment_phase_broadcasts_error_when_no_api_key(pg_schema):
 
     statuses = [e["status"] for e in manager.recent_events()]
     assert statuses == ["stock_judgment_started", "stock_judgment_error"]
+    assert all(e.get("user_id") == alice["id"] for e in manager.recent_events())
 
 
 async def test_sync_stock_aborts_after_two_consecutive_429_crawlers(pg_schema, manager, monkeypatch):
@@ -3939,7 +3942,7 @@ async def test_run_judgment_phase_broadcasts_complete_when_nothing_unjudged(pg_s
     statuses = [e["status"] for e in manager.recent_events()]
     assert statuses == ["stock_judgment_started", "stock_judgment_complete"]
     events = [e for e in manager.recent_events() if e["status"] == "stock_judgment_complete"]
-    assert events == [{"status": "stock_judgment_complete", "judged": 0, "id": 2}]
+    assert events == [{"status": "stock_judgment_complete", "judged": 0, "id": 2, "user_id": alice["id"]}]
     assert any("nothing to do" in r.message for r in caplog.records)
 
 

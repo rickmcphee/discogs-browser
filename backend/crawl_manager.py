@@ -625,7 +625,7 @@ class CrawlManager:
         )
         import httpx
 
-        broadcast = lambda event: self._broadcast_threadsafe(event, loop)
+        broadcast = lambda event: self._broadcast_threadsafe({**event, "user_id": user_id}, loop)
 
         broadcast({"status": "sync_started", "scope": scope})
         try:
@@ -1066,7 +1066,11 @@ class CrawlManager:
         # keeps the except block's own log line safe even if that query itself
         # (or anything after it) is what raises.
         username = f"user {user_id}"
-        await self._broadcast({"status": "stock_judgment_started"})
+
+        async def broadcast(event: dict):
+            await self._broadcast({**event, "user_id": user_id})
+
+        await broadcast({"status": "stock_judgment_started"})
         try:
             with get_identity_pool().connection() as conn:
                 user = conn.execute(
@@ -1075,13 +1079,13 @@ class CrawlManager:
                 ).fetchone()
             if user is None:
                 log.info("Judgment run started for %s", username)
-                await self._broadcast({"status": "stock_judgment_error", "error": "User not found"})
+                await broadcast({"status": "stock_judgment_error", "error": "User not found"})
                 return
             username = user["discogs_username"]
             log.info("Judgment run started for %s", username)
             api_key = user["anthropic_api_key"]
             if not api_key:
-                await self._broadcast({"status": "stock_judgment_error", "error": "Anthropic API key not configured"})
+                await broadcast({"status": "stock_judgment_error", "error": "Anthropic API key not configured"})
                 return
             # recommendation_item_limit is NOT NULL DEFAULT 300, and 0 is a
             # deliberate "unlimited" sentinel consumed by get_unjudged_stock_items's
@@ -1095,7 +1099,7 @@ class CrawlManager:
                 taste_listing = get_taste_listing(conn, user_id)
 
             if not unjudged:
-                await self._broadcast({"status": "stock_judgment_complete", "judged": 0})
+                await broadcast({"status": "stock_judgment_complete", "judged": 0})
                 log.info("Found 0/0 items to judge for %s, nothing to do", username)
                 return
             log.info("Found %d/%d items to judge for %s", len(unjudged), total_unjudged, username)
@@ -1113,16 +1117,16 @@ class CrawlManager:
                     judged += len(results)
                     recommended_in_batch = sum(1 for r in results if r["recommended"])
                 log.info("Judged batch %d/%d for %s: %d recommended", judged, len(unjudged), username, recommended_in_batch)
-                await self._broadcast({"status": "stock_judgment_progress", "judged": judged, "total": len(unjudged)})
+                await broadcast({"status": "stock_judgment_progress", "judged": judged, "total": len(unjudged)})
 
-            await self._broadcast({"status": "stock_judgment_complete", "judged": judged})
+            await broadcast({"status": "stock_judgment_complete", "judged": judged})
             log.info("Stock judgment complete for %s: %d items judged", username, judged)
         except asyncio.CancelledError:
             log.info("Judgment run cancelled")
             raise
         except Exception as e:
             log.error("Judgment phase failed for %s: %s", username, e, exc_info=True)
-            await self._broadcast({"status": "stock_judgment_error", "error": str(e)})
+            await broadcast({"status": "stock_judgment_error", "error": str(e)})
 
     async def _run_plex_match(self, user_id: int, base_url: str, token: str, threshold: int):
         import plex
@@ -1132,13 +1136,17 @@ class CrawlManager:
         )
 
         username = self._username_for_log(user_id)
-        await self._broadcast({"status": "plex_match_started"})
+
+        async def broadcast(event: dict):
+            await self._broadcast({**event, "user_id": user_id})
+
+        await broadcast({"status": "plex_match_started"})
         log.info("Plex match started for %s", username)
         try:
             section_key = await asyncio.to_thread(plex.get_music_section_key, base_url, token)
             if section_key is None:
                 log.warning("Plex match skipped for %s: no music library section found on %s", username, base_url)
-                await self._broadcast({"status": "plex_match_error", "error": "No music library found on Plex server"})
+                await broadcast({"status": "plex_match_error", "error": "No music library found on Plex server"})
                 return
 
             albums = await asyncio.to_thread(plex.fetch_albums, base_url, token, section_key)
@@ -1167,16 +1175,16 @@ class CrawlManager:
                         # remaining items in this same connection are still RLS-scoped
                         # to this user (same hazard _sync_collection's page loop hits).
                         conn.execute("SELECT set_config('app.user_id', %s, true)", [str(user_id)])
-                        await self._broadcast({"status": "plex_match_progress", "matched": matched, "total": len(items)})
+                        await broadcast({"status": "plex_match_progress", "matched": matched, "total": len(items)})
 
-            await self._broadcast({"status": "plex_match_complete", "matched": matched})
+            await broadcast({"status": "plex_match_complete", "matched": matched})
             log.info("Plex match complete for %s: %d/%d matched", username, matched, len(items))
         except Exception as e:
             if isinstance(e, plex_security.PlexUnsafeAddressError):
                 log.warning("Plex match rejected for %s: %s", username, e)
-                await self._broadcast({"status": "plex_match_error", "error": "Plex address not reachable"})
+                await broadcast({"status": "plex_match_error", "error": "Plex address not reachable"})
             else:
                 log.warning("Plex match phase failed for %s, skipping: %s", username, e)
-                await self._broadcast({"status": "plex_match_error", "error": "an unexpected error occurred"})
+                await broadcast({"status": "plex_match_error", "error": "an unexpected error occurred"})
 
 crawl_manager = CrawlManager()
