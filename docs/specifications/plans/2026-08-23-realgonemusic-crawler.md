@@ -15,7 +15,7 @@
 - `format` is hardcoded `"Vinyl"` on every yielded item; `currency` is hardcoded `"USD"`.
 - `_COLLECTION_SLUG = "vinyl"`. Do not switch to `all` or add a second collection — the design spec's "Collection choice" section records that `rarities`/`halloween`/`upcoming`/`new-releases`/`real-gone-collectibles` are cross-cuts already present as tags on `vinyl` products.
 - **`artist` is `product["vendor"]` verbatim, always.** Never attempt to split the product title. This is the spec's central decision, not an oversight — see its "Artist attribution" section for the three rejected alternatives. A reviewer who "fixes" this reintroduces confidently-wrong attributions.
-- **No per-variant format filter, positive or negative.** This is a deliberate departure from every sibling Shopify crawler. All 279 live variant titles are colour/edition names; a positive vinyl regex would drop the large majority of real stock.
+- **No per-variant format filter, positive or negative.** This is a deliberate departure from every sibling Shopify crawler. Not one of the 279 live variant titles names a format: 229 are colour/edition names, 48 are bundles, 2 are Shopify's `Default` placeholder. A positive vinyl regex would drop the large majority of real stock, and a negative one would have nothing to match.
 - **No pre-order handling.** The `Upcoming` tag is a real pre-order signal and is deliberately unused — see the spec's "Pre-orders (not implemented)" section. Do not add a ` (Pre-Order)` suffix and do not bypass the availability gate.
 - No comments except where the WHY is non-obvious (a hidden constraint, a confirmed-live edge case) — no comments describing WHAT the code does.
 - Registration is automatic via `main.py`'s `seed_bundled_crawlers()`, which walks `backend/crawlers/` at startup and calls `register_crawler` — no wiring changes anywhere else.
@@ -249,6 +249,21 @@ _SYNTHETIC_BAD_PRICE = {
 }
 
 
+# Synthetic: no live variant has an empty or whitespace-only title. This
+# pins the third _compose_title collapse, which is defensive -- without it
+# an empty descriptor would render as a dangling "Product Title — ".
+_SYNTHETIC_EMPTY_VARIANT_TITLE = {
+    "title": "Synthetic Artist Empty Variant LP",
+    "vendor": "Real Gone Music",
+    "handle": "synthetic-artist-empty-variant-lp",
+    "tags": ["Vinyl"],
+    "images": [],
+    "variants": [
+        {"title": "   ", "price": "24.99", "available": True, "featured_image": None},
+    ],
+}
+
+
 def _page_response(products):
     return httpx.Response(200, json={"products": products})
 
@@ -373,6 +388,14 @@ async def test_crawl_catalog_skips_product_with_null_variants(crawler):
     assert items == []
 
 
+@respx.mock
+async def test_crawl_catalog_whitespace_variant_title_not_suffixed(crawler):
+    _mock_single_page([_SYNTHETIC_EMPTY_VARIANT_TITLE])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert len(items) == 1
+    assert items[0]["title"] == "Synthetic Artist Empty Variant LP"
+
+
 def test_site_metadata():
     assert Crawler.site_name == "Real Gone Music"
     assert Crawler.base_url == "https://realgonemusic.com"
@@ -445,10 +468,13 @@ class Crawler:
         url = f"{cls.base_url}/products/{handle}"
 
         # No format filter, deliberately: the `vinyl` collection tag
-        # already gates format at the product level, and all 279 live
-        # variant titles are colour/edition names ("Wax Mage", "Blue-Green
-        # 'Ocean Spray'"), so a positive vinyl regex -- the sibling
-        # convention -- would drop the large majority of real stock.
+        # already gates format at the product level, and not one of the
+        # 279 live variant titles names a format at all -- 229 are
+        # colour/edition names ("Wax Mage", "Blue-Green 'Ocean Spray'"),
+        # 48 are bundles, and 2 are Shopify's Default placeholder. So a
+        # positive vinyl regex -- the sibling convention -- would drop the
+        # large majority of real stock, and a negative one would have
+        # nothing to match.
         items = []
         for variant in product.get("variants") or []:
             if not variant.get("available"):
@@ -493,11 +519,11 @@ class Crawler:
 cd backend && pytest tests/test_realgonemusic_crawler.py -v
 ```
 
-Expected: 12 passed.
+Expected: 13 passed.
 
 - [ ] **Step 5: Run the full crawler test suite for regressions**
 
-The plugin loader imports every module in `backend/crawlers/`, so a syntax or import error in the new file breaks unrelated tests. This command needs no database:
+The plugin loader imports every module in `backend/crawlers/`, so a syntax or import error in the new file breaks unrelated tests. **Unlike the narrow command above, this one does need Postgres** — the `-k crawler` selection pulls in DB-backed files (`test_ebay_crawler.py` and others) that error with `KeyError: 'TEST_DATABASE_URL'` when the three test env vars are unset. Set them (see `CLAUDE.md`'s "Running" section) so you don't have to distinguish fixture errors from real regressions by eye:
 
 ```bash
 cd backend && pytest tests/ -k crawler -v
@@ -527,8 +553,8 @@ library. Colon-splitting, prefix clustering, and Discogs UPC lookup were
 each considered and rejected -- see the design spec.
 
 Two deliberate departures from the sibling Shopify crawlers, both pinned
-by tests: no per-variant format filter (all 279 live variant titles are
-colour/edition names; the collection tag already gates format), and no
+by tests: no per-variant format filter (not one of the 279 live variant
+titles names a format; the collection tag already gates it), and no
 pre-order handling (the Upcoming tag is a real signal, but the sibling
 availability-bypass half would only admit sold-out variants here).
 
@@ -569,7 +595,7 @@ One is known to need attention before the PR opens:
 
 1. `docs/specifications/shaping/2026-08-07-shared-title-split-helper-design.md` — this doc tracks every crawler that diverges from the proposed shared `split_artist_title()` contract, and carries four dated amendments naming `cleorecs.py`, `jackpotrecords.py`, `asianmanrecords.py`, and `carparkrecords.py` as exceptions. `realgonemusic.py` is a further exception, and a stronger one than any prior: it does not split titles *at all*. Add the next amendment in sequence recording that, dated 2026-08-23, branch `claude/realgonemusic-crawler-84feaf`. Count the existing amendments before labelling it — as of 2026-08-23 there are four (the fourth, for `carparkrecords.py`, landed 2026-08-19), so the new one is the **fifth**.
 
-(This crawler's own design spec had a second drift — its "Testing" section described direct `_items()` calls — but that was corrected in commit `a060093` before implementation began, so it needs no action here.)
+(This crawler's own design spec had a second drift — its "Testing" section described the suite as exercising `_items()` directly, when the sibling convention it actually follows drives `crawl_catalog()` through `respx`-mocked pages. Corrected in commit `a060093` before implementation began, so it needs no action here. Note the correction narrowed the claim rather than reversing it: the shipped suite still calls `_items()` directly in one place, for the artist-gap assertion, whose anchor product yields nothing through the public path.)
 
 Confirm the rest of the matches still describe reality; amend any that do not, with a short note or inline correction rather than a rewrite.
 

@@ -50,10 +50,13 @@ class Crawler:
         url = f"{cls.base_url}/products/{handle}"
 
         # No format filter, deliberately: the `vinyl` collection tag
-        # already gates format at the product level, and all 279 live
-        # variant titles are colour/edition names ("Wax Mage", "Blue-Green
-        # 'Ocean Spray'"), so a positive vinyl regex -- the sibling
-        # convention -- would drop the large majority of real stock.
+        # already gates format at the product level, and not one of the
+        # 279 live variant titles names a format at all -- 229 are
+        # colour/edition names ("Wax Mage", "Blue-Green 'Ocean Spray'"),
+        # 48 are bundles, and 2 are Shopify's Default placeholder. So a
+        # positive vinyl regex -- the sibling convention -- would drop the
+        # large majority of real stock, and a negative one would have
+        # nothing to match.
         items = []
         for variant in product.get("variants") or []:
             if not variant.get("available"):

@@ -151,10 +151,10 @@ _BUNDLE_RE = re.compile(r'\bbundle\b', re.IGNORECASE)
 **No format filter, deliberately.** This is a departure from every
 sibling Shopify crawler, all of which apply a positive or negative
 per-variant format regex. Confirmed live across all 279 distinct variant
-titles in this collection: every one is a colour or edition name (`Black`,
-`Wax Mage`, `Clear with Red Green & Purple "Dracula" Swirl Web EX.`,
-`Blue-Green "Ocean Spray"`), a `Default`/`Default Title` placeholder, or a
-bundle. There is not one CD, cassette, digital, or merch variant in the
+titles in this collection: not one names a format. 229 are colour or
+edition names (`Black`, `Wax Mage`, `Clear with Red Green & Purple
+"Dracula" Swirl Web EX.`, `Blue-Green "Ocean Spray"`), 48 are bundles, and
+2 are Shopify's `Default`/`Default Title` placeholder. There is not one CD, cassette, digital, or merch variant in the
 collection — the collection tag already gates format at the product level.
 A positive vinyl regex would drop the large majority of real stock
 (`carparkrecords.py`'s spec documents the same trap), and a negative one
@@ -217,8 +217,9 @@ with three collapses to the bare product title:
   shape, and none is expected to; the arm exists so a future empty
   descriptor renders as the bare product title rather than a dangling
   `Product Title — `. It is the same "no meaningful variant descriptor"
-  principle as the two arms above, at the cost of one `or` term, and it is
-  the one branch of `_compose_title` no test drives.
+  principle as the two arms above, at the cost of one `or` term. Pinned by
+  a synthetic test (a whitespace-only variant title), since no live product
+  can exercise it.
 
 All 9 collapsed titles among the 268 emitted rows therefore come from the
 `Default`/`Default Title` branch. Confirmed live that the 268 `(artist,
@@ -313,6 +314,8 @@ and so yields nothing through the public path. Cases:
   handling
 - a bare colour variant with no format keyword (`Wax Mage`, `Hellfire`) →
   kept — pins the deliberate absence of a format filter
+- whitespace-only variant title → bare product title, no dangling em dash
+  (synthetic; the one `_compose_title` branch no live product reaches)
 - malformed/missing `price` → `None`, row still emitted
 - `cover_image_url` prefers the variant's `featured_image` over the
   product's first image

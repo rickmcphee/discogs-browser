@@ -201,6 +201,21 @@ _SYNTHETIC_BAD_PRICE = {
 }
 
 
+# Synthetic: no live variant has an empty or whitespace-only title. This
+# pins the third _compose_title collapse, which is defensive -- without it
+# an empty descriptor would render as a dangling "Product Title — ".
+_SYNTHETIC_EMPTY_VARIANT_TITLE = {
+    "title": "Synthetic Artist Empty Variant LP",
+    "vendor": "Real Gone Music",
+    "handle": "synthetic-artist-empty-variant-lp",
+    "tags": ["Vinyl"],
+    "images": [],
+    "variants": [
+        {"title": "   ", "price": "24.99", "available": True, "featured_image": None},
+    ],
+}
+
+
 def _page_response(products):
     return httpx.Response(200, json={"products": products})
 
@@ -323,6 +338,14 @@ async def test_crawl_catalog_skips_product_with_null_variants(crawler):
     _mock_single_page([{**_BARBARA_LEWIS, "variants": None}])
     items = [item async for item in crawler.crawl_catalog()]
     assert items == []
+
+
+@respx.mock
+async def test_crawl_catalog_whitespace_variant_title_not_suffixed(crawler):
+    _mock_single_page([_SYNTHETIC_EMPTY_VARIANT_TITLE])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert len(items) == 1
+    assert items[0]["title"] == "Synthetic Artist Empty Variant LP"
 
 
 def test_site_metadata():
