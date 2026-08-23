@@ -37,12 +37,20 @@ _DASH_RE = re.compile(r'^(?P<artist>.+?)(?:\s+[-–—]\s*|\s*[-–—]\s+)(?P<a
 # no bare "MC"/"EP", since this rewrites the stored title rather than just
 # gating on it.
 _TRAILING_FORMAT_RE = re.compile(
-    r'\s+((?:(?:\d*LP|\d*CDS?|VINYL|CASSETTE|TAPE|DVD|BLU-?RAY|DIGIPA[KC]K?|'
-    r'PICTURE\s+DISC)\b|\d{1,2}\s*(?:"|INCH\b)).*)$',
+    r'\s+((?:(?:\d*[x×]?LP|\d*[x×]?CDS?|VINYL|CASSETTE|TAPE|\d*[x×]?DVD|BLU-?RAY|'
+    r'DIGIPA[KC]K?|PICTURE\s+DISC)\b|\d{1,2}\s*(?:"|INCH\b)).*)$',
     re.IGNORECASE,
 )
+_PLACEHOLDER_VARIANT = "default title"
 _PREORDER_RE = re.compile(r'pre[\s_-]?order', re.IGNORECASE)
-_VINYL_RE = re.compile(r'\b\d*lp\b|\bvinyl\b|\b(?:7|10|12)"|\bpicture disc\b', re.IGNORECASE)
+# \d*[x×]? on the LP/CD/DVD forms: Shopify stores write multi-disc counts both
+# ways ("2LP" and "2xLP"), and this repo's own fixtures carry the x form (see
+# test_temporaryresidence_crawler.py). Siblings already spell it \b\d*x?lp\b;
+# the × is added because a store that types the real multiplication sign should
+# not silently fall through the gate.
+_VINYL_RE = re.compile(
+    r'\b\d*[x×]?lp\b|\bvinyl\b|\b(?:7|10|12)"|\bpicture disc\b', re.IGNORECASE
+)
 # The \d* on cd/dvd is load-bearing: a disc count binds to the format word with
 # no word boundary between them, so a bare \bcds?\b cannot match the "CD" in
 # "2CD" and a double-CD edition was passing the gate as Vinyl. _VINYL_RE's
@@ -50,8 +58,8 @@ _VINYL_RE = re.compile(r'\b\d*lp\b|\bvinyl\b|\b(?:7|10|12)"|\bpicture disc\b', r
 # side into line. A bundle naming both ("LP+2CD") is still vinyl -- _VINYL_RE
 # short-circuits ahead of this.
 _NON_VINYL_RE = re.compile(
-    r'\b(\d*cds?|digipa[kc]k?|cassette|tape|mc|\d*dvd|blu-?ray|shirt|t-shirt|hoodie|'
-    r'longsleeve|poster|patch|flag|mug|book)\b',
+    r'\b(\d*[x×]?cds?|digipa[kc]k?|cassette|tape|mc|\d*[x×]?dvd|blu-?ray|shirt|t-shirt|'
+    r'hoodie|longsleeve|poster|patch|flag|mug|book)\b',
     re.IGNORECASE,
 )
 
@@ -97,15 +105,37 @@ class Crawler:
         url = f"{cls.base_url}/products/{handle}"
         is_preorder = cls._is_preorder(product)
 
+        variants = product.get("variants") or []
+        # db.compute_item_key hashes (artist, title, url) and
+        # replace_stock_items INSERTs without ON CONFLICT, so two variants of
+        # one product sharing a title become two physically duplicated rows
+        # under one identity -- indistinguishable in the Store tab, and sharing
+        # a single judgment and saved state between them. A multi-variant
+        # product therefore qualifies each row with its variant name, the shape
+        # nuclearblast.py uses.
+        #
+        # Counted over the FULL variant list, never the availability-filtered
+        # one: if the qualifier appeared only while a sibling variant happened
+        # to be in stock, the title -- and with it item_key -- would change
+        # between syncs, orphaning that row's judgment every time stock moved.
+        multi_variant = len(variants) > 1
+
         items = []
-        for variant in product.get("variants") or []:
+        for variant in variants:
             if not variant.get("available") and not is_preorder:
                 continue
             try:
                 price = float(variant["price"])
             except (KeyError, TypeError, ValueError):
                 price = None
-            display_title = f"{album_title} (Pre-Order)" if is_preorder else album_title
+            display_title = album_title
+            variant_title = (variant.get("title") or "").strip()
+            # "Default Title" is Shopify's placeholder on a single-variant
+            # product; it identifies nothing and must never reach a title.
+            if multi_variant and variant_title and variant_title.lower() != _PLACEHOLDER_VARIANT:
+                display_title = f"{album_title} — {variant_title}"
+            if is_preorder:
+                display_title += " (Pre-Order)"
             items.append({
                 "artist": artist,
                 "title": display_title,

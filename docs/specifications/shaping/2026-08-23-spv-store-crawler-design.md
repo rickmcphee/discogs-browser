@@ -178,12 +178,24 @@ the test it replaced only passed because it blanked `vendor`.
 ### Format gate: negative, on the title blurb
 
 ```python
-_VINYL_RE     = re.compile(r'\b\d*lp\b|\bvinyl\b|\b(?:7|10|12)"|\bpicture disc\b', re.IGNORECASE)
-_NON_VINYL_RE = re.compile(r'\b(cds?|digipa[kc]k?|cassette|tape|mc|dvd|blu-?ray|shirt|t-shirt|hoodie|longsleeve|poster|patch|flag|mug|book)\b', re.IGNORECASE)
+_VINYL_RE     = re.compile(r'\b\d*[x×]?lp\b|\bvinyl\b|\b(?:7|10|12)"|\bpicture disc\b', re.IGNORECASE)
+_NON_VINYL_RE = re.compile(r'\b(\d*[x×]?cds?|digipa[kc]k?|cassette|tape|mc|\d*[x×]?dvd|blu-?ray|shirt|t-shirt|hoodie|longsleeve|poster|patch|flag|mug|book)\b', re.IGNORECASE)
 ```
 
 The gate reads the trailing blurb only, never the artist or album, so a
 record named *Tape* or *Book* is not mistaken for one.
+
+The `\d*[x×]?` on the LP/CD/DVD forms is load-bearing in both directions, and
+arrived in two review rounds on PR #165. A disc count binds to the format word
+with no word boundary between them, so a bare `\bcds?\b` cannot match the "CD"
+in `2CD` and a double-CD edition passed the gate as Vinyl. The `x`/`×` form is
+the same hole one step further out: Shopify stores write the count both ways
+(`2LP` and `2xLP` — this repo's own `test_temporaryresidence_crawler.py`
+fixtures carry the x form), and without it `2xCD` is published as vinyl *and*
+`2xLP+CD` is wrongly dropped, since the bundle's vinyl half no longer matches
+the override while its `CD` half still matches the negative side. `_VINYL_RE`,
+`_NON_VINYL_RE`, and `_TRAILING_FORMAT_RE` all carry the same allowance so the
+two gates and the dash-path splitter cannot disagree.
 
 Negative rather than positive, and deliberately so: the source is the store's
 own vinyl collection, so an *unrecognised* blurb (`Deluxe Edition`) is kept.
@@ -210,6 +222,32 @@ match and survives untouched.
 
 This gate is the one piece of the design that is pure insurance. If the
 `vinyl` collection turns out to be strictly vinyl, it never fires.
+
+### Multi-variant products: qualify the title, or collide
+
+`db.compute_item_key` hashes `(artist, title, url)`, and `replace_stock_items`
+INSERTs into `stock_items` with no `ON CONFLICT`. Two variants of one product
+sharing a title therefore become two physically duplicated rows under a single
+identity — indistinguishable in the Store tab, sharing one judgment and one
+saved state between them. A multi-variant product qualifies each row with its
+variant name (`1982 — Black`), the shape `nuclearblast.py` uses.
+
+Three details, all load-bearing:
+
+- **The count is over the full variant list, never the availability-filtered
+  one.** A qualifier that appeared only while a sibling variant happened to be
+  in stock would change the title — and with it `item_key` — between syncs,
+  orphaning that row's judgment every time stock moved.
+- **Shopify's `Default Title` placeholder never reaches a title.** It appears
+  on single-variant products, identifies nothing, and would be pure noise.
+- **The qualifier precedes the ` (Pre-Order)` suffix**, so the clean album
+  title stays an exact or space-terminated prefix of whatever is stored — the
+  invariant [`2026-07-06-store-recommended-filter-design.md`](../../superpowers/specs/2026-07-06-store-recommended-filter-design.md)
+  depends on.
+
+Found in review on PR #165. Whether this store even has multi-variant products
+is one more thing the live feed would settle; the qualifier costs nothing if
+every product turns out to have exactly one.
 
 ### Pre-order
 
@@ -252,9 +290,10 @@ price render site, which comparison rows share. A symbol map rather than
 `Intl.NumberFormat`: `Intl` would also start inserting thousands separators
 into USD prices, changing how every existing source renders in order to fix a
 bug in one of them. `toFixed(2)` is kept exactly as it was, so USD output is
-byte-for-byte unchanged. A null `currency` defaults to USD — 45 of the 46
-sources hardcode it, so defaulting avoids regressing pre-existing rows to a
-bare number. An unmapped-but-real code prints as `27.99 SEK` rather than
+byte-for-byte unchanged. A null `currency` defaults to USD — of the 48 stock
+sources, only `jetglowrecordings.py` (hardcoded EUR), `darkdescentrecords.py`
+(feed pass-through) and this crawler are anything else — so defaulting avoids
+regressing pre-existing rows to a bare number. An unmapped-but-real code prints as `27.99 SEK` rather than
 guessing a symbol.
 
 ### Metadata
@@ -269,7 +308,7 @@ crawler_type = "catalog"
 
 ## Tests
 
-`backend/tests/test_spv_crawler.py`, 27 cases, `respx`-mocked — the same
+`backend/tests/test_spv_crawler.py`, 38 cases, `respx`-mocked — the same
 shape as the sibling crawler tests. Product titles and handles in the
 fixtures are real store listings; prices, tags, variants, and image URLs are
 synthesized, and the file says so at the top rather than implying a live
@@ -281,7 +320,11 @@ name (`Satan's Fall`), the first-closing-quote stop, all three pre-order tag
 spellings including the comma-string form, unavailable-variant drop, the
 non-vinyl blurb gate, the `LP+CD` override, the unrecognised-blurb keep, both
 dash fallbacks including `Cro-Mags`, the no-artist-source skip, null
-variants, and an unparseable price.
+variants, and an unparseable price. Later review rounds added the
+count-prefixed and multiplier format cases (`2CD`, `2xCD`, `2×CD`, `2xDVD`
+dropped; `2LP`, `2xLP`, `2xLP+CD` kept), the four variant-qualifier cases
+below, and the spaced `Pre Order` tag spelling the design claimed but nothing
+pinned.
 
 No `conftest.py` change is needed: this crawler paces itself through
 `shopify_catalog.iter_products()`, whose `sleep` and `load_config` the

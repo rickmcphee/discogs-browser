@@ -172,6 +172,66 @@ def test_non_vinyl_format_blurb_dropped():
         assert Crawler._items(product) == [], blurb
 
 
+def _variant(title, available=True, price="27.99"):
+    return {"title": title, "price": price, "available": available, "featured_image": None}
+
+
+def test_multiplier_notation_non_vinyl_is_dropped():
+    # "2xCD" is real Shopify notation -- this repo's own temporaryresidence
+    # fixtures carry it -- and the plain \d* prefix does not reach across the x.
+    for title in ('Sodom "1982" 2xCD', "Sodom - 1982 2xCD", 'Sodom "1982" 2×CD',
+                  'Sodom "1982" 2xDVD'):
+        assert Crawler._items({**_SODOM, "title": title}) == [], title
+
+
+def test_multiplier_notation_vinyl_is_kept():
+    for title in ('Sodom "1982" 2xLP', 'Sodom "1982" 2×LP', 'Sodom "1982" 2xLP+CD'):
+        assert len(Crawler._items({**_SODOM, "title": title})) == 1, title
+
+
+def test_multi_variant_product_qualifies_each_row():
+    # db.compute_item_key hashes (artist, title, url) and replace_stock_items
+    # INSERTs with no ON CONFLICT, so identical titles across variants become
+    # duplicated rows sharing one identity, one judgment and one saved state.
+    product = {**_SODOM, "variants": [_variant("Black"), _variant("Splatter")]}
+    titles = [i["title"] for i in Crawler._items(product)]
+    assert titles == ["1982 — Black", "1982 — Splatter"]
+    assert len(set(titles)) == 2
+
+
+def test_single_variant_product_is_not_qualified():
+    product = {**_SODOM, "variants": [_variant("Black")]}
+    assert [i["title"] for i in Crawler._items(product)] == ["1982"]
+
+
+def test_shopify_placeholder_variant_never_reaches_the_title():
+    product = {**_SODOM, "variants": [_variant("Default Title"), _variant("Default Title")]}
+    assert [i["title"] for i in Crawler._items(product)] == ["1982", "1982"]
+
+
+def test_variant_qualifier_does_not_depend_on_sibling_availability():
+    # Counted over the full variant list, not the filtered one: a qualifier that
+    # appeared only while a sibling was in stock would change item_key between
+    # syncs and orphan that row's judgment every time stock moved.
+    product = {**_SODOM, "variants": [_variant("Black"), _variant("Splatter", available=False)]}
+    assert [i["title"] for i in Crawler._items(product)] == ["1982 — Black"]
+
+
+def test_variant_qualifier_precedes_the_preorder_suffix():
+    product = {**_SODOM, "tags": ["pre-order"],
+               "variants": [_variant("Black"), _variant("Splatter")]}
+    titles = [i["title"] for i in Crawler._items(product)]
+    assert titles == ["1982 — Black (Pre-Order)", "1982 — Splatter (Pre-Order)"]
+    # The recommended-filter spec's prefix invariant: the clean album title
+    # stays an exact or space-terminated prefix of whatever is stored.
+    assert all(x.startswith("1982 ") for x in titles)
+
+
+def test_preorder_tag_matches_the_spaced_spelling():
+    # The design claims _PREORDER_RE covers "Pre Order"; nothing pinned it.
+    assert Crawler._items({**_SODOM, "tags": ["Pre Order"]})[0]["title"] == "1982 (Pre-Order)"
+
+
 def test_count_prefixed_non_vinyl_format_is_dropped():
     # Regression: a disc count binds to the format word with no word boundary
     # between them, so `\bcds?\b` could not match the "CD" in "2CD" and a
