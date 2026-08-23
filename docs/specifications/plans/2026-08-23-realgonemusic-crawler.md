@@ -567,7 +567,7 @@ grep -rl "numerogroup\|shopify_catalog\|iter_products\|resolve_cover_image\|mark
 
 One is known to need attention before the PR opens:
 
-1. `docs/specifications/shaping/2026-08-07-shared-title-split-helper-design.md` — this doc tracks every crawler that diverges from the proposed shared `split_artist_title()` contract, and carries three dated amendments naming `cleorecs.py`, `jackpotrecords.py`, and `asianmanrecords.py` as exceptions. `realgonemusic.py` is a further exception, and a stronger one than any prior: it does not split titles *at all*. Add the next amendment in sequence recording that, dated 2026-08-23, branch `claude/realgonemusic-crawler-84feaf`. Count the existing amendments before labelling it — as of 2026-08-23 there are four (the fourth, for `carparkrecords.py`, landed 2026-08-19), so the new one is the **fifth**.
+1. `docs/specifications/shaping/2026-08-07-shared-title-split-helper-design.md` — this doc tracks every crawler that diverges from the proposed shared `split_artist_title()` contract, and carries four dated amendments naming `cleorecs.py`, `jackpotrecords.py`, `asianmanrecords.py`, and `carparkrecords.py` as exceptions. `realgonemusic.py` is a further exception, and a stronger one than any prior: it does not split titles *at all*. Add the next amendment in sequence recording that, dated 2026-08-23, branch `claude/realgonemusic-crawler-84feaf`. Count the existing amendments before labelling it — as of 2026-08-23 there are four (the fourth, for `carparkrecords.py`, landed 2026-08-19), so the new one is the **fifth**.
 
 (This crawler's own design spec had a second drift — its "Testing" section described direct `_items()` calls — but that was corrected in commit `a060093` before implementation began, so it needs no action here.)
 
@@ -581,8 +581,8 @@ Spec drift gets its own commit on this branch, pushed before the PR opens — a 
 cat > /tmp/realgone-spec-commit.txt <<'MSG'
 Amend specs for Real Gone Music crawler
 
-Fourth amendment to the shared-title-split-helper design: realgonemusic.py
-is a fourth documented exception to the converging split_artist_title()
+Fifth amendment to the shared-title-split-helper design: realgonemusic.py
+is a fifth documented exception to the converging split_artist_title()
 contract, and the strongest one -- it performs no title split at all,
 because the store has no artist/album delimiter to split on.
 
