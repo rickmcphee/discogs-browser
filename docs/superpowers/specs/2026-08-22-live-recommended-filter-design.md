@@ -51,12 +51,17 @@ handlers — no new state, no new endpoints.
    refresh happens to be running concurrently is no longer relevant to
    whether the filter is usable.
 
-2. **`hasJudgedItems` flips true progressively**, in the
-   `stock_judgment_progress` handler (`App.tsx:274`): call
-   `setHasJudgedItems(true)` when `event.judged > 0`. Mirrors what
-   `stock_judgment_complete` already does unconditionally, but fires on the
-   first batch instead of waiting for the whole run — this is what makes a
-   first-ever refresh's filter selectable mid-run rather than only after.
+2. **`hasJudgedItems` flips true only when a batch actually judged
+   something**, on both the `stock_judgment_progress` and
+   `stock_judgment_complete` handlers: call `setHasJudgedItems(true)` when
+   `(event.judged ?? 0) > 0`. `stock_judgment_progress` firing this on the
+   first non-zero batch (rather than waiting for the whole run) is what
+   makes a first-ever refresh's filter selectable mid-run. Guarding
+   `stock_judgment_complete` the same way — rather than the unconditional
+   flip it originally had — matters for a run where every batch fails
+   (`judge_batch` returns `[]` on any failure, so `judged` never advances)
+   or an empty catalog: without the guard, `stock_judgment_complete` would
+   still unlock `Recommended` with zero actual judgments.
 
 3. **`stockSyncGeneration` bumps on judgment events**, same pattern as the
    existing `stock_sync_progress`/`stock_sync_complete` handlers: add
@@ -74,11 +79,14 @@ mid-refresh.
 ## Testing
 
 - Frontend: `stock_judgment_progress` with `judged > 0` sets
-  `hasJudgedItems` true and bumps `stockSyncGeneration`; a subsequent
-  `judged === 0` event (shouldn't occur, but keep the guard) doesn't flip it
-  false. `stock_judgment_complete` still bumps `stockSyncGeneration` in
-  addition to its existing behavior. `recommendedAvailable` is true whenever
-  `hasAnthropicKey && hasJudgedItems`, regardless of `judgmentRunning`.
+  `hasJudgedItems` true and bumps `stockSyncGeneration`. `stock_judgment_complete`
+  bumps `stockSyncGeneration` unconditionally but only sets `hasJudgedItems`
+  true when `(event.judged ?? 0) > 0` — a fresh user whose entire run judges
+  zero items (every batch failed, or nothing was left to judge) sees
+  `stock_judgment_started` → `stock_judgment_complete` with `judged: 0` and
+  the "Recommended" option stays disabled throughout. `recommendedAvailable`
+  is true whenever `hasAnthropicKey && hasJudgedItems`, regardless of
+  `judgmentRunning`.
 - Existing `StockBrowser` tests covering the `recommendedAvailable`
   false→true transition (filter option enabling, no forced reset away from
   "recommended") continue to pass unchanged — behavior there doesn't change,
