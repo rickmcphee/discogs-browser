@@ -220,6 +220,16 @@ APP_DB_PASSWORD=test \
 pytest
 ```
 
+In a Claude Code cloud session none of that setup exists yet, so
+`scripts/cloud-setup.sh` does it: starts Postgres, gives the `postgres` role a
+password, creates the test database, writes those three variables to
+`backend/.env` (picked up by the `pytest-dotenv` dev dependency, so plain
+`pytest` works), and installs the backend, Playwright Chromium, and frontend
+dependencies. It runs automatically via the `SessionStart` hook in
+`.claude/settings.json` and no-ops outside a cloud session; pass `--force` to
+run it anyway. It mirrors `.github/workflows/fly-deploy.yml`, which stays the
+authoritative statement of what a green run needs.
+
 The passwords are arbitrary local test values, not real secrets. The database
 named in `TEST_DATABASE_URL` is never itself read from or written to —
 each pytest session provisions its own `<base>_run_<hex>` database from

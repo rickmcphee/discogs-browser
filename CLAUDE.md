@@ -134,6 +134,10 @@ A single check right after CI passes has the same race shifted one step later: C
 
 ## Tests
 
+- In a Claude Code cloud session, `scripts/cloud-setup.sh` provisions everything the
+  suite needs (Postgres, test database, `backend/.env`, backend + Playwright +
+  frontend dependencies). It runs automatically via the `SessionStart` hook in
+  `.claude/settings.json` — the one file under `.claude/` that is not gitignored.
 - `pytest-asyncio` with `asyncio_mode = "auto"` (all async tests run automatically)
 - HTML fixtures for Amazon price regression tests: `backend/tests/fixtures/crawlers/amazon/`
 - To capture a new fixture: `python backend/scripts/capture_fixture.py amazon <url> "Artist - Title"`
