@@ -43,8 +43,14 @@ _TRAILING_FORMAT_RE = re.compile(
 )
 _PREORDER_RE = re.compile(r'pre[\s_-]?order', re.IGNORECASE)
 _VINYL_RE = re.compile(r'\b\d*lp\b|\bvinyl\b|\b(?:7|10|12)"|\bpicture disc\b', re.IGNORECASE)
+# The \d* on cd/dvd is load-bearing: a disc count binds to the format word with
+# no word boundary between them, so a bare \bcds?\b cannot match the "CD" in
+# "2CD" and a double-CD edition was passing the gate as Vinyl. _VINYL_RE's
+# \b\d*lp\b already had the same allowance for "2LP"; this brings the negative
+# side into line. A bundle naming both ("LP+2CD") is still vinyl -- _VINYL_RE
+# short-circuits ahead of this.
 _NON_VINYL_RE = re.compile(
-    r'\b(cds?|digipa[kc]k?|cassette|tape|mc|dvd|blu-?ray|shirt|t-shirt|hoodie|'
+    r'\b(\d*cds?|digipa[kc]k?|cassette|tape|mc|\d*dvd|blu-?ray|shirt|t-shirt|hoodie|'
     r'longsleeve|poster|patch|flag|mug|book)\b',
     re.IGNORECASE,
 )

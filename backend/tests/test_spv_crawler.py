@@ -172,6 +172,24 @@ def test_non_vinyl_format_blurb_dropped():
         assert Crawler._items(product) == [], blurb
 
 
+def test_count_prefixed_non_vinyl_format_is_dropped():
+    # Regression: a disc count binds to the format word with no word boundary
+    # between them, so `\bcds?\b` could not match the "CD" in "2CD" and a
+    # double-CD edition passed the gate as Vinyl. Both parser paths.
+    for title in ('Sodom "1982" 2CD', "Sodom - 1982 2CD", 'Sodom "1982" 2DVD'):
+        assert Crawler._items({**_SODOM, "title": title}) == [], title
+
+
+def test_count_prefixed_vinyl_format_is_still_kept():
+    for title in ('Sodom "1982" 2LP', 'Sodom "1982" 3LP'):
+        assert len(Crawler._items({**_SODOM, "title": title})) == 1, title
+
+
+def test_vinyl_keyword_overrides_count_prefixed_cd():
+    # A bundle naming both is a vinyl release: _VINYL_RE short-circuits.
+    assert len(Crawler._items({**_SODOM, "title": 'Sodom "1982" LP+2CD'})) == 1
+
+
 def test_vinyl_keyword_overrides_non_vinyl_keyword():
     # A bundle naming both formats is a vinyl release, not a CD.
     product = {**_SODOM, "title": 'Sodom "1982" LP+CD'}

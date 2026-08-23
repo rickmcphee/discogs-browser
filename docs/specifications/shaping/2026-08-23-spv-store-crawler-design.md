@@ -14,10 +14,13 @@ plugins already in `backend/crawlers/`, 41 of which are Shopify stores crawled
 through `shopify_catalog.iter_products()` (counted directly: `grep -l
 iter_products backend/crawlers/*.py` returns 42 including this one).
 
-It is the first EU-domiciled Shopify store in the set: prices are EUR, not
-the USD every sibling Shopify crawler hardcodes. `darkdescentrecords.py` is
-the precedent for a non-USD `currency`, which is a pass-through string end to
-end.
+Prices are EUR, not the USD every sibling *Shopify* crawler hardcodes — SPV is
+the first Shopify store in the set to price in anything else. It is not the
+first EU-domiciled source, though: `jetglowrecordings.py` (Italian, Big Cartel)
+already hardcodes EUR, and `darkdescentrecords.py` passes its feed's currency
+through. Those two are the precedent, and `currency` is a pass-through string
+end to end. (An earlier draft of this doc called SPV the first EU-domiciled
+source outright; corrected in review on PR #165.)
 
 Its title convention quotes the album — `Sodom "1982" LP (exclusive)`,
 `Magnum "The Monster Roars" LP (white & black marbled vinyl)` — rather than
@@ -235,10 +238,14 @@ is.
 ### Frontend: the price cell had to learn about currency
 
 `currency` was already stored per row, selected by `get_stock_items`, and typed
-on `StockItem` — but `StockBrowser.tsx` ignored it and hardcoded a `$`. Every
-existing source hardcodes `"USD"`, so the gap was invisible until this branch
-added the first EU-domiciled store; SPV's `27.99` would have rendered as
-`$27.99`. Found in review on PR #165.
+on `StockItem` — but `StockBrowser.tsx` ignored it and hardcoded a `$`.
+
+This is a **pre-existing live bug this branch exposed, not one it introduced**.
+An earlier draft of this section claimed the gap was invisible until SPV added
+the first EU-domiciled store; that was wrong, and review on PR #165 caught it.
+`jetglowrecordings.py` shipped the day before this branch and hardcodes EUR, so
+Jetglow's rows are being rendered as dollars in production right now. Fixing it
+here corrects those rows too, not just SPV's.
 
 `views/formatPrice.ts` maps the code to a symbol and is used at the single
 price render site, which comparison rows share. A symbol map rather than
