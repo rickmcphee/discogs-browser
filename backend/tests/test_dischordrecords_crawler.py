@@ -1,3 +1,8 @@
+import httpx
+import pytest
+import respx
+
+from config import save_config
 from crawlers.dischordrecords import Crawler
 
 _LISTING_PAGE_1 = """
@@ -44,9 +49,6 @@ def test_release_hrefs_dedupes_image_and_title_links_per_row():
 
 def test_release_hrefs_returns_empty_list_when_none_found():
     assert Crawler._release_hrefs("<html>nothing here</html>") == []
-
-
-import pytest
 
 
 def _detail_page(h1_body, prices_body, og_image="https://s3.amazonaws.com/x/cover.jpg"):
@@ -184,10 +186,6 @@ def test_price_returns_none_on_unparsable_string():
     assert Crawler._price("free") is None
 
 
-import httpx
-import respx
-from config import save_config
-
 _LABEL_URL = "https://dischord.com/label/dischord"
 
 
@@ -210,27 +208,87 @@ async def test_crawl_catalog_yields_items_from_a_single_page(monkeypatch, tmp_co
     assert items[0]["url"] == "https://dischord.com/release/1/only-release"
 
 
+def _listing_page_with_one_release(href):
+    return f'<div class="item"><a href="{href}">Release</a></div>'
+
+
 @respx.mock
 async def test_crawl_catalog_paginates_and_fetches_every_release(monkeypatch, tmp_config_dir):
     save_config({"crawl_delay_seconds": 0})
-    respx.get(_LABEL_URL, params={"page": "1"}).mock(
+    page1_route = respx.get(_LABEL_URL, params={"page": "1"}).mock(
         return_value=httpx.Response(200, text=_LISTING_PAGE_1))
     page2_route = respx.get(_LABEL_URL, params={"page": "2"}).mock(
-        return_value=httpx.Response(200, text=_LISTING_PAGE_NO_PAGINATION))
+        return_value=httpx.Response(200, text=_listing_page_with_one_release("/release/p2/r2")))
     for i in range(3, 9):
         respx.get(_LABEL_URL, params={"page": str(i)}).mock(
-            return_value=httpx.Response(200, text=_LISTING_PAGE_NO_PAGINATION))
+            return_value=httpx.Response(200, text=_listing_page_with_one_release(f"/release/p{i}/r{i}")))
     respx.get(_release_url("/release/203/the-mark")).mock(
         return_value=httpx.Response(200, text=_detail_page(_H1_SINGLE, _ONE_VINYL_BUTTON)))
     respx.get(_release_url("/release/202/plays")).mock(
         return_value=httpx.Response(200, text=_detail_page(_H1_VARIOUS_ARTISTS, _ONE_VINYL_BUTTON)))
+    for i in range(2, 9):
+        respx.get(_release_url(f"/release/p{i}/r{i}")).mock(
+            return_value=httpx.Response(200, text=_detail_page(_H1_SINGLE, _ONE_VINYL_BUTTON)))
+
+    items = [item async for item in Crawler().crawl_catalog()]
+
+    assert page1_route.call_count == 1
+    assert page2_route.call_count == 1
+    assert len(items) == 9  # page 1's two releases + one distinct release each on pages 2-8 (7 pages)
+
+
+@respx.mock
+async def test_crawl_catalog_dedupes_release_seen_on_an_earlier_page(monkeypatch, tmp_config_dir):
+    save_config({"crawl_delay_seconds": 0})
+    shared_href = "/release/shared/dup"
+    page1_html = (
+        f'<div class="item"><a href="{shared_href}">Shared</a></div>'
+        '<nav><ul class="pagination"><li class="page-item"><a class="page-link" href="/label/dischord?page=2">2</a></li></ul></nav>'
+    )
+    page2_html = (
+        f'<div class="item"><a href="{shared_href}">Shared</a></div>'
+        '<div class="item"><a href="/release/only/page2">Only</a></div>'
+    )
+    respx.get(_LABEL_URL, params={"page": "1"}).mock(return_value=httpx.Response(200, text=page1_html))
+    respx.get(_LABEL_URL, params={"page": "2"}).mock(return_value=httpx.Response(200, text=page2_html))
+    shared_route = respx.get(_release_url(shared_href)).mock(
+        return_value=httpx.Response(200, text=_detail_page(_H1_SINGLE, _ONE_VINYL_BUTTON)))
+    respx.get(_release_url("/release/only/page2")).mock(
+        return_value=httpx.Response(200, text=_detail_page(_H1_VARIOUS_ARTISTS, _ONE_VINYL_BUTTON)))
+
+    items = [item async for item in Crawler().crawl_catalog()]
+
+    assert shared_route.call_count == 1
+    assert len(items) == 2
+
+
+@respx.mock
+async def test_crawl_catalog_skips_release_on_404_but_continues(monkeypatch, tmp_config_dir):
+    save_config({"crawl_delay_seconds": 0})
+    page_html = (
+        '<div class="item"><a href="/release/missing/gone">Gone</a></div>'
+        '<div class="item"><a href="/release/1/only-release">Only</a></div>'
+    )
+    respx.get(_LABEL_URL, params={"page": "1"}).mock(return_value=httpx.Response(200, text=page_html))
+    respx.get(_release_url("/release/missing/gone")).mock(return_value=httpx.Response(404))
     respx.get(_release_url("/release/1/only-release")).mock(
         return_value=httpx.Response(200, text=_detail_page(_H1_SINGLE, _ONE_VINYL_BUTTON)))
 
     items = [item async for item in Crawler().crawl_catalog()]
 
-    assert page2_route.call_count == 1
-    assert len(items) == 9  # page 1's two releases + one release each on pages 2-8 (7 pages)
+    assert len(items) == 1
+    assert items[0]["artist"] == "Bed Maker"
+
+
+@respx.mock
+async def test_crawl_catalog_raises_on_non_404_detail_page_http_error(monkeypatch, tmp_config_dir):
+    save_config({"crawl_delay_seconds": 0})
+    respx.get(_LABEL_URL, params={"page": "1"}).mock(
+        return_value=httpx.Response(200, text=_LISTING_PAGE_NO_PAGINATION))
+    respx.get(_release_url("/release/1/only-release")).mock(return_value=httpx.Response(500))
+
+    with pytest.raises(httpx.HTTPStatusError):
+        [item async for item in Crawler().crawl_catalog()]
 
 
 @respx.mock

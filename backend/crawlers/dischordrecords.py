@@ -57,22 +57,29 @@ class Crawler:
             page_html = r.text
             total_pages = self._max_page(page_html)
 
+            seen_hrefs = set()
             total_yielded = 0
-            for page in range(1, total_pages + 1):
+            page = 1
+            while page <= total_pages:
                 if page > 1:
                     await sleep(random.uniform(delay * 0.5, delay))
                     r = await client.get(_LABEL_PATH, params={"page": page})
                     r.raise_for_status()
                     page_html = r.text
+                    total_pages = max(total_pages, self._max_page(page_html))
 
                 hrefs = self._release_hrefs(page_html)
                 if not hrefs:
                     raise RuntimeError(f"no release links found on {_LABEL_PATH}?page={page} -- markup drift")
+                new_hrefs = [h for h in hrefs if h not in seen_hrefs]
+                seen_hrefs.update(new_hrefs)
 
                 page_items = []
-                for href in hrefs:
+                for href in new_hrefs:
                     await sleep(random.uniform(delay * 0.5, delay))
                     r = await client.get(href)
+                    if r.status_code == 404:
+                        continue
                     r.raise_for_status()
                     page_items.extend(self._parse_release(r.text, href))
 
@@ -80,6 +87,7 @@ class Crawler:
                 total_yielded += len(page_items)
                 for item in page_items:
                     yield item
+                page += 1
 
         if total_yielded == 0:
             raise RuntimeError("parsed 0 vinyl items across the entire Dischord catalog -- format drift")
