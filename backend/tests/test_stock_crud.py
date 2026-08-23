@@ -1651,17 +1651,21 @@ def test_get_distinct_stock_artists_folds_bare_form_across_tables(admin_conn):
 def test_get_stock_items_artist_filter_matches_bare_form_row(admin_conn):
     # Same shape as the catalog version in test_catalog_crud.py: clicking
     # "Beatles, The" must also surface a stock row stored with no article.
+    # All three raw spellings ("The Beatles", "Beatles", "Beatles, The") are
+    # seeded here so one filter call pins all three collapsing under a single
+    # filter value, not just the bare/prefix pair.
     alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
     crawler_id = _register(admin_conn, "Amazon")
     db.replace_stock_items(admin_conn, crawler_id, [
         {"artist": "The Beatles", "title": "Abbey Road", "url": "https://x/1", "price": 20.0, "currency": "USD"},
         {"artist": "Beatles", "title": "Let It Be", "url": "https://x/2", "price": 18.0, "currency": "USD"},
+        {"artist": "Beatles, The", "title": "Revolver", "url": "https://x/3", "price": 22.0, "currency": "USD"},
     ])
     admin_conn.commit()
 
     with db.user_scope(alice["id"]) as conn:
         result = db.get_stock_items(conn, alice["id"], artist="Beatles, The")
-    assert result["total"] == 2
+    assert result["total"] == 3
     assert {i["artist"] for i in result["items"]} == {"Beatles, The"}
 
 

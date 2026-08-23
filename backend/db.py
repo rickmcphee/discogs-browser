@@ -111,8 +111,13 @@ def _artist_sort_sql(column: str, *, escape_percent: bool = True) -> str:
     un-canonicalized column -- it runs before canonical_artist_labels' fold
     gets a chance to relabel the row, so it needs its own stripping regardless
     of what the row's eventual display label becomes. `LIKE 'the %%'`/
-    `LIKE '%%, the'` each require a real word on the far side, so a bare "The"
-    or a name like "Theatre of Hate" is correctly left alone.
+    `LIKE '%%, the'` guard on the literal `'the '`/`', the'` substring, so a
+    bare "The" or a name like "Theatre of Hate" is correctly left alone --
+    though `%` also matches zero characters, so an artist spelled exactly
+    ", The" (suffix branch) or "The " with a trailing space (prefix branch)
+    keys to the empty string instead of being left alone; vanishingly
+    unlikely names the guard wasn't written for, not a miss on the ones it
+    was.
 
     This same bare, article-stripped key is also what the artist equality
     filters in get_library_releases/get_stock_items compare on (see
@@ -1568,7 +1573,7 @@ _CANONICAL_ARTIST_BARE_SQL = """
     grouped AS (
         SELECT LOWER({the_bare}) AS key, artist AS label, COUNT(*) AS n
         FROM {table}
-        WHERE LOWER({the_bare}) = ANY (ARRAY(SELECT LOWER(artist) || ', the' FROM wanted))
+        WHERE LOWER({the_bare}) = ANY (ARRAY(SELECT LOWER(wanted.artist) || ', the' FROM wanted))
         GROUP BY LOWER({the_bare}), artist
     ),
     winner AS (
