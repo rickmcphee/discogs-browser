@@ -148,6 +148,91 @@ def _artist_sort_sql(column: str, *, escape_percent: bool = True) -> str:
     )
 
 
+def _price_sort_sql(column: str) -> str:
+    """Numeric sort-key expression for a free-text price column.
+
+    `library_items.price_paid` is whatever the user typed into their Discogs
+    custom field, so it arrives as display text with the currency attached
+    ("$30.00", "GBP 9", "1,200.00", "25,50"). Ordering that column as text is
+    lexicographic -- "$100" sorts before "$9" -- so both the Collection/Wishlist
+    Price header and the Track tab's price sort pull the leading number out and
+    order on that instead. Whatever leads the value is skipped, not parsed, so
+    the currency never reaches the comparison.
+
+    The hard part is not the currency but the separators, because `,` and `.`
+    swap roles between locales and the column holds both conventions. The
+    grouping/decimal question is settled by matching the token against the
+    formats that actually occur, rather than by stripping one character
+    unconditionally:
+
+    - `1,200` / `1,200.50` / `1,234,567` -- comma grouping, optional dot
+      decimal. Commas drop out.
+    - `1.234.567` / `1.234,56` -- dot grouping, optional comma decimal. Dots
+      drop out and the comma becomes the decimal point. Two or more dot groups,
+      or a comma decimal part, are required: a lone `1.234` stays a dot decimal,
+      since reading it as 1234 would silently change how every existing
+      three-decimal value already sorted.
+    - `25,50` -- decimal comma, the case a blanket strip turns into 2550.
+    - `1,23,456` / `1,23,456.78` -- the Indian grouping, whose last group is
+      three digits and whose earlier ones are two, with the same optional dot
+      decimal the comma-grouping branch takes. Commas drop out. The decimal
+      suffix is not optional to *this* branch's usefulness: without it the
+      commonest real form of the convention, a price with cents, missed every
+      branch and floored to 1 -- the exact flattening recognising the grouping
+      was meant to prevent.
+    - `25` / `25.50` -- already plain.
+    - `.99` / `,99` -- a bare decimal part, which a price written without its
+      leading zero produces. The token may start with a separator and is given
+      the zero back before the branches see it.
+    - anything else falls back to the *leading digit run*, everything from the
+      first separator on discarded.
+
+    That fallback errs downward on purpose. Removing the separators instead --
+    which is what it did until Copilot caught it on PR #172 -- reads the typo
+    `"25.00.00"` as 250000, inflating a $25 record four orders of magnitude and
+    floating it to the top of a descending sort. Truncating to `25` is wrong by
+    the cents. An unrecognised token can only ever understate now, and only as
+    far as its leading group; it can never outrank a well-formed larger price.
+    That is the whole claim -- the fallback is a floor, not an estimate.
+
+    The leading-zero rule is part of that claim rather than a nicety. While the
+    token had to start with a digit, `"$.99"` captured as `99` and sorted a
+    99-cent record above a $50 one -- the same inflation the fallback exists to
+    rule out, arriving through the tokeniser instead of through the branches.
+    Both ends have to hold for "can only understate" to mean anything.
+
+    `1,200` is genuinely ambiguous -- 1200 grouped, or 1.2 with a decimal comma
+    -- and is read as grouping, because three digits after a single comma is the
+    grouping convention and a two-decimal price is what the decimal-comma form
+    almost always looks like (`25,50`).
+
+    Every branch yields digits with at most one dot, so the `::numeric` cast
+    cannot fail and error the whole query -- the property that made a blanket
+    strip-then-cast wrong in the first place. Anything with no digits at all
+    ("N/A", "") yields NULL and sorts last via the caller's NULL guard.
+
+    Mixed currencies are deliberately not converted: the number is compared
+    as-is, which is right for the overwhelmingly common single-currency
+    collection and merely approximate for the rare mixed one. The currency is
+    untouched in the stored value, so display keeps it.
+    """
+    # Bound once in a subquery: the token is tested against several patterns and
+    # repeating the regexp_match per branch would be unreadable and slower.
+    return f"""(SELECT CASE
+        WHEN t.v ~ '^[0-9]{{1,3}}(,[0-9]{{3}})+(\\.[0-9]+)?$' THEN replace(t.v, ',', '')
+        WHEN t.v ~ '^[0-9]{{1,3}}(\\.[0-9]{{3}}){{2,}}$'
+          OR t.v ~ '^[0-9]{{1,3}}(\\.[0-9]{{3}})+,[0-9]+$'
+          THEN replace(replace(t.v, '.', ''), ',', '.')
+        WHEN t.v ~ '^[0-9]{{1,2}}(,[0-9]{{2}})+,[0-9]{{3}}(\\.[0-9]+)?$' THEN replace(t.v, ',', '')
+        WHEN t.v ~ '^[0-9]+,[0-9]+$' THEN replace(t.v, ',', '.')
+        WHEN t.v ~ '^[0-9]+(\\.[0-9]+)?$' THEN t.v
+        ELSE (regexp_match(t.v, '^[0-9]+'))[1]
+    END::numeric
+    FROM (SELECT regexp_replace(
+            (regexp_match({column}, '[.,]?[0-9][0-9.,]*[0-9]|[.,]?[0-9]'))[1],
+            '^([.,])', '0\\1') AS v) t)"""
+
+
 GLOBAL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS catalog (
     discogs_id TEXT PRIMARY KEY,
@@ -1000,7 +1085,8 @@ def get_library_releases(
     params["offset"] = offset
 
     if sort == "discogs_price":
-        sort_expr = "li.price_paid"
+        # Free text with the currency attached -- see _price_sort_sql.
+        sort_expr = _price_sort_sql("li.price_paid")
     elif sort == "date_added" and scope in ("discogs", "wishlist"):
         sort_expr = "li." + ("wishlist_date_added" if scope == "wishlist" else "collection_date_added")
     else:
@@ -1798,9 +1884,9 @@ def get_stock_items(
     # every key would be NULL, leaving all rows tied and pagination unstable.
     # The lookup's default covers None and any unmapped scope.
     if sort == "discogs_price" and "in_collection" in _LIBRARY_MEMBERSHIP.get(library_scope, ()):
-        sort_expr = """(SELECT (regexp_match(li.price_paid, '\\d+\\.?\\d*'))[1]::numeric
-                        {match} LIMIT 1)""".format(
-            match=_library_match_fragment("%(user_id)s", "collection")
+        sort_expr = "(SELECT {price} {match} LIMIT 1)".format(
+            price=_price_sort_sql("li.price_paid"),
+            match=_library_match_fragment("%(user_id)s", "collection"),
         )
     elif sort == "source":
         sort_expr = "cr.site_name"
@@ -1851,7 +1937,14 @@ def get_stock_items(
     offset = (page - 1) * per_page
     params["limit"] = per_page
     params["offset"] = offset
-    null_order = "ASC" if order_sql == "ASC" else "DESC"
+    # Always ASC: NULLs sort last for both ASC and DESC, matching
+    # get_library_releases. The `"ASC" if order_sql == "ASC" else "DESC"`
+    # formula this replaces was a no-op copy of order_sql, so a descending
+    # sort ordered the CASE guard descending too and put its 1s -- the rows
+    # with no sort key -- first. Reachable on every stock sort with a nullable
+    # key: an unpriced Cost, an absent Format, and the discogs_price sort
+    # whose "N/A"/blank values this branch's numeric extraction maps to NULL.
+    null_order = "ASC"
     rows = conn.execute(
         f"""
         SELECT s.id, s.artist, s.title, s.format, s.price, s.currency, s.url, s.cover_image_url, s.last_seen,

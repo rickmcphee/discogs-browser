@@ -298,6 +298,157 @@ def test_get_library_releases_date_added_sort_falls_back_to_artist_without_a_sco
     assert all(r["date_added"] is None for r in result["releases"])
 
 
+def _seed_priced(admin_conn, user_id, rows):
+    """rows: [(discogs_id, artist, price_paid)] -- artist order is seeded to
+    disagree with price order so a silent fallback to the artist sort fails."""
+    for discogs_id, artist, price in rows:
+        db.upsert_catalog_release(admin_conn, {
+            "discogs_id": discogs_id, "artist": artist, "title": "T", "year": None,
+            "label": None, "format": None, "discogs_price": None, "barcode": None,
+            "cover_image_url": None, "discogs_url": None,
+        })
+        db.upsert_library_item(
+            admin_conn, user_id, discogs_id, in_collection=True, price_paid=price
+        )
+    admin_conn.commit()
+
+
+def test_get_library_releases_sort_by_discogs_price_orders_numerically(admin_conn):
+    # price_paid is free text carrying the currency, so ordering it as text is
+    # lexicographic: "$100.00" < "$30.00" < "$9.00". The numeric sort key has
+    # to put $9 first.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _seed_priced(admin_conn, alice["id"], [
+        ("r1", "Aaa", "$100.00"),
+        ("r2", "Bbb", "$30.00"),
+        ("r3", "Ccc", "$9.00"),
+    ])
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], sort="discogs_price", order="asc")
+    assert [r["discogs_id"] for r in result["releases"]] == ["r3", "r2", "r1"]
+    # The currency is untouched in what's returned for display.
+    assert [r["discogs_price"] for r in result["releases"]] == ["$9.00", "$30.00", "$100.00"]
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], sort="discogs_price", order="desc")
+    assert [r["discogs_id"] for r in result["releases"]] == ["r1", "r2", "r3"]
+
+
+def test_get_library_releases_price_sort_ignores_currency_and_separators(admin_conn):
+    # Mixed currency symbols are rare but must not break the extraction, and a
+    # thousands separator must not truncate the number to its leading group
+    # ("1,200.50" -> 1200.50, not 1). Values with no digits at all sort last,
+    # with NULL, under the existing NULL guard.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _seed_priced(admin_conn, alice["id"], [
+        ("r1", "Aaa", "N/A"),
+        ("r2", "Bbb", "$1,200.50"),
+        ("r3", "Ccc", "\u00a35.99"),
+        ("r4", "Ddd", None),
+        ("r5", "Eee", "GBP 40"),
+    ])
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], sort="discogs_price", order="asc")
+    ordered = [r["discogs_id"] for r in result["releases"]]
+    assert ordered[:3] == ["r3", "r5", "r2"]
+    assert set(ordered[3:]) == {"r1", "r4"}
+
+
+def test_get_library_releases_price_sort_reads_decimal_commas_as_decimals(admin_conn):
+    # price_paid is free text, so a European collection writes "25,50" for what
+    # a US one writes "25.50". Stripping every comma as a thousands separator
+    # turns that into 2550 -- not merely lossy but a hundredfold overstatement,
+    # which sorts a cheap record above a $100 one. The separators are resolved
+    # by format instead:
+    #
+    #   "25,50"     decimal comma        -> 25.50
+    #   "1.234,56"  dot grouping + comma -> 1234.56
+    #   "1,200.50"  comma grouping + dot -> 1200.50
+    #   "1.234"     lone dot group       -> 1.234, unchanged on purpose
+    #
+    # The last is the deliberately conservative call: reading it as 1234 would
+    # silently reorder every three-decimal value already stored.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _seed_priced(admin_conn, alice["id"], [
+        ("r1", "Aaa", "$1,200.50"),
+        ("r2", "Bbb", "\u20ac25,50"),
+        ("r3", "Ccc", "1.234,56"),
+        ("r4", "Ddd", "$100"),
+        ("r5", "Eee", "1.234"),
+    ])
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], sort="discogs_price", order="asc")
+    # 1.234 < 25.50 < 100 < 1200.50 < 1234.56
+    assert [r["discogs_id"] for r in result["releases"]] == ["r5", "r2", "r4", "r1", "r3"]
+
+
+def test_get_library_releases_price_sort_reads_a_bare_decimal_part(admin_conn):
+    # A price written without its leading zero -- "$.99", or ",99" in a
+    # decimal-comma collection. While the token had to begin with a digit these
+    # captured as "99" and sorted a 99-cent record above a $50 one: the same
+    # inflation the fallback exists to rule out, arriving through the tokeniser
+    # rather than the branches. The token may now start with a separator and
+    # gets the zero back before the branches see it.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _seed_priced(admin_conn, alice["id"], [
+        ("r1", "Aaa", "$.99"),
+        ("r2", "Bbb", ",99"),
+        ("r3", "Ccc", "$50"),
+        ("r4", "Ddd", "$5"),
+    ])
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], sort="discogs_price", order="asc")
+    # 0.99, 0.99, 5, 50 -- the two cent-prices lead; under a digit-first token
+    # they read as 99 and trail $50 instead.
+    ordered = [r["discogs_id"] for r in result["releases"]]
+    assert set(ordered[:2]) == {"r1", "r2"}
+    assert ordered[2:] == ["r4", "r3"]
+
+
+def test_get_library_releases_price_sort_floors_unrecognised_prices(admin_conn):
+    # Two things at once, both about the fallback branch.
+    #
+    # Two rejected approaches, two distinct failure modes, both on this input:
+    #
+    #   strip everything but digits and separators   "25.00.00" -> "25.00.00"
+    #   strip the separators too                     "25.00.00" -> 250000
+    #
+    # The first keeps the currency out but leaves two dots, so ::numeric fails
+    # and takes down the whole query rather than one row -- which is why every
+    # branch has to yield digits with at most one dot. The second casts fine
+    # and is worse: it floats a $25 record four orders of magnitude up, to the
+    # top of a descending sort. The fallback truncates to the leading digit run
+    # instead, so an unrecognised token can only understate, and only as far as
+    # its first group.
+    #
+    # "1,23,456" is the Indian grouping and is recognised outright rather than
+    # left to the fallback, which would have floored it to 1.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _seed_priced(admin_conn, alice["id"], [
+        ("r1", "Aaa", "25.00.00"),
+        ("r2", "Bbb", "1,23,456"),
+        ("r3", "Ccc", "$5"),
+        ("r4", "Ddd", "$40"),
+        ("r5", "Eee", "1,23,456.78"),
+    ])
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], sort="discogs_price", order="asc")
+    # 5 < 25 (floored from "25.00.00") < 40 < 123456 < 123456.78. Under a
+    # separator strip r1 reads as 250000 and leads on desc; under a leading-run
+    # fallback for every unrecognised token r2 reads as 1 and leads on asc.
+    #
+    # r5 carries the decimal the Indian branch originally omitted, which is the
+    # commonest real form of that convention -- a price with cents. Without the
+    # suffix it missed every branch and floored to 1, so recognising the
+    # grouping bought nothing for exactly the values it was added for.
+    assert [r["discogs_id"] for r in result["releases"]] == ["r3", "r1", "r4", "r2", "r5"]
+
+
 def test_get_library_releases_paginates_without_overlap_when_every_sort_key_is_null(admin_conn):
     # discogs_price is a Discogs custom field most collections never set, so
     # sorting by it leaves every row's sort key NULL and every row tied. A
