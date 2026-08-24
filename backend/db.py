@@ -173,10 +173,19 @@ def _price_sort_sql(column: str) -> str:
       since reading it as 1234 would silently change how every existing
       three-decimal value already sorted.
     - `25,50` -- decimal comma, the case a blanket strip turns into 2550.
+    - `1,23,456` -- the Indian grouping, whose last group is three digits and
+      whose earlier ones are two. Commas drop out.
     - `25` / `25.50` -- already plain.
-    - anything else (`1,23,456` and other groupings not listed) falls back to
-      digits only. Approximate by construction, but bounded and never wrong by
-      an order of magnitude.
+    - anything else falls back to the *leading digit run*, everything from the
+      first separator on discarded.
+
+    That fallback errs downward on purpose. Removing the separators instead --
+    which is what it did until Copilot caught it on PR #172 -- reads the typo
+    `"25.00.00"` as 250000, inflating a $25 record four orders of magnitude and
+    floating it to the top of a descending sort. Truncating to `25` is wrong by
+    the cents. An unrecognised token can only ever understate now, and only as
+    far as its leading group; it can never outrank a well-formed larger price.
+    That is the whole claim -- the fallback is a floor, not an estimate.
 
     `1,200` is genuinely ambiguous -- 1200 grouped, or 1.2 with a decimal comma
     -- and is read as grouping, because three digits after a single comma is the
@@ -200,9 +209,10 @@ def _price_sort_sql(column: str) -> str:
         WHEN t.v ~ '^[0-9]{{1,3}}(\\.[0-9]{{3}}){{2,}}$'
           OR t.v ~ '^[0-9]{{1,3}}(\\.[0-9]{{3}})+,[0-9]+$'
           THEN replace(replace(t.v, '.', ''), ',', '.')
+        WHEN t.v ~ '^[0-9]{{1,2}}(,[0-9]{{2}})+,[0-9]{{3}}$' THEN replace(t.v, ',', '')
         WHEN t.v ~ '^[0-9]+,[0-9]+$' THEN replace(t.v, ',', '.')
         WHEN t.v ~ '^[0-9]+(\\.[0-9]+)?$' THEN t.v
-        ELSE regexp_replace(t.v, '[.,]', '', 'g')
+        ELSE (regexp_match(t.v, '^[0-9]+'))[1]
     END::numeric
     FROM (SELECT (regexp_match({column}, '[0-9][0-9.,]*[0-9]|[0-9]'))[1] AS v) t)"""
 

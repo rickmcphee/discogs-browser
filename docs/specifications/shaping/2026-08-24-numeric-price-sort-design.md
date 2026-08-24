@@ -40,10 +40,8 @@ below `"$9.00"`.
 
 ## Decision: one shared sort-key expression, extraction not conversion
 
-`_price_sort_sql(column)` in `backend/db.py`, next to `_artist_sort_sql`, used by both
-call sites:
-
-It pulls the first digit run out of the value — so whatever leads it (`$`, `£`, `USD `,
+`_price_sort_sql(column)` in `backend/db.py`, next to `_artist_sort_sql`, is used by both
+call sites. It pulls the first digit run out of the value — so whatever leads it (`$`, `£`, `USD `,
 nothing) is skipped rather than parsed — and then resolves the separators.
 
 **The separators are the hard part, not the currency.** `,` and `.` swap roles between
@@ -59,8 +57,9 @@ cents.) So the token is matched against the formats that actually occur instead:
 | `1,200`, `1,200.50`, `1,234,567` | comma grouping, optional dot decimal | commas drop out |
 | `1.234.567`, `1.234,56` | dot grouping, optional comma decimal | dots drop out, comma becomes the point |
 | `25,50` | decimal comma | comma becomes the point |
+| `1,23,456` | Indian grouping — two-digit groups, three-digit last | commas drop out |
 | `25`, `25.50` | already plain | unchanged |
-| anything else | unrecognised | digits only |
+| anything else | unrecognised | leading digit run, rest discarded |
 
 Two calls worth stating outright:
 
@@ -72,10 +71,24 @@ Two calls worth stating outright:
   Reading a single group as `1234` would silently reorder every three-decimal value
   already stored, to fix a case no one has reported.
 
-The fallback matters as much as the branches: every one of them yields digits with at most
-one dot, so the `::numeric` cast cannot fail. That is the property a blanket
-strip-then-cast lacks — `"25.00.00"` survives a strip intact and then errors the *whole
-query*, not one row.
+The fallback matters as much as the branches, for two reasons.
+
+It must not error: every branch yields digits with at most one dot, so `::numeric` cannot
+fail. A blanket strip-then-cast lacks that — `"25.00.00"` survives a strip intact and then
+errors the *whole query*, not one row.
+
+It must not inflate, either, and the first version of this fallback did. Discarding the
+separators from an unrecognised token reads `"25.00.00"` as 250000, floating a $25 record
+four orders of magnitude up and to the top of a descending sort — worse than the
+lexicographic ordering this whole change replaces. (Copilot review on PR #172 again, and
+it also caught the docstring next to it claiming the fallback was "never wrong by an order
+of magnitude" while doing exactly that.) The fallback now truncates to the leading digit
+run, so an unrecognised token can only understate, and only as far as its first group: it
+can never outrank a well-formed larger price. A floor, not an estimate.
+
+Adding Indian grouping to the table above is part of the same fix. Under a leading-run
+fallback `"1,23,456"` would floor to 1 — a real convention silently flattened — so it is
+recognised outright rather than left to a fallback that is deliberately lossy.
 
 Sharing the expression, rather than fixing `get_library_releases` in isolation, is the
 point: both sorts read the same column, rendered under the same `Price` header on every

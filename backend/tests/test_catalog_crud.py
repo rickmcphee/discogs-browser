@@ -385,22 +385,36 @@ def test_get_library_releases_price_sort_reads_decimal_commas_as_decimals(admin_
     assert [r["discogs_id"] for r in result["releases"]] == ["r5", "r2", "r4", "r1", "r3"]
 
 
-def test_get_library_releases_price_sort_never_errors_on_unparseable_prices(admin_conn):
-    # The reason the extraction matches known formats rather than stripping
-    # every separator and casting: "25.00.00" survives a blanket strip as
-    # "25.00.00", which fails ::numeric and takes down the whole query rather
-    # than one row. Every branch must yield digits with at most one dot.
+def test_get_library_releases_price_sort_floors_unrecognised_prices(admin_conn):
+    # Two things at once, both about the fallback branch.
+    #
+    # It must not error: "25.00.00" survives a blanket separator strip intact
+    # and then fails ::numeric, taking down the whole query rather than one
+    # row. Every branch has to yield digits with at most one dot.
+    #
+    # And it must not inflate. Stripping the separators reads "25.00.00" as
+    # 250000, floating a $25 record four orders of magnitude up and to the top
+    # of a descending sort -- worse than the lexicographic ordering this whole
+    # change replaces. The fallback truncates to the leading digit run instead,
+    # so an unrecognised token can only understate, and only as far as its
+    # first group.
+    #
+    # "1,23,456" is the Indian grouping and is recognised outright rather than
+    # left to the fallback, which would have floored it to 1.
     alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
     _seed_priced(admin_conn, alice["id"], [
         ("r1", "Aaa", "25.00.00"),
         ("r2", "Bbb", "1,23,456"),
         ("r3", "Ccc", "$5"),
+        ("r4", "Ddd", "$40"),
     ])
 
     with db.user_scope(alice["id"]) as conn:
         result = db.get_library_releases(conn, alice["id"], sort="discogs_price", order="asc")
-    assert [r["discogs_id"] for r in result["releases"]][0] == "r3"
-    assert len(result["releases"]) == 3
+    # 5 < 25 (floored from "25.00.00") < 40 < 123456. Under a separator strip
+    # r1 reads as 250000 and leads on desc; under a leading-run fallback for
+    # every unrecognised token r2 reads as 1 and leads on asc.
+    assert [r["discogs_id"] for r in result["releases"]] == ["r3", "r1", "r4", "r2"]
 
 
 def test_get_library_releases_paginates_without_overlap_when_every_sort_key_is_null(admin_conn):
