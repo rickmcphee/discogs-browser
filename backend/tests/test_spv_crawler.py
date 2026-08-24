@@ -2,7 +2,7 @@ import httpx
 import respx
 import pytest
 from crawlers.spv import (
-    Crawler, _NON_VINYL_WORDS, _VINYL_WORDS, _FORMAT_TOKEN_RE,
+    Crawler, _NON_VINYL_WORDS, _VINYL_WORDS, _FORMAT_TOKEN_RE, _split_trailing_format,
 )
 
 _PRODUCTS_URL = "https://store.spv.de/collections/vinyl/products.json"
@@ -251,6 +251,23 @@ def test_format_word_inside_an_album_title_does_not_truncate_it():
 
     items = Crawler._items({**_SODOM, "title": "Sodom - Live LP 1982 Vinyl"})
     assert items and items[0]["title"] == "Live LP 1982"
+
+
+def test_embedded_format_word_with_no_trailing_format_is_still_misread():
+    # The accepted dash-path limitation, pinned so its real scope is asserted
+    # rather than incidental. The test above holds only because a genuine
+    # format word follows: drop the trailing "LP" and the same title anchors on
+    # "Book" instead, truncating the album to "The" and -- since "book" is on
+    # the non-vinyl side of the gate -- dropping the row outright. So the
+    # misread is not confined to albums *ending* in a format word, which is all
+    # the design doc claimed before review on PR #165.
+    assert _split_trailing_format("The Book of Souls") == ("The", "Book of Souls")
+    assert Crawler._items({**_SODOM, "title": "Iron Maiden - The Book of Souls"}) == []
+
+    # A leading format word stays safe: the empty-remainder guard returns the
+    # album untouched, so these are not swept up by the same anchor.
+    for album in ("Tape Deck Heart", "Vinyl Days"):
+        assert _split_trailing_format(album) == (album, "")
 
 
 def test_trailing_format_still_splits_when_it_is_the_only_match():

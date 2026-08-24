@@ -163,14 +163,13 @@ None of the three is expressible as a call to this doc's proposed
 `split_artist_title(title)`, for the same reason the four prior *splitting* exceptions
 aren't. What is new here is a weaker form of the doc's original convergence
 claim holding after all, one level down: `spv.py` did not need a new parser
-shape, it needed a parameterisation of an existing exception's shape. If a
-*third* quoted-album store ever appears — SPV is the second, after
-`asianmanrecords.py`; "sixth" above is its position in this doc's exception
-list, which is a different count — *that* — a shared quoted-album parser
-with a quote-class and a return-the-blurb flag, not the dash-splitting
-`split_artist_title` this doc proposes — is the helper worth extracting. Two
-stores is not yet that case: the parser is nine lines, and the two crawlers
-agree on none of the parsing that follows it.
+shape, it needed a parameterisation of an existing exception's shape. The
+quoted-album shape is no longer unique to `asianmanrecords.py`, so if it turns
+up again, the helper worth extracting is a shared quoted-album parser with a
+quote-class and a return-the-blurb flag — not the dash-splitting
+`split_artist_title` this doc proposes. The duplication as it stands does not
+justify one: the parser is nine lines, and the two crawlers agree on none of
+the parsing that follows it.
 
 Records `spv.py` as a sixth documented exception, not a bug to fix into
 conformance — the same framing the first five amendments use. (Renumbered from

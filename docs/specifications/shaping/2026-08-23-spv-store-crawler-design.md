@@ -84,7 +84,7 @@ be held back (see "Verification still owed"):**
 
 | Assumption | Why | If wrong |
 |---|---|---|
-| `products.json` is served unauthenticated and paginates on `?limit=250&page=N` | Shopify default; true on all 43 sibling stores using `iter_products()` | `iter_products()` raises; no silent bad data |
+| `products.json` is served unauthenticated and paginates on `?limit=250&page=N` | Shopify default; true on every sibling store using `iter_products()` | `iter_products()` raises; no silent bad data |
 | Prices are EUR | German store, ships from EU | Prices display under the wrong currency — one-line fix |
 | `vendor` carries the label, not the artist | Matches `seasonofmist.py`, whose vendor is the label | Nothing — the crawler never reads `vendor`. This assumption is why it doesn't (see "Title parsing"); if it turned out to hold the artist, an unparseable title would be a missed row rather than a wrong one |
 | Pre-order products carry a `pre-order`/`preorder` tag | Sibling convention; exact casing/spelling varies per store, so the check is a case-insensitive regex over both spellings rather than an exact `has_tag()` match | Pre-orders lose their ` (Pre-Order)` suffix and their unavailable variants are dropped |
@@ -310,17 +310,39 @@ album, and aligning the vocabularies above widened what it has to protect
 against — the stripper now recognises merch words too, so an album whose last
 word is `Poster` or `Flag` is exposed to the same misread as one ending in
 `Tape`. Accepted on the same reasoning, and still bounded to the fallback
-path. A multi-word album ending in a format word is still misread on the dash
-path: `Artist - The Tape` splits to album `The` + format `Tape` and is then
-dropped by the negative gate, and `Artist - The Vinyl` is stored as `The`.
-Raised in review on PR #165 and deliberately left alone, for two reasons.
-First, there is no syntax that separates the two cases — `1982 CD` and
-`The Tape` are the same shape, and every disambiguation tried (require a
-multi-word remainder, exclude a preceding article) either breaks the real
-format case or invents a rule this store's data has never been checked
-against. Second, tightening the stripper to unambiguous forms only
-(count-prefixed, inch-marked) would reopen the `Artist - Album CD` hole fixed
-earlier on this branch. The trade taken is: correct on `Album FORMAT`, wrong on
+path.
+
+The scope is wider than "an album ending in a format word," and an earlier
+draft of this section said only that. The stripper anchors on the *last*
+format token **anywhere in the album**, not on one that actually ends it, so a
+recognised word sitting mid-title with ordinary words after it is treated as
+the start of the blurb:
+
+```
+'Artist - The Tape'           -> album 'The',   blurb 'Tape'          -> dropped
+'Artist - The Vinyl'          -> album 'The',   blurb 'Vinyl'         -> stored as 'The'
+'Artist - The Book of Souls'  -> album 'The',   blurb 'Book of Souls' -> dropped
+```
+
+The third is the one the ending-only description missed: nothing about it ends
+in a format word, and the whole item disappears rather than merely losing part
+of its title, because `book` is on the non-vinyl side of the gate. A *leading*
+format word is safe — the empty-remainder guard returns the album untouched,
+so `Tape Deck Heart` and `Vinyl Days` survive.
+
+Raised in review on PR #165 and deliberately left alone — but the reasoning
+recorded here previously was itself too narrow, so it is restated. "There is
+no syntax that separates the two cases" is true of the *ending* case: `1982 CD`
+and `The Tape` really are the same shape. It is **not** true of the embedded
+case — `Book of Souls` has ordinary title words after the token and `1982 CD`
+does not, which is a difference a rule could read. What actually blocks the fix
+is the absence of live data, not the absence of a distinguishing rule: every
+candidate rule trades this misread for its mirror image (requiring the run to
+reach the end makes `1982 Digital Download` stop matching, so a digital release
+publishes *as vinyl* through the negative gate), and there is no sample of this
+store's feed to say which shape occurs and which is hypothetical. Tightening
+the stripper to unambiguous forms only (count-prefixed, inch-marked) would
+separately reopen the `Artist - Album CD` hole fixed earlier on this branch. The trade taken is: correct on `Album FORMAT`, wrong on
 an album whose last word is a format word, on the fallback path only — the
 quoted path, which is this store's observed convention, is unaffected because
 its format lives in a separate capture group. Whether the store has any
@@ -408,10 +430,11 @@ price render site, which comparison rows share. A symbol map rather than
 `Intl.NumberFormat`: `Intl` would also start inserting thousands separators
 into USD prices, changing how every existing source renders in order to fix a
 bug in one of them. `toFixed(2)` is kept exactly as it was, so USD output is
-byte-for-byte unchanged. A null `currency` defaults to USD — of the 51 stock
-sources, only `jetglowrecordings.py` (hardcoded EUR), `darkdescentrecords.py`
-(feed pass-through) and this crawler are anything else — so defaulting avoids
-regressing pre-existing rows to a bare number. An unmapped-but-real code prints as `27.99 SEK` rather than
+byte-for-byte unchanged. A null `currency` defaults to USD — the only sources
+that are anything else are `jetglowrecordings.py` (hardcoded EUR),
+`darkdescentrecords.py` (feed pass-through) and this crawler, and every other
+source hardcodes USD — so defaulting avoids regressing pre-existing rows to a
+bare number. An unmapped-but-real code prints as `27.99 SEK` rather than
 guessing a symbol.
 
 ### Metadata
@@ -477,8 +500,10 @@ that do work" above):
 4. Measure what fraction of titles the quoted-title regex matches, and read
    the residue — the dash fallback and the skip path are sized for a handful
    of stragglers, not a second convention. If unquoted titles turn out to be
-   common, re-examine the dash path's known limitation above (a multi-word
-   album ending in a format word is misread); it is an accepted risk only
-   while that path is rare.
+   common, re-examine the dash path's known limitation above — any album
+   carrying a recognised format word after its first word is misread, whether
+   or not the word ends the title, and is silently dropped when that word is a
+   non-vinyl one. Inspect the whole residue, not just titles ending in a format
+   word; it is an accepted risk only while that path is rare.
 5. Check whether the `vinyl` collection carries non-vinyl products, and
    whether the blurb gate catches them.
