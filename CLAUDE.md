@@ -126,6 +126,9 @@ search unwrapped text, since a wrapped line can split the number from its noun:
   table below`, `~8 other test files`, `the four crawler test files`, `~100
   pytest files`. Searching only for `crawler|source|site|plugin` misses every
   one of these, so sweep `files?|fixtures?` too.
+- **The number hyphenated onto the noun** — `a 40-file edit`, `the ~40-crawler
+  list`. There is no space to anchor on, so `\d+ \w+ files` misses it; search
+  `\d+-(file|crawler|source|plugin)` separately.
 
 Why: these numbers change every time a crawler is added, and nothing depends on
 them. Every one of them went stale within weeks, and each staleness cost real
@@ -173,7 +176,10 @@ change what it claims. "with 34 store crawlers able to enqueue on the order of
 20,000 jobs per sync" is an *aggregate* — rewriting it to "with every store
 crawler able to enqueue 20,000 jobs" silently multiplies the estimate. Reach for
 "collectively", "between them", or "in aggregate" when the count was doing that
-work.
+work. And read the whole passage, not just the sentence you edited: these
+documents often restate the same set a few lines later ("all seven files" after
+an enumerated list of seven), and a half-de-numbered passage is worse than an
+untouched one.
 
 **If you find yourself about to add or update an inventory count, delete it
 instead.** An amendment whose only content is "this count is now N" should not be

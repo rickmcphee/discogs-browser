@@ -548,7 +548,7 @@ Expected: PASS (all tests in the file).
 - [ ] **Step 5: Run the full backend suite**
 
 Run: `cd backend && TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/discogs_browser_test IDENTITY_DB_PASSWORD=test APP_DB_PASSWORD=test pytest`
-Expected: PASS (no regressions from the 40-file edit; run tests in the foreground, not in parallel with any other pytest run against the same Postgres cluster).
+Expected: PASS (no regressions from the bulk edit; run tests in the foreground, not in parallel with any other pytest run against the same Postgres cluster).
 
 - [ ] **Step 6: Commit**
 
