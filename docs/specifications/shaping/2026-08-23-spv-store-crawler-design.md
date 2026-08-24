@@ -79,8 +79,9 @@ titles and URLs, not the JSON feed):
   titles match the pattern.
 - The store ships from the EU.
 
-**Assumed, and to be checked against `/collections/vinyl/products.json`
-before this crawler is enabled in production:**
+**Assumed, and to be checked against `/collections/vinyl/products.json` —
+after deploy, not before: this crawler registers `enabled = TRUE` and cannot
+be held back (see "Verification still owed"):**
 
 | Assumption | Why | If wrong |
 |---|---|---|
@@ -420,8 +421,17 @@ module named `*_crawler`.
 
 ## Verification still owed
 
-Before enabling this crawler on a real deployment, from a host that can reach
-`store.spv.de`:
+These are **post-deployment** checks, and calling them prerequisites would be
+wishful thinking: `register_crawler` inserts every new crawler with
+`enabled = TRUE`, so this one goes live on the first stock sync after deploy
+whether or not anyone has run them (the enabled-by-default decision is recorded
+on PR #165). An earlier draft of this section said "before enabling", which the
+shipped behaviour cannot honour.
+
+Run them from a host that can reach `store.spv.de`, as soon after deploy as
+practical — and note that finding a problem then means removing rows that are
+already published, which is a manual step, not a toggle (see "The rollbacks
+that do work" above):
 
 1. `GET /collections/vinyl/products.json?limit=250&page=1` — confirm it is
    served, and page until empty to get the product count.

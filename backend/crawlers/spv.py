@@ -38,7 +38,7 @@ _DASH_RE = re.compile(r'^(?P<artist>.+?)(?:\s+[-–—]\s*|\s*[-–—]\s+)(?P<a
 # gating on it.
 _TRAILING_FORMAT_RE = re.compile(
     r'\s+((?:(?:\d*[x×]?LP|\d*[x×]?CDS?|VINYL|CASSETTE|TAPE|\d*[x×]?DVD|BLU-?RAY|'
-    r'DIGIPA[KC]K?|PICTURE\s+DISC)\b|\d{1,2}\s*(?:"|INCH\b)).*)$',
+    r'DIGITAL|DIGIPA[KC]K?|PICTURE\s+DISC)\b|\d{1,2}\s*(?:"|INCH\b)).*)$',
     re.IGNORECASE,
 )
 _PLACEHOLDER_VARIANT = "default title"
@@ -65,8 +65,8 @@ _VINYL_RE = re.compile(
 # side into line. A bundle naming both ("LP+2CD") is still vinyl -- _VINYL_RE
 # short-circuits ahead of this.
 _NON_VINYL_RE = re.compile(
-    r'\b(\d*[x×]?cds?|digipa[kc]k?|cassette|tape|mc|\d*[x×]?dvd|blu-?ray|shirt|t-shirt|'
-    r'hoodie|longsleeve|poster|patch|flag|mug|book)\b',
+    r'\b(\d*[x×]?cds?|digital|digipa[kc]k?|cassette|tape|mc|\d*[x×]?dvd|blu-?ray|shirt|'
+    r't-shirt|hoodie|longsleeve|poster|patch|flag|mug|book)\b',
     re.IGNORECASE,
 )
 

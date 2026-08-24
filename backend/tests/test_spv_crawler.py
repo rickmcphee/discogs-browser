@@ -204,6 +204,22 @@ def test_multiplier_notation_vinyl_is_kept():
         assert len(Crawler._items({**_SODOM, "title": title})) == 1, title
 
 
+def test_digital_is_rejected_on_every_path():
+    # `Digital` is a common Shopify variant and was missing from both the
+    # denylist and the trailing-format stripper, so it published as Vinyl on
+    # all three paths. runforcoverrecords.py rejects it too.
+    assert Crawler._items({**_SODOM, "title": 'Sodom "1982" Digital'}) == []
+    assert Crawler._items({**_SODOM, "title": "Sodom - 1982 Digital Download"}) == []
+    product = {**_SODOM, "variants": [_variant("Black LP"), _variant("Digital")]}
+    assert [i["title"] for i in Crawler._items(product)] == ["1982"]
+
+
+def test_album_named_digital_survives():
+    # Same single-word guard that protects an album named "Tape".
+    items = Crawler._items({**_SODOM, "title": "Sodom - Digital"})
+    assert items and items[0]["title"] == "Digital"
+
+
 def test_non_vinyl_variant_of_a_vinyl_product_is_dropped():
     # The title blurb gates the product; before this, a mixed-format product's
     # CD variant was published as format "Vinyl" titled "1982 — CD".

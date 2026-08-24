@@ -164,7 +164,9 @@ None of the three is expressible as a call to this doc's proposed
 aren't. What is new here is a weaker form of the doc's original convergence
 claim holding after all, one level down: `spv.py` did not need a new parser
 shape, it needed a parameterisation of an existing exception's shape. If a
-sixth quoted-album store ever appears, *that* — a shared quoted-album parser
+*third* quoted-album store ever appears — SPV is the second, after
+`asianmanrecords.py`; "sixth" above is its position in this doc's exception
+list, which is a different count — *that* — a shared quoted-album parser
 with a quote-class and a return-the-blurb flag, not the dash-splitting
 `split_artist_title` this doc proposes — is the helper worth extracting. Two
 stores is not yet that case: the parser is nine lines, and the two crawlers
