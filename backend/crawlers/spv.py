@@ -33,9 +33,13 @@ _DASH_RE = re.compile(r'^(?P<artist>.+?)(?:\s+[-–—]\s*|\s*[-–—]\s+)(?P<a
 # mirroring asianmanrecords.py's _FORMAT_SUFFIX_RE, which does the same for its
 # own no-quote titles. The leading \s+ means a single-word album that IS one of
 # these words ("Tape") has nothing before it to match and is left alone.
-# Deliberately narrower than _NON_VINYL_RE: only unambiguous format markers,
-# no bare "MC"/"EP", since this rewrites the stored title rather than just
-# gating on it.
+# It carries the SAME vocabulary as the gates, deliberately -- see the note
+# below. An earlier version was narrower on the reasoning that this expression
+# rewrites the stored title rather than just gating on it; that reasoning
+# produced four separate escapes and is not worth restoring. "EP" stays out of
+# both tuples, though, and for that original reason: an EP is not a format
+# decision (EP pressings exist on vinyl and CD alike), so stripping it would
+# edit titles for no classification gain.
 # One vocabulary, three uses. These lists were maintained as separate literals
 # and drifted apart four times in review -- disc counts, then Digital, then
 # merch, then Book and MC -- each time letting a non-vinyl product through on

@@ -90,7 +90,7 @@ be held back (see "Verification still owed"):**
 | Prices are EUR | German store, ships from EU | Prices display under the wrong currency — one-line fix |
 | `vendor` carries the label, not the artist | Matches `seasonofmist.py`, whose vendor is the label | Nothing — the crawler never reads `vendor`. This assumption is why it doesn't (see "Title parsing"); if it turned out to hold the artist, an unparseable title would be a missed row rather than a wrong one |
 | Pre-order products carry a `pre-order`/`preorder` tag | Sibling convention; exact casing/spelling varies per store, so the check is a case-insensitive regex over both spellings rather than an exact `has_tag()` match | Pre-orders lose their ` (Pre-Order)` suffix and their unavailable variants are dropped |
-| The `vinyl` collection is vinyl-only | It is titled "LP" | Split: a bleed item whose blurb names a *recognised* non-vinyl format (`CD`, `2xCD`, `Cassette`) is dropped by the gate below; one whose descriptor the gate doesn't recognise is deliberately **kept** and published as `format: "Vinyl"`. That second half is one of the two silent failure modes named under the table — an earlier draft of this row said only "caught by the gate", which contradicted it |
+| The `vinyl` collection is vinyl-only | It is titled "LP" | Split: a bleed item whose blurb names a *recognised* non-vinyl format (`CD`, `2xCD`, `Cassette`) is dropped by the gate below; one whose descriptor the gate doesn't recognise is deliberately **kept** and published as `format: "Vinyl"`. That second half is one of the three silent failure modes named under the table — an earlier draft of this row said only "caught by the gate", which contradicted it |
 | Typographic quotes (`“ ”`) may appear alongside straight ones | Not observed in the sample; cheap to accept both | Nothing — the parser handles both |
 
 Most of these fail safe — but not all of them, and an earlier draft of this
@@ -287,9 +287,14 @@ format marker off the dash-path album and hands it to the gate, mirroring
 `asianmanrecords.py`'s `_FORMAT_SUFFIX_RE`, which does the same for its own
 no-quote titles.
 
-Its vocabulary is deliberately narrower than `_NON_VINYL_RE` — unambiguous
-markers only, no bare `MC` or `EP` — because it rewrites the stored title
-rather than merely gating on it. The required leading `\s+` means a single-word
+Its vocabulary is now identical to `_NON_VINYL_RE`'s, because both are built
+from the same tuples (see above). It was deliberately narrower at first —
+unambiguous markers only — on the reasoning that this expression rewrites the
+stored title rather than merely gating on it. That reasoning produced four
+separate escapes (`2CD`, `Digital`, merch, then `Book`/`MC`) and was abandoned.
+`EP` remains outside both tuples for the original reason, which does still
+hold: an EP is not a format decision, since EP pressings exist on vinyl and CD
+alike, so stripping it would edit titles for no classification gain. The required leading `\s+` means a single-word
 album that *is* one of these words (`Sodom - Tape`) has nothing preceding it to
 match and survives untouched.
 
