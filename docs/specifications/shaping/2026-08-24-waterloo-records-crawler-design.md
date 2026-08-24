@@ -255,8 +255,10 @@ on 429).
 This is by a wide margin the largest catalog in the fleet, and that is a
 real operational cost, recorded here rather than discovered later:
 
-- **144 GETs per sync.** 35,645 products at `limit=250` is 143 full
-  pages, plus the empty page `iter_products()` needs to terminate.
+- **144 GETs per sync.** 35,645 products at `limit=250` is 143 non-empty
+  pages — 142 full ones plus a 145-item remainder — and then the empty
+  page `iter_products()` needs to terminate, which it only does on an
+  empty page, never a short one.
 - **Roughly 54 minutes of wall-clock per sync**, at the
   `random.uniform(delay * 0.5, delay)` pacing with `crawl_delay_seconds`
   defaulting to 30s (~22.5s mean).
@@ -269,7 +271,7 @@ real operational cost, recorded here rather than discovered later:
   (`amazon`, `ebay`, `ebay_general`; `discogs_marketplace` is excluded by
   its `requires_discogs_release = True`).
 
-That is ~40× `carparkrecords.py` (~590 units). It is accepted rather than
+That is ~55× `carparkrecords.py` (~590 units). It is accepted rather than
 mitigated because the queue is a shared, rate-limited, always-draining
 worker pool: a large enqueue makes the queue take longer to drain, it
 does not make it fail, and the per-item crawler fan-out design already
