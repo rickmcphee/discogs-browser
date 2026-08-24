@@ -212,14 +212,22 @@ no longer filters `listing_changed` events by whether the release is in the
 requesting user's own library before delivering them — a discogs_id-scoped
 filter existed for an older, now-removed per-release progress UI, and left
 in place it would have silently starved every user's Store/Track tab of
-repaints for any release outside their own collection/wishlist. Every
-connected user receives every `listing_changed` event now. **(2026-08-23:**
-this sentence originally credited "both the live SSE stream and the
-reconnect replay buffer" — the replay half was never real. Both
-broadcasters `put_nowait` straight onto subscriber queues and never touch
-`_recent` (`crawl_manager.py:533-557`), so a `listing_changed` event is
-delivered live or not at all; a reconnecting client cannot replay one. The
-no-filtering point is unaffected.)**
+repaints for any release outside their own collection/wishlist. No
+ownership filter now stands between a `listing_changed` event and any user
+subscribed on the broadcasting process. **(2026-08-23:** the original
+sentence — "both the live SSE stream and the reconnect replay buffer
+deliver every `listing_changed` event to every connected user" —
+overstated twice. (1) The replay half was never real: both broadcasters
+`put_nowait` straight onto subscriber queues and never touch `_recent`
+(`crawl_manager.py:533-557`), so such an event is delivered live or not at
+all; a reconnecting client cannot replay one. (2) "Every connected user" is
+not literally true in the deployed multi-Machine setup either —
+`_subscribers` is an in-process list, so a stream landing on one Machine
+never sees events another Machine's worker pool produced. That is an
+accepted, documented gap, not a regression: see
+[`2026-08-16-fly-multi-machine-design.md`](2026-08-16-fly-multi-machine-design.md)'s
+"Cross-Machine SSE fan-out". What this paragraph exists to establish — the
+absence of ownership filtering — holds regardless.)**
 
 ## Testing
 
