@@ -92,7 +92,7 @@ This is deliberately *not* done with a `price_paid_known: bool` companion flag. 
 
 **`parse_release` renames its output key** `discogs_price` → `price_paid`. This is what allows `preserve_price` to die: once `upsert_catalog_release` has no price to write, the flag guards nothing.
 
-Churn note: the ~40 existing test fixtures that pass `"discogs_price": None` into `upsert_catalog_release` keep working untouched, because psycopg ignores named parameters the statement does not reference. Only tests that assert on `catalog.discogs_price` need editing.
+Churn note: the existing test fixtures that pass `"discogs_price": None` into `upsert_catalog_release` keep working untouched, because psycopg ignores named parameters the statement does not reference. Only tests that assert on `catalog.discogs_price` need editing.
 
 ### 3. Read path
 
@@ -206,6 +206,6 @@ The repo's required pre-PR spec-drift check sweeps for the remainder.
 
 ## Out of scope
 
-- Renaming the `discogs_price` wire/JSON field to `price_paid`. Deliberate: it would touch `api/types.ts`, `RecordBrowser.tsx` sort keys, and ~15 frontend test fixtures, none of which bears on the data loss.
+- Renaming the `discogs_price` wire/JSON field to `price_paid`. Deliberate: it would touch `api/types.ts`, `RecordBrowser.tsx` sort keys, and the frontend test fixtures, none of which bears on the data loss.
 - Typing the column as `NUMERIC` or normalizing currency. The value is free text from a user-controlled Discogs field.
 - Any live Discogs marketplace price. No such data exists in this app; the misconception that it does is what the spec correction above addresses.

@@ -9,7 +9,7 @@ Waterloo Records (`waterloorecords.com`) — the Austin, Texas independent
 record store trading since 1982, and one of the largest new-vinyl
 inventories this fleet could cover — is not served by any existing
 crawler. It is a Shopify storefront, so it belongs to the same family as
-the ~40 `catalog` plugins already in `backend/crawlers/`.
+the `catalog` plugins already in `backend/crawlers/`.
 
 It differs from every sibling in three ways that drive this design:
 

@@ -11,7 +11,7 @@ Russell, Henry Franklin), soul, death metal (Deicide, Obituary), '90s
 alt-rock (Letters to Cleo, Smoking Popes, The Donnas), and film/TV
 soundtracks (`Freddy vs. Jason`, `The Neon Demon`, `Corpse Bride`) — is
 not covered by any existing crawler. It is a standard Shopify storefront,
-same family as the ~40 label-store `catalog` plugins already in
+same family as the label-store `catalog` plugins already in
 `backend/crawlers/`.
 
 What makes this store different from every sibling is that **it exposes no

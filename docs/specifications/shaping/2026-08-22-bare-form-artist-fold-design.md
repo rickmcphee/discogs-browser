@@ -96,7 +96,7 @@ lookup phase both still query through `_the_comma_form_sql`, unchanged.
 
 `stock_items` now carries three artist expression indexes (plain `LOWER`,
 `the_lower`, `bare_lower`), and `replace_stock_items` fully deletes and
-reinserts every row for a crawler on each stock sync, across 40+ crawlers —
+reinserts every row for a crawler on each stock sync, across every crawler —
 that's three index entries maintained per row, per sync, for every stock
 item in the system. The read-side justification above doesn't weigh this
 write-side cost; it's a real one, just judged worth paying for the
