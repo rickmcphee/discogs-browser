@@ -754,6 +754,40 @@ def test_get_stock_items_sort_by_discogs_price_orders_numerically_nulls_last(adm
     assert [r["artist"] for r in result["items"]] == ["Artist D", "Artist A", "Artist B", "Artist C"]
 
 
+def test_get_stock_items_sort_by_discogs_price_reads_decimal_commas_as_decimals(admin_conn):
+    # The Track tab shares _price_sort_sql with the library path, so the
+    # decimal-comma resolution has to hold here too -- see the matching test in
+    # test_catalog_crud.py. Covered on both paths deliberately: the two sorts
+    # had already drifted apart once before the helper was shared.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+        {"artist": "Artist B", "title": "Album B", "url": "https://x/2", "price": 10.0, "currency": "USD"},
+        {"artist": "Artist C", "title": "Album C", "url": "https://x/3", "price": 10.0, "currency": "USD"},
+    ])
+    for discogs_id, artist, title, price in [
+        ("r1", "Artist A", "Album A", "$100"),
+        ("r2", "Artist B", "Album B", "\u20ac25,50"),
+        ("r3", "Artist C", "Album C", "1.234,56"),
+    ]:
+        db.upsert_catalog_release(admin_conn, {
+            "discogs_id": discogs_id, "artist": artist, "title": title, "year": None, "label": None,
+            "format": None, "price_paid": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.upsert_library_item(admin_conn, alice["id"], discogs_id, in_collection=True, price_paid=price)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], library_scope="collection", sort="discogs_price", order="asc")
+    # 25.50 < 100 < 1234.56. Under a blanket comma strip B reads as 2550 and
+    # leads; under the old narrow regex C reads as 1.234 and leads.
+    assert [r["artist"] for r in result["items"]] == ["Artist B", "Artist A", "Artist C"]
+
+
 def test_get_stock_items_sort_by_discogs_price_falls_back_to_artist_when_no_library_scope(admin_conn):
     db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")
     admin_conn.commit()

@@ -356,6 +356,53 @@ def test_get_library_releases_price_sort_ignores_currency_and_separators(admin_c
     assert set(ordered[3:]) == {"r1", "r4"}
 
 
+def test_get_library_releases_price_sort_reads_decimal_commas_as_decimals(admin_conn):
+    # price_paid is free text, so a European collection writes "25,50" for what
+    # a US one writes "25.50". Stripping every comma as a thousands separator
+    # turns that into 2550 -- not merely lossy but a hundredfold overstatement,
+    # which sorts a cheap record above a $100 one. The separators are resolved
+    # by format instead:
+    #
+    #   "25,50"     decimal comma        -> 25.50
+    #   "1.234,56"  dot grouping + comma -> 1234.56
+    #   "1,200.50"  comma grouping + dot -> 1200.50
+    #   "1.234"     lone dot group       -> 1.234, unchanged on purpose
+    #
+    # The last is the deliberately conservative call: reading it as 1234 would
+    # silently reorder every three-decimal value already stored.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _seed_priced(admin_conn, alice["id"], [
+        ("r1", "Aaa", "$1,200.50"),
+        ("r2", "Bbb", "\u20ac25,50"),
+        ("r3", "Ccc", "1.234,56"),
+        ("r4", "Ddd", "$100"),
+        ("r5", "Eee", "1.234"),
+    ])
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], sort="discogs_price", order="asc")
+    # 1.234 < 25.50 < 100 < 1200.50 < 1234.56
+    assert [r["discogs_id"] for r in result["releases"]] == ["r5", "r2", "r4", "r1", "r3"]
+
+
+def test_get_library_releases_price_sort_never_errors_on_unparseable_prices(admin_conn):
+    # The reason the extraction matches known formats rather than stripping
+    # every separator and casting: "25.00.00" survives a blanket strip as
+    # "25.00.00", which fails ::numeric and takes down the whole query rather
+    # than one row. Every branch must yield digits with at most one dot.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _seed_priced(admin_conn, alice["id"], [
+        ("r1", "Aaa", "25.00.00"),
+        ("r2", "Bbb", "1,23,456"),
+        ("r3", "Ccc", "$5"),
+    ])
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], sort="discogs_price", order="asc")
+    assert [r["discogs_id"] for r in result["releases"]][0] == "r3"
+    assert len(result["releases"]) == 3
+
+
 def test_get_library_releases_paginates_without_overlap_when_every_sort_key_is_null(admin_conn):
     # discogs_price is a Discogs custom field most collections never set, so
     # sorting by it leaves every row's sort key NULL and every row tied. A

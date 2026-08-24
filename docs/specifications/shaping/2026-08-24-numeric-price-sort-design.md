@@ -43,13 +43,39 @@ below `"$9.00"`.
 `_price_sort_sql(column)` in `backend/db.py`, next to `_artist_sort_sql`, used by both
 call sites:
 
-```python
-replace((regexp_match(<column>, '[0-9][0-9,]*(?:\.[0-9]+)?'))[1], ',', '')::numeric
-```
+It pulls the first digit run out of the value — so whatever leads it (`$`, `£`, `USD `,
+nothing) is skipped rather than parsed — and then resolves the separators.
 
-It takes the first digit run, tolerating thousands separators, stops at the decimal part,
-then strips the separators so the cast sees a bare number. Whatever leads the value —
-`$`, `£`, `USD `, nothing — is skipped rather than parsed.
+**The separators are the hard part, not the currency.** `,` and `.` swap roles between
+locales and this column holds both conventions, because it stores whatever the user typed.
+The first version of this helper stripped every comma as a thousands separator, which
+turned the European `"25,50"` into `2550` — not merely lossy but a hundredfold
+overstatement, sorting a cheap record above a `$100` one. (Found by Copilot review on
+PR #172. The narrow pattern it replaced read `"25,50"` as `25`: wrong, but only by the
+cents.) So the token is matched against the formats that actually occur instead:
+
+| Token | Read as | Result |
+| --- | --- | --- |
+| `1,200`, `1,200.50`, `1,234,567` | comma grouping, optional dot decimal | commas drop out |
+| `1.234.567`, `1.234,56` | dot grouping, optional comma decimal | dots drop out, comma becomes the point |
+| `25,50` | decimal comma | comma becomes the point |
+| `25`, `25.50` | already plain | unchanged |
+| anything else | unrecognised | digits only |
+
+Two calls worth stating outright:
+
+- **`1,200` is read as grouping**, though `1.2` with a decimal comma is a legal reading.
+  Three digits after a single comma is the grouping convention, and the decimal-comma form
+  in practice looks like `25,50` — two digits, a price's cents.
+- **A lone `1.234` stays a dot decimal**, even though `1.234.567` is treated as dot
+  grouping. Dot grouping therefore requires two or more groups, or a comma decimal part.
+  Reading a single group as `1234` would silently reorder every three-decimal value
+  already stored, to fix a case no one has reported.
+
+The fallback matters as much as the branches: every one of them yields digits with at most
+one dot, so the `::numeric` cast cannot fail. That is the property a blanket
+strip-then-cast lacks — `"25.00.00"` survives a strip intact and then errors the *whole
+query*, not one row.
 
 Sharing the expression, rather than fixing `get_library_releases` in isolation, is the
 point: both sorts read the same column, rendered under the same `Price` header on every
@@ -62,11 +88,8 @@ deliberate, and the alternative — refusing to sort mixed-currency rows — is 
 slightly-off order. Nothing about display changes: the stored text, currency included, is
 what the API returns and what the table renders.
 
-**Still extraction, not strip-then-cast.** A blanket "remove every non-digit, then cast"
-would turn a typo like `"25.00.00"` into a value that fails `::numeric` and errors the
-whole query. Matching one well-formed numeric substring cannot fail the cast: the pattern
-admits only digits, commas, and at most one decimal group, and comma removal leaves digits
-optionally followed by a single `.`-plus-digits.
+**Still extraction, not strip-then-cast.** See the cast-safety argument above: the branch
+table exists precisely so that no input can reach `::numeric` as something it refuses.
 
 **Values with no digits sort last.** `"N/A"`, `""` and NULL all yield NULL, which the
 `CASE WHEN <expr> IS NULL THEN 1 ELSE 0 END` guard on both queries sorts last.
@@ -109,6 +132,12 @@ Found by Copilot review on PR #172.
   currency, so the fix stays sort-only.
 - Mixed currency symbols, a thousands separator, `"N/A"` and NULL in one set: numeric
   order for the first three, the digit-less pair last.
+- The separator matrix — `"$1,200.50"`, `"€25,50"`, `"1.234,56"`, `"$100"`, `"1.234"`
+  in one ascending sort. Confirmed discriminating: under a blanket comma strip the `25,50`
+  row reads as 2550 and leads.
+- Unparseable input (`"25.00.00"`, `"1,23,456"`) returns rows rather than erroring. This
+  one guards the widened token rather than pinning a behaviour change — it passes against
+  the narrower pattern too, which never captured a second dot to begin with.
 
 `backend/tests/test_stock_crud.py`:
 
@@ -119,6 +148,9 @@ Found by Copilot review on PR #172.
   the Track path without pinning anything this change does to it. And it only ever
   called `order="asc"`, despite being named for a nulls-last property that holds in both
   directions, which is how the `null_order` bug survived in the first place.
+- The separator matrix again, on the Track path. Duplicated across both call sites on
+  purpose: the two sorts had already drifted apart once before the helper was shared, so
+  a format resolved correctly on one path proves nothing about the other.
 
 Both gaps were found by Copilot review on PR #172, not by the original test pass. The
 lesson generalizes: a regression test over values that sort the same way before and

@@ -153,20 +153,58 @@ def _price_sort_sql(column: str) -> str:
 
     `library_items.price_paid` is whatever the user typed into their Discogs
     custom field, so it arrives as display text with the currency attached
-    ("$30.00", "GBP 9", "1,200.00"). Ordering that column as text is
+    ("$30.00", "GBP 9", "1,200.00", "25,50"). Ordering that column as text is
     lexicographic -- "$100" sorts before "$9" -- so both the Collection/Wishlist
     Price header and the Track tab's price sort pull the leading number out and
-    order on that instead. The regex takes the first digit run, tolerating
-    thousands separators, and stops at the decimal part; the `replace` drops
-    those separators so the cast sees a bare number. Anything with no digits at
-    all ("N/A", "") yields NULL and sorts last via the caller's NULL guard.
+    order on that instead. Whatever leads the value is skipped, not parsed, so
+    the currency never reaches the comparison.
+
+    The hard part is not the currency but the separators, because `,` and `.`
+    swap roles between locales and the column holds both conventions. The
+    grouping/decimal question is settled by matching the token against the
+    formats that actually occur, rather than by stripping one character
+    unconditionally:
+
+    - `1,200` / `1,200.50` / `1,234,567` -- comma grouping, optional dot
+      decimal. Commas drop out.
+    - `1.234.567` / `1.234,56` -- dot grouping, optional comma decimal. Dots
+      drop out and the comma becomes the decimal point. Two or more dot groups,
+      or a comma decimal part, are required: a lone `1.234` stays a dot decimal,
+      since reading it as 1234 would silently change how every existing
+      three-decimal value already sorted.
+    - `25,50` -- decimal comma, the case a blanket strip turns into 2550.
+    - `25` / `25.50` -- already plain.
+    - anything else (`1,23,456` and other groupings not listed) falls back to
+      digits only. Approximate by construction, but bounded and never wrong by
+      an order of magnitude.
+
+    `1,200` is genuinely ambiguous -- 1200 grouped, or 1.2 with a decimal comma
+    -- and is read as grouping, because three digits after a single comma is the
+    grouping convention and a two-decimal price is what the decimal-comma form
+    almost always looks like (`25,50`).
+
+    Every branch yields digits with at most one dot, so the `::numeric` cast
+    cannot fail and error the whole query -- the property that made a blanket
+    strip-then-cast wrong in the first place. Anything with no digits at all
+    ("N/A", "") yields NULL and sorts last via the caller's NULL guard.
 
     Mixed currencies are deliberately not converted: the number is compared
     as-is, which is right for the overwhelmingly common single-currency
     collection and merely approximate for the rare mixed one. The currency is
     untouched in the stored value, so display keeps it.
     """
-    return f"replace((regexp_match({column}, '[0-9][0-9,]*(?:\\.[0-9]+)?'))[1], ',', '')::numeric"
+    # Bound once in a subquery: the token is tested against several patterns and
+    # repeating the regexp_match per branch would be unreadable and slower.
+    return f"""(SELECT CASE
+        WHEN t.v ~ '^[0-9]{{1,3}}(,[0-9]{{3}})+(\\.[0-9]+)?$' THEN replace(t.v, ',', '')
+        WHEN t.v ~ '^[0-9]{{1,3}}(\\.[0-9]{{3}}){{2,}}$'
+          OR t.v ~ '^[0-9]{{1,3}}(\\.[0-9]{{3}})+,[0-9]+$'
+          THEN replace(replace(t.v, '.', ''), ',', '.')
+        WHEN t.v ~ '^[0-9]+,[0-9]+$' THEN replace(t.v, ',', '.')
+        WHEN t.v ~ '^[0-9]+(\\.[0-9]+)?$' THEN t.v
+        ELSE regexp_replace(t.v, '[.,]', '', 'g')
+    END::numeric
+    FROM (SELECT (regexp_match({column}, '[0-9][0-9.,]*[0-9]|[0-9]'))[1] AS v) t)"""
 
 
 GLOBAL_SCHEMA = """
