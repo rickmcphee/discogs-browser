@@ -98,15 +98,15 @@ converging contract, not a bug to fix into conformance, the same framing the
 earlier amendments use.
 
 **Fifth amendment (2026-08-23, branch `claude/realgonemusic-crawler-84feaf`):**
-`backend/crawlers/realgonemusic.py` is another exception, and so far the only
-one that this doc's contract cannot describe even in principle: it does
-not split titles at all. The earlier exceptions each diverge in *how*
-they split — a wider separator class, a preprocessing pass, a quoted-album
-primary parser, no vendor fallback — but they all still answer the question
-"where does the artist end and the album begin?". Real Gone Music's store
-makes that question unanswerable from the data. `vendor` is the literal
-string `"Real Gone Music"` on all 278 vinyl products, and product titles
-concatenate artist and album with no delimiter of any kind (`Deicide
+`backend/crawlers/realgonemusic.py` is another exception, and exceptional in a
+way the others are not: this doc's contract cannot describe it even in
+principle, because it does not split titles at all. The earlier exceptions
+each diverge in *how* they split — a wider separator class, a preprocessing
+pass, a quoted-album primary parser, no vendor fallback — but they all still
+answer the question "where does the artist end and the album begin?". Real
+Gone Music's store makes that question unanswerable from the data. `vendor` is
+the literal string `"Real Gone Music"` on all 278 vinyl products, and product
+titles concatenate artist and album with no delimiter of any kind (`Deicide
 Serpents of the Light (Remastered) Vinyl`, `Béla Fleck & The Flecktones
 Flight of the Cosmic Hippo Vinyl`) — confirmed live across `products.json`,
 `/products/{handle}.js`, the page's JSON-LD `ProductGroup`, and its
