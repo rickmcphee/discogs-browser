@@ -9,7 +9,7 @@ This repository is **specification-driven**. The design spec and implementation 
 The spec and plan are the authoritative source of truth. If you want to understand how the system works, start with:
 
 - [`docs/superpowers/specs/2026-06-27-discogs-browser-design.md`](docs/superpowers/specs/2026-06-27-discogs-browser-design.md) — design spec
-- [`docs/superpowers/plans/2026-06-27-discogs-browser.md`](docs/superpowers/plans/2026-06-27-discogs-browser.md) — implementation plan (tasks 1–12 initial build; 13–18 subsequent improvements)
+- [`docs/superpowers/plans/2026-06-27-discogs-browser.md`](docs/superpowers/plans/2026-06-27-discogs-browser.md) — implementation plan
 
 See [`CLAUDE.md`](CLAUDE.md) for instructions aimed at Claude Code running in this repo.
 

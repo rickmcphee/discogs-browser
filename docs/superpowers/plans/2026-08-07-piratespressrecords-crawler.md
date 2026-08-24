@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a catalog crawler for Pirates Press Records (`shop.piratespressrecords.com`), the Store tab's 32nd catalog source.
+**Goal:** Add a catalog crawler for Pirates Press Records (`shop.piratespressrecords.com`), a new Store-tab catalog source.
 
 **Architecture:** Reuses `backend/shopify_catalog.py`'s `iter_products`/`has_tag`/`resolve_cover_image` helpers via the same `crawl_catalog()` contract every other catalog crawler implements. This store has no single collection holding all of its vinyl, but the storewide `/collections/all` feed does, at 560/560 vinyl listings (a since-abandoned four-collection-plus-dedup draft only reached 496/560, and needed more HTTP requests to do it) — so the crawler is the standard single-slug shape, `_COLLECTION_SLUG = "all"`, the same pattern `riserecords.py`/`saddlecreek.py`/`killrockstars.py`/`triplebrecords.py` already use. Format filtering is a product-level `product_type` check (`"Vinyl LP"` or `"Picture Disc"`); every product has exactly one variant, so no per-variant filter is layered on top. `vendor` is the artist; the display title is derived by splitting the raw title on its own first `" - "` rather than calling the shared `strip_vendor_prefix` (which needs an exact `"{vendor} - "` prefix match that 58/566 titles fail due to case/whitespace drift). That split requires whitespace on at least one side of the hyphen — a plain `\s*-\s*` split incorrectly breaks on two artists whose own name contains an unspaced internal hyphen (`"A-100s"`, `"The Re-Volts"`).
 

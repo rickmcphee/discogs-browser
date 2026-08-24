@@ -65,8 +65,7 @@ other value fails on 30-second connection timeouts until the first
 
 ## Evidence
 
-All measured on this machine against `postgres:16`, full backend suite
-(738 tests).
+All measured on this machine against `postgres:16`, full backend suite.
 
 | Measurement | Result |
 | --- | --- |
@@ -104,7 +103,7 @@ from `template0` gets the ACL right by construction, which is why the design
 below provisions a database rather than resetting a schema.
 
 **The schema strings do fully self-construct.** Against a genuinely pristine
-cluster the whole suite passes: 738 tests, no failures. So resetting to bare
+cluster the whole suite passes, no failures. So resetting to bare
 does not expose latent DDL gaps, and every local failure seen during this
 investigation was contamination rather than a real defect.
 
@@ -205,7 +204,7 @@ A hard crash between poison and correction can still leave the bits inverted,
 and `make test-db-clean` (below) normalizes them.
 
 Because the fixture is session-scoped and autouse, it must also stay out of the
-way of the 56 test files that never touch Postgres: with `TEST_DATABASE_URL`
+way of the test files that never touch Postgres: with `TEST_DATABASE_URL`
 unset it provisions nothing and yields `None`, leaving `pg_test_db` to raise for
 the files that do need a database, exactly as before this fixture existed. The
 guard test skips in that case — safe, because the same unset variable makes all
@@ -293,7 +292,8 @@ Touches:
   `_with_database` DSN helper, and a `_poison_app_roles` helper. `pg_test_db`
   and the `TRUNCATE` teardowns are left exactly as they are: with a bare
   database per run they are now an intra-run optimization rather than the only
-  cleanup, and rewriting 27 test files' fixtures is not this change.
+  cleanup, and rewriting every database-touching test file's fixtures is not
+  this change.
 - `backend/tests/test_pg_fixtures.py` — new, three cases.
 - `backend/scripts/drop_leaked_test_dbs.py` — new.
 - `Makefile` — new `test-db-clean` target.
@@ -311,7 +311,7 @@ Explicitly not touched:
   infrastructure only.
 - `.github/workflows/fly-deploy.yml` — CI already provisions a fresh database
   per job and needs no change. It gains the per-run database for free.
-- The 27 existing test files that use `pg_test_db`.
+- The existing test files that use `pg_test_db`.
 
 ## Non-goals
 
