@@ -212,9 +212,14 @@ no longer filters `listing_changed` events by whether the release is in the
 requesting user's own library before delivering them — a discogs_id-scoped
 filter existed for an older, now-removed per-release progress UI, and left
 in place it would have silently starved every user's Store/Track tab of
-repaints for any release outside their own collection/wishlist. Both the
-live SSE stream and the reconnect replay buffer deliver every
-`listing_changed` event to every connected user now.
+repaints for any release outside their own collection/wishlist. Every
+connected user receives every `listing_changed` event now. **(2026-08-23:**
+this sentence originally credited "both the live SSE stream and the
+reconnect replay buffer" — the replay half was never real. Both
+broadcasters `put_nowait` straight onto subscriber queues and never touch
+`_recent` (`crawl_manager.py:533-557`), so a `listing_changed` event is
+delivered live or not at all; a reconnecting client cannot replay one. The
+no-filtering point is unaffected.)**
 
 ## Testing
 
