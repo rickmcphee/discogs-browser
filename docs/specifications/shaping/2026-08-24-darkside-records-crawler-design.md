@@ -8,7 +8,7 @@ Branch: `claude/darkside-records-crawler-4kfeag`
 Darkside Records (`shop.darksiderecords.com`) — a Poughkeepsie, New York
 independent record store, open since 2011 and the Hudson Valley's largest —
 is not covered by any existing crawler. It is a standard Shopify storefront,
-the same family as the ~46 `catalog` plugins already in `backend/crawlers/`,
+the same family as the `catalog` plugins already in `backend/crawlers/`,
 but it is a *retail store* rather than a label, so its shape matches
 `jackpotrecords.py` (distributor `vendor`, `Artist- Album` titles) rather
 than the label-store crawlers.
@@ -103,7 +103,8 @@ below derives from it. The same discrepancy is recorded in
 The genre sub-collections (`new-vinyl-rock-a` … `new-vinyl-rock-z`,
 `new-vinyl-jazz`, `new-vinyl-metal`, …) were considered as a way to reach
 the full `new-vinyl` set by splitting it under the 25,000 cap. Rejected:
-it would mean ~50 collection slugs hardcoded in the plugin, each needing
+it would mean hardcoding the store's whole set of genre sub-collection
+slugs in the plugin, each needing
 its own pagination and de-duplication pass across overlapping membership,
 to surface stock the store does not physically have — a large amount of
 new machinery for the less useful half of the catalog.
