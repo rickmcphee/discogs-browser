@@ -123,7 +123,12 @@ change that).
   blanket strip-then-cast, still NULL-and-last for a value with no digits,
   still sort-order-only. The helper is now shared with `get_library_releases`
   — see
-  [`2026-08-24-numeric-price-sort-design.md`](2026-08-24-numeric-price-sort-design.md).)
+  [`2026-08-24-numeric-price-sort-design.md`](2026-08-24-numeric-price-sort-design.md).
+
+  "Sorts as NULL, last" above was only ever true ascending. `get_stock_items`
+  derived its `null_order` from the requested order, so a descending sort put
+  the digit-less rows first; it is pinned to `ASC` as of the same date, making
+  the sentence true in both directions as it always claimed.)
 - **Missing value renders as `—`**, matching `Format`'s existing convention
   in the same table.
 - **Shared match logic, not duplicated.** `_not_owned_clause`'s

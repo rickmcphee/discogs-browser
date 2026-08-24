@@ -738,6 +738,13 @@ def test_get_stock_items_sort_by_discogs_price_orders_numerically_nulls_last(adm
         result = db.get_stock_items(conn, alice["id"], library_scope="collection", sort="discogs_price", order="asc")
     assert [r["artist"] for r in result["items"]] == ["Artist B", "Artist A", "Artist C"]
 
+    # Descending reverses the priced rows but must not promote the unpriced
+    # one: "nulls last" means last in both directions. This is the half the
+    # test name always claimed and only the ascending call ever checked.
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], library_scope="collection", sort="discogs_price", order="desc")
+    assert [r["artist"] for r in result["items"]] == ["Artist A", "Artist B", "Artist C"]
+
 
 def test_get_stock_items_sort_by_discogs_price_falls_back_to_artist_when_no_library_scope(admin_conn):
     db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")

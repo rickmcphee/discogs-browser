@@ -59,8 +59,23 @@ admits only digits, commas, and at most one decimal group, and comma removal lea
 optionally followed by a single `.`-plus-digits.
 
 **Values with no digits sort last.** `"N/A"`, `""` and NULL all yield NULL, which the
-existing `CASE WHEN <expr> IS NULL THEN 1 ELSE 0 END` guard on both queries already sorts
-last in either direction. Unchanged, and the reason the guard is not touched here.
+`CASE WHEN <expr> IS NULL THEN 1 ELSE 0 END` guard on both queries sorts last.
+
+That was true of `get_library_releases` already but not of `get_stock_items`, which is
+fixed here as well. The guard's direction is a separate `null_order`, and the Track-tab
+query set it to `"ASC" if order_sql == "ASC" else "DESC"` — a no-op copy of `order_sql`,
+so a descending sort ordered the guard descending too and put its `1`s, the rows with no
+sort key, *first*. `get_library_releases` pinned its own `null_order` to `"ASC"` when the
+same formula was found there; `get_stock_items` kept the broken copy because the only
+test then exercising it was deleted in that change. It is now pinned the same way, with
+the same rationale.
+
+The fix is not specific to prices: `null_order` is shared by every stock sort, so an
+absent `Format` and an unpriced `Cost` were mis-ordered on descending too, and now are
+not. It is in scope here because this branch is what makes the price case reachable —
+the numeric extraction is precisely what turns `"N/A"` into a NULL sort key.
+
+Found by Copilot review on PR #172.
 
 ## Scope
 

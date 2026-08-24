@@ -1767,7 +1767,14 @@ def get_stock_items(
     offset = (page - 1) * per_page
     params["limit"] = per_page
     params["offset"] = offset
-    null_order = "ASC" if order_sql == "ASC" else "DESC"
+    # Always ASC: NULLs sort last for both ASC and DESC, matching
+    # get_library_releases. The `"ASC" if order_sql == "ASC" else "DESC"`
+    # formula this replaces was a no-op copy of order_sql, so a descending
+    # sort ordered the CASE guard descending too and put its 1s -- the rows
+    # with no sort key -- first. Reachable on every stock sort with a nullable
+    # key: an unpriced Cost, an absent Format, and the discogs_price sort
+    # whose "N/A"/blank values this branch's numeric extraction maps to NULL.
+    null_order = "ASC"
     rows = conn.execute(
         f"""
         SELECT s.id, s.artist, s.title, s.format, s.price, s.currency, s.url, s.cover_image_url, s.last_seen,
