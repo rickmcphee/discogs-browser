@@ -2,7 +2,7 @@
 
 ## Problem
 
-The Store Management section (Settings tab) lists ~36 catalog-crawler stores by name only. A user deciding whether to hide a store (the existing View toggle) has no way to tell what kind of music it carries without following the link out to the site.
+The Store Management section (Settings tab) lists the catalog-crawler stores by name only. A user deciding whether to hide a store (the existing View toggle) has no way to tell what kind of music it carries without following the link out to the site.
 
 ## Scope
 

@@ -11,7 +11,7 @@ Russell, Henry Franklin), soul, death metal (Deicide, Obituary), '90s
 alt-rock (Letters to Cleo, Smoking Popes, The Donnas), and film/TV
 soundtracks (`Freddy vs. Jason`, `The Neon Demon`, `Corpse Bride`) — is
 not covered by any existing crawler. It is a standard Shopify storefront,
-same family as the ~40 label-store `catalog` plugins already in
+same family as the label-store `catalog` plugins already in
 `backend/crawlers/`.
 
 What makes this store different from every sibling is that **it exposes no
@@ -272,13 +272,12 @@ class Crawler:
     async def crawl_catalog(self) -> AsyncIterator[dict]: ...
 ```
 
-`genre = "marketplace"` is this repo's genre-spanning bucket — the other
-eight members are Amoeba, Newbury Comics, Turntable Lab, The Sound Garden,
-Jackpot Records, and the reissue labels Craft Recordings, Cleopatra
-Records, and Numero Group — the right fit for a catalog running from Black
-Jazz to Deicide. (Amendment, 2026-08-24: Darkside Records has since joined
-the bucket as a tenth member — see
-[`2026-08-24-darkside-records-crawler-design.md`](2026-08-24-darkside-records-crawler-design.md).) `_COLLECTION_SLUG = "vinyl"`, iterated with
+`genre = "marketplace"` is this repo's genre-spanning bucket — its other
+members are Amoeba, Newbury Comics, Turntable Lab, The Sound Garden,
+Jackpot Records, Waterloo Records, Darkside Records, and the reissue
+labels Craft Recordings, Cleopatra Records, and Numero Group — the right
+fit for a catalog running from Black
+Jazz to Deicide. `_COLLECTION_SLUG = "vinyl"`, iterated with
 `shopify_catalog.iter_products()` unchanged. Registration is automatic:
 `main.py`'s `seed_bundled_crawlers()` walks `backend/crawlers/` at startup
 and calls `register_crawler` for each plugin it finds — no wiring

@@ -8,7 +8,7 @@ Branch: `claude/side-one-dummy-crawler-da0711`
 SideOneDummy Records' official store
 (`sideonedummyrecords.shop.musictoday.com`) is not covered by any existing
 crawler. It runs on the Musictoday commerce platform — a platform no
-existing crawler in this repo targets (the ~40 label-store `catalog`/
+existing crawler in this repo targets (the label-store `catalog`/
 `catalog_browser` plugins are Shopify, Bigcartel, WooCommerce, or bespoke
 storefronts).
 

@@ -316,7 +316,7 @@ narrower collection, not new code.
 `test_jackpotrecords_crawler.py`'s pattern — product literals taken from
 confirmed-live products, served through `respx`-mocked `products.json`
 responses and driven via `crawl_catalog()`; no live site, no bot-detection
-risk. 22 cases:
+risk. The cases:
 
 - dominant glued-hyphen title → artist/album split, plus all scalar fields
 - en-dash separator → split
@@ -345,11 +345,11 @@ risk. 22 cases:
 - pagination continues until an empty page
 - site metadata
 
-All 22 pass. The wider suite is unaffected: 1,373 pass, and the 38 errors
-present are pre-existing Playwright browser-launch failures in
-`tests/crawlers/` (no Chromium build at the configured
-`PLAYWRIGHT_BROWSERS_PATH`), unrelated to this change, which adds only two
-new files and touches no existing module.
+They all pass. The wider suite is unaffected: it passes apart from
+pre-existing Playwright browser-launch failures in `tests/crawlers/` (no
+Chromium build at the configured `PLAYWRIGHT_BROWSERS_PATH`), which are
+unrelated to this change — it adds only new files and touches no existing
+module — and which CI, where the browsers are present, runs green.
 
 ## Crawl citizenship and `robots.txt` compliance
 

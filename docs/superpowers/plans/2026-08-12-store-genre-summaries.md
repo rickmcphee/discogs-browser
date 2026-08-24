@@ -126,7 +126,7 @@ EOF
 
 ---
 
-### Task 2: Backend — populate `genre_summary` on the 36 catalog crawler plugins
+### Task 2: Backend — populate `genre_summary` on every catalog crawler plugin
 
 **Files:**
 - Modify: all 36 files listed in the table below, each `backend/crawlers/<file>.py`
@@ -165,7 +165,7 @@ def test_startup_seeds_catalog_crawlers_with_genre_summary(pg_test_db):
 
 Run: `cd backend && TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/discogs_browser_test IDENTITY_DB_PASSWORD=test APP_DB_PASSWORD=test pytest tests/test_main.py -k genre_summary -v`
 
-Expected: FAIL — `missing` assertion lists all 36 catalog site names.
+Expected: FAIL — `missing` assertion lists every catalog site name.
 
 - [ ] **Step 3: Add `genre_summary` to each plugin**
 
@@ -236,7 +236,7 @@ Expected: PASS (no regressions in per-crawler fixture tests — `genre_summary` 
 ```bash
 git add backend/crawlers/*.py backend/tests/test_main.py
 git commit -F - <<'EOF'
-Add genre_summary to all 36 catalog crawler plugins
+Add genre_summary to every catalog crawler plugin
 
 Why: populates the data Task 1 wired up, so Store Management can
 show a one-sentence description of what each store sells.

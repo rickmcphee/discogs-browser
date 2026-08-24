@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add five punk/hardcore/indie catalog crawlers — Closed Casket Activities, Big Scary Monsters USA, Kill Rock Stars, Saddle Creek, and Polyvinyl Record Co. — the third of four planned batches covering the 18 new US-only, USD-billed Shopify record stores researched for the Store tab. Developed independently in parallel with the other batches (see the parallel-batch note in Task 6) — this plan's crawler-count math is based on the current unmerged `main` (13 pre-existing catalog crawlers), not on any sibling batch landing first.
+**Goal:** Add five punk/hardcore/indie catalog crawlers — Closed Casket Activities, Big Scary Monsters USA, Kill Rock Stars, Saddle Creek, and Polyvinyl Record Co. — the third of four planned batches covering the new US-only, USD-billed Shopify record stores researched for the Store tab. Developed independently in parallel with the other batches (see the parallel-batch note in Task 6), against the current unmerged `main` rather than any sibling batch landing first.
 
-**Architecture:** All five are Shopify storefronts. A live-data grounding pass (mandatory per this repo's convention — no invented fixtures) turned up three new wrinkles not seen in any of the 17 crawlers built in the two prior batches:
+**Architecture:** All five are Shopify storefronts. A live-data grounding pass (mandatory per this repo's convention — no invented fixtures) turned up three new wrinkles not seen in any crawler built in the two prior batches:
 
 - **Closed Casket Activities and Big Scary Monsters USA both have genuine single-variant `"Default Title"` vinyl products mixed into the same collection as multi-variant LP+CD products.** A positive vinyl-regex filter (the shape used by most prior crawlers) would wrongly exclude the `"Default Title"` ones, since that literal string carries no format keyword at all. Both crawlers use a **negative** filter instead — exclude only variants titled exactly `"CD"`/`"Cassette"`/`"Digital"` — which correctly keeps `"Default Title"` while still dropping the CD/Cassette/Digital siblings on multi-variant products. Both also need a conditional display-title rule: don't append the variant name when it's literally `"Default Title"` (uninformative), but do append it otherwise (real color/pressing info).
 - **Kill Rock Stars mixes vinyl, CD, digital, apparel, and "bundle" variants inside one large `/collections/all` catalog**, including one confirmed product with 38 variants spanning vinyl-only, CD-only, vinyl+CD-bundle, T-shirt-only, and sticker-pack-only options crossed with shirt sizes. A pure positive vinyl-regex (matching `LP`/inch-mark patterns) turns out to be sufficient to exclude apparel/digital/CD without any product-level tag or `product_type` gate at all — except that a bundle variant like `"LP + CD Bundle / X-Small"` also contains the substring `"LP"` and would false-positive, so an additional exclusion for variant titles containing `"bundle"` or `"+"` is layered on top.
@@ -1159,7 +1159,7 @@ Expected: `5 passed`
 - [ ] **Step 1: Run the full backend test suite**
 
 Run (from `backend/`): `pytest -q`
-Expected: all tests pass, including all five new files. Total catalog crawlers registered on this branch: eighteen (13 pre-existing + 5 from this batch).
+Expected: all tests pass, including all five new files.
 
 - [ ] **Step 2: Check for `main` movement, rebase if needed**
 
@@ -1168,7 +1168,7 @@ git fetch origin main
 git log --oneline HEAD..origin/main
 ```
 
-If `origin/main` has moved (e.g. because a sibling batch — metal or punk/hardcore pt1 — merged while this branch was in progress), `git rebase origin/main` and re-run the full suite before the drift check below. **Parallel-batch note:** this plan's crawler-count math (13 pre-existing + 5 = eighteen) assumes neither sibling batch has merged yet. If one has, the actual count after rebase will be higher (13 + whichever sibling batches already landed + 5) — recompute from what's actually in the rebased `main`, don't trust the number in this plan document.
+If `origin/main` has moved (e.g. because a sibling batch — metal or punk/hardcore pt1 — merged while this branch was in progress), `git rebase origin/main` and re-run the full suite before the drift check below. **Parallel-batch note:** this plan assumes neither sibling batch has merged yet. If one has, work from what's actually in the rebased `main`.
 
 - [ ] **Step 3: Run the mandatory pre-PR spec-drift check**
 

@@ -49,6 +49,21 @@ the three existing sort sites:**
 Both helpers derive from the same `"the "` literal so the SQL and Python rules
 can't drift apart.
 
+**Amended 2026-08-23** (`2026-08-22-bare-form-artist-fold-design.md`): the
+signature above is no longer current, and neither is "no new touch points
+beyond the three existing sort sites". `_artist_sort_sql` now reads
+`_artist_sort_sql(column: str, *, escape_percent: bool = True) -> str` — the
+new keyword mirrors `_the_comma_form_sql`'s, emitting a single unescaped `%`
+for the unparameterized `GLOBAL_SCHEMA` index DDL and the doubled `%%`
+psycopg pyformat needs everywhere else. Its call sites are now the two
+`ORDER BY` expressions described here, the two `artist=` equality conditions
+in `get_library_releases`/`get_stock_items` (which use its article-stripped
+key so a bare-stored "Beatles" matches a "Beatles, The" filter value), and
+the `catalog_artist_bare_lower_idx`/`stock_items_artist_bare_lower_idx`
+index definitions that keep those conditions off a sequential scan. The
+function also moved to just after `_the_comma_form_sql`, near the top of
+`db.py`, because `GLOBAL_SCHEMA` calls it at module-import time.
+
 ## Out of scope
 
 - Display text — "The Beatles" keeps rendering as "The Beatles" everywhere.

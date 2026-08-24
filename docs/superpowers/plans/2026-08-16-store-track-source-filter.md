@@ -432,7 +432,7 @@ EOF
 
 ---
 
-## Task 4: Seed `genre` on all 40 catalog crawler plugins
+## Task 4: Seed `genre` on every catalog crawler plugin
 
 **Files:**
 - Modify: all 40 files listed in the table below, under `backend/crawlers/`
@@ -477,7 +477,7 @@ def test_startup_seeds_catalog_crawlers_with_genre(pg_test_db):
 Run: `cd backend && TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/discogs_browser_test IDENTITY_DB_PASSWORD=test APP_DB_PASSWORD=test pytest tests/test_main.py -k genre -v`
 Expected: FAIL — every catalog crawler currently defaults to `"marketplace"` (Task 2's fallback), so `century_media["genre"] == "metal"` fails.
 
-- [ ] **Step 3: Add `genre` to each of the 40 catalog crawler plugins**
+- [ ] **Step 3: Add `genre` to each catalog crawler plugin**
 
 In each file below, add a `genre: str = "<value>"` class attribute immediately after the existing `genre_summary: str = "..."` line:
 
@@ -555,7 +555,7 @@ Expected: PASS (no regressions from the 40-file edit; run tests in the foregroun
 ```bash
 git add backend/crawlers/ backend/tests/test_main.py
 git commit -F - <<'EOF'
-Seed genre on all 40 catalog crawler plugins
+Seed genre on every catalog crawler plugin
 
 Derived from each crawler's existing genre_summary; anything spanning
 unrelated genres or too broad to map cleanly is marketplace.

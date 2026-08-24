@@ -1615,3 +1615,95 @@ def test_get_stock_items_search_matches_comma_form_against_the_prefixed_row(admi
         result = db.get_stock_items(conn, alice["id"], search="Beatles, The")
     assert result["total"] == 1
     assert result["items"][0]["title"] == "Abbey Road"
+
+
+def test_get_distinct_stock_artists_folds_bare_form_across_tables(admin_conn):
+    # The bare "Beatles" row lives only in stock_items; the "The Beatles"
+    # spelling lives only in catalog. canonical_artist_labels' bare lookup
+    # must check both tables before falling back to the bare input's own
+    # casing group -- a naive single-table-first resolution would stop at
+    # stock_items (which already has a winner for bare "Beatles" itself) and
+    # never check catalog for the variant. See
+    # docs/specifications/shaping/2026-08-22-bare-form-artist-fold-design.md.
+    # Deliberately does not also assert on get_stock_items(artist=...) here:
+    # that filter's own bare-form fold is Task 4's scope
+    # (test_get_stock_items_artist_filter_matches_bare_form_row), not this
+    # task's -- this test is about canonical_artist_labels'/
+    # get_distinct_stock_artists' grouping alone, which the assertion below
+    # already fully exercises.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r1", "artist": "The Beatles", "title": "Abbey Road",
+        "year": None, "label": None, "format": None, "barcode": None,
+        "cover_image_url": None, "discogs_url": None,
+    })
+    crawler_id = _register(admin_conn, "Amazon")
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "Beatles", "title": "Let It Be", "url": "https://x/1", "price": 20.0, "currency": "USD"},
+    ])
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        artists = db.get_distinct_stock_artists(conn, alice["id"])
+    assert artists == ["Beatles, The"]
+
+
+def test_get_stock_items_artist_filter_matches_bare_form_row(admin_conn):
+    # Same shape as the catalog version in test_catalog_crud.py: clicking
+    # "Beatles, The" must also surface a stock row stored with no article.
+    # All three raw spellings ("The Beatles", "Beatles", "Beatles, The") are
+    # seeded here so one filter call pins all three collapsing under a single
+    # filter value, not just the bare/prefix pair.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    crawler_id = _register(admin_conn, "Amazon")
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "The Beatles", "title": "Abbey Road", "url": "https://x/1", "price": 20.0, "currency": "USD"},
+        {"artist": "Beatles", "title": "Let It Be", "url": "https://x/2", "price": 18.0, "currency": "USD"},
+        {"artist": "Beatles, The", "title": "Revolver", "url": "https://x/3", "price": 22.0, "currency": "USD"},
+    ])
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], artist="Beatles, The")
+    assert result["total"] == 3
+    assert {i["artist"] for i in result["items"]} == {"Beatles, The"}
+
+
+def test_get_distinct_artists_bare_in_catalog_folds_to_stock_items_variant(admin_conn):
+    # The discriminating case for the bare lookup being its own pass rather
+    # than a check folded into the existing per-table casing loop. The two
+    # tables are deliberately the opposite way round from
+    # test_get_distinct_stock_artists_folds_bare_form_across_tables above:
+    # the BARE spelling is in `catalog` (the table checked first) and the
+    # marked "The Beatles" spelling exists only in `stock_items` (checked
+    # second).
+    #
+    # That ordering is what makes this test able to fail. A merged
+    # implementation -- one that resolved each input at the first table
+    # having any winner for it -- would, at the catalog stage, find bare
+    # "Beatles" a winner for its own key and resolve to "Beatles", never
+    # reaching stock_items to discover the "The Beatles" variant. With the
+    # bare lookup as its own catalog-then-stock_items pass, the catalog
+    # stage finds nothing folding to "beatles, the", so the pass continues
+    # to stock_items and picks up the variant. See the design doc's
+    # "Running the bare lookup as its own ... pass" paragraph.
+    #
+    # The sibling test above cannot catch this: it puts the marked spelling
+    # in catalog, which is checked first under either implementation, so
+    # both produce "Beatles, The" and the test passes either way.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r1", "artist": "Beatles", "title": "Let It Be",
+        "year": None, "label": None, "format": None, "barcode": None,
+        "cover_image_url": None, "discogs_url": None,
+    })
+    db.upsert_library_item(admin_conn, alice["id"], "r1", in_collection=True)
+    crawler_id = _register(admin_conn, "Amazon")
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "The Beatles", "title": "Abbey Road", "url": "https://x/1", "price": 20.0, "currency": "USD"},
+    ])
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        artists = db.get_distinct_artists(conn, alice["id"])
+    assert artists == ["Beatles, The"]
