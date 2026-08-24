@@ -58,9 +58,13 @@ this endpoint no matter how the crawl is paced.
 Worse, the failure is not graceful. `iter_products()` treats a 400 as a
 generic `httpx.HTTPError` (only 429 gets the fail-fast path), so it would
 `continue` and retry the same page until `consecutive_failure_limit` is
-exhausted — up to ~10 minutes of retries — and then raise, after having
-already spent ~90 minutes paginating the first 100 pages. `new-vinyl` is
-therefore not a "slow but workable" option; it is a guaranteed failed sync.
+exhausted — 10 further attempts, each preceded by the same sleep, so a
+further ~2.5–5 minutes — and then raise, after having already spent
+~25–50 minutes paginating the first 100 pages. (`iter_products()` sleeps
+`random.uniform(delay * 0.5, delay)` before every request, so at the
+default `crawl_delay_seconds = 30` each page costs 15–30s, mean 22.5s;
+100 pages is ~37 minutes on average.) `new-vinyl` is therefore not a
+"slow but workable" option; it is a guaranteed failed sync.
 
 `new-vinyl-in-stock` is the crawlable alternative, and it happens to carry
 the better semantic too:
