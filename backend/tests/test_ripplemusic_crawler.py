@@ -176,6 +176,60 @@ def test_items_drops_an_inch_marked_merch_option():
     assert Crawler._items(product) == []
 
 
+@pytest.mark.parametrize("text,kept", [
+    # "Vinyl" is a material as well as a format: these are merchandise, and
+    # the word describes what they are made of, not that they are records.
+    ("Wo Fat - Vinyl Sticker", False),
+    ("Ripple Music Vinyl Banner", False),
+    ("Ripple Music Vinyl Slipmat", False),
+    ("Vinyl Decals", False),
+    # Genuine bundles keep their own token -- there is no compound here, the
+    # vinyl and the merch item are separate things.
+    ("Mothership - Mothership LP + Sticker", True),
+    ("Wo Fat - Black Vinyl + Sticker", True),
+    # Only the compound is stripped, so an independent format token survives.
+    ("Cortez - Vinyl Sticker + LP", True),
+    # A mixed-format record still passes: no compound, and the vinyl word is
+    # doing format work.
+    ("Godzillionaire - Diminishing Returns Limited Vinyl and CD variants", True),
+])
+def test_items_does_not_treat_vinyl_as_a_format_when_it_names_a_material(text, kept):
+    product = _product(name=text, categories=[], artists=[{"id": 1, "name": "Ripple"}])
+    assert len(Crawler._items(product)) == (1 if kept else 0)
+
+
+def test_items_drops_a_vinyl_material_merch_option():
+    # Same rule one layer down: the vinyl-word override must not rescue an
+    # option whose "vinyl" is describing a sticker.
+    product = _product(options=[
+        {"id": 80, "name": "Vinyl Sticker", "price": 5.0, "sold_out": False},
+    ])
+    assert Crawler._items(product) == []
+
+
+def test_items_keeps_a_bundle_option_naming_vinyl_and_a_merch_item_separately():
+    product = _product(options=[
+        {"id": 81, "name": "Black Vinyl + Sticker", "price": 30.0, "sold_out": False},
+    ])
+    assert len(Crawler._items(product)) == 1
+
+
+@pytest.mark.parametrize("text,kept", [
+    # A test pressing is vinyl by definition, in each form the store might use.
+    ("Test Presses", True),
+    ("Rare Test Press", True),
+    ("Test Pressing", True),
+    ("Test Pressings", True),
+    # ...but the token needs a terminating boundary, or it swallows any word
+    # that merely starts with "press".
+    ("Test Pressure", False),
+])
+def test_items_test_press_token_is_bounded(text, kept):
+    product = _product(name=f"Wo Fat - {text}", categories=[],
+                       artists=[{"id": 1, "name": "Wo Fat"}])
+    assert len(Crawler._items(product)) == (1 if kept else 0)
+
+
 def test_items_drops_a_product_with_neither_signal():
     product = _product(name="Ripple Music Logo Tee", categories=[{"id": 8, "name": "Tees"}])
     assert Crawler._items(product) == []

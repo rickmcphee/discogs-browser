@@ -56,15 +56,31 @@ platform behaviour gains a third data point, and one correction of emphasis:
   `7" Vinyl`, `Double LP`, `Test Presses`). Three stores, three category
   vocabularies — an exact category string is store-local by default, and
   `ripplemusic.py` matches category names with a token regex for that reason.
-- Option-level `sold_out` — populated here (19 true), inert on Jetglow,
-  **unverified** on Ripple Music, which therefore honours both it and
-  product-level `status`, and treats an absent `status` as "no signal" rather
-  than as sold out.
+- Option-level `sold_out` — populated here (19 true), inert on Jetglow, and
+  **both populated** on Ripple Music (measured 2026-08-24: 316 `active` / 55
+  `sold-out` / 2 `coming-soon` products, and 228 of 722 options `sold_out`).
+  Three stores, three combinations — so neither field is reliable alone on an
+  unexamined Big Cartel store, and a new crawler should honour both rather
+  than pick whichever its nearest sibling used. `ripplemusic.py` additionally
+  treats an absent `status` as "no signal" rather than as sold out, so a feed
+  that omits the field degrades to the option flag instead of emptying.
+  Ripple Music also exposes a third `status` value neither store here shows,
+  `coming-soon`.
 - The unpaginated-feed behaviour reproduced on the second store, and the first
   amendment recorded that as reproduction. Two stores of 76 and 50 products
   are weak evidence for a platform-wide rule about response caps; it should be
-  read as "not yet contradicted," not as established. It remains unverified on
-  the third store.
+  read as "not yet contradicted," not as established.
+
+  **Updated 2026-08-24, same branch, after the third store was measured:**
+  Ripple Music is **373 products** and `/products.json` still returns all of
+  them in one response, with `?page=2` returning the same 373. That is five to
+  seven times either store here, so the rule is now supported by a size range
+  wide enough to be worth something rather than by two small catalogs. The
+  count was cross-checked against that store's `sitemap.xml`, which lists the
+  same 373 — without an independent count, "373 in one response" cannot be
+  told apart from "373 is the cap", and neither of the first two stores
+  advertised a sitemap to check against. Still not a documented platform
+  guarantee, and `ripplemusic.py` keeps its paging loop for that reason.
 
 Amendment only — nothing below is retracted.
 

@@ -28,17 +28,43 @@ What *is* grounded, and how:
 | Prices are USD | US (SF Bay Area) label; a `$23.99 USD` listing for one of its releases | High |
 | `/products.json` shape (`options`, `sold_out`, `status`, `artists`, `categories`, `images`) | `asbestosrecords.py` and `jetglowrecordings.py`, both confirmed live against the same platform | High |
 | `robots.txt` does not `Disallow` `/products.json` | Fetched live 2026-08-24 — see "Crawl citizenship" | **Confirmed** |
-| Whether `/products.json` honours `page=` on **this** store | — | **Unknown** |
-| Whether product-level `status` is populated on **this** store | — | **Unknown** |
-| Whether option-level `sold_out` is populated on **this** store | — | **Unknown** |
-| Catalog size, and how many rows this yields | — | **Unknown** |
+| `/products.json` **ignores `page=`** — `?page=2` returns the same 373 | Measured live 2026-08-24 | **Confirmed** |
+| Product-level `status` **is** populated — 316 `active`, 55 `sold-out`, 2 `coming-soon` | Measured live 2026-08-24 | **Confirmed** |
+| Option-level `sold_out` **is** populated — 494 `false`, 228 `true` across 722 options | Measured live 2026-08-24 | **Confirmed** |
+| Catalog size: **373 products**, and `/products.json` returns all of them in one response | Measured live 2026-08-24; the `sitemap.xml` product count agrees exactly | **Confirmed** |
+| How many rows this crawler actually yields | — | **Unknown** |
 
-The three unknowns are the design's centre of gravity: each is a place where
-the two sibling Big Cartel crawlers made *opposite* confirmed-live findings,
-so neither could be copied. The resolution throughout is to write logic that
-is correct under either finding rather than to guess one — see each section
-below. Where that costs something (one extra HTTP request per sync), the
-cost is named.
+Those four were unknown when the crawler was written, and were the design's
+centre of gravity: each is a place where the two sibling Big Cartel crawlers
+made *opposite* confirmed-live findings, so neither could be copied. The
+resolution throughout was to write logic correct under either finding rather
+than to guess one.
+
+**They were measured on 2026-08-24** (by the maintainer, from an unrestricted
+network — see "Crawl citizenship" for why this doc distinguishes that). The
+outcome, recorded because a design that hedges should be honest about how the
+hedges landed:
+
+- **Pagination — the hedge was not needed, and was not free.** `page=` is
+  ignored here exactly as on both siblings, so the loop takes its two-GET
+  path. The reasoning that justified it still stands: at 373 products this
+  store is five to seven times either sibling, and *nothing observable from
+  outside* distinguished "returns everything" from "caps the response" until
+  the sitemap cross-check existed. The cost of having been wrong the other
+  way was a silently truncated catalog; the cost of the hedge is one extra
+  GET per sync. That trade is still the right one, but the loop is now
+  carrying machinery this store does not exercise.
+- **Availability — the hedge was needed, and by more than expected.** Both
+  signals are populated here. That is new: Asbestos populates only
+  `sold_out`, Jetglow only `status`. Honouring both was belt-and-braces when
+  written and is load-bearing in fact — gating on either alone would be
+  wrong. See "Availability" below.
+- **`status` carries a third value neither sibling shows**: `coming-soon`, on
+  2 products. Handled, but not by design — see below.
+
+The one item still open is what the crawler actually emits. 316 products are
+`active`; how many survive the vinyl gate, and whether their artist/title
+splits are right, has not been checked against the live catalog.
 
 **The `robots.txt` merge gate is cleared** (2026-08-24). The repo's normative
 crawler policy
@@ -204,6 +230,20 @@ Cost of the unknown is **one extra HTTP request per sync** in the
 ignored case — the same total load the siblings incur, plus one. That is the
 whole price, and it buys immunity from silent truncation.
 
+**Measured 2026-08-24: `page=` is ignored.** `/products.json` returns all 373
+products, and `?page=2` returns the same 373; the `sitemap.xml` product count
+agrees, which is what rules out "373 is a cap" rather than "373 is the
+catalog". So this crawler makes exactly 2 GETs per sync and the accumulate
+branch is never taken on this store.
+
+Worth stating plainly: the hedge turned out unnecessary here. It was still
+correct to write. Nothing observable from outside distinguished the two cases
+before the sitemap cross-check existed, the store is five to seven times
+either sibling's size, and the two failure modes are not symmetric — guessing
+"unpaginated" and being wrong silently drops most of a label's catalog, while
+guessing "paginated" and being wrong costs one GET. The asymmetry, not the
+probability, is why the loop is shaped this way.
+
 `_key(product)` is `id or url`. `id` is Big Cartel's own product key; `url`
 is the fallback so a row missing an id is still recognised on the next page
 instead of looking fresh forever. `name` is deliberately *not* in the chain:
@@ -225,8 +265,8 @@ The siblings made opposite confirmed-live findings here:
   every option of the six products the storefront renders "Sold Out");
   product-level `status` carries it instead.
 
-Neither could be checked here, so both are honoured — but with one
-asymmetry that matters:
+Neither could be checked when this was written, so both are honoured — but
+with one asymmetry that matters:
 
 ```python
 status = product.get("status")
@@ -242,6 +282,23 @@ option-level `sold_out` flag is left to do the work, exactly as on Asbestos.
 The failure mode is bounded and in the right direction — at worst a handful
 of sold-out rows are published as available, rather than the whole store
 vanishing.
+
+**Measured 2026-08-24: both signals are populated.** 373 products carry
+`status` — 316 `active`, 55 `sold-out`, 2 `coming-soon` — and 722 options
+carry `sold_out`, 228 of them `true`. This store is the first of the three
+where *both* are live: Asbestos populates only `sold_out` (Jetglow's
+`status` is what carries it there), Jetglow only `status` (its option flag is
+inert). Honouring both was written as belt-and-braces and is load-bearing in
+fact: gating on either alone would publish rows the store does not sell.
+
+`coming-soon` is a value neither sibling exposes, and it was not anticipated.
+The gate handles it correctly by construction rather than by design — it is
+"not `active`", so those 2 products are dropped. That is the right outcome
+and consistent with the "no preorder detection" non-goal: a coming-soon
+product is not purchasable, and this app has no preorder concept to put it
+in. Recorded because the handling is incidental, so a future reader should
+know it was not reasoned about in advance and may deserve revisiting if the
+store starts using the value at scale.
 
 ### The vinyl gate is two-layered
 
@@ -288,6 +345,38 @@ So the vocabulary is split in two:
 - `_INCH_RE` (`\d+\s*"`) — trusted only where the same string names no
   competing format or merch item. `_looks_vinyl()` applies that rule:
   `Wo Fat - Split 7"` is admitted, `Ripple Music 12" Slipmat` is not.
+
+**And `vinyl` is not unambiguous either** — the same lesson one level up,
+found by review after the inch-mark fix had already declared the word
+vocabulary safe to trust anywhere. "Vinyl" names a *material* as well as a
+format: a vinyl sticker, decal, banner, or slipmat is merchandise, and the
+word describes what it is made of. Left unhandled, `Wo Fat - Vinyl Sticker`
+cleared the product gate on its vinyl word and — via the same echoing-option
+bypass the slipmat exploited — published a sticker as a record. The identical
+hole existed in the option filter, where the vinyl-word override kept an
+option literally named `Vinyl Sticker`.
+
+The fix is a strip, not a rejection. `_VINYL_MERCH_RE` matches the compound
+form (`vinyl` immediately followed by a merch noun) and `_vinyl_word()`
+removes those before testing for a format token. Only the compound goes, so
+anything independent survives:
+
+| Text | Verdict | Why |
+|---|---|---|
+| `Vinyl Sticker` | merch | its only token was the compound |
+| `Black Vinyl + Sticker` | record | no compound — two separate things |
+| `Vinyl Sticker + LP` | record | compound stripped, the `LP` remains |
+| `… Limited Vinyl and CD variants` | record | no compound; the word is doing format work |
+
+A blanket "has a vinyl word AND no merch word" rule would have been simpler
+and is wrong: it drops the last two rows, and the mixed vinyl/CD product is
+exactly the case the option filter exists to serve.
+
+`test press` is bounded for the same class of reason —
+`test press(?:es|ing|ings)?\b` rather than a bare prefix, which matched any
+word merely beginning with "press" (`Test Pressure`). No live example is
+known; the boundary costs nothing and the unbounded form was an accident, not
+a decision.
 
 Dropping the inch mark altogether was the simpler alternative and was
 rejected: a `7"`/`10"`/`12"` single whose name carries no other format word
@@ -430,9 +519,12 @@ gate asks for this store's file, and rightly.
 
 - Load, worked through rather than asserted. The loop body issues exactly one
   GET per iteration and runs for `page = 1 … _MAX_PAGES`, so:
-  - **`page=` ignored** (the siblings' confirmed behaviour): **2 GETs** — one
-    returns the catalog, the second repeats it and the freshness check stops
-    the loop.
+  - **`page=` ignored** — **measured as the actual behaviour of this store**
+    on 2026-08-24, matching both siblings: **2 GETs** — one returns all 373
+    products, the second repeats them and the freshness check stops the loop.
+    This is the real per-sync load; the ceiling below is now hypothetical
+    here, retained because the loop still guards against a change of
+    behaviour.
   - **`page=` honoured**: **50 GETs is the hard ceiling** (`_MAX_PAGES`
     itself, not `_MAX_PAGES + 1` — the terminating empty page is one of the
     50, not an extra). The realistic figure is
@@ -461,7 +553,7 @@ gate asks for this store's file, and rightly.
 `backend/tests/test_ripplemusic_crawler.py` — flat in `tests/`, like every
 pure-HTTP catalog crawler (`tests/crawlers/` holds the Playwright-driven
 ones). `respx` mocks `/products.json`; no live site, no bot-detection risk.
-75 tests.
+90 tests.
 
 Suite totals, measured on one machine by checking out each revision in turn
 rather than inferred from a single run:
@@ -470,9 +562,9 @@ rather than inferred from a single run:
 |---|---|---|
 | `9d35d35` — this branch's fork point | 1356 | 38 |
 | `3868ea1` — `origin/main` at time of writing | 1358 | 38 |
-| `f2c5641` — this branch | 1431 | 38 |
+| this branch (at 90 tests) | 1446 | 38 |
 
-`1431 − 1356 = 75`, exactly this file's test count and nothing else. The
+`1446 − 1356 = 90`, exactly this file's test count and nothing else. The
 extra 2 on `origin/main` come from PR #166, which landed after the fork point
 and is not in this branch.
 
@@ -513,7 +605,12 @@ Cases, grouped:
 - **Option filter** — 19 parametrized option names covering unmarked
   colour/edition variants (kept), bundles carrying both a vinyl and a
   non-vinyl token (kept), and competing formats and merch (dropped); a mixed
-  vinyl/CD product split correctly.
+  vinyl/CD product split correctly; plus a `Vinyl Sticker` option dropped and
+  a `Black Vinyl + Sticker` option kept.
+- **Material-vs-format** — 8 parametrized names covering the compound merch
+  forms (dropped), genuine bundles (kept), and a compound alongside an
+  independent format token (kept); 5 more covering the `test press` boundary,
+  including `Test Pressure` (dropped).
 - **Availability** — `sold_out` option skipped; non-active `status` dropped;
   **absent `status` kept** (the safe-degradation branch above); all-sold-out
   product yields nothing.

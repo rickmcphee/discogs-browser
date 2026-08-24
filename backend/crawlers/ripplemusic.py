@@ -26,7 +26,21 @@ _VARIOUS_RE = re.compile(r'^various(?:\s+artists?)?$', re.IGNORECASE)
 # lumped 'Vinyl - Cassette - CD' -- so a token regex generalises where an
 # exact category string would not. `test press` is included because a test
 # pressing is vinyl by definition and this store sells them as a category.
-_VINYL_WORD_RE = re.compile(r'\bvinyls?\b|\b\d*x?lps?\b|\btest press', re.IGNORECASE)
+_VINYL_WORD_RE = re.compile(
+    r'\bvinyls?\b|\b\d*x?lps?\b|\btest press(?:es|ing|ings)?\b', re.IGNORECASE
+)
+
+# "Vinyl" names a material as well as a format. A vinyl sticker, decal, or
+# banner is merchandise; the word is describing what the thing is made of,
+# not that it is a record. Those compounds are removed before the format
+# test (see _vinyl_word) so the word cannot vouch for the merch noun it
+# modifies. A genuine bundle is unaffected -- "Black Vinyl + Sticker" has no
+# compound, so its own vinyl token survives and keeps the row.
+_VINYL_MERCH_RE = re.compile(
+    r'\bvinyls?[\s-]+(?:stickers?|decals?|banners?|slipmats?|mats?|toys?'
+    r'|figures?|wraps?|sleeves?|koozies?|patches)\b',
+    re.IGNORECASE,
+)
 
 # A bare inch mark is a *weak* signal, deliberately kept out of the regex
 # above. It reads as vinyl in "Wo Fat - Split 7\"" and as merch in
@@ -186,6 +200,17 @@ class Crawler:
         return items
 
     @classmethod
+    def _vinyl_word(cls, text: str):
+        """Vinyl vocabulary, with material-sense compounds removed first.
+
+        Stripping rather than rejecting: only the compound itself is removed,
+        so any independent format token in the same string still counts.
+        "Vinyl Sticker" loses its only token and stops looking like a record;
+        "Vinyl Sticker + LP" keeps its LP and stays one.
+        """
+        return _VINYL_WORD_RE.search(_VINYL_MERCH_RE.sub(" ", text))
+
+    @classmethod
     def _looks_vinyl(cls, text: str) -> bool:
         """Whether a category or product name says "this is a record".
 
@@ -197,7 +222,7 @@ class Crawler:
         single-option product's echoing option then bypasses _is_non_vinyl
         and publishes a slipmat as vinyl.
         """
-        if _VINYL_WORD_RE.search(text):
+        if cls._vinyl_word(text):
             return True
         return bool(_INCH_RE.search(text) and not _NON_VINYL_RE.search(text))
 
@@ -217,7 +242,7 @@ class Crawler:
         filter never reaches for an override on it.
         """
         return bool(
-            _NON_VINYL_RE.search(option_name) and not _VINYL_WORD_RE.search(option_name)
+            _NON_VINYL_RE.search(option_name) and not cls._vinyl_word(option_name)
         )
 
     @classmethod
