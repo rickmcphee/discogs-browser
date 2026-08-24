@@ -73,13 +73,16 @@ def _the_comma_form_sql(column: str, *, escape_percent: bool = True) -> str:
     no leading article, passes through unchanged. Shares its `LIKE 'the %'`
     guard with `_artist_sort_sql` so a bare "The" or "Theatre of Hate" is left
     alone for the same reason. Used both to fold matching in SQL (schema
-    indexes, canonical_artist_labels, the two artist-equality filters) and,
+    indexes, canonical_artist_labels, the two artist search branches) and,
     inside canonical_artist_labels, to format the winning label for display.
+    Not the artist-equality filters: those compare _artist_sort_sql's
+    article-stripped key, which also matches a bare-spelled row (see
+    docs/specifications/shaping/2026-08-22-bare-form-artist-fold-design.md).
 
     escape_percent doubles the LIKE pattern's `%` to `%%`, which psycopg's
     pyformat layer collapses back to a literal `%` -- required by every call
     site that executes with a non-empty params dict (canonical_artist_labels,
-    both artist filters), the default here. GLOBAL_SCHEMA has no params, so
+    both search branches), the default here. GLOBAL_SCHEMA has no params, so
     its two index definitions must pass escape_percent=False to keep the
     single, unescaped `%` Postgres actually sees: otherwise the index bakes in
     the literal two-character constant `'the %%'` while the query, after
@@ -92,6 +95,56 @@ def _the_comma_form_sql(column: str, *, escape_percent: bool = True) -> str:
         f"CASE WHEN LOWER({column}) LIKE '{_ARTIST_SORT_ARTICLE}{percent}' "
         f"THEN SUBSTRING({column} FROM {len(_ARTIST_SORT_ARTICLE) + 1}) || ', The' "
         f"ELSE {column} END"
+    )
+
+
+def _artist_sort_sql(column: str, *, escape_percent: bool = True) -> str:
+    """SQL sort-key expression for `column`: a leading "The " or a trailing
+    ", The" (either case) is dropped to the bare remainder, so "The Beatles"
+    sorts under B like "Beatles, The" does, and -- now that both raw storage
+    conventions coexist -- the two spellings of the same artist produce the
+    *identical* key instead of merely landing in the same neighborhood. Only
+    one guard can ever fire per name (canonical_artist_labels' own fold means
+    a value is never both "The X" and "X, The" at once), so this stays a
+    two-branch CASE, not a composition. Stripping to the bare word rather than
+    to the comma-form ("beatles" rather than "beatles, the") matters: the
+    comma-form key would still be wrong relative to a third artist like
+    "Beatles A" ("beatles a" sorts before "beatles, the" but the bare key
+    "beatles" -- correctly -- doesn't). The ORDER BY call sites apply this to
+    the raw un-canonicalized column -- it runs before canonical_artist_labels'
+    fold gets a chance to relabel the row, so it needs its own stripping
+    regardless of what the row's eventual display label becomes. `LIKE 'the %%'`/
+    `LIKE '%%, the'` guard on the literal `'the '`/`', the'` substring, so a
+    bare "The" or a name like "Theatre of Hate" is correctly left alone --
+    though `%` also matches zero characters, so an artist spelled exactly
+    ", The" (suffix branch) or "The " with a trailing space (prefix branch)
+    keys to the empty string instead of being left alone; vanishingly
+    unlikely names the guard wasn't written for, not a miss on the ones it
+    was.
+
+    This same bare, article-stripped key is also what the artist equality
+    filters in get_library_releases/get_stock_items compare on (see
+    docs/specifications/shaping/2026-08-22-bare-form-artist-fold-design.md):
+    "The Beatles", "Beatles, The", and bare "Beatles" all reduce to the
+    identical key "beatles", so a filter click matches all three raw
+    spellings, not just the two _the_comma_form_sql folds together.
+
+    escape_percent mirrors _the_comma_form_sql's parameter and exists for the
+    same reason: doubled `%%` is required by every call site that executes
+    with a non-empty params dict (both ORDER BY call sites, the two artist
+    filters), but the unparameterized GLOBAL_SCHEMA index DDL needs the
+    single, unescaped `%` Postgres actually sees, or the index bakes in a
+    different string literal than the query compares against and is never
+    chosen by the planner."""
+    percent = "%%" if escape_percent else "%"
+    suffix_len = len(_ARTIST_SORT_SUFFIX)
+    return (
+        f"(CASE "
+        f"WHEN LOWER({column}) LIKE '{_ARTIST_SORT_ARTICLE}{percent}' "
+        f"THEN LOWER(SUBSTRING({column} FROM {len(_ARTIST_SORT_ARTICLE) + 1})) "
+        f"WHEN LOWER({column}) LIKE '{percent}{_ARTIST_SORT_SUFFIX}' "
+        f"THEN LOWER(SUBSTRING({column} FROM 1 FOR (LENGTH({column}) - {suffix_len}))) "
+        f"ELSE LOWER({column}) END)"
     )
 
 
@@ -286,8 +339,9 @@ CREATE INDEX IF NOT EXISTS catalog_artist_lower_idx ON catalog (LOWER(artist));
 CREATE INDEX IF NOT EXISTS stock_items_artist_lower_idx ON stock_items (LOWER(artist));
 """ + f"""
 -- Same reasoning as the two indexes above, for the "The X" -> "X, The"
--- comma-suffix fold layered on top (see canonical_artist_labels and the
--- artist filters in get_library_releases/get_stock_items). The plain
+-- comma-suffix fold layered on top. These serve canonical_artist_labels'
+-- grouping WHERE; the artist filters moved to _artist_sort_sql's bare key
+-- and are covered by the two bare-form indexes below. The plain
 -- LOWER(artist) indexes above still serve _library_match_fragment's
 -- owned-artist join, which doesn't use this fold -- see
 -- docs/specifications/shaping/2026-08-16-the-suffix-artist-display-design.md.
@@ -298,6 +352,21 @@ CREATE INDEX IF NOT EXISTS catalog_artist_the_lower_idx
     ON catalog (LOWER({_the_comma_form_sql("artist", escape_percent=False)}));
 CREATE INDEX IF NOT EXISTS stock_items_artist_the_lower_idx
     ON stock_items (LOWER({_the_comma_form_sql("artist", escape_percent=False)}));
+""" + f"""
+-- Bare-form artist fold (2026-08-22-bare-form-artist-fold-design.md): the
+-- artist filters in get_library_releases/get_stock_items now compare
+-- _artist_sort_sql's bare, article-stripped key instead of
+-- _the_comma_form_sql's, so a bare "Beatles" row matches a "Beatles, The"
+-- filter value too. Without a matching index that comparison is a
+-- sequential scan of catalog or stock_items on every artist-filtered
+-- listing page. _artist_sort_sql already lowers every branch of its own
+-- CASE expression, so -- unlike the _the_comma_form_sql indexes above --
+-- this isn't wrapped in an extra LOWER(). escape_percent=False for the same
+-- reason as the comma-form indexes: this DDL runs with no params.
+CREATE INDEX IF NOT EXISTS catalog_artist_bare_lower_idx
+    ON catalog ({_artist_sort_sql("artist", escape_percent=False)});
+CREATE INDEX IF NOT EXISTS stock_items_artist_bare_lower_idx
+    ON stock_items ({_artist_sort_sql("artist", escape_percent=False)});
 """
 
 
@@ -901,13 +970,17 @@ def get_library_releases(
         )
         params["search"] = f"%{search}%"
     if artist:
-        # Both sides go through the same case fold and "The X" -> "X, The"
-        # comma-suffix fold canonical_artist_labels applies: the sidebar always
-        # sends back a post-fold label, so a raw compare would hide every
-        # release whose catalog row spells the artist differently, including
-        # rows literally stored as "The X" once the label reads "X, The".
+        # Both sides go through the same bare, article-stripped fold
+        # canonical_artist_labels' bare-form lookup relies on: the sidebar
+        # always sends back a post-fold label, so a raw compare -- or even
+        # _the_comma_form_sql's narrower The/comma-only fold -- would hide a
+        # release whose catalog row spells the artist a third way, with no
+        # article at all. _artist_sort_sql already lowers internally, so
+        # this isn't wrapped in an extra LOWER() the way the comma-form fold
+        # needs. See
+        # docs/specifications/shaping/2026-08-22-bare-form-artist-fold-design.md.
         conditions.append(
-            f"LOWER({_the_comma_form_sql('c.artist')}) = LOWER({_the_comma_form_sql('%(artist)s')})"
+            f"{_artist_sort_sql('c.artist')} = {_artist_sort_sql('%(artist)s')}"
         )
         params["artist"] = artist
     if scope == "discogs":
@@ -1479,6 +1552,43 @@ _CANONICAL_ARTIST_SQL = """
 """
 
 
+def _is_bare_artist_input(name: str) -> bool:
+    """True when `name` carries neither the "The X" nor "X, The" marker, so
+    canonical_artist_labels' pure string fold (_the_comma_form_sql) can't
+    tell it apart from an artist genuinely named without an article -- the
+    case its bare-form lookup phase exists to resolve via a data lookup
+    instead. See
+    docs/specifications/shaping/2026-08-22-bare-form-artist-fold-design.md."""
+    lower = name.lower()
+    return not lower.startswith(_ARTIST_SORT_ARTICLE) and not lower.endswith(_ARTIST_SORT_SUFFIX)
+
+
+# Bare-form lookup: for an input with neither marker (_is_bare_artist_input),
+# does a "The X"/"X, The" spelling of the same name exist anywhere in this
+# table? Reuses _CANONICAL_ARTIST_SQL's grouped/winner shape exactly, but the
+# `wanted`/`winner` join key is the input's *implied* The-form
+# (LOWER(artist) || ', the') rather than the input's own folded key -- a bare
+# "Beatles" input never has a row literally matching its own key end in
+# ", the", so this can't reuse the plain join in _CANONICAL_ARTIST_SQL as-is.
+_CANONICAL_ARTIST_BARE_SQL = """
+    WITH wanted AS (
+        SELECT DISTINCT a AS artist FROM unnest(%(artists)s::text[]) AS a
+    ),
+    grouped AS (
+        SELECT LOWER({the_bare}) AS key, artist AS label, COUNT(*) AS n
+        FROM {table}
+        WHERE LOWER({the_bare}) = ANY (ARRAY(SELECT LOWER(wanted.artist) || ', the' FROM wanted))
+        GROUP BY LOWER({the_bare}), artist
+    ),
+    winner AS (
+        SELECT DISTINCT ON (key) key, label FROM grouped
+        ORDER BY key, n DESC, label COLLATE "C"
+    )
+    SELECT w.artist AS input, {the_label} AS label
+    FROM wanted w JOIN winner ON winner.key = LOWER(w.artist) || ', the'
+"""
+
+
 def canonical_artist_labels(conn, artists) -> dict:
     """Map each artist name, exactly as stored, to the label the UI displays.
 
@@ -1497,11 +1607,37 @@ def canonical_artist_labels(conn, artists) -> dict:
     for display, regardless of which raw spelling won. See
     docs/specifications/shaping/2026-08-16-the-suffix-artist-display-design.md.
 
+    A third, independent lookup runs before either of the above for inputs
+    with neither marker (_is_bare_artist_input): a bare "Beatles" carries no
+    string transform that says it's the same artist as "The Beatles", so this
+    checks whether a "The X"/"X, The" spelling of the same name exists
+    anywhere in `catalog` or `stock_items` (catalog checked first, same
+    preference as the casing fold) and, if so, resolves straight to that
+    variant's label -- skipping the casing-only resolution below entirely.
+    A bare input with no such variant anywhere falls through unresolved into
+    the casing-only loop, unaffected. See
+    docs/specifications/shaping/2026-08-22-bare-form-artist-fold-design.md.
+
     Both tables are global and un-RLS'd, so the label is app-wide: two users
     can't see one artist spelled two ways.
     """
     inputs = sorted({a for a in artists if a})
     labels: dict = {}
+
+    bare_inputs = [a for a in inputs if _is_bare_artist_input(a)]
+    for table in ("catalog", "stock_items"):
+        remaining = [a for a in bare_inputs if a not in labels]
+        if not remaining:
+            break
+        sql_text = _CANONICAL_ARTIST_BARE_SQL.format(
+            table=table,
+            the_bare=_the_comma_form_sql("artist"),
+            the_label=_the_comma_form_sql("winner.label"),
+        )
+        rows = conn.execute(sql_text, {"artists": remaining}).fetchall()
+        for row in rows:
+            labels[row["input"]] = row["label"]
+
     for table in ("catalog", "stock_items"):
         remaining = [a for a in inputs if a not in labels]
         if not remaining:
@@ -1516,37 +1652,6 @@ def canonical_artist_labels(conn, artists) -> dict:
         for row in rows:
             labels[row["input"]] = row["label"]
     return labels
-
-
-def _artist_sort_sql(column: str) -> str:
-    """SQL sort-key expression for `column`: a leading "The " or a trailing
-    ", The" (either case) is dropped to the bare remainder, so "The Beatles"
-    sorts under B like "Beatles, The" does, and -- now that both raw storage
-    conventions coexist -- the two spellings of the same artist produce the
-    *identical* key instead of merely landing in the same neighborhood. Only
-    one guard can ever fire per name (canonical_artist_labels' own fold means
-    a value is never both "The X" and "X, The" at once), so this stays a
-    two-branch CASE, not a composition. Stripping to the bare word rather than
-    to the comma-form ("beatles" rather than "beatles, the") matters: the
-    comma-form key would still be wrong relative to a third artist like
-    "Beatles A" ("beatles a" sorts before "beatles, the" but the bare key
-    "beatles" -- correctly -- doesn't). This is ORDER BY only, on the raw
-    un-canonicalized column -- it runs before canonical_artist_labels' fold
-    gets a chance to relabel the row, so it needs its own stripping regardless
-    of what the row's eventual display label becomes. `LIKE 'the %%'`/
-    `LIKE '%%, the'` each require a real word on the far side, so a bare "The"
-    or a name like "Theatre of Hate" is correctly left alone. The `%%` (not
-    `%`) is psycopg pyformat escaping for a literal `%`, required because both
-    call sites execute this query with a non-empty params dict."""
-    suffix_len = len(_ARTIST_SORT_SUFFIX)
-    return (
-        f"CASE "
-        f"WHEN LOWER({column}) LIKE '{_ARTIST_SORT_ARTICLE}%%' "
-        f"THEN LOWER(SUBSTRING({column} FROM {len(_ARTIST_SORT_ARTICLE) + 1})) "
-        f"WHEN LOWER({column}) LIKE '%%{_ARTIST_SORT_SUFFIX}' "
-        f"THEN LOWER(SUBSTRING({column} FROM 1 FOR LENGTH({column}) - {suffix_len})) "
-        f"ELSE LOWER({column}) END"
-    )
 
 
 def _artist_sort_key(name: str) -> str:
@@ -1716,9 +1821,10 @@ def get_stock_items(
         params["search"] = f"%{search}%"
     if artist:
         # See the matching clause in get_library_releases: the filter value is
-        # a canonical label, not any one store's spelling.
+        # a canonical label, not any one store's spelling -- including, now,
+        # a spelling with no article at all.
         conditions.append(
-            f"LOWER({_the_comma_form_sql('s.artist')}) = LOWER({_the_comma_form_sql('%(artist)s')})"
+            f"{_artist_sort_sql('s.artist')} = {_artist_sort_sql('%(artist)s')}"
         )
         params["artist"] = artist
     in_library = _in_library_clause("%(user_id)s", library_scope)
