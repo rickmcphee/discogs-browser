@@ -6,7 +6,7 @@ PageReporter = Callable[[int, int], Awaitable[None]]
 # Async generators have no context of their own -- they run in the context of
 # whatever task is iterating them -- so a reporter installed by the caller of
 # crawl_catalog() is visible all the way down into a crawler's paging loop
-# without threading a callback through all 30-odd catalog crawler plugins.
+# without threading a callback through every catalog crawler plugin.
 _page_reporter: contextvars.ContextVar[Optional[PageReporter]] = contextvars.ContextVar(
     "catalog_page_reporter", default=None
 )

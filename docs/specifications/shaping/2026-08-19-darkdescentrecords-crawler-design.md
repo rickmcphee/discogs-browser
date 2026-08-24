@@ -7,7 +7,7 @@ Branch: `claude/dark-descent-vinyl-crawler-9189a5`
 
 Dark Descent Records (`darkdescentrecords.com`), an underground metal label
 and mailorder store based in Colorado specializing in death, black, and
-doom metal, is not covered by any existing crawler. Unlike the ~35
+doom metal, is not covered by any existing crawler. Unlike the
 label-store `catalog` plugins already in `backend/crawlers/` (all Shopify
 or Bigcartel), this store runs WooCommerce on WordPress — no existing
 crawler in this repo targets that platform.

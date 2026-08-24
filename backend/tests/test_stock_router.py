@@ -617,7 +617,7 @@ def _seed_judged_item(user_id, artist="Artist A", title="Album A", url="https://
 
 def test_export_carries_a_non_usd_currency(pg_test_db, authed_client_factory):
     # Without a currency column an exported EUR row is a bare "27.99" that
-    # reads as dollars. Two sources already price in EUR (jetglowrecordings.py
+    # reads as dollars. Some sources already price in EUR (jetglowrecordings.py
     # hardcodes it; darkdescentrecords.py passes its feed's value through), so
     # this is live data, not a hypothetical.
     crawler_id = _make_crawler("Jetglow Recordings")

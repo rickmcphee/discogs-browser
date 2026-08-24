@@ -2087,7 +2087,7 @@ async def test_successive_ebay_api_errors_cool_down_the_site(pg_schema):
 
 
 async def test_failures_pool_across_crawlers_sharing_a_failure_domain(pg_schema):
-    """The two eBay plugins are separate crawler rows but one eBay app, one
+    """The eBay plugins are separate crawler rows but one eBay app, one
     token, and one API. Counting their failures separately meant a 409 storm
     had to hit consecutive_failure_limit twice over -- once per crawler --
     before both stopped calling the API."""
@@ -2101,7 +2101,7 @@ async def test_failures_pool_across_crawlers_sharing_a_failure_domain(pg_schema)
         ccmusic_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'eBay/CCmusic'").fetchone()["id"]
         general_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'eBay'").fetchone()["id"]
         _stock_item_with_source(conn, "key1")
-        # One row for the target -- both eBay crawlers are resolved as
+        # One row for the target -- the eBay crawlers are resolved as
         # eligible for it at dispatch time, so a single enqueue is enough to
         # fan out to both.
         db.enqueue_crawl_queue_for_stock_item(conn, "key1")
