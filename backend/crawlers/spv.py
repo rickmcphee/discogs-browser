@@ -61,8 +61,12 @@ def _alternation(*tuples):
     return "|".join(word for group in tuples for word in group)
 
 
+# The leading `.*` is greedy on purpose: it anchors the split on the LAST
+# format word, not the first. With a lazy/absent prefix the engine takes the
+# leftmost match, so `The Book of Souls LP` split at `Book` and stored the album
+# as `The`. Greedy backtracking finds ` LP` instead and keeps the album whole.
 _TRAILING_FORMAT_RE = re.compile(
-    r'\s+((?:\b(?:%s)\b|%s).*)$'
+    r'^.*\s+((?:\b(?:%s)\b|%s).*)$'
     % (_alternation(_VINYL_WORDS, _NON_VINYL_WORDS), _INCH),
     re.IGNORECASE,
 )
@@ -99,7 +103,7 @@ def _split_trailing_format(album: str) -> tuple:
     m = _TRAILING_FORMAT_RE.search(album)
     if not m:
         return album, ""
-    remainder = album[:m.start()].strip()
+    remainder = album[:m.start(1)].strip()
     if not remainder:
         return album, ""
     return remainder, m.group(1).strip()

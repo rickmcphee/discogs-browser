@@ -21,7 +21,8 @@ logs" — and records what happened, including the parts that went wrong.
    qualifier.
 2. `backend/tests/test_spv_crawler.py` — a `respx`-mocked suite. No case
    count here: it went stale on nearly every commit and was removed from the
-   design doc for the same reason. `grep -c '^def test_'` answers it.
+   design doc for the same reason. `grep -c '^def test_\|^async def test_'` answers it — the
+   plain `^def test_` form misses the three async cases.
 3. `frontend/src/views/formatPrice.ts` + test — the price cell rendered every
    currency with `$`. Split out of the crawler work only in the sense that it
    was found by it; it fixes rows that were already wrong.

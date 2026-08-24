@@ -221,6 +221,25 @@ def test_every_format_word_reaches_the_dash_path_stripper():
         assert _TRAILING_FORMAT_RE.search(f" {sample}"), word
 
 
+def test_format_word_inside_an_album_title_does_not_truncate_it():
+    # The split must anchor on the LAST format word, not the first. With a
+    # leftmost match, 'The Book of Souls LP' split at "Book" and stored the
+    # album as "The" -- the later "LP" still satisfied the gate, so the row
+    # shipped, badly truncated, rather than being dropped.
+    items = Crawler._items({**_SODOM, "title": "Iron Maiden - The Book of Souls LP"})
+    assert items and items[0]["title"] == "The Book of Souls"
+
+    items = Crawler._items({**_SODOM, "title": "Sodom - Live LP 1982 Vinyl"})
+    assert items and items[0]["title"] == "Live LP 1982"
+
+
+def test_trailing_format_still_splits_when_it_is_the_only_match():
+    for title, expected in (("Sodom - 1982 LP", "1982"),
+                            ("Sodom - Tape Recorder Blues LP", "Tape Recorder Blues")):
+        items = Crawler._items({**_SODOM, "title": title})
+        assert items and items[0]["title"] == expected, title
+
+
 def test_book_and_mc_are_dropped_on_the_dash_path():
     # The fourth drift: both were in the denylist but absent from the stripper,
     # so the dash path published them as Vinyl while the quoted path dropped them.
