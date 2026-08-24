@@ -276,7 +276,9 @@ class Crawler:
 eight members are Amoeba, Newbury Comics, Turntable Lab, The Sound Garden,
 Jackpot Records, and the reissue labels Craft Recordings, Cleopatra
 Records, and Numero Group — the right fit for a catalog running from Black
-Jazz to Deicide. `_COLLECTION_SLUG = "vinyl"`, iterated with
+Jazz to Deicide. (Amendment, 2026-08-24: Darkside Records has since joined
+the bucket as a tenth member — see
+[`2026-08-24-darkside-records-crawler-design.md`](2026-08-24-darkside-records-crawler-design.md).) `_COLLECTION_SLUG = "vinyl"`, iterated with
 `shopify_catalog.iter_products()` unchanged. Registration is automatic:
 `main.py`'s `seed_bundled_crawlers()` walks `backend/crawlers/` at startup
 and calls `register_crawler` for each plugin it finds — no wiring
