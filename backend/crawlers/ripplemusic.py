@@ -30,18 +30,6 @@ _VINYL_WORD_RE = re.compile(
     r'\bvinyls?\b|\b\d*x?lps?\b|\btest press(?:es|ing|ings)?\b', re.IGNORECASE
 )
 
-# "Vinyl" names a material as well as a format. A vinyl sticker, decal, or
-# banner is merchandise; the word is describing what the thing is made of,
-# not that it is a record. Those compounds are removed before the format
-# test (see _vinyl_word) so the word cannot vouch for the merch noun it
-# modifies. A genuine bundle is unaffected -- "Black Vinyl + Sticker" has no
-# compound, so its own vinyl token survives and keeps the row.
-_VINYL_MERCH_RE = re.compile(
-    r'\bvinyls?[\s-]+(?:stickers?|decals?|banners?|slipmats?|mats?|toys?'
-    r'|figures?|wraps?|sleeves?|koozies?|patches)\b',
-    re.IGNORECASE,
-)
-
 # A bare inch mark is a *weak* signal, deliberately kept out of the regex
 # above. It reads as vinyl in "Wo Fat - Split 7\"" and as merch in
 # "Ripple Music 12\" Slipmat", and this store sells both -- it has a Slipmat
@@ -51,17 +39,44 @@ _VINYL_MERCH_RE = re.compile(
 # string contradicts it -- see _looks_vinyl.
 _INCH_RE = re.compile(r'\d+\s*"')
 
+# One merch vocabulary, two derived regexes. Keeping it in a single list is
+# the whole point: the hand-written pair this replaces had `patches` in one
+# and `patch` in the other, no `tee` in either despite the store having a
+# `Tees` category, and singular-only forms throughout -- so `Vinyl Patch`,
+# `12" Slipmats`, and a bare `Tee` all walked straight through as vinyl.
+# Two regexes written by hand drift; two built from one list cannot.
+#
+# Deliberately excluded as too ambiguous in a record-store context, where a
+# false positive drops a real release rather than admitting a mug: `sleeve`
+# (a "Gatefold Sleeve" variant is a record), `mat` (pluralizes into the
+# ordinary word "mates"), `cap` (pluralizes into "capes"), `wrap`. `slipmat`
+# covers the real merch case without any of that.
+_MERCH_NOUNS = (
+    "sticker", "decal", "banner", "slipmat", "poster", "patch", "pin",
+    "koozie", "book", "tee", "t-?shirt", "shirt", "hoodie", "sweatshirt",
+    "hat", "beanie", "tote", "mug", "magnet", "keychain", "toy", "figure",
+    "flag", "puzzle",
+)
+_MERCH_NOUN = r'(?:' + "|".join(_MERCH_NOUNS) + r')(?:s|es)?'
+
 # Competing formats and merch, used only as a per-option filter and only when
 # the option names no vinyl token (see _items). Deliberately broad: the vinyl
 # override makes over-inclusion here harmless -- a bundle option named
 # "Black Vinyl + Sticker" matches both regexes and is kept -- while a missing
 # entry silently publishes a CD as though it were a record.
 _NON_VINYL_RE = re.compile(
-    r'\bcds?\b|\bcassettes?\b|\btapes?\b|\bdigital\b|\bdvds?\b|\bblu-?ray\b'
-    r'|\bt-?shirts?\b|\bhoodie\b|\bsweatshirt\b|\bslipmat\b|\bposter\b'
-    r'|\bbooks?\b|\bpatch\b|\bpins?\b|\bkoozie\b|\bstickers?\b|\bhat\b|\bbeanie\b',
+    r'\b(?:cds?|cassettes?|tapes?|digital|dvds?|blu-?ray)\b'
+    r'|\b' + _MERCH_NOUN + r'\b',
     re.IGNORECASE,
 )
+
+# "Vinyl" names a material as well as a format. A vinyl sticker, decal, or
+# banner is merchandise; the word describes what the thing is made of, not
+# that it is a record. These compounds are removed before the format test
+# (see _vinyl_word) so the word cannot vouch for the merch noun it modifies.
+# A genuine bundle is unaffected -- "Black Vinyl + Sticker" has no compound,
+# so its own vinyl token survives and keeps the row.
+_VINYL_MERCH_RE = re.compile(r'\bvinyls?[\s-]+' + _MERCH_NOUN + r'\b', re.IGNORECASE)
 
 # Runaway guard on the paging loop below, not a coverage decision. At Big
 # Cartel's 24-per-page storefront default this is ~1200 products, comfortably
@@ -80,12 +95,23 @@ class Crawler:
         """Page /products.json until it stops returning products we haven't seen.
 
         The two sibling Big Cartel crawlers each issue exactly one GET, having
-        confirmed live that `page=` is silently ignored on their stores. That
-        finding could not be reproduced here -- this store is far larger than
-        either of theirs (its storefront paginates: /products?page=3 and
-        /category/cds?page=4 both exist, against 76 and 50 products total for
-        the siblings) -- so the loop is written to be correct either way
-        rather than to assume one:
+        confirmed live that `page=` is silently ignored on their stores.
+
+        This store does the same -- measured 2026-08-24: 373 products, and
+        ?page=2 returns the same 373, with the sitemap's product count
+        agreeing. So in practice this loop makes two requests and the
+        accumulate branch below is never taken.
+
+        It is kept anyway. When it was written the behaviour was unknown, and
+        nothing observable from outside distinguished "returns everything"
+        from "caps the response" -- this store is five to seven times either
+        sibling (76 and 50 products, against 373) and its storefront does
+        paginate, /products?page=3 and /category/cds?page=4 both existing. The
+        two failure modes are not symmetric: assuming unpaginated and being
+        wrong silently drops most of a label's catalog, while assuming
+        paginated and being wrong costs one GET. That asymmetry is the reason
+        for the shape, and it outlives the measurement -- the store can change
+        its behaviour without telling us.
 
         - If `page=` is honoured, pages accumulate until one comes back empty.
         - If `page=` is ignored, page 1 carries the whole catalog and page 2

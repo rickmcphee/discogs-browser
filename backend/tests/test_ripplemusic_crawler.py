@@ -198,6 +198,59 @@ def test_items_does_not_treat_vinyl_as_a_format_when_it_names_a_material(text, k
     assert len(Crawler._items(product)) == (1 if kept else 0)
 
 
+@pytest.mark.parametrize("text,kept", [
+    # Singular and plural of the same noun must behave identically. The two
+    # hand-written regexes this replaces disagreed on exactly this: one had
+    # `patches`, the other `patch`, and neither had `tee` at all despite the
+    # store having a Tees category.
+    ("Wo Fat - Vinyl Patch", False),
+    ("Wo Fat - Vinyl Patches", False),
+    ("Wo Fat - Vinyl Tee", False),
+    ("Wo Fat - Vinyl Tees", False),
+    ("Wo Fat - Vinyl T-Shirt", False),
+    ('Ripple Music 12" Tee', False),
+    ('Ripple Music 12" Slipmats', False),
+    ('Ripple Music 12" Patches', False),
+    # Nouns deliberately kept out of the vocabulary: a "Gatefold Sleeve"
+    # variant is a record, so `sleeve` must not read as merch.
+    ("Wo Fat - Black Vinyl (Gatefold Sleeve)", True),
+])
+def test_items_merch_vocabulary_covers_singular_and_plural(text, kept):
+    product = _product(name=text, categories=[], artists=[{"id": 1, "name": "Wo Fat"}])
+    assert len(Crawler._items(product)) == (1 if kept else 0)
+
+
+@pytest.mark.parametrize("option_name", [
+    "Tee", "Tees", "Slipmats", "Patches", "Hoodies", "Posters", "Beanies",
+    "Vinyl Patch", "Vinyl T-Shirt",
+])
+def test_items_drops_plural_and_clothing_merch_options(option_name):
+    product = _product(options=[
+        {"id": 90, "name": option_name, "price": 20.0, "sold_out": False},
+    ])
+    assert Crawler._items(product) == []
+
+
+def test_items_keeps_an_option_naming_a_sleeve():
+    # `sleeve` is excluded from the merch vocabulary on purpose -- dropping a
+    # Gatefold Sleeve variant would lose a real record.
+    product = _product(options=[
+        {"id": 91, "name": "Gatefold Sleeve", "price": 30.0, "sold_out": False},
+    ])
+    assert len(Crawler._items(product)) == 1
+
+
+def test_merch_regexes_are_built_from_one_vocabulary():
+    # The structural guarantee, not just its current effect: both regexes are
+    # derived from _MERCH_NOUNS, so they cannot drift apart the way the
+    # hand-written pair did.
+    from crawlers import ripplemusic
+    for noun in ("tee", "patch", "slipmat", "hoodie"):
+        assert noun in ripplemusic._MERCH_NOUN
+        assert noun in ripplemusic._NON_VINYL_RE.pattern
+        assert noun in ripplemusic._VINYL_MERCH_RE.pattern
+
+
 def test_items_drops_a_vinyl_material_merch_option():
     # Same rule one layer down: the vinyl-word override must not rescue an
     # option whose "vinyl" is describing a sticker.

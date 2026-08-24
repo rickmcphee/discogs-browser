@@ -75,9 +75,10 @@ added. It has been, by the maintainer from an unrestricted network:
 `/products.json` is not covered by any `Disallow`. See "Crawl citizenship"
 below for the file and what it does and does not settle.
 
-The items below are *verification*, not merge gates. They remain open, and
-the crawler's output should not be trusted as accurate until they are
-measured.
+The verification commands below are *verification*, not merge gates. Steps 0
+through 2 have since been run — their results are the Confirmed rows above.
+Step 3, inspecting what the crawler actually emits, has not, and is the one
+thing still outstanding.
 
 **To verify before trusting this crawler's output**, from a network that can
 reach the store:
@@ -114,11 +115,16 @@ async def main():
 asyncio.run(main())"
 ```
 
-If (2) shows `status` absent or `sold_out` uniformly `false`, nothing needs
-to change — the crawler already handles both. If (1) shows `page=` ignored,
-the paging loop already collapses to two requests. The verification is to
-confirm the row output looks right, and to replace this section's Unknowns
-with measured numbers.
+**Steps 0–2 were run on 2026-08-24; their results are in the table above.**
+`page=` is ignored, so the paging loop collapses to two requests; `status`
+and `sold_out` are both populated, which the crawler already handles. No code
+change was needed for any of them — which was the point of writing each to be
+correct under either answer.
+
+**Step 3 has not been run.** 316 products are `active`; how many survive the
+vinyl gate, and whether their artist/title splits are right, is unverified.
+That is the remaining gap, and it is the one that would actually change the
+rows a user sees.
 
 (0) is the one lever this store offers that neither sibling did: its
 `robots.txt` advertises a sitemap, so the true product count is obtainable
@@ -412,11 +418,34 @@ product is a record, so the only job left is to drop the *competing-format*
 variants a mixed vinyl/CD product carries (`Godzillionaire - Diminishing
 Returns Limited Vinyl and CD variants` is one live example).
 
-`_NON_VINYL_RE` is deliberately broad (CD, cassette, tape, digital, DVD,
-Blu-ray, t-shirt, hoodie, sweatshirt, slipmat, poster, book, patch, pin,
-koozie, sticker, hat, beanie). Breadth is safe *because* the vinyl token
-overrides it: `LP + CD` and `Black Vinyl + Sticker` match both regexes and
-are kept. A missing entry, by contrast, silently publishes a CD as a record.
+`_NON_VINYL_RE` is deliberately broad. Breadth is safe *because* the vinyl
+token overrides it: `LP + CD` and `Black Vinyl + Sticker` match both regexes
+and are kept. A missing entry, by contrast, silently publishes a CD as a
+record.
+
+**Both merch regexes are derived from one vocabulary, `_MERCH_NOUNS`**, and
+that structure is the fix for a real defect rather than tidiness. Written by
+hand, the two disagreed: `_VINYL_MERCH_RE` had `patches`, `_NON_VINYL_RE` had
+`patch`, neither had `tee` at all *despite this store having a `Tees`
+category*, and most entries were singular-only. The measured consequences,
+all reproduced before the fix:
+
+| Name | Was | Now |
+|---|---|---|
+| `Wo Fat - Vinyl Patch` | admitted as a record | merch |
+| `Wo Fat - Vinyl T-Shirt` | admitted as a record | merch |
+| `Ripple Music 12" Tee` | admitted as a record | merch |
+| `Ripple Music 12" Slipmats` | admitted as a record | merch |
+| option `Tee` / `Tees` / `Hoodies` / `Posters` | kept | dropped |
+
+Pluralization is `(?:s|es)?` on every noun, which covers `patch`→`patches`
+and `tee`→`tees` from one rule.
+
+Four nouns are **deliberately excluded**, because in a record-store context a
+false positive drops a real release rather than admitting a mug: `sleeve` (a
+`Gatefold Sleeve` variant *is* a record — pinned by a test), `mat`
+(pluralizes into the ordinary word "mates"), `cap` (pluralizes into "capes"),
+and `wrap`. `slipmat` covers the real merch case without any of that.
 
 **The echo bypass.** Big Cartel has no Shopify-style `Default Title`
 placeholder — a single-option product repeats its own name as the option
@@ -507,10 +536,11 @@ Sitemap: https://ripplemusic.bigcartel.com/sitemap.xml
 Provenance, since it matters for a doc that is otherwise careful about it:
 this was fetched by the maintainer from an unrestricted network and pasted
 back, not fetched by the session that wrote this crawler — all egress to
-`ripplemusic.bigcartel.com` was `403`-ed at that session's proxy, which is
-why the `/products.json` facts in "Verification status" remain unmeasured.
-The `robots.txt` requirement is a *merge* gate and is now satisfied; those
-are verification items and are not.
+`ripplemusic.bigcartel.com` was `403`-ed at that session's proxy. The same
+applies to the `/products.json` measurements recorded in "Verification
+status": supplied the same way, on the same day. What is still unverified is
+narrower than it was — only what the crawler actually emits (step 3 of the
+verification commands), not the feed's shape or behaviour.
 
 That the platform default turned out to be what this store serves does not
 retroactively justify assuming it. Big Cartel stores can serve their own
@@ -553,27 +583,46 @@ gate asks for this store's file, and rightly.
 `backend/tests/test_ripplemusic_crawler.py` — flat in `tests/`, like every
 pure-HTTP catalog crawler (`tests/crawlers/` holds the Playwright-driven
 ones). `respx` mocks `/products.json`; no live site, no bot-detection risk.
-90 tests.
+110 tests.
 
-Suite totals, measured on one machine by checking out each revision in turn
-rather than inferred from a single run:
+Suite totals, measured by checking out each revision in turn rather than
+inferred from a single run.
+
+**Measured after the container gained its Playwright browser** (a session
+restart re-ran `scripts/cloud-setup.sh`, which installs Chromium):
+
+| Revision | Passed | Failed |
+|---|---|---|
+| `9d35d35` — this branch's fork point | 1391 | 3 |
+| this branch (110 tests) | 1501 | 3 |
+
+`1501 − 1391 = 110`, exactly this file's test count and nothing else.
+
+The 3 failures are `tests/crawlers/test_amazon_price_extraction.py`
+(`test_mosaic_price`, `test_evolver_no_price`,
+`test_adam_ants_prince_charming_no_price`). They are **pre-existing and
+unrelated to this diff** — identical on the fork point, and confirmed again
+by re-running them with this branch's changes stashed. This crawler is
+httpx-only and touches no Playwright path.
+
+**Earlier measurements in this doc were taken in a container missing that
+browser**, where 38 Playwright-dependent tests errored out before running:
 
 | Revision | Passed | Errors |
 |---|---|---|
-| `9d35d35` — this branch's fork point | 1356 | 38 |
-| `3868ea1` — `origin/main` at time of writing | 1358 | 38 |
+| `9d35d35` — fork point | 1356 | 38 |
+| `3868ea1` — `origin/main` | 1358 | 38 |
 | this branch (at 90 tests) | 1446 | 38 |
 
-`1446 − 1356 = 90`, exactly this file's test count and nothing else. The
-extra 2 on `origin/main` come from PR #166, which landed after the fork point
-and is not in this branch.
-
-The 38 errors are identical on all three revisions, which is the point of
-listing them: they are environmental, not this diff's. They are the
-Playwright-driven `tests/crawlers/` files failing to launch a browser
-(`Executable doesn't exist at /opt/pw-browsers/chromium_headless_shell-*`) —
-this container's bundled Chromium is not where its pinned Playwright looks.
-Nothing in this crawler touches Playwright.
+Those numbers were internally consistent and the delta was still exactly the
+test count, so the comparison held. But the reasoning attached to them did
+not: "38 errors on every revision, therefore environmental, therefore
+ignorable" was half right. They were environmental, and they were also
+**masking 3 genuine failures** that only appeared once the browser existed.
+An error that prevents a test from running is not the same as a test that
+passes, and treating a constant error count as benign is how a real failure
+hides behind a broken environment. Recorded because the mistake is reusable,
+not because these particular three matter to this crawler.
 
 An earlier draft of the PR description compared 1423 against 1431 and
 labelled the pair before-and-after. That was wrong: 1423 was this branch
@@ -602,7 +651,7 @@ Cases, grouped:
   inch-marked merch product whose echoing option would otherwise carry it
   past the non-vinyl filter — pinned as its own test, with a matching one for
   an inch-marked merch *option*.
-- **Option filter** — 19 parametrized option names covering unmarked
+- **Option filter** — 18 parametrized option names covering unmarked
   colour/edition variants (kept), bundles carrying both a vinyl and a
   non-vinyl token (kept), and competing formats and merch (dropped); a mixed
   vinyl/CD product split correctly; plus a `Vinyl Sticker` option dropped and
@@ -611,6 +660,12 @@ Cases, grouped:
   forms (dropped), genuine bundles (kept), and a compound alongside an
   independent format token (kept); 5 more covering the `test press` boundary,
   including `Test Pressure` (dropped).
+- **Merch vocabulary** — 9 parametrized names pinning singular/plural parity
+  (`Vinyl Patch`/`Patches`, `Vinyl Tee`/`Tees`, `12" Slipmats`, `Vinyl
+  T-Shirt`) plus the deliberate `sleeve` exclusion; 9 more for plural and
+  clothing *option* names; and one structural test asserting both regexes are
+  built from `_MERCH_NOUNS`, so the hand-written drift that caused the defect
+  cannot recur.
 - **Availability** — `sold_out` option skipped; non-active `status` dropped;
   **absent `status` kept** (the safe-degradation branch above); all-sold-out
   product yields nothing.
