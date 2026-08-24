@@ -18,8 +18,14 @@ log = get_logger("ripplemusic")
 _TITLE_RE = re.compile(r'^(?P<artist>.+?)(?:\s+-\s*|\s*-\s+)(?P<album>.+)$')
 _VARIOUS_RE = re.compile(r'^various(?:\s+artists?)?$', re.IGNORECASE)
 
-# Unambiguous vinyl vocabulary, safe to trust in any of the three strings
-# this crawler reads: a category name, a product name, or an option name.
+# The vinyl vocabulary itself. NOT safe to call directly on a category,
+# product, or option name -- `\bvinyls?\b` matches "Vinyl Sticker", where the
+# word names a material rather than a format. Go through _vinyl_word(), which
+# strips those compounds first; every caller in this file does. This is the
+# post-strip vocabulary, not a general-purpose "is it vinyl" test, and the
+# distinction is load-bearing: an earlier version of this comment called it
+# safe to trust anywhere, and that is exactly the bug that produced.
+#
 # This store splits its media categories by format *and size* ('12" Vinyl',
 # '10" Vinyl', '7" Vinyl', 'Double LP', 'Test Presses'), unlike
 # asbestosrecords.py's single `Vinyl` category and jetglowrecordings.py's one

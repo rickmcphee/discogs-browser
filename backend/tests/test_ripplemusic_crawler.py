@@ -240,6 +240,24 @@ def test_items_keeps_an_option_naming_a_sleeve():
     assert len(Crawler._items(product)) == 1
 
 
+def test_vinyl_word_regex_is_only_reached_through_the_compound_strip():
+    """`_VINYL_WORD_RE` matches "Vinyl Sticker", where the word names a
+    material rather than a format. Every use must go through `_vinyl_word()`,
+    which strips those compounds first. A direct call reintroduces the bug,
+    so the invariant is enforced here rather than only asserted in a comment.
+    """
+    import inspect
+    from crawlers import ripplemusic
+    source = inspect.getsource(ripplemusic)
+    uses = [
+        line.strip() for line in source.splitlines()
+        if "_VINYL_WORD_RE" in line
+        and not line.lstrip().startswith("#")
+        and "_VINYL_WORD_RE = " not in line
+    ]
+    assert uses == ['return _VINYL_WORD_RE.search(_VINYL_MERCH_RE.sub(" ", text))'], uses
+
+
 def test_merch_regexes_are_built_from_one_vocabulary():
     # The structural guarantee, not just its current effect: both regexes are
     # derived from _MERCH_NOUNS, so they cannot drift apart the way the

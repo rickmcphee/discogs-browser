@@ -11,11 +11,23 @@ it was built in runs behind a strict egress allowlist: every request to
 Big Cartel stores) is refused by the proxy with `403` to `CONNECT`, through
 both `curl` and the harness fetch tool. `GET /products.json` was never made.
 
-That is a real departure from every sibling crawler design in this repo,
+That was a real departure from every sibling crawler design in this repo,
 each of which is grounded in a confirmed-live fetch and quotes exact counts.
-Nothing here quotes a count, because none could be measured.
+As first written, this document quoted no counts, because none could be
+measured.
 
-What *is* grounded, and how:
+**That is no longer the state.** The feed was measured on 2026-08-24 (by the
+maintainer, from an unrestricted network) and the confirmed figures are in
+the table below and throughout. This section is kept in its original framing
+— what was known at authoring time, and from where — because the crawler's
+shape was decided under that uncertainty and cannot be understood without it.
+Read the Confidence column as *what was available when the code was written*,
+and the **Confirmed** rows as what has since been verified.
+
+One item remains genuinely unverified: what the crawler actually emits, step
+3 of the verification commands below.
+
+What was grounded at authoring time, and how:
 
 | Fact | Source | Confidence |
 |---|---|---|
@@ -583,7 +595,7 @@ gate asks for this store's file, and rightly.
 `backend/tests/test_ripplemusic_crawler.py` — flat in `tests/`, like every
 pure-HTTP catalog crawler (`tests/crawlers/` holds the Playwright-driven
 ones). `respx` mocks `/products.json`; no live site, no bot-detection risk.
-110 tests.
+111 tests.
 
 Suite totals, measured by checking out each revision in turn rather than
 inferred from a single run.
@@ -594,9 +606,9 @@ restart re-ran `scripts/cloud-setup.sh`, which installs Chromium):
 | Revision | Passed | Failed |
 |---|---|---|
 | `9d35d35` — this branch's fork point | 1391 | 3 |
-| this branch (110 tests) | 1501 | 3 |
+| this branch (111 tests) | 1502 | 3 |
 
-`1501 − 1391 = 110`, exactly this file's test count and nothing else.
+`1502 − 1391 = 111`, exactly this file's test count and nothing else.
 
 The 3 failures are `tests/crawlers/test_amazon_price_extraction.py`
 (`test_mosaic_price`, `test_evolver_no_price`,
@@ -663,9 +675,14 @@ Cases, grouped:
 - **Merch vocabulary** — 9 parametrized names pinning singular/plural parity
   (`Vinyl Patch`/`Patches`, `Vinyl Tee`/`Tees`, `12" Slipmats`, `Vinyl
   T-Shirt`) plus the deliberate `sleeve` exclusion; 9 more for plural and
-  clothing *option* names; and one structural test asserting both regexes are
-  built from `_MERCH_NOUNS`, so the hand-written drift that caused the defect
-  cannot recur.
+  clothing *option* names.
+- **Two structural tests**, which pin invariants rather than behaviour,
+  because both defects they guard were caused by structure rather than by a
+  wrong value. One asserts both merch regexes are built from `_MERCH_NOUNS`,
+  so the hand-written drift cannot recur. The other asserts `_VINYL_WORD_RE`
+  is reached only through `_vinyl_word()` — it matches `Vinyl Sticker`, so a
+  direct call reintroduces the material-sense bug, and a comment saying so is
+  weaker than a test that fails.
 - **Availability** — `sold_out` option skipped; non-active `status` dropped;
   **absent `status` kept** (the safe-degradation branch above); all-sold-out
   product yields nothing.
