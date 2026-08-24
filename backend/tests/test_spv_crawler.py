@@ -188,6 +188,24 @@ def test_spelled_and_spaced_inch_markers_take_the_vinyl_override():
         assert len(Crawler._items({**_SODOM, "title": title})) == 1, title
 
 
+def test_dimension_does_not_override_an_explicit_merch_word():
+    # _INCH matches any 1-2 digit measurement, so a bare 12" used to
+    # short-circuit the gate and publish merch as Vinyl. The repo already
+    # carries this exact title shape -- see test_cleorecs_crawler.py's
+    # _POSTER_PRODUCT, 'Revolting Cocks (12" x 12" Poster)'. Found in review on
+    # PR #165.
+    for blurb in ('12" x 12" Poster', '12" Poster', '10 inch Patch'):
+        assert Crawler._is_vinyl(blurb) is False, blurb
+
+    # The fix must not cost the bundles: a media format or an outright vinyl
+    # word next to the marker is a real release, not a measurement.
+    for blurb in ('10 INCH + CD', '12"', 'LP + T-Shirt', '12" LP + Poster'):
+        assert Crawler._is_vinyl(blurb) is True, blurb
+
+    items = Crawler._items({**_SODOM, "title": 'Sodom "1982" 12" x 12" Poster'})
+    assert items == []
+
+
 def test_inch_markers_alone_are_still_vinyl():
     for title in ('Sodom "1982" 10 INCH', 'Sodom "1982" 12"', 'Sodom "1982" 7"'):
         assert len(Crawler._items({**_SODOM, "title": title})) == 1, title

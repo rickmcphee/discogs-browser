@@ -223,15 +223,19 @@ the test it replaced only passed because it blanked `vendor`.
 ### Format gate: negative, on the title blurb
 
 ```python
-_VINYL_WORDS     = (r'\d*[x×]?lp', r'vinyl', r'picture\s+disc')
-_NON_VINYL_WORDS = (r'\d*[x×]?cds?', r'digital', r'digipa[kc]k?', r'cassette', r'tape', r'mc',
-                    r'\d*[x×]?dvd', r'blu-?ray', r't-?shirt', r'shirt', r'hoodie', r'longsleeve',
-                    r'poster', r'patch', r'flag', r'mug', r'book')
-_INCH            = r'\b\d{1,2}\s*(?:"|inch\b)'
+_VINYL_WORDS           = (r'\d*[x×]?lp', r'vinyl', r'picture\s+disc')
+_NON_VINYL_MEDIA_WORDS = (r'\d*[x×]?cds?', r'digital', r'digipa[kc]k?', r'cassette',
+                          r'tape', r'mc', r'\d*[x×]?dvd', r'blu-?ray')
+_MERCH_WORDS           = (r't-?shirt', r'shirt', r'hoodie', r'longsleeve',
+                          r'poster', r'patch', r'flag', r'mug', r'book')
+_NON_VINYL_WORDS       = _NON_VINYL_MEDIA_WORDS + _MERCH_WORDS
+_INCH                  = r'\b\d{1,2}\s*(?:"|inch\b)'
 
-_VINYL_RE           = ...  # _VINYL_WORDS + _INCH
-_NON_VINYL_RE       = ...  # _NON_VINYL_WORDS
-_FORMAT_TOKEN_RE    = ...  # both tuples + _INCH, as a trailing run
+_VINYL_WORD_RE         = ...  # _VINYL_WORDS
+_INCH_RE               = ...  # _INCH
+_MERCH_RE              = ...  # _MERCH_WORDS
+_NON_VINYL_RE          = ...  # _NON_VINYL_WORDS (both halves)
+_FORMAT_TOKEN_RE       = ...  # every tuple + _INCH, as a trailing run
 ```
 
 The gate reads the trailing blurb only, never the artist or album, so a
@@ -256,9 +260,9 @@ the same hole one step further out: Shopify stores write the count both ways
 (`2LP` and `2xLP` — this repo's own `test_temporaryresidence_crawler.py`
 fixtures carry the x form), and without it `2xCD` is published as vinyl *and*
 `2xLP+CD` is wrongly dropped, since the bundle's vinyl half no longer matches
-the override while its `CD` half still matches the negative side. `_VINYL_RE`,
-`_NON_VINYL_RE`, and `_FORMAT_TOKEN_RE` all carry the same allowance so the
-two gates and the dash-path splitter cannot disagree.
+the override while its `CD` half still matches the negative side.
+`_VINYL_WORD_RE`, `_NON_VINYL_RE`, and `_FORMAT_TOKEN_RE` all carry the same
+allowance so the two gates and the dash-path splitter cannot disagree.
 
 The inch alternative had the same disagreement, found a round later: this gate
 took only an unspaced mark on three sizes (`7|10|12"`) while the stripper
@@ -273,8 +277,34 @@ own vinyl collection, so an *unrecognised* blurb (`Deluxe Edition`) is kept.
 A positive filter would silently drop stock whose descriptor this list didn't
 anticipate — the failure mode `carparkrecords.py`'s doc records for its own
 store, where a positive filter would have dropped every bare-colour variant
-name. A blurb naming both formats (`LP+CD`) is vinyl: `_VINYL_RE` short-
-circuits ahead of `_NON_VINYL_RE`, mirroring that sibling's collision guard.
+name. A blurb naming both formats (`LP+CD`) is vinyl: an outright
+vinyl word short-circuits ahead of `_NON_VINYL_RE`, mirroring that sibling's
+collision guard.
+
+**A dimension is not a format claim, and treating it as one was a bug.**
+Because `_INCH` matches any 1-2 digit measurement, an inch marker used to
+short-circuit the gate ahead of everything else — so `12" x 12" Poster`
+published as `format: "Vinyl"`, an explicit merch word overridden by what was
+only a measurement. Not hypothetical: this repo's Cleopatra fixture already
+carries that exact title shape (`Revolting Cocks (12" x 12" Poster)` in
+`test_cleorecs_crawler.py`). Found in review on PR #165.
+
+The fix splits the non-vinyl vocabulary into media (`CD`, `DVD`, `Cassette`,
+`Digital`, `MC`, `Blu-ray`) and merch (`Poster`, `Patch`, `Shirt`, `Hoodie`,
+`Mug`, `Flag`, `Book`, `Longsleeve`), and orders the gate: an outright vinyl
+word wins, then merch loses, then an inch marker wins, then the negative gate
+decides. Media keeps its bundle behaviour because a CD beside a 10-inch record
+is a real release, while a poster measured in inches is just a measured poster.
+`10 INCH + CD`, `12"`, `LP + T-Shirt` and `12" LP + Poster` all stay vinyl;
+`12" x 12" Poster` and `10 inch Patch` no longer do.
+
+The split is a partition, not a second vocabulary to keep in sync —
+`_NON_VINYL_WORDS` is the concatenation of the two halves, so the stripper and
+the structural guard test still see every word and the drift this module
+suffered four times stays impossible. The narrow cost: a genuine
+`12" + Poster` bundle, naming no vinyl word of its own, is now dropped. That
+trade is deliberate — merch bleeding into a vinyl collection is the commoner
+shape, and a real bundle almost always names its record.
 
 The gate reads `extra`, which only the quoted parser produces — so on the dash
 fallback it was initially inert, and `Sodom - 1982 CD` published as Vinyl with

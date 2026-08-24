@@ -47,11 +47,20 @@ _DASH_RE = re.compile(r'^(?P<artist>.+?)(?:\s+[-–—]\s*|\s*[-–—]\s+)(?P<a
 # same two tuples makes that specific mistake impossible: a word added here
 # reaches the product gate, the variant gate and the dash-path stripper at once.
 _VINYL_WORDS = (r'\d*[x×]?lp', r'vinyl', r'picture\s+disc')
-_NON_VINYL_WORDS = (
+# Split media from merch because the two behave differently against an inch
+# marker, not because the stripper cares -- it still sees the concatenation.
+# An inch marker next to a *media* format is a real bundle ("10 INCH + CD");
+# next to *merch* it is usually a measurement ("12\" x 12\" Poster"), so it must
+# not be read as a vinyl claim. See _is_vinyl.
+_NON_VINYL_MEDIA_WORDS = (
     r'\d*[x×]?cds?', r'digital', r'digipa[kc]k?', r'cassette', r'tape', r'mc',
-    r'\d*[x×]?dvd', r'blu-?ray', r't-?shirt', r'shirt', r'hoodie', r'longsleeve',
+    r'\d*[x×]?dvd', r'blu-?ray',
+)
+_MERCH_WORDS = (
+    r't-?shirt', r'shirt', r'hoodie', r'longsleeve',
     r'poster', r'patch', r'flag', r'mug', r'book',
 )
+_NON_VINYL_WORDS = _NON_VINYL_MEDIA_WORDS + _MERCH_WORDS
 # Inch markers stay separate from the word tuples: the mark is a non-word
 # character, so a trailing \b cannot follow it.
 _INCH = r'\b\d{1,2}\s*(?:"|inch\b)'
@@ -97,17 +106,17 @@ _PREORDER_RE = re.compile(r'pre[\s_-]?order', re.IGNORECASE)
 # override and was dropped as a CD, while `12" + CD` was kept. Same shape of
 # bug as the 2xLP+CD one: a bundle is only safe if the override recognises
 # every vinyl spelling the rest of the module does.
-_VINYL_RE = re.compile(
-    r'\b(?:%s)\b|%s' % (_alternation(_VINYL_WORDS), _INCH), re.IGNORECASE
-)
+_VINYL_WORD_RE = re.compile(r'\b(?:%s)\b' % _alternation(_VINYL_WORDS), re.IGNORECASE)
+_INCH_RE = re.compile(_INCH, re.IGNORECASE)
+_MERCH_RE = re.compile(r'\b(?:%s)\b' % _alternation(_MERCH_WORDS), re.IGNORECASE)
 _NON_VINYL_RE = re.compile(
     r'\b(?:%s)\b' % _alternation(_NON_VINYL_WORDS), re.IGNORECASE
 )
 # The \d* on cd/dvd is load-bearing: a disc count binds to the format word with
 # no word boundary between them, so a bare \bcds?\b cannot match the "CD" in
-# "2CD" and a double-CD edition was passing the gate as Vinyl. _VINYL_RE's
+# "2CD" and a double-CD edition was passing the gate as Vinyl. _VINYL_WORD_RE's
 # \b\d*lp\b already had the same allowance for "2LP"; this brings the negative
-# side into line. A bundle naming both ("LP+2CD") is still vinyl -- _VINYL_RE
+# side into line. A bundle naming both ("LP+2CD") is still vinyl -- _VINYL_WORD_RE
 # short-circuits ahead of this.
 
 
@@ -163,7 +172,7 @@ class Crawler:
         # needs its non-vinyl variants dropped, or a "CD" variant of an
         # LP-titled release publishes as format "Vinyl". Same gate, applied to
         # the variant name -- deliberately not nuclearblast.py's positive
-        # `_VINYL_RE.search(variant_title)` filter, which would drop every bare
+        # `_VINYL_WORD_RE.search(variant_title)` filter, which would drop every bare
         # colour name ("Black", "Splatter"), the failure mode
         # carparkrecords.py's doc records for its own store.
         #
@@ -247,8 +256,20 @@ class Crawler:
         silently drop stock whose descriptor this list doesn't anticipate) and
         only an explicit non-vinyl format is dropped. A blurb naming both
         (`LP+CD`) is vinyl.
+
+        Merch is checked before the inch marker because a dimension is not a
+        format claim. `_INCH` matches any 1-2 digit measurement, so a bare
+        `12"` used to override an explicit merch word and publish
+        `12" x 12" Poster` as Vinyl -- a title shape this repo already meets
+        (`test_cleorecs_crawler.py`'s poster fixture). Ordering the checks this
+        way keeps real media bundles (`10 INCH + CD`) and vinyl-plus-merch
+        bundles (`LP + T-Shirt`), because both name a format outright.
         """
-        if _VINYL_RE.search(extra):
+        if _VINYL_WORD_RE.search(extra):
+            return True
+        if _MERCH_RE.search(extra):
+            return False
+        if _INCH_RE.search(extra):
             return True
         return not _NON_VINYL_RE.search(extra)
 

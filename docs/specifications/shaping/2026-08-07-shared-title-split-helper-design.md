@@ -133,8 +133,9 @@ crawl path. Full grounding in
 section.
 
 **Sixth amendment (2026-08-23, branch `claude/spv-store-crawler-2mdf0z`):**
-`backend/crawlers/spv.py` is another exception, and the first one that is a
-near-copy of a prior one rather than a new shape. It takes `asianmanrecords.py`'s
+`backend/crawlers/spv.py` is another exception, and unlike the earlier ones it
+is a near-copy of a prior exception rather than a new shape. It takes
+`asianmanrecords.py`'s
 two-stage structure wholesale — quoted-album primary parser, hyphen/en-dash/em-dash
 split demoted to a fallback, optional `[-–—]?` separator before the opening
 quote, no vendor fallback (`vendor` is expected to be the label here:
