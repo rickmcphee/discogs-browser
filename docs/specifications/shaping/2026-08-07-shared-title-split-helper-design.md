@@ -210,8 +210,8 @@ This neither retracts the doc's original argument for the crawlers it still
 describes correctly, nor the earlier amendments' verdicts on their own
 crawlers; it records that `darksiderecords.py` is a documented exception to
 the converging contract, not a bug to fix into conformance — the same framing
-the earlier amendments use. It is the second exception that is a near-copy of
-a prior one rather than a new shape, after `spv.py`.
+the earlier amendments use. Like `spv.py`, it is a near-copy of a prior
+exception rather than a new shape.
 
 
 ## Problem

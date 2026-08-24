@@ -236,19 +236,46 @@ suffer `jackpotrecords.py`'s "The Marshall Mathers LP" problem.
 
 ### Pre-orders (not implemented)
 
-Recording the finding so a future reader does not re-derive it: pre-orders
-are tagged (`preorder_bt` 874, `pre-order vinyl` 271, `preorder_blocked_bt`
-112). Pre-order handling is nonetheless not implemented, for the same reason
-as `realgonemusic.py`.
+**There are no pre-orders in this collection to handle.** Products do carry
+pre-order-looking tags — `preorder_bt` (874), `pre-order vinyl` (271),
+`preorder_blocked_bt` (112) — but none of them marks a *current* pre-order.
+They are residue from when the product was once listed for pre-order, and
+acting on them would actively misinform.
 
-The sibling pattern is two coupled behaviours — label the title
-` (Pre-Order)` and bypass the `available` gate — and the second half is
-inert-to-harmful here: this store already marks pre-order variants
-`available: true`, so bypassing the gate could only ever admit genuinely
-sold-out stock. Labelling without bypassing was considered and rejected
-rather than ship half a fleet pattern. Two tests pin the absence: a
-pre-order product is emitted plainly with no suffix, and a sold-out
-pre-order is still skipped.
+Confirmed live against the full capture:
+
+- **Every one of the 874 `preorder_bt` products has a release date in the
+  past.** All 874 carry a `Release-Date:` tag, and zero are future-dated
+  (`Conan Gray- Wishbone Deluxe` 2026-08-14, `B-52's- Ancient Culture`
+  2026-08-21, against a crawl date of 2026-08-24). One of them is a
+  `(DAMAGED)` sleeve copy, which cannot be a pre-order at all.
+- **`pre-order vinyl` is staler still**: 271 products, zero future-dated,
+  latest release date 2026-03-27 — five months before the crawl. Its first
+  entries are all `(DAMAGED)` discount copies.
+- **The two tags never co-occur** (0 overlap), and `preorder_blocked_bt`
+  overlaps `preorder_bt` on 63 of its 112, which is not a coherent
+  current-state signal either.
+- **Structurally it cannot be otherwise.** Every product in
+  `new-vinyl-in-stock` is tagged `instore-available` — physically on the
+  shelf in Poughkeepsie. A genuine pre-order is by definition not on the
+  shelf, so this collection is the wrong place to look for one.
+
+So the sibling pattern's two coupled behaviours are both wrong here, not
+just one. Bypassing the `available` gate is inert-to-harmful, since the
+store already marks these `available: true` and bypassing could only admit
+genuinely sold-out stock. And *labelling* — proposed in review as the safe
+half — would append ` (Pre-Order)` to 1,145 already-released, physically
+in-stock records, including damaged discount copies. That is worse than
+doing nothing.
+
+A second reason to avoid the label even on a store where the tag were
+accurate: `db.compute_item_key()` hashes the title, so a marker that
+disappears when a pre-order ships would change that row's `item_key` and
+orphan its `listings` and saved-item rows — the same identity churn the
+variant descriptor is gated to avoid.
+
+Tests pin the absence: a pre-order-tagged product is emitted plainly with no
+suffix, and a sold-out one is still skipped.
 
 ### Fields
 
