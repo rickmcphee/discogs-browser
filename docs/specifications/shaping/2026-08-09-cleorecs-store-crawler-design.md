@@ -9,7 +9,7 @@ Cleopatra Records (`cleorecs.com`) is a Los Angeles reissue and catalog label
 whose vinyl output — across its own imprint plus Purple Pyramid, Deadline
 Music, Goldenlane, Kung Fu, New Red Archives, Magna Carta, X-Ray and others —
 is not covered by any existing crawler. Its store is a standard Shopify
-storefront, so it belongs to the same family as the 33 Shopify `catalog`
+storefront, so it belongs to the same family as the Shopify `catalog`
 plugins already in `backend/crawlers/`.
 
 Two things make it more than a copy of one of those: `vendor` is the imprint

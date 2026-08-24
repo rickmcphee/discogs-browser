@@ -10,7 +10,7 @@ indie label whose roster includes Toro y Moi, Beach House (early
 releases), Animal Collective side-projects, Dan Deacon, Speedy Ortiz, and
 The Beths, running its own sub-imprints (Company, Wax Nine, Paw Tracks
 listed among the store's own vendors) — is not covered by any existing
-crawler. It is a standard Shopify storefront, same family as the ~35
+crawler. It is a standard Shopify storefront, same family as the
 label-store `catalog` plugins already in `backend/crawlers/`.
 
 Format lives entirely in the *variant* title here (`LP`, `LP (Black

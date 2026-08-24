@@ -122,7 +122,7 @@ to point at it.
 
 Rewriting the environment variable rather than adding a new fixture parameter
 is what keeps this change small. `TEST_DATABASE_URL` is read at fixture-call
-time in nine places across five files — `conftest.py:19,21,24`,
+time at the call sites enumerated here — `conftest.py:19,21,24`,
 `test_db_pools.py:11`, `test_tenant_schema.py:25,158,198`,
 `test_rls_isolation.py:26`, `test_crawl_manager.py:46` — and no test
 hard-codes a database name
@@ -207,8 +207,8 @@ Because the fixture is session-scoped and autouse, it must also stay out of the
 way of the test files that never touch Postgres: with `TEST_DATABASE_URL`
 unset it provisions nothing and yields `None`, leaving `pg_test_db` to raise for
 the files that do need a database, exactly as before this fixture existed. The
-guard test skips in that case — safe, because the same unset variable makes all
-28 Postgres-backed files fail loudly, so a run that lost it cannot look green.
+guard test skips in that case — safe, because the same unset variable makes
+every Postgres-backed test file fail loudly, so a run that lost it cannot look green.
 
 ### Guard test
 

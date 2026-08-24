@@ -7,7 +7,7 @@ Branch: `claude/turntable-lab-crawler-5369a9`
 
 Turntable Lab (`turntablelab.com`), a New York-based record store and hi-fi
 retailer, is not covered by any existing crawler. Its store is a standard
-Shopify storefront, so it belongs to the same family as the 33 Shopify
+Shopify storefront, so it belongs to the same family as the Shopify
 `catalog` plugins already in `backend/crawlers/`.
 
 What makes it more than a copy of a label-store plugin: it sells hardware
