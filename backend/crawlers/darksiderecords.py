@@ -110,7 +110,7 @@ class Crawler:
                 # Vinyl)" still matches catalog "Awake", and the damage marker
                 # is what makes a below-market price self-explanatory in the
                 # price column.
-                "title": cls._compose_title(album, variant, is_multi_variant),
+                "title": cls._compose_title(album, variant, is_multi_variant, url),
                 "format": "Vinyl",
                 "price": price,
                 "currency": "USD",
@@ -120,7 +120,7 @@ class Crawler:
         return items
 
     @staticmethod
-    def _compose_title(album: str, variant: dict, is_multi_variant: bool) -> str:
+    def _compose_title(album: str, variant: dict, is_multi_variant: bool, url: str) -> str:
         # Single-variant products -- all 5,141 of them live -- keep the bare
         # album title, since their only variant is the "Default Title"
         # placeholder and carries nothing. A multi-variant product appends its
@@ -141,10 +141,18 @@ class Crawler:
             # put every such row back onto one item_key and reintroduce the
             # collision this helper exists to prevent. A raw id reads poorly
             # in Store, but identity correctness beats cosmetics in a shape
-            # the store cannot currently produce. If even the id is missing
-            # there is no stable per-variant value left, so the bare album is
-            # all that remains.
+            # the store cannot currently produce.
             descriptor = str(variant.get("id") or "").strip()
             if not descriptor:
-                return album
+                # Nothing stable left to disambiguate on. Returning the bare
+                # album would emit rows sharing one item_key, and
+                # replace_stock_items() DELETEs this crawler's rows before
+                # inserting, so a corrupt snapshot would replace a good one.
+                # Raising instead leaves the previous snapshot untouched:
+                # _sync_stock catches it, records the site as failed and
+                # `continue`s past replace_stock_items entirely.
+                raise ValueError(
+                    f"{url}: multi-variant product whose variants have neither a "
+                    "title nor an id -- cannot derive distinct item keys"
+                )
         return f"{album} — {descriptor}"

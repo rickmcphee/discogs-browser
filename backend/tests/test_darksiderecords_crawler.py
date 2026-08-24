@@ -418,24 +418,21 @@ async def test_crawl_catalog_falls_back_to_variant_id_for_placeholder_descriptor
 
 
 @respx.mock
-async def test_crawl_catalog_falls_back_to_bare_album_when_no_stable_variant_value(crawler):
-    # Nothing stable left to disambiguate on -- no title, no id. The bare
-    # album is all that remains; the rows do collide, and that is the honest
-    # floor rather than a fabricated identity.
+async def test_crawl_catalog_raises_when_no_stable_variant_identity(crawler):
+    # Nothing stable left to disambiguate on -- no variant title, no id.
+    # Emitting the bare album for each would write rows sharing one item_key,
+    # and replace_stock_items() DELETEs this crawler's rows before inserting,
+    # so a corrupt snapshot would replace a good one. Raising leaves the
+    # previous snapshot intact: _sync_stock catches it, records the site as
+    # failed and `continue`s past replace_stock_items.
     no_identity = {**_MULTI_VARIANT_PRODUCT, "variants": [
         {"title": "Default Title", "price": "29.99", "available": True, "featured_image": None},
         {"title": "", "price": "31.99", "available": True, "featured_image": None},
     ]}
     _mock_single_page([no_identity])
-    items = [item async for item in crawler.crawl_catalog()]
-    # Asserted as a sequence, not a set: a set would collapse the two
-    # identical titles and pass even if one row were silently dropped, which
-    # is the one-row-per-available-variant guarantee this branch must keep.
-    assert [i["title"] for i in items] == [
-        "Double Infinity (Vinyl)",
-        "Double Infinity (Vinyl)",
-    ]
-    assert [i["price"] for i in items] == [29.99, 31.99]
+    with pytest.raises(ValueError, match="neither a title nor an id"):
+        [item async for item in crawler.crawl_catalog()]
+
 
 
 @respx.mock

@@ -207,8 +207,19 @@ placeholder row would share a title again and land back on one `item_key`.
 Shopify only issues `Default Title` for a product with exactly one variant,
 so this shape is malformed data, and a raw id reads poorly in Store — but
 identity correctness beats cosmetics in a case the store cannot currently
-produce. If even the id is absent there is no stable per-variant value
-left, so the bare album is the honest floor and those rows do collide.
+produce.
+
+If even the id is absent there is no stable per-variant value left, and the
+crawler **raises** rather than emitting the bare album for each. That is the
+safer failure: `replace_stock_items` (`backend/db.py`) opens with `DELETE
+FROM stock_items WHERE crawler_id = %s`, so emitting colliding rows would
+replace a good snapshot with a corrupt one. A raise cannot reach it —
+`_run_catalog_crawler` materialises the whole list before returning, and
+`_sync_stock`'s `except` block logs the failure, records the site as failed,
+broadcasts `stock_sync_error` and `continue`s *past* the
+`replace_stock_items` call — so the previous snapshot survives untouched.
+This also matches the crawler contract in `CLAUDE.md`: `[]` means the site
+answered with nothing, and any failure must raise.
 
 None of this is reachable by live data today; it is pinned by hypothetical
 fixtures so a future multi-variant product is neither silently reduced to
@@ -367,8 +378,8 @@ risk. The cases:
 - single-variant product → bare album title, no descriptor
 - multi-variant product with placeholder variant titles → descriptor falls
   back to the variant `id`, so identities stay distinct
-- multi-variant product with neither titles nor ids → bare album title, the
-  documented floor
+- multi-variant product with neither titles nor ids → raises, so the previous
+  stock snapshot is preserved rather than replaced by colliding rows
 - variant `featured_image` preferred over the product image
 - malformed `price` → `None`, row still emitted
 - pagination continues until an empty page
