@@ -199,6 +199,13 @@ the artist sort became case-insensitive so an artist's casing variants stay
 adjacent. Nothing else about the gate above changed. See
 [`2026-08-14-artist-casing-canonicalization-design.md`](2026-08-14-artist-casing-canonicalization-design.md).)
 
+(As of 2026-08-24 the `if` branch's inline `regexp_match` is gone too: the
+extraction moved into a shared `_price_sort_sql()` helper, with the widened
+pattern described under "Best-effort numeric sort" above. The subquery wrapper
+and the match fragment around it are unchanged; the column it reads is
+`li.price_paid`, per the storage correction at the top of this document. See
+[`2026-08-24-numeric-price-sort-design.md`](2026-08-24-numeric-price-sort-design.md).)
+
 `_STOCK_ALLOWED_SORT` is left unchanged — `"discogs_price"` is deliberately
 *not* a member. `routers/stock.py` passes `sort` straight through to
 `get_stock_items` with no validation of its own, so `_STOCK_ALLOWED_SORT`

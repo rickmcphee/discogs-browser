@@ -720,11 +720,19 @@ def test_get_stock_items_sort_by_discogs_price_orders_numerically_nulls_last(adm
         {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
         {"artist": "Artist B", "title": "Album B", "url": "https://x/2", "price": 10.0, "currency": "USD"},
         {"artist": "Artist C", "title": "Album C", "url": "https://x/3", "price": 10.0, "currency": "USD"},
+        {"artist": "Artist D", "title": "Album D", "url": "https://x/4", "price": 10.0, "currency": "USD"},
     ])
+    # Artist D's thousands separator is what makes this test discriminate
+    # _price_sort_sql from the narrower inline regex it replaced: under
+    # '\d+\.?\d*' the match stops at the comma and "$1,200.50" reads as 1,
+    # sorting below "10" instead of above "$30.00". The other three values
+    # order identically under both, so without it the call site could be
+    # reverted with every assertion still passing.
     for discogs_id, artist, title, price in [
         ("r1", "Artist A", "Album A", "$30.00"),
         ("r2", "Artist B", "Album B", "10"),
         ("r3", "Artist C", "Album C", "N/A"),
+        ("r4", "Artist D", "Album D", "$1,200.50"),
     ]:
         db.upsert_catalog_release(admin_conn, {
             "discogs_id": discogs_id, "artist": artist, "title": title, "year": None, "label": None,
@@ -736,14 +744,14 @@ def test_get_stock_items_sort_by_discogs_price_orders_numerically_nulls_last(adm
 
     with db.user_scope(alice["id"]) as conn:
         result = db.get_stock_items(conn, alice["id"], library_scope="collection", sort="discogs_price", order="asc")
-    assert [r["artist"] for r in result["items"]] == ["Artist B", "Artist A", "Artist C"]
+    assert [r["artist"] for r in result["items"]] == ["Artist B", "Artist A", "Artist D", "Artist C"]
 
     # Descending reverses the priced rows but must not promote the unpriced
     # one: "nulls last" means last in both directions. This is the half the
     # test name always claimed and only the ascending call ever checked.
     with db.user_scope(alice["id"]) as conn:
         result = db.get_stock_items(conn, alice["id"], library_scope="collection", sort="discogs_price", order="desc")
-    assert [r["artist"] for r in result["items"]] == ["Artist A", "Artist B", "Artist C"]
+    assert [r["artist"] for r in result["items"]] == ["Artist D", "Artist A", "Artist B", "Artist C"]
 
 
 def test_get_stock_items_sort_by_discogs_price_falls_back_to_artist_when_no_library_scope(admin_conn):

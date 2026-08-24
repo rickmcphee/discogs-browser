@@ -125,7 +125,7 @@ ahead of `"$9"` in the Collection/Wishlist Price header. It now reads
 **`get_stock_items`** — `_library_match_fragment` already binds `li`, so both sites repoint with no structural change:
 
 - Projection: `(SELECT li.price_paid {_library_match_fragment('%(user_id)s', 'collection')} LIMIT 1) AS discogs_price`
-- Sort: `regexp_match(li.price_paid, ...)` in place of `regexp_match(c.discogs_price, ...)`
+- Sort: `regexp_match(li.price_paid, ...)` in place of `regexp_match(c.discogs_price, ...)` (as of 2026-08-24 this is no longer inline either — it is the shared `_price_sort_sql("li.price_paid")` named in the correction above, reading the same column)
 
 The collection-pinned sort guard (`"in_collection" in _LIBRARY_MEMBERSHIP.get(library_scope, ())`) and its rationale are unchanged and still correct: under wishlist scope every key would be NULL, leaving rows tied and pagination unstable.
 

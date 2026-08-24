@@ -100,6 +100,16 @@ Found by Copilot review on PR #172.
 - Mixed currency symbols, a thousands separator, `"N/A"` and NULL in one set: numeric
   order for the first three, the digit-less pair last.
 
-The existing Track-tab test
-(`test_get_stock_items_sort_by_discogs_price_orders_numerically_nulls_last`) covers the
-shared helper on the other call site.
+`backend/tests/test_stock_crud.py`:
+
+- `test_get_stock_items_sort_by_discogs_price_orders_numerically_nulls_last` gains a
+  comma-bearing price (`"$1,200.50"`) and a descending call. Neither was incidental. Its
+  original `"$30.00"` / `"10"` / `"N/A"` inputs order identically under the old inline
+  regex and the shared helper, so it passed with the call site reverted — it exercised
+  the Track path without pinning anything this change does to it. And it only ever
+  called `order="asc"`, despite being named for a nulls-last property that holds in both
+  directions, which is how the `null_order` bug survived in the first place.
+
+Both gaps were found by Copilot review on PR #172, not by the original test pass. The
+lesson generalizes: a regression test over values that sort the same way before and
+after proves the query still runs, not that the change happened.

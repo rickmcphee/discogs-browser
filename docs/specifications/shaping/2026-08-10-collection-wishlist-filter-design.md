@@ -329,6 +329,15 @@ else:
 the artist sort is case-insensitive now. See
 [`2026-08-14-artist-casing-canonicalization-design.md`](2026-08-14-artist-casing-canonicalization-design.md).)
 
+(As of 2026-08-24 the inline `regexp_match(..., '\d+\.?\d*')` above is gone.
+The extraction moved into a shared `_price_sort_sql()` helper, also used by
+`get_library_releases`, and widened to `'[0-9][0-9,]*(?:\.[0-9]+)?'` with the
+matched substring's commas stripped before the cast — the old pattern stopped
+at the first non-digit, so `"$1,200.50"` read as `1`. The subquery wrapper and
+`_library_match_fragment` call around it are unchanged. The column it reads is
+`li.price_paid`, per this document's storage-superseded banner. See
+[`2026-08-24-numeric-price-sort-design.md`](2026-08-24-numeric-price-sort-design.md).)
+
 Under the Wantlist filter every value the expression produces is `NULL`,
 so the sort is a harmless no-op (all rows tie and fall to the NULL-last
 branch) rather than a case needing its own gate. Harmless on the wire, but
