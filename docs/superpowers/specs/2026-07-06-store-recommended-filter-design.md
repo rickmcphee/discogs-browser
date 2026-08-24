@@ -203,7 +203,7 @@ This stays developer-only — the file lives in the repo, not the data directory
 
 ### 3. Decoupled judgment-only refresh
 
-Previously, the only way to get new judgments was `POST /api/stock/sync/start`, which re-crawls all catalog sources (31 as of this writing) *and* runs the judgment phase afterward — there was no way to just re-run judgment against whatever's currently unjudged. This adds one:
+Previously, the only way to get new judgments was `POST /api/stock/sync/start`, which re-crawls all catalog sources *and* runs the judgment phase afterward — there was no way to just re-run judgment against whatever's currently unjudged. This adds one:
 
 - `CrawlManager` gains `judgment_running` (property) and `start_judgment_only()`, running the existing `_run_judgment_phase` standalone against the current `stock_items`/`stock_item_judgments` state, on its own dedicated connection (same pattern as `_sync_stock`) — no catalog crawl.
 - Mutual exclusion: `start_stock_sync` and `start_judgment_only` each refuse (return `False`, matching the existing 409-style guard shape) if *either* is already running — prevents two processes judging overlapping unjudged items concurrently, which would double-spend API calls on the same items.

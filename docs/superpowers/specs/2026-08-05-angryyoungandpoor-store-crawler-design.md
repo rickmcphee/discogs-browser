@@ -36,7 +36,7 @@ which hit the same question and originally made the same mistake — see
 
 ## Overview
 
-Add `angryyoungandpoor.com` as a 32nd catalog source for the Store tab —
+Add `angryyoungandpoor.com` as a new catalog source for the Store tab —
 but unlike every existing catalog source, this one can't reuse
 `shopify_catalog.py`. Direct inspection (`curl` with a real browser UA)
 confirms Cloudflare returns "Attention Required!" (403) for any non-browser

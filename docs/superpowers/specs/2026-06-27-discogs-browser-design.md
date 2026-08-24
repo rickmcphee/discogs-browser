@@ -436,7 +436,7 @@ discogs-browser/
 │   ├── routers/                # one per domain (collection, crawl, discover, health, logs,
 │   │                           #   plex, releases, screenshots, session, settings, stock)
 │   ├── scripts/                # capture_fixture.py, drop_leaked_test_dbs.py, migrate_from_sqlite.py
-│   └── tests/                  # ~100 pytest files, plus tests/fixtures/crawlers/amazon/*.html
+│   └── tests/                  # pytest files, plus tests/fixtures/crawlers/amazon/*.html
 ├── frontend/
 │   ├── package.json
 │   ├── vite.config.ts

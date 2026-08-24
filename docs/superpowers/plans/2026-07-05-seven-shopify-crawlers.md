@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add seven more catalog crawlers — Deathwish Inc, Equal Vision, Run For Cover, Secretly Store, Craft Recordings, Relapse, and Napalm Records — bringing the Store tab's total catalog sources to thirteen.
+**Goal:** Add seven more catalog crawlers — Deathwish Inc, Equal Vision, Run For Cover, Secretly Store, Craft Recordings, Relapse, and Napalm Records.
 
 **Architecture:** All seven are Shopify storefronts, so all seven crawlers reuse the existing `backend/shopify_catalog.py` helpers and implement the same `crawl_catalog()` catalog-crawler contract as the six sites already documented in `docs/superpowers/specs/2026-07-05-in-stock-crawler-design.md`. Three genuinely new decision shapes show up across this batch that the existing six sites hadn't needed: a *product-level* type filter instead of a per-variant regex (Equal Vision), a *negative* per-variant filter that excludes specific non-vinyl titles instead of requiring a positive vinyl match (Run For Cover excludes `"digital"`; Craft Recordings excludes exact `"CD"`/`"Cassette"`), and the discovery that a collection literally named `/collections/vinyl` is not proof it's vinyl-only (Deathwish Inc mixes in thousands of Cassette/CD variants and needs the same wide positive-regex filter Fat Wreck Chords/Secretly Store use). Full technical grounding for all seven (live JSON samples, exact match-rate percentages from testing regexes against full live catalogs) is written up in the spec doc's per-site subsections.
 

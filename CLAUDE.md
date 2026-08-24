@@ -108,7 +108,17 @@ covers exact counts ("34 store crawlers"), approximations ("~40 catalog crawler
 plugins"), spelled-out counts ("thirty-three sources ship"), ordinals that imply
 a total ("a 34th `catalog`-type source", "the thirty-fifth crawler"), and
 running totals ("bringing the total to twenty-six"). Whole-suite test totals
-("738 tests") are the same rule.
+("738 tests") and file-tree annotations ("~100 pytest files") are the same rule.
+
+Two forms hide from a naive `grep` for a number next to a noun, and both slipped
+through the sweep that first removed these — check for them by hand:
+
+- **Ordinals fused to the digits** — `32nd catalog source`, `33rd Shopify-based
+  source`. `\d+ catalog` doesn't match `32nd catalog`.
+- **The number trailing the noun** — `brings the Store tab's total catalog
+  sources to eighteen`, `re-crawls all catalog sources (31 as of this writing)`.
+  Search for `total .* to`, `as of this writing`, and `\b\d+(st|nd|rd|th)\b`
+  as well as the obvious pattern.
 
 Why: these numbers change every time a crawler is added, and nothing depends on
 them. Every one of them went stale within weeks, and each staleness cost real
@@ -127,6 +137,8 @@ Write it count-free instead:
 | `confirmed against all 31 crawlers` | `confirmed against every crawler` |
 | `the 36 catalog crawler plugins` | `every catalog crawler plugin` |
 | `a schema column with 31 crawlers writing NULL` | `a schema column with every other crawler writing NULL` |
+| `a 32nd catalog source for the Store tab` | `a new catalog source for the Store tab` |
+| `brings the total catalog sources to eighteen` | *(delete the clause)* |
 | `Total catalog crawlers registered: twenty-two` | *(delete the sentence)* |
 
 Naming the members of a set is fine — an enumerated list of source names carries
@@ -145,6 +157,16 @@ Scope, so this doesn't over-apply. These stay:
   batch", "run and confirm all 5 tests pass" for a test file the task just wrote.
 - Counts a single sentence defines by enumerating — "`colCount` stays 7 for
   Track and 6 for Store" describes actual columns in actual code.
+- A count that is a fixed historical fact an argument rests on — "the helper
+  wasn't extracted until nine Shopify crawlers had converged on identical
+  logic" records when a threshold was crossed; it does not go stale.
+
+One trap worth calling out: when you de-number a sentence, make sure you don't
+change what it claims. "with 34 store crawlers able to enqueue on the order of
+20,000 jobs per sync" is an *aggregate* — rewriting it to "with every store
+crawler able to enqueue 20,000 jobs" silently multiplies the estimate. Reach for
+"collectively", "between them", or "in aggregate" when the count was doing that
+work.
 
 **If you find yourself about to add or update an inventory count, delete it
 instead.** An amendment whose only content is "this count is now N" should not be

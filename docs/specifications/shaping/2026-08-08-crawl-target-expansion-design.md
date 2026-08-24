@@ -100,8 +100,8 @@ it doesn't show it.
   decision.** The original plan deferred queue prioritization, on the
   reasoning that a large stock-item enqueue burst "could in principle
   delay" a user's collection crawl. A whole-branch review found that
-  premise false at actual scale: with every store crawler able to enqueue on
-  the order of 20,000 stock-item jobs per sync against a shared ~7,700
+  premise false at actual scale: with the store crawlers collectively able to
+  enqueue on the order of 20,000 stock-item jobs per sync against a shared ~7,700
   jobs/day drain ceiling, and enqueued-but-undrained rows never advancing
   their `requested_at` (only a `'done'` row's re-enqueue does), the FIFO
   queue's backlog grows every sync rather than draining — starvation, not
