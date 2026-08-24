@@ -61,15 +61,28 @@ def _alternation(*tuples):
     return "|".join(word for group in tuples for word in group)
 
 
-# The leading `.*` is greedy on purpose: it anchors the split on the LAST
-# format word, not the first. With a lazy/absent prefix the engine takes the
-# leftmost match, so `The Book of Souls LP` split at `Book` and stored the album
-# as `The`. Greedy backtracking finds ` LP` instead and keeps the album whole.
-_TRAILING_FORMAT_RE = re.compile(
-    r'^.*\s+((?:\b(?:%s)\b|%s).*)$'
-    % (_alternation(_VINYL_WORDS, _NON_VINYL_WORDS), _INCH),
+# Finding the trailing format run took three attempts, so the reasoning is
+# recorded rather than just the answer.
+#
+#   leftmost match      -> 'The Book of Souls LP' split at 'Book', album 'The'
+#   greedy prefix       -> '1982 LP + CD' split at ' CD', album '1982 LP +',
+#                          and the bundle dropped because _is_vinyl never saw LP
+#   run-must-reach-end  -> '1982 Digital Download' stopped matching at all,
+#                          because 'Download' is not a format token
+#
+# What all three got wrong is that the split point is the start of the last
+# *run* of format tokens, not the first token, not the last token, and not a
+# region that has to be pure format to the end. So: find every format token,
+# anchor on the last one, then walk left across any tokens joined to it by only
+# a connector. Everything from there to the end is the format blurb, trailing
+# qualifier words ('Download') and parentheticals ('(exclusive)') included.
+_FORMAT_TOKEN_RE = re.compile(
+    r'\b(?:%s)\b|%s' % (_alternation(_VINYL_WORDS, _NON_VINYL_WORDS), _INCH),
     re.IGNORECASE,
 )
+_CONNECTOR_ONLY_RE = re.compile(r'^[\s+/&,]*$')
+
+
 _PLACEHOLDER_VARIANT = "default title"
 _PREORDER_RE = re.compile(r'pre[\s_-]?order', re.IGNORECASE)
 # \d*[x×]? on the LP/CD/DVD forms: Shopify stores write multi-disc counts both
@@ -99,14 +112,20 @@ _NON_VINYL_RE = re.compile(
 
 
 def _split_trailing_format(album: str) -> tuple:
-    """Split a trailing format marker off an album title -> (album, format)."""
-    m = _TRAILING_FORMAT_RE.search(album)
-    if not m:
+    """Split the trailing format run off an album title -> (album, format)."""
+    matches = list(_FORMAT_TOKEN_RE.finditer(album))
+    if not matches:
         return album, ""
-    remainder = album[:m.start(1)].strip()
-    if not remainder:
+    run_start = matches[-1].start()
+    for earlier in reversed(matches[:-1]):
+        if not _CONNECTOR_ONLY_RE.match(album[earlier.end():run_start]):
+            break
+        run_start = earlier.start()
+    remainder = album[:run_start].strip()
+    # No remainder means the album *is* the format word ("Tape"); leave it be.
+    if not remainder or remainder == album:
         return album, ""
-    return remainder, m.group(1).strip()
+    return remainder, album[run_start:].strip()
 
 
 class Crawler:

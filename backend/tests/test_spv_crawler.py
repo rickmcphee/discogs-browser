@@ -2,7 +2,7 @@ import httpx
 import respx
 import pytest
 from crawlers.spv import (
-    Crawler, _NON_VINYL_WORDS, _VINYL_WORDS, _TRAILING_FORMAT_RE,
+    Crawler, _NON_VINYL_WORDS, _VINYL_WORDS, _FORMAT_TOKEN_RE,
 )
 
 _PRODUCTS_URL = "https://store.spv.de/collections/vinyl/products.json"
@@ -213,12 +213,32 @@ def test_every_format_word_reaches_the_dash_path_stripper():
     # on whichever path had the shorter list. They are now derived from shared
     # tuples; this asserts the property that derivation is there to provide, so
     # a future edit that reintroduces two lists fails here rather than in
-    # review.
+    # review. _FORMAT_TOKEN_RE is what the dash-path splitter scans with, so
+    # a word it cannot see is a word that path cannot gate on.
     for word in _NON_VINYL_WORDS + _VINYL_WORDS:
         # A concrete sample per pattern, since the tuples hold regex fragments.
         sample = (word.replace(r"\d*[x×]?", "2").replace(r"\s+", " ")
                       .replace("-?", "-").replace("[kc]", "k").replace("?", ""))
-        assert _TRAILING_FORMAT_RE.search(f" {sample}"), word
+        assert _FORMAT_TOKEN_RE.search(sample), word
+
+
+def test_spaced_bundle_runs_keep_every_token(): 
+    # Regression from the greedy-prefix fix: it anchored on the last format
+    # *token* rather than the last run, so '1982 LP + CD' split at ' CD',
+    # leaving the album '1982 LP +' and dropping the bundle because _is_vinyl
+    # never saw the LP. Both tokens must reach the gate.
+    for title in ("Sodom - 1982 LP + CD", "Sodom - 1982 CD / LP"):
+        items = Crawler._items({**_SODOM, "title": title})
+        assert items and items[0]["title"] == "1982", title
+
+
+def test_trailing_qualifier_words_stay_with_the_format():
+    # And the counter-regression: requiring the run to reach the end of the
+    # string stopped 'Digital Download' matching at all, because 'Download' is
+    # not a format token. The run absorbs trailing qualifier words.
+    from crawlers.spv import _split_trailing_format
+    assert _split_trailing_format("1982 Digital Download") == ("1982", "Digital Download")
+    assert _split_trailing_format("1982 LP (exclusive)") == ("1982", "LP (exclusive)")
 
 
 def test_format_word_inside_an_album_title_does_not_truncate_it():

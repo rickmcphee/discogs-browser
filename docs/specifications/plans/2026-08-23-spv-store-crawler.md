@@ -37,17 +37,23 @@ record-store domain. Every figure in the design doc that a sibling doc would
 have confirmed against `products.json` is instead marked as an assumption, with
 its failure mode. The five checks in "Verification still owed" are still owed.
 
-**Eight code defects were found in review, none by running the crawler.** In
-rough order: the `vendor` fallback made the no-artist guard dead code; the dash
+**Every code defect on this branch was found in review; none by running the
+crawler.** No total is given, because it kept growing after this log was
+written and a fixed number here just goes stale — see the PR's resolved threads
+for the full sequence. In rough order: the `vendor` fallback made the no-artist guard dead code; the dash
 fallback bypassed the format gate; the Stock browser hardcoded `$`; count-
 prefixed (`2CD`) and multiplier (`2xCD`) formats slipped the gate; spelled inch
 markers (`10 INCH`) lost the vinyl override; mixed-format products published
 their CD variants as vinyl; `Digital` was absent from the denylist; merch
 suffixes bypassed the dash path.
 
-Six of those eight are one bug: **a gate that covers one path while a second
-path around it goes ungated**, or two expressions that are supposed to share a
-vocabulary drifting apart. The design doc now states the invariant explicitly —
+Most of them are one bug: **a gate that covers one path while a second path
+around it goes ungated**, or two expressions that are supposed to share a
+vocabulary drifting apart. Later rounds added a second recurring shape, in the
+dash-path splitter: finding the *wrong end* of the trailing format run — first
+its leftmost token, then its last token rather than its last run, then a rule
+so strict it stopped matching qualifier words. Two of those three were
+regressions introduced by the fix before them. The design doc now states the invariant explicitly —
 `_VINYL_RE`, `_NON_VINYL_RE` and `_TRAILING_FORMAT_RE` are maintained as one
 vocabulary — because arriving at it took five separate rounds.
 
