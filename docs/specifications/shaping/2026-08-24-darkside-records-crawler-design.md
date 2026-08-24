@@ -322,8 +322,14 @@ to `New Vinyl/Hardcore`. Registration is automatic: `main.py`'s
 `seed_bundled_crawlers()` walks `backend/crawlers/` at startup — no wiring
 changes.
 
-The plugin is pure transformation over dicts and raises nothing itself; all
-error handling is inherited from `iter_products()`.
+The plugin is otherwise pure transformation over dicts, and inherits its
+network error handling from `iter_products()` — retry-with-backoff on a
+non-429 within the `consecutive_failure_limit` budget, immediate raise on
+429. It does raise on its own in exactly one case: `_compose_title` raises
+`ValueError` when a multi-variant product's variants have neither a usable
+title nor an `id`, since there is then no way to give them distinct
+`item_key`s. See "Per-variant gates" for why raising is the safe response
+there rather than emitting the rows.
 
 ## Queue fan-out
 
@@ -386,10 +392,17 @@ risk. The cases:
 - site metadata
 
 They all pass. The wider suite is unaffected: it passes apart from
-pre-existing Playwright browser-launch failures in `tests/crawlers/` (no
-Chromium build at the configured `PLAYWRIGHT_BROWSERS_PATH`), which are
-unrelated to this change — it adds only new files and touches no existing
-module — and which CI, where the browsers are present, runs green.
+pre-existing failures in `tests/crawlers/test_amazon_price_extraction.py`,
+where Playwright's `Page.set_content` times out loading large HTML fixtures
+in a constrained sandbox. Those are environmental, not logic failures, and
+unrelated to this change — it adds only new files and touches no Amazon
+code, fixtures, `conftest.py` or shared module — and CI runs them green.
+
+(An earlier revision of this section described these as browser-*launch*
+failures from a missing Chromium build at `PLAYWRIGHT_BROWSERS_PATH`. That
+was the failure mode before the sandbox provisioned Playwright's browsers;
+once installed, the launch errors were replaced by these content-load
+timeouts. Recorded so the misdiagnosis isn't inherited by the next reader.)
 
 ## Crawl citizenship and `robots.txt` compliance
 

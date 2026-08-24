@@ -75,12 +75,14 @@ class Crawler:
         handle = product.get("handle", "")
         url = f"{cls.base_url}/products/{handle}"
 
-        # No pre-order carve-out on the availability gate, unlike the sibling
-        # crawlers that bypass it for pre-order-tagged products. It would be
-        # inert here: the store marks pre-orders `available: true` already
-        # (874 products carry `preorder_bt`), so bypassing the gate could only
-        # ever admit genuinely sold-out stock. Only 3 of 5,141 products have no
-        # available variant at all.
+        # No pre-order carve-out, unlike the sibling crawlers that bypass this
+        # gate for pre-order-tagged products -- because there are no current
+        # pre-orders here to carve out. Both tag forms (`preorder_bt` 874,
+        # `pre-order vinyl` 271) are stale residue on already-released shelf
+        # stock: every tagged product's release date is in the past, the two
+        # never co-occur, and everything in this collection is tagged
+        # `instore-available`. See the design spec's "Pre-orders" section.
+        # Only 3 of 5,141 products have no available variant at all.
         variants = product.get("variants") or []
         # Gated on the total variant count, not the available one, so a row's
         # identity is stable: db.compute_item_key() hashes exactly
