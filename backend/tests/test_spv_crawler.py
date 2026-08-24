@@ -270,7 +270,8 @@ def test_shopify_placeholder_variant_never_reaches_the_title():
 
 
 def test_variant_qualifier_does_not_depend_on_sibling_availability():
-    # Counted over the full variant list, not the filtered one: a qualifier that
+    # Counted over the full format-eligible list, not the availability-filtered
+    # rows: a qualifier that
     # appeared only while a sibling was in stock would change item_key between
     # syncs and orphan that row's judgment every time stock moved.
     product = {**_SODOM, "variants": [_variant("Black"), _variant("Splatter", available=False)]}

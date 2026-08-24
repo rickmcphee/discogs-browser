@@ -33,7 +33,8 @@ dash-split fallback, recorded as the third exception in
 [`2026-08-07-shared-title-split-helper-design.md`](2026-08-07-shared-title-split-helper-design.md).
 This crawler reuses that two-stage shape rather than inventing a parallel
 one — see "Title parsing" below for the two places it widens it, and that
-doc's fifth amendment for the divergence record.
+doc's sixth amendment for the divergence record (fifth until Real Gone
+Music's landed on `main` first).
 
 ## Scope
 
@@ -125,8 +126,8 @@ rows survive untouched. That costs coverage, never correctness.
   dropping stock, but it means non-vinyl bleed in the `vinyl` collection would
   publish as `format: "Vinyl"` rather than being rejected.
 
-Both are bounded to this source — `replace_stock_items` only ever touches this
-crawler's own rows, so neither can corrupt another source.
+All three are bounded to this source — `replace_stock_items` only ever touches
+this crawler's own rows, so none of them can corrupt another source.
 
 **They are not reversible by disabling the source, and an earlier draft of this
 section wrongly said they were.** Caught in review on PR #165, and verified
@@ -152,7 +153,7 @@ enabled-by-default (see the auto-enable discussion on PR #165) was taken partly
 on the strength of the reversibility claim above. The blast radius is still one
 source's rows, but undoing it is a manual step, not a toggle.
 
-Neither failure mode announces itself, which
+None of these failure modes announces itself, which
 is the reason the "Verification still owed" section at the end exists and why
 this crawler should be treated as unverified until those checks are run.
 
@@ -168,7 +169,7 @@ variant) was driven by that store's format-specific collections being
 confirmed *not* to be supersets of its vinyl stock; there is no evidence of
 that here, and the check needs the live feed.
 
-### Title parsing: quoted album, with two fallbacks
+### Title parsing: quoted album, with a dash fallback
 
 ```python
 _TITLE_RE = re.compile(r'^(?P<artist>[^"“”]+?)\s*[-–—]?\s*["“](?P<album>[^"“”]+)["”]\s*(?P<extra>.*)$')
@@ -191,7 +192,7 @@ quote, so both parsers handle a blurb that quotes a word
 (`Sodom "1982" LP (the "exclusive" pressing)` → `1982`) identically. An
 earlier draft of this section claimed both captures diverged and that the
 album behaviour "matters in both directions"; that overstated it, and
-contradicted this branch's own fifth amendment to
+contradicted this branch's own sixth amendment to
 [`2026-08-07-shared-title-split-helper-design.md`](2026-08-07-shared-title-split-helper-design.md),
 which describes the divergence correctly. Corrected in review on PR #165.
 

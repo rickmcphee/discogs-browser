@@ -137,10 +137,12 @@ class Crawler:
         # product therefore qualifies each row with its variant name, the shape
         # nuclearblast.py uses.
         #
-        # Counted over the FULL variant list, never the availability-filtered
-        # one: if the qualifier appeared only while a sibling variant happened
-        # to be in stock, the title -- and with it item_key -- would change
-        # between syncs, orphaning that row's judgment every time stock moved.
+        # Counted over the full format-eligible list, never the
+        # availability-filtered one: if the qualifier appeared only while a
+        # sibling variant happened to be in stock, the title -- and with it
+        # item_key -- would change between syncs, orphaning that row's judgment
+        # every time stock moved. Format is safe to filter on first because a
+        # variant's format does not change as stock moves; availability is not.
         multi_variant = len(eligible) > 1
 
         items = []
