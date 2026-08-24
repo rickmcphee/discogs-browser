@@ -23,7 +23,7 @@ import scheduler
 # load_enabled_crawlers level instead -- so start_worker_pool/
 # stop_worker_pool are patched here for consistency with that convention.
 #
-# The two CORS tests reload config and main to pick up FRONTEND_ORIGINS,
+# The CORS tests reload config and main to pick up FRONTEND_ORIGINS,
 # which also re-derives DATABASE_URL from the environment and throws away
 # pg_test_db's repoint at the per-run test database. Since settings moved
 # into app_config, startup()'s load_config() would then query a database
