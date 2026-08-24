@@ -27,6 +27,7 @@ What *is* grounded, and how:
 | Variant names are colour/edition strings, only some naming a format (`Rare Test Press`, `Worldwide Edition Classic Black Vinyl LP`, `Limited Edition Coloured Vinyl LP (150 copies)`) | Indexed product copy | Medium |
 | Prices are USD | US (SF Bay Area) label; a `$23.99 USD` listing for one of its releases | High |
 | `/products.json` shape (`options`, `sold_out`, `status`, `artists`, `categories`, `images`) | `asbestosrecords.py` and `jetglowrecordings.py`, both confirmed live against the same platform | High |
+| `robots.txt` does not `Disallow` `/products.json` | Fetched live 2026-08-24 — see "Crawl citizenship" | **Confirmed** |
 | Whether `/products.json` honours `page=` on **this** store | — | **Unknown** |
 | Whether product-level `status` is populated on **this** store | — | **Unknown** |
 | Whether option-level `sold_out` is populated on **this** store | — | **Unknown** |
@@ -39,18 +40,28 @@ is correct under either finding rather than to guess one — see each section
 below. Where that costs something (one extra HTTP request per sync), the
 cost is named.
 
-**One of these is a merge gate, not a nice-to-have.** The repo's normative
+**The `robots.txt` merge gate is cleared** (2026-08-24). The repo's normative
 crawler policy
 (`docs/specifications/shaping/2026-08-09-amoeba-store-crawler-design.md`,
 "Crawl citizenship and `robots.txt` compliance") requires this store's own
 `robots.txt` to be fetched and its finding recorded before the crawler is
-added. That could not be done here, so **this crawler should not merge until
-it is** — see "Crawl citizenship" below.
+added. It has been, by the maintainer from an unrestricted network:
+`/products.json` is not covered by any `Disallow`. See "Crawl citizenship"
+below for the file and what it does and does not settle.
+
+The items below are *verification*, not merge gates. They remain open, and
+the crawler's output should not be trusted as accurate until they are
+measured.
 
 **To verify before trusting this crawler's output**, from a network that can
 reach the store:
 
 ```bash
+# 0. Catalog size the cheap way -- robots.txt names a sitemap, which the
+#    sibling stores' files do not. Cross-check against (1): if products.json
+#    returns fewer than the sitemap lists, page= is capping the response.
+curl -s 'https://ripplemusic.bigcartel.com/sitemap.xml' | grep -c '<loc>.*/product/'
+
 # 1. Catalog size, and whether page= is honoured or ignored.
 curl -s 'https://ripplemusic.bigcartel.com/products.json'        | jq 'length'
 curl -s 'https://ripplemusic.bigcartel.com/products.json?page=2' | jq 'length'
@@ -82,6 +93,13 @@ to change — the crawler already handles both. If (1) shows `page=` ignored,
 the paging loop already collapses to two requests. The verification is to
 confirm the row output looks right, and to replace this section's Unknowns
 with measured numbers.
+
+(0) is the one lever this store offers that neither sibling did: its
+`robots.txt` advertises a sitemap, so the true product count is obtainable
+without trusting `/products.json`'s own paging behaviour. That makes the
+`page=` question answerable by comparison rather than by inference — if the
+sitemap lists materially more products than a single `/products.json` returns,
+the endpoint is capped and the paging loop is doing real work.
 
 ## Problem
 
@@ -374,42 +392,41 @@ genre grouping only.
 Per the normative section of
 `docs/specifications/shaping/2026-08-09-amoeba-store-crawler-design.md`.
 
-**⛔ This is an unmet merge gate, not a caveat.** That normative section
-says, in terms:
+This site's finding, fetched 2026-08-24:
 
-> Before adding any future store crawler, `robots.txt` must be fetched and
-> read for the specific paths that crawler will request, and the finding
-> recorded in that crawler's spec the way it is recorded here.
+```
+User-Agent: *
+Disallow: /admin
+Disallow: /cart
+Disallow: /checkout
+Disallow: /receipt
 
-This store's `robots.txt` could not be fetched — same egress block that
-prevented the `/products.json` fetch. The requirement is therefore **not
-satisfied**, and this crawler should not merge until it is.
-
-The gate has teeth here, not just paperwork: `db.register_crawler`
-(`backend/db.py:1048-1058`) inserts `enabled = TRUE` unconditionally, and
-`main.py`'s `seed_bundled_crawlers()` calls it for every file in
-`backend/crawlers/` at boot. So merging this file is what starts the traffic
-— the next stock sync will contact `/products.json` with no further action
-from anyone. There is no intermediate state in which the plugin is present
-but dormant.
-
-What is known, and why it is not a substitute: Big Cartel serves a
-platform-wide default (`Disallow: /admin`, `/cart`, `/checkout`,
-`/receipt`), confirmed live on the Asbestos store, which does not cover
-`/products.json`. Big Cartel stores can also serve their own, so a sibling
-store's file is evidence about the platform, not about this store. The gate
-asks for this store's file, and rightly.
-
-To clear it, from a network that can reach the store:
-
-```bash
-curl -sS https://ripplemusic.bigcartel.com/robots.txt
+Sitemap: https://ripplemusic.bigcartel.com/sitemap.xml
 ```
 
-Then record the finding here the way the sibling specs do. A `Disallow`
-covering `/products.json` for general-purpose clients means the store is not
-added — per the same normative section, that is the answer, not a prompt to
-find a way around it.
+- The applicable `User-agent: *` group disallows four checkout and admin
+  paths. **`/products.json`, the only path this crawler requests, is not
+  covered by any `Disallow`.**
+- No named-agent groups, no `Content-Signal` header, no `Crawl-delay`. There
+  is nothing here to honour beyond the four paths, none of which this
+  crawler touches.
+- The file is Big Cartel's platform default plus a `Sitemap:` line —
+  byte-identical, in its `Disallow` set, to the one
+  `2026-08-13-asbestos-records-store-crawler-design.md` records for the
+  Asbestos store.
+
+Provenance, since it matters for a doc that is otherwise careful about it:
+this was fetched by the maintainer from an unrestricted network and pasted
+back, not fetched by the session that wrote this crawler — all egress to
+`ripplemusic.bigcartel.com` was `403`-ed at that session's proxy, which is
+why the `/products.json` facts in "Verification status" remain unmeasured.
+The `robots.txt` requirement is a *merge* gate and is now satisfied; those
+are verification items and are not.
+
+That the platform default turned out to be what this store serves does not
+retroactively justify assuming it. Big Cartel stores can serve their own
+file, so the sibling's copy was only ever evidence about the platform. The
+gate asks for this store's file, and rightly.
 
 - Load, worked through rather than asserted. The loop body issues exactly one
   GET per iteration and runs for `page = 1 … _MAX_PAGES`, so:
