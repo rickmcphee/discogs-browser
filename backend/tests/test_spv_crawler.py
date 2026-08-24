@@ -188,6 +188,35 @@ def test_spelled_and_spaced_inch_markers_take_the_vinyl_override():
         assert len(Crawler._items({**_SODOM, "title": title})) == 1, title
 
 
+def test_hyphenated_inch_notation_is_recognised():
+    # "12-INCH VINYL"/"7-INCH VINYL" is established notation in this repo --
+    # asianmanrecords.py's _VINYL_TYPES -- and without the optional hyphen the
+    # override missed it, so a bundle dropped as a CD. Found in review on
+    # PR #165.
+    assert Crawler._is_vinyl('12-INCH + CD') is True
+    for blurb in ('12-INCH VINYL', '7-INCH', '12 INCH + CD', '12" + CD'):
+        assert Crawler._is_vinyl(blurb) is True, blurb
+    # Still a dimension, not a format, when it qualifies merch.
+    assert Crawler._is_vinyl('12-inch Poster') is False
+    # And the splitter strips it, so the marker does not stay in the title.
+    assert _split_trailing_format('1982 12-INCH') == ('1982', '12-INCH')
+
+
+def test_spaced_count_is_left_in_the_album_title():
+    # Accepted, not fixed: the count prefix binds only when adjacent, so a
+    # spaced count leaves a stray digit behind on the dash path. Raised in
+    # review on PR #165 and left alone because the two readings are
+    # structurally identical -- text, space, one-digit count, space, token --
+    # so any rule absorbing the "2" in the first also eats the meaningful one
+    # in the second, and no sample of this store's feed exists to say which
+    # shape occurs.
+    assert _split_trailing_format('1982 2 LPs') == ('1982 2', 'LPs')
+    assert _split_trailing_format('Volume 2 LPs') == ('Volume 2', 'LPs')
+    # Classification is unaffected either way -- the gate reads the blurb, and
+    # `LPs` reaches it in both.
+    assert Crawler._is_vinyl('LPs') is True
+
+
 def test_plural_format_words_are_recognised_on_both_sides():
     # `\blp\b` cannot match the "LPs" in "2 LPs + CD" -- no word boundary
     # between the p and the s -- so the vinyl override failed and the CD half

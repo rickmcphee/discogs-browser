@@ -385,6 +385,22 @@ of its title, because `book` is on the non-vinyl side of the gate. A *leading*
 format word is safe — the empty-remainder guard returns the album untouched,
 so `Tape Deck Heart` and `Vinyl Days` survive.
 
+A second residue of the same kind, found a round later: the count prefix binds
+only when it is *adjacent* to the format word, so a spaced count is left behind
+in the title.
+
+```
+_split_trailing_format('1982 2 LPs')    -> ('1982 2', 'LPs')
+_split_trailing_format('Volume 2 LPs')  -> ('Volume 2', 'LPs')
+```
+
+The first is wrong and the second is right, and they are structurally
+identical — text, space, one-digit count, space, token. Any rule that absorbs
+the stray `2` in `1982 2 LPs` also eats the meaningful one in `Volume 2 LPs`,
+so this is left alone for the same reason as the rest of this section.
+Classification is unaffected either way: the gate reads the blurb, and `LPs`
+reaches it in both.
+
 Raised in review on PR #165 and deliberately left alone — but the reasoning
 recorded here previously was itself too narrow, so it is restated. "There is
 no syntax that separates the two cases" is true of the *ending* case: `1982 CD`
@@ -398,7 +414,9 @@ publishes *as vinyl* through the negative gate), and there is no sample of this
 store's feed to say which shape occurs and which is hypothetical. Tightening
 the stripper to unambiguous forms only (count-prefixed, inch-marked) would
 separately reopen the `Artist - Album CD` hole fixed earlier on this branch. The trade taken is: correct on `Album FORMAT`, wrong on
-an album whose last word is a format word, on the fallback path only — the
+any album carrying a recognised token after its first word — whether that
+token ends the title or sits mid-title with ordinary words after it, as the
+`The Book of Souls` case above shows — on the fallback path only — the
 quoted path, which is this store's observed convention, is unaffected because
 its format lives in a separate capture group. Whether the store has any
 unquoted titles at all is one more thing the live feed would settle.
@@ -485,11 +503,12 @@ price render site, which comparison rows share. A symbol map rather than
 `Intl.NumberFormat`: `Intl` would also start inserting thousands separators
 into USD prices, changing how every existing source renders in order to fix a
 bug in one of them. `toFixed(2)` is kept exactly as it was, so USD output is
-byte-for-byte unchanged. A null `currency` defaults to USD — the only sources
-that are anything else are `jetglowrecordings.py` (hardcoded EUR),
-`darkdescentrecords.py` (feed pass-through) and this crawler, and every other
-source hardcodes USD — so defaulting avoids regressing pre-existing rows to a
-bare number. An unmapped-but-real code prints as `27.99 SEK` rather than
+byte-for-byte unchanged. A null `currency` defaults to USD — the sources that
+are anything else are `jetglowrecordings.py` (hardcoded EUR),
+`darkdescentrecords.py` (feed pass-through), `discogs_marketplace.py` (reads
+`data-currency` off the listing, and its results render here as comparison
+rows) and this crawler; the catalog sources otherwise hardcode USD — so
+defaulting avoids regressing pre-existing rows to a bare number. An unmapped-but-real code prints as `27.99 SEK` rather than
 guessing a symbol.
 
 ### Metadata

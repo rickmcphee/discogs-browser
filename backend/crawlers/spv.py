@@ -71,7 +71,12 @@ _MERCH_WORDS = (
 _NON_VINYL_WORDS = _NON_VINYL_MEDIA_WORDS + _MERCH_WORDS
 # Inch markers stay separate from the word tuples: the mark is a non-word
 # character, so a trailing \b cannot follow it.
-_INCH = r'\b\d{1,2}\s*(?:"|inch\b)'
+# The hyphen is optional and load-bearing: "12-INCH VINYL"/"7-INCH VINYL" is
+# established notation in this repo (asianmanrecords.py's _VINYL_TYPES), and
+# without it `12-INCH + CD` missed the vinyl override and dropped as a CD.
+# "7-INCH" alone was right only by accident -- the override never fired, the
+# row survived because nothing negative matched. Found in review on PR #165.
+_INCH = r'\b\d{1,2}\s*-?\s*(?:"|inch\b)'
 
 
 def _alternation(*tuples):

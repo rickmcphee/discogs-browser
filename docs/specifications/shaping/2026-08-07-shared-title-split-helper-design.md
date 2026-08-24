@@ -31,16 +31,16 @@ a whole, and any future implementation of `split_artist_title` should treat
 `cleorecs.py` as a documented exception, not a bug to fix into conformance.
 
 **Second amendment (2026-08-14, branch `claude/jackpot-records-crawler-5a6b9f`):**
-`backend/crawlers/jackpotrecords.py` is a second exception with the same
+`backend/crawlers/jackpotrecords.py` is another exception with the same
 shape as `cleorecs.py`'s divergences (1) and (3) above: it reuses the same
 wider `[-–—]` separator class, and it has no vendor fallback at all (`vendor`
 here is the store's own name or a reissue label, never the artist). It skips
 the paren-stripping pass, unlike `cleorecs.py`. `cleorecs.py` is no longer
-the sole documented exception to the converging contract; there are now two.
+the sole documented exception to the converging contract.
 
 **Third amendment (2026-08-16, branch `claude/asian-man-records-crawler-074aa7`):**
-`backend/crawlers/asianmanrecords.py` is a third exception. It shares two
-divergences with the prior two: the same wider `[-–—]` separator class
+`backend/crawlers/asianmanrecords.py` is another exception. It shares two
+divergences with the prior ones: the same wider `[-–—]` separator class
 `cleorecs.py` and `jackpotrecords.py` both use, and no vendor fallback at all
 — `vendor` is the label's own name, not an artist, on every product
 (case-insensitively `"asian man records"`; 250/251 products spell it
@@ -60,15 +60,15 @@ Neither prior exception has this two-stage primary/fallback structure — each
 has exactly one parser.
 
 None of this retracts the doc's original convergence argument for the eight
-crawlers it still describes correctly, nor the first two amendments' verdicts
+crawlers it still describes correctly, nor the earlier amendments' verdicts
 on `cleorecs.py` and `jackpotrecords.py` — it records that
-`asianmanrecords.py` is a third documented exception to the converging
-contract, not a bug to fix into conformance, the same framing the first two
+`asianmanrecords.py` is a documented exception to the converging
+contract, not a bug to fix into conformance, the same framing the earlier
 amendments use.
 
 **Fourth amendment (2026-08-19, branch `claude/carpark-records-crawler-0adc27`):**
-`backend/crawlers/carparkrecords.py` is a fourth exception, for reasons
-distinct from all three prior ones. It runs a mandatory preprocessing pass
+`backend/crawlers/carparkrecords.py` is another exception, for reasons
+distinct from the prior ones. It runs a mandatory preprocessing pass
 over the title before the artist/album split is even attempted — stripping
 an optional leading catalog-code prefix (`CAK188`, `CAKD067`, and the one
 dual-number case `WIX04/05`) via `_CODE_RE`. This is the same *shape* of
@@ -91,18 +91,18 @@ is even attempted, exactly the same structural reason `cleorecs.py`'s
 paren-strip is inexpressible that way.
 
 None of this retracts the doc's original convergence argument for the eight
-crawlers it still describes correctly, nor the first three amendments'
+crawlers it still describes correctly, nor the earlier amendments'
 verdicts on `cleorecs.py`, `jackpotrecords.py`, and `asianmanrecords.py` —
-it records that `carparkrecords.py` is a fourth documented exception to the
+it records that `carparkrecords.py` is a documented exception to the
 converging contract, not a bug to fix into conformance, the same framing the
-first three amendments use.
+earlier amendments use.
 
 **Fifth amendment (2026-08-23, branch `claude/realgonemusic-crawler-84feaf`):**
-`backend/crawlers/realgonemusic.py` is a fifth exception, and the only one
-so far that this doc's contract cannot describe even in principle: it does
+`backend/crawlers/realgonemusic.py` is another exception, and so far the only
+one that this doc's contract cannot describe even in principle: it does
 not split titles at all. The earlier exceptions each diverge in *how*
 they split — a wider separator class, a preprocessing pass, a quoted-album
-primary parser, no vendor fallback — but all four still answer the question
+primary parser, no vendor fallback — but they all still answer the question
 "where does the artist end and the album begin?". Real Gone Music's store
 makes that question unanswerable from the data. `vendor` is the literal
 string `"Real Gone Music"` on all 278 vinyl products, and product titles
