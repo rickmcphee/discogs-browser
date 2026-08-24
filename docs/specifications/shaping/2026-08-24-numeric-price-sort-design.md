@@ -148,9 +148,12 @@ Found by Copilot review on PR #172.
 - The separator matrix — `"$1,200.50"`, `"€25,50"`, `"1.234,56"`, `"$100"`, `"1.234"`
   in one ascending sort. Confirmed discriminating: under a blanket comma strip the `25,50`
   row reads as 2550 and leads.
-- Unparseable input (`"25.00.00"`, `"1,23,456"`) returns rows rather than erroring. This
-  one guards the widened token rather than pinning a behaviour change — it passes against
-  the narrower pattern too, which never captured a second dot to begin with.
+- The fallback, with the full ordering asserted: `"25.00.00"` (unrecognised, floored to
+  25) against `"1,23,456"` (*recognised* — Indian grouping, 123456), `"$5"` and `"$40"`.
+  The two cases are deliberately in one test because they pull against each other:
+  discriminating in both directions, since separator-stripping sorts `25.00.00` last as
+  250000, while flooring everything unrecognised sorts `1,23,456` first as 1.
+- A bare decimal part (`"$.99"`, `",99"`) against whole-number prices, on both paths.
 
 `backend/tests/test_stock_crud.py`:
 

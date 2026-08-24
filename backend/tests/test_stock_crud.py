@@ -788,6 +788,36 @@ def test_get_stock_items_sort_by_discogs_price_reads_decimal_commas_as_decimals(
     assert [r["artist"] for r in result["items"]] == ["Artist B", "Artist A", "Artist C"]
 
 
+def test_get_stock_items_sort_by_discogs_price_reads_a_bare_decimal_part(admin_conn):
+    # The leading-zero rule on the Track path -- see the matching library test.
+    # Both paths share _price_sort_sql, and both are covered for the same
+    # reason the separator matrix is: they had drifted apart once already.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+        {"artist": "Artist B", "title": "Album B", "url": "https://x/2", "price": 10.0, "currency": "USD"},
+    ])
+    for discogs_id, artist, title, price in [
+        ("r1", "Artist A", "Album A", "$.99"),
+        ("r2", "Artist B", "Album B", "$50"),
+    ]:
+        db.upsert_catalog_release(admin_conn, {
+            "discogs_id": discogs_id, "artist": artist, "title": title, "year": None, "label": None,
+            "format": None, "price_paid": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.upsert_library_item(admin_conn, alice["id"], discogs_id, in_collection=True, price_paid=price)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], library_scope="collection", sort="discogs_price", order="asc")
+    # 0.99 < 50. Under a digit-first token "$.99" reads as 99 and trails.
+    assert [r["artist"] for r in result["items"]] == ["Artist A", "Artist B"]
+
+
 def test_get_stock_items_sort_by_discogs_price_falls_back_to_artist_when_no_library_scope(admin_conn):
     db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")
     admin_conn.commit()

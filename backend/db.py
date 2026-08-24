@@ -176,6 +176,9 @@ def _price_sort_sql(column: str) -> str:
     - `1,23,456` -- the Indian grouping, whose last group is three digits and
       whose earlier ones are two. Commas drop out.
     - `25` / `25.50` -- already plain.
+    - `.99` / `,99` -- a bare decimal part, which a price written without its
+      leading zero produces. The token may start with a separator and is given
+      the zero back before the branches see it.
     - anything else falls back to the *leading digit run*, everything from the
       first separator on discarded.
 
@@ -186,6 +189,12 @@ def _price_sort_sql(column: str) -> str:
     the cents. An unrecognised token can only ever understate now, and only as
     far as its leading group; it can never outrank a well-formed larger price.
     That is the whole claim -- the fallback is a floor, not an estimate.
+
+    The leading-zero rule is part of that claim rather than a nicety. While the
+    token had to start with a digit, `"$.99"` captured as `99` and sorted a
+    99-cent record above a $50 one -- the same inflation the fallback exists to
+    rule out, arriving through the tokeniser instead of through the branches.
+    Both ends have to hold for "can only understate" to mean anything.
 
     `1,200` is genuinely ambiguous -- 1200 grouped, or 1.2 with a decimal comma
     -- and is read as grouping, because three digits after a single comma is the
@@ -214,7 +223,9 @@ def _price_sort_sql(column: str) -> str:
         WHEN t.v ~ '^[0-9]+(\\.[0-9]+)?$' THEN t.v
         ELSE (regexp_match(t.v, '^[0-9]+'))[1]
     END::numeric
-    FROM (SELECT (regexp_match({column}, '[0-9][0-9.,]*[0-9]|[0-9]'))[1] AS v) t)"""
+    FROM (SELECT regexp_replace(
+            (regexp_match({column}, '[.,]?[0-9][0-9.,]*[0-9]|[.,]?[0-9]'))[1],
+            '^([.,])', '0\\1') AS v) t)"""
 
 
 GLOBAL_SCHEMA = """

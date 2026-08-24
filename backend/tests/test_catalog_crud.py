@@ -385,6 +385,30 @@ def test_get_library_releases_price_sort_reads_decimal_commas_as_decimals(admin_
     assert [r["discogs_id"] for r in result["releases"]] == ["r5", "r2", "r4", "r1", "r3"]
 
 
+def test_get_library_releases_price_sort_reads_a_bare_decimal_part(admin_conn):
+    # A price written without its leading zero -- "$.99", or ",99" in a
+    # decimal-comma collection. While the token had to begin with a digit these
+    # captured as "99" and sorted a 99-cent record above a $50 one: the same
+    # inflation the fallback exists to rule out, arriving through the tokeniser
+    # rather than the branches. The token may now start with a separator and
+    # gets the zero back before the branches see it.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _seed_priced(admin_conn, alice["id"], [
+        ("r1", "Aaa", "$.99"),
+        ("r2", "Bbb", ",99"),
+        ("r3", "Ccc", "$50"),
+        ("r4", "Ddd", "$5"),
+    ])
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], sort="discogs_price", order="asc")
+    # 0.99, 0.99, 5, 50 -- the two cent-prices lead; under a digit-first token
+    # they read as 99 and trail $50 instead.
+    ordered = [r["discogs_id"] for r in result["releases"]]
+    assert set(ordered[:2]) == {"r1", "r2"}
+    assert ordered[2:] == ["r4", "r3"]
+
+
 def test_get_library_releases_price_sort_floors_unrecognised_prices(admin_conn):
     # Two things at once, both about the fallback branch.
     #
