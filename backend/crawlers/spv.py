@@ -9,9 +9,9 @@ _COLLECTION_SLUG = "vinyl"
 # typographic double quotes and a trailing format/edition blurb:
 #   Sodom "1982" LP (exclusive)
 #   Magnum "The Monster Roars" LP (white & black marbled vinyl)
-# Same two-stage quoted-primary/dash-fallback shape as asianmanrecords.py, the
-# only other store in the fleet that quotes its album titles, including its
-# optional separator before the opening quote (`Artist - "Album"`). Widened
+# Same two-stage quoted-primary/dash-fallback shape as asianmanrecords.py,
+# which quotes its album titles the same way, including its optional
+# separator before the opening quote (`Artist - "Album"`). Widened
 # here to accept typographic quotes, and extended with an `extra` capture the
 # sibling has no use for -- this store carries its format in the title blurb,
 # not in the variant, so the gate below needs the text after the album.

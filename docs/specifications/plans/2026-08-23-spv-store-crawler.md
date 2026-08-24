@@ -26,7 +26,7 @@ logs" — and records what happened, including the parts that went wrong.
 3. `frontend/src/views/formatPrice.ts` + test — the price cell rendered every
    currency with `$`. Split out of the crawler work only in the sense that it
    was found by it; it fixes rows that were already wrong.
-4. Spec amendments: the shared title-split helper doc (sixth exception), the
+4. Spec amendments: the shared title-split helper doc (documented exception), the
    in-stock crawler design, and the store-recommended-filter design.
 
 ## The part worth recording

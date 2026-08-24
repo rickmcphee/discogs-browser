@@ -27,7 +27,7 @@ naming the artist in `vendor` (`centurymedia.py`, `napalmrecords.py`,
 `nuclearblast.py`) or splitting the title on a dash (`seasonofmist.py`,
 `carparkrecords.py`). That is **not** new to the fleet:
 `asianmanrecords.py` already ships a quoted-album primary parser with a
-dash-split fallback, recorded as the third exception in
+dash-split fallback, recorded as a documented exception in
 [`2026-08-07-shared-title-split-helper-design.md`](2026-08-07-shared-title-split-helper-design.md).
 This crawler reuses that two-stage shape rather than inventing a parallel
 one — see "Title parsing" below for the two places it widens it, and that

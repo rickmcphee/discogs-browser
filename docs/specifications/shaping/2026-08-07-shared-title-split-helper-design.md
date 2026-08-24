@@ -77,12 +77,12 @@ amendment, divergence (2)) — a step that has to run before the split regex
 can even see the artist/title text — but for a different reason: a
 catalog-number prefix, not a trailing parenthetical. Its separator regex,
 `_SPLIT_RE = re.compile(r'\s+-\s+')`, is narrower than both this doc's own
-proposed shared regex (`[-–]`) and the wider `[-–—]` class all three prior
+proposed shared regex (`[-–]`) and the wider `[-–—]` class the prior
 exceptions use — whitespace-bounded hyphen only, no en-dash or em-dash
-support at all. And unlike all three prior exceptions, none of which has a
+support at all. And unlike the prior exceptions, none of which has a
 vendor fallback, `carparkrecords.py` does fall back to `vendor` when no
 separator is found — on this one axis it actually matches the original
-eight-crawler convergence this doc describes, not the three exceptions. But
+eight-crawler convergence this doc describes, not the exceptions. But
 the mandatory catalog-code strip still means it can't be expressed as a
 plain call to `split_artist_title(title)` plus a one-line vendor-fallback
 wrapper, this design's proposed pattern for the original eight — the
@@ -100,7 +100,7 @@ first three amendments use.
 **Fifth amendment (2026-08-23, branch `claude/realgonemusic-crawler-84feaf`):**
 `backend/crawlers/realgonemusic.py` is a fifth exception, and the only one
 so far that this doc's contract cannot describe even in principle: it does
-not split titles at all. The four prior exceptions each diverge in *how*
+not split titles at all. The earlier exceptions each diverge in *how*
 they split — a wider separator class, a preprocessing pass, a quoted-album
 primary parser, no vendor fallback — but all four still answer the question
 "where does the artist end and the album begin?". Real Gone Music's store
@@ -133,8 +133,8 @@ crawl path. Full grounding in
 section.
 
 **Sixth amendment (2026-08-23, branch `claude/spv-store-crawler-2mdf0z`):**
-`backend/crawlers/spv.py` is a sixth exception, and the first that is a near-copy
-of a prior one rather than a new shape. It takes `asianmanrecords.py`'s
+`backend/crawlers/spv.py` is another exception, and the first one that is a
+near-copy of a prior one rather than a new shape. It takes `asianmanrecords.py`'s
 two-stage structure wholesale — quoted-album primary parser, hyphen/en-dash/em-dash
 split demoted to a fallback, optional `[-–—]?` separator before the opening
 quote, no vendor fallback (`vendor` is expected to be the label here:
@@ -160,8 +160,8 @@ SPV/Steamhammer/Long Branch) — and diverges from it on three points:
    follows the album.
 
 None of the three is expressible as a call to this doc's proposed
-`split_artist_title(title)`, for the same reason the four prior *splitting* exceptions
-aren't. What is new here is a weaker form of the doc's original convergence
+`split_artist_title(title)`, for the same reason the earlier *splitting*
+exceptions aren't. What is new here is a weaker form of the doc's original convergence
 claim holding after all, one level down: `spv.py` did not need a new parser
 shape, it needed a parameterisation of an existing exception's shape. The
 quoted-album shape is no longer unique to `asianmanrecords.py`, so if it turns
@@ -171,10 +171,14 @@ quote-class and a return-the-blurb flag — not the dash-splitting
 justify one: the parser is nine lines, and the two crawlers agree on none of
 the parsing that follows it.
 
-Records `spv.py` as a sixth documented exception, not a bug to fix into
-conformance — the same framing the first five amendments use. (Renumbered from
-fifth when Real Gone Music's amendment above landed on `main` first; the two
-were written concurrently and collided on merge.)
+Records `spv.py` as a documented exception, not a bug to fix into
+conformance — the same framing the earlier amendments use. (This amendment's
+heading was renumbered when Real Gone Music's amendment above landed on `main`
+first; the two were written concurrently and collided on merge. That renumber
+is the reason the exception ordinals this amendment originally carried are
+gone: a count that another branch can shift on merge is exactly the kind
+`CLAUDE.md` says not to write down. The amendment headings keep their numbers
+because they order this document's own sections, not the crawlers.)
 
 ## Problem
 
