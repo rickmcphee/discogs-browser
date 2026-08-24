@@ -97,7 +97,113 @@ Catalog crawlers (`crawl_catalog`, not shown above) may additionally declare an 
 
 **`[]` means "the site answered and has nothing." Any failure must raise.** The consecutive-failure circuit breaker cannot tell the two apart otherwise, and on the stock-item path an empty result is deliberately not counted as a failure at all — so a crawler that swallows its errors into `[]` never cools its site off.
 
-`failure_domain` is optional: crawlers declaring the same value count as one site to that breaker. Only the two eBay plugins use it (`"ebay-browse-api"` — one app, one token, one API across two `crawlers` rows). Omit it and the crawler is its own domain.
+`failure_domain` is optional: crawlers declaring the same value count as one site to that breaker. Only the eBay plugins use it (`"ebay-browse-api"` — one app, one token, one API across more than one `crawlers` row). Omit it and the crawler is its own domain.
+
+## Documentation — never write down a count of things that change
+
+**No document in this repo may state how many crawlers, stores, catalog
+sources, sites, plugins, tests, or *files* of any of those kinds exist.** Not in `CLAUDE.md`, not in a spec,
+not in a plan, not in a README, not in a commit message or PR description. This
+covers exact counts ("34 store crawlers"), approximations ("~40 catalog crawler
+plugins"), spelled-out counts ("thirty-three sources ship"), ordinals that imply
+a total ("a 34th `catalog`-type source", "the thirty-fifth crawler"), and
+running totals ("bringing the total to twenty-six"). Whole-suite test totals
+("738 tests") and file-tree annotations ("~100 pytest files") are the same rule.
+
+Several forms hide from a naive `grep` for a number next to a noun, and each of
+these slipped through a sweep that looked only for the obvious pattern — check
+for them by hand. Note also that `\w+` does not span a hyphen, so a pattern like
+`\d+ \w+ plugins` never matches `35 label-store plugins`; allow `[\w-]+`, and
+search unwrapped text, since a wrapped line can split the number from its noun:
+
+- **Ordinals fused to the digits** — `32nd catalog source`, `33rd Shopify-based
+  source`. `\d+ catalog` doesn't match `32nd catalog`.
+- **The number trailing the noun** — `brings the Store tab's total catalog
+  sources to eighteen`, `re-crawls all catalog sources (31 as of this writing)`.
+  Search for `total .* to`, `as of this writing`, and `\b\d+(st|nd|rd|th)\b`
+  as well as the obvious pattern.
+- **A generic noun standing in for the inventory** — `all 40 files listed in the
+  table below`, `~8 other test files`, `~100 pytest files`. Searching only for
+  `crawler|source|site|plugin` misses these, so sweep `files?|fixtures?` too.
+- **A spelled-out number**, especially a small one — `the four crawler test
+  files`, `six App-rendering test files`. A digit-only pattern never sees them,
+  so match `one|two|…|fifty` as well as `\d+`. Do **not** skip the low numbers on
+  the theory that they are scoped to one change: filtering out `four` is exactly
+  how `the four crawler test files` survived two sweeps.
+- **The number hyphenated onto the noun** — `a 40-file edit`, `the ~40-crawler
+  list`, `all 30-odd catalog crawler plugins`. There is no space to anchor on,
+  and a modifier can sit between the hyphen and the noun, so `\d+ \w+ files` and
+  a bare `\d+-(file|crawler)` both miss cases; search `\d+-[\w-]+` followed by an
+  inventory noun within a few words.
+
+Why: these numbers change every time a crawler is added, and nothing depends on
+them. Every one of them went stale within weeks, and each staleness cost real
+work — spec amendments written only to correct a number, then further amendments
+correcting the correction, then a plan step instructing the next session to
+propagate the new number into three other specs. The count was never load-bearing
+for any decision; the churn was pure overhead.
+
+Write it count-free instead:
+
+| Don't | Do |
+| --- | --- |
+| `~50 bundled plugins` | `bundled plugins` |
+| `Thirty-four sources ship: Nuclear Blast, …` | `These sources ship: Nuclear Blast, …` |
+| `a 33rd catalog-type source, The Sound Garden` | `another catalog-type source, The Sound Garden` |
+| `confirmed against all 31 crawlers` | `confirmed against every crawler` |
+| `the 36 catalog crawler plugins` | `every catalog crawler plugin` |
+| `a schema column with 31 crawlers writing NULL` | `a schema column with every other crawler writing NULL` |
+| `a 32nd catalog source for the Store tab` | `a new catalog source for the Store tab` |
+| `brings the total catalog sources to eighteen` | *(delete the clause)* |
+| `Total catalog crawlers registered: twenty-two` | *(delete the sentence)* |
+
+Naming the members of a set is fine — an enumerated list of source names carries
+real information and updates naturally when a source is added. It's the
+*cardinality* that must not be written down. If a reader needs the number, it's
+one `ls backend/crawlers/` away.
+
+Scope, so this doesn't over-apply. These stay:
+
+- Configuration values and thresholds — `consecutive_failure_limit`, a
+  30-minute cooldown, a 1,000-item cap, port numbers, timeouts.
+- Live-data findings from a specific investigation — "3,605 products, 15 pages",
+  "58/566 titles mismatch", "all 114 options report `sold_out: false`". These are
+  dated observations, not claims about current state.
+- Counts scoped to one change and fixed by it — "four new crawlers in this
+  batch", "run and confirm all 5 tests pass" for a test file the task just wrote.
+- Counts a single sentence defines by enumerating, where the number *is* the
+  fact — "`colCount` stays 7 for Track and 6 for Store" describes actual columns
+  in actual code. This does not cover a number that merely restates a list
+  printed next to it: "read in nine places across five files — a.py:1, b.py:2,
+  …" carries nothing the list doesn't, so the count goes and the list stays.
+- A count that is a fixed historical fact an argument rests on — "the helper
+  wasn't extracted until nine Shopify crawlers had converged on identical
+  logic" records when a threshold was crossed; it does not go stale.
+- **A test run's own result, reported as verification** in a PR description or
+  commit message — "1441 passed, 38 errors". That records what one command did
+  on one date; nobody maintains it and no reader takes it as a standing claim.
+  What this rule forbids is asserting the suite's *size* ("the suite is 738
+  tests"), especially in a spec or README where it reads as current fact. The
+  distinction matters because `.github/pull_request_template.md` requires the
+  opposite of silence here — "Commands run and their result. 'Tests pass'
+  without output is not verification." — so stripping run output from a PR
+  description would trade a real verification record for a cosmetic win.
+
+One trap worth calling out: when you de-number a sentence, make sure you don't
+change what it claims. "with 34 store crawlers able to enqueue on the order of
+20,000 jobs per sync" is an *aggregate* — rewriting it to "with every store
+crawler able to enqueue 20,000 jobs" silently multiplies the estimate. Reach for
+"collectively", "between them", or "in aggregate" when the count was doing that
+work. And read the whole passage, not just the sentence you edited: these
+documents often restate the same set a few lines later ("all seven files" after
+an enumerated list of seven), and a half-de-numbered passage is worse than an
+untouched one.
+
+**If you find yourself about to add or update an inventory count, delete it
+instead.** An amendment whose only content is "this count is now N" should not be
+written; if you're amending a doc that already carries such a count, remove the
+count rather than refreshing it. And do not "restore" a count you notice is
+missing from a spec — it is missing on purpose.
 
 ## Spec-first workflow
 
@@ -120,7 +226,8 @@ Before opening a PR — including ad hoc changes that never went through the spe
 2. For each match, confirm the spec text still describes what actually shipped on this branch.
 3. If any spec has drifted, amend it — with a short note or inline correction, not a full rewrite of history — as its own commit on this branch, and push it before opening or merging the PR. A PR should not merge with known spec drift, even drift it didn't cause but exposed.
 4. This applies even when the current change itself has no spec/plan of its own (e.g., a small reorg with no new behavior) — the check is about what the diff broke in other docs, not about whether this change needed a spec.
-5. Note in the PR description what drift was found and fixed (or that none was found).
+5. While you're in each spec: if it carries a crawler/store/source/plugin/test **count**, delete the count — see "Documentation — never write down a count of things that change" above. Never update one to a newer number.
+6. Note in the PR description what drift was found and fixed (or that none was found).
 
 Plans (`docs/superpowers/plans/` and `docs/specifications/plans/`) are historical per-feature task logs, not living reference — they don't need backporting for this check.
 
@@ -145,7 +252,7 @@ A single check right after CI passes has the same race shifted one step later: C
 - **A test may never assume pre-existing schema or role state.** The session-scoped `pg_run_database` fixture (`backend/tests/conftest.py`) builds each pytest session a fresh `<base>_run_<hex>` database from `TEMPLATE template0` and poisons `app_user`/`app_identity`'s `BYPASSRLS` attributes (inverted from what `_ensure_role` sets) before the run's first `init_tenant_schema()`. Anything a test asserts on must therefore be constructed by the code under test during that run, not inherited from a prior run or a hand-provisioned local database. See `docs/specifications/shaping/2026-08-09-test-database-freshness-design.md`.
 - Poisoning also rotates both roles' passwords to random values; `init_tenant_schema()` rewrites them from `IDENTITY_DB_PASSWORD`/`APP_DB_PASSWORD`. Teardown restores both `BYPASSRLS` bits but *not* the passwords — they are unknowable after the fact, and the next run sets them again. A crashed run can therefore leave the cluster's roles holding random passwords until something re-runs `init_tenant_schema()`; `make test-db-clean` repairs the bits only.
 - Sharp edge: roles are cluster-level, not per-database, so two suites running concurrently against one Postgres cluster still interfere at the role level for up to one test (the next `init_tenant_schema()` in each session repairs it). Give each worktree its own Postgres container if running suites in parallel. For the same reason, never run `make test-db-clean` while a suite is in flight — pools close between tests, so a live run's database momentarily has zero backends.
-- With `TEST_DATABASE_URL` unset, `pg_run_database` no-ops and only the tests that need a database fail. That set is wider than "tests about Postgres": `tmp_config_dir` now depends on `pg_test_db` (settings live in `app_config`, not a file), so `test_config.py`, `test_logging_config.py`, and the four crawler test files requesting it need `TEST_DATABASE_URL` too, whatever they're actually asserting.
+- With `TEST_DATABASE_URL` unset, `pg_run_database` no-ops and only the tests that need a database fail. That set is wider than "tests about Postgres": `tmp_config_dir` now depends on `pg_test_db` (settings live in `app_config`, not a file), so `test_config.py`, `test_logging_config.py`, and the crawler test files requesting it need `TEST_DATABASE_URL` too, whatever they're actually asserting.
 
 ## Commits — AI attribution trailers (required, every commit)
 
@@ -182,6 +289,7 @@ The old scheme required each PR to bump a shared literal before merge, but wheth
 
 ## Style notes
 
+- No inventory counts in prose — see "Documentation — never write down a count of things that change"
 - No comments unless the WHY is non-obvious
 - No backwards-compat shims — just change the code
 - Python ≥3.9 (no `str | None` syntax — use `Optional[str]` or untyped)

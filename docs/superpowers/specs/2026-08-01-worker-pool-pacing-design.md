@@ -97,12 +97,12 @@ had a consequence nobody spotted when it landed.
    plugin against a mocked 409, asserting the cooldown trips) and
    `test_search_raises_on_http_error` / `test_search_raises_on_request_error`.
 10. **The breaker's unit is now a failure domain, not always a crawler.** One
-    `crawlers` row was assumed to mean one upstream; the two eBay plugins
+    `crawlers` row was assumed to mean one upstream; the eBay plugins
     (`eBay/CCmusic` and `eBay`) break that — separate rows, but one eBay app,
     one cached OAuth token and one API, so an error storm answering one
     answers both. With a counter each, a storm had to reach
     `consecutive_failure_limit` twice over before both stopped calling. A
-    plugin may now declare `failure_domain: str` (both eBay plugins declare
+    plugin may now declare `failure_domain: str` (the eBay plugins declare
     `"ebay-browse-api"`); `CrawlManager._set_failure_domains`, called from
     `start_worker_pool`, collects those declarations, and
     `_record_site_result` applies each result to every crawler in the domain.

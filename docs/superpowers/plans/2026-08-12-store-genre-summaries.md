@@ -126,10 +126,10 @@ EOF
 
 ---
 
-### Task 2: Backend — populate `genre_summary` on the 36 catalog crawler plugins
+### Task 2: Backend — populate `genre_summary` on every catalog crawler plugin
 
 **Files:**
-- Modify: all 36 files listed in the table below, each `backend/crawlers/<file>.py`
+- Modify: all files listed in the table below, each `backend/crawlers/<file>.py`
 - Test: `backend/tests/test_main.py`
 
 **Interfaces:**
@@ -149,10 +149,12 @@ def test_startup_seeds_catalog_crawlers_with_genre_summary(pg_test_db):
             with db.get_admin_pool().connection() as conn:
                 crawlers = db.get_all_crawlers(conn)
 
+    assert len(crawlers) == len(sorted(main.BUNDLED_CRAWLERS_DIR.glob("*.py")))
     catalog_crawlers = [c for c in crawlers if c["crawler_type"] in ("catalog", "catalog_browser")]
     release_crawlers = [c for c in crawlers if c["crawler_type"] == "release"]
+    assert catalog_crawlers
+    assert release_crawlers
 
-    assert len(catalog_crawlers) >= 36
     missing = [c["site_name"] for c in catalog_crawlers if not c["genre_summary"]]
     assert missing == [], f"catalog crawlers missing genre_summary: {missing}"
     assert all(c["genre_summary"] is None for c in release_crawlers)
@@ -165,7 +167,7 @@ def test_startup_seeds_catalog_crawlers_with_genre_summary(pg_test_db):
 
 Run: `cd backend && TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/discogs_browser_test IDENTITY_DB_PASSWORD=test APP_DB_PASSWORD=test pytest tests/test_main.py -k genre_summary -v`
 
-Expected: FAIL — `missing` assertion lists all 36 catalog site names.
+Expected: FAIL — `missing` assertion lists every catalog site name.
 
 - [ ] **Step 3: Add `genre_summary` to each plugin**
 
@@ -236,7 +238,7 @@ Expected: PASS (no regressions in per-crawler fixture tests — `genre_summary` 
 ```bash
 git add backend/crawlers/*.py backend/tests/test_main.py
 git commit -F - <<'EOF'
-Add genre_summary to all 36 catalog crawler plugins
+Add genre_summary to every catalog crawler plugin
 
 Why: populates the data Task 1 wired up, so Store Management can
 show a one-sentence description of what each store sells.
@@ -261,7 +263,7 @@ EOF
 
 **Interfaces:**
 - Consumes: `Crawler.genre_summary` from the backend (Tasks 1–2).
-- Produces: `Crawler.genre_summary?: string | null` — declared **optional** (not required like `base_url`) specifically so the ~8 other test files that construct `Crawler` literals (`staleSignupLink.test.tsx`, `viewRenderChurn.test.tsx`, `wantlistRefresh.test.tsx`, `accountNav.test.tsx`, `inStockTab.test.tsx`, `account.test.tsx`, `crawlStatusBar.test.tsx`, `client.test.ts`) don't need touching — they never assert on `genre_summary` and `undefined` behaves identically to `null` at the one call site (`c.genre_summary ?? undefined`).
+- Produces: `Crawler.genre_summary?: string | null` — declared **optional** (not required like `base_url`) specifically so the other test files that construct `Crawler` literals (`staleSignupLink.test.tsx`, `viewRenderChurn.test.tsx`, `wantlistRefresh.test.tsx`, `accountNav.test.tsx`, `inStockTab.test.tsx`, `account.test.tsx`, `crawlStatusBar.test.tsx`, `client.test.ts`) don't need touching — they never assert on `genre_summary` and `undefined` behaves identically to `null` at the one call site (`c.genre_summary ?? undefined`).
 
 - [ ] **Step 1: Write the failing test**
 

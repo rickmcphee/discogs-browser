@@ -225,7 +225,7 @@ not safe to interleave across processes.
   don't touch Postgres run with no database at all... only the
   Postgres-backed files fail" is now inaccurate — `tmp_config_dir` (Task 5)
   now depends on `pg_test_db`, so every test requesting it
-  (`test_config.py`, `test_logging_config.py`, and four crawler test files)
+  (`test_config.py`, `test_logging_config.py`, and the crawler test files)
   requires `TEST_DATABASE_URL` even though most of what they test has
   nothing to do with Postgres. Update the bullet to say so.
 

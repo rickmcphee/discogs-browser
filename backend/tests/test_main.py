@@ -23,12 +23,19 @@ import scheduler
 # load_enabled_crawlers level instead -- so start_worker_pool/
 # stop_worker_pool are patched here for consistency with that convention.
 #
-# The two CORS tests reload config and main to pick up FRONTEND_ORIGINS,
+# The CORS tests reload config and main to pick up FRONTEND_ORIGINS,
 # which also re-derives DATABASE_URL from the environment and throws away
 # pg_test_db's repoint at the per-run test database. Since settings moved
 # into app_config, startup()'s load_config() would then query a database
 # that has no such table (locally) or no such database at all (CI), so
 # those tests patch main.load_config too.
+
+
+def _bundled_plugin_paths():
+    """Every plugin file `seed_bundled_crawlers` will register, derived at call
+    time rather than counted, so this stays correct as crawlers are added."""
+    import main
+    return sorted(main.BUNDLED_CRAWLERS_DIR.glob("*.py"))
 
 
 def test_app_boots_and_health_check_succeeds(pg_test_db):
@@ -49,7 +56,7 @@ def test_startup_seeds_bundled_crawlers(pg_test_db):
         with TestClient(main.app):
             with db.get_admin_pool().connection() as conn:
                 crawlers = db.get_all_crawlers(conn)
-    assert len(crawlers) > 0
+    assert len(crawlers) == len(_bundled_plugin_paths())
 
 
 def test_startup_seeds_catalog_crawlers_with_genre_summary(pg_test_db):
@@ -61,13 +68,17 @@ def test_startup_seeds_catalog_crawlers_with_genre_summary(pg_test_db):
             with db.get_admin_pool().connection() as conn:
                 crawlers = db.get_all_crawlers(conn)
 
+    assert len(crawlers) == len(_bundled_plugin_paths())
     catalog_crawlers = [c for c in crawlers if c["crawler_type"] in ("catalog", "catalog_browser")]
     release_crawlers = [c for c in crawlers if c["crawler_type"] == "release"]
+    # The equality above cannot catch a whole crawler_type disappearing: deleting
+    # every release plugin shrinks _bundled_plugin_paths() by the same amount, so
+    # it still holds while the release assertions below go vacuous on an empty list.
+    assert catalog_crawlers
+    assert release_crawlers
 
-    assert len(catalog_crawlers) >= 36
     missing = [c["site_name"] for c in catalog_crawlers if not c["genre_summary"]]
     assert missing == [], f"catalog crawlers missing genre_summary: {missing}"
-    assert len(release_crawlers) >= 4
     assert all(c["genre_summary"] is None for c in release_crawlers)
 
     century_media = next(c for c in catalog_crawlers if c["site_name"] == "Century Media")
@@ -83,14 +94,18 @@ def test_startup_seeds_catalog_crawlers_with_genre(pg_test_db):
             with db.get_admin_pool().connection() as conn:
                 crawlers = db.get_all_crawlers(conn)
 
+    assert len(crawlers) == len(_bundled_plugin_paths())
     catalog_crawlers = [c for c in crawlers if c["crawler_type"] in ("catalog", "catalog_browser")]
     release_crawlers = [c for c in crawlers if c["crawler_type"] == "release"]
+    # The equality above cannot catch a whole crawler_type disappearing: deleting
+    # every release plugin shrinks _bundled_plugin_paths() by the same amount, so
+    # it still holds while the release assertions below go vacuous on an empty list.
+    assert catalog_crawlers
+    assert release_crawlers
     valid_genres = {"marketplace", "punk", "metal", "rock", "pop"}
 
-    assert len(catalog_crawlers) >= 36
     invalid = {c["site_name"]: c["genre"] for c in catalog_crawlers if c["genre"] not in valid_genres}
     assert invalid == {}
-    assert len(release_crawlers) >= 4
     assert all(c["genre"] == "marketplace" for c in release_crawlers)
 
     century_media = next(c for c in catalog_crawlers if c["site_name"] == "Century Media")

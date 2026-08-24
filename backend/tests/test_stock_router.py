@@ -11,7 +11,7 @@ from routers import stock as stock_router
 
 EXPORTED_HEADER = [
     "artist", "title", "format", "price", "source", "link", "reason",
-    "item_key", "recommended", "judged_at",
+    "item_key", "recommended", "judged_at", "currency",
 ]
 
 
@@ -615,7 +615,53 @@ def _seed_judged_item(user_id, artist="Artist A", title="Album A", url="https://
     return item_key
 
 
-def test_export_emits_the_ten_column_header_and_not_recommended_rows(pg_test_db, authed_client_factory):
+def test_export_carries_a_non_usd_currency(pg_test_db, authed_client_factory):
+    # Without a currency column an exported EUR row is a bare "27.99" that
+    # reads as dollars. Some sources already price in EUR (jetglowrecordings.py
+    # hardcodes it; darkdescentrecords.py passes its feed's value through), so
+    # this is live data, not a hypothetical.
+    crawler_id = _make_crawler("Jetglow Recordings")
+    with db.get_admin_pool().connection() as conn:
+        db.replace_stock_items(conn, crawler_id, [
+            {"artist": "Lowdrive", "title": "Rise", "format": "Vinyl",
+             "price": 27.99, "currency": "EUR", "url": "https://x/eur"},
+        ])
+        user = db.create_user(conn, discogs_user_id=7, discogs_username="eur")
+        conn.commit()
+
+    item_key = db.compute_item_key("Lowdrive", "Rise", "https://x/eur")
+    with db.user_scope(user["id"]) as conn:
+        db.upsert_stock_judgments(conn, user["id"], [
+            {"item_key": item_key, "recommended": True, "reason": "eur"},
+        ])
+        conn.commit()
+
+    client = authed_client_factory(user["id"])
+    rows = list(csv.reader(io.StringIO(client.get("/api/stock/export").text)))
+    assert rows[0] == EXPORTED_HEADER
+    assert rows[1][3] == "27.99"
+    assert rows[1][EXPORTED_HEADER.index("currency")] == "EUR"
+
+
+def test_export_leaves_currency_empty_when_the_row_has_none(pg_test_db, authed_client_factory):
+    # A judgment whose item is no longer in stock has no joined row at all, so
+    # every live-price column is NULL. Currency must come out empty rather than
+    # defaulting to a currency nothing recorded.
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=8, discogs_username="nostock")
+        conn.commit()
+    with db.user_scope(alice["id"]) as conn:
+        db.upsert_stock_judgments(conn, alice["id"], [
+            {"item_key": "c" * 64, "recommended": True, "reason": "gone"},
+        ])
+        conn.commit()
+
+    client = authed_client_factory(alice["id"])
+    rows = list(csv.reader(io.StringIO(client.get("/api/stock/export").text)))
+    assert rows[1][EXPORTED_HEADER.index("currency")] == ""
+
+
+def test_export_emits_the_eleven_column_header_and_not_recommended_rows(pg_test_db, authed_client_factory):
     with db.get_admin_pool().connection() as conn:
         alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
         conn.commit()

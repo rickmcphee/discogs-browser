@@ -108,7 +108,7 @@ if ! PATH="$ORIGINAL_PATH" command -v pytest >/dev/null 2>&1; then
   exit 1
 fi
 
-# Five crawler test files launch a real headless Chromium against local HTML
+# Some crawler test files launch a real headless Chromium against local HTML
 # fixtures, so the browser is required for a full green run, not optional.
 # Runs as the session user, never under as_root: the driver escalates the apt
 # half itself (transformCommandsForRoot wraps it in `sudo -- sh -c` when not

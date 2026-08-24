@@ -451,7 +451,7 @@ becomes
   getPriceStatus.mockResolvedValue({ any_price_paid: false })
 ```
 
-In each of the other six App-rendering test files (`accountNav.test.tsx`, `backendDown.test.tsx`, `crawlStatusBar.test.tsx`, `staleSignupLink.test.tsx`, `viewRenderChurn.test.tsx`, `wantlistRefresh.test.tsx`), find:
+In each of the other App-rendering test files (`accountNav.test.tsx`, `backendDown.test.tsx`, `crawlStatusBar.test.tsx`, `staleSignupLink.test.tsx`, `viewRenderChurn.test.tsx`, `wantlistRefresh.test.tsx`), find:
 
 ```tsx
   getJudgmentStatus: vi.fn().mockResolvedValue({ any_judged: false }),
@@ -463,7 +463,7 @@ and add immediately after it:
   getPriceStatus: vi.fn().mockResolvedValue({ any_price_paid: false }),
 ```
 
-(This line is required in every file, not just the two new `inStockTab.test.tsx` tests — without it, App.tsx's new bootstrap call to `getPriceStatus()` throws `getPriceStatus is not a function` before its own `.catch()` attaches, crashing every test in all seven files.)
+(This line is required in every file, not just the two new `inStockTab.test.tsx` tests — without it, App.tsx's new bootstrap call to `getPriceStatus()` throws `getPriceStatus is not a function` before its own `.catch()` attaches, crashing every test in those files.)
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -543,7 +543,7 @@ Run: `cd frontend && npx vitest run src/test/inStockTab.test.tsx`
 Expected: all pass.
 
 Then the full frontend suite: `cd frontend && npm test`
-Expected: all pass — this is the check that the six other mock-updated files still render `<App />` correctly.
+Expected: all pass — this is the check that the other mock-updated files still render `<App />` correctly.
 
 - [ ] **Step 5: Commit**
 

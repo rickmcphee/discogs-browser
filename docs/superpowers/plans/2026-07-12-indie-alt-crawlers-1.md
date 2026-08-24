@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add five indie/alt catalog crawlers — Numero Group, Sub Pop Mega Mart, Fat Possum, Father/Daughter Records, and Temporary Residence Ltd — the fourth and final planned batch covering the 18 new US-only, USD-billed Shopify record stores researched for the Store tab. Developed independently in parallel with the other three batches (see the parallel-batch note in Task 6) — this plan's crawler-count math is based on the current unmerged `main` (13 pre-existing catalog crawlers), not on any sibling batch landing first.
+**Goal:** Add five indie/alt catalog crawlers — Numero Group, Sub Pop Mega Mart, Fat Possum, Father/Daughter Records, and Temporary Residence Ltd — the fourth and final planned batch covering the new US-only, USD-billed Shopify record stores researched for the Store tab. Developed independently in parallel with the other three batches (see the parallel-batch note in Task 6), against the current unmerged `main` rather than any sibling batch landing first.
 
-**Architecture:** All five are Shopify storefronts. A live-data grounding pass (mandatory per this repo's convention — no invented fixtures) turned up two new wrinkles not seen in any of the 17 crawlers built across the three prior batches:
+**Architecture:** All five are Shopify storefronts. A live-data grounding pass (mandatory per this repo's convention — no invented fixtures) turned up two new wrinkles not seen in any crawler built across the three prior batches:
 
 - **Sub Pop Mega Mart's clean, apparel-free `/collections/vinyl` silently excludes pre-order releases.** The store's root `/products.json` has pre-orders but is contaminated with T-shirts/bags/hats; `/collections/vinyl` is cleanly `product_type: "Music"` but two confirmed-live pre-order titles are absent from all pages of it. Rather than hit both endpoints and merge, this crawler uses `/collections/vinyl` and accepts the gap — no pre-order override, and pre-order titles simply won't appear until they leave pre-order status. This is a deliberate scope decision, not a bug.
 - **Father/Daughter Records' bundle/grab-bag products are reliably identifiable by an empty `product_type` string, and collapse to one uninformative `"Default Title"` variant.** Confirmed live: every bundle product (`"Father/Daughter - Essentials LP Bundle"`, `"The Softies - The Bed I Made LP/CD + Tee Bundle"`, etc.) has `product_type: ""`, and no variant-title signal can tell vinyl from non-vinyl for a bundle's single "Default Title" variant. These are excluded entirely via a `product_type` presence check, rather than guessed at.
@@ -954,7 +954,7 @@ Expected: `4 passed`
 - [ ] **Step 1: Run the full backend test suite**
 
 Run (from `backend/`): `pytest -q`
-Expected: all tests pass, including all five new files. Total catalog crawlers registered on this branch: eighteen (13 pre-existing + 5 from this batch) — this is the fourth and final planned batch, so once all four PRs eventually merge the true total is 13 + 4 + 4 + 5 + 5 = 31, not any single PR's own branch-time count of 18.
+Expected: all tests pass, including all five new files. This is the fourth and final planned batch; the other three land independently, so don't reason about a registered-crawler total from this branch alone.
 
 - [ ] **Step 2: Check for `main` movement, rebase if needed**
 
@@ -975,4 +975,4 @@ Add a "Technical grounding" subsection for each of the five sites to `docs/super
 
 - [ ] **Step 5: Commit the spec update and any drift fixes** (same trailer/helper process as Task 1)
 
-- [ ] **Step 6: This is the last of the four planned batches — after this merges (whenever it and its siblings land), consider whether the four-PR "Store tab expansion" project as a whole needs a closing note in `docs/superpowers/specs/2026-07-05-in-stock-crawler-design.md`'s Out of scope / Success criteria sections reflecting the final, reconciled total (31 catalog crawlers) rather than each PR's individual branch-time count.**
+- [ ] **Step 6: This is the last of the four planned batches — after this merges (whenever it and its siblings land), consider whether the four-PR "Store tab expansion" project as a whole needs a closing note in `docs/superpowers/specs/2026-07-05-in-stock-crawler-design.md`'s Out of scope / Success criteria sections. Do not record a source count there — per `CLAUDE.md`, specs carry no counts of crawlers or sources.**

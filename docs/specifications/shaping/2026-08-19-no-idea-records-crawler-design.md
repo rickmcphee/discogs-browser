@@ -9,7 +9,7 @@ No Idea Records (`noidearecords.com`), the Gainesville, FL punk/emo label
 and mailorder store (Hot Water Music, Against Me!, Chuck Ragan, Latterman,
 Defiance Ohio, plus a Leatherface-adjacent distro), is not covered by any
 existing crawler. It is a standard Shopify storefront — same family as the
-~35 label-store `catalog` plugins already in `backend/crawlers/`, most
+label-store `catalog` plugins already in `backend/crawlers/`, most
 directly comparable to `deathwishinc.py`: a single browsable collection
 that mixes vinyl in with CD/cassette/download variants of the same
 products, needing a per-variant format filter rather than a clean

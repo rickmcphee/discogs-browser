@@ -13,7 +13,7 @@ devices, and inconvenient to reach while actually browsing.
 This spec replaces that mechanism with a "Source" filter button in the
 Store/Track header itself, backed by a per-user server-persisted hidden-set,
 plus a coarse genre grouping (marketplace/punk/metal/rock/pop) so the
-~40-crawler list can be bulk-toggled instead of checked one at a time. It
+long crawler list can be bulk-toggled instead of checked one at a time. It
 also removes the now-empty Settings tab for non-admin users.
 
 ## Goals / non-goals
@@ -61,7 +61,7 @@ also removes the now-empty Settings tab for non-admin users.
   inside the existing try/except, defaulting to `"marketplace"` on import
   failure (matches the "cosmetic, must not fail the listing" comment
   already there for the other two fields).
-- The four release-type crawlers (Amazon, eBay, eBay/CCmusic, Discogs
+- The release-type crawlers (Amazon, eBay, eBay/CCmusic, Discogs
   Marketplace) set no `genre` attribute, same as they set no
   `genre_summary` today, and fall back to the default `"marketplace"`.
 - Retagging a crawler's genre means editing its plugin file and
