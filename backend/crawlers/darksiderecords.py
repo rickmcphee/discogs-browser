@@ -39,6 +39,11 @@ _VINYL_TYPE_PREFIX = "new vinyl"
 # Soundtrack) [Blue Jay 2LP Vinyl]").
 _TITLE_RE = re.compile(r'^(?P<artist>.+?)(?:\s+[-–—]\s*|\s*[-–—]\s+)(?P<album>.+)$')
 
+# Shopify's placeholders for a product with no real options. Every live
+# product uses "Default Title"; the bare "Default" spelling is carried
+# because realgonemusic.py found both in the wild on one store.
+_DEFAULT_VARIANT_TITLES = {"default", "default title"}
+
 
 class Crawler:
     site_name: str = "Darkside Records"
@@ -75,8 +80,17 @@ class Crawler:
         # (874 products carry `preorder_bt`), so bypassing the gate could only
         # ever admit genuinely sold-out stock. Only 3 of 5,141 products have no
         # available variant at all.
+        variants = product.get("variants") or []
+        # Gated on the total variant count, not the available one, so a row's
+        # identity is stable: db.compute_item_key() hashes exactly
+        # (artist, title, url), so if the descriptor appeared only while a
+        # sibling happened to be in stock, a variant's item_key would change
+        # the moment that sibling sold out, orphaning its listings and
+        # saved-item rows.
+        is_multi_variant = len(variants) > 1
+
         items = []
-        for variant in product.get("variants") or []:
+        for variant in variants:
             if not variant.get("available"):
                 continue
 
@@ -95,7 +109,7 @@ class Crawler:
                 # Vinyl)" still matches catalog "Awake", and the damage marker
                 # is what makes a below-market price self-explanatory in the
                 # price column.
-                "title": album,
+                "title": cls._compose_title(album, variant, is_multi_variant),
                 "format": "Vinyl",
                 "price": price,
                 "currency": "USD",
@@ -103,3 +117,21 @@ class Crawler:
                 "cover_image_url": resolve_cover_image(product, variant),
             })
         return items
+
+    @staticmethod
+    def _compose_title(album: str, variant: dict, is_multi_variant: bool) -> str:
+        # Single-variant products -- all 5,141 of them live -- keep the bare
+        # album title, since their only variant is the "Default Title"
+        # placeholder and carries nothing. A multi-variant product appends its
+        # variant descriptor instead, because db.compute_item_key() hashes
+        # (artist, title, url) and this crawler's url is per-product: without
+        # the descriptor two available variants would collapse onto one
+        # item_key, so the stock sync would enqueue a single marketplace
+        # lookup and Store would show one row for what are two different
+        # pressings at potentially different prices.
+        if not is_multi_variant:
+            return album
+        variant_title = (variant.get("title") or "").strip()
+        if not variant_title or variant_title.lower() in _DEFAULT_VARIANT_TITLES:
+            return album
+        return f"{album} — {variant_title}"

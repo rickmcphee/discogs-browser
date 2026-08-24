@@ -315,8 +315,60 @@ async def test_crawl_catalog_emits_one_row_per_available_variant(crawler):
     items = [item async for item in crawler.crawl_catalog()]
     assert len(items) == 2
     assert [i["price"] for i in items] == [29.99, 34.99]
-    # Title carries no variant descriptor: every live product is single-variant,
-    # so the variant name is deliberately not composed into the title.
+
+
+@respx.mock
+async def test_crawl_catalog_gives_multi_variant_rows_distinct_item_identities(crawler):
+    # db.compute_item_key() hashes exactly (artist, title, url), and the url is
+    # per-product, so without a variant descriptor in the title both rows would
+    # collapse onto one item_key: one marketplace lookup for two pressings, and
+    # two indistinguishable Store rows at different prices.
+    _mock_single_page([_MULTI_VARIANT_PRODUCT])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["title"] for i in items] == [
+        "Double Infinity (Vinyl) — Black Vinyl",
+        "Double Infinity (Vinyl) — Indie Exclusive Colored Vinyl",
+    ]
+    assert len({(i["artist"], i["title"], i["url"]) for i in items}) == 2
+
+
+@respx.mock
+async def test_crawl_catalog_keeps_variant_identity_stable_when_sibling_sells_out(crawler):
+    # The descriptor is gated on the total variant count, not the available
+    # one. If it were gated on availability, this product dropping to a single
+    # available variant would rewrite that row's title, changing its item_key
+    # and orphaning its listings and saved-item rows.
+    sold_out_sibling = {**_MULTI_VARIANT_PRODUCT, "variants": [
+        {"title": "Black Vinyl", "price": "29.99", "available": True,
+         "featured_image": {"src": "https://cdn.shopify.com/big-thief-black.jpg"}},
+        {"title": "Indie Exclusive Colored Vinyl", "price": "34.99", "available": False,
+         "featured_image": None},
+        {"title": "Repress", "price": "27.99", "available": False, "featured_image": None},
+    ]}
+    _mock_single_page([sold_out_sibling])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert len(items) == 1
+    assert items[0]["title"] == "Double Infinity (Vinyl) — Black Vinyl"
+
+
+@respx.mock
+async def test_crawl_catalog_omits_descriptor_for_single_variant_product(crawler):
+    # The live shape: one "Default Title" variant, so the title stays bare.
+    _mock_single_page([_PRODUCT])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert items[0]["title"] == "Blood Visions (Vinyl)"
+
+
+@respx.mock
+async def test_crawl_catalog_omits_placeholder_descriptor_on_multi_variant_product(crawler):
+    # Defensive: a multi-variant product whose variant titles are Shopify
+    # placeholders must not render a dangling em dash.
+    placeholder_variants = {**_MULTI_VARIANT_PRODUCT, "variants": [
+        {"title": "Default Title", "price": "29.99", "available": True, "featured_image": None},
+        {"title": "   ", "price": "31.99", "available": True, "featured_image": None},
+    ]}
+    _mock_single_page([placeholder_variants])
+    items = [item async for item in crawler.crawl_catalog()]
     assert {i["title"] for i in items} == {"Double Infinity (Vinyl)"}
 
 

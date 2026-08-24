@@ -164,13 +164,32 @@ convention and costs one comparison.
 
 **Variants are always exactly one per product.** All 5,141 products have a
 single variant titled `Default Title` — there are no colour/pressing
-variants on this store, each pressing is its own product. Consequently:
+variants on this store, each pressing is its own product. A single-variant
+product therefore keeps its bare album title, and no live row carries a
+variant descriptor today.
 
-- No variant descriptor is composed into the title (nothing to compose).
-- No `Default Title` collapse branch is needed (there is no other case).
-- A multi-variant product is nonetheless handled correctly — one row per
-  available variant — and a hypothetical fixture pins that, so a future
-  multi-variant product is not silently reduced to its first variant.
+A multi-variant product is nonetheless handled correctly, and the handling
+is load-bearing rather than decorative. `db.compute_item_key()` hashes
+exactly `(artist, title, url)`, and this crawler's `url` is per-product, so
+two available variants of one product emitting the same title would collapse
+onto a **single `item_key`**: the stock sync would enqueue one marketplace
+lookup instead of two, and Store would show one row for what are two
+different pressings at potentially different prices. So a multi-variant
+product appends ` — {variant_title}` to the album.
+
+The gate is the product's **total** variant count, not its available count.
+Gating on availability would make a row's identity unstable: a two-variant
+product whose sibling sells out would drop the descriptor, changing that
+row's `item_key` and orphaning its `listings` and saved-item rows. A
+multi-variant product whose variant titles are Shopify placeholders
+(`Default Title`, blank) falls back to the bare album rather than rendering
+a dangling em dash.
+
+None of this is reachable by live data today; it is pinned by hypothetical
+fixtures so a future multi-variant product is neither silently reduced to
+one row nor given a churning identity. (Raised by Copilot on PR #171; the
+first revision of this crawler emitted colliding titles here and its test
+asserted that behaviour.)
 
 ### Format gate: `product_type`
 
@@ -270,7 +289,7 @@ narrower collection, not new code.
 `test_jackpotrecords_crawler.py`'s pattern — product literals taken from
 confirmed-live products, served through `respx`-mocked `products.json`
 responses and driven via `crawl_catalog()`; no live site, no bot-detection
-risk. 17 cases:
+risk. 21 cases:
 
 - dominant glued-hyphen title → artist/album split, plus all scalar fields
 - en-dash separator → split
@@ -284,14 +303,20 @@ risk. 17 cases:
 - sold-out pre-order → still skipped (no availability bypass)
 - product with no images → `cover_image_url is None`
 - non-`New Vinyl` `product_type` → skipped
-- multi-variant product → one row per available variant, no variant
-  descriptor in the title
+- multi-variant product → one row per available variant
+- multi-variant product → distinct `(artist, title, url)` per row, so the
+  two rows cannot collapse onto one `item_key`
+- multi-variant product with a sold-out sibling → the surviving row's title
+  is unchanged, so its identity is stable across restocks
+- single-variant product → bare album title, no descriptor
+- multi-variant product with placeholder variant titles → bare album title,
+  no dangling em dash
 - variant `featured_image` preferred over the product image
 - malformed `price` → `None`, row still emitted
 - pagination continues until an empty page
 - site metadata
 
-All 17 pass. The wider suite is unaffected: 1,373 pass, and the 38 errors
+All 21 pass. The wider suite is unaffected: 1,373 pass, and the 38 errors
 present are pre-existing Playwright browser-launch failures in
 `tests/crawlers/` (no Chromium build at the configured
 `PLAYWRIGHT_BROWSERS_PATH`), unrelated to this change, which adds only two
