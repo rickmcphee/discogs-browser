@@ -187,8 +187,18 @@ sometimes with `Price`, `Version` or `Size`, and in inconsistent order
 So: **one row per product**, taking the cheapest *in-stock* variant's
 price. Cheapest because `stock_items` has no condition column — a used
 copy cannot be labelled as one, so the row reports the least it costs to
-get the record. This matches `amoeba.py`, which already surfaces used
-prices with the same "lowest available" semantics.
+get the record.
+
+This is this store's own policy, not a fleet convention, and the
+distinction is worth stating because it is easy to assume otherwise.
+`amoeba.py` is the only other crawler that sees used stock, and it
+behaves differently: `_extract_price` tries the new-price pattern and the
+used "from" pattern *in that order* and returns on the first match, so it
+prefers the new price and falls back to used only when no new price
+parses. It never compares the two. Its "lowest" semantics are internal to
+the used label ("from" meaning the cheapest of several used copies), not
+a choice across conditions. Waterloo picks the cheapest in-stock variant
+outright, whatever its condition.
 
 Order matters: availability gates *before* the cheapest-price pick, so a
 cheaper sold-out variant never sets the price. Live anchor: `070 Shake -
@@ -246,9 +256,11 @@ is automatic: `main.py`'s `seed_bundled_crawlers()` walks
 `backend/crawlers/` at startup, so there are no wiring changes.
 
 The plugin is pure transformation over dicts and raises nothing itself;
-all error handling is inherited from `iter_products()` (retry-with-backoff
-on non-429 within the `consecutive_failure_limit` budget, immediate raise
-on 429).
+all error handling is inherited from `iter_products()`: a non-429 failure
+is retried within the `consecutive_failure_limit` budget, and a 429 raises
+immediately. Note the retry is *not* backed off — each attempt waits the
+same `random.uniform(delay * 0.5, delay)` pacing the loop applies to every
+request, with no increasing interval between successive failures.
 
 ## Scale, and why it is accepted
 

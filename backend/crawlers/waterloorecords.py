@@ -97,7 +97,10 @@ class Crawler:
         there is no descriptor worth appending to the title to tell them
         apart. Cheapest wins because `stock_items` has no condition column:
         a used copy cannot be labelled as one, so the row reports the least
-        it costs to get the record, matching amoeba.py's used-price handling.
+        it costs to get the record. That is this store's own policy, not a
+        fleet convention -- amoeba.py, the only other crawler that sees used
+        stock, prefers the new price and falls back to used only when no new
+        price parses, rather than comparing the two.
         """
         available = [v for v in product.get("variants") or [] if v.get("available")]
         if not available:
