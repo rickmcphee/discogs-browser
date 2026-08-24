@@ -8,7 +8,7 @@ Branch: `claude/asian-man-records-crawler-074aa7`
 Asian Man Records (`asianmanrecords.com`), Mike Park's Bay Area punk/ska
 label (Alkaline Trio, AJJ, Less Than Jake-adjacent catalog, 30 years of
 releases), is not covered by any existing crawler. It is a standard
-Shopify storefront — same family as the 34 label-store `catalog` plugins
+Shopify storefront — same family as the label-store `catalog` plugins
 already in `backend/crawlers/`, most directly comparable to
 `jackpotrecords.py` (full-catalog pull + inclusion gate, not a narrower
 per-format collection).

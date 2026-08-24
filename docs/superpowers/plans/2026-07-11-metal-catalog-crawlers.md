@@ -788,7 +788,7 @@ git commit -m "metal-catalog-crawlers: add 20 Buck Spin catalog crawler"
 - [ ] **Step 1: Run the full backend test suite**
 
 Run (from `backend/`): `pytest -q`
-Expected: all tests pass, including all four new files and the existing `test_main.py` (bundled-crawler seeding globs `backend/crawlers/*.py`, so it picks up all four new files automatically without any test changes). Total catalog crawlers registered: eighteen.
+Expected: all tests pass, including all four new files and the existing `test_main.py` (bundled-crawler seeding globs `backend/crawlers/*.py`, so it picks up all four new files automatically without any test changes).
 
 - [ ] **Step 2: Update the design spec**
 

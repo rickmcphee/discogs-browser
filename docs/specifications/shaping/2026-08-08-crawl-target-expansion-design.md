@@ -20,7 +20,7 @@ This is the second slice of the v3.0 redesign (see
 (`crawler_type='release'`: amazon, discogs_marketplace, ebay) only ever
 search on behalf of a Discogs release — `crawl_queue` and `listings` are
 both hard-FK'd to `catalog(discogs_id)`. Store-crawler stock items
-(`crawler_type='catalog'`/`'catalog_browser'`, ~36 small-site crawlers)
+(`crawler_type='catalog'`/`'catalog_browser'`, the small-site crawlers)
 have no `catalog.discogs_id` and get no cross-site price comparison at
 all today; `stock_items` only ever holds the one price the store itself
 reported. This slice lets amazon and ebay search on behalf of a stock item
@@ -100,7 +100,7 @@ it doesn't show it.
   decision.** The original plan deferred queue prioritization, on the
   reasoning that a large stock-item enqueue burst "could in principle
   delay" a user's collection crawl. A whole-branch review found that
-  premise false at actual scale: with 34 store crawlers able to enqueue on
+  premise false at actual scale: with every store crawler able to enqueue on
   the order of 20,000 stock-item jobs per sync against a shared ~7,700
   jobs/day drain ceiling, and enqueued-but-undrained rows never advancing
   their `requested_at` (only a `'done'` row's re-enqueue does), the FIFO

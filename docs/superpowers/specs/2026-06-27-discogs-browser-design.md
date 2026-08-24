@@ -432,7 +432,7 @@ discogs-browser/
 │   ├── version.py              # VERSION, derived not edited
 │   ├── ... (admin, avatar, discover, ebay_api, plex, rate_limit,
 │   │        recommendations, shopify_catalog, and other modules)
-│   ├── crawlers/               # ~50 bundled plugins (amazon.py, ebay.py, label and store crawlers)
+│   ├── crawlers/               # bundled plugins (amazon.py, ebay.py, label and store crawlers)
 │   ├── routers/                # one per domain (collection, crawl, discover, health, logs,
 │   │                           #   plex, releases, screenshots, session, settings, stock)
 │   ├── scripts/                # capture_fixture.py, drop_leaked_test_dbs.py, migrate_from_sqlite.py
