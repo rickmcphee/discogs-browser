@@ -75,12 +75,21 @@ the better semantic too:
 | `products_count` | 58,416 | 5,157 |
 | paginates cleanly | **no** (HTTP 400 past page 100) | yes (21 pages) |
 | products actually retrieved | — | **5,141** |
-| tagged `instore-available` | 52% | **100%** |
+| tagged `instore-available` | ~24% (sampled) | **100%** |
 
 The `instore-available` tag is the store's own marker for stock physically
 on the shelf in Poughkeepsie, as opposed to titles it can order from a
 distributor. Since this app exists to tell a user where they can actually
 buy a record now, "on the shelf" is the more useful set, not a compromise.
+
+The `new-vinyl` figure is sampled, not exhaustive — the collection cannot
+be fully paginated, so an exact rate is unobtainable. Across 1,500 products
+(6 pages of 250, spanning pages 1, 10, 25, 50, 75 and 100) 24.1% carry the
+tag, and the rate falls steeply with depth: 59% on page 1, 40% on page 10,
+24% on page 25, 19% on page 50, 0% on page 75 and 2% on page 100. So the
+shelf stock is concentrated in the pages a capped crawl would reach first,
+and the deep pages this crawler forgoes are largely distributor-orderable
+titles rather than lost shelf inventory.
 
 Pagination terminates cleanly: 20 pages of 250 plus a final page of 141
 (5,141), then an empty page 22. Note the small discrepancy between the
