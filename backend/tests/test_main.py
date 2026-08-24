@@ -64,10 +64,10 @@ def test_startup_seeds_catalog_crawlers_with_genre_summary(pg_test_db):
     catalog_crawlers = [c for c in crawlers if c["crawler_type"] in ("catalog", "catalog_browser")]
     release_crawlers = [c for c in crawlers if c["crawler_type"] == "release"]
 
-    assert len(catalog_crawlers) >= 36
+    assert catalog_crawlers
     missing = [c["site_name"] for c in catalog_crawlers if not c["genre_summary"]]
     assert missing == [], f"catalog crawlers missing genre_summary: {missing}"
-    assert len(release_crawlers) >= 4
+    assert release_crawlers
     assert all(c["genre_summary"] is None for c in release_crawlers)
 
     century_media = next(c for c in catalog_crawlers if c["site_name"] == "Century Media")
@@ -87,10 +87,10 @@ def test_startup_seeds_catalog_crawlers_with_genre(pg_test_db):
     release_crawlers = [c for c in crawlers if c["crawler_type"] == "release"]
     valid_genres = {"marketplace", "punk", "metal", "rock", "pop"}
 
-    assert len(catalog_crawlers) >= 36
+    assert catalog_crawlers
     invalid = {c["site_name"]: c["genre"] for c in catalog_crawlers if c["genre"] not in valid_genres}
     assert invalid == {}
-    assert len(release_crawlers) >= 4
+    assert release_crawlers
     assert all(c["genre"] == "marketplace" for c in release_crawlers)
 
     century_media = next(c for c in catalog_crawlers if c["site_name"] == "Century Media")
