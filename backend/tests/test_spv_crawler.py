@@ -180,7 +180,7 @@ def _variant(title, available=True, price="27.99"):
 
 def test_spelled_and_spaced_inch_markers_take_the_vinyl_override():
     # Regression: the gate took only an unspaced mark on 7/10/12, while
-    # _TRAILING_FORMAT_RE also accepted a space and the word INCH. A bundle
+    # _FORMAT_TOKEN_RE also accepted a space and the word INCH. A bundle
     # like "10 INCH + CD" therefore lost the override and was dropped as a CD,
     # while "12\" + CD" was kept -- the same shape as the 2xLP+CD bug.
     for title in ('Sodom "1982" 10 INCH + CD', 'Sodom "1982" 12 " + CD',
@@ -269,7 +269,7 @@ def test_book_and_mc_are_dropped_on_the_dash_path():
 
 
 def test_merch_suffixes_are_dropped_on_the_dash_path_too():
-    # _NON_VINYL_RE knew about merch but _TRAILING_FORMAT_RE did not, so the
+    # _NON_VINYL_RE knew about merch but _FORMAT_TOKEN_RE did not, so the
     # dash path never produced an `extra` for it to gate on: the quoted
     # 'Sodom "1982" T-Shirt' was dropped while 'Sodom - 1982 T-Shirt' shipped
     # as a Vinyl row titled "1982 T-Shirt".

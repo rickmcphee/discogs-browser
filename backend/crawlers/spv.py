@@ -91,7 +91,7 @@ _PREORDER_RE = re.compile(r'pre[\s_-]?order', re.IGNORECASE)
 # the × is added because a store that types the real multiplication sign should
 # not silently fall through the gate.
 # The inch alternative is deliberately spelled the same way as
-# _TRAILING_FORMAT_RE's. They disagreed before: this gate took only an
+# _FORMAT_TOKEN_RE's. They disagreed before: this gate took only an
 # unspaced mark on three specific sizes (7/10/12"), while the stripper also
 # accepted a space and the word INCH -- so `10 INCH + CD` lost the vinyl
 # override and was dropped as a CD, while `12" + CD` was kept. Same shape of

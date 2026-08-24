@@ -9,11 +9,9 @@ SPV Entertainment (`store.spv.de`) — the official store of SPV GmbH, the
 German independent label and distributor founded in 1984, home to the
 Steamhammer and Long Branch Records imprints (Sodom, Magnum, Agent Fresco,
 Siamese, The Wild!, Satan's Fall) — is not covered by any existing crawler.
-It is a Shopify storefront, the same family as the 50 other `catalog`-kind
-plugins already in `backend/crawlers/`, 43 of which are Shopify stores crawled
-through `shopify_catalog.iter_products()` (counted directly on 2026-08-24:
-`grep -l iter_products backend/crawlers/*.py` returns 44 including this one —
-a snapshot, like every count in this doc).
+It is a Shopify storefront, the same family as the other `catalog`-kind
+plugins already in `backend/crawlers/`, most of which are Shopify stores crawled
+through `shopify_catalog.iter_products()`.
 
 Prices are EUR, not the USD every sibling *Shopify* crawler hardcodes — SPV is
 the first Shopify store in the set to price in anything else. It is not the
@@ -233,7 +231,7 @@ _INCH            = r'\b\d{1,2}\s*(?:"|inch\b)'
 
 _VINYL_RE           = ...  # _VINYL_WORDS + _INCH
 _NON_VINYL_RE       = ...  # _NON_VINYL_WORDS
-_TRAILING_FORMAT_RE = ...  # both tuples + _INCH, as a trailing run
+_FORMAT_TOKEN_RE    = ...  # both tuples + _INCH, as a trailing run
 ```
 
 The gate reads the trailing blurb only, never the artist or album, so a
@@ -259,7 +257,7 @@ the same hole one step further out: Shopify stores write the count both ways
 fixtures carry the x form), and without it `2xCD` is published as vinyl *and*
 `2xLP+CD` is wrongly dropped, since the bundle's vinyl half no longer matches
 the override while its `CD` half still matches the negative side. `_VINYL_RE`,
-`_NON_VINYL_RE`, and `_TRAILING_FORMAT_RE` all carry the same allowance so the
+`_NON_VINYL_RE`, and `_FORMAT_TOKEN_RE` all carry the same allowance so the
 two gates and the dash-path splitter cannot disagree.
 
 The inch alternative had the same disagreement, found a round later: this gate
@@ -299,7 +297,7 @@ album that *is* one of these words (`Sodom - Tape`) has nothing preceding it to
 match and survives untouched.
 
 The same alignment applies to merch. `_NON_VINYL_RE` listed `t-shirt`,
-`hoodie`, `poster` and the rest from the start, but `_TRAILING_FORMAT_RE` did
+`hoodie`, `poster` and the rest from the start, but `_FORMAT_TOKEN_RE` did
 not — so on the dash path there was no `extra` for the gate to read, and
 `Sodom - 1982 T-Shirt` shipped as a Vinyl row titled `1982 T-Shirt` while the
 quoted equivalent was correctly dropped. Found in review on PR #165, and the
