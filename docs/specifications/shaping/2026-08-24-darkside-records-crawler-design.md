@@ -14,8 +14,9 @@ but it is a *retail store* rather than a label, so its shape matches
 than the label-store crawlers.
 
 What makes this store different from every sibling is **scale**: its
-`new-vinyl` collection reports 58,416 products, two orders of magnitude past
-the largest existing crawler. That turns out to be not merely a pacing
+`new-vinyl` collection reports 58,416 products, roughly 19× the emitted-row
+count of the fleet's largest existing crawler (`cleorecs.py`, 3,151 stock
+items). That turns out to be not merely a pacing
 concern but a hard blocker, and resolving it is the central design decision
 below.
 
@@ -288,9 +289,11 @@ eligible release crawlers at dispatch (`amazon`, `ebay`, `ebay_general`;
 `discogs_marketplace` excluded by its `requires_discogs_release = True`),
 for ~14,900 dispatch work units per sync.
 
-**This is by a wide margin the largest crawler in the fleet** — roughly 18×
-`realgonemusic.py` (268 rows) and 8× `carparkrecords.py` (~590). It is
-flagged here rather than mitigated: it is within the same machinery every
+**This is the largest crawler in the fleet**, though by a narrower margin
+than the raw product count suggests: ~1.6× the previous largest
+(`cleorecs.py`, 3,151 stock items), ~1.7× `jackpotrecords.py` (2,956),
+~18× `realgonemusic.py` (268 item rows) and ~25× `carparkrecords.py`
+(196). It is flagged here rather than mitigated: it is within the same machinery every
 other store uses, and the queue is drained by a continuously running worker
 pool rather than a per-sync job, so a large backlog is absorbed rather than
 blocking. If it proves too heavy in practice, the natural lever is a
