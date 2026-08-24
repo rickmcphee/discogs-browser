@@ -218,7 +218,13 @@ entirely from this branch. The collection loop's equivalent
     `_RELEASE_ALLOWED_SORT`, because the price moved to
     `library_items.price_paid` and its sort expression is therefore
     `li.price_paid`, which likewise cannot go through a `f"c.{sort_col}"`
-    lookup. The set now holds only genuine `catalog` columns: `artist`,
+    lookup. (As of 2026-08-24 that branch reads
+    `_price_sort_sql("li.price_paid")`, a shared helper that resolves the
+    column's free-text separators into a numeric sort key; sorting the raw
+    column compared it as text, so `"$100"` ordered ahead of `"$9"`. The
+    point this bullet makes is unaffected — it is still an `li.`-prefixed
+    special case ahead of the lookup, for the same reason. See
+    [`2026-08-24-numeric-price-sort-design.md`](2026-08-24-numeric-price-sort-design.md).) The set now holds only genuine `catalog` columns: `artist`,
     `title`, `year`, `label`, `format`.
 - The ORDER BY ends with a deterministic `c.discogs_id` term (catalog's
   primary key; `library_items` is filtered to one user, so it is unique

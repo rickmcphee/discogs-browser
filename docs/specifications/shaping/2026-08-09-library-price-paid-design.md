@@ -52,7 +52,7 @@ Add to `TENANT_SCHEMA`, alongside the existing additive `library_items` migratio
 ALTER TABLE library_items ADD COLUMN IF NOT EXISTS price_paid TEXT;
 ```
 
-`TEXT`, not `NUMERIC`: the value is a free-text Discogs custom field whose contents the app does not control, matching the `TEXT` type `catalog.discogs_price` already used. The existing stock sort already regex-extracts a number from it (`regexp_match(..., '\d+\.?\d*')`), and that behaviour is preserved rather than replaced by a typed column.
+`TEXT`, not `NUMERIC`: the value is a free-text Discogs custom field whose contents the app does not control, matching the `TEXT` type `catalog.discogs_price` already used. The existing stock sort already regex-extracts a number from it (`regexp_match(..., '\d+\.?\d*')`), and that behaviour is preserved rather than replaced by a typed column. (As of 2026-08-24 that extraction lives in a shared `_price_sort_sql()` helper that resolves `,` vs `.` by matching the token's format rather than by stripping either one — same approach, still `TEXT` — see [`2026-08-24-numeric-price-sort-design.md`](2026-08-24-numeric-price-sort-design.md).)
 
 **No grant or RLS changes are needed.** `app_user` already holds table-level `GRANT SELECT, INSERT, UPDATE, DELETE ON library_items`, which covers new columns, and the `library_items_isolation` RLS policy is row-scoped, so it protects `price_paid` on creation. This is the substance of the fix, not an incidental benefit: the column becomes unwritable across tenants by construction, rather than by a caller remembering to pass a flag.
 
@@ -115,10 +115,17 @@ elif sort == "date_added" and scope in ("discogs", "wishlist"):
     ...
 ```
 
+**Correction (2026-08-24):** the `discogs_price` branch above shipped as a raw
+column reference, which sorts the free-text column lexicographically — `"$100"`
+ahead of `"$9"` in the Collection/Wishlist Price header. It now reads
+`sort_expr = _price_sort_sql("li.price_paid")`, the same numeric extraction
+`get_stock_items` already used, so both sites share one expression. See
+[`2026-08-24-numeric-price-sort-design.md`](2026-08-24-numeric-price-sort-design.md).
+
 **`get_stock_items`** — `_library_match_fragment` already binds `li`, so both sites repoint with no structural change:
 
 - Projection: `(SELECT li.price_paid {_library_match_fragment('%(user_id)s', 'collection')} LIMIT 1) AS discogs_price`
-- Sort: `regexp_match(li.price_paid, ...)` in place of `regexp_match(c.discogs_price, ...)`
+- Sort: `regexp_match(li.price_paid, ...)` in place of `regexp_match(c.discogs_price, ...)` (as of 2026-08-24 this is no longer inline either — it is the shared `_price_sort_sql("li.price_paid")` named in the correction above, reading the same column)
 
 The collection-pinned sort guard (`"in_collection" in _LIBRARY_MEMBERSHIP.get(library_scope, ())`) and its rationale are unchanged and still correct: under wishlist scope every key would be NULL, leaving rows tied and pagination unstable.
 
@@ -186,7 +193,7 @@ That harness also removes a caveat this spec's migration tests were written arou
 - **Cross-tenant regression, the bug this fixes:** user A syncs with a `"Price"` field and user B syncs the same release without one; A's `price_paid` survives B's sync. This is the test whose absence allowed the bug.
 - `mode="new"` sync over an existing release leaves `price_paid` intact.
 - A `mode="all"` sync with `price_field_id=None` clears the syncing user's own `price_paid` and no one else's.
-- `get_library_releases` returns the calling user's `price_paid` as `discogs_price`, and sorting by `discogs_price` orders on it.
+- `get_library_releases` returns the calling user's `price_paid` as `discogs_price`, and sorting by `discogs_price` orders on it (numerically, as of 2026-08-24).
 - `get_stock_items` projects and sorts the calling user's value under collection scope.
 - Backfill: single-owner release is copied; a release held by two users is left NULL for both.
 - Migration idempotence: running `init_tenant_schema` twice does not error and does not re-fill a value cleared between runs.
