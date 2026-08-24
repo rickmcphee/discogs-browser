@@ -234,8 +234,16 @@ category but no format token in their `name`. Neither signal alone is
 sufficient, so:
 
 ```python
-in_vinyl_category or _VINYL_RE.search(name)
+in_vinyl_category = any(
+    cls._looks_vinyl(c.get("name") or "") for c in categories
+)
+if not (in_vinyl_category or cls._looks_vinyl(name)):
+    return []
 ```
+
+Both arms go through `_looks_vinyl()`, whose competing-format clause is what
+keeps a name like `12" Slipmat` out — see "The inch mark is a weak signal"
+below.
 
 The category arm is stronger here than on either sibling, because this store
 names its media categories by format *and size* — `12" Vinyl`, `10" Vinyl`,
@@ -281,8 +289,12 @@ not a gap to close: the alternative is admitting CDs.
 filter, the opposite polarity to `jetglowrecordings.py`'s positive one:
 
 ```python
-_NON_VINYL_RE.search(option_name) and not _VINYL_RE.search(option_name)
+_NON_VINYL_RE.search(option_name) and not _VINYL_WORD_RE.search(option_name)
 ```
+
+`_VINYL_WORD_RE`, not `_looks_vinyl`: here a vinyl *word* must override the
+blocklist so bundles survive, while an inch mark must not, so a
+`12" Slipmat` option is dropped rather than rescued.
 
 Jetglow's gate is positive because that store's vinyl options always name
 the format. This store's don't: `Rare Test Press`, `Clear and Black
@@ -373,6 +385,14 @@ This store's `robots.txt` could not be fetched — same egress block that
 prevented the `/products.json` fetch. The requirement is therefore **not
 satisfied**, and this crawler should not merge until it is.
 
+The gate has teeth here, not just paperwork: `db.register_crawler`
+(`backend/db.py:1048-1058`) inserts `enabled = TRUE` unconditionally, and
+`main.py`'s `seed_bundled_crawlers()` calls it for every file in
+`backend/crawlers/` at boot. So merging this file is what starts the traffic
+— the next stock sync will contact `/products.json` with no further action
+from anyone. There is no intermediate state in which the plugin is present
+but dormant.
+
 What is known, and why it is not a substitute: Big Cartel serves a
 platform-wide default (`Disallow: /admin`, `/cart`, `/checkout`,
 `/receipt`), confirmed live on the Asbestos store, which does not cover
@@ -391,16 +411,28 @@ covering `/products.json` for general-purpose clients means the store is not
 added — per the same normative section, that is the answer, not a prompt to
 find a way around it.
 
-- Load: **2 GETs per sync if `page=` is ignored** (the siblings' confirmed
-  behaviour — one for the catalog, one that repeats it and stops the loop).
-  **If `page=` is honoured the bound is `_MAX_PAGES` + 1 = 51**, and the
-  realistic figure is `ceil(catalog_size / page_size) + 1` — at Big Cartel's
-  24-per-page storefront default, ~13 requests for a 300-product catalog.
-  Still no per-product detail-page fan-out, and every request is paced with
-  `random.uniform(delay * 0.5, delay)` from `crawl_delay_seconds` (default
-  30s), so even the 51-request ceiling spreads over ~13 minutes. An earlier
-  draft of this section said "one to two GETs per sync"; that describes only
-  the ignored case and understated the shipped behaviour.
+- Load, worked through rather than asserted. The loop body issues exactly one
+  GET per iteration and runs for `page = 1 … _MAX_PAGES`, so:
+  - **`page=` ignored** (the siblings' confirmed behaviour): **2 GETs** — one
+    returns the catalog, the second repeats it and the freshness check stops
+    the loop.
+  - **`page=` honoured**: **50 GETs is the hard ceiling** (`_MAX_PAGES`
+    itself, not `_MAX_PAGES + 1` — the terminating empty page is one of the
+    50, not an extra). The realistic figure is
+    `ceil(catalog_size / page_size) + 1`, the `+ 1` being the empty probe
+    that ends the walk: at Big Cartel's 24-per-page storefront default, a
+    300-product catalog is 13 data pages plus that probe = **14 requests**.
+  - **Pacing**: each request waits `random.uniform(delay * 0.5, delay)`
+    beforehand, so at the 30s default every request costs 15–30s. The
+    50-request ceiling therefore spans **12.5–25 minutes** (~19 on average),
+    and the realistic 14 requests span 3.5–7 minutes.
+  - No per-product detail-page fan-out in any case.
+
+  Two earlier drafts of this bullet were wrong and are corrected above: the
+  first said "one to two GETs per sync", describing only the ignored case;
+  the second gave 51 / ~13 requests / ~13 minutes, which respectively
+  off-by-oned the ceiling, dropped the empty probe, and quoted the minimum of
+  the pacing range as though it were the expected value.
 - No headers are spoofed; the request goes out under a plain `python-httpx`
   user agent.
 - If Ripple Music blocks this crawler, adds a `Disallow` covering
