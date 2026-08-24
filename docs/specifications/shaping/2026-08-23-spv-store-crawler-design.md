@@ -386,6 +386,18 @@ of its title, because `book` is on the non-vinyl side of the gate. A *leading*
 format word is safe — the empty-remainder guard returns the album untouched,
 so `Tape Deck Heart` and `Vinyl Days` survive.
 
+**A parenthesised format left its opening bracket on the album, and that one
+*was* fixed.** Splitting at the token alone made `1982 (LP)` publish under the
+title `1982 (`. Unlike the residues below this is not ambiguous — no reading of
+`1982 (` is correct — and `(Vinyl)` is established notation, carried by
+`test_jackpotrecords_crawler.py`'s `Deftones - Private Music (Indie Ex)
+(Vinyl)`. The splitter now absorbs an opening `(`/`[` sitting immediately
+before the run. The rule is anchored to the end of the remainder, so an
+already-closed parenthetical stays with the album where it belongs:
+`Live (Deluxe) LP` still splits to `Live (Deluxe)` + `LP`, and
+`1982 LP (exclusive)` is untouched because its bracket follows the token
+rather than preceding it. Found in review on PR #165.
+
 A second residue of the same kind, found a round later: the count prefix binds
 only when it is *adjacent* to the format word, so a spaced count is left behind
 in the title.

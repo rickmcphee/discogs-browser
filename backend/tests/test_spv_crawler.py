@@ -188,6 +188,25 @@ def test_spelled_and_spaced_inch_markers_take_the_vinyl_override():
         assert len(Crawler._items({**_SODOM, "title": title})) == 1, title
 
 
+def test_parenthesised_format_does_not_leave_a_dangling_delimiter():
+    # Splitting at the token alone left the opening bracket on the album:
+    # "1982 (LP)" published as "1982 (". "(Vinyl)" is established notation --
+    # test_jackpotrecords_crawler.py carries "Deftones - Private Music
+    # (Indie Ex) (Vinyl)". Found in review on PR #165.
+    for album, expected in (("1982 (LP)", ("1982", "(LP)")),
+                            ("1982 [LP]", ("1982", "[LP]")),
+                            ("1982 (Vinyl)", ("1982", "(Vinyl)"))):
+        assert _split_trailing_format(album) == expected, album
+
+    # Anchored to the end, so an already-closed parenthetical is untouched --
+    # the bracket there belongs to the album, not the blurb.
+    assert _split_trailing_format("Live (Deluxe) LP") == ("Live (Deluxe)", "LP")
+    assert _split_trailing_format("1982 LP (exclusive)") == ("1982", "LP (exclusive)")
+
+    items = Crawler._items({**_SODOM, "title": "Sodom - 1982 (LP)"})
+    assert items and items[0]["title"] == "1982"
+
+
 def test_hyphenated_inch_notation_is_recognised():
     # "12-INCH VINYL"/"7-INCH VINYL" is established notation in this repo --
     # asianmanrecords.py's _VINYL_TYPES -- and without the optional hyphen the

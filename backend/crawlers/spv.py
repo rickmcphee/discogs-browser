@@ -103,6 +103,12 @@ _FORMAT_TOKEN_RE = re.compile(
     re.IGNORECASE,
 )
 _CONNECTOR_ONLY_RE = re.compile(r'^[\s+/&,]*$')
+# An opening delimiter immediately before the run belongs to the blurb, not the
+# album: "1982 (LP)" split at the token alone left the album as "1982 (".
+# "(Vinyl)" is established notation -- test_jackpotrecords_crawler.py carries
+# "Deftones - Private Music (Indie Ex) (Vinyl)". Anchored to the end so a
+# *closed* parenthetical is untouched: "Live (Deluxe) LP" keeps its remainder.
+_OPENING_DELIM_RE = re.compile(r'[(\[]\s*$')
 
 
 _PLACEHOLDER_VARIANT = "default title"
@@ -143,6 +149,9 @@ def _split_trailing_format(album: str) -> tuple:
         if not _CONNECTOR_ONLY_RE.match(album[earlier.end():run_start]):
             break
         run_start = earlier.start()
+    opening = _OPENING_DELIM_RE.search(album[:run_start])
+    if opening:
+        run_start = opening.start()
     remainder = album[:run_start].strip()
     # No remainder means the album *is* the format word ("Tape"); leave it be.
     if not remainder or remainder == album:
