@@ -755,3 +755,54 @@ def test_get_library_releases_search_matches_comma_form_against_the_prefixed_row
         result = db.get_library_releases(conn, alice["id"], search="Beatles, The")
     assert result["total"] == 1
     assert result["releases"][0]["discogs_id"] == "r1"
+
+
+def test_get_distinct_artists_folds_bare_form_into_the_suffix_group(admin_conn):
+    # "Beatles" carries no article marker at all -- unlike "The Beatles" vs
+    # "Beatles, The", there's no string transform that says these are the
+    # same artist; canonical_artist_labels has to look up whether a
+    # The/comma-form spelling exists elsewhere. See
+    # docs/specifications/shaping/2026-08-22-bare-form-artist-fold-design.md.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "The Beatles", "Abbey Road")
+    _catalog(admin_conn, "r2", "Beatles", "Let It Be")
+    for rid in ("r1", "r2"):
+        db.upsert_library_item(admin_conn, alice["id"], rid, in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.get_distinct_artists(conn, alice["id"]) == ["Beatles, The"]
+
+
+def test_get_distinct_artists_bare_form_with_no_the_variant_stays_bare(admin_conn):
+    # A genuinely bare-named artist, with no "The X"/"X, The" spelling
+    # anywhere, must be unaffected -- the fold only fires when a variant
+    # actually exists to fold into.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "Nirvana", "Nevermind")
+    db.upsert_library_item(admin_conn, alice["id"], "r1", in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.get_distinct_artists(conn, alice["id"]) == ["Nirvana"]
+
+
+def test_get_library_releases_artist_filter_matches_bare_form_row(admin_conn):
+    # Same shape as test_get_library_releases_artist_filter_matches_comma_form_against_the_prefixed_row,
+    # for the bare spelling: clicking "Beatles, The" in the sidebar must also
+    # surface a catalog row stored with no article at all. All three raw
+    # spellings ("The Beatles", "Beatles", "Beatles, The") are seeded here so
+    # one filter call pins all three collapsing under a single filter value,
+    # not just the bare/prefix pair.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "The Beatles", "Abbey Road")
+    _catalog(admin_conn, "r2", "Beatles", "Let It Be")
+    _catalog(admin_conn, "r3", "Beatles, The", "Revolver")
+    for rid in ("r1", "r2", "r3"):
+        db.upsert_library_item(admin_conn, alice["id"], rid, in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], artist="Beatles, The")
+    assert result["total"] == 3
+    assert {r["artist"] for r in result["releases"]} == {"Beatles, The"}

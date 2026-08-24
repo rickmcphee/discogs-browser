@@ -145,6 +145,16 @@ which this doc also does not attempt to re-document. The casing rule above
 otherwise unchanged; the new fold is applied to whichever spelling that rule
 picks, not instead of it.
 
+A third branch (`2026-08-22-bare-form-artist-fold-design.md`, 2026-08-23)
+adds a bare spelling with no article at all — "Beatles" — to that same
+group, via a lookup phase that runs before the casing rule and asks whether
+any row spells the name with "The". The casing rule is again unchanged, and
+still resolves any artist the new phase doesn't claim. That branch also
+moves the `artist=` equality filter in the table below off
+`LOWER(c.artist) = LOWER(%(artist)s)` — first to a "The"-fold, then to
+`_artist_sort_sql`'s article-stripped key, which matches all three
+spellings.
+
 Sidebar ordering moves from the database collation to Python's case-folded
 ordering (`key=lambda a: (_artist_sort_key(a), a.lower(), a)`), because the
 label is chosen after the rows come back. The two orderings differ only for
