@@ -446,6 +446,31 @@ pure-HTTP catalog crawler (`tests/crawlers/` holds the Playwright-driven
 ones). `respx` mocks `/products.json`; no live site, no bot-detection risk.
 75 tests.
 
+Suite totals, measured on one machine by checking out each revision in turn
+rather than inferred from a single run:
+
+| Revision | Passed | Errors |
+|---|---|---|
+| `9d35d35` — this branch's fork point | 1356 | 38 |
+| `3868ea1` — `origin/main` at time of writing | 1358 | 38 |
+| `f2c5641` — this branch | 1431 | 38 |
+
+`1431 − 1356 = 75`, exactly this file's test count and nothing else. The
+extra 2 on `origin/main` come from PR #166, which landed after the fork point
+and is not in this branch.
+
+The 38 errors are identical on all three revisions, which is the point of
+listing them: they are environmental, not this diff's. They are the
+Playwright-driven `tests/crawlers/` files failing to launch a browser
+(`Executable doesn't exist at /opt/pw-browsers/chromium_headless_shell-*`) —
+this container's bundled Chromium is not where its pinned Playwright looks.
+Nothing in this crawler touches Playwright.
+
+An earlier draft of the PR description compared 1423 against 1431 and
+labelled the pair before-and-after. That was wrong: 1423 was this branch
+mid-flight, when the test file held 67 cases, not any baseline. Both numbers
+were from the branch, so the comparison measured nothing.
+
 **Fixture honesty.** Sibling test files use product literals copied from a
 live feed. These are *reconstructions*: artist names, product names, and
 category names are real (from indexed page titles and category URLs), but
