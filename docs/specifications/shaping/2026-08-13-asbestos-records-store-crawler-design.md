@@ -27,6 +27,47 @@ retracting anything below:
    response, `page=`/`limit=` ignored" behaviour *did* reproduce on the
    second store.
 
+**Second amendment (2026-08-24, branch `claude/ripple-music-crawler-ttceiq`):**
+`backend/crawlers/ripplemusic.py` is a third Big Cartel store, and it spends
+the reasoning the first amendment replaced the count argument with.
+
+That amendment said the `bigcartel_catalog.py` helper stays premature because
+the two crawlers "agree only on the *fetch* (one unpaginated `/products.json`
+GET) and diverge on every parsing decision after it." The third crawler does
+not share the fetch either: it pages `/products.json` and stops when a page
+returns nothing new. Not because `page=` was found to be honoured there — it
+could not be checked at all (see that crawler's design doc, "Verification
+status") — but because that store is far larger than either of these two (its
+storefront paginates to at least `/products?page=3` and `/category/cds?page=4`,
+against 76 and 50 products total here and on Jetglow), so a single GET risks
+silently truncating the catalog if the platform caps the response.
+
+The conclusion is unchanged and now rests on something stronger than a count:
+the three crawlers share no logic at all, only Big Cartel's response *schema*,
+which is the platform's and not ours. A shared helper would have nothing left
+to hold. The nine-Shopify-crawler bar cited below is still the right one.
+
+The first amendment's list of observations that are store-specific rather than
+platform behaviour gains a third data point, and one correction of emphasis:
+
+- The `Vinyl` *category* — already noted as not generalising to Jetglow's
+  lumped `Vinyl - Cassette - CD`. Ripple Music is a third shape again: its
+  media categories are named by format *and size* (`12" Vinyl`, `10" Vinyl`,
+  `7" Vinyl`, `Double LP`, `Test Presses`). Three stores, three category
+  vocabularies — an exact category string is store-local by default, and
+  `ripplemusic.py` matches category names with a token regex for that reason.
+- Option-level `sold_out` — populated here (19 true), inert on Jetglow,
+  **unverified** on Ripple Music, which therefore honours both it and
+  product-level `status`, and treats an absent `status` as "no signal" rather
+  than as sold out.
+- The unpaginated-feed behaviour reproduced on the second store, and the first
+  amendment recorded that as reproduction. Two stores of 76 and 50 products
+  are weak evidence for a platform-wide rule about response caps; it should be
+  read as "not yet contradicted," not as established. It remains unverified on
+  the third store.
+
+Amendment only — nothing below is retracted.
+
 ## Problem
 
 Asbestos Records (`asbestosrecords.bigcartel.com`) is a ska/punk/hardcore
