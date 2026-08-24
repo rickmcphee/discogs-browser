@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 
@@ -227,7 +228,7 @@ async def test_events_to_replay_gate_opens_for_a_running_job_even_with_no_pendin
 ):
     """_events_to_replay's `any_active` gate has two independent ways to open:
     the calling user having their own pending crawl_queue rows (covered by
-    test_crawl_stream_replay_only_includes_events_relevant_to_calling_user),
+    test_crawl_stream_replay_only_includes_per_user_events_relevant_to_calling_user),
     or a sync/stock/judgment/plex-match job being active regardless of
     whether this particular user has anything queued. Collection sync,
     judgment, and Plex match gate open only for the calling user's own job
@@ -249,3 +250,95 @@ async def test_events_to_replay_gate_opens_for_a_running_job_even_with_no_pendin
     events = crawl_router._events_to_replay(_FakeRequest(alice["id"]))
 
     assert events == [{"id": 1, "status": "sync_started"}]
+
+
+def test_visible_to_owned_event_is_visible_only_to_its_owner():
+    event = {"status": "sync_started", "user_id": 42}
+    assert crawl_router._visible_to(event, 42) is True
+    assert crawl_router._visible_to(event, 99) is False
+
+
+def test_visible_to_untagged_event_is_visible_to_everyone():
+    event = {"status": "stock_sync_progress", "synced": 3}
+    assert crawl_router._visible_to(event, 42) is True
+    assert crawl_router._visible_to(event, 99) is True
+
+
+def test_crawl_stream_replay_only_includes_per_user_events_relevant_to_calling_user(pg_test_db, authed_client_factory):
+    # sync_*/stock_judgment_*/plex_match_* events are tagged with the
+    # broadcasting user's id (crawl_manager.py's per-function `broadcast`
+    # closures) and must not leak another user's job status -- unlike
+    # listing_changed (tested above), which is deliberately global.
+    alice, bob, _crawler_id = _setup_two_users_each_with_a_different_release()
+
+    crawl_manager._recent = [
+        {"id": 1, "status": "sync_started", "user_id": alice["id"]},
+        {"id": 2, "status": "sync_started", "user_id": bob["id"]},
+        {"id": 3, "status": "stock_sync_progress", "synced": 5},
+    ]
+    with db.user_scope(alice["id"]) as conn:
+        db.enqueue_crawl_queue(conn, "r1")
+        conn.commit()
+
+    events = crawl_router._events_to_replay(_FakeRequest(alice["id"]))
+
+    ids = [e["id"] for e in events]
+    assert ids == [1, 3]
+
+
+async def test_crawl_stream_live_loop_drops_another_users_tagged_event(pg_test_db, authed_client_factory):
+    """The live half of the filter, exercised through the real SSE generator.
+
+    Every other test here calls `_visible_to`/`_events_to_replay` directly,
+    so deleting `crawl_stream`'s own `if not _visible_to(...): continue`
+    left the whole suite green while restoring exactly the cross-user leak
+    this filtering exists to close -- the live path, not the replay buffer,
+    is what the original bug report was about. Driving the generator is the
+    only assertion that fails when that line goes.
+
+    `_recent` is emptied so the replay pass contributes nothing and every
+    event asserted on below arrives over the live path alone.
+    """
+    alice, bob, _crawler_id = _setup_two_users_each_with_a_different_release()
+    crawl_manager._recent = []
+
+    response = await crawl_router.crawl_stream(_FakeRequest(alice["id"]))
+    stream = response.body_iterator
+
+    # The generator is lazy -- it does not subscribe (nor run its replay
+    # pass) until first advanced -- so broadcasting before this point would
+    # reach no queue at all and the reads below would collect 15s keepalive
+    # pings instead. Advance it in a task and wait for its subscription to
+    # appear, which is the observable signal that it has reached `q.get()`.
+    # Bounded, and it re-raises rather than spinning: if the generator ever
+    # dies before subscribing (or stops subscribing at all), an unbounded
+    # wait here would hang the whole suite instead of failing this test.
+    subscriber_count = len(crawl_manager._subscribers)
+    first = asyncio.ensure_future(stream.__anext__())
+
+    async def _await_subscription():
+        while len(crawl_manager._subscribers) == subscriber_count:
+            if first.done():
+                await first  # re-raises whatever killed the generator
+                raise AssertionError("stream yielded before subscribing")
+            await asyncio.sleep(0.001)
+
+    try:
+        await asyncio.wait_for(_await_subscription(), timeout=5)
+    except BaseException:
+        first.cancel()
+        raise
+
+    await crawl_manager._broadcast({"status": "sync_started", "user_id": bob["id"]})
+    await crawl_manager._broadcast({"status": "sync_started", "user_id": alice["id"]})
+    await crawl_manager._broadcast({"status": "stock_sync_progress", "synced": 5})
+
+    received = [json.loads((await first)["data"])]
+    received.append(json.loads((await stream.__anext__())["data"]))
+    await stream.aclose()
+
+    # Bob's event is dropped outright: the first thing Alice sees is her own,
+    # then the untagged global one.
+    assert [e.get("user_id") for e in received] == [alice["id"], None]
+    assert [e["status"] for e in received] == ["sync_started", "stock_sync_progress"]
+
