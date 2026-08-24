@@ -21,8 +21,18 @@ Two views sort on it, and only one of them sorted numerically:
   collection spanning an order of magnitude, which is most of them.
 
 The Store/Track `Cost` column (`stock_items.price`) is not affected: it is
-`DOUBLE PRECISION` and its `$` is applied at render time, so it already compares
-numerically.
+`DOUBLE PRECISION` and its currency symbol is applied at render time, so it already
+compares numerically. (Written when that cell hardcoded a `$`; as of #165 it renders the
+row's own `currency` through `frontend/src/views/formatPrice.ts`. The point stands either
+way — the symbol is presentation, never part of the stored value or the sort key.)
+
+That change does make one thing below live for `Cost` too. Now that a row can render as
+`€27.99` next to `$30.00`, a numeric `Cost` sort compares face values across currencies,
+exactly the approximation this document accepts for `price_paid` under "No currency
+conversion". The difference is that `stock_items` stores `price` and `currency` as
+separate typed columns, so converting there would be a tractable change later, needing
+only rates and a base-currency setting — where `price_paid` would first have to parse a
+currency back out of free text.
 
 The Track tab's existing extraction also had a narrower bug of its own. Its pattern,
 `'\d+\.?\d*'`, stops at the first non-digit, so `"$1,200.50"` extracted as `1` and sorted
