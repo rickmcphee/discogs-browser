@@ -12,8 +12,9 @@ from shopify_catalog import iter_products, resolve_cover_image
 #
 # `new-vinyl-in-stock` is both crawlable (5,141 products, 21 pages) and the
 # better semantic: every one of its products carries the `instore-available`
-# tag, against 52% of `new-vinyl`, so it is what is physically on the shelf in
-# Poughkeepsie rather than what the store can order from a distributor.
+# tag, against ~24% of `new-vinyl` (sampled over 1,500 products spanning
+# pages 1-100), so it is what is physically on the shelf in Poughkeepsie
+# rather than what the store can order from a distributor.
 _COLLECTION_SLUG = "new-vinyl-in-stock"
 
 # All 5,141 products are typed "New Vinyl/<genre>" across 44 distinct subtypes,
