@@ -184,10 +184,19 @@ product appends ` — {variant_title}` to the album.
 The gate is the product's **total** variant count, not its available count.
 Gating on availability would make a row's identity unstable: a two-variant
 product whose sibling sells out would drop the descriptor, changing that
-row's `item_key` and orphaning its `listings` and saved-item rows. A
-multi-variant product whose variant titles are Shopify placeholders
-(`Default Title`, blank) falls back to the bare album rather than rendering
-a dangling em dash.
+row's `item_key` and orphaning its `listings` and saved-item rows.
+
+When a multi-variant product's variant titles are Shopify placeholders
+(`Default Title`, blank), the descriptor falls back to the **variant `id`**
+— immutable, unique per variant, and present on all 5,141 live variants.
+Falling back to the bare album instead, as the first attempt at this fix
+did, simply reinstated the collision one branch further down: every
+placeholder row would share a title again and land back on one `item_key`.
+Shopify only issues `Default Title` for a product with exactly one variant,
+so this shape is malformed data, and a raw id reads poorly in Store — but
+identity correctness beats cosmetics in a case the store cannot currently
+produce. If even the id is absent there is no stable per-variant value
+left, so the bare album is the honest floor and those rows do collide.
 
 None of this is reachable by live data today; it is pinned by hypothetical
 fixtures so a future multi-variant product is neither silently reduced to
@@ -293,7 +302,7 @@ narrower collection, not new code.
 `test_jackpotrecords_crawler.py`'s pattern — product literals taken from
 confirmed-live products, served through `respx`-mocked `products.json`
 responses and driven via `crawl_catalog()`; no live site, no bot-detection
-risk. 21 cases:
+risk. 22 cases:
 
 - dominant glued-hyphen title → artist/album split, plus all scalar fields
 - en-dash separator → split
@@ -313,14 +322,16 @@ risk. 21 cases:
 - multi-variant product with a sold-out sibling → the surviving row's title
   is unchanged, so its identity is stable across restocks
 - single-variant product → bare album title, no descriptor
-- multi-variant product with placeholder variant titles → bare album title,
-  no dangling em dash
+- multi-variant product with placeholder variant titles → descriptor falls
+  back to the variant `id`, so identities stay distinct
+- multi-variant product with neither titles nor ids → bare album title, the
+  documented floor
 - variant `featured_image` preferred over the product image
 - malformed `price` → `None`, row still emitted
 - pagination continues until an empty page
 - site metadata
 
-All 21 pass. The wider suite is unaffected: 1,373 pass, and the 38 errors
+All 22 pass. The wider suite is unaffected: 1,373 pass, and the 38 errors
 present are pre-existing Playwright browser-launch failures in
 `tests/crawlers/` (no Chromium build at the configured
 `PLAYWRIGHT_BROWSERS_PATH`), unrelated to this change, which adds only two

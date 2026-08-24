@@ -164,10 +164,12 @@ _MULTI_VARIANT_PRODUCT = {
     "tags": ["instore-available"],
     "images": [{"src": "https://cdn.shopify.com/big-thief-fallback.jpg"}],
     "variants": [
-        {"title": "Black Vinyl", "price": "29.99", "available": True,
+        {"id": 48373708947677, "title": "Black Vinyl", "price": "29.99", "available": True,
          "featured_image": {"src": "https://cdn.shopify.com/big-thief-black.jpg"}},
-        {"title": "Indie Exclusive Colored Vinyl", "price": "34.99", "available": True, "featured_image": None},
-        {"title": "Repress", "price": "27.99", "available": False, "featured_image": None},
+        {"id": 48373708980445, "title": "Indie Exclusive Colored Vinyl", "price": "34.99",
+         "available": True, "featured_image": None},
+        {"id": 48373709013213, "title": "Repress", "price": "27.99", "available": False,
+         "featured_image": None},
     ],
 }
 
@@ -360,14 +362,36 @@ async def test_crawl_catalog_omits_descriptor_for_single_variant_product(crawler
 
 
 @respx.mock
-async def test_crawl_catalog_omits_placeholder_descriptor_on_multi_variant_product(crawler):
-    # Defensive: a multi-variant product whose variant titles are Shopify
-    # placeholders must not render a dangling em dash.
+async def test_crawl_catalog_falls_back_to_variant_id_for_placeholder_descriptors(crawler):
+    # Shopify only issues "Default Title" for a product with exactly one
+    # variant, so this shape is malformed data. It still must not collapse to
+    # the bare album for every row: that would put both back onto one
+    # item_key, the collision the descriptor exists to prevent. A raw id reads
+    # poorly, but identity correctness wins here.
     placeholder_variants = {**_MULTI_VARIANT_PRODUCT, "variants": [
-        {"title": "Default Title", "price": "29.99", "available": True, "featured_image": None},
-        {"title": "   ", "price": "31.99", "available": True, "featured_image": None},
+        {"id": 111, "title": "Default Title", "price": "29.99", "available": True,
+         "featured_image": None},
+        {"id": 222, "title": "   ", "price": "31.99", "available": True, "featured_image": None},
     ]}
     _mock_single_page([placeholder_variants])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["title"] for i in items] == [
+        "Double Infinity (Vinyl) — 111",
+        "Double Infinity (Vinyl) — 222",
+    ]
+    assert len({(i["artist"], i["title"], i["url"]) for i in items}) == 2
+
+
+@respx.mock
+async def test_crawl_catalog_falls_back_to_bare_album_when_no_stable_variant_value(crawler):
+    # Nothing stable left to disambiguate on -- no title, no id. The bare
+    # album is all that remains; the rows do collide, and that is the honest
+    # floor rather than a fabricated identity.
+    no_identity = {**_MULTI_VARIANT_PRODUCT, "variants": [
+        {"title": "Default Title", "price": "29.99", "available": True, "featured_image": None},
+        {"title": "", "price": "31.99", "available": True, "featured_image": None},
+    ]}
+    _mock_single_page([no_identity])
     items = [item async for item in crawler.crawl_catalog()]
     assert {i["title"] for i in items} == {"Double Infinity (Vinyl)"}
 

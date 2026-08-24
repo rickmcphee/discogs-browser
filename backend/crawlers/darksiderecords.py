@@ -131,7 +131,19 @@ class Crawler:
         # pressings at potentially different prices.
         if not is_multi_variant:
             return album
-        variant_title = (variant.get("title") or "").strip()
-        if not variant_title or variant_title.lower() in _DEFAULT_VARIANT_TITLES:
-            return album
-        return f"{album} — {variant_title}"
+        descriptor = (variant.get("title") or "").strip()
+        if not descriptor or descriptor.lower() in _DEFAULT_VARIANT_TITLES:
+            # Shopify only issues "Default Title" for a product with exactly
+            # one variant, so a multi-variant product reaching here is
+            # malformed data. Fall back to the variant id -- immutable, and
+            # unique per variant -- rather than the bare album, which would
+            # put every such row back onto one item_key and reintroduce the
+            # collision this helper exists to prevent. A raw id reads poorly
+            # in Store, but identity correctness beats cosmetics in a shape
+            # the store cannot currently produce. If even the id is missing
+            # there is no stable per-variant value left, so the bare album is
+            # all that remains.
+            descriptor = str(variant.get("id") or "").strip()
+            if not descriptor:
+                return album
+        return f"{album} — {descriptor}"
