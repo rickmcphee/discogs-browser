@@ -212,9 +212,22 @@ no longer filters `listing_changed` events by whether the release is in the
 requesting user's own library before delivering them — a discogs_id-scoped
 filter existed for an older, now-removed per-release progress UI, and left
 in place it would have silently starved every user's Store/Track tab of
-repaints for any release outside their own collection/wishlist. Both the
-live SSE stream and the reconnect replay buffer deliver every
-`listing_changed` event to every connected user now.
+repaints for any release outside their own collection/wishlist. No
+ownership filter now stands between a `listing_changed` event and any user
+subscribed on the broadcasting process. **(2026-08-23:** the original
+sentence — "both the live SSE stream and the reconnect replay buffer
+deliver every `listing_changed` event to every connected user" —
+overstated twice. (1) The replay half was never real: both broadcasters
+`put_nowait` straight onto subscriber queues and never touch `_recent`
+(`crawl_manager.py:533-557`), so such an event is delivered live or not at
+all; a reconnecting client cannot replay one. (2) "Every connected user" is
+not literally true in the deployed multi-Machine setup either —
+`_subscribers` is an in-process list, so a stream landing on one Machine
+never sees events another Machine's worker pool produced. That is an
+accepted, documented gap, not a regression: see
+[`2026-08-16-fly-multi-machine-design.md`](2026-08-16-fly-multi-machine-design.md)'s
+"Cross-Machine SSE fan-out". What this paragraph exists to establish — the
+absence of ownership filtering — holds regardless.)**
 
 ## Testing
 
@@ -232,8 +245,16 @@ live SSE stream and the reconnect replay buffer deliver every
   priced by every enabled *release* crawler is not "missing", even with an
   unrelated enabled *catalog* crawler also present (`test_library_maintenance.py`).
 - `_events_to_replay`: a `listing_changed` event for a release outside the
-  requesting user's own library is still included in their replay buffer
-  (`test_crawl_router.py`).
+  requesting user's own library is not filtered out on its way to that user
+  (`test_crawl_router.py`). **(2026-08-23:** this bullet said such an event
+  "is still included in their replay buffer", which overstates it — the test
+  hand-seeds `_recent` and calls `_events_to_replay`, but production never
+  puts a `listing_changed` event in `_recent` at all: both broadcasters
+  `put_nowait` straight onto subscriber queues (`crawl_manager.py:533-557`),
+  so these events are only ever delivered live. What the test really pins is
+  the absence of ownership filtering, which is the property that mattered
+  then and still holds — `_visible_to()` acts only on `user_id`-tagged
+  events. See `2026-08-23-per-user-sse-event-filtering-design.md`.)**
 - Frontend: a `listing_changed` SSE event triggers a `getStock` refetch,
   proven the same way `inStockTab.test.tsx` already proves it for
   `stock_sync_progress`.
