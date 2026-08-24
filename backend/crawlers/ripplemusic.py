@@ -32,9 +32,8 @@ _VARIOUS_RE = re.compile(r'^various(?:\s+artists?)?$', re.IGNORECASE)
 # lumped 'Vinyl - Cassette - CD' -- so a token regex generalises where an
 # exact category string would not. `test press` is included because a test
 # pressing is vinyl by definition and this store sells them as a category.
-_VINYL_WORD_RE = re.compile(
-    r'\bvinyls?\b|\b\d*x?lps?\b|\btest press(?:es|ing|ings)?\b', re.IGNORECASE
-)
+_FORMAT_TOKEN = r'(?:vinyls?|\d*x?lps?|test press(?:es|ing|ings)?)'
+_VINYL_WORD_RE = re.compile(r'\b' + _FORMAT_TOKEN + r'\b', re.IGNORECASE)
 
 # A bare inch mark is a *weak* signal, deliberately kept out of the regex
 # above. It reads as vinyl in "Wo Fat - Split 7\"" and as merch in
@@ -76,13 +75,22 @@ _NON_VINYL_RE = re.compile(
     re.IGNORECASE,
 )
 
-# "Vinyl" names a material as well as a format. A vinyl sticker, decal, or
-# banner is merchandise; the word describes what the thing is made of, not
-# that it is a record. These compounds are removed before the format test
-# (see _vinyl_word) so the word cannot vouch for the merch noun it modifies.
-# A genuine bundle is unaffected -- "Black Vinyl + Sticker" has no compound,
-# so its own vinyl token survives and keeps the row.
-_VINYL_MERCH_RE = re.compile(r'\bvinyls?[\s-]+' + _MERCH_NOUN + r'\b', re.IGNORECASE)
+# A format token immediately followed by a merch noun is naming a material,
+# not a format: a vinyl sticker, an LP t-shirt, a test-press poster. These
+# compounds are removed before the format test (see _vinyl_word) so the token
+# cannot vouch for the merch noun it modifies. A genuine bundle is unaffected
+# -- "Black Vinyl + Sticker" has no compound, so its own token survives and
+# keeps the row.
+#
+# Built from _FORMAT_TOKEN, the same alternation _VINYL_WORD_RE uses, for the
+# reason _MERCH_NOUNS exists: the first version of this regex hard-coded
+# `vinyls?` while _VINYL_WORD_RE accepted three tokens, so "LP T-Shirt" and
+# "Test Press Poster" kept their format word and were published as records.
+# Fixing the vinyl case and leaving its two siblings is the bug this shape
+# makes impossible.
+_VINYL_MERCH_RE = re.compile(
+    r'\b' + _FORMAT_TOKEN + r'[\s-]+' + _MERCH_NOUN + r'\b', re.IGNORECASE
+)
 
 # Runaway guard on the paging loop below, not a coverage decision. At Big
 # Cartel's 24-per-page storefront default this is ~1200 products, comfortably

@@ -358,11 +358,17 @@ non-vinyl filter — publish a slipmat as vinyl.
 
 So the vocabulary is split in two:
 
-- `_VINYL_WORD_RE` (`\bvinyls?\b|\b\d*x?lps?\b|\btest press`) —
-  unambiguous, trusted anywhere.
+- `_VINYL_WORD_RE`, built from `_FORMAT_TOKEN`
+  (`vinyls?|\d*x?lps?|test press(?:es|ing|ings)?`) — the format vocabulary,
+  **not safe to call directly**. Every token in it can also name a material
+  (`Vinyl Sticker`, `LP T-Shirt`, `Test Press Poster`), so it is reached only
+  through `_vinyl_word()`, which strips those compounds first. A structural
+  test enforces that single call path; see "Material, not format" below.
 - `_INCH_RE` (`\d+\s*"`) — trusted only where the same string names no
   competing format or merch item. `_looks_vinyl()` applies that rule:
   `Wo Fat - Split 7"` is admitted, `Ripple Music 12" Slipmat` is not.
+
+### Material, not format
 
 **And `vinyl` is not unambiguous either** — the same lesson one level up,
 found by review after the inch-mark fix had already declared the word
@@ -375,13 +381,15 @@ hole existed in the option filter, where the vinyl-word override kept an
 option literally named `Vinyl Sticker`.
 
 The fix is a strip, not a rejection. `_VINYL_MERCH_RE` matches the compound
-form (`vinyl` immediately followed by a merch noun) and `_vinyl_word()`
-removes those before testing for a format token. Only the compound goes, so
-anything independent survives:
+form — **any** format token immediately followed by a merch noun — and
+`_vinyl_word()` removes those before testing for a format token. Only the
+compound goes, so anything independent survives:
 
 | Text | Verdict | Why |
 |---|---|---|
 | `Vinyl Sticker` | merch | its only token was the compound |
+| `LP T-Shirt` | merch | same rule, different token |
+| `Test Press Poster` | merch | same rule, different token |
 | `Black Vinyl + Sticker` | record | no compound — two separate things |
 | `Vinyl Sticker + LP` | record | compound stripped, the `LP` remains |
 | `… Limited Vinyl and CD variants` | record | no compound; the word is doing format work |
@@ -414,12 +422,18 @@ not a gap to close: the alternative is admitting CDs.
 filter, the opposite polarity to `jetglowrecordings.py`'s positive one:
 
 ```python
-_NON_VINYL_RE.search(option_name) and not _VINYL_WORD_RE.search(option_name)
+_NON_VINYL_RE.search(option_name) and not cls._vinyl_word(option_name)
 ```
 
-`_VINYL_WORD_RE`, not `_looks_vinyl`: here a vinyl *word* must override the
+`_vinyl_word()`, not `_looks_vinyl`: here a format *word* must override the
 blocklist so bundles survive, while an inch mark must not, so a
-`12" Slipmat` option is dropped rather than rescued.
+`12" Slipmat` option is dropped rather than rescued. And `_vinyl_word()`
+rather than `_VINYL_WORD_RE` directly, so the compound strip applies — an
+option named `LP T-Shirt` is merch, not a bundle.
+
+(An earlier draft of this doc printed the raw `_VINYL_WORD_RE` call here.
+That is the exact direct use the shipped code and its structural test
+prohibit, so the snippet was endorsing the bug the section below describes.)
 
 Jetglow's gate is positive because that store's vinyl options always name
 the format. This store's don't: `Rare Test Press`, `Clear and Black
@@ -595,7 +609,7 @@ gate asks for this store's file, and rightly.
 `backend/tests/test_ripplemusic_crawler.py` — flat in `tests/`, like every
 pure-HTTP catalog crawler (`tests/crawlers/` holds the Playwright-driven
 ones). `respx` mocks `/products.json`; no live site, no bot-detection risk.
-111 tests.
+125 tests.
 
 Suite totals, measured by checking out each revision in turn rather than
 inferred from a single run.
@@ -606,9 +620,9 @@ restart re-ran `scripts/cloud-setup.sh`, which installs Chromium):
 | Revision | Passed | Failed |
 |---|---|---|
 | `9d35d35` — this branch's fork point | 1391 | 3 |
-| this branch (111 tests) | 1502 | 3 |
+| this branch (125 tests) | 1516 | 3 |
 
-`1502 − 1391 = 111`, exactly this file's test count and nothing else.
+`1516 − 1391 = 125`, exactly this file's test count and nothing else.
 
 The 3 failures are `tests/crawlers/test_amazon_price_extraction.py`
 (`test_mosaic_price`, `test_evolver_no_price`,
@@ -676,13 +690,19 @@ Cases, grouped:
   (`Vinyl Patch`/`Patches`, `Vinyl Tee`/`Tees`, `12" Slipmats`, `Vinyl
   T-Shirt`) plus the deliberate `sleeve` exclusion; 9 more for plural and
   clothing *option* names.
-- **Two structural tests**, which pin invariants rather than behaviour,
+- **Format-token parity** — 9 parametrized names covering each format token
+  in a merch compound (`LP T-Shirt`, `2xLP Tote`, `Test Press Poster`) against
+  the genuine records using the same tokens; 4 more for the option filter.
+- **Three structural tests**, which pin invariants rather than behaviour,
   because both defects they guard were caused by structure rather than by a
   wrong value. One asserts both merch regexes are built from `_MERCH_NOUNS`,
   so the hand-written drift cannot recur. The other asserts `_VINYL_WORD_RE`
   is reached only through `_vinyl_word()` — it matches `Vinyl Sticker`, so a
   direct call reintroduces the material-sense bug, and a comment saying so is
-  weaker than a test that fails.
+  weaker than a test that fails. The third asserts `_VINYL_WORD_RE` and
+  `_VINYL_MERCH_RE` are built from the same `_FORMAT_TOKEN` alternation, so a
+  token accepted by the vocabulary but not by the compound strip — which is
+  precisely how `LP T-Shirt` survived — cannot recur.
 - **Availability** — `sold_out` option skipped; non-active `status` dropped;
   **absent `status` kept** (the safe-degradation branch above); all-sold-out
   product yields nothing.

@@ -258,6 +258,48 @@ def test_vinyl_word_regex_is_only_reached_through_the_compound_strip():
     assert uses == ['return _VINYL_WORD_RE.search(_VINYL_MERCH_RE.sub(" ", text))'], uses
 
 
+@pytest.mark.parametrize("text,kept", [
+    # Every format token can name a material, not just `vinyl`. The first
+    # version of the compound strip hard-coded `vinyls?` while the format
+    # vocabulary accepted three tokens, so these kept their format word and
+    # were published as records.
+    ("Wo Fat - LP T-Shirt", False),
+    ("Wo Fat - LP Sticker", False),
+    ("Wo Fat - 2xLP Tote", False),
+    ("Wo Fat - Test Press Poster", False),
+    ("Wo Fat - Vinyl T-Shirt", False),
+    # Genuine records with the same tokens are untouched.
+    ("Mothership - Mothership LP", True),
+    ("Wo Fat - Rare Test Press", True),
+    ("Wo Fat - Black Vinyl + Sticker", True),
+    ("Cortez - Vinyl Sticker + LP", True),
+])
+def test_items_compound_strip_covers_every_format_token(text, kept):
+    product = _product(name=text, categories=[], artists=[{"id": 1, "name": "Wo Fat"}])
+    assert len(Crawler._items(product)) == (1 if kept else 0)
+
+
+@pytest.mark.parametrize("option_name", [
+    "LP T-Shirt", "LP Sticker", "2xLP Tote", "Test Press Poster",
+])
+def test_items_drops_non_vinyl_compound_options_for_every_format_token(option_name):
+    product = _product(options=[
+        {"id": 95, "name": option_name, "price": 25.0, "sold_out": False},
+    ])
+    assert Crawler._items(product) == []
+
+
+def test_format_regexes_are_built_from_one_token_alternation():
+    # Same guarantee as _MERCH_NOUNS, on the other axis: the vocabulary regex
+    # and the compound strip must accept the same format tokens, or a token
+    # accepted by one and not the other reopens the material-sense hole.
+    from crawlers import ripplemusic
+    for token in ("vinyls?", "lps?", "test press"):
+        assert token in ripplemusic._FORMAT_TOKEN
+        assert token in ripplemusic._VINYL_WORD_RE.pattern
+        assert token in ripplemusic._VINYL_MERCH_RE.pattern
+
+
 def test_merch_regexes_are_built_from_one_vocabulary():
     # The structural guarantee, not just its current effect: both regexes are
     # derived from _MERCH_NOUNS, so they cannot drift apart the way the
