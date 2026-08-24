@@ -31,6 +31,13 @@ import scheduler
 # those tests patch main.load_config too.
 
 
+def _bundled_plugin_paths():
+    """Every plugin file `seed_bundled_crawlers` will register, derived at call
+    time rather than counted, so this stays correct as crawlers are added."""
+    import main
+    return sorted(main.BUNDLED_CRAWLERS_DIR.glob("*.py"))
+
+
 def test_app_boots_and_health_check_succeeds(pg_test_db):
     with patch("main.crawl_manager.start_worker_pool", new=AsyncMock()), \
          patch("main.crawl_manager.stop_worker_pool", new=AsyncMock()), \
@@ -49,7 +56,7 @@ def test_startup_seeds_bundled_crawlers(pg_test_db):
         with TestClient(main.app):
             with db.get_admin_pool().connection() as conn:
                 crawlers = db.get_all_crawlers(conn)
-    assert len(crawlers) > 0
+    assert len(crawlers) == len(_bundled_plugin_paths())
 
 
 def test_startup_seeds_catalog_crawlers_with_genre_summary(pg_test_db):
@@ -61,13 +68,12 @@ def test_startup_seeds_catalog_crawlers_with_genre_summary(pg_test_db):
             with db.get_admin_pool().connection() as conn:
                 crawlers = db.get_all_crawlers(conn)
 
+    assert len(crawlers) == len(_bundled_plugin_paths())
     catalog_crawlers = [c for c in crawlers if c["crawler_type"] in ("catalog", "catalog_browser")]
     release_crawlers = [c for c in crawlers if c["crawler_type"] == "release"]
 
-    assert catalog_crawlers
     missing = [c["site_name"] for c in catalog_crawlers if not c["genre_summary"]]
     assert missing == [], f"catalog crawlers missing genre_summary: {missing}"
-    assert release_crawlers
     assert all(c["genre_summary"] is None for c in release_crawlers)
 
     century_media = next(c for c in catalog_crawlers if c["site_name"] == "Century Media")
@@ -83,14 +89,13 @@ def test_startup_seeds_catalog_crawlers_with_genre(pg_test_db):
             with db.get_admin_pool().connection() as conn:
                 crawlers = db.get_all_crawlers(conn)
 
+    assert len(crawlers) == len(_bundled_plugin_paths())
     catalog_crawlers = [c for c in crawlers if c["crawler_type"] in ("catalog", "catalog_browser")]
     release_crawlers = [c for c in crawlers if c["crawler_type"] == "release"]
     valid_genres = {"marketplace", "punk", "metal", "rock", "pop"}
 
-    assert catalog_crawlers
     invalid = {c["site_name"]: c["genre"] for c in catalog_crawlers if c["genre"] not in valid_genres}
     assert invalid == {}
-    assert release_crawlers
     assert all(c["genre"] == "marketplace" for c in release_crawlers)
 
     century_media = next(c for c in catalog_crawlers if c["site_name"] == "Century Media")
