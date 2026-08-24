@@ -279,6 +279,55 @@ handles deferral and circuit-breaker cooldowns. The mitigation lever, if
 one is ever needed, is disabling the crawler or narrowing the collection
 — both operational, neither structural.
 
+### The lock-held serial cost, which queue drainage does *not* cover
+
+The paragraph above is only about *downstream* price-dispatch work. The
+~54 minutes has a second, separate cost on the *upstream* side, and it is
+the more consequential of the two:
+
+- `start_stock_sync` (`crawl_manager.py`) takes
+  `pg_try_advisory_lock(STOCK_SYNC_LOCK_KEY)` on a dedicated
+  non-pooled connection and holds it for the whole of `_sync_stock`,
+  releasing it only in that function's `finally`.
+- `_sync_stock` walks the catalog crawlers **sequentially** — one
+  `await self._run_catalog_crawler(crawler)` per source, in a plain
+  `for` loop — so each crawler's full duration is serial time added to
+  the run, not overlapped with any other.
+- A sync that starts while the lock is held is **skipped outright, not
+  queued**. Both guards return `False` and log: the in-process
+  `stock_sync_running` check ("Stock sync already running, ignoring start
+  request") and the cross-instance lock ("Stock sync already running on
+  another instance, ignoring start request").
+
+So enabling this crawler has three consequences beyond queue depth:
+
+1. Every full stock sync grows by ~54 minutes of wall clock.
+2. Every store *after* Waterloo Records in the loop has its refresh
+   delayed by that much.
+3. Any scheduled or manual stock sync that fires inside the window is
+   dropped for that cycle. It does not run late — it does not run.
+
+**How bad this is depends entirely on the configured cadence**, which is
+an admin setting with no default: `stock_schedule` is read as
+`cfg.get("stock_schedule", "")` in `main.py`, and an empty value means no
+scheduled sync at all. If the cadence is shorter than the full-run
+duration, runs are skipped every cycle; if it is comfortably longer,
+nothing is lost. That is a deployment decision, not a property of this
+crawler, so this document records the cost rather than picking a number.
+
+**No mitigation is implemented here, deliberately.** The obvious ones —
+running catalog crawlers concurrently, or giving long crawlers their own
+lock and cadence — change shared sync machinery that every store depends
+on, which is well outside a single store crawler's blast radius and
+wants its own design. The levers available today are all operational:
+set `stock_schedule` longer than a full run, sync this store on its own
+via `start_stock_sync(crawler_id=...)` (note the lock is still global, so
+this shortens the run, it does not make it concurrent), or disable the
+crawler.
+
+This is the one part of the design a reviewer should push back on if the
+deployment's sync cadence is tight.
+
 ## Deliberate omissions
 
 Recorded so a future reader doesn't re-derive them:
