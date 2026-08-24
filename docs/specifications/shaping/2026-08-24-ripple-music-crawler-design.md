@@ -151,7 +151,7 @@ Ripple Music (`ripplemusic.bigcartel.com`) — a San Francisco Bay Area stoner
 rock, doom, and heavy psych label (Wo Fat, Mothership, Cortez, Vokonis,
 Godzillionaire, Wino) — is not covered by any existing crawler.
 
-It is the third Big Cartel storefront in this repo, after
+It is another Big Cartel storefront in this repo, after
 `backend/crawlers/asbestosrecords.py` (2026-08-13) and
 `backend/crawlers/jetglowrecordings.py` (2026-08-23). Those two agree on the
 feed's *shape* — `options` in place of Shopify `variants`, no `vendor` but a
@@ -171,13 +171,13 @@ rather than going through `shopify_catalog.iter_products()`, so without that
 entry its tests would sleep `crawl_delay_seconds` (default 30s) for real.
 
 **Still no `bigcartel_catalog.py` helper.** The Asbestos doc's 2026-08-23
-amendment argued the abstraction stays premature because the two crawlers
-"agree only on the fetch." A third crawler doesn't spend that argument, it
-inverts it: this one does not share the fetch either (see "Pagination"). The
-three now agree on nothing but the response *schema*, which is Big Cartel's,
-not ours. `shopify_catalog.py` wasn't extracted until nine crawlers had
-converged on identical logic; three that have converged on nothing is
-further from that bar than two were. Amended into the Asbestos doc on this
+amendment argued the abstraction stays premature because the crawlers
+"agree only on the fetch." Another crawler doesn't spend that argument, it
+inverts it: this one does not share the fetch either (see "Pagination"). They
+now agree on nothing but the response *schema*, which is Big Cartel's, not
+ours. `shopify_catalog.py` wasn't extracted until nine Shopify crawlers had
+converged on identical logic — a bar this set moves *away* from with each
+addition, having converged on nothing. Amended into the Asbestos doc on this
 branch.
 
 **Non-goals**
@@ -204,7 +204,7 @@ branch.
   `asbestosrecords.py` ships with.
 - **No `split_artist_title()` conformance question.** The shared-title-split
   helper design covers the *Shopify* fleet; neither Big Cartel sibling is
-  listed among its five documented exceptions, and this crawler reuses those
+  listed among its documented exceptions, and this crawler reuses those
   siblings' `_parse_artist_title` shape unchanged. Nothing to amend there.
 
 ## Technical grounding
@@ -609,27 +609,34 @@ gate asks for this store's file, and rightly.
 `backend/tests/test_ripplemusic_crawler.py` — flat in `tests/`, like every
 pure-HTTP catalog crawler (`tests/crawlers/` holds the Playwright-driven
 ones). `respx` mocks `/products.json`; no live site, no bot-detection risk.
-125 tests.
 
 Suite totals, measured by checking out each revision in turn rather than
 inferred from a single run.
 
-**Measured after the container gained its Playwright browser** (a session
-restart re-ran `scripts/cloud-setup.sh`, which installs Chromium):
+**Re-measured 2026-08-24 after merging `origin/main` into this branch**, which
+had moved on considerably (new store crawlers, a price-sort fix, the
+documentation sweep). Both revisions run with the container's Playwright
+browser present:
 
 | Revision | Passed | Failed |
 |---|---|---|
-| `9d35d35` — this branch's fork point | 1391 | 3 |
-| this branch (125 tests) | 1516 | 3 |
+| `afb0cf9` — `origin/main` at merge time | 1506 | 3 |
+| this branch, post-merge | 1631 | 3 |
 
-`1516 − 1391 = 125`, exactly this file's test count and nothing else.
+The difference is exactly the tests this branch adds to
+`test_ripplemusic_crawler.py`, and nothing else — which is the point of
+running both revisions rather than quoting one number.
 
 The 3 failures are `tests/crawlers/test_amazon_price_extraction.py`
 (`test_mosaic_price`, `test_evolver_no_price`,
 `test_adam_ants_prince_charming_no_price`). They are **pre-existing and
-unrelated to this diff** — identical on the fork point, and confirmed again
-by re-running them with this branch's changes stashed. This crawler is
-httpx-only and touches no Playwright path.
+unrelated to this diff** — identical on `origin/main`, on this branch's fork
+point before the merge, and again when re-run with this branch's changes
+stashed. This crawler is httpx-only and touches no Playwright path.
+
+The pre-merge comparison, kept because it was the evidence at the time: fork
+point `9d35d35` at 1391 passed / 3 failed against this branch at 1516 / 3 —
+the same delta, against a base that has since moved.
 
 **Earlier measurements in this doc were taken in a container missing that
 browser**, where 38 Playwright-dependent tests errored out before running:
@@ -638,7 +645,7 @@ browser**, where 38 Playwright-dependent tests errored out before running:
 |---|---|---|
 | `9d35d35` — fork point | 1356 | 38 |
 | `3868ea1` — `origin/main` | 1358 | 38 |
-| this branch (at 90 tests) | 1446 | 38 |
+| this branch, mid-review | 1446 | 38 |
 
 Those numbers were internally consistent and the delta was still exactly the
 test count, so the comparison held. But the reasoning attached to them did
@@ -693,7 +700,7 @@ Cases, grouped:
 - **Format-token parity** — 9 parametrized names covering each format token
   in a merch compound (`LP T-Shirt`, `2xLP Tote`, `Test Press Poster`) against
   the genuine records using the same tokens; 4 more for the option filter.
-- **Three structural tests**, which pin invariants rather than behaviour,
+- **Structural tests**, which pin invariants rather than behaviour,
   because both defects they guard were caused by structure rather than by a
   wrong value. One asserts both merch regexes are built from `_MERCH_NOUNS`,
   so the hand-written drift cannot recur. The other asserts `_VINYL_WORD_RE`

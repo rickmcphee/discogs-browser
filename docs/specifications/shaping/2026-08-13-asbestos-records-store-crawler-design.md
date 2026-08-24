@@ -4,16 +4,16 @@ Date: 2026-08-13
 Branch: `claude/realgonemusic-store-crawler-68d8ae`
 
 **Amendment (2026-08-23, branch `claude/competent-saha-636e61`):**
-`backend/crawlers/jetglowrecordings.py` is a second Big Cartel store, so
+`backend/crawlers/jetglowrecordings.py` is another Big Cartel store, so
 this doc is no longer describing the only one. Two clarifications, neither
 retracting anything below:
 
 1. The Scope section's "this is the first Bigcartel store, so a
    `bigcartel_catalog.py` helper would be premature abstraction" still
-   holds, but no longer for the reason given. With two stores the count
-   argument is spent; what keeps the abstraction premature now is that the
-   two crawlers agree only on the *fetch* (one unpaginated `/products.json`
-   GET) and diverge on every parsing decision after it — see
+   holds, but no longer for the reason given. Now that it is not the only
+   one, the count argument is spent; what keeps the abstraction premature is
+   that the crawlers agree only on the *fetch* (one unpaginated
+   `/products.json` GET) and diverge on every parsing decision after it — see
    [`2026-08-23-jetglow-recordings-crawler-design.md`](2026-08-23-jetglow-recordings-crawler-design.md).
    A shared helper would cover the one line that is already trivial. The
    nine-Shopify-crawler bar cited below is still the right one.
@@ -24,16 +24,15 @@ retracting anything below:
    option-level `sold_out` (populated here — 19 true — but inert on
    Jetglow, where all 114 options report `false` and product-level
    `status` carries availability instead). The "entire catalog in one
-   response, `page=`/`limit=` ignored" behaviour *did* reproduce on the
-   second store.
+   response, `page=`/`limit=` ignored" behaviour *did* reproduce on Jetglow.
 
 **Second amendment (2026-08-24, branch `claude/ripple-music-crawler-ttceiq`):**
-`backend/crawlers/ripplemusic.py` is a third Big Cartel store, and it spends
+`backend/crawlers/ripplemusic.py` is another Big Cartel store, and it spends
 the reasoning the first amendment replaced the count argument with.
 
 That amendment said the `bigcartel_catalog.py` helper stays premature because
-the two crawlers "agree only on the *fetch* (one unpaginated `/products.json`
-GET) and diverge on every parsing decision after it." The third crawler does
+the crawlers "agree only on the *fetch* (one unpaginated `/products.json`
+GET) and diverge on every parsing decision after it." This crawler does
 not share the fetch either: it pages `/products.json` and stops when a page
 returns nothing new. Not because `page=` was found to be honoured there — it
 could not be checked at all (see that crawler's design doc, "Verification
@@ -43,43 +42,44 @@ against 76 and 50 products total here and on Jetglow), so a single GET risks
 silently truncating the catalog if the platform caps the response.
 
 The conclusion is unchanged and now rests on something stronger than a count:
-the three crawlers share no logic at all, only Big Cartel's response *schema*,
+these crawlers share no logic at all, only Big Cartel's response *schema*,
 which is the platform's and not ours. A shared helper would have nothing left
 to hold. The nine-Shopify-crawler bar cited below is still the right one.
 
 The first amendment's list of observations that are store-specific rather than
-platform behaviour gains a third data point, and one correction of emphasis:
+platform behaviour gains another data point, and one correction of emphasis:
 
 - The `Vinyl` *category* — already noted as not generalising to Jetglow's
-  lumped `Vinyl - Cassette - CD`. Ripple Music is a third shape again: its
+  lumped `Vinyl - Cassette - CD`. Ripple Music is a different shape again: its
   media categories are named by format *and size* (`12" Vinyl`, `10" Vinyl`,
-  `7" Vinyl`, `Double LP`, `Test Presses`). Three stores, three category
-  vocabularies — an exact category string is store-local by default, and
+  `7" Vinyl`, `Double LP`, `Test Presses`). Every Big Cartel store here names
+  its media categories differently — an exact category string is store-local by default, and
   `ripplemusic.py` matches category names with a token regex for that reason.
 - Option-level `sold_out` — populated here (19 true), inert on Jetglow, and
   **both populated** on Ripple Music (measured 2026-08-24: 316 `active` / 55
   `sold-out` / 2 `coming-soon` products, and 228 of 722 options `sold_out`).
-  Three stores, three combinations — so neither field is reliable alone on an
+  Every store here shows a different combination — so neither field is
+  reliable alone on an
   unexamined Big Cartel store, and a new crawler should honour both rather
   than pick whichever its nearest sibling used. `ripplemusic.py` additionally
   treats an absent `status` as "no signal" rather than as sold out, so a feed
   that omits the field degrades to the option flag instead of emptying.
   Ripple Music also exposes a third `status` value neither store here shows,
   `coming-soon`.
-- The unpaginated-feed behaviour reproduced on the second store, and the first
+- The unpaginated-feed behaviour reproduced on Jetglow, and the first
   amendment recorded that as reproduction. Two stores of 76 and 50 products
   are weak evidence for a platform-wide rule about response caps; it should be
   read as "not yet contradicted," not as established.
 
-  **Updated 2026-08-24, same branch, after the third store was measured:**
+  **Updated 2026-08-24, same branch, after Ripple Music was measured:**
   Ripple Music is **373 products** and `/products.json` still returns all of
   them in one response, with `?page=2` returning the same 373. That is five to
   seven times either store here, so the rule is now supported by a size range
   wide enough to be worth something rather than by two small catalogs. The
   count was cross-checked against that store's `sitemap.xml`, which lists the
   same 373 — without an independent count, "373 in one response" cannot be
-  told apart from "373 is the cap", and neither of the first two stores
-  advertised a sitemap to check against. Still not a documented platform
+  told apart from "373 is the cap", and neither earlier store advertised a
+  sitemap to check against. Still not a documented platform
   guarantee, and `ripplemusic.py` keeps its paging loop for that reason.
 
 Amendment only — nothing below is retracted.
