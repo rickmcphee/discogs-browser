@@ -123,9 +123,13 @@ search unwrapped text, since a wrapped line can split the number from its noun:
   Search for `total .* to`, `as of this writing`, and `\b\d+(st|nd|rd|th)\b`
   as well as the obvious pattern.
 - **A generic noun standing in for the inventory** — `all 40 files listed in the
-  table below`, `~8 other test files`, `the four crawler test files`, `~100
-  pytest files`. Searching only for `crawler|source|site|plugin` misses every
-  one of these, so sweep `files?|fixtures?` too.
+  table below`, `~8 other test files`, `~100 pytest files`. Searching only for
+  `crawler|source|site|plugin` misses these, so sweep `files?|fixtures?` too.
+- **A spelled-out number**, especially a small one — `the four crawler test
+  files`, `six App-rendering test files`. A digit-only pattern never sees them,
+  so match `one|two|…|fifty` as well as `\d+`. Do **not** skip the low numbers on
+  the theory that they are scoped to one change: filtering out `four` is exactly
+  how `the four crawler test files` survived two sweeps.
 - **The number hyphenated onto the noun** — `a 40-file edit`, `the ~40-crawler
   list`. There is no space to anchor on, so `\d+ \w+ files` misses it; search
   `\d+-(file|crawler|source|plugin)` separately.
