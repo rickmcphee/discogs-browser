@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - **No `backend/db.py` changes.** `GLOBAL_SCHEMA`, `TENANT_SCHEMA`, `init_global_schema`, `init_tenant_schema` and `_ensure_role` are untouched. Task 4 modifies `db.py` temporarily to prove the guards bite and **reverts before committing** — verify with `git diff backend/db.py` returning empty.
-- **No changes to the 27 existing test files that use `pg_test_db`.** `pg_test_db` and the per-file `TRUNCATE` teardowns stay exactly as they are; with a bare database per run they become an intra-run optimization rather than the only cleanup.
+- **No changes to the existing test files that use `pg_test_db`.** `pg_test_db` and the per-file `TRUNCATE` teardowns stay exactly as they are; with a bare database per run they become an intra-run optimization rather than the only cleanup.
 - **No changes to `.github/workflows/fly-deploy.yml`.** CI already provisions a fresh database per job; it gains the per-run database for free.
 - Role names and passwords go through `sql.Identifier` / `sql.Literal`, never string interpolation — mirroring `_ensure_role` at `backend/db.py:296`.
 - Python ≥3.9 syntax (no `str | None`); no comments unless the WHY is non-obvious — per `CLAUDE.md` style notes.

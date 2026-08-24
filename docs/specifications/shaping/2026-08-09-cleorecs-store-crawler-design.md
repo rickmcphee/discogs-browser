@@ -288,15 +288,15 @@ Registration is automatic: `main.py`'s startup loop reads `site_name` /
 
 ## Queue fan-out
 
-3,151 stock items × 3 eligible release crawlers (amazon, ebay, ebay_general;
-`discogs_marketplace` is excluded by its `requires_discogs_release = True`)
-= **~9,450 `crawl_queue` jobs per sync**, drained at roughly 4 jobs/minute —
-about 39 hours.
+Each eligible release crawler (amazon, ebay, ebay_general; `discogs_marketplace`
+is excluded by its `requires_discogs_release = True`) gets its own job per stock
+item, so this store's 3,151 stock items fan out to **~9,450 `crawl_queue` jobs
+per sync**, drained at roughly 4 jobs/minute — about 39 hours.
 
 **No window is applied**, unlike the amoeba crawler's 1,000-item cap. Two
 reasons:
 
-- This is a label store, like the other 33 Shopify plugins, none of which are
+- This is a label store, like the other Shopify plugins, none of which are
   windowed; `angryyoungandpoor.py` ships ~4,400 items unwindowed.
 - The starvation risk that motivated amoeba's window was fixed structurally
   afterwards. `claim_crawl_queue_batch`'s `ORDER BY (item_key IS NOT NULL)`

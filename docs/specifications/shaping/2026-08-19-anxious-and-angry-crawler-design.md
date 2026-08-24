@@ -10,7 +10,7 @@ Heads)'s punk mailorder/record store — new and used vinyl, CDs, and merch
 from a broad punk-adjacent roster (Off With Their Heads, Pegboy, Banner
 Pilot, American Steel, and many others as consignment/distro stock, not a
 single-label catalog) — is not covered by any existing crawler. It is a
-standard Shopify storefront, same family as the ~35 label-store `catalog`
+standard Shopify storefront, same family as the label-store `catalog`
 plugins already in `backend/crawlers/`.
 
 Unlike most of those siblings, format lives in the *product* title suffix

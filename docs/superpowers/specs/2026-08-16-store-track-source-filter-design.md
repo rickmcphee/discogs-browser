@@ -13,7 +13,7 @@ devices, and inconvenient to reach while actually browsing.
 This spec replaces that mechanism with a "Source" filter button in the
 Store/Track header itself, backed by a per-user server-persisted hidden-set,
 plus a coarse genre grouping (marketplace/punk/metal/rock/pop) so the
-~40-crawler list can be bulk-toggled instead of checked one at a time. It
+long crawler list can be bulk-toggled instead of checked one at a time. It
 also removes the now-empty Settings tab for non-admin users.
 
 ## Goals / non-goals
