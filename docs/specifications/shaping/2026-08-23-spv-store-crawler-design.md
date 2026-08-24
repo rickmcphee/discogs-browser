@@ -223,11 +223,11 @@ the test it replaced only passed because it blanked `vendor`.
 ### Format gate: negative, on the title blurb
 
 ```python
-_VINYL_WORDS           = (r'\d*[x×]?lp', r'vinyl', r'picture\s+disc')
-_NON_VINYL_MEDIA_WORDS = (r'\d*[x×]?cds?', r'digital', r'digipa[kc]k?', r'cassette',
-                          r'tape', r'mc', r'\d*[x×]?dvd', r'blu-?ray')
-_MERCH_WORDS           = (r't-?shirt', r'shirt', r'hoodie', r'longsleeve',
-                          r'poster', r'patch', r'flag', r'mug', r'book')
+_VINYL_WORDS           = (r'\d*[x×]?lps?', r'vinyls?', r'picture\s+discs?')
+_NON_VINYL_MEDIA_WORDS = (r'\d*[x×]?cds?', r'digital', r'digipa[kc]k?s?', r'cassettes?',
+                          r'tapes?', r'mcs?', r'\d*[x×]?dvds?', r'blu-?rays?')
+_MERCH_WORDS           = (r't-?shirts?', r'shirts?', r'hoodies?', r'longsleeves?',
+                          r'posters?', r'patche?s?', r'flags?', r'mugs?', r'books?')
 _NON_VINYL_WORDS       = _NON_VINYL_MEDIA_WORDS + _MERCH_WORDS
 _INCH                  = r'\b\d{1,2}\s*(?:"|inch\b)'
 
@@ -297,6 +297,31 @@ decides. Media keeps its bundle behaviour because a CD beside a 10-inch record
 is a real release, while a poster measured in inches is just a measured poster.
 `10 INCH + CD`, `12"`, `LP + T-Shirt` and `12" LP + Poster` all stay vinyl;
 `12" x 12" Poster` and `10 inch Patch` no longer do.
+
+**Every noun carries `s?`, and omitting it broke both halves.** `\blp\b`
+cannot match the `LPs` in `2 LPs + CD`: there is no word boundary between the
+`p` and the `s`. On the vinyl side that *dropped real stock* — the override
+failed to fire, then the `CD` half matched the negative side, so a genuine
+bundle vanished. Both shapes are already in this repo: `fatherdaughterrecords.py`
+spells it `lps?` and carries a comment explaining why, which this crawler did
+not inherit, and `test_jetglowrecordings_crawler.py` keeps a confirmed-live
+`Black Vinyls + CD` variant. On the merch side the same gap let the dimension
+collision straight back in — with only `poster` in the vocabulary,
+`12" x 12" Posters` fell through to the inch marker and published as vinyl
+again, one round after that bug was fixed in the singular. Found in review on
+PR #165.
+
+Two second-order notes. `2 LPs` alone was classified correctly *by accident*
+before this: the override never fired, and the row survived only because
+nothing negative matched either — which is why the bug surfaced in the bundle,
+where something negative did. And `patche?s?` is spelled that way rather than
+`patch(?:es)?` so the structural guard test can keep deriving its sample by
+stripping `?` from the pattern.
+
+The cost is a slightly wider dash-path misread: `The Books` now truncates where
+`The Book` already did. That is the accepted limitation recorded above, one
+plural wider, and it is the right side of the trade — the alternative silently
+loses real vinyl.
 
 The split is a partition, not a second vocabulary to keep in sync —
 `_NON_VINYL_WORDS` is the concatenation of the two halves, so the stripper and

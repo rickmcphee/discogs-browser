@@ -46,19 +46,27 @@ _DASH_RE = re.compile(r'^(?P<artist>.+?)(?:\s+[-–—]\s*|\s*[-–—]\s+)(?P<a
 # whichever path carried the shorter list. Deriving every expression from the
 # same two tuples makes that specific mistake impossible: a word added here
 # reaches the product gate, the variant gate and the dash-path stripper at once.
-_VINYL_WORDS = (r'\d*[x×]?lp', r'vinyl', r'picture\s+disc')
+# Every noun carries s?: `\blp\b` cannot match the "LPs" in "2 LPs + CD",
+# because there is no word boundary between the p and the s. On the vinyl side
+# that silently *dropped* real stock -- the override failed, then the CD half
+# matched the negative side -- and `fatherdaughterrecords.py` already carries a
+# comment about this exact trap that this crawler did not inherit. On the merch
+# side it let the dimension bug below back in as "12\" x 12\" Posters". Both
+# found in review on PR #165. `patche?s?` rather than `patch(?:es)?` so the
+# structural guard test can still derive a sample by stripping `?`.
+_VINYL_WORDS = (r'\d*[x×]?lps?', r'vinyls?', r'picture\s+discs?')
 # Split media from merch because the two behave differently against an inch
 # marker, not because the stripper cares -- it still sees the concatenation.
 # An inch marker next to a *media* format is a real bundle ("10 INCH + CD");
 # next to *merch* it is usually a measurement ("12\" x 12\" Poster"), so it must
 # not be read as a vinyl claim. See _is_vinyl.
 _NON_VINYL_MEDIA_WORDS = (
-    r'\d*[x×]?cds?', r'digital', r'digipa[kc]k?', r'cassette', r'tape', r'mc',
-    r'\d*[x×]?dvd', r'blu-?ray',
+    r'\d*[x×]?cds?', r'digital', r'digipa[kc]k?s?', r'cassettes?', r'tapes?',
+    r'mcs?', r'\d*[x×]?dvds?', r'blu-?rays?',
 )
 _MERCH_WORDS = (
-    r't-?shirt', r'shirt', r'hoodie', r'longsleeve',
-    r'poster', r'patch', r'flag', r'mug', r'book',
+    r't-?shirts?', r'shirts?', r'hoodies?', r'longsleeves?',
+    r'posters?', r'patche?s?', r'flags?', r'mugs?', r'books?',
 )
 _NON_VINYL_WORDS = _NON_VINYL_MEDIA_WORDS + _MERCH_WORDS
 # Inch markers stay separate from the word tuples: the mark is a non-word

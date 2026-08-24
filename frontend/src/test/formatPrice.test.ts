@@ -8,8 +8,11 @@ describe('formatPrice', () => {
   })
 
   it('renders EUR with its own symbol', () => {
-    // The regression this helper exists for: SPV Entertainment prices in EUR
-    // were rendered as "$27.99".
+    // The live regression this helper exists for is jetglowrecordings.py's:
+    // its EUR rows render as "$27.99" today. SPV would have compounded it, but
+    // has never run against the live feed, so no SPV row has rendered at all.
+    // An earlier version of this comment credited the bug to SPV; corrected
+    // alongside the same overclaim in the design doc and formatPrice.ts.
     expect(formatPrice(27.99, 'EUR')).toBe('€27.99')
   })
 

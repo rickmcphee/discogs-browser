@@ -188,6 +188,28 @@ def test_spelled_and_spaced_inch_markers_take_the_vinyl_override():
         assert len(Crawler._items({**_SODOM, "title": title})) == 1, title
 
 
+def test_plural_format_words_are_recognised_on_both_sides():
+    # `\blp\b` cannot match the "LPs" in "2 LPs + CD" -- no word boundary
+    # between the p and the s -- so the vinyl override failed and the CD half
+    # then matched the negative side, dropping a real bundle. Both cited shapes
+    # already exist in this repo: fatherdaughterrecords.py spells it `lps?` for
+    # this reason, and test_jetglowrecordings_crawler.py keeps a confirmed-live
+    # "Black Vinyls + CD". Found in review on PR #165.
+    for blurb in ('2 LPs + CD', 'Black Vinyls + CD',
+                  'Bundle Black Vinyls + Digipack CD', 'Picture Discs'):
+        assert Crawler._is_vinyl(blurb) is True, blurb
+
+    # The same gap on the merch side let the dimension collision back in: with
+    # only `poster` in the vocabulary, "Posters" fell through to the inch
+    # marker and published as vinyl again.
+    for blurb in ('12" x 12" Posters', '10 inch Patches', 'T-Shirts', 'Books'):
+        assert Crawler._is_vinyl(blurb) is False, blurb
+
+    # And on the media side, so a plural non-vinyl format is still dropped.
+    for blurb in ('2 CDs', 'Cassettes', 'Blu-Rays'):
+        assert Crawler._is_vinyl(blurb) is False, blurb
+
+
 def test_dimension_does_not_override_an_explicit_merch_word():
     # _INCH matches any 1-2 digit measurement, so a bare 12" used to
     # short-circuit the gate and publish merch as Vinyl. The repo already
