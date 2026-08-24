@@ -114,6 +114,16 @@ change that).
   single well-formed numeric substring first avoids that. No validation or
   normalization of the underlying free-text value itself; this only affects
   sort order, never what's displayed.
+
+  (As of 2026-08-24 the extraction moved into a shared `_price_sort_sql()`
+  helper and its pattern widened to `'[0-9][0-9,]*(?:\.[0-9]+)?'`, with the
+  matched substring's commas stripped before the `::numeric` cast, so a
+  thousands separator no longer truncates `"$1,200.50"` to `1`. Everything
+  above still holds: still a single well-formed substring rather than a
+  blanket strip-then-cast, still NULL-and-last for a value with no digits,
+  still sort-order-only. The helper is now shared with `get_library_releases`
+  — see
+  [`2026-08-24-numeric-price-sort-design.md`](2026-08-24-numeric-price-sort-design.md).)
 - **Missing value renders as `—`**, matching `Format`'s existing convention
   in the same table.
 - **Shared match logic, not duplicated.** `_not_owned_clause`'s
