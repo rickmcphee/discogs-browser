@@ -412,16 +412,18 @@ def test_get_library_releases_price_sort_reads_a_bare_decimal_part(admin_conn):
 def test_get_library_releases_price_sort_floors_unrecognised_prices(admin_conn):
     # Two things at once, both about the fallback branch.
     #
-    # It must not error: "25.00.00" survives a blanket separator strip intact
-    # and then fails ::numeric, taking down the whole query rather than one
-    # row. Every branch has to yield digits with at most one dot.
+    # Two rejected approaches, two distinct failure modes, both on this input:
     #
-    # And it must not inflate. Stripping the separators reads "25.00.00" as
-    # 250000, floating a $25 record four orders of magnitude up and to the top
-    # of a descending sort -- worse than the lexicographic ordering this whole
-    # change replaces. The fallback truncates to the leading digit run instead,
-    # so an unrecognised token can only understate, and only as far as its
-    # first group.
+    #   strip everything but digits and separators   "25.00.00" -> "25.00.00"
+    #   strip the separators too                     "25.00.00" -> 250000
+    #
+    # The first keeps the currency out but leaves two dots, so ::numeric fails
+    # and takes down the whole query rather than one row -- which is why every
+    # branch has to yield digits with at most one dot. The second casts fine
+    # and is worse: it floats a $25 record four orders of magnitude up, to the
+    # top of a descending sort. The fallback truncates to the leading digit run
+    # instead, so an unrecognised token can only understate, and only as far as
+    # its first group.
     #
     # "1,23,456" is the Indian grouping and is recognised outright rather than
     # left to the fallback, which would have floored it to 1.
@@ -431,14 +433,20 @@ def test_get_library_releases_price_sort_floors_unrecognised_prices(admin_conn):
         ("r2", "Bbb", "1,23,456"),
         ("r3", "Ccc", "$5"),
         ("r4", "Ddd", "$40"),
+        ("r5", "Eee", "1,23,456.78"),
     ])
 
     with db.user_scope(alice["id"]) as conn:
         result = db.get_library_releases(conn, alice["id"], sort="discogs_price", order="asc")
-    # 5 < 25 (floored from "25.00.00") < 40 < 123456. Under a separator strip
-    # r1 reads as 250000 and leads on desc; under a leading-run fallback for
-    # every unrecognised token r2 reads as 1 and leads on asc.
-    assert [r["discogs_id"] for r in result["releases"]] == ["r3", "r1", "r4", "r2"]
+    # 5 < 25 (floored from "25.00.00") < 40 < 123456 < 123456.78. Under a
+    # separator strip r1 reads as 250000 and leads on desc; under a leading-run
+    # fallback for every unrecognised token r2 reads as 1 and leads on asc.
+    #
+    # r5 carries the decimal the Indian branch originally omitted, which is the
+    # commonest real form of that convention -- a price with cents. Without the
+    # suffix it missed every branch and floored to 1, so recognising the
+    # grouping bought nothing for exactly the values it was added for.
+    assert [r["discogs_id"] for r in result["releases"]] == ["r3", "r1", "r4", "r2", "r5"]
 
 
 def test_get_library_releases_paginates_without_overlap_when_every_sort_key_is_null(admin_conn):

@@ -769,6 +769,7 @@ def test_get_stock_items_sort_by_discogs_price_reads_decimal_commas_as_decimals(
         {"artist": "Artist C", "title": "Album C", "url": "https://x/3", "price": 10.0, "currency": "USD"},
         {"artist": "Artist D", "title": "Album D", "url": "https://x/4", "price": 10.0, "currency": "USD"},
         {"artist": "Artist E", "title": "Album E", "url": "https://x/5", "price": 10.0, "currency": "USD"},
+        {"artist": "Artist F", "title": "Album F", "url": "https://x/6", "price": 10.0, "currency": "USD"},
     ])
     for discogs_id, artist, title, price in [
         ("r1", "Artist A", "Album A", "$100"),
@@ -776,6 +777,7 @@ def test_get_stock_items_sort_by_discogs_price_reads_decimal_commas_as_decimals(
         ("r3", "Artist C", "Album C", "1.234,56"),
         ("r4", "Artist D", "Album D", "$1,200.50"),
         ("r5", "Artist E", "Album E", "1.234"),
+        ("r6", "Artist F", "Album F", "1,23,456.78"),
     ]:
         db.upsert_catalog_release(admin_conn, {
             "discogs_id": discogs_id, "artist": artist, "title": title, "year": None, "label": None,
@@ -791,7 +793,7 @@ def test_get_stock_items_sort_by_discogs_price_reads_decimal_commas_as_decimals(
     # Under a blanket comma strip B reads as 2550 and leads; under the old
     # narrow regex C reads as 1.234 and D as 1.
     assert [r["artist"] for r in result["items"]] == [
-        "Artist E", "Artist B", "Artist A", "Artist D", "Artist C",
+        "Artist E", "Artist B", "Artist A", "Artist D", "Artist C", "Artist F",
     ]
 
 

@@ -173,8 +173,13 @@ def _price_sort_sql(column: str) -> str:
       since reading it as 1234 would silently change how every existing
       three-decimal value already sorted.
     - `25,50` -- decimal comma, the case a blanket strip turns into 2550.
-    - `1,23,456` -- the Indian grouping, whose last group is three digits and
-      whose earlier ones are two. Commas drop out.
+    - `1,23,456` / `1,23,456.78` -- the Indian grouping, whose last group is
+      three digits and whose earlier ones are two, with the same optional dot
+      decimal the comma-grouping branch takes. Commas drop out. The decimal
+      suffix is not optional to *this* branch's usefulness: without it the
+      commonest real form of the convention, a price with cents, missed every
+      branch and floored to 1 -- the exact flattening recognising the grouping
+      was meant to prevent.
     - `25` / `25.50` -- already plain.
     - `.99` / `,99` -- a bare decimal part, which a price written without its
       leading zero produces. The token may start with a separator and is given
@@ -218,7 +223,7 @@ def _price_sort_sql(column: str) -> str:
         WHEN t.v ~ '^[0-9]{{1,3}}(\\.[0-9]{{3}}){{2,}}$'
           OR t.v ~ '^[0-9]{{1,3}}(\\.[0-9]{{3}})+,[0-9]+$'
           THEN replace(replace(t.v, '.', ''), ',', '.')
-        WHEN t.v ~ '^[0-9]{{1,2}}(,[0-9]{{2}})+,[0-9]{{3}}$' THEN replace(t.v, ',', '')
+        WHEN t.v ~ '^[0-9]{{1,2}}(,[0-9]{{2}})+,[0-9]{{3}}(\\.[0-9]+)?$' THEN replace(t.v, ',', '')
         WHEN t.v ~ '^[0-9]+,[0-9]+$' THEN replace(t.v, ',', '.')
         WHEN t.v ~ '^[0-9]+(\\.[0-9]+)?$' THEN t.v
         ELSE (regexp_match(t.v, '^[0-9]+'))[1]
