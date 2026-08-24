@@ -4,7 +4,7 @@ Date: 2026-08-07
 Branch: `shared-title-split-helper`
 
 **Amendment (2026-08-10, branch `claude/cleorecs-vinyl-crawler-265d08`):**
-`backend/crawlers/cleorecs.py` is a tenth Shopify title-splitting crawler,
+`backend/crawlers/cleorecs.py` is another Shopify title-splitting crawler,
 shipped after this doc, and it is genuine counter-evidence to the "Is this
 the diverges-enough-to-need-flags case, or not?" section's conclusion that
 title-splitting mechanics converge across the fleet. `cleorecs.py` diverges
@@ -16,7 +16,8 @@ title before matching, to keep a trailing-bracket `" - "` from being mistaken
 for the artist/album separator, which no sibling crawler does; (3) it has no
 vendor fallback at all — `vendor` names the imprint on every Cleopatra
 product, never the artist, so the no-separator case falls through to
-`"Various"` instead of trusting `vendor` the way the other eight do; and (4)
+`"Various"` instead of trusting `vendor` the way the others this doc
+describes do; and (4)
 its method signature is `_parse_artist_title(title)`, one argument, not this
 doc's proposed `_parse_artist_title(title, vendor)` two-argument shape — there
 is no vendor to thread through. None of these four is expressible by calling
@@ -25,7 +26,7 @@ around it, the pattern this design proposes for every other crawler; the
 character class alone would need to become a parameter, and the paren-strip
 and no-vendor-fallback points aren't parameters of the split at all, they're
 different call shapes. This doesn't retract the doc's original argument for
-the other eight (they still converge exactly as described) — it records that
+the others it describes (they still converge exactly as described) — it records that
 the premise no longer holds unconditionally across "the Shopify crawlers" as
 a whole, and any future implementation of `split_artist_title` should treat
 `cleorecs.py` as a documented exception, not a bug to fix into conformance.
@@ -82,7 +83,7 @@ exceptions use — whitespace-bounded hyphen only, no en-dash or em-dash
 support at all. And unlike the prior exceptions, none of which has a
 vendor fallback, `carparkrecords.py` does fall back to `vendor` when no
 separator is found — on this one axis it actually matches the original
-eight-crawler convergence this doc describes, not the exceptions. But
+convergence this doc describes, not the exceptions. But
 the mandatory catalog-code strip still means it can't be expressed as a
 plain call to `split_artist_title(title)` plus a one-line vendor-fallback
 wrapper, this design's proposed pattern for the original eight — the
@@ -180,6 +181,38 @@ is the reason the exception ordinals this amendment originally carried are
 gone: a count that another branch can shift on merge is exactly the kind
 `CLAUDE.md` says not to write down. The amendment headings keep their numbers
 because they order this document's own sections, not the crawlers.)
+
+**Seventh amendment (2026-08-24, branch `claude/darkside-records-crawler-4kfeag`):**
+`backend/crawlers/darksiderecords.py` is another exception, and the least
+novel one yet: it is a straight reuse of `jackpotrecords.py`'s shape, adding
+no divergence of its own. Same wider `[-–—]` separator class the prior
+exceptions share, same asymmetric-spacing alternation
+(`\s+[-–—]\s*|\s*[-–—]\s+`), same single parser with no preprocessing pass
+and no two-stage primary/fallback, and the same absence of a vendor fallback
+— `vendor` on this store is the *distributor* (`THE ORCHARD`, `UMG`, `WMX`,
+`AEC`, `REDEYE MUSIC DISTRIBUTION`), which is neither the artist nor, unlike
+the label stores, a stable imprint name. A product whose title has no
+separator yields nothing rather than falling through to `vendor` or to
+`"Various"` the way `cleorecs.py` does; 178 of 5,141 live products take that
+path, all of them genuinely artist-less soundtracks and compilations.
+
+Two points are worth recording even though neither is a new divergence. The
+asymmetric-spacing alternation is not decoration on this store: its dominant
+title form is `Artist- Album`, the hyphen glued to the artist with a space
+only after it, so a symmetric `\s*[-–—]\s*` would be required, and a
+`\s+[-–—]\s+` would match almost nothing. And that same alternation is what
+keeps hyphenated artist names intact, since both branches require whitespace
+adjacent to the dash — verified against all 45 live products whose artist
+contains one (`Blink-182`, `Run-Dmc`, `Jean-Luc Ponty`, `Olivia
+Newton-John`, `B-52's`, `The-Dream`).
+
+This neither retracts the doc's original argument for the crawlers it still
+describes correctly, nor the earlier amendments' verdicts on their own
+crawlers; it records that `darksiderecords.py` is a documented exception to
+the converging contract, not a bug to fix into conformance — the same framing
+the earlier amendments use. It is the second exception that is a near-copy of
+a prior one rather than a new shape, after `spv.py`.
+
 
 ## Problem
 
