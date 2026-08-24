@@ -291,10 +291,22 @@ variant name (`1982 — Black`), the shape `nuclearblast.py` uses.
 
 Three details, all load-bearing:
 
-- **The count is over the full variant list, never the availability-filtered
-  one.** A qualifier that appeared only while a sibling variant happened to be
-  in stock would change the title — and with it `item_key` — between syncs,
-  orphaning that row's judgment every time stock moved.
+- **Non-vinyl variants are dropped first.** The title blurb gates the
+  *product*; a mixed-format product still needs its own variants filtered, or
+  a `CD` variant of an LP-titled release publishes as `format: "Vinyl"` titled
+  `1982 — CD`. The same `_is_vinyl()` gate is applied to the variant name —
+  deliberately **not** `nuclearblast.py`'s positive
+  `_VINYL_RE.search(variant_title)` filter, which would drop every bare colour
+  name (`Black`, `Splatter`), the failure mode `carparkrecords.py`'s doc
+  records for its own store. Found in review on PR #165.
+- **The count is over the format-filtered list, never the availability-filtered
+  one.** These two filters are not interchangeable. A qualifier that appeared
+  only while a sibling variant happened to be in stock would change the title —
+  and with it `item_key` — between syncs, orphaning that row's judgment every
+  time stock moved. A variant's *format*, by contrast, doesn't change as stock
+  moves, so filtering on it before the count is stable — and it's more correct,
+  because the qualifier exists to disambiguate rows and should therefore count
+  only variants that can actually become rows.
 - **Shopify's `Default Title` placeholder never reaches a title.** It appears
   on single-variant products, identifies nothing, and would be pure noise.
 - **The qualifier precedes the ` (Pre-Order)` suffix**, so the clean album

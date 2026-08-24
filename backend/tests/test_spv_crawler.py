@@ -204,6 +204,35 @@ def test_multiplier_notation_vinyl_is_kept():
         assert len(Crawler._items({**_SODOM, "title": title})) == 1, title
 
 
+def test_non_vinyl_variant_of_a_vinyl_product_is_dropped():
+    # The title blurb gates the product; before this, a mixed-format product's
+    # CD variant was published as format "Vinyl" titled "1982 — CD".
+    product = {**_SODOM, "variants": [_variant("Black LP"), _variant("CD")]}
+    items = Crawler._items(product)
+    assert [i["title"] for i in items] == ["1982"]
+    assert all(i["format"] == "Vinyl" for i in items)
+
+
+def test_bare_colour_variants_are_not_dropped_by_the_variant_gate():
+    # The gate is negative for the same reason the product-level one is: a
+    # positive filter would drop every variant named only for its colour.
+    product = {**_SODOM, "variants": [_variant("Black"), _variant("Splatter")]}
+    assert len(Crawler._items(product)) == 2
+
+
+def test_product_whose_every_variant_is_non_vinyl_yields_nothing():
+    product = {**_SODOM, "variants": [_variant("CD"), _variant("2xCD")]}
+    assert Crawler._items(product) == []
+
+
+def test_qualifier_counts_only_variants_that_can_become_rows():
+    # Two variants but one is a CD, so exactly one row is emitted and it needs
+    # no qualifier to disambiguate it. Format is safe to filter on before the
+    # count -- unlike availability -- because it does not change as stock moves.
+    product = {**_SODOM, "variants": [_variant("Black LP"), _variant("CD")]}
+    assert [i["title"] for i in Crawler._items(product)] == ["1982"]
+
+
 def test_multi_variant_product_qualifies_each_row():
     # db.compute_item_key hashes (artist, title, url) and replace_stock_items
     # INSERTs with no ON CONFLICT, so identical titles across variants become

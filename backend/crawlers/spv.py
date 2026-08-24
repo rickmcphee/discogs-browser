@@ -113,6 +113,22 @@ class Crawler:
         is_preorder = cls._is_preorder(product)
 
         variants = product.get("variants") or []
+        # The title blurb gates the *product*; a mixed-format product still
+        # needs its non-vinyl variants dropped, or a "CD" variant of an
+        # LP-titled release publishes as format "Vinyl". Same gate, applied to
+        # the variant name -- deliberately not nuclearblast.py's positive
+        # `_VINYL_RE.search(variant_title)` filter, which would drop every bare
+        # colour name ("Black", "Splatter"), the failure mode
+        # carparkrecords.py's doc records for its own store.
+        #
+        # Applied before the count below, not inside the loop: the qualifier
+        # exists to disambiguate rows, so it should count variants that can
+        # actually become rows. Filtering on format here is safe for item_key
+        # stability -- a variant's format does not change as stock moves --
+        # which is exactly why availability is *not* filtered here.
+        eligible = [
+            v for v in variants if cls._is_vinyl((v.get("title") or "").strip())
+        ]
         # db.compute_item_key hashes (artist, title, url) and
         # replace_stock_items INSERTs without ON CONFLICT, so two variants of
         # one product sharing a title become two physically duplicated rows
@@ -125,10 +141,10 @@ class Crawler:
         # one: if the qualifier appeared only while a sibling variant happened
         # to be in stock, the title -- and with it item_key -- would change
         # between syncs, orphaning that row's judgment every time stock moved.
-        multi_variant = len(variants) > 1
+        multi_variant = len(eligible) > 1
 
         items = []
-        for variant in variants:
+        for variant in eligible:
             if not variant.get("available") and not is_preorder:
                 continue
             try:
