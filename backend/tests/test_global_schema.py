@@ -259,7 +259,7 @@ def test_bare_form_indexes_have_unescaped_like_pattern(admin_conn):
         ).fetchone()["indexdef"]
         assert "the %%" not in indexdef.lower()
         assert "the %" in indexdef.lower()
-        assert ", the%%" not in indexdef.lower()
+        assert "%%, the" not in indexdef.lower()
         assert "%, the" in indexdef.lower()
 
 

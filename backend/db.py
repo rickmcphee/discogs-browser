@@ -107,10 +107,10 @@ def _artist_sort_sql(column: str, *, escape_percent: bool = True) -> str:
     to the comma-form ("beatles" rather than "beatles, the") matters: the
     comma-form key would still be wrong relative to a third artist like
     "Beatles A" ("beatles a" sorts before "beatles, the" but the bare key
-    "beatles" -- correctly -- doesn't). This is ORDER BY only, on the raw
-    un-canonicalized column -- it runs before canonical_artist_labels' fold
-    gets a chance to relabel the row, so it needs its own stripping regardless
-    of what the row's eventual display label becomes. `LIKE 'the %%'`/
+    "beatles" -- correctly -- doesn't). The ORDER BY call sites apply this to
+    the raw un-canonicalized column -- it runs before canonical_artist_labels'
+    fold gets a chance to relabel the row, so it needs its own stripping
+    regardless of what the row's eventual display label becomes. `LIKE 'the %%'`/
     `LIKE '%%, the'` guard on the literal `'the '`/`', the'` substring, so a
     bare "The" or a name like "Theatre of Hate" is correctly left alone --
     though `%` also matches zero characters, so an artist spelled exactly
