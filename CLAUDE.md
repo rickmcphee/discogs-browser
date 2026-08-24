@@ -131,8 +131,10 @@ search unwrapped text, since a wrapped line can split the number from its noun:
   the theory that they are scoped to one change: filtering out `four` is exactly
   how `the four crawler test files` survived two sweeps.
 - **The number hyphenated onto the noun** — `a 40-file edit`, `the ~40-crawler
-  list`. There is no space to anchor on, so `\d+ \w+ files` misses it; search
-  `\d+-(file|crawler|source|plugin)` separately.
+  list`, `all 30-odd catalog crawler plugins`. There is no space to anchor on,
+  and a modifier can sit between the hyphen and the noun, so `\d+ \w+ files` and
+  a bare `\d+-(file|crawler)` both miss cases; search `\d+-[\w-]+` followed by an
+  inventory noun within a few words.
 
 Why: these numbers change every time a crawler is added, and nothing depends on
 them. Every one of them went stale within weeks, and each staleness cost real
@@ -169,8 +171,11 @@ Scope, so this doesn't over-apply. These stay:
   dated observations, not claims about current state.
 - Counts scoped to one change and fixed by it — "four new crawlers in this
   batch", "run and confirm all 5 tests pass" for a test file the task just wrote.
-- Counts a single sentence defines by enumerating — "`colCount` stays 7 for
-  Track and 6 for Store" describes actual columns in actual code.
+- Counts a single sentence defines by enumerating, where the number *is* the
+  fact — "`colCount` stays 7 for Track and 6 for Store" describes actual columns
+  in actual code. This does not cover a number that merely restates a list
+  printed next to it: "read in nine places across five files — a.py:1, b.py:2,
+  …" carries nothing the list doesn't, so the count goes and the list stays.
 - A count that is a fixed historical fact an argument rests on — "the helper
   wasn't extracted until nine Shopify crawlers had converged on identical
   logic" records when a threshold was crossed; it does not go stale.

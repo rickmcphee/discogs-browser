@@ -200,7 +200,7 @@ class CrawlManager:
         """Group crawlers that share one upstream for circuit-breaker purposes.
 
         A plugin may declare `failure_domain: str`; every crawler declaring the
-        same one counts as a single site to the breaker. The two eBay plugins
+        same one counts as a single site to the breaker. The eBay plugins
         are separate `crawlers` rows but one eBay app, one OAuth token and one
         API, so a 409 storm answering one of them is answering both -- with a
         counter each, the storm had to reach `consecutive_failure_limit` twice
