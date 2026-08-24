@@ -73,13 +73,16 @@ def _the_comma_form_sql(column: str, *, escape_percent: bool = True) -> str:
     no leading article, passes through unchanged. Shares its `LIKE 'the %'`
     guard with `_artist_sort_sql` so a bare "The" or "Theatre of Hate" is left
     alone for the same reason. Used both to fold matching in SQL (schema
-    indexes, canonical_artist_labels, the two artist-equality filters) and,
+    indexes, canonical_artist_labels, the two artist search branches) and,
     inside canonical_artist_labels, to format the winning label for display.
+    Not the artist-equality filters: those compare _artist_sort_sql's
+    article-stripped key, which also matches a bare-spelled row (see
+    docs/specifications/shaping/2026-08-22-bare-form-artist-fold-design.md).
 
     escape_percent doubles the LIKE pattern's `%` to `%%`, which psycopg's
     pyformat layer collapses back to a literal `%` -- required by every call
     site that executes with a non-empty params dict (canonical_artist_labels,
-    both artist filters), the default here. GLOBAL_SCHEMA has no params, so
+    both search branches), the default here. GLOBAL_SCHEMA has no params, so
     its two index definitions must pass escape_percent=False to keep the
     single, unescaped `%` Postgres actually sees: otherwise the index bakes in
     the literal two-character constant `'the %%'` while the query, after
@@ -336,8 +339,9 @@ CREATE INDEX IF NOT EXISTS catalog_artist_lower_idx ON catalog (LOWER(artist));
 CREATE INDEX IF NOT EXISTS stock_items_artist_lower_idx ON stock_items (LOWER(artist));
 """ + f"""
 -- Same reasoning as the two indexes above, for the "The X" -> "X, The"
--- comma-suffix fold layered on top (see canonical_artist_labels and the
--- artist filters in get_library_releases/get_stock_items). The plain
+-- comma-suffix fold layered on top. These serve canonical_artist_labels'
+-- grouping WHERE; the artist filters moved to _artist_sort_sql's bare key
+-- and are covered by the two bare-form indexes below. The plain
 -- LOWER(artist) indexes above still serve _library_match_fragment's
 -- owned-artist join, which doesn't use this fold -- see
 -- docs/specifications/shaping/2026-08-16-the-suffix-artist-display-design.md.
