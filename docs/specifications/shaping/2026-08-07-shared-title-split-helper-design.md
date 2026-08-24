@@ -168,8 +168,8 @@ quoted-album shape is no longer unique to `asianmanrecords.py`, so if it turns
 up again, the helper worth extracting is a shared quoted-album parser with a
 quote-class and a return-the-blurb flag — not the dash-splitting
 `split_artist_title` this doc proposes. The duplication as it stands does not
-justify one: the parser is nine lines, and the two crawlers agree on none of
-the parsing that follows it.
+justify one: the parser is nine lines, and the two implementations agree on
+none of the parsing that follows it.
 
 Records `spv.py` as a documented exception, not a bug to fix into
 conformance — the same framing the earlier amendments use. (This amendment's

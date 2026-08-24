@@ -451,9 +451,11 @@ crawler_type = "catalog"
 
 `backend/tests/test_spv_crawler.py`, `respx`-mocked — the same
 shape as the sibling crawler tests. No case count is quoted here on purpose:
-it went stale four times across this branch's review rounds (19 → 22 → 24 →
-27 → 30 → 38 → 40), drawing a finding each time, and the number carries no
-information the coverage list below doesn't. Run
+it went stale on nearly every commit of this branch, drawing a review finding
+each time, and the number carries no information the coverage list below
+doesn't. An earlier version of this paragraph tried to make that point by
+listing the successive values, which merely restated the count in a form that
+went stale too — it was already wrong by the next commit. Run
 `grep -c '^def test_\|^async def test_' backend/tests/test_spv_crawler.py`
 for the current figure. Product titles and handles in the
 fixtures are real store listings; prices, tags, variants, and image URLs are
