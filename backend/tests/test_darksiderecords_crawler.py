@@ -107,19 +107,42 @@ _UNAVAILABLE_PRODUCT = {
     ],
 }
 
-# Real confirmed-live case: a pre-order-tagged product the store already
-# marks available. It must be emitted plainly, with no " (Pre-Order)" suffix
-# and no bypass of the availability gate -- pins the deliberate absence of
-# the sibling crawlers' pre-order handling.
+# Real confirmed-live case, tags verbatim from the capture: a `preorder_bt`
+# product the store already marks available. It must be emitted plainly, with
+# no " (Pre-Order)" suffix and no bypass of the availability gate -- pins the
+# deliberate absence of the sibling crawlers' pre-order handling. Note the
+# release date is in the past, which is why the tag is not a current-pre-order
+# signal; see the design spec's "Pre-orders" section.
 _PREORDER_PRODUCT = {
-    "title": "Geese- Getting Killed (Vinyl)",
-    "vendor": "AEC",
-    "handle": "geese-getting-killed",
+    "title": "Geese- Live At Third Man Records (Vinyl)",
+    "vendor": "AMS",
+    "handle": "geese-live-at-third-man-records",
     "product_type": "New Vinyl/Rock",
-    "tags": ["instore-available", "preorder_bt", "pre-order vinyl"],
+    "tags": ["cimsmarch26", "created_bt", "featured_bt", "genre1:Rock_bt",
+             "instore-available", "preorder_bt", "recent_bt",
+             "Release-Date: 02-27-2026"],
     "images": [],
     "variants": [
-        {"title": "Default Title", "price": "29.99", "available": True, "featured_image": None},
+        {"title": "Default Title", "price": "23.99", "available": True, "featured_image": None},
+    ],
+}
+
+# Real confirmed-live case for the *other* pre-order tag form, which never
+# co-occurs with `preorder_bt` -- a separate product, tags verbatim, note the
+# store's own casing is "Pre-Order Vinyl". Its release date is also in the
+# past. Covered separately rather than by stacking both tags onto one fixture,
+# which would contradict the zero-overlap finding the spec records.
+_PREORDER_VINYL_PRODUCT = {
+    "title": "The Stooges- Alternate Funhouse (Rocktober 2025) (Vinyl)",
+    "vendor": "WMX",
+    "handle": "the-stooges-alternate-funhouse-rktbr25-preorder",
+    "product_type": "New Vinyl/Punk",
+    "tags": ["cc-import", "instore-available", "inventory_link_bt", "no-html",
+             "Pre-Order Vinyl", "Release-Date: 10-31-2025", "Release-Year: 2025",
+             "Rock", "The Stooges", "Vinyl"],
+    "images": [],
+    "variants": [
+        {"title": "Default Title", "price": "26.99", "available": True, "featured_image": None},
     ],
 }
 
@@ -282,7 +305,19 @@ async def test_crawl_catalog_emits_preorder_plainly_without_suffix(crawler):
     items = [item async for item in crawler.crawl_catalog()]
     assert len(items) == 1
     assert items[0]["artist"] == "Geese"
-    assert items[0]["title"] == "Getting Killed (Vinyl)"
+    assert items[0]["title"] == "Live At Third Man Records (Vinyl)"
+    assert "Pre-Order" not in items[0]["title"]
+
+
+@respx.mock
+async def test_crawl_catalog_emits_pre_order_vinyl_tag_form_plainly(crawler):
+    # The second tag form, on its own product. Neither form is treated as a
+    # current pre-order, so neither gets a suffix.
+    _mock_single_page([_PREORDER_VINYL_PRODUCT])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert len(items) == 1
+    assert items[0]["artist"] == "The Stooges"
+    assert items[0]["title"] == "Alternate Funhouse (Rocktober 2025) (Vinyl)"
     assert "Pre-Order" not in items[0]["title"]
 
 
