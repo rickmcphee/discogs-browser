@@ -190,12 +190,13 @@ def test_crawl_stream_replay_includes_listing_changed_events_for_every_release(p
     # own collection/wishlist.
     alice, bob, crawler_id = _setup_two_users_each_with_a_different_release()
 
-    # _broadcast_listing_changed fans a listing_changed event out to live
-    # subscribers only -- it does not append to _recent (only the generic
-    # _broadcast used by sync/stock/judgment does) -- so a reconnecting
-    # client's replay buffer is populated here the same way a real one would
-    # be: directly, as _recent already holds whatever mix of job-status and
-    # listing_changed events happened to be broadcast before the reconnect.
+    # _recent is seeded by hand because production cannot produce this state:
+    # _broadcast_listing_changed fans out to live subscribers only and never
+    # appends to _recent (only the generic _broadcast used by sync/stock/
+    # judgment does), so a real replay buffer holds no listing_changed events
+    # at all. The seeding is a synthetic way to drive _events_to_replay's
+    # pass-through, not a reproduction of a real reconnect -- what is being
+    # asserted is the absence of ownership filtering, which is real.
     crawl_manager._recent = [
         {"id": 1, "status": "sync_started"},
         {"id": 2, "type": "listing_changed", "discogs_id": "r1", "crawler_id": crawler_id, "status": "found"},
