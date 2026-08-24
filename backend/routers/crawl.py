@@ -71,6 +71,11 @@ def _events_to_replay(request: Request) -> list[dict]:
     release-crawler match), so a listing_changed event for a release outside
     the calling user's own library still needs to reach them so their
     Store/Track tab repaints.
+
+    sync_*/stock_judgment_*/plex_match_* events, in contrast, are tagged with
+    the broadcasting user's id (see crawl_manager.py's per-job `broadcast`
+    closures) and ARE filtered here by that id -- one user's collection sync
+    or judgment run must not appear as another user's job status.
     """
     user_id = request.state.user_id
     with db.user_scope(user_id) as conn:
@@ -81,11 +86,24 @@ def _events_to_replay(request: Request) -> list[dict]:
     )
     if not any_active:
         return []
-    return crawl_manager.recent_events()
+    return [e for e in crawl_manager.recent_events() if _visible_to(e, user_id)]
+
+
+def _visible_to(event: dict, user_id: int) -> bool:
+    """A per-user event (sync/judgment/plex-match, tagged with the broadcasting
+    user's id) is visible only to that user. An untagged event (stock sync,
+    listing_changed, ping) has no owner and is visible to everyone. A missing
+    "user_id" key and an explicit `"user_id": None` are treated identically as
+    "no owner" -- every current caller tags with a real int, so this distinction
+    is unreachable today, not a guarded case."""
+    owner = event.get("user_id")
+    return owner is None or owner == user_id
 
 
 @router.get("/crawl/stream")
 async def crawl_stream(request: Request):
+    user_id = request.state.user_id
+
     async def generate():
         q = crawl_manager.subscribe()
         try:
@@ -96,6 +114,8 @@ async def crawl_stream(request: Request):
                     event = await asyncio.wait_for(q.get(), timeout=15.0)
                 except asyncio.TimeoutError:
                     yield {"data": json.dumps({"status": "ping"})}
+                    continue
+                if not _visible_to(event, user_id):
                     continue
                 yield {"data": json.dumps(event)}
         finally:

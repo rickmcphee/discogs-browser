@@ -97,8 +97,43 @@ it records that `carparkrecords.py` is a fourth documented exception to the
 converging contract, not a bug to fix into conformance, the same framing the
 first three amendments use.
 
-**Fifth amendment (2026-08-23, branch `claude/spv-store-crawler-2mdf0z`):**
-`backend/crawlers/spv.py` is a fifth exception, and the first that is a near-copy
+**Fifth amendment (2026-08-23, branch `claude/realgonemusic-crawler-84feaf`):**
+`backend/crawlers/realgonemusic.py` is a fifth exception, and the only one
+so far that this doc's contract cannot describe even in principle: it does
+not split titles at all. The four prior exceptions each diverge in *how*
+they split — a wider separator class, a preprocessing pass, a quoted-album
+primary parser, no vendor fallback — but all four still answer the question
+"where does the artist end and the album begin?". Real Gone Music's store
+makes that question unanswerable from the data. `vendor` is the literal
+string `"Real Gone Music"` on all 278 vinyl products, and product titles
+concatenate artist and album with no delimiter of any kind (`Deicide
+Serpents of the Light (Remastered) Vinyl`, `Béla Fleck & The Flecktones
+Flight of the Cosmic Hippo Vinyl`) — confirmed live across `products.json`,
+`/products/{handle}.js`, the page's JSON-LD `ProductGroup`, and its
+`og:`/`twitter:` meta tags, none of which carries an artist field.
+
+So the crawler sets `artist` to `vendor` unconditionally and preserves the
+full product title, on `numerogroup.py`'s precedent — a documented accepted
+gap, not a parse. Note that `numerogroup.py` is *not* itself listed as an
+exception in this doc, because it never purported to split; the difference
+here is only that Real Gone's titles visibly do contain the artist, which
+makes the absence of a split look like an omission until you try to write
+the regex.
+
+The consequence to record for anyone later tempted to "complete" this
+crawler by adding a split: there is no separator to key on, and the three
+alternatives were each considered and rejected on live data — colon-
+splitting reaches 6 of 278 titles while misfiring on 2 (a film title and a
+track-time album name); leading-token clustering reaches only artists with
+2+ releases and misattributes `The Devil Wears Prada Soundtrack LP` to the
+metalcore band with 4 albums in the same collection; and Discogs UPC lookup
+would need per-user OAuth credentials threaded into the user-less catalog
+crawl path. Full grounding in
+`2026-08-23-realgonemusic-crawler-design.md`'s "Artist attribution"
+section.
+
+**Sixth amendment (2026-08-23, branch `claude/spv-store-crawler-2mdf0z`):**
+`backend/crawlers/spv.py` is a sixth exception, and the first that is a near-copy
 of a prior one rather than a new shape. It takes `asianmanrecords.py`'s
 two-stage structure wholesale — quoted-album primary parser, hyphen/en-dash/em-dash
 split demoted to a fallback, optional `[-–—]?` separator before the opening
@@ -125,7 +160,7 @@ SPV/Steamhammer/Long Branch) — and diverges from it on three points:
    follows the album.
 
 None of the three is expressible as a call to this doc's proposed
-`split_artist_title(title)`, for the same reason the four prior exceptions
+`split_artist_title(title)`, for the same reason the four prior *splitting* exceptions
 aren't. What is new here is a weaker form of the doc's original convergence
 claim holding after all, one level down: `spv.py` did not need a new parser
 shape, it needed a parameterisation of an existing exception's shape. If a
@@ -135,8 +170,10 @@ with a quote-class and a return-the-blurb flag, not the dash-splitting
 stores is not yet that case: the parser is nine lines, and the two crawlers
 agree on none of the parsing that follows it.
 
-Records `spv.py` as a fifth documented exception, not a bug to fix into
-conformance — the same framing the first four amendments use.
+Records `spv.py` as a sixth documented exception, not a bug to fix into
+conformance — the same framing the first five amendments use. (Renumbered from
+fifth when Real Gone Music's amendment above landed on `main` first; the two
+were written concurrently and collided on merge.)
 
 ## Problem
 
