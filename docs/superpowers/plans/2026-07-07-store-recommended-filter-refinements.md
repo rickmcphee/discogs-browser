@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Three refinements to the already-merged Store "Recommended" filter: never suggest an item the user already owns, rewrite the judgment prompt so reasons read as factual item descriptions (not "matches your collection" phrasing) and move it into its own file, and add a way to re-run judgment without a full full stock re-crawl.
+**Goal:** Three refinements to the already-merged Store "Recommended" filter: never suggest an item the user already owns, rewrite the judgment prompt so reasons read as factual item descriptions (not "matches your collection" phrasing) and move it into its own file, and add a way to re-run judgment without a full stock re-crawl.
 
 **Architecture:** A single reusable SQL exclusion clause (artist + title-prefix match against `in_collection = 1`) applied at both judgment time (`get_unjudged_stock_items`) and read time (`get_stock_items`/`get_distinct_stock_artists`). The judgment prompt moves from a Python string constant into `backend/recommendations_prompt.md`, loaded once at import. `CrawlManager` gains a second, independently-triggerable entry point (`start_judgment_only`) that runs the existing `_run_judgment_phase` without the catalog crawl, mutually exclusive with the full stock sync.
 
