@@ -225,12 +225,30 @@ the test it replaced only passed because it blanked `vendor`.
 ### Format gate: negative, on the title blurb
 
 ```python
-_VINYL_RE     = re.compile(r'\b\d*[x×]?lp\b|\bvinyl\b|\b\d{1,2}\s*(?:"|inch\b)|\bpicture disc\b', re.IGNORECASE)
-_NON_VINYL_RE = re.compile(r'\b(\d*[x×]?cds?|digipa[kc]k?|cassette|tape|mc|\d*[x×]?dvd|blu-?ray|shirt|t-shirt|hoodie|longsleeve|poster|patch|flag|mug|book)\b', re.IGNORECASE)
+_VINYL_WORDS     = (r'\d*[x×]?lp', r'vinyl', r'picture\s+disc')
+_NON_VINYL_WORDS = (r'\d*[x×]?cds?', r'digital', r'digipa[kc]k?', r'cassette', r'tape', r'mc',
+                    r'\d*[x×]?dvd', r'blu-?ray', r't-?shirt', r'shirt', r'hoodie', r'longsleeve',
+                    r'poster', r'patch', r'flag', r'mug', r'book')
+_INCH            = r'\b\d{1,2}\s*(?:"|inch\b)'
+
+_VINYL_RE           = ...  # _VINYL_WORDS + _INCH
+_NON_VINYL_RE       = ...  # _NON_VINYL_WORDS
+_TRAILING_FORMAT_RE = ...  # both tuples + _INCH, as a trailing run
 ```
 
 The gate reads the trailing blurb only, never the artist or album, so a
 record named *Tape* or *Book* is not mistaken for one.
+
+**The three expressions are derived from two shared tuples, not written out
+separately, and that is the point.** They were separate literals for most of
+this branch's life and drifted apart four times in review — disc counts, then
+`Digital`, then merch, then `Book` and `MC`. Every drift had the same shape: a
+word present in one list and absent from another, so a non-vinyl product passed
+whichever gate carried the shorter list. Patching the fourth instance would
+have invited a fifth, so the vocabulary is now defined once and the three
+expressions built from it. `test_every_format_word_reaches_the_dash_path_stripper`
+asserts the property directly, so re-splitting them fails a test rather than
+reaching review.
 
 The `\d*[x×]?` on the LP/CD/DVD forms is load-bearing in both directions, and
 arrived in two review rounds on PR #165. A disc count binds to the format word

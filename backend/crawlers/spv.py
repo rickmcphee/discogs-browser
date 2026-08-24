@@ -36,10 +36,30 @@ _DASH_RE = re.compile(r'^(?P<artist>.+?)(?:\s+[-–—]\s*|\s*[-–—]\s+)(?P<a
 # Deliberately narrower than _NON_VINYL_RE: only unambiguous format markers,
 # no bare "MC"/"EP", since this rewrites the stored title rather than just
 # gating on it.
+# One vocabulary, three uses. These lists were maintained as separate literals
+# and drifted apart four times in review -- disc counts, then Digital, then
+# merch, then Book and MC -- each time letting a non-vinyl product through on
+# whichever path carried the shorter list. Deriving every expression from the
+# same two tuples makes that specific mistake impossible: a word added here
+# reaches the product gate, the variant gate and the dash-path stripper at once.
+_VINYL_WORDS = (r'\d*[x×]?lp', r'vinyl', r'picture\s+disc')
+_NON_VINYL_WORDS = (
+    r'\d*[x×]?cds?', r'digital', r'digipa[kc]k?', r'cassette', r'tape', r'mc',
+    r'\d*[x×]?dvd', r'blu-?ray', r't-?shirt', r'shirt', r'hoodie', r'longsleeve',
+    r'poster', r'patch', r'flag', r'mug', r'book',
+)
+# Inch markers stay separate from the word tuples: the mark is a non-word
+# character, so a trailing \b cannot follow it.
+_INCH = r'\b\d{1,2}\s*(?:"|inch\b)'
+
+
+def _alternation(*tuples):
+    return "|".join(word for group in tuples for word in group)
+
+
 _TRAILING_FORMAT_RE = re.compile(
-    r'\s+((?:(?:\d*[x×]?LP|\d*[x×]?CDS?|VINYL|CASSETTE|TAPE|\d*[x×]?DVD|BLU-?RAY|'
-    r'DIGITAL|DIGIPA[KC]K?|PICTURE\s+DISC|T-?SHIRT|SHIRT|HOODIE|LONGSLEEVE|POSTER|'
-    r'PATCH|FLAG|MUG)\b|\d{1,2}\s*(?:"|INCH\b)).*)$',
+    r'\s+((?:\b(?:%s)\b|%s).*)$'
+    % (_alternation(_VINYL_WORDS, _NON_VINYL_WORDS), _INCH),
     re.IGNORECASE,
 )
 _PLACEHOLDER_VARIANT = "default title"
@@ -57,7 +77,10 @@ _PREORDER_RE = re.compile(r'pre[\s_-]?order', re.IGNORECASE)
 # bug as the 2xLP+CD one: a bundle is only safe if the override recognises
 # every vinyl spelling the rest of the module does.
 _VINYL_RE = re.compile(
-    r'\b\d*[x×]?lp\b|\bvinyl\b|\b\d{1,2}\s*(?:"|inch\b)|\bpicture disc\b', re.IGNORECASE
+    r'\b(?:%s)\b|%s' % (_alternation(_VINYL_WORDS), _INCH), re.IGNORECASE
+)
+_NON_VINYL_RE = re.compile(
+    r'\b(?:%s)\b' % _alternation(_NON_VINYL_WORDS), re.IGNORECASE
 )
 # The \d* on cd/dvd is load-bearing: a disc count binds to the format word with
 # no word boundary between them, so a bare \bcds?\b cannot match the "CD" in
@@ -65,11 +88,6 @@ _VINYL_RE = re.compile(
 # \b\d*lp\b already had the same allowance for "2LP"; this brings the negative
 # side into line. A bundle naming both ("LP+2CD") is still vinyl -- _VINYL_RE
 # short-circuits ahead of this.
-_NON_VINYL_RE = re.compile(
-    r'\b(\d*[x×]?cds?|digital|digipa[kc]k?|cassette|tape|mc|\d*[x×]?dvd|blu-?ray|shirt|'
-    r't-shirt|hoodie|longsleeve|poster|patch|flag|mug|book)\b',
-    re.IGNORECASE,
-)
 
 
 def _split_trailing_format(album: str) -> tuple:

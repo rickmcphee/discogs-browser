@@ -1,7 +1,9 @@
 import httpx
 import respx
 import pytest
-from crawlers.spv import Crawler
+from crawlers.spv import (
+    Crawler, _NON_VINYL_WORDS, _VINYL_WORDS, _TRAILING_FORMAT_RE,
+)
 
 _PRODUCTS_URL = "https://store.spv.de/collections/vinyl/products.json"
 
@@ -202,6 +204,29 @@ def test_multiplier_notation_non_vinyl_is_dropped():
 def test_multiplier_notation_vinyl_is_kept():
     for title in ('Sodom "1982" 2xLP', 'Sodom "1982" 2×LP', 'Sodom "1982" 2xLP+CD'):
         assert len(Crawler._items({**_SODOM, "title": title})) == 1, title
+
+
+def test_every_format_word_reaches_the_dash_path_stripper():
+    # The structural guard. These vocabularies were maintained as separate
+    # literals and drifted apart four times in review -- disc counts, Digital,
+    # merch, then Book and MC -- each drift letting a non-vinyl product through
+    # on whichever path had the shorter list. They are now derived from shared
+    # tuples; this asserts the property that derivation is there to provide, so
+    # a future edit that reintroduces two lists fails here rather than in
+    # review.
+    for word in _NON_VINYL_WORDS + _VINYL_WORDS:
+        # A concrete sample per pattern, since the tuples hold regex fragments.
+        sample = (word.replace(r"\d*[x×]?", "2").replace(r"\s+", " ")
+                      .replace("-?", "-").replace("[kc]", "k").replace("?", ""))
+        assert _TRAILING_FORMAT_RE.search(f" {sample}"), word
+
+
+def test_book_and_mc_are_dropped_on_the_dash_path():
+    # The fourth drift: both were in the denylist but absent from the stripper,
+    # so the dash path published them as Vinyl while the quoted path dropped them.
+    for title in ("Sodom - 1982 Book", "Sodom - 1982 MC"):
+        assert Crawler._items({**_SODOM, "title": title}) == [], title
+    assert Crawler._items({**_SODOM, "title": 'Sodom "1982" Book'}) == []
 
 
 def test_merch_suffixes_are_dropped_on_the_dash_path_too():
