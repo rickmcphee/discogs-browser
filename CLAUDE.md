@@ -174,6 +174,15 @@ Scope, so this doesn't over-apply. These stay:
 - A count that is a fixed historical fact an argument rests on — "the helper
   wasn't extracted until nine Shopify crawlers had converged on identical
   logic" records when a threshold was crossed; it does not go stale.
+- **A test run's own result, reported as verification** in a PR description or
+  commit message — "1441 passed, 38 errors". That records what one command did
+  on one date; nobody maintains it and no reader takes it as a standing claim.
+  What this rule forbids is asserting the suite's *size* ("the suite is 738
+  tests"), especially in a spec or README where it reads as current fact. The
+  distinction matters because `.github/pull_request_template.md` requires the
+  opposite of silence here — "Commands run and their result. 'Tests pass'
+  without output is not verification." — so stripping run output from a PR
+  description would trade a real verification record for a cosmetic win.
 
 One trap worth calling out: when you de-number a sentence, make sure you don't
 change what it claims. "with 34 store crawlers able to enqueue on the order of

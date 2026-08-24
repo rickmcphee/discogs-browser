@@ -454,7 +454,7 @@ def test_startup_seeds_catalog_crawlers_with_genre(pg_test_db):
             with db.get_admin_pool().connection() as conn:
                 crawlers = db.get_all_crawlers(conn)
 
-    assert len(crawlers) == len(_bundled_plugin_paths())
+    assert len(crawlers) == len(sorted(main.BUNDLED_CRAWLERS_DIR.glob("*.py")))
     catalog_crawlers = [c for c in crawlers if c["crawler_type"] in ("catalog", "catalog_browser")]
     release_crawlers = [c for c in crawlers if c["crawler_type"] == "release"]
     assert catalog_crawlers
