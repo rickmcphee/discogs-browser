@@ -435,7 +435,7 @@ EOF
 ## Task 4: Seed `genre` on every catalog crawler plugin
 
 **Files:**
-- Modify: all 40 files listed in the table below, under `backend/crawlers/`
+- Modify: all files listed in the table below, under `backend/crawlers/`
 - Test: `backend/tests/test_main.py`
 
 **Interfaces:**
@@ -538,7 +538,7 @@ Change to:
     genre: str = "punk"
 ```
 
-Repeat for all 40 files using the table above. The four release-type crawlers (`amazon.py`, `discogs_marketplace.py`, `ebay.py`, `ebay_general.py`) are **not** touched — they keep defaulting to `"marketplace"` via Task 2's `getattr` fallback, exactly like they already do for `genre_summary`.
+Repeat for every file using the table above. The four release-type crawlers (`amazon.py`, `discogs_marketplace.py`, `ebay.py`, `ebay_general.py`) are **not** touched — they keep defaulting to `"marketplace"` via Task 2's `getattr` fallback, exactly like they already do for `genre_summary`.
 
 - [ ] **Step 4: Run to verify pass**
 

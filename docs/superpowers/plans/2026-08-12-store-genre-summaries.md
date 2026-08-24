@@ -129,7 +129,7 @@ EOF
 ### Task 2: Backend — populate `genre_summary` on every catalog crawler plugin
 
 **Files:**
-- Modify: all 36 files listed in the table below, each `backend/crawlers/<file>.py`
+- Modify: all files listed in the table below, each `backend/crawlers/<file>.py`
 - Test: `backend/tests/test_main.py`
 
 **Interfaces:**
@@ -261,7 +261,7 @@ EOF
 
 **Interfaces:**
 - Consumes: `Crawler.genre_summary` from the backend (Tasks 1–2).
-- Produces: `Crawler.genre_summary?: string | null` — declared **optional** (not required like `base_url`) specifically so the ~8 other test files that construct `Crawler` literals (`staleSignupLink.test.tsx`, `viewRenderChurn.test.tsx`, `wantlistRefresh.test.tsx`, `accountNav.test.tsx`, `inStockTab.test.tsx`, `account.test.tsx`, `crawlStatusBar.test.tsx`, `client.test.ts`) don't need touching — they never assert on `genre_summary` and `undefined` behaves identically to `null` at the one call site (`c.genre_summary ?? undefined`).
+- Produces: `Crawler.genre_summary?: string | null` — declared **optional** (not required like `base_url`) specifically so the other test files that construct `Crawler` literals (`staleSignupLink.test.tsx`, `viewRenderChurn.test.tsx`, `wantlistRefresh.test.tsx`, `accountNav.test.tsx`, `inStockTab.test.tsx`, `account.test.tsx`, `crawlStatusBar.test.tsx`, `client.test.ts`) don't need touching — they never assert on `genre_summary` and `undefined` behaves identically to `null` at the one call site (`c.genre_summary ?? undefined`).
 
 - [ ] **Step 1: Write the failing test**
 

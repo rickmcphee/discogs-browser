@@ -102,7 +102,7 @@ Catalog crawlers (`crawl_catalog`, not shown above) may additionally declare an 
 ## Documentation — never write down a count of things that change
 
 **No document in this repo may state how many crawlers, stores, catalog
-sources, sites, plugins, or tests exist.** Not in `CLAUDE.md`, not in a spec,
+sources, sites, plugins, tests, or *files* of any of those kinds exist.** Not in `CLAUDE.md`, not in a spec,
 not in a plan, not in a README, not in a commit message or PR description. This
 covers exact counts ("34 store crawlers"), approximations ("~40 catalog crawler
 plugins"), spelled-out counts ("thirty-three sources ship"), ordinals that imply
@@ -119,6 +119,10 @@ through the sweep that first removed these — check for them by hand:
   sources to eighteen`, `re-crawls all catalog sources (31 as of this writing)`.
   Search for `total .* to`, `as of this writing`, and `\b\d+(st|nd|rd|th)\b`
   as well as the obvious pattern.
+- **A generic noun standing in for the inventory** — `all 40 files listed in the
+  table below`, `~8 other test files`, `the four crawler test files`, `~100
+  pytest files`. Searching only for `crawler|source|site|plugin` misses every
+  one of these, so sweep `files?|fixtures?` too.
 
 Why: these numbers change every time a crawler is added, and nothing depends on
 them. Every one of them went stale within weeks, and each staleness cost real
@@ -221,7 +225,7 @@ A single check right after CI passes has the same race shifted one step later: C
 - **A test may never assume pre-existing schema or role state.** The session-scoped `pg_run_database` fixture (`backend/tests/conftest.py`) builds each pytest session a fresh `<base>_run_<hex>` database from `TEMPLATE template0` and poisons `app_user`/`app_identity`'s `BYPASSRLS` attributes (inverted from what `_ensure_role` sets) before the run's first `init_tenant_schema()`. Anything a test asserts on must therefore be constructed by the code under test during that run, not inherited from a prior run or a hand-provisioned local database. See `docs/specifications/shaping/2026-08-09-test-database-freshness-design.md`.
 - Poisoning also rotates both roles' passwords to random values; `init_tenant_schema()` rewrites them from `IDENTITY_DB_PASSWORD`/`APP_DB_PASSWORD`. Teardown restores both `BYPASSRLS` bits but *not* the passwords — they are unknowable after the fact, and the next run sets them again. A crashed run can therefore leave the cluster's roles holding random passwords until something re-runs `init_tenant_schema()`; `make test-db-clean` repairs the bits only.
 - Sharp edge: roles are cluster-level, not per-database, so two suites running concurrently against one Postgres cluster still interfere at the role level for up to one test (the next `init_tenant_schema()` in each session repairs it). Give each worktree its own Postgres container if running suites in parallel. For the same reason, never run `make test-db-clean` while a suite is in flight — pools close between tests, so a live run's database momentarily has zero backends.
-- With `TEST_DATABASE_URL` unset, `pg_run_database` no-ops and only the tests that need a database fail. That set is wider than "tests about Postgres": `tmp_config_dir` now depends on `pg_test_db` (settings live in `app_config`, not a file), so `test_config.py`, `test_logging_config.py`, and the four crawler test files requesting it need `TEST_DATABASE_URL` too, whatever they're actually asserting.
+- With `TEST_DATABASE_URL` unset, `pg_run_database` no-ops and only the tests that need a database fail. That set is wider than "tests about Postgres": `tmp_config_dir` now depends on `pg_test_db` (settings live in `app_config`, not a file), so `test_config.py`, `test_logging_config.py`, and the crawler test files requesting it need `TEST_DATABASE_URL` too, whatever they're actually asserting.
 
 ## Commits — AI attribution trailers (required, every commit)
 
