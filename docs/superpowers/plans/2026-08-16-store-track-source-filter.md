@@ -457,6 +457,8 @@ def test_startup_seeds_catalog_crawlers_with_genre(pg_test_db):
     assert len(crawlers) == len(_bundled_plugin_paths())
     catalog_crawlers = [c for c in crawlers if c["crawler_type"] in ("catalog", "catalog_browser")]
     release_crawlers = [c for c in crawlers if c["crawler_type"] == "release"]
+    assert catalog_crawlers
+    assert release_crawlers
     valid_genres = {"marketplace", "punk", "metal", "rock", "pop"}
 
     invalid = {c["site_name"]: c["genre"] for c in catalog_crawlers if c["genre"] not in valid_genres}

@@ -152,6 +152,8 @@ def test_startup_seeds_catalog_crawlers_with_genre_summary(pg_test_db):
     assert len(crawlers) == len(_bundled_plugin_paths())
     catalog_crawlers = [c for c in crawlers if c["crawler_type"] in ("catalog", "catalog_browser")]
     release_crawlers = [c for c in crawlers if c["crawler_type"] == "release"]
+    assert catalog_crawlers
+    assert release_crawlers
 
     missing = [c["site_name"] for c in catalog_crawlers if not c["genre_summary"]]
     assert missing == [], f"catalog crawlers missing genre_summary: {missing}"

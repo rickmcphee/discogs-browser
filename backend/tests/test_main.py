@@ -71,6 +71,11 @@ def test_startup_seeds_catalog_crawlers_with_genre_summary(pg_test_db):
     assert len(crawlers) == len(_bundled_plugin_paths())
     catalog_crawlers = [c for c in crawlers if c["crawler_type"] in ("catalog", "catalog_browser")]
     release_crawlers = [c for c in crawlers if c["crawler_type"] == "release"]
+    # The equality above cannot catch a whole crawler_type disappearing: deleting
+    # every release plugin shrinks _bundled_plugin_paths() by the same amount, so
+    # it still holds while the release assertions below go vacuous on an empty list.
+    assert catalog_crawlers
+    assert release_crawlers
 
     missing = [c["site_name"] for c in catalog_crawlers if not c["genre_summary"]]
     assert missing == [], f"catalog crawlers missing genre_summary: {missing}"
@@ -92,6 +97,11 @@ def test_startup_seeds_catalog_crawlers_with_genre(pg_test_db):
     assert len(crawlers) == len(_bundled_plugin_paths())
     catalog_crawlers = [c for c in crawlers if c["crawler_type"] in ("catalog", "catalog_browser")]
     release_crawlers = [c for c in crawlers if c["crawler_type"] == "release"]
+    # The equality above cannot catch a whole crawler_type disappearing: deleting
+    # every release plugin shrinks _bundled_plugin_paths() by the same amount, so
+    # it still holds while the release assertions below go vacuous on an empty list.
+    assert catalog_crawlers
+    assert release_crawlers
     valid_genres = {"marketplace", "punk", "metal", "rock", "pop"}
 
     invalid = {c["site_name"]: c["genre"] for c in catalog_crawlers if c["genre"] not in valid_genres}
