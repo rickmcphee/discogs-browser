@@ -331,11 +331,16 @@ the artist sort is case-insensitive now. See
 
 (As of 2026-08-24 the inline `regexp_match(..., '\d+\.?\d*')` above is gone.
 The extraction moved into a shared `_price_sort_sql()` helper, also used by
-`get_library_releases`, and widened to `'[0-9][0-9,]*(?:\.[0-9]+)?'` with the
-matched substring's commas stripped before the cast — the old pattern stopped
-at the first non-digit, so `"$1,200.50"` read as `1`. The subquery wrapper and
-`_library_match_fragment` call around it are unchanged. The column it reads is
-`li.price_paid`, per this document's storage-superseded banner. See
+`get_library_releases`. The old pattern stopped at the first non-digit, so
+`"$1,200.50"` read as `1`; the helper instead matches the token against the
+formats that occur and picks the normalization from that — comma grouping
+(`1,200.50`) loses its commas, dot grouping (`1.234,56`) loses its dots with the
+comma becoming the point, a bare decimal comma (`25,50`) becomes a point, and an
+unrecognised token falls back to digits only. Note this is *not* a blanket comma
+strip: an intermediate version was, and turned `"€25,50"` into 2550. The
+subquery wrapper and `_library_match_fragment` call around it are unchanged. The
+column it reads is `li.price_paid`, per this document's storage-superseded
+banner. See
 [`2026-08-24-numeric-price-sort-design.md`](2026-08-24-numeric-price-sort-design.md).)
 
 Under the Wantlist filter every value the expression produces is `NULL`,
