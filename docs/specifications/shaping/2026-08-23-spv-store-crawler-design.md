@@ -275,8 +275,21 @@ rather than merely gating on it. The required leading `\s+` means a single-word
 album that *is* one of these words (`Sodom - Tape`) has nothing preceding it to
 match and survives untouched.
 
+The same alignment applies to merch. `_NON_VINYL_RE` listed `t-shirt`,
+`hoodie`, `poster` and the rest from the start, but `_TRAILING_FORMAT_RE` did
+not — so on the dash path there was no `extra` for the gate to read, and
+`Sodom - 1982 T-Shirt` shipped as a Vinyl row titled `1982 T-Shirt` while the
+quoted equivalent was correctly dropped. Found in review on PR #165, and the
+third instance of the same asymmetry after the disc-count and `Digital` cases.
+The two expressions now carry the same vocabulary, which is the rule this
+keeps arriving at.
+
 **Known limitation, not fixed.** That `\s+` guard only protects a *one-word*
-album. A multi-word album ending in a format word is still misread on the dash
+album, and aligning the vocabularies above widened what it has to protect
+against — the stripper now recognises merch words too, so an album whose last
+word is `Poster` or `Flag` is exposed to the same misread as one ending in
+`Tape`. Accepted on the same reasoning, and still bounded to the fallback
+path. A multi-word album ending in a format word is still misread on the dash
 path: `Artist - The Tape` splits to album `The` + format `Tape` and is then
 dropped by the negative gate, and `Artist - The Vinyl` is stored as `The`.
 Raised in review on PR #165 and deliberately left alone, for two reasons.

@@ -38,7 +38,8 @@ _DASH_RE = re.compile(r'^(?P<artist>.+?)(?:\s+[-–—]\s*|\s*[-–—]\s+)(?P<a
 # gating on it.
 _TRAILING_FORMAT_RE = re.compile(
     r'\s+((?:(?:\d*[x×]?LP|\d*[x×]?CDS?|VINYL|CASSETTE|TAPE|\d*[x×]?DVD|BLU-?RAY|'
-    r'DIGITAL|DIGIPA[KC]K?|PICTURE\s+DISC)\b|\d{1,2}\s*(?:"|INCH\b)).*)$',
+    r'DIGITAL|DIGIPA[KC]K?|PICTURE\s+DISC|T-?SHIRT|SHIRT|HOODIE|LONGSLEEVE|POSTER|'
+    r'PATCH|FLAG|MUG)\b|\d{1,2}\s*(?:"|INCH\b)).*)$',
     re.IGNORECASE,
 )
 _PLACEHOLDER_VARIANT = "default title"

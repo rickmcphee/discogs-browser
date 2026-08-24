@@ -204,6 +204,21 @@ def test_multiplier_notation_vinyl_is_kept():
         assert len(Crawler._items({**_SODOM, "title": title})) == 1, title
 
 
+def test_merch_suffixes_are_dropped_on_the_dash_path_too():
+    # _NON_VINYL_RE knew about merch but _TRAILING_FORMAT_RE did not, so the
+    # dash path never produced an `extra` for it to gate on: the quoted
+    # 'Sodom "1982" T-Shirt' was dropped while 'Sodom - 1982 T-Shirt' shipped
+    # as a Vinyl row titled "1982 T-Shirt".
+    for title in ("Sodom - 1982 T-Shirt", "Sodom - 1982 Hoodie",
+                  "Sodom - 1982 Poster", "Sodom - 1982 Patch"):
+        assert Crawler._items({**_SODOM, "title": title}) == [], title
+
+
+def test_album_named_for_a_merch_word_survives():
+    items = Crawler._items({**_SODOM, "title": "Sodom - Poster"})
+    assert items and items[0]["title"] == "Poster"
+
+
 def test_digital_is_rejected_on_every_path():
     # `Digital` is a common Shopify variant and was missing from both the
     # denylist and the trailing-format stripper, so it published as Vinyl on
