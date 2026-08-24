@@ -393,7 +393,14 @@ async def test_crawl_catalog_falls_back_to_bare_album_when_no_stable_variant_val
     ]}
     _mock_single_page([no_identity])
     items = [item async for item in crawler.crawl_catalog()]
-    assert {i["title"] for i in items} == {"Double Infinity (Vinyl)"}
+    # Asserted as a sequence, not a set: a set would collapse the two
+    # identical titles and pass even if one row were silently dropped, which
+    # is the one-row-per-available-variant guarantee this branch must keep.
+    assert [i["title"] for i in items] == [
+        "Double Infinity (Vinyl)",
+        "Double Infinity (Vinyl)",
+    ]
+    assert [i["price"] for i in items] == [29.99, 31.99]
 
 
 @respx.mock
