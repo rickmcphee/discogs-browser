@@ -96,12 +96,25 @@ section claimed otherwise ("each unknown either degrades to a documented
 fallback or raises rather than publishing wrong data silently"). That was an
 overclaim, flagged in review on PR #165. The honest split:
 
-**Fails loudly.** A wrong endpoint or pagination assumption makes
-`iter_products()` raise; the consecutive-failure breaker cools the source off
-and no rows are written. A title the parser can't read yields no artist and is
-dropped. These cost coverage, never correctness.
+**Fails loudly.** One case only: a wrong endpoint or pagination assumption
+makes `iter_products()` raise, the consecutive-failure breaker cools the source
+off, and the crawl aborts before `replace_stock_items` is reached — so existing
+rows survive untouched. That costs coverage, never correctness.
 
-**Fails silently, and would need a human to notice.** Two:
+**Fails silently, and would need a human to notice.** Three:
+
+- **A title the parser can't read.** An earlier draft of this section listed
+  this under "fails loudly", which was wrong twice over — flagged in review on
+  PR #165 and verified against the code. It is not loud: `_items()` returns no
+  rows, `_run_catalog_crawler()` completes normally, and `_sync_stock` records
+  a success, logging only `Stock sync found N items` at INFO. And it is not
+  purely a coverage cost: `replace_stock_items` runs its
+  `DELETE FROM stock_items WHERE crawler_id = %s` *before* it checks for an
+  empty item list, so a feed this parser cannot read at all does not merely
+  fail to add rows — it **deletes the ones already there**, and reports
+  `found 0 items` while doing it. A partial parse failure is the quieter
+  version of the same thing: the missing products are simply absent, with
+  nothing distinguishing them from stock the store genuinely stopped carrying.
 
 - **The currency.** If prices are not EUR, every SPV row displays under the
   wrong currency. Nothing in the pipeline can detect this — `currency` is a
