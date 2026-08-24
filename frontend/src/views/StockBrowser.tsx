@@ -5,6 +5,7 @@ import { navButtonClass, dismissButtonClass } from '../styles/buttons'
 import { textInputClass, selectClass } from '../styles/inputs'
 import { reconcileSelectedArtist } from './artistSelection'
 import SourceFilter from '../components/SourceFilter'
+import { formatPrice } from './formatPrice'
 
 interface Props {
   scope?: StockScope
@@ -468,7 +469,7 @@ function StockBrowser({
                   )}
                   <td className="px-3 py-2">
                     <a href={item.url} target="_blank" rel="noreferrer" className="text-green-400 hover:text-green-300 font-medium">
-                      {item.price != null ? `$${item.price.toFixed(2)}` : 'View'}
+                      {item.price != null ? formatPrice(item.price, item.currency) : 'View'}
                     </a>
                   </td>
                   <td className="px-3 py-2 text-gray-400">{item.source}</td>

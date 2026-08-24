@@ -31,16 +31,16 @@ a whole, and any future implementation of `split_artist_title` should treat
 `cleorecs.py` as a documented exception, not a bug to fix into conformance.
 
 **Second amendment (2026-08-14, branch `claude/jackpot-records-crawler-5a6b9f`):**
-`backend/crawlers/jackpotrecords.py` is a second exception with the same
+`backend/crawlers/jackpotrecords.py` is another exception with the same
 shape as `cleorecs.py`'s divergences (1) and (3) above: it reuses the same
 wider `[-–—]` separator class, and it has no vendor fallback at all (`vendor`
 here is the store's own name or a reissue label, never the artist). It skips
 the paren-stripping pass, unlike `cleorecs.py`. `cleorecs.py` is no longer
-the sole documented exception to the converging contract; there are now two.
+the sole documented exception to the converging contract.
 
 **Third amendment (2026-08-16, branch `claude/asian-man-records-crawler-074aa7`):**
-`backend/crawlers/asianmanrecords.py` is a third exception. It shares two
-divergences with the prior two: the same wider `[-–—]` separator class
+`backend/crawlers/asianmanrecords.py` is another exception. It shares two
+divergences with the prior ones: the same wider `[-–—]` separator class
 `cleorecs.py` and `jackpotrecords.py` both use, and no vendor fallback at all
 — `vendor` is the label's own name, not an artist, on every product
 (case-insensitively `"asian man records"`; 250/251 products spell it
@@ -60,15 +60,15 @@ Neither prior exception has this two-stage primary/fallback structure — each
 has exactly one parser.
 
 None of this retracts the doc's original convergence argument for the eight
-crawlers it still describes correctly, nor the first two amendments' verdicts
+crawlers it still describes correctly, nor the earlier amendments' verdicts
 on `cleorecs.py` and `jackpotrecords.py` — it records that
-`asianmanrecords.py` is a third documented exception to the converging
-contract, not a bug to fix into conformance, the same framing the first two
+`asianmanrecords.py` is a documented exception to the converging
+contract, not a bug to fix into conformance, the same framing the earlier
 amendments use.
 
 **Fourth amendment (2026-08-19, branch `claude/carpark-records-crawler-0adc27`):**
-`backend/crawlers/carparkrecords.py` is a fourth exception, for reasons
-distinct from all three prior ones. It runs a mandatory preprocessing pass
+`backend/crawlers/carparkrecords.py` is another exception, for reasons
+distinct from the prior ones. It runs a mandatory preprocessing pass
 over the title before the artist/album split is even attempted — stripping
 an optional leading catalog-code prefix (`CAK188`, `CAKD067`, and the one
 dual-number case `WIX04/05`) via `_CODE_RE`. This is the same *shape* of
@@ -77,12 +77,12 @@ amendment, divergence (2)) — a step that has to run before the split regex
 can even see the artist/title text — but for a different reason: a
 catalog-number prefix, not a trailing parenthetical. Its separator regex,
 `_SPLIT_RE = re.compile(r'\s+-\s+')`, is narrower than both this doc's own
-proposed shared regex (`[-–]`) and the wider `[-–—]` class all three prior
+proposed shared regex (`[-–]`) and the wider `[-–—]` class the prior
 exceptions use — whitespace-bounded hyphen only, no en-dash or em-dash
-support at all. And unlike all three prior exceptions, none of which has a
+support at all. And unlike the prior exceptions, none of which has a
 vendor fallback, `carparkrecords.py` does fall back to `vendor` when no
 separator is found — on this one axis it actually matches the original
-eight-crawler convergence this doc describes, not the three exceptions. But
+eight-crawler convergence this doc describes, not the exceptions. But
 the mandatory catalog-code strip still means it can't be expressed as a
 plain call to `split_artist_title(title)` plus a one-line vendor-fallback
 wrapper, this design's proposed pattern for the original eight — the
@@ -91,22 +91,22 @@ is even attempted, exactly the same structural reason `cleorecs.py`'s
 paren-strip is inexpressible that way.
 
 None of this retracts the doc's original convergence argument for the eight
-crawlers it still describes correctly, nor the first three amendments'
+crawlers it still describes correctly, nor the earlier amendments'
 verdicts on `cleorecs.py`, `jackpotrecords.py`, and `asianmanrecords.py` —
-it records that `carparkrecords.py` is a fourth documented exception to the
+it records that `carparkrecords.py` is a documented exception to the
 converging contract, not a bug to fix into conformance, the same framing the
-first three amendments use.
+earlier amendments use.
 
 **Fifth amendment (2026-08-23, branch `claude/realgonemusic-crawler-84feaf`):**
-`backend/crawlers/realgonemusic.py` is a fifth exception, and the only one
-so far that this doc's contract cannot describe even in principle: it does
-not split titles at all. The four prior exceptions each diverge in *how*
-they split — a wider separator class, a preprocessing pass, a quoted-album
-primary parser, no vendor fallback — but all four still answer the question
-"where does the artist end and the album begin?". Real Gone Music's store
-makes that question unanswerable from the data. `vendor` is the literal
-string `"Real Gone Music"` on all 278 vinyl products, and product titles
-concatenate artist and album with no delimiter of any kind (`Deicide
+`backend/crawlers/realgonemusic.py` is another exception, and exceptional in a
+way the others are not: this doc's contract cannot describe it even in
+principle, because it does not split titles at all. The earlier exceptions
+each diverge in *how* they split — a wider separator class, a preprocessing
+pass, a quoted-album primary parser, no vendor fallback — but they all still
+answer the question "where does the artist end and the album begin?". Real
+Gone Music's store makes that question unanswerable from the data. `vendor` is
+the literal string `"Real Gone Music"` on all 278 vinyl products, and product
+titles concatenate artist and album with no delimiter of any kind (`Deicide
 Serpents of the Light (Remastered) Vinyl`, `Béla Fleck & The Flecktones
 Flight of the Cosmic Hippo Vinyl`) — confirmed live across `products.json`,
 `/products/{handle}.js`, the page's JSON-LD `ProductGroup`, and its
@@ -131,6 +131,55 @@ would need per-user OAuth credentials threaded into the user-less catalog
 crawl path. Full grounding in
 `2026-08-23-realgonemusic-crawler-design.md`'s "Artist attribution"
 section.
+
+**Sixth amendment (2026-08-23, branch `claude/spv-store-crawler-2mdf0z`):**
+`backend/crawlers/spv.py` is another exception, and unlike the earlier ones it
+is a near-copy of a prior exception rather than a new shape. It takes
+`asianmanrecords.py`'s
+two-stage structure wholesale — quoted-album primary parser, hyphen/en-dash/em-dash
+split demoted to a fallback, optional `[-–—]?` separator before the opening
+quote, no vendor fallback (`vendor` is expected to be the label here:
+SPV/Steamhammer/Long Branch) — and diverges from it on three points:
+
+1. **Typographic quotes.** The quote classes are `["“]`/`["”]` rather than the
+   sibling's straight `"` only. Not observed on this store; accepted because
+   it costs one character class and a German storefront is a likelier place
+   to meet them than the sibling's.
+2. **An `extra` capture group.** `asianmanrecords.py` needs only artist and
+   album, because it gates format on the *variant* title. This store carries
+   its format in the title's trailing blurb (`LP (exclusive)`,
+   `LP (white & black marbled vinyl)`), so the parser returns a third group
+   and the crawler gates on it. No prior exception's parser returns more than
+   two groups.
+3. **Quote-free character classes instead of `.+?`.** The sibling's
+   `^(?P<artist>.+?)\s*[-–—]?\s*"(?P<album>[^"]+)"` already stops the album
+   at the first closing quote via `[^"]+`, but its artist half is `.+?`.
+   Because divergence (2) makes the trailing blurb part of the match here, and
+   because this store's blurbs can contain an inch mark — the same character
+   as a straight quote (`Sodom "1982" 12" (exclusive)`) — the artist half is
+   `[^"“”]+?`, so it can never swallow an opening quote no matter what
+   follows the album.
+
+None of the three is expressible as a call to this doc's proposed
+`split_artist_title(title)`, for the same reason the earlier *splitting*
+exceptions aren't. What is new here is a weaker form of the doc's original convergence
+claim holding after all, one level down: `spv.py` did not need a new parser
+shape, it needed a parameterisation of an existing exception's shape. The
+quoted-album shape is no longer unique to `asianmanrecords.py`, so if it turns
+up again, the helper worth extracting is a shared quoted-album parser with a
+quote-class and a return-the-blurb flag — not the dash-splitting
+`split_artist_title` this doc proposes. The duplication as it stands does not
+justify one: the parser is nine lines, and the two implementations agree on
+none of the parsing that follows it.
+
+Records `spv.py` as a documented exception, not a bug to fix into
+conformance — the same framing the earlier amendments use. (This amendment's
+heading was renumbered when Real Gone Music's amendment above landed on `main`
+first; the two were written concurrently and collided on merge. That renumber
+is the reason the exception ordinals this amendment originally carried are
+gone: a count that another branch can shift on merge is exactly the kind
+`CLAUDE.md` says not to write down. The amendment headings keep their numbers
+because they order this document's own sections, not the crawlers.)
 
 ## Problem
 
