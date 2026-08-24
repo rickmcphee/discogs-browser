@@ -231,11 +231,11 @@ class CrawlManager:
         # counter so that _site_consecutive_failures/_site_cooldown_until stay
         # keyed by crawler_id -- which is what _cooling_down_crawler_ids and
         # _cooldown_remaining_seconds need, and what a crawler with no declared
-        # domain (every crawler but the two eBay ones) already was.
+        # domain (every crawler but the eBay ones) already was.
         #
         # Locked per domain (not just awaited) because load_config() below is
         # a real yield point now that it's offloaded -- without the lock, two
-        # concurrent calls for the same domain (e.g. both eBay crawlers, or
+        # concurrent calls for the same domain (e.g. the eBay crawlers, or
         # two workers hitting the same crawler_id) could interleave their
         # read-modify-write of these dicts: a failure's write can land after
         # a chronologically later success's reset, resurrecting a stale
