@@ -65,7 +65,7 @@ Replay `_is_vinyl`/`_items` over the complete 5,141-product capture and confirm:
 
 - [x] **Step 5: Write the design spec and run the pre-PR spec-drift check**
 
-`docs/specifications/shaping/2026-08-24-darkside-records-crawler-design.md`. Then grep **both** spec trees for what the diff touches. Found and fixed: the Real Gone spec's `marketplace` genre enumeration, which under-counted once Darkside joined.
+`docs/specifications/shaping/2026-08-24-darkside-records-crawler-design.md`. Then grep **both** spec trees for what the diff touches. Found and fixed: the `marketplace` genre enumerations in the Real Gone and Waterloo Records specs, both of which stated a membership count and omitted Darkside. Re-run the check after merging `main` — the Waterloo spec arrived in that merge, so the first pass could not have seen it, and its fan-out figures also displace this crawler as the fleet's heaviest.
 
 ---
 

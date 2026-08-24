@@ -15,8 +15,7 @@ than the label-store crawlers.
 
 What makes this store different from every sibling is **scale**: its
 `new-vinyl` collection reports 58,416 products, roughly 19× the emitted-row
-count of the fleet's largest existing crawler (`cleorecs.py`, 3,151 stock
-items). That turns out to be not merely a pacing
+count of an established sibling like `cleorecs.py` (3,151 stock items). That turns out to be not merely a pacing
 concern but a hard blocker, and resolving it is the central design decision
 below.
 
@@ -301,11 +300,13 @@ eligible release crawlers at dispatch (`amazon`, `ebay`, `ebay_general`;
 `discogs_marketplace` excluded by its `requires_discogs_release = True`),
 for ~14,900 dispatch work units per sync.
 
-**This is the largest crawler in the fleet**, though by a narrower margin
-than the raw product count suggests: ~1.6× the previous largest
-(`cleorecs.py`, 3,151 stock items), ~1.7× `jackpotrecords.py` (2,956),
-~18× `realgonemusic.py` (268 item rows) and ~25× `carparkrecords.py`
-(196). It is flagged here rather than mitigated: it is within the same machinery every
+**This is among the heaviest crawlers in the fleet, but not the
+heaviest.** `waterloorecords.py`, which landed on `main` while this branch
+was open, extrapolates to ~10,800 rows and ~32,000 dispatch units — a bit
+over twice this crawler. Against the rest: ~1.6× `cleorecs.py` (3,151
+stock items), ~1.7× `jackpotrecords.py` (2,956), ~18× `realgonemusic.py`
+(268 item rows) and ~25× `carparkrecords.py` (196). It is flagged here
+rather than mitigated: it is within the same machinery every
 other store uses, and the queue is drained by a continuously running worker
 pool rather than a per-sync job, so a large backlog is absorbed rather than
 blocking. If it proves too heavy in practice, the natural lever is a

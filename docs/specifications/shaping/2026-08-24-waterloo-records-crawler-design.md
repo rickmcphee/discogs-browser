@@ -247,11 +247,11 @@ class Crawler:
     async def crawl_catalog(self) -> AsyncIterator[dict]: ...
 ```
 
-`genre = "marketplace"` is this repo's genre-spanning bucket. The other
-nine members are Amoeba, Newbury Comics, Turntable Lab, The Sound Garden,
-Jackpot Records, Real Gone Music, and the reissue labels Craft
-Recordings, Cleopatra Records and Numero Group — the right fit for an
-all-genres general retailer. Registration
+`genre = "marketplace"` is this repo's genre-spanning bucket. Its other
+members are Amoeba, Newbury Comics, Turntable Lab, The Sound Garden,
+Jackpot Records, Real Gone Music, Darkside Records, and the reissue
+labels Craft Recordings, Cleopatra Records and Numero Group — the right
+fit for an all-genres general retailer. Registration
 is automatic: `main.py`'s `seed_bundled_crawlers()` walks
 `backend/crawlers/` at startup, so there are no wiring changes.
 
