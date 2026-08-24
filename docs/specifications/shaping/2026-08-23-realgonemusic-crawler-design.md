@@ -272,12 +272,12 @@ class Crawler:
     async def crawl_catalog(self) -> AsyncIterator[dict]: ...
 ```
 
-`genre = "marketplace"` is this repo's genre-spanning bucket — the other
-eight members are Amoeba, Newbury Comics, Turntable Lab, The Sound Garden,
-Jackpot Records, and the reissue labels Craft Recordings, Cleopatra
-Records, and Numero Group — the right fit for a catalog running from Black
-Jazz to Deicide. (Correction, 2026-08-24: Waterloo Records has since
-joined the bucket, so the count above is now nine, not eight.) `_COLLECTION_SLUG = "vinyl"`, iterated with
+`genre = "marketplace"` is this repo's genre-spanning bucket — its other
+members are Amoeba, Newbury Comics, Turntable Lab, The Sound Garden,
+Jackpot Records, Waterloo Records, Darkside Records, and the reissue
+labels Craft Recordings, Cleopatra Records, and Numero Group — the right
+fit for a catalog running from Black
+Jazz to Deicide. `_COLLECTION_SLUG = "vinyl"`, iterated with
 `shopify_catalog.iter_products()` unchanged. Registration is automatic:
 `main.py`'s `seed_bundled_crawlers()` walks `backend/crawlers/` at startup
 and calls `register_crawler` for each plugin it finds — no wiring
