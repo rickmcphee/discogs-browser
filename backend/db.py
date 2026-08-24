@@ -927,7 +927,8 @@ def get_library_releases(
     params["offset"] = offset
 
     if sort == "discogs_price":
-        sort_expr = "li.price_paid"
+        # Free text with the currency attached -- see _price_sort_sql.
+        sort_expr = _price_sort_sql("li.price_paid")
     elif sort == "date_added" and scope in ("discogs", "wishlist"):
         sort_expr = "li." + ("wishlist_date_added" if scope == "wishlist" else "collection_date_added")
     else:
@@ -1549,6 +1550,27 @@ def _artist_sort_sql(column: str) -> str:
     )
 
 
+def _price_sort_sql(column: str) -> str:
+    """Numeric sort-key expression for a free-text price column.
+
+    `library_items.price_paid` is whatever the user typed into their Discogs
+    custom field, so it arrives as display text with the currency attached
+    ("$30.00", "GBP 9", "1,200.00"). Ordering that column as text is
+    lexicographic -- "$100" sorts before "$9" -- so both the Collection/Wishlist
+    Price header and the Track tab's price sort pull the leading number out and
+    order on that instead. The regex takes the first digit run, tolerating
+    thousands separators, and stops at the decimal part; the `replace` drops
+    those separators so the cast sees a bare number. Anything with no digits at
+    all ("N/A", "") yields NULL and sorts last via the caller's NULL guard.
+
+    Mixed currencies are deliberately not converted: the number is compared
+    as-is, which is right for the overwhelmingly common single-currency
+    collection and merely approximate for the rare mixed one. The currency is
+    untouched in the stored value, so display keeps it.
+    """
+    return f"replace((regexp_match({column}, '[0-9][0-9,]*(?:\\.[0-9]+)?'))[1], ',', '')::numeric"
+
+
 def _artist_sort_key(name: str) -> str:
     """Python equivalent of _artist_sort_sql, for the sidebar list which sorts
     in Python (see _canonical_artist_list) rather than SQL. In practice this
@@ -1693,9 +1715,9 @@ def get_stock_items(
     # every key would be NULL, leaving all rows tied and pagination unstable.
     # The lookup's default covers None and any unmapped scope.
     if sort == "discogs_price" and "in_collection" in _LIBRARY_MEMBERSHIP.get(library_scope, ()):
-        sort_expr = """(SELECT (regexp_match(li.price_paid, '\\d+\\.?\\d*'))[1]::numeric
-                        {match} LIMIT 1)""".format(
-            match=_library_match_fragment("%(user_id)s", "collection")
+        sort_expr = "(SELECT {price} {match} LIMIT 1)".format(
+            price=_price_sort_sql("li.price_paid"),
+            match=_library_match_fragment("%(user_id)s", "collection"),
         )
     elif sort == "source":
         sort_expr = "cr.site_name"
