@@ -61,7 +61,7 @@ also removes the now-empty Settings tab for non-admin users.
   inside the existing try/except, defaulting to `"marketplace"` on import
   failure (matches the "cosmetic, must not fail the listing" comment
   already there for the other two fields).
-- The four release-type crawlers (Amazon, eBay, eBay/CCmusic, Discogs
+- The release-type crawlers (Amazon, eBay, eBay/CCmusic, Discogs
   Marketplace) set no `genre` attribute, same as they set no
   `genre_summary` today, and fall back to the default `"marketplace"`.
 - Retagging a crawler's genre means editing its plugin file and

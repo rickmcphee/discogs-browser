@@ -7,7 +7,7 @@ Branch: `claude/newbury-comics-crawler-17392e`
 
 Newbury Comics (`newburycomics.com`), a New England record store chain and
 pop-culture retailer, is not covered by any existing crawler. Its store is a
-standard Shopify storefront, so it belongs to the same family as the 34
+standard Shopify storefront, so it belongs to the same family as the
 Shopify `catalog` plugins already in `backend/crawlers/`.
 
 ## Scope

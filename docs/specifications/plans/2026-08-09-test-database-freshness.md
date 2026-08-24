@@ -143,7 +143,7 @@ def pg_run_database():
 
     TEMPLATE template0 rather than a hand-recreated schema: a recreated
     `public` schema loses the default `GRANT USAGE ... TO PUBLIC` that
-    TENANT_SCHEMA silently relies on, which fails ~88 tests. See
+    TENANT_SCHEMA silently relies on, which fails every grant and RLS test. See
     docs/specifications/shaping/2026-08-09-test-database-freshness-design.md.
     """
     base_url = os.environ["TEST_DATABASE_URL"]

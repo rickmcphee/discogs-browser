@@ -435,7 +435,7 @@ EOF
 ## Task 4: Seed `genre` on every catalog crawler plugin
 
 **Files:**
-- Modify: all 40 files listed in the table below, under `backend/crawlers/`
+- Modify: all files listed in the table below, under `backend/crawlers/`
 - Test: `backend/tests/test_main.py`
 
 **Interfaces:**
@@ -454,14 +454,15 @@ def test_startup_seeds_catalog_crawlers_with_genre(pg_test_db):
             with db.get_admin_pool().connection() as conn:
                 crawlers = db.get_all_crawlers(conn)
 
+    assert len(crawlers) == len(sorted(main.BUNDLED_CRAWLERS_DIR.glob("*.py")))
     catalog_crawlers = [c for c in crawlers if c["crawler_type"] in ("catalog", "catalog_browser")]
     release_crawlers = [c for c in crawlers if c["crawler_type"] == "release"]
+    assert catalog_crawlers
+    assert release_crawlers
     valid_genres = {"marketplace", "punk", "metal", "rock", "pop"}
 
-    assert len(catalog_crawlers) >= 36
     invalid = {c["site_name"]: c["genre"] for c in catalog_crawlers if c["genre"] not in valid_genres}
     assert invalid == {}
-    assert len(release_crawlers) >= 4
     assert all(c["genre"] == "marketplace" for c in release_crawlers)
 
     century_media = next(c for c in catalog_crawlers if c["site_name"] == "Century Media")
@@ -538,7 +539,7 @@ Change to:
     genre: str = "punk"
 ```
 
-Repeat for all 40 files using the table above. The four release-type crawlers (`amazon.py`, `discogs_marketplace.py`, `ebay.py`, `ebay_general.py`) are **not** touched — they keep defaulting to `"marketplace"` via Task 2's `getattr` fallback, exactly like they already do for `genre_summary`.
+Repeat for every file using the table above. The release-type crawlers (`amazon.py`, `discogs_marketplace.py`, `ebay.py`, `ebay_general.py`) are **not** touched — they keep defaulting to `"marketplace"` via Task 2's `getattr` fallback, exactly like they already do for `genre_summary`.
 
 - [ ] **Step 4: Run to verify pass**
 
@@ -548,7 +549,7 @@ Expected: PASS (all tests in the file).
 - [ ] **Step 5: Run the full backend suite**
 
 Run: `cd backend && TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/discogs_browser_test IDENTITY_DB_PASSWORD=test APP_DB_PASSWORD=test pytest`
-Expected: PASS (no regressions from the 40-file edit; run tests in the foreground, not in parallel with any other pytest run against the same Postgres cluster).
+Expected: PASS (no regressions from the bulk edit; run tests in the foreground, not in parallel with any other pytest run against the same Postgres cluster).
 
 - [ ] **Step 6: Commit**
 
@@ -1230,7 +1231,7 @@ EOF
 **Interfaces:**
 - Consumes: `getUserHiddenCrawlers`, `postUserHiddenCrawlers` (Task 5), `StockBrowser`'s new props (Task 7), `Settings`'s reduced props (Task 8).
 
-- [ ] **Step 1: Update five App-mounting test files' client mocks**
+- [ ] **Step 1: Update the App-mounting test files' client mocks**
 
 In each of `frontend/src/test/crawlStatusBar.test.tsx`, `frontend/src/test/inStockTab.test.tsx`, `frontend/src/test/staleSignupLink.test.tsx`, `frontend/src/test/wantlistRefresh.test.tsx`, `frontend/src/test/viewRenderChurn.test.tsx`, find the `vi.mock('../api/client', () => ({` block and add these two lines immediately after `setUnauthorizedHandler: vi.fn(),`:
 

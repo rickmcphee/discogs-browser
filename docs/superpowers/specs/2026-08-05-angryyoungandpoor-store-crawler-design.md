@@ -274,8 +274,8 @@ in-browser extraction.
 title as a `" (Used)"` suffix when the source title ends in `"(USED)"` —
 the same pattern `is_preorder` suffixes already use elsewhere (e.g.
 `secretlystore.py` appending `" (Pre-Order)"`). A dedicated `condition`
-column was considered and rejected for now: every other of the 31 existing
-catalog sources is new-only, so a schema column with every other crawler writing
+column was considered and rejected for now: every other existing
+catalog source is new-only, so a schema column with every other crawler writing
 `NULL` for one crawler's benefit is more invasive than the value justifies
 at this scale. If a second used/vintage source shows up later, revisit.
 

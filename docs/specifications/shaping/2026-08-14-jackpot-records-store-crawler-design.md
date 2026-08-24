@@ -8,7 +8,7 @@ Branch: `claude/jackpot-records-crawler-5a6b9f`
 Jackpot Records (`jackpotrecords.com`), a Portland, Oregon record store and
 label ("new and used Vinyl LPs, CDs, DVDs and other collectibles", per its
 own meta description), is not covered by any existing crawler. It is a
-standard Shopify storefront — same family as Turntable Lab and the 33
+standard Shopify storefront — same family as Turntable Lab and the
 label-store `catalog` plugins already in `backend/crawlers/`.
 
 What makes it more than a copy of `turntablelab.py`: unlike Turntable Lab's

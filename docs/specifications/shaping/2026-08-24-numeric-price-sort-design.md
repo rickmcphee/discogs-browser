@@ -52,8 +52,8 @@ then strips the separators so the cast sees a bare number. Whatever leads the va
 `$`, `£`, `USD `, nothing — is skipped rather than parsed.
 
 Sharing the expression, rather than fixing `get_library_releases` in isolation, is the
-point: the two sorts are the same column rendered in two tabs, and they had already
-diverged once.
+point: both sorts read the same column, rendered under the same `Price` header on every
+tab that shows it, and they had already diverged once.
 
 **No currency conversion.** A collection with mixed currencies compares the bare numbers,
 so `"£5"` sorts below `"$9"` on their face values. Converting would need live FX rates and
