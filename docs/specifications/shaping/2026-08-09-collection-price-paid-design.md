@@ -122,7 +122,11 @@ change that).
   `1,200` / `1,200.50` / `1,234,567` are comma grouping and lose their commas;
   `1.234.567` / `1.234,56` are dot grouping and lose their dots, the comma
   becoming the point; `25,50` is a decimal comma; `25` / `25.50` are already
-  plain; anything unrecognised falls back to digits only.
+  plain; a bare decimal part (`.99`, `,99`) gets its leading zero back; and
+  anything unrecognised falls back to its *leading digit run*, everything from
+  the first separator on discarded. Not "digits only" — removing the separators
+  from `"25.00.00"` yields 250000, which is the behaviour this fallback exists
+  to avoid.
 
   An intermediate version of this amendment described the helper as stripping
   every comma. That is what it did for one commit, and it was wrong: `"€25,50"`

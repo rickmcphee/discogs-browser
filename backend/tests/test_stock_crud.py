@@ -767,11 +767,15 @@ def test_get_stock_items_sort_by_discogs_price_reads_decimal_commas_as_decimals(
         {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
         {"artist": "Artist B", "title": "Album B", "url": "https://x/2", "price": 10.0, "currency": "USD"},
         {"artist": "Artist C", "title": "Album C", "url": "https://x/3", "price": 10.0, "currency": "USD"},
+        {"artist": "Artist D", "title": "Album D", "url": "https://x/4", "price": 10.0, "currency": "USD"},
+        {"artist": "Artist E", "title": "Album E", "url": "https://x/5", "price": 10.0, "currency": "USD"},
     ])
     for discogs_id, artist, title, price in [
         ("r1", "Artist A", "Album A", "$100"),
         ("r2", "Artist B", "Album B", "\u20ac25,50"),
         ("r3", "Artist C", "Album C", "1.234,56"),
+        ("r4", "Artist D", "Album D", "$1,200.50"),
+        ("r5", "Artist E", "Album E", "1.234"),
     ]:
         db.upsert_catalog_release(admin_conn, {
             "discogs_id": discogs_id, "artist": artist, "title": title, "year": None, "label": None,
@@ -783,9 +787,12 @@ def test_get_stock_items_sort_by_discogs_price_reads_decimal_commas_as_decimals(
 
     with db.user_scope(alice["id"]) as conn:
         result = db.get_stock_items(conn, alice["id"], library_scope="collection", sort="discogs_price", order="asc")
-    # 25.50 < 100 < 1234.56. Under a blanket comma strip B reads as 2550 and
-    # leads; under the old narrow regex C reads as 1.234 and leads.
-    assert [r["artist"] for r in result["items"]] == ["Artist B", "Artist A", "Artist C"]
+    # 1.234 < 25.50 < 100 < 1200.50 < 1234.56 -- the whole matrix, not a subset.
+    # Under a blanket comma strip B reads as 2550 and leads; under the old
+    # narrow regex C reads as 1.234 and D as 1.
+    assert [r["artist"] for r in result["items"]] == [
+        "Artist E", "Artist B", "Artist A", "Artist D", "Artist C",
+    ]
 
 
 def test_get_stock_items_sort_by_discogs_price_reads_a_bare_decimal_part(admin_conn):
@@ -799,10 +806,12 @@ def test_get_stock_items_sort_by_discogs_price_reads_a_bare_decimal_part(admin_c
     db.replace_stock_items(admin_conn, crawler_id, [
         {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
         {"artist": "Artist B", "title": "Album B", "url": "https://x/2", "price": 10.0, "currency": "USD"},
+        {"artist": "Artist C", "title": "Album C", "url": "https://x/3", "price": 10.0, "currency": "USD"},
     ])
     for discogs_id, artist, title, price in [
         ("r1", "Artist A", "Album A", "$.99"),
         ("r2", "Artist B", "Album B", "$50"),
+        ("r3", "Artist C", "Album C", ",99"),
     ]:
         db.upsert_catalog_release(admin_conn, {
             "discogs_id": discogs_id, "artist": artist, "title": title, "year": None, "label": None,
@@ -814,8 +823,13 @@ def test_get_stock_items_sort_by_discogs_price_reads_a_bare_decimal_part(admin_c
 
     with db.user_scope(alice["id"]) as conn:
         result = db.get_stock_items(conn, alice["id"], library_scope="collection", sort="discogs_price", order="asc")
-    # 0.99 < 50. Under a digit-first token "$.99" reads as 99 and trails.
-    assert [r["artist"] for r in result["items"]] == ["Artist A", "Artist B"]
+    # Both leading-separator forms, 0.99 each, ahead of 50. Under a digit-first
+    # token they read as 99 and trail. C's ",99" goes through the decimal-comma
+    # branch after the zero is prepended, A's "$.99" through the plain one --
+    # different branches, so both are worth pinning here.
+    ordered = [r["artist"] for r in result["items"]]
+    assert set(ordered[:2]) == {"Artist A", "Artist C"}
+    assert ordered[2] == "Artist B"
 
 
 def test_get_stock_items_sort_by_discogs_price_falls_back_to_artist_when_no_library_scope(admin_conn):

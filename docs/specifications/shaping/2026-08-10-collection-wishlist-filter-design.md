@@ -335,9 +335,13 @@ The extraction moved into a shared `_price_sort_sql()` helper, also used by
 `"$1,200.50"` read as `1`; the helper instead matches the token against the
 formats that occur and picks the normalization from that — comma grouping
 (`1,200.50`) loses its commas, dot grouping (`1.234,56`) loses its dots with the
-comma becoming the point, a bare decimal comma (`25,50`) becomes a point, and an
-unrecognised token falls back to digits only. Note this is *not* a blanket comma
-strip: an intermediate version was, and turned `"€25,50"` into 2550. The
+comma becoming the point, a bare decimal comma (`25,50`) becomes a point, a
+value written without its leading zero (`.99`) gets one, and an unrecognised
+token falls back to its *leading digit run*, everything from the first separator
+on discarded. Note this is *not* a blanket strip in either place: an
+intermediate version stripped every comma and turned `"€25,50"` into 2550, and
+an intermediate fallback stripped every separator and turned `"25.00.00"` into
+250000. The
 subquery wrapper and `_library_match_fragment` call around it are unchanged. The
 column it reads is `li.price_paid`, per this document's storage-superseded
 banner. See

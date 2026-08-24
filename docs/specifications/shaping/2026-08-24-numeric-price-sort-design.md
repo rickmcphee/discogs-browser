@@ -59,6 +59,7 @@ cents.) So the token is matched against the formats that actually occur instead:
 | `25,50` | decimal comma | comma becomes the point |
 | `1,23,456` | Indian grouping — two-digit groups, three-digit last | commas drop out |
 | `25`, `25.50` | already plain | unchanged |
+| `.99`, `,99` | a bare decimal part, written without its leading zero | zero prepended, then resolved as above |
 | anything else | unrecognised | leading digit run, rest discarded |
 
 Two calls worth stating outright:
