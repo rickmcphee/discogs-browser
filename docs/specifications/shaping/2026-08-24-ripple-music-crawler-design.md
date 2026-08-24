@@ -39,6 +39,14 @@ is correct under either finding rather than to guess one — see each section
 below. Where that costs something (one extra HTTP request per sync), the
 cost is named.
 
+**One of these is a merge gate, not a nice-to-have.** The repo's normative
+crawler policy
+(`docs/specifications/shaping/2026-08-09-amoeba-store-crawler-design.md`,
+"Crawl citizenship and `robots.txt` compliance") requires this store's own
+`robots.txt` to be fetched and its finding recorded before the crawler is
+added. That could not be done here, so **this crawler should not merge until
+it is** — see "Crawl citizenship" below.
+
 **To verify before trusting this crawler's output**, from a network that can
 reach the store:
 
@@ -231,13 +239,38 @@ in_vinyl_category or _VINYL_RE.search(name)
 
 The category arm is stronger here than on either sibling, because this store
 names its media categories by format *and size* — `12" Vinyl`, `10" Vinyl`,
-`7" Vinyl`, `Double LP`, `Test Presses`. That is why `_VINYL_RE`
-(`\bvinyls?\b|\b\d*x?lps?\b|\d+\s*"|\btest press`) is run against category
-names rather than compared against one exact string: Asbestos's single
-`Vinyl` category and Jetglow's lumped `Vinyl - Cassette - CD` are each one
-literal, and a literal generalises to neither this store nor the next.
-`test press` is included because a test pressing is vinyl by definition and
-this store sells them as their own category.
+`7" Vinyl`, `Double LP`, `Test Presses`. That is why the vinyl test is a
+token regex run against category names rather than a comparison against one
+exact string: Asbestos's single `Vinyl` category and Jetglow's lumped
+`Vinyl - Cassette - CD` are each one literal, and a literal generalises to
+neither this store nor the next. `test press` counts because a test pressing
+is vinyl by definition and this store sells them as their own category.
+
+**The inch mark is a weak signal and is not in that regex.** Both sibling
+crawlers fold `\d+\s*"` into their one vinyl pattern, and Jetglow's comment
+argues a digit followed by a quote mark "cannot misfire." That holds on its
+store, which sells no merchandise measured in inches. It does not hold here:
+this store has a `Slipmat` category, and slipmats are 12". A single pattern
+would clear `Ripple Music 12" Slipmat` through the product gate on its inch
+mark, and — because a single-option product's echoing option bypasses the
+non-vinyl filter — publish a slipmat as vinyl.
+
+So the vocabulary is split in two:
+
+- `_VINYL_WORD_RE` (`\bvinyls?\b|\b\d*x?lps?\b|\btest press`) —
+  unambiguous, trusted anywhere.
+- `_INCH_RE` (`\d+\s*"`) — trusted only where the same string names no
+  competing format or merch item. `_looks_vinyl()` applies that rule:
+  `Wo Fat - Split 7"` is admitted, `Ripple Music 12" Slipmat` is not.
+
+Dropping the inch mark altogether was the simpler alternative and was
+rejected: a `7"`/`10"`/`12"` single whose name carries no other format word
+is ordinary stock for a label like this, and the known category vocabulary
+would still be matched by the word regex alone, so the loss would be silent.
+In the *option* filter the inch mark is simply absent from the override —
+a `12" Slipmat` option is dropped rather than rescued, and nothing is lost,
+since an option named only `7"` matches no blocklist entry in the first
+place and so never needs an override.
 
 `Limited Edition` and `Rogue Wave Records` (a sub-label) match neither arm on
 their own — they carry no format signal, so a product filed only under them
@@ -286,7 +319,10 @@ by its own name after the gate had already accepted it.
   artists don't match the title's own billing, so a literal split always
   wins. `Various Artists` normalizes to `Various`, Discogs' own entity name,
   because `db._library_match_fragment` does exact `LOWER()` equality on
-  artist.
+  artist. Normalization runs on **both** branches, via `_normalize_artist`:
+  both siblings normalize only on the split branch, which leaves a curated
+  `artists` tag reading `Various Artists` just as unmatchable as the billing
+  it was meant to rescue.
 - **price** — `option["price"]`, already a JSON number on this platform; a
   type check, not a parse. Non-numeric → `None`.
 - **currency** — `"USD"`. US label, and its releases list in dollars.
@@ -326,16 +362,45 @@ genre grouping only.
 Per the normative section of
 `docs/specifications/shaping/2026-08-09-amoeba-store-crawler-design.md`.
 
-**This site's `robots.txt` could not be read** — same egress block. Big
-Cartel serves a platform-wide default (`Disallow: /admin`, `/cart`,
-`/checkout`, `/receipt`) which was confirmed live on the Asbestos store and
-does not cover `/products.json`; there is no reason to expect this store to
-differ, but it was not verified and should be, alongside the checks above.
+**⛔ This is an unmet merge gate, not a caveat.** That normative section
+says, in terms:
 
-- Load: **one to two GETs per sync**, among the lightest of any crawler in
-  this repo — no per-product detail-page fan-out. Each request is paced with
-  `random.uniform(delay * 0.5, delay)` from `crawl_delay_seconds`, matching
-  every sibling.
+> Before adding any future store crawler, `robots.txt` must be fetched and
+> read for the specific paths that crawler will request, and the finding
+> recorded in that crawler's spec the way it is recorded here.
+
+This store's `robots.txt` could not be fetched — same egress block that
+prevented the `/products.json` fetch. The requirement is therefore **not
+satisfied**, and this crawler should not merge until it is.
+
+What is known, and why it is not a substitute: Big Cartel serves a
+platform-wide default (`Disallow: /admin`, `/cart`, `/checkout`,
+`/receipt`), confirmed live on the Asbestos store, which does not cover
+`/products.json`. Big Cartel stores can also serve their own, so a sibling
+store's file is evidence about the platform, not about this store. The gate
+asks for this store's file, and rightly.
+
+To clear it, from a network that can reach the store:
+
+```bash
+curl -sS https://ripplemusic.bigcartel.com/robots.txt
+```
+
+Then record the finding here the way the sibling specs do. A `Disallow`
+covering `/products.json` for general-purpose clients means the store is not
+added — per the same normative section, that is the answer, not a prompt to
+find a way around it.
+
+- Load: **2 GETs per sync if `page=` is ignored** (the siblings' confirmed
+  behaviour — one for the catalog, one that repeats it and stops the loop).
+  **If `page=` is honoured the bound is `_MAX_PAGES` + 1 = 51**, and the
+  realistic figure is `ceil(catalog_size / page_size) + 1` — at Big Cartel's
+  24-per-page storefront default, ~13 requests for a 300-product catalog.
+  Still no per-product detail-page fan-out, and every request is paced with
+  `random.uniform(delay * 0.5, delay)` from `crawl_delay_seconds` (default
+  30s), so even the 51-request ceiling spreads over ~13 minutes. An earlier
+  draft of this section said "one to two GETs per sync"; that describes only
+  the ignored case and understated the shipped behaviour.
 - No headers are spoofed; the request goes out under a plain `python-httpx`
   user agent.
 - If Ripple Music blocks this crawler, adds a `Disallow` covering
@@ -347,7 +412,7 @@ differ, but it was not verified and should be, alongside the checks above.
 `backend/tests/test_ripplemusic_crawler.py` — flat in `tests/`, like every
 pure-HTTP catalog crawler (`tests/crawlers/` holds the Playwright-driven
 ones). `respx` mocks `/products.json`; no live site, no bot-detection risk.
-67 tests.
+75 tests.
 
 **Fixture honesty.** Sibling test files use product literals copied from a
 live feed. These are *reconstructions*: artist names, product names, and
@@ -360,12 +425,17 @@ Cases, grouped:
 
 - **Artist/title** — first-separator split; hyphen glued to a word not
   clipped; `artists[]` fallback; blank curated name → skip, not empty string;
-  `Various Artists` and `Various Artist` → `Various`; HTML entities
-  unescaped.
+  `Various Artists` and `Various Artist` → `Various` on the split branch
+  *and* on the curated fallback; HTML entities unescaped.
 - **Product gate** — each of the 14 known category names, parametrized, with
   a format-free product name so the category arm is isolated; vinyl name with
   no categories; vinyl category with no format token in the name; neither
-  signal → dropped.
+  signal → dropped. Plus the inch-mark rule in both directions: `Split 7"`
+  and `Sell the Future 12"` admitted, `12" Slipmat` and `7" Storage Book`
+  rejected, and the end-to-end shape of the bug the rule prevents — an
+  inch-marked merch product whose echoing option would otherwise carry it
+  past the non-vinyl filter — pinned as its own test, with a matching one for
+  an inch-marked merch *option*.
 - **Option filter** — 19 parametrized option names covering unmarked
   colour/edition variants (kept), bundles carrying both a vinyl and a
   non-vinyl token (kept), and competing formats and merch (dropped); a mixed

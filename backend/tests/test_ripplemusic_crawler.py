@@ -77,6 +77,16 @@ def test_parse_artist_title_normalizes_various_artists_to_various():
     assert Crawler._parse_artist_title("Various Artist - Ripple Sampler", [])[0] == "Various"
 
 
+def test_parse_artist_title_normalizes_various_on_the_curated_fallback_too():
+    # A product with no separator whose curated tag reads "Various Artists" is
+    # exactly as unmatchable as a title billing that reads the same way, so
+    # normalization cannot live only on the split branch.
+    artists = [{"id": 7, "name": "Various Artists"}]
+    assert Crawler._parse_artist_title("Ripple Sampler Volume 1", artists) == (
+        "Various", "Ripple Sampler Volume 1",
+    )
+
+
 def test_parse_artist_title_unescapes_html_entities():
     name = "Mothership - Don&#x27;t Fear the Reaper LP"
     assert Crawler._parse_artist_title(name, []) == ("Mothership", "Don't Fear the Reaper LP")
@@ -123,6 +133,47 @@ def test_items_keeps_a_product_with_a_vinyl_category_but_no_format_token_in_its_
     # The other half of the same finding: neither signal alone is sufficient.
     product = _product(name="Vokonis - Odyssey", categories=_VINYL_CATEGORY)
     assert len(Crawler._items(product)) == 1
+
+
+@pytest.mark.parametrize("product_name,kept", [
+    # A bare inch mark reads as vinyl here...
+    ('Wo Fat - Split 7"', True),
+    ('Cortez - Sell the Future 12"', True),
+    # ...and as merch here. The mark alone cannot tell the two apart, so it
+    # is only trusted when nothing else in the string contradicts it. This
+    # store has a Slipmat category, and slipmats are measured in inches.
+    ('Ripple Music 12" Slipmat', False),
+    ('Ripple Music 7" Storage Book', False),
+    # A vinyl word overrides a competing token; the inch mark does not.
+    ('Godzillionaire - Diminishing Returns Vinyl and CD variants', True),
+])
+def test_items_inch_mark_is_only_trusted_when_nothing_contradicts_it(product_name, kept):
+    # categories=[] isolates the product-name arm of the gate.
+    product = _product(name=product_name, categories=[], artists=[{"id": 1, "name": "Ripple"}])
+    assert len(Crawler._items(product)) == (1 if kept else 0)
+
+
+def test_items_does_not_publish_an_inch_marked_merch_product_via_its_echoing_option():
+    # The end-to-end shape of the bug the second _looks_vinyl clause exists to
+    # prevent: the inch mark clears the product gate, then the single option
+    # echoes the product name and bypasses _is_non_vinyl on the way out.
+    name = 'Ripple Music 12" Slipmat'
+    product = _product(
+        name=name,
+        categories=[{"id": 8, "name": "Slipmat"}],
+        artists=[{"id": 1, "name": "Ripple Music"}],
+        options=[{"id": 70, "name": name, "price": 15.0, "sold_out": False}],
+    )
+    assert Crawler._items(product) == []
+
+
+def test_items_drops_an_inch_marked_merch_option():
+    # Same rule one layer down: an inch mark must not rescue an option from
+    # the blocklist the way a vinyl word does.
+    product = _product(options=[
+        {"id": 71, "name": '12" Slipmat', "price": 15.0, "sold_out": False},
+    ])
+    assert Crawler._items(product) == []
 
 
 def test_items_drops_a_product_with_neither_signal():

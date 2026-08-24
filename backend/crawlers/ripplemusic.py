@@ -18,15 +18,24 @@ log = get_logger("ripplemusic")
 _TITLE_RE = re.compile(r'^(?P<artist>.+?)(?:\s+-\s*|\s*-\s+)(?P<album>.+)$')
 _VARIOUS_RE = re.compile(r'^various(?:\s+artists?)?$', re.IGNORECASE)
 
-# Vinyl tokens, used against three different strings: category names, the
-# product name, and option names. This store splits its media categories by
-# format *and size* ('12" Vinyl', '10" Vinyl', '7" Vinyl', 'Double LP',
-# 'Test Presses'), unlike asbestosrecords.py's single `Vinyl` category and
-# jetglowrecordings.py's one lumped 'Vinyl - Cassette - CD' -- so a token
-# regex generalises where an exact category string would not. `test press`
-# is included because a test pressing is vinyl by definition and this store
-# sells them as their own category.
-_VINYL_RE = re.compile(r'\bvinyls?\b|\b\d*x?lps?\b|\d+\s*"|\btest press', re.IGNORECASE)
+# Unambiguous vinyl vocabulary, safe to trust in any of the three strings
+# this crawler reads: a category name, a product name, or an option name.
+# This store splits its media categories by format *and size* ('12" Vinyl',
+# '10" Vinyl', '7" Vinyl', 'Double LP', 'Test Presses'), unlike
+# asbestosrecords.py's single `Vinyl` category and jetglowrecordings.py's one
+# lumped 'Vinyl - Cassette - CD' -- so a token regex generalises where an
+# exact category string would not. `test press` is included because a test
+# pressing is vinyl by definition and this store sells them as a category.
+_VINYL_WORD_RE = re.compile(r'\bvinyls?\b|\b\d*x?lps?\b|\btest press', re.IGNORECASE)
+
+# A bare inch mark is a *weak* signal, deliberately kept out of the regex
+# above. It reads as vinyl in "Wo Fat - Split 7\"" and as merch in
+# "Ripple Music 12\" Slipmat", and this store sells both -- it has a Slipmat
+# category. jetglowrecordings.py notes that a digit followed by a quote mark
+# "cannot misfire"; that holds on its store, which sells no merch measured in
+# inches, and does not hold here. Trusted only where nothing in the same
+# string contradicts it -- see _looks_vinyl.
+_INCH_RE = re.compile(r'\d+\s*"')
 
 # Competing formats and merch, used only as a per-option filter and only when
 # the option names no vinyl token (see _items). Deliberately broad: the vinyl
@@ -136,9 +145,9 @@ class Crawler:
         # format token in the name. This store's format-named categories make
         # the category arm stronger than it was there, but not sufficient.
         in_vinyl_category = any(
-            _VINYL_RE.search(c.get("name") or "") for c in categories
+            cls._looks_vinyl(c.get("name") or "") for c in categories
         )
-        if not (in_vinyl_category or _VINYL_RE.search(name)):
+        if not (in_vinyl_category or cls._looks_vinyl(name)):
             return []
 
         artist, album = cls._parse_artist_title(name, product.get("artists") or [])
@@ -177,6 +186,22 @@ class Crawler:
         return items
 
     @classmethod
+    def _looks_vinyl(cls, text: str) -> bool:
+        """Whether a category or product name says "this is a record".
+
+        The unambiguous vocabulary is trusted outright. A bare inch mark is
+        trusted only when the same string names no competing format or merch
+        item, because the mark alone cannot tell a 7" single from a 12"
+        slipmat. Without that second clause a product named
+        `Ripple Music 12" Slipmat` clears the gate on its inch mark, and a
+        single-option product's echoing option then bypasses _is_non_vinyl
+        and publishes a slipmat as vinyl.
+        """
+        if _VINYL_WORD_RE.search(text):
+            return True
+        return bool(_INCH_RE.search(text) and not _NON_VINYL_RE.search(text))
+
+    @classmethod
     def _is_non_vinyl(cls, option_name: str) -> bool:
         """Negative per-option filter, the opposite polarity to
         jetglowrecordings.py's positive one, because this store's variant
@@ -185,11 +210,14 @@ class Crawler:
         A positive gate would drop the unmarked ones; the product-level gate
         above has already established the product is a record, so the only
         job left is to drop the competing-format variants that mixed
-        vinyl/CD products carry. A vinyl token anywhere in the name wins, so
-        bundle variants ("LP + CD") survive.
+        vinyl/CD products carry. A vinyl *word* wins, so bundle variants
+        ("LP + CD") survive -- but an inch mark does not, so a `12" Slipmat`
+        option is dropped rather than rescued. Nothing is lost by that: an
+        option named only `7"` matches no blocklist entry, so the negative
+        filter never reaches for an override on it.
         """
         return bool(
-            _NON_VINYL_RE.search(option_name) and not _VINYL_RE.search(option_name)
+            _NON_VINYL_RE.search(option_name) and not _VINYL_WORD_RE.search(option_name)
         )
 
     @classmethod
@@ -202,19 +230,22 @@ class Crawler:
         clean = html.unescape(name).strip()
         m = _TITLE_RE.match(clean)
         if m:
-            artist = m.group("artist").strip()
-            album = m.group("album").strip()
-            if _VARIOUS_RE.match(artist):
-                # Discogs' own entity name is "Various", not "Various
-                # Artists" -- db._library_match_fragment does exact LOWER()
-                # equality on artist, so the long form never matches.
-                artist = "Various"
-            return artist, album
+            return cls._normalize_artist(m.group("artist").strip()), m.group("album").strip()
         if artists:
             # A blank/missing name on the first curated entry must fall
             # through to the skip below, not return an empty-string artist --
             # _items()'s `if artist is None` guard only rejects None.
             fallback = html.unescape(artists[0].get("name") or "").strip()
             if fallback:
-                return fallback, clean
+                # Normalized here too, not only on the split branch: a curated
+                # tag reading "Various Artists" is exactly as unmatchable as a
+                # title billing that reads the same way.
+                return cls._normalize_artist(fallback), clean
         return None, clean
+
+    @staticmethod
+    def _normalize_artist(artist: str) -> str:
+        """Discogs' own entity name is "Various", not "Various Artists" --
+        db._library_match_fragment does exact LOWER() equality on artist, so
+        the long form never matches anything."""
+        return "Various" if _VARIOUS_RE.match(artist) else artist
