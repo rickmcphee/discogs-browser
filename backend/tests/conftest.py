@@ -313,15 +313,16 @@ def _fast_catalog_crawl_sleep(request, monkeypatch):
         monkeypatch.setattr("shopify_catalog.sleep", fake_sleep)
         monkeypatch.setattr("shopify_catalog.load_config", lambda: {})
         # angryyoungandpoor.py, amoeba.py, asbestosrecords.py,
-        # jetglowrecordings.py, and sideonedummyrecords.py pace their own
-        # request directly rather than going through
+        # jetglowrecordings.py, ripplemusic.py, and sideonedummyrecords.py
+        # pace their own request directly rather than going through
         # shopify_catalog.iter_products() -- patch their module-local `sleep`
-        # bindings too, when importable. asbestosrecords and jetglowrecordings
-        # are imported as "crawlers.<name>" (package submodules), not bare
-        # top-level names like the others, which is why their tuple entries
-        # carry the "crawlers." prefix.
+        # bindings too, when importable. asbestosrecords, jetglowrecordings,
+        # and ripplemusic are imported as "crawlers.<name>" (package
+        # submodules), not bare top-level names like the others, which is why
+        # their tuple entries carry the "crawlers." prefix.
         for module_name in ("angryyoungandpoor", "amoeba", "crawlers.asbestosrecords",
-                            "crawlers.jetglowrecordings", "sideonedummyrecords"):
+                            "crawlers.jetglowrecordings", "crawlers.ripplemusic",
+                            "sideonedummyrecords"):
             for attr, replacement in (("sleep", fake_sleep), ("load_config", lambda: {})):
                 try:
                     monkeypatch.setattr(f"{module_name}.{attr}", replacement)
