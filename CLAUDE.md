@@ -110,8 +110,11 @@ a total ("a 34th `catalog`-type source", "the thirty-fifth crawler"), and
 running totals ("bringing the total to twenty-six"). Whole-suite test totals
 ("738 tests") and file-tree annotations ("~100 pytest files") are the same rule.
 
-Two forms hide from a naive `grep` for a number next to a noun, and both slipped
-through the sweep that first removed these — check for them by hand:
+Several forms hide from a naive `grep` for a number next to a noun, and each of
+these slipped through a sweep that looked only for the obvious pattern — check
+for them by hand. Note also that `\w+` does not span a hyphen, so a pattern like
+`\d+ \w+ plugins` never matches `35 label-store plugins`; allow `[\w-]+`, and
+search unwrapped text, since a wrapped line can split the number from its noun:
 
 - **Ordinals fused to the digits** — `32nd catalog source`, `33rd Shopify-based
   source`. `\d+ catalog` doesn't match `32nd catalog`.

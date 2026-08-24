@@ -385,7 +385,7 @@ by any endpoint in this plan — see Non-goals.
   and `PATCH /crawlers/{id}`; admin caller succeeds.
 - Router-level tests for `collection`, `releases`, `crawl`, `discover`,
   `stock` are rewritten against the Postgres fixtures (`pg_test_db`) the
-  auth/oauth test suite already established, replacing the six SQLite-era
+  auth/oauth test suite already established, replacing the SQLite-era
   test files that currently fail to import
   (`test_crawl_router_replay.py`, `test_db.py`, `test_main.py`,
   `test_releases_router.py`, `test_settings_router.py`,

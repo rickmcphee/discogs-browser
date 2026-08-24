@@ -1230,7 +1230,7 @@ EOF
 **Interfaces:**
 - Consumes: `getUserHiddenCrawlers`, `postUserHiddenCrawlers` (Task 5), `StockBrowser`'s new props (Task 7), `Settings`'s reduced props (Task 8).
 
-- [ ] **Step 1: Update five App-mounting test files' client mocks**
+- [ ] **Step 1: Update the App-mounting test files' client mocks**
 
 In each of `frontend/src/test/crawlStatusBar.test.tsx`, `frontend/src/test/inStockTab.test.tsx`, `frontend/src/test/staleSignupLink.test.tsx`, `frontend/src/test/wantlistRefresh.test.tsx`, `frontend/src/test/viewRenderChurn.test.tsx`, find the `vi.mock('../api/client', () => ({` block and add these two lines immediately after `setUnauthorizedHandler: vi.fn(),`:
 

@@ -207,8 +207,8 @@ Because the fixture is session-scoped and autouse, it must also stay out of the
 way of the test files that never touch Postgres: with `TEST_DATABASE_URL`
 unset it provisions nothing and yields `None`, leaving `pg_test_db` to raise for
 the files that do need a database, exactly as before this fixture existed. The
-guard test skips in that case — safe, because the same unset variable makes all
-28 Postgres-backed files fail loudly, so a run that lost it cannot look green.
+guard test skips in that case — safe, because the same unset variable makes
+every Postgres-backed test file fail loudly, so a run that lost it cannot look green.
 
 ### Guard test
 
