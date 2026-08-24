@@ -229,7 +229,7 @@ _NON_VINYL_MEDIA_WORDS = (r'\d*[x×]?cds?', r'digital', r'digipa[kc]k?s?', r'cas
 _MERCH_WORDS           = (r't-?shirts?', r'shirts?', r'hoodies?', r'longsleeves?',
                           r'posters?', r'patche?s?', r'flags?', r'mugs?', r'books?')
 _NON_VINYL_WORDS       = _NON_VINYL_MEDIA_WORDS + _MERCH_WORDS
-_INCH                  = r'\b\d{1,2}\s*(?:"|inch\b)'
+_INCH                  = r'\b\d{1,2}\s*-?\s*(?:"|inch\b)'
 
 _VINYL_WORD_RE         = ...  # _VINYL_WORDS
 _INCH_RE               = ...  # _INCH
@@ -268,7 +268,8 @@ The inch alternative had the same disagreement, found a round later: this gate
 took only an unspaced mark on three sizes (`7|10|12"`) while the stripper
 already accepted a space and the spelled word, so `10 INCH + CD` lost the
 vinyl override and was dropped as a CD while `12" + CD` was kept. Both now
-read `\d{1,2}\s*(?:"|inch\b)`. The rule this keeps arriving at: a bundle is
+read `\d{1,2}\s*-?\s*(?:"|inch\b)` — the optional hyphen added a round later
+still, for `12-INCH`; see the hyphen note below. The rule this keeps arriving at: a bundle is
 only safe when the override recognises every vinyl spelling the rest of the
 module does, so the three expressions are maintained as one vocabulary.
 
@@ -433,7 +434,7 @@ identity — indistinguishable in the Store tab, sharing one judgment and one
 saved state between them. A multi-variant product qualifies each row with its
 variant name (`1982 — Black`), the shape `nuclearblast.py` uses.
 
-Three details, all load-bearing:
+Four details, all load-bearing:
 
 - **Non-vinyl variants are dropped first.** The title blurb gates the
   *product*; a mixed-format product still needs its own variants filtered, or

@@ -185,7 +185,7 @@ class Crawler:
         # needs its non-vinyl variants dropped, or a "CD" variant of an
         # LP-titled release publishes as format "Vinyl". Same gate, applied to
         # the variant name -- deliberately not nuclearblast.py's positive
-        # `_VINYL_WORD_RE.search(variant_title)` filter, which would drop every bare
+        # `_VINYL_RE.search(variant_title)` filter, which would drop every bare
         # colour name ("Black", "Splatter"), the failure mode
         # carparkrecords.py's doc records for its own store.
         #

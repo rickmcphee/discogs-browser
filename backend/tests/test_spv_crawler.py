@@ -472,7 +472,7 @@ def test_count_prefixed_vinyl_format_is_still_kept():
 
 
 def test_vinyl_keyword_overrides_count_prefixed_cd():
-    # A bundle naming both is a vinyl release: _VINYL_RE short-circuits.
+    # A bundle naming both is a vinyl release: _VINYL_WORD_RE short-circuits.
     assert len(Crawler._items({**_SODOM, "title": 'Sodom "1982" LP+2CD'})) == 1
 
 

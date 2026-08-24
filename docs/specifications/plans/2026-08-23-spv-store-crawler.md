@@ -54,7 +54,7 @@ dash-path splitter: finding the *wrong end* of the trailing format run — first
 its leftmost token, then its last token rather than its last run, then a rule
 so strict it stopped matching qualifier words. Two of those three were
 regressions introduced by the fix before them. The design doc now states the invariant explicitly —
-`_VINYL_RE`, `_NON_VINYL_RE` and `_FORMAT_TOKEN_RE` are maintained as one
+`_VINYL_WORD_RE`, `_NON_VINYL_RE` and `_FORMAT_TOKEN_RE` are maintained as one
 vocabulary — because arriving at it took five separate rounds.
 
 Three further corrections were to safety claims in the design doc itself, all
