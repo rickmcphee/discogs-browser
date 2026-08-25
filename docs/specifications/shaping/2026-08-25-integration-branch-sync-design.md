@@ -78,8 +78,15 @@ the source of nearly every defect found while building it.
 **Merge commits retire all of it.** A sync PR whose head is a merge commit with
 `main`'s tip as its second parent makes that tip a genuine ancestor of
 `integration` the moment it lands. `git merge-base` is then correct by
-construction, for good, with nothing to record, promote or maintain. #186 was
-the one-time merge that established the link; every sync since keeps it.
+construction, for good, with nothing to record, promote or maintain.
+
+**Ordering matters, and is enforced rather than assumed.** #186 is the one-time
+merge that establishes the link, and until it lands git still derives the frozen
+base — so this workflow merging first would reproduce the very conflicts it
+dropped the marker protocol to avoid. The `sync` job therefore refuses to run
+while `git merge-base` still returns `b24e568e`, naming the bootstrap as the
+fix. The guard retires itself: once a merge commit links the branches the base
+moves and the check never fires again.
 
 Two consequences worth stating plainly, because both are load-bearing:
 

@@ -69,6 +69,10 @@ concurrency:
 
 env:
   SYNC_BRANCH: chore/integration-sync
+  # The last commit `main` and `integration` genuinely shared before either
+  # branch existed in its current form. While git still derives this as their
+  # merge base, no merge commit has ever linked them -- see the guard in `sync`.
+  FROZEN_BASE: b24e568e76bc927888e62c658e210104aa1be0d6
   # Stamped into every recreate request this workflow posts, and the only thing
   # the don't-ask-twice guard counts. Identity-independent on purpose: the
   # comment author is github-actions[bot] or the PAT's owner depending on which
@@ -151,18 +155,31 @@ jobs:
           # used to squash-merge, and a squash records no parent link back to
           # the branch it came from, so neither branch ever became an ancestor
           # of the other and `git merge-base main integration` sat frozen at
-          # b24e568e (2026-08-10) -- four months stale, and the source of
-          # conflicts on files nobody had changed on both sides. This workflow
-          # used to carry a recorded marker and two tags to work around it.
+          # b24e568e (2026-08-10) no matter how far either branch moved --
+          # which is the source of conflicts on files nobody had changed on
+          # both sides. This workflow used to carry a recorded marker and two
+          # tags to work around it.
           #
-          # #186 was the one-time merge commit that unfroze it. Every sync
-          # since lands as a merge commit too (never a squash -- see the
+          # #186 is the one-time merge commit that unfreezes it, and the
+          # guard below refuses to run until it has landed. Every sync after it
+          # lands as a merge commit too (never a squash -- see the
           # auto-merge calls below, which fail rather than fall back), so
           # `main`'s tip becomes a genuine ancestor of `integration` each time
           # one merges and the base stays current with nothing to maintain.
           #
           # Which makes this the whole "is there anything to bring over"
           # question: real ancestry, not a tree comparison standing in for it.
+          # Until a merge commit has ever linked the branches, git's derived
+          # base IS the frozen one, and merging from it reproduces exactly the
+          # conflicts this rewrite exists to stop producing. That is reachable
+          # by merge order alone -- this workflow landing before the bootstrap
+          # sync does it -- so check rather than assume. Self-retiring: once the
+          # bootstrap lands the base moves and this never fires again.
+          if [ "$(git merge-base origin/main origin/integration)" = "$FROZEN_BASE" ]; then
+            echo "::error::the merge base for main/integration is still $FROZEN_BASE, so no merge commit has ever linked them and the bootstrap sync has not landed. Merging from this base reproduces the frozen-base conflicts. Land the bootstrap sync PR as a MERGE COMMIT first, then re-run."
+            exit 1
+          fi
+
           if git merge-base --is-ancestor origin/main origin/integration; then
             echo "integration already contains main; nothing to sync."
             exit 0
@@ -194,10 +211,17 @@ jobs:
             done
             case "$sync_state" in
               unknown)
-                # Never resolved. Re-arming auto-merge below is still right --
-                # it is idempotent and harmless -- but say so, because a PR
-                # silently left behind is the failure this poll exists to catch.
-                echo "::warning::could not resolve mergeable_state for sync PR #$existing; re-arming auto-merge without knowing whether it is behind."
+                # Fail closed. Falling through to the re-arm used to look
+                # harmless on the grounds that arming is idempotent, but that
+                # reasoning only holds if the PR is not `dirty` -- and this is
+                # precisely the branch where that is unknown. A conflict blocks
+                # auto-merge without clearing it, so arming a PR that turns out
+                # to be conflicted means whoever resolves it by hand has their
+                # resolution merged on the spot, with no label and no review.
+                # That is the exact failure the `dirty` branch exists to
+                # prevent, reached by not knowing rather than by deciding.
+                echo "::error::could not resolve mergeable_state for sync PR #$existing after polling. Not arming auto-merge: if it is actually conflicted, arming would merge a hand-written resolution unreviewed. Re-run once GitHub settles."
+                exit 1
                 ;;
               behind)
                 echo "Sync PR #$existing is behind; catching it up before re-arming auto-merge."
@@ -415,7 +439,11 @@ jobs:
                 # lockfile, and regenerating one by merge resolution produces a
                 # file no package manager would have written. `recreate` throws
                 # the branch away and re-derives it from the current base.
-                author="$(gh api "repos/$REPO/pulls/$n" --jq '.user.login')"
+                if ! author="$(gh api "repos/$REPO/pulls/$n" --jq '.user.login')"; then
+                  echo "::warning::could not read the author of PR #$n; leaving it alone."
+                  failed="$failed #$n"
+                  continue
+                fi
                 if [ "$author" != "dependabot[bot]" ]; then
                   echo "::warning::PR #$n conflicts with integration and only its author can rebuild it; it needs a human."
                   continue
@@ -439,10 +467,17 @@ jobs:
                 # one filter string and forwards no jq options, so --arg would
                 # be swallowed as the filter itself. Safe here because the
                 # marker contains no double quotes.
-                asked="$(gh api --paginate \
+                if ! asked="$(gh api --paginate \
                   "repos/$REPO/issues/$n/comments?since=$since&per_page=100" \
                   --jq ".[] | select(.body | contains(\"$RECREATE_MARKER\")) | .id" \
-                  | wc -l)"
+                  | wc -l)"; then
+                  # Fail closed on the read, not the ask: without knowing what
+                  # has already been posted, commenting again is how a stuck PR
+                  # collects a duplicate request every run.
+                  echo "::warning::could not read PR #$n's comments, so cannot tell whether Dependabot was already asked; not asking again."
+                  failed="$failed #$n"
+                  continue
+                fi
                 if [ "$asked" -gt 0 ]; then
                   echo "PR #$n conflicts but was already asked to recreate since $since; leaving it."
                   continue
@@ -452,8 +487,12 @@ jobs:
                 # inherit this block's indentation, and four leading spaces make
                 # markdown render it as a code block -- an HTML comment meant to
                 # be invisible, shown verbatim on the PR.
-                gh pr comment "$n" --repo "$REPO" \
-                  --body "$(printf '@dependabot recreate\n\n%s' "$RECREATE_MARKER")"
+                if ! gh pr comment "$n" --repo "$REPO" \
+                     --body "$(printf '@dependabot recreate\n\n%s' "$RECREATE_MARKER")"; then
+                  echo "::warning::could not post the recreate request on PR #$n."
+                  failed="$failed #$n"
+                  continue
+                fi
                 ;;
 
               unknown)
