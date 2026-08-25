@@ -370,10 +370,10 @@ runs them via `run_in_threadpool`, matching the `_sync_collection_blocking`
 pattern already used elsewhere in `crawl_manager.py`, rather than calling them
 inline on the event loop as this section originally described.
 
-**Amendment (2026-08-25):** "returns `False`" above is now literally
-`{"started": False, "on_another_instance": True, "running": True, ...}` --
-`start_stock_sync()` returns a result dict rather than a bool. The
-distinction this records is exactly the cross-Machine one: on this
+**Amendment (2026-08-25):** the rejection described above -- whose wording
+this same change updated, since it no longer returns a bool at all -- is now
+literally `{"started": False, "on_another_instance": True, "running": True,
+...}`. The distinction this records is exactly the cross-Machine one: on this
 rejection the process has no `_stock_task`, so a local state read denies a
 sync is running at all, and the caller needs to be told that a sync *is*
 running and simply isn't ours. The holder's source and elapsed time stay

@@ -115,9 +115,15 @@ outside the INFO stream is invisible to someone watching the rest of the
 crawl narrative — the same reasoning that already governs the
 dead-queue-row sweep line.
 
-Log volume is bounded by pacing, not by catalog size: one line per paced
-request, so at the default delay a Dischord run emits on the order of one
-line every 22 seconds.
+The reporting *rate* -- not the total -- is what pacing bounds. A line lands
+only as fast as the paced request it reports, so at the default delay a
+Dischord run emits on the order of one line every 22 seconds however large
+the catalog is. The total does scale with the catalog: one row per paced
+request, plus a leading `0/N` per listing page that has anything to fetch,
+which for a full Dischord sync is on the order of 300 rows in `app_logs`.
+That is the cost of the change, and the rate is the property worth stating,
+because the rate is what decides whether the Log Viewer stays readable while
+a crawl is running.
 
 The two completion lines gain elapsed time —
 `[{source}] Stock sync found N items in 1h 48m` and
@@ -199,7 +205,8 @@ Same silence, different shape. Its listing request returns a page of products
 at once, and only a *variable* product costs a paced detail fetch; a simple
 one is priced from the listing payload. So `total` counts the page's variable
 products rather than all of its products, which is what keeps the reporting
-rate at one line per paced request. Counting every product instead would emit
+rate tied to paced requests rather than to product count. Counting every
+product instead would emit
 a burst of instant reports for the simple ones and then fall silent on each
 variable one -- the opposite of the signal this is for.
 
