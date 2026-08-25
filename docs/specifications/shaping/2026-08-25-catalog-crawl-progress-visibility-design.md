@@ -146,6 +146,18 @@ Assembling the response in the router from a second `stock_sync_state()`
 read would also race a sync that finished in between and report a bare
 "nothing running."
 
+`start_stock_sync`'s guard, lock acquisition, and task assignment run under
+one `asyncio.Lock`, created lazily because the module-level `crawl_manager`
+singleton is built at import, before any event loop exists (the same reason
+`_site_locks` is populated on first use). Without it the classification is
+unsound: `_stock_task` is not assigned until after the threadpool
+acquisition awaits, so two callers on this process could both clear the
+`stock_sync_running` guard, and the loser -- finding the advisory lock held
+by the *other local request* -- would be told another Machine owns it.
+Serialized, the loser waits and then takes the in-process branch carrying
+the winner's real state, which is both correct and strictly more
+informative.
+
 Surfacing the holder's source and elapsed time *across* Machines would need
 shared lock-holder metadata in Postgres, kept fresh as the holder walks its
 sources. That is a larger change than this one and is not attempted here;
@@ -178,7 +190,9 @@ raise still aborts before reporting, since the crawl is over either way.
   is cleared when a crawl ends; `_sync_stock` logs the source it is
   starting and the elapsed time it finished in; `stock_sync_state()` while
   running and while idle; the rejection log with and without a source
-  reached; `_format_duration` across its boundaries.
+  reached; `_format_duration` across its boundaries; two concurrent
+  starts on one process yielding exactly one winner and a loser
+  reported as in-process, not cross-Machine.
 - `backend/tests/test_dischordrecords_crawler.py`: progress reported
   across every listing page including the leading `0/N`; a 404-skipped
   release still advances the count; the crawl still runs with no reporter

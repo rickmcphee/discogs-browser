@@ -3151,6 +3151,35 @@ async def test_start_stock_sync_returns_false_when_another_instance_holds_the_lo
         holder.close()
 
 
+async def test_concurrent_starts_on_one_process_are_not_reported_as_another_instance(
+    pg_test_db, manager
+):
+    """_stock_task is only assigned after the threadpool lock acquisition, so
+    two callers on this process could both clear the stock_sync_running guard
+    and the loser would find the advisory lock held -- by the other local
+    request. Classifying that as on_another_instance is a flatly wrong
+    diagnosis, and the UI now states it out loud."""
+    event = asyncio.Event()
+
+    async def _fake_sync(crawler_id=None, lock_conn=None):
+        await event.wait()
+        lock_conn.close()
+
+    manager._sync_stock = _fake_sync  # type: ignore
+    first, second = await asyncio.gather(
+        manager.start_stock_sync(), manager.start_stock_sync()
+    )
+    event.set()
+    await asyncio.sleep(0.01)
+
+    started = [r for r in (first, second) if r["started"]]
+    rejected = [r for r in (first, second) if not r["started"]]
+    assert len(started) == 1
+    assert len(rejected) == 1
+    assert rejected[0]["on_another_instance"] is False
+    assert rejected[0]["running"] is True
+
+
 async def test_sync_stock_releases_the_advisory_lock_when_it_finishes(pg_schema, manager):
     lock_conn = psycopg.connect(db.config.APP_DATABASE_URL)
     assert lock_conn.execute(

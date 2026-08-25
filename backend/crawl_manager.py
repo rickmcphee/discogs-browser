@@ -79,6 +79,11 @@ class CrawlManager:
         self._stock_sync_started_at: Optional[float] = None
         self._stock_sync_source: Optional[str] = None
         self._stock_sync_source_started_at: Optional[float] = None
+        # Serializes start_stock_sync's guard-acquire-assign sequence. Created
+        # lazily, not here: the module-level crawl_manager singleton is built
+        # at import, before any event loop exists -- the same reason
+        # _site_locks is populated on first use.
+        self._stock_start_lock: Optional[asyncio.Lock] = None
         self._judgment_tasks: dict[int, asyncio.Task] = {}
         self._plex_match_tasks: dict[int, asyncio.Task] = {}
         self._worker_tasks: list[asyncio.Task] = []
@@ -863,59 +868,71 @@ class CrawlManager:
         cross-Machine rejection below it would report the idle shape --
         `running: false`, no source, no timings -- for a sync that is
         genuinely running, just not here."""
-        import psycopg
-        import config
+        # The whole sequence below runs under one lock because _stock_task is
+        # not assigned until after the threadpool acquisition awaits: two
+        # callers on this process could otherwise both clear the
+        # stock_sync_running guard, and the loser -- finding the advisory lock
+        # held by the *other local request* -- would be told another Machine
+        # owns it. Serialized, the loser simply waits and then takes the
+        # in-process branch with the winner's real state. The check-and-assign
+        # below has no await between its halves, so it is atomic under
+        # asyncio's single-threaded scheduling.
+        if self._stock_start_lock is None:
+            self._stock_start_lock = asyncio.Lock()
+        async with self._stock_start_lock:
+            import psycopg
+            import config
 
-        if self.stock_sync_running:
-            state = self.stock_sync_state()
-            log.warning(
-                "Stock sync already running (%s), ignoring start request",
-                _describe_stock_sync(state),
-            )
-            return {"started": False, "on_another_instance": False, **state}
+            if self.stock_sync_running:
+                state = self.stock_sync_state()
+                log.warning(
+                    "Stock sync already running (%s), ignoring start request",
+                    _describe_stock_sync(state),
+                )
+                return {"started": False, "on_another_instance": False, **state}
 
-        # Deliberately not a pooled connection: the advisory lock is
-        # session-scoped, and a pooled connection gets handed back out for
-        # unrelated work while it still holds it. Closed in _sync_stock's
-        # finally, which releases the lock. autocommit=True so the session
-        # never sits idle-in-transaction for the sync's full duration --
-        # otherwise a managed Postgres's idle_in_transaction_session_timeout
-        # can kill the backend mid-sync, silently releasing the lock and
-        # readmitting the exact concurrent replace_stock_items() this lock
-        # exists to prevent. connect() + the lock query are both blocking
-        # calls, so run them off the event loop the same way
-        # _sync_collection_blocking does above. DIRECT_APP_DATABASE_URL, not
-        # APP_DATABASE_URL: the latter is derived from Neon's pooled DSN, and a
-        # transaction pooler can put this session's statements on different
-        # backends, so the lock could outlive the connection or be dropped
-        # early (see config.py).
-        def _acquire_lock():
-            conn = psycopg.connect(config.DIRECT_APP_DATABASE_URL, autocommit=True)
-            got = conn.execute(
-                "SELECT pg_try_advisory_lock(%s)", [STOCK_SYNC_LOCK_KEY]
-            ).fetchone()[0]
-            return conn, got
+            # Deliberately not a pooled connection: the advisory lock is
+            # session-scoped, and a pooled connection gets handed back out for
+            # unrelated work while it still holds it. Closed in _sync_stock's
+            # finally, which releases the lock. autocommit=True so the session
+            # never sits idle-in-transaction for the sync's full duration --
+            # otherwise a managed Postgres's idle_in_transaction_session_timeout
+            # can kill the backend mid-sync, silently releasing the lock and
+            # readmitting the exact concurrent replace_stock_items() this lock
+            # exists to prevent. connect() + the lock query are both blocking
+            # calls, so run them off the event loop the same way
+            # _sync_collection_blocking does above. DIRECT_APP_DATABASE_URL, not
+            # APP_DATABASE_URL: the latter is derived from Neon's pooled DSN, and a
+            # transaction pooler can put this session's statements on different
+            # backends, so the lock could outlive the connection or be dropped
+            # early (see config.py).
+            def _acquire_lock():
+                conn = psycopg.connect(config.DIRECT_APP_DATABASE_URL, autocommit=True)
+                got = conn.execute(
+                    "SELECT pg_try_advisory_lock(%s)", [STOCK_SYNC_LOCK_KEY]
+                ).fetchone()[0]
+                return conn, got
 
-        lock_conn, got_lock = await run_in_threadpool(_acquire_lock)
-        if not got_lock:
-            lock_conn.close()
-            log.info("Stock sync already running on another instance, ignoring start request")
-            # `running: True` is stated here rather than read from
-            # stock_sync_state(): the holder is another Machine, so this
-            # process has no _stock_task and the local view would flatly deny
-            # that a sync is running. Source and timings live in the holder's
-            # memory and are not readable from here at all -- surfacing them
-            # cross-Machine would need shared lock-holder metadata in
-            # Postgres, which is a bigger change than this one. What this
-            # process can say truthfully is that a sync is running and that it
-            # isn't ours, which is what `on_another_instance` is for.
-            return {
-                "started": False, "on_another_instance": True, "running": True,
-                "source": None, "elapsed_seconds": None, "source_elapsed_seconds": None,
-            }
+            lock_conn, got_lock = await run_in_threadpool(_acquire_lock)
+            if not got_lock:
+                lock_conn.close()
+                log.info("Stock sync already running on another instance, ignoring start request")
+                # `running: True` is stated here rather than read from
+                # stock_sync_state(): the holder is another Machine, so this
+                # process has no _stock_task and the local view would flatly deny
+                # that a sync is running. Source and timings live in the holder's
+                # memory and are not readable from here at all -- surfacing them
+                # cross-Machine would need shared lock-holder metadata in
+                # Postgres, which is a bigger change than this one. What this
+                # process can say truthfully is that a sync is running and that it
+                # isn't ours, which is what `on_another_instance` is for.
+                return {
+                    "started": False, "on_another_instance": True, "running": True,
+                    "source": None, "elapsed_seconds": None, "source_elapsed_seconds": None,
+                }
 
-        self._stock_task = asyncio.create_task(self._sync_stock(crawler_id, lock_conn))
-        return {"started": True, "on_another_instance": False, **self.stock_sync_state()}
+            self._stock_task = asyncio.create_task(self._sync_stock(crawler_id, lock_conn))
+            return {"started": True, "on_another_instance": False, **self.stock_sync_state()}
 
     async def _run_catalog_crawler(self, crawler) -> list[dict]:
         """Runs crawler.crawl_catalog(), handling the catalog_browser kind's
