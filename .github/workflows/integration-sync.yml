@@ -324,16 +324,15 @@ jobs:
                   echo "::warning::PR #$n conflicts with integration and only its author can rebuild it; it needs a human."
                   continue
                 fi
-                # Don't ask twice in a day: a request Dependabot silently drops
-                # would otherwise collect one comment per day on that PR for as
-                # long as it stayed open.
-                # The window has to be longer than the schedule above, or it
-                # cannot do its job: with a daily cron, yesterday's request is
-                # already outside a 24-hour lookback, so a PR Dependabot never
-                # answers collects one comment a day regardless. A week means
-                # at most one ask per stuck PR per week, which also matches
-                # Dependabot's own cadence. Paginated, since `since` bounds how
-                # old the comments are but not how many.
+                # Don't keep asking: a request Dependabot silently drops would
+                # otherwise collect a fresh comment on that PR for as long as it
+                # stayed open. The window has to be longer than the schedule
+                # above or it cannot do that job at all -- against a daily cron,
+                # yesterday's request already falls outside a 24-hour lookback,
+                # so the guard never fires and the comment lands anyway. A week
+                # means at most one ask per stuck PR per week, which also
+                # matches Dependabot's own cadence. Paginated, since `since`
+                # bounds how old the comments are but not how many.
                 since="$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)"
                 asked="$(gh api --paginate \
                   "repos/$REPO/issues/$n/comments?since=$since&per_page=100" \
