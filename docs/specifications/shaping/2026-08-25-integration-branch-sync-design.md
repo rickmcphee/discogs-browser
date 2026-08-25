@@ -49,14 +49,14 @@ out of it.
   push is rejected however the workflow authenticates.
 - Deleting the `integration` branch, or otherwise resetting its history.
 
-## Why the merge base cannot be inferred
+## The merge base
 
-This is the load-bearing fact, and everything below follows from it.
+This was the load-bearing fact of the original design, and it has changed.
 
-Both branches only ever squash-merge, in both directions. A squash gives neither
-branch an ancestor from the other, so `git merge-base main integration` is
+Both branches used to squash-merge in both directions. A squash gives neither
+branch an ancestor from the other, so `git merge-base main integration` was
 pinned to the last commit the two genuinely shared — `b24e568e`, 2026-08-10 —
-and stays pinned there. It did not move even after the manual sync in #184
+and stayed pinned there. It did not move even after the manual sync in #184
 brought `integration` to `main`'s exact tree.
 
 Merging against a base that old is not merely inefficient, it is wrong. A
@@ -69,135 +69,70 @@ theirs          cryptography>=50     (main: promoted once)
 -> conflict, on a file nobody disagrees about
 ```
 
-The correct base is not something git can derive. It must be recorded.
+Because git could not derive that base, an earlier revision of this design
+recorded one by hand: a marker tag naming the `main` commit `integration`
+provably held, a second tag to carry it across a sync PR's merge, a bootstrap
+constant for the first run, and an invariant on each. It worked, and it was
+the source of nearly every defect found while building it.
 
-## The marker
+**Merge commits retire all of it.** A sync PR whose head is a merge commit with
+`main`'s tip as its second parent makes that tip a genuine ancestor of
+`integration` the moment it lands. `git merge-base` is then correct by
+construction, for good, with nothing to record, promote or maintain. #186 was
+the one-time merge that established the link; every sync since keeps it.
 
-A **marker** is a commit on `main` whose content `integration` provably already
-holds. That is its entire meaning, and every rule below is a consequence:
+Two consequences worth stating plainly, because both are load-bearing:
 
-- **Invariant.** A marker MUST be an ancestor of `origin/main`
-  (`git merge-base --is-ancestor`). No commit off `main` can assert "integration
-  holds main up to here". This is checked on every marker regardless of where it
-  came from, because one wrong base is as damaging as another and the check
-  costs nothing.
-- **Recorded only where containment is proven.** Never optimistically.
-  Recording a marker before the content is actually on `integration` makes a
-  later run conclude there is nothing to bring over and skip a sync that was
-  genuinely needed.
-- **Storage.** The tag `integration-sync-base`, force-moved. A tag rather than a
-  file because it must survive on a branch the workflow does not otherwise
-  write to, and force-moved because it is a moving pointer, not history.
+- **A sync PR must never be squashed.** Squashing one would land it as a single
+  commit carrying no parent link to `main`, re-freezing the base at that point
+  and requiring the whole recorded-marker protocol back. `arm_auto_merge` uses
+  `--merge` with no squash fallback and fails loudly if merge commits are
+  unavailable, rather than quietly doing the thing that breaks it.
+- **A promotion produces a sync PR with no file changes.** A promotion advances
+  `main` with content that came from `integration`, so merging it back applies
+  nothing — but the merge commit is still the point, since it is what moves
+  `main`'s tip into `integration`'s ancestry. The PR is opened anyway. One
+  empty PR per promotion is the running cost of keeping the base current, and
+  it is a good trade against the protocol it replaced.
 
-### Obtaining a marker
+`main` keeps its squash-only history: only `integration` needs to accept merge
+commits, which is a per-branch setting in `allowed_merge_methods`. The
+repository-level "Allow merge commits" toggle must also be on — it gates the
+API outright, returning `405 Merge commits are not allowed on this repository`
+regardless of what any ruleset says.
 
-In order, first hit wins:
+## Is there anything to sync?
 
-1. **The tag**, if it exists — possibly advanced by promotion, below.
-2. **`BOOTSTRAP_BASE`**, a constant naming the `main` commit `integration` held
-   when this workflow was written (`43217e9`; #184 synced `integration` to
-   exactly that tree).
+One question, answered from ancestry:
 
-### Keeping it current: the pending tag
-
-Opening a sync PR writes `integration-sync-pending`, naming the `main` commit
-that PR carries — **before** auto-merge is armed, and the job fails if it cannot
-be written. Ordering matters: an armed PR can land at any moment, and one that
-lands with no pending tag leaves the marker behind what `integration` holds,
-which is the lag that drops reverts. For the same reason the workflow refuses to
-arm auto-merge on an already-open sync PR whose pending tag has gone missing. A later run resolves it:
-
-| Sync PR state | Action |
-| --- | --- |
-| still open | leave pending; nothing is proven yet |
-| merged | promote to `integration-sync-base`, then delete pending |
-| closed unmerged | delete pending, promote nothing |
-
-The PR itself is looked up by head branch, which survives the branch's deletion
-because GitHub keeps the pull request record. That is the whole reason this is a
-tag rather than something read off the branch: the branch is gone on merge.
-
-There is deliberately **no recovery from the sync branch**, though several
-drafts had one: read the incorporated `main` SHA back off the landed sync
-branch, prove containment by tree equality, adopt it. It cannot work here.
-`delete_branch_on_merge` is on for this repository, so the sync branch is gone
-the instant its PR merges — verified against the head branches of #157, #178 and
-#184, none of which survive. A mechanism that can never execute is worse than
-its absence: it reads as covering a case it does not.
-
-A lagging marker is not merely stale — it is **wrong**, and an earlier draft of
-this document said otherwise. Valid and current are different properties, and
-only the second makes the merge correct:
-
-```
-main   M0(off) -> M1(on) -> M2(reverts to off)
-integration    holds M1's change, from a sync that landed
-
-marker M0 (lagging)  -> base=off ours=on theirs=off -> keeps ON   revert DROPPED
-marker M1 (current)  -> base=on  ours=on theirs=off -> takes OFF  revert applied
+```bash
+if git merge-base --is-ancestor origin/main origin/integration; then
+  echo "integration already contains main; nothing to sync."
+  exit 0
+fi
 ```
 
-With the marker lagging, git sees `base == theirs` and treats `integration`'s
-side as the only change, so `main`'s revert never arrives and the next promotion
-carries the reverted change back into `main`. Worse, that merge is a no-op, so
-an exit that recorded "containment proven" there would stamp the revert as
-incorporated without ever applying it.
+This replaces a tree comparison, a commit-identity comparison, and the marker
+resolution that fed both. It is exact: it cannot report "nothing to do" for a
+revert (the case that forced the pending tag into the previous design), and it
+cannot mistake `integration`'s own unpromoted bumps for something to merge.
 
-So the marker must be kept current, which needs the incorporated commit recorded
-somewhere that outlives the sync branch.
-
-### Where a marker is recorded
-
-Only these two, and each has proven containment at that point:
-
-| Point | What proves containment |
-| --- | --- |
-| Trees identical | `integration` and `main` hold the same files |
-| A sync PR merged | The pending tag named what it carried, and it landed |
-
-A merge that changes nothing on `integration` deliberately records **nothing**.
-It only proves containment *relative to the base used*, so with a lagging marker
-it proves nothing at all — and that is precisely the case where stamping the
-current `main` marks a revert incorporated without applying it.
-
-The path that *opens* a sync PR deliberately records nothing: the merge has not
-landed, so containment is not yet true.
-
-### Bootstrap retirement
-
-`BOOTSTRAP_BASE` covers the first run and is never consulted again once a real
-marker exists. It is not retired by deletion — it stays as a floor — but reaching
-for it *after* a sync has run means the marker tag is missing or has never been
-written, which is warned about loudly. It is deliberately **not** a hard
-failure: every path that records a marker lies past that point, so a stop there
-cannot be recovered from by the workflow itself.
 
 ## The two jobs
 
 ### `sync`
 
 Triggers: push to `main`, push to `integration`, a daily cron, and
-`workflow_dispatch`. The `integration` trigger is there because a sync landing
-is the moment the pending tag can be promoted, and step 2 may be able to record
-the marker outright.
+`workflow_dispatch`. Every trigger is cheap, because step 1 answers from refs
+alone.
 
-1. Resolve a marker (above).
-2. Trees identical? Record the marker; done.
-3. Is `main` still *at* the marker? Compared by commit id, not tree. If it is,
-   the remaining difference is `integration`'s own unpromoted bumps and there is
-   nothing to bring over: skip **without attempting the merge**, since
-   attempting it is what produces the spurious conflict described above.
-   Tree equality is not sufficient — because the marker may lag, `integration`
-   can already hold `main` changes the marker does not name, and a `main` that
-   reverts to the marker's tree would read as "not advanced". The revert would
-   never reach `integration`, and the next promotion would carry the reverted
-   changes back into `main`.
-4. A sync PR already open? Resolve its own `mergeable_state`: `behind` gets
+1. Does `integration` already contain `main`? Exit if so (above).
+2. A sync PR already open? Resolve its own `mergeable_state`: `behind` gets
    `update-branch` before auto-merge is re-armed; `dirty` fails loudly and
    leaves auto-merge off. Do not rebuild its branch — it may carry a
    hand-resolved conflict.
-5. Otherwise branch from `integration`, merge `main` in against the marker, and
-   open a PR that auto-merges.
+3. Otherwise branch from `integration`, `git merge origin/main`, and open a PR
+   that auto-merges **with a merge commit**.
 
 Branch from `integration` and merge `main` in, never the reverse: the head must
 contain `integration`'s tip to satisfy the same strict up-to-date policy on the
@@ -237,21 +172,16 @@ day `INTEGRATION_PROMOTE_TOKEN` is configured and the author changes.
 
 ## Conflict handling
 
-Valid does not mean current. The marker advances at the trees-identical exit
-and when the pending tag is promoted, which between them should keep it
-current — but a promotion that failed, or a tag moved by hand, leaves it
-lagging, and merging from a lagging base reproduces the frozen-base artefact in
-miniature, on files nobody actually disagrees about. So a conflict has two
-possible readings, and the diagnostic says so rather than asserting the first:
+A conflict now means one thing: both sides genuinely changed the same lines
+since a base git derived from real ancestry. Resolve by hand, push, open a PR
+into `integration`.
 
-- **A real disagreement.** Both sides changed the same lines since a base they
-  genuinely share. Resolve by hand, push, open a PR into `integration`.
-- **A stale marker.** `integration` already holds the newer side. Moving
-  `integration-sync-base` forward and re-running is the fix; resolving by hand
-  would be committing to a conflict that does not exist.
-
-Check which before resolving. A conflict against a base that is not on `main`
-is neither — the invariant makes that unreachable.
+This is a simplification worth noting rather than passing over. Under the
+recorded marker a conflict had *two* readings — a real disagreement, or a
+marker that had fallen behind what `integration` held — and the diagnostic had
+to present both, because resolving a conflict that does not exist is its own
+way to lose work. With the base derived rather than recorded, the second
+reading is gone.
 
 The job fails with the branch named either way, and the next run leaves that
 branch alone rather than rebuilding it. A sync PR whose conflict needs hand
@@ -288,6 +218,14 @@ recorded because every one was found by changing one part of the protocol
 without a contract for the rest, which is the failure this document exists to
 prevent.
 
+**Read this table as history.** Every row below is a defect in the recorded
+marker, and the marker no longer exists — enabling merge commits deleted the
+mechanism and all of its failure modes at once. The table is kept because it is
+the argument for that trade: a hand-maintained substitute for a value git can
+compute went wrong in every way recorded below, all within a single sitting,
+and the cost of each was a silent one — a dropped revert, a deleted bump, a
+guard that failed open.
+
 | Failure | Why it happened | Closed by |
 | --- | --- | --- |
 | Spurious conflict on a re-bumped pin | Merged against the frozen inferred base | The marker |
@@ -312,14 +250,16 @@ prevent.
 
 ## Simplifications available
 
-Neither is a code change; both are repository settings.
+**Taken:** allow merge commits on `integration` — the repository's "Allow merge
+commits" toggle plus `"merge"` in `allowed_merge_methods` on
+`integration-branch-protection`. This is what retired the marker, the pending
+tag, the bootstrap constant and their invariants. It is recorded here as a settings prerequisite, not an
+optimisation: the workflow fails loudly if merge commits become unavailable
+again, because the alternative is silently re-freezing the base.
 
-1. **Allow merge commits** (repo setting) plus `"merge"` in
-   `allowed_merge_methods` on `integration-branch-protection`. This keeps git's
-   own merge base current and makes the entire marker mechanism belt-and-braces
-   rather than load-bearing. The sync already asks for a merge commit and falls
-   back to squash, so it starts using one with no edit.
-2. **Drop `strict_required_status_checks_policy` on `integration` only.** That
+**Still available:**
+
+1. **Drop `strict_required_status_checks_policy` on `integration` only.** That
    is the mechanism behind failure (1), and dropping it would make most of
    `refresh` unnecessary. The promotion PR re-tests the whole batch against
    `main` before anything ships, so it buys little on a staging branch.

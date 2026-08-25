@@ -69,22 +69,6 @@ concurrency:
 
 env:
   SYNC_BRANCH: chore/integration-sync
-  MARKER_TAG: integration-sync-base
-  # Written when a sync PR is opened, naming the `main` commit that PR carries,
-  # and promoted to MARKER_TAG once that PR is seen merged. A tag because it has
-  # to outlive the sync branch, which GitHub deletes on merge.
-  PENDING_TAG: integration-sync-pending
-  # The `main` commit `integration` held when this workflow was written: #184
-  # synced `integration` to exactly this tree, and `git diff 43217e9
-  # origin/integration` was empty at the time. It stands in for the marker tag
-  # until the workflow has recorded one of its own, and is then never consulted
-  # again. Without it the very first run has no base but git's inferred one,
-  # which is b24e568e -- old enough to predate integration-promote.yml, so both
-  # sides look like they added that file and the merge dies on an add/add
-  # conflict before it can ever record a marker. Verified: merging this branch
-  # into `integration` conflicts on integration-promote.yml and CLAUDE.md with
-  # the inferred base, and is clean with this one.
-  BOOTSTRAP_BASE: 43217e92921fe0164854b28798dfcb10792368f1
   # Stamped into every recreate request this workflow posts, and the only thing
   # the don't-ask-twice guard counts. Identity-independent on purpose: the
   # comment author is github-actions[bot] or the PAT's owner depending on which
@@ -99,15 +83,8 @@ env:
 jobs:
   sync:
     name: Merge main into integration
-    # Every trigger, including a push to `integration`. A sync PR merging *is*
-    # a push to `integration`, and that is the moment its pending tag becomes
-    # promotable -- so running here is what keeps the marker current, not an
-    # incidental extra pass.
-    #
-    # The marker advances at exactly two points: the trees-identical exit
-    # below, and that promotion. The merge-no-op exit deliberately records
-    # nothing; the comment there says why. Running when there is nothing to
-    # bring over costs a few seconds.
+    # Every trigger, including a push to `integration`, which is cheap: the
+    # containment test below answers from refs alone and exits.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -151,153 +128,43 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          git fetch --quiet --tags --force origin main integration
+          # No --tags: the marker and pending tags this used to maintain are
+          # gone, and nothing here reads a tag any more.
+          git fetch --quiet origin main integration
 
-          on_main() { git merge-base --is-ancestor "$1" origin/main 2>/dev/null; }
-
-          advances() {  # $1 = candidate; true when it moves the marker forward
-            # `record_marker` force-pushes, so an unguarded call can drag the
-            # marker BACKWARDS onto a commit `integration` passed long ago --
-            # the lagging-marker state that silently drops main's reverts.
-            # Reached for real when a promoted pending tag then fails to
-            # delete: the next run finds it again, still "merged", and
-            # re-promotes it over a marker a later pass had already advanced.
-            if [ -z "$marker" ]; then return 0; fi
-            ! git merge-base --is-ancestor "$1" "$marker"
-          }
-
-          record_marker() {  # $1 = the main commit integration provably holds
-            # Returns non-zero on failure, and callers must respect that. It
-            # used to swallow the error, which on the promotion path meant
-            # deleting the pending tag -- the only durable record of what the
-            # sync carried -- after failing to write what replaces it. The next
-            # run then had neither, fell back to a staler base, and dropped
-            # main's reverts.
-            if git push --force --quiet origin "$1:refs/tags/$MARKER_TAG"; then
-              echo "marker: integration holds main $(git rev-parse --short "$1")"
-            else
-              echo "::error::could not move $MARKER_TAG to $(git rev-parse --short "$1"). Check the token's contents permission; until this succeeds the merge base only grows staler."
-              return 1
+          arm_auto_merge() {  # $1 = PR number
+            # --merge, with no squash fallback, and this is load-bearing rather
+            # than a preference. A squash would land the sync as a single commit
+            # carrying no parent link to `main`, re-freezing git's merge base at
+            # that point for good and bringing back the recorded-marker protocol
+            # this replaced. Failing loudly is the correct response to merge
+            # commits being unavailable.
+            if ! gh pr merge "$1" --repo "$REPO" --auto --merge; then
+              echo "::error::could not arm auto-merge on sync PR #$1 with a merge commit. A squash is not an acceptable fallback here -- it would re-freeze git's merge base between main and integration. Check that the repository allows merge commits and that allowed_merge_methods on integration-branch-protection includes merge."
+              exit 1
             fi
           }
 
-          # The marker names the `main` commit `integration` already holds, and
-          # it is the merge base every sync uses. git cannot derive it: both
-          # branches only ever squash-merge, so neither gains an ancestor from
-          # the other and `git merge-base` stays pinned to the last commit they
-          # genuinely shared -- b24e568e, 2026-08-10 -- for good.
+
+          # git's own merge base is authoritative, and that is a recent
+          # property of this repository rather than a given. Both directions
+          # used to squash-merge, and a squash records no parent link back to
+          # the branch it came from, so neither branch ever became an ancestor
+          # of the other and `git merge-base main integration` sat frozen at
+          # b24e568e (2026-08-10) -- four months stale, and the source of
+          # conflicts on files nobody had changed on both sides. This workflow
+          # used to carry a recorded marker and two tags to work around it.
           #
-          # It must also be CURRENT, not merely a valid commit on `main`. A
-          # marker that lags what `integration` actually holds silently drops
-          # main's reverts: with the marker naming M0, `integration` holding
-          # M1's change and `main` having reverted it in M2, the three-way merge
-          # sees base==theirs and keeps integration's side. The revert never
-          # arrives, and the next promotion carries the reverted change back
-          # into `main`. Hence the pending tag below -- there is no way to
-          # recover this after the fact, because the sync branch that named the
-          # incorporated commit is deleted the moment its PR merges.
-          # `-q --verify` on a fully-qualified ref fails only when the ref is
-          # absent, which is the ordinary first-run state -- so `|| true` here
-          # swallows nothing a later step would want to know about. Both
-          # absences are handled explicitly below.
-          marker="$(git rev-parse -q --verify "refs/tags/$MARKER_TAG^{commit}" || true)"
-
-          pending="$(git rev-parse -q --verify "refs/tags/$PENDING_TAG^{commit}" || true)"
-          if [ -n "$pending" ]; then
-            still_open="$(gh pr list --repo "$REPO" --base integration \
-              --head "$SYNC_BRANCH" --state open \
-              --json number,isCrossRepository \
-              --jq 'map(select(.isCrossRepository == false)) | .[0].number // empty')"
-            if [ -n "$still_open" ]; then
-              echo "sync PR #$still_open is still open; $PENDING_TAG stays pending."
-            else
-              # The PR it belonged to has closed one way or the other. Merged
-              # means integration now holds that commit; closed unmerged means
-              # it never will, and the tag must go either way or it would be
-              # promoted against some later, unrelated sync.
-              # isCrossRepository here too. This was the last lookup matching
-              # on branch name alone, and it decides whether to discard the
-              # pending marker: a fork could open a PR from a branch of this
-              # name, close it, and have that read as "the sync was abandoned",
-              # throwing away a marker that a real merge had earned and leaving
-              # the next sync on a stale base.
-              last_state="$(gh pr list --repo "$REPO" --base integration \
-                --head "$SYNC_BRANCH" --state all --limit 5 \
-                --json state,isCrossRepository \
-                --jq 'map(select(.isCrossRepository == false)) | .[0].state // empty')"
-              if [ "$last_state" = "MERGED" ] && on_main "$pending" \
-                 && advances "$pending"; then
-                echo "last sync PR merged; promoting $PENDING_TAG to the marker."
-                if record_marker "$pending"; then
-                  marker="$pending"
-                  git push --force --quiet origin ":refs/tags/$PENDING_TAG" \
-                    || echo "::warning::could not delete $PENDING_TAG; retrying on the next run."
-                else
-                  # Keep the tag -- it is the only record of what that sync
-                  # carried, and deleting it after failing to write the marker
-                  # loses the information entirely.
-                  #
-                  # And stop, rather than falling through. `::error::` annotates
-                  # but does not fail a step, so continuing would build this
-                  # run's merge on a marker known to lag what `integration`
-                  # holds, and report success doing it. The next run retries.
-                  echo "::error::promoting $PENDING_TAG failed; not continuing on a marker known to be stale. The tag is left in place for the next run."
-                  exit 1
-                fi
-              else
-                # Not promotable: the sync never merged, the tag is off `main`,
-                # or the marker already covers it (a delete that failed once and
-                # left it behind). Discarding is right in every case.
-                echo "last sync PR ended '$last_state'; discarding $PENDING_TAG without promoting."
-                # A warning rather than a failure: this whole block runs
-                # again on every trigger, so the delete is retried, and a sync
-                # PR opening force-writes the tag regardless. Failing here
-                # would also fail a run that had just promoted correctly.
-                git push --force --quiet origin ":refs/tags/$PENDING_TAG" \
-                  || echo "::warning::could not delete $PENDING_TAG; retrying on the next run."
-              fi
-            fi
-          fi
-
-          # Whatever the source, a marker has exactly one meaning: "integration
-          # already holds `main` up to here". A commit that is not on `main`
-          # cannot say that, and used as a merge base it invents changes neither
-          # side made.
-          if [ -n "$marker" ] && ! on_main "$marker"; then
-            echo "::warning::discarding marker $marker -- it is not a commit on main, so it cannot describe what integration holds"
-            marker=""
-          fi
-
-          if [ -z "$marker" ] && git cat-file -e "$BOOTSTRAP_BASE^{commit}" 2>/dev/null \
-             && on_main "$BOOTSTRAP_BASE"; then
-            marker="$BOOTSTRAP_BASE"
-            if git cat-file -e \
-                 "origin/integration:.github/workflows/integration-sync.yml" 2>/dev/null; then
-              echo "::warning::$MARKER_TAG is missing even though integration already carries this workflow, so record_marker has not succeeded since the first sync. Falling back to BOOTSTRAP_BASE, which only grows staler; if this repeats, re-create the tag at the newest main commit integration provably holds."
-            else
-              echo "no $MARKER_TAG yet and integration has never been synced by this workflow; bootstrapping from $BOOTSTRAP_BASE"
-            fi
-          fi
-
-          # Compare trees, not ancestry -- same squash-merge reason as above.
-          if git diff --quiet origin/main origin/integration; then
-            echo "integration already holds main's files; nothing to sync."
-            record_marker "$(git rev-parse origin/main)"
-            exit 0
-          fi
-
-          # A tree difference on its own does not mean main has anything to
-          # hand over: it is equally what integration's own unpromoted bumps
-          # look like. Merging in that case is not just wasted work, it is the
-          # spurious conflict described above, so check before attempting it.
-          # Commit identity, not tree equality. The marker is allowed to lag a
-          # completed sync, so `integration` can already hold `main` changes the
-          # marker does not name -- and if `main` then reverts to the marker's
-          # tree, comparing trees reads as "main has not advanced" and skips.
-          # The revert never reaches `integration`, and the next promotion
-          # carries the reverted changes straight back into `main`.
-          if [ -n "$marker" ] && [ "$marker" = "$(git rev-parse origin/main)" ]; then
-            echo "main has not advanced since it was last folded in; the remaining difference is integration's own."
+          # #186 was the one-time merge commit that unfroze it. Every sync
+          # since lands as a merge commit too (never a squash -- see the
+          # auto-merge calls below, which fail rather than fall back), so
+          # `main`'s tip becomes a genuine ancestor of `integration` each time
+          # one merges and the base stays current with nothing to maintain.
+          #
+          # Which makes this the whole "is there anything to bring over"
+          # question: real ancestry, not a tree comparison standing in for it.
+          if git merge-base --is-ancestor origin/main origin/integration; then
+            echo "integration already contains main; nothing to sync."
             exit 0
           fi
 
@@ -404,17 +271,7 @@ jobs:
             elif [ -n "$pr_automerge" ]; then
               echo "Sync PR #$existing already has auto-merge armed."
             else
-              if [ -z "$pending" ]; then
-                # Arming now would let this PR merge with nothing to promote,
-                # leaving the marker behind what `integration` holds.
-                echo "::error::sync PR #$existing is open but $PENDING_TAG is missing, so the marker cannot advance when it merges. Not arming auto-merge. Set $PENDING_TAG to the main commit that PR carries, or close it and let the next run rebuild it."
-                exit 1
-              fi
-              # No `|| true`: if neither call can arm auto-merge, the sync PR
-              # sits open with nothing driving it, and a green run would say
-              # otherwise.
-              gh pr merge "$existing" --repo "$REPO" --auto --merge \
-                || gh pr merge "$existing" --repo "$REPO" --auto --squash
+              arm_auto_merge "$existing"
             fi
             exit 0
           fi
@@ -427,61 +284,19 @@ jobs:
           # strict up-to-date policy on the way back in.
           git checkout -B "$SYNC_BRANCH" origin/integration
 
-          if [ -n "$marker" ]; then
-            if ! merged="$(git merge-tree --write-tree --merge-base="$marker" \
-                             HEAD origin/main)"; then
-              echo "::error::main and integration have both changed the same lines since $marker. Resolve $SYNC_BRANCH by hand, push it, and open a PR into integration. Before resolving, check whether $marker is simply stale: it should be current, because $PENDING_TAG is promoted as soon as each sync PR merges, but a failed promotion or a tag moved by hand leaves it lagging -- and merging from a lagging base reproduces the frozen-base artefact on files nobody disagrees about. If integration already holds the newer side, move $MARKER_TAG forward and re-run rather than resolving by hand."
-              exit 1
-            fi
-            git reset --hard --quiet "$(git commit-tree "$merged" \
-              -p HEAD -p "$(git rev-parse origin/main)" \
-              -m "Merge main into integration")"
-          else
-            # No marker yet -- first run, or the tag was lost. Git's inferred
-            # base is all there is; a conflict here may well be the spurious
-            # kind, and the marker written on the next clean pass prevents a
-            # repeat.
-            if ! git merge --no-edit origin/main; then
-              git merge --abort || true
-              echo "::error::could not merge main into integration and no $MARKER_TAG marker exists yet to supply a better base. Resolve $SYNC_BRANCH by hand and push it."
-              exit 1
-            fi
+          if ! git merge --no-edit origin/main; then
+            git merge --abort || true
+            echo "::error::main and integration have both changed the same lines since they diverged. Resolve $SYNC_BRANCH by hand, push it, and open a PR into integration. Unlike the frozen-base era this is a real disagreement: git derives the base from actual ancestry now, so a conflict here means both sides genuinely touched the same lines."
+            exit 1
           fi
 
           if git diff --quiet origin/integration HEAD; then
-            # A no-op merge only proves `integration` contains `main` *relative
-            # to the base used*, so against a lagging marker it proves nothing
-            # -- and stamping main's tip here is exactly how a revert gets
-            # marked incorporated without ever being applied.
-            #
-            # There is one advance of `main` this exit can record safely: a
-            # promotion. `integration-promote.yml` squash-merges `integration`
-            # into `main`, so that merge commit is content `integration`
-            # already holds, and nothing else records it -- a promotion is not
-            # a sync, so no pending tag ever names it. Left unrecorded, the
-            # marker sits at the pre-promotion commit while `integration` has
-            # moved past it, and the next revert on `main` is dropped by the
-            # lagging-base path described above.
-            #
-            # Requiring main's tip to *be* that merge commit is what keeps this
-            # narrow, and is why it does not reopen the bug the blanket version
-            # caused: a no-op produced by a genuinely lagging marker has a
-            # revert at main's tip, not a promotion, so it still records
-            # nothing. Note the promoted commit is only safe to record
-            # *together with* the no-op -- a squash promotion merges main's own
-            # side in too, so on its own it is not proof `integration` holds it.
-            tip="$(git rev-parse origin/main)"
-            promoted="$(gh pr list --repo "$REPO" --base main --head integration \
-              --state merged --limit 5 --json mergeCommit,isCrossRepository \
-              --jq 'map(select(.isCrossRepository == false)) | .[0].mergeCommit.oid // empty')"
-            if [ -n "$promoted" ] && [ "$promoted" = "$tip" ] && advances "$tip"; then
-              echo "merge changed nothing, and main's tip is the promotion $(git rev-parse --short "$tip") -- content integration already holds."
-              record_marker "$tip"
-            else
-              echo "merge changed nothing on integration; recording nothing, as main's tip is not a promotion."
-            fi
-            echo "nothing to sync."
-            exit 0
+            # Expected after a promotion: `main` advanced with content that came
+            # from `integration` in the first place, so there is nothing to
+            # apply. The merge commit is still the point -- it is what moves
+            # `main`'s tip into `integration`'s ancestry and keeps the base
+            # current -- so the PR is opened anyway, with no files changed.
+            echo "no file changes (main's tip is content integration already holds); opening the PR for the merge commit alone."
           fi
 
           # No sync PR is open at this point, so nothing references the branch
@@ -500,7 +315,10 @@ jobs:
             --base integration \
             --head "$SYNC_BRANCH" \
             --title "chore: sync integration with main" \
-            --body "Brings \`main\`'s current files into \`integration\` so Dependabot branches from an up-to-date base, keeping any bumps \`integration\` is still holding. Opened automatically by .github/workflows/integration-sync.yml; auto-merges once CI is green. Nothing is authored here -- every change comes from one side or the other." \
+            --body "$(printf '%s\n\n%s\n\n%s' \
+              'Brings `main` into `integration` so Dependabot branches from an up-to-date base, keeping any bumps `integration` is still holding. Opened automatically by .github/workflows/integration-sync.yml; auto-merges once CI is green. Nothing is authored here -- every change comes from one side or the other.' \
+              '**Merge this with a merge commit, not a squash.** That is what makes `main`'"'"'s tip an ancestor of `integration` and keeps `git merge-base` current; a squash re-freezes it. See docs/specifications/shaping/2026-08-25-integration-branch-sync-design.md.' \
+              'No files changed is expected right after a promotion: `main` advanced with content that came from `integration`, so there is nothing to apply and the merge commit itself is the point.')" \
             --label dependencies
 
           opened="$(gh pr list --repo "$REPO" --base integration \
@@ -513,32 +331,7 @@ jobs:
           # review and carries no Copilot review rule, so there is no review to
           # race -- and the content merging in is main's own, already reviewed
           # on its way there.
-          #
-          # Prefer a real merge commit. It would make `main` an ancestor of
-          # `integration` and keep git's own merge base current, which is what
-          # the marker above is standing in for. Two settings gate it and both
-          # are off today: the repository's "Allow merge commits", and "merge"
-          # in allowed_merge_methods on integration-branch-protection. Turning
-          # both on -- `main`'s ruleset need not change, so `main` keeps its
-          # squash-only history -- makes this start using one with no edit
-          # here. Until then it falls back to squash.
-          # Record which `main` commit this PR carries BEFORE arming auto-merge,
-          # and fail if it cannot be recorded. Once auto-merge is armed the PR
-          # can land at any moment, and if it lands with no pending tag the
-          # marker never advances -- which is the lag that silently drops main's
-          # reverts. The branch that would otherwise have named the commit is
-          # deleted on merge, so there is no recovering this afterwards.
-          if ! git push --force --quiet origin \
-               "$(git rev-parse origin/main):refs/tags/$PENDING_TAG"; then
-            echo "::error::could not record $PENDING_TAG for sync PR #$opened, so the marker could not advance when it merges. Auto-merge has deliberately not been armed. Fix the push (check the token's contents permission) and re-run; #$opened is waiting."
-            exit 1
-          fi
-
-          # As above: no `|| true` on the fallback. If neither call can arm
-          # auto-merge the step fails, rather than reporting success over a PR
-          # with nothing driving it.
-          gh pr merge "$opened" --repo "$REPO" --auto --merge \
-            || gh pr merge "$opened" --repo "$REPO" --auto --squash
+          arm_auto_merge "$opened"
           echo "Sync PR #$opened is queued to merge."
 
   refresh:
