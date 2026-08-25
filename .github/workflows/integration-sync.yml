@@ -269,7 +269,15 @@ jobs:
                   || echo "::warning::could not update sync PR #$existing automatically"
                 ;;
               dirty)
-                echo "pending=true" >> "$GITHUB_OUTPUT"
+                # pending=false, unlike every other exit that leaves a sync PR
+                # open. The guard exists because a queued sync is about to move
+                # `integration`, making any catch-up immediately stale -- but
+                # auto-merge is deliberately left off here, so nothing is going
+                # to move. Reporting pending would suppress `refresh` and hold
+                # every unrelated stale PR hostage to a conflict that has
+                # nothing to do with them, until someone resolves it by hand.
+                # The failure below still makes the sync itself loud.
+                echo "pending=false" >> "$GITHUB_OUTPUT"
                 echo "::error::Sync PR #$existing conflicts with integration. Resolve $SYNC_BRANCH by hand and push it; auto-merge is deliberately left off until then."
                 exit 1
                 ;;

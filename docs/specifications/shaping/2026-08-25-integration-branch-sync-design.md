@@ -157,7 +157,14 @@ way back in.
 ### `refresh`
 
 Triggers: push to `integration`, the same cron, and `workflow_dispatch`. Held
-off while a sync PR is still queued, since `integration` is about to move again.
+off while a sync PR is *queued to merge*, since `integration` is about to move
+again and any catch-up would immediately be stale.
+
+"Queued" is the precise condition, not "open". A sync PR left conflicted has
+auto-merge deliberately off, so nothing is about to move; holding `refresh` off
+there would keep every unrelated stale PR hostage to a conflict that has nothing
+to do with them. The same applies when auto-merge could not be armed at all —
+those paths fail before reporting a pending sync, so `refresh` still runs.
 
 Routes each open PR by `mergeable_state`, polled rather than read once because
 GitHub computes it asynchronously and answers `unknown` right after a push:
@@ -215,6 +222,7 @@ prevent.
 | Deadlock after the first success | "No marker + workflow file present ⇒ tag lost ⇒ fail" — but the PR-opening path never records a marker, so this fired the moment the first sync landed | Recovery from the landed sync; the stale-bootstrap case warns instead |
 | **Pending bumps silently deleted** | `update-branch` on a behind sync PR makes the tip's `^2` an *integration* commit; recorded as the base, a bump `main` never had reads as "removed on main" and is dropped with no conflict | First-parent walk plus the on-`main` invariant |
 | Sync PR open forever | `\|\| true` swallowed total auto-merge failure while `pending=true` suppressed `refresh` | Let it fail |
+| Unrelated PRs blocked by someone else's conflict | A conflicted sync PR reported a pending sync, suppressing `refresh`, though auto-merge was off and nothing was about to move | `pending=false` on that path |
 | Refresh silently doing nothing | `for n in $(gh pr list …)` is a word expansion, so `set -e` never saw the command fail | Assign first |
 | Fork PR handed auto-merge | `--head` matches branch *name* only | `isCrossRepository == false` |
 
