@@ -38,6 +38,7 @@ def list_stock(
     per_page: int = Query(50, ge=1, le=500),
     library_scope: Optional[str] = Query(None),
     recommended: bool = Query(False),
+    saved: bool = Query(False),
     hidden_crawler_ids: Optional[str] = Query(None),
 ):
     user_id = request.state.user_id
@@ -46,7 +47,7 @@ def list_stock(
         return db.get_stock_items(
             conn, user_id, search=search, artist=artist, sort=sort, order=order,
             page=page, per_page=per_page, library_scope=library_scope, recommended=recommended,
-            exclude_crawler_ids=exclude_crawler_ids,
+            saved_only=saved, exclude_crawler_ids=exclude_crawler_ids,
         )
 
 
@@ -55,6 +56,7 @@ def list_stock_artists(
     request: Request,
     library_scope: Optional[str] = Query(None),
     recommended: bool = Query(False),
+    saved: bool = Query(False),
     hidden_crawler_ids: Optional[str] = Query(None),
 ):
     user_id = request.state.user_id
@@ -62,9 +64,27 @@ def list_stock_artists(
     with db.user_scope(user_id) as conn:
         artists = db.get_distinct_stock_artists(
             conn, user_id, library_scope=library_scope, recommended=recommended,
-            exclude_crawler_ids=exclude_crawler_ids,
+            saved_only=saved, exclude_crawler_ids=exclude_crawler_ids,
         )
         return {"artists": artists}
+
+
+@router.put("/stock/saved/{item_key}")
+def save_stock_item(item_key: str, request: Request):
+    user_id = request.state.user_id
+    with db.user_scope(user_id) as conn:
+        db.save_stock_item(conn, user_id, item_key)
+        conn.commit()
+    return {"saved": True}
+
+
+@router.delete("/stock/saved/{item_key}")
+def unsave_stock_item(item_key: str, request: Request):
+    user_id = request.state.user_id
+    with db.user_scope(user_id) as conn:
+        db.unsave_stock_item(conn, user_id, item_key)
+        conn.commit()
+    return {"saved": False}
 
 
 @router.get("/stock/judge/status")
@@ -80,8 +100,14 @@ class StockSyncStartRequest(BaseModel):
 
 @router.post("/stock/sync/start", dependencies=[Depends(require_admin)])
 async def start_stock_sync(body: Optional[StockSyncStartRequest] = None):
-    started = await crawl_manager.start_stock_sync(body.crawler_id if body else None)
-    return {"started": started, "running": crawl_manager.stock_sync_running}
+    # The rejected case used to come back as a bare started=false the frontend
+    # dropped on the floor, so a Refresh click during a long sync looked like
+    # it had done nothing. The in-flight source and its elapsed time are what
+    # make "already running" actionable. Returned by start_stock_sync itself
+    # rather than assembled here from stock_sync_state(): only it knows which
+    # of its two rejections happened, and a second read here could also catch
+    # a sync that finished in between and report a bare "nothing running."
+    return await crawl_manager.start_stock_sync(body.crawler_id if body else None)
 
 
 @router.post("/stock/judge/start")
@@ -102,9 +128,14 @@ def clear_stock_judgment(request: Request):
     return {"cleared": True, "count": count}
 
 
+# `currency` is appended rather than slotted next to `price`, where it would
+# read better. Every existing column keeps its index, so a consumer reading the
+# file positionally -- a spreadsheet, a script -- is unaffected by the addition.
+# Import is name-based (csv.DictReader against REQUIRED_COLUMNS), so an older
+# file without the column still imports and a newer one still round-trips.
 EXPORT_COLUMNS = [
     "artist", "title", "format", "price", "source", "link", "reason",
-    "item_key", "recommended", "judged_at",
+    "item_key", "recommended", "judged_at", "currency",
 ]
 
 
@@ -125,6 +156,10 @@ def export_stock_judgments(request: Request):
             # format even though the importer would still accept it.
             "true" if row["recommended"] else "false",
             row["judged_at"].isoformat(),
+            # Empty rather than a guessed "USD" when the row predates the
+            # column or its item is no longer in stock: the export's job is to
+            # record what was there, not to assert a currency nothing stored.
+            row["currency"] or "",
         ])
     return Response(
         content=buffer.getvalue(),

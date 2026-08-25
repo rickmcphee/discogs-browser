@@ -44,6 +44,8 @@ _EXTRACT_JS = """
 class Crawler:
     site_name: str = "Angry Young and Poor"
     base_url: str = "https://www.angryyoungandpoor.com/store/pc"
+    genre_summary: str = "Independent record store and distro focused on punk and hardcore."
+    genre: str = "punk"
     crawler_type: str = "catalog_browser"
 
     _CATEGORIES = [

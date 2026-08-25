@@ -17,7 +17,7 @@ import db
 
 
 # Skipping rather than passing when TEST_DATABASE_URL is unset is safe here: in
-# that case pg_test_db raises for all 28 Postgres-backed test files, so a run
+# that case pg_test_db raises for every Postgres-backed test file, so a run
 # that lost the variable can never look green.
 @pytest.fixture(autouse=True)
 def _require_run_database(pg_run_database):

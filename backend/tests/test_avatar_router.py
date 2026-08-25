@@ -18,7 +18,6 @@ HDR = {"X-Requested-With": "fetch"}
 
 @pytest.fixture
 def client(pg_test_db, monkeypatch, tmp_path):
-    monkeypatch.setattr(avatar, "AVATAR_FILE", tmp_path / "avatar.png")
     db.init_global_schema()
     db.init_tenant_schema()
 
@@ -32,9 +31,11 @@ def client(pg_test_db, monkeypatch, tmp_path):
         conn.commit()
 
 
-def _login(client):
+def _login_as(client, discogs_user_id, discogs_username):
     with db.get_admin_pool().connection() as conn:
-        user = db.create_user(conn, discogs_user_id=42, discogs_username="alice")
+        user = db.create_user(
+            conn, discogs_user_id=discogs_user_id, discogs_username=discogs_username
+        )
         token = session_tokens.new_session_token()
         db.create_session(
             conn,
@@ -44,6 +45,10 @@ def _login(client):
         )
         conn.commit()
     client.cookies.set(config.COOKIE_NAME, token)
+
+
+def _login(client):
+    _login_as(client, 42, "alice")
 
 
 def _png_bytes():
@@ -103,3 +108,15 @@ def test_delete_avatar_removes_it(client):
 def test_delete_avatar_noop_when_missing(client):
     _login(client)
     assert client.delete("/api/auth/avatar", headers=HDR).status_code == 200
+
+
+def test_avatar_is_scoped_to_the_uploading_user(client):
+    # The avatar was a single shared file before it moved to users.avatar_image:
+    # one user's upload must not become every other user's avatar.
+    _login(client)
+    assert client.post(
+        "/api/auth/avatar", files={"file": ("a.png", _png_bytes(), "image/png")}, headers=HDR
+    ).status_code == 200
+
+    _login_as(client, 43, "bob")
+    assert client.get("/api/auth/avatar").status_code == 404

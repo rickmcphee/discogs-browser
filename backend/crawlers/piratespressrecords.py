@@ -19,6 +19,8 @@ _TITLE_RE = re.compile(r'^.+?(?:\s+-\s*|\s*-\s+)(?P<album>.+)$')
 class Crawler:
     site_name: str = "Pirates Press Records"
     base_url: str = "https://shop.piratespressrecords.com"
+    genre_summary: str = "Punk, oi!, and rockabilly label and pressing plant."
+    genre: str = "punk"
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:

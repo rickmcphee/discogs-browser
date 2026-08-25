@@ -73,4 +73,4 @@ Standard TDD regression-test addition to each crawler's existing `respx`-mocked 
 ## Out of scope
 
 - Any change to `shopify_catalog.py`, `main.py`, the data model, the API, or the frontend — none needed.
-- Backporting this fix's live-data methodology to any of the 27 other crawlers not already flagged as carrying this specific vulnerable regex shape.
+- Backporting this fix's live-data methodology to the other crawlers not already flagged as carrying this specific vulnerable regex shape.

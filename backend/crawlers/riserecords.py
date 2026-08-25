@@ -10,6 +10,8 @@ _VINYL_TAGS = ("Vinyl LP", "Vinyl 7")
 class Crawler:
     site_name: str = "Rise Records"
     base_url: str = "https://riserecords.com"
+    genre_summary: str = "Post-hardcore, metalcore, and pop-punk label."
+    genre: str = "punk"
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:

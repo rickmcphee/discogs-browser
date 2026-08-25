@@ -239,10 +239,15 @@ class Crawler:
 
 ### Crawl flow
 
-1. `page.goto(f"{base_url}/music/cd-and-vinyl", timeout=120_000)`. This
-   establishes `PHPSESSID` and `cf_clearance` and lets the Cloudflare JSD
-   challenge script run — the AJAX endpoint is not reachable without it.
-   Raise `BotDetectedError` if the title contains `"Attention Required"`.
+1. `page.goto(f"{base_url}/music/cd-and-vinyl", wait_until="domcontentloaded",
+   timeout=120_000)`. This establishes `PHPSESSID` and `cf_clearance` and
+   lets the Cloudflare JSD challenge script run — the AJAX endpoint is not
+   reachable without it. `wait_until="domcontentloaded"` avoids blocking on
+   unrelated page resources (ads, analytics, chat widgets), which was
+   observed to hang past the 120s timeout under the default `"load"`
+   milestone; only the DOM and the JSD challenge matter here, matching
+   `amazon.py` and `discogs_marketplace.py`. Raise `BotDetectedError` if the
+   title contains `"Attention Required"`.
 2. For `page_num` in 1..5:
    - `await sleep(random.uniform(delay * 0.5, delay))` where `delay =
      load_config().get("crawl_delay_seconds", 30)` — before *every* request

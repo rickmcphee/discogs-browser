@@ -120,22 +120,15 @@ def test_stock_items_insert_and_select(admin_conn):
 
 
 def test_crawl_queue_table_exists_with_unique_constraint(admin_conn):
-    crawler_id = admin_conn.execute(
-        "INSERT INTO crawlers (site_name, module_path) VALUES ('Test Site', '/x.py') RETURNING id"
-    ).fetchone()["id"]
     db.upsert_catalog_release(admin_conn, {
         "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
         "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
         "discogs_url": None,
     })
-    admin_conn.execute(
-        "INSERT INTO crawl_queue (discogs_id, crawler_id) VALUES ('r1', %s)", [crawler_id]
-    )
+    admin_conn.execute("INSERT INTO crawl_queue (discogs_id) VALUES ('r1')")
     admin_conn.commit()
     with pytest.raises(psycopg.errors.UniqueViolation):
-        admin_conn.execute(
-            "INSERT INTO crawl_queue (discogs_id, crawler_id) VALUES ('r1', %s)", [crawler_id]
-        )
+        admin_conn.execute("INSERT INTO crawl_queue (discogs_id) VALUES ('r1')")
     admin_conn.rollback()
 
 
@@ -231,12 +224,7 @@ def test_crawl_queue_accepts_item_key_based_row_with_null_discogs_id(admin_conn)
     admin_conn.execute(
         "INSERT INTO stock_item_identities (item_key, artist, title) VALUES ('key1', 'A', 'T')"
     )
-    crawler_id = admin_conn.execute(
-        "INSERT INTO crawlers (site_name, module_path) VALUES ('Test Site', '/x.py') RETURNING id"
-    ).fetchone()["id"]
-    admin_conn.execute(
-        "INSERT INTO crawl_queue (item_key, crawler_id) VALUES ('key1', %s)", [crawler_id]
-    )
+    admin_conn.execute("INSERT INTO crawl_queue (item_key) VALUES ('key1')")
     admin_conn.commit()
     row = admin_conn.execute(
         "SELECT discogs_id, item_key FROM crawl_queue WHERE item_key = 'key1'"
@@ -245,19 +233,42 @@ def test_crawl_queue_accepts_item_key_based_row_with_null_discogs_id(admin_conn)
     assert row["item_key"] == "key1"
 
 
-def test_crawl_queue_unique_on_item_key_and_crawler(admin_conn):
+def test_the_comma_form_indexes_have_unescaped_like_pattern(admin_conn):
+    # GLOBAL_SCHEMA runs with no params, so _the_comma_form_sql's LIKE guard
+    # must land as a single '%' -- the doubled '%%' psycopg needs everywhere
+    # else (to collapse to one '%' during parameter substitution) would
+    # otherwise get baked into the index definition literally, so it could
+    # never match the single-'%' expression the parameterized queries send at
+    # runtime, and the index would silently never be chosen by the planner.
+    for idx in ("catalog_artist_the_lower_idx", "stock_items_artist_the_lower_idx"):
+        indexdef = admin_conn.execute(
+            "SELECT indexdef FROM pg_indexes WHERE indexname = %s", [idx]
+        ).fetchone()["indexdef"]
+        assert "the %%" not in indexdef.lower()
+        assert "the %" in indexdef.lower()
+
+
+def test_bare_form_indexes_have_unescaped_like_pattern(admin_conn):
+    # Same rationale as test_the_comma_form_indexes_have_unescaped_like_pattern,
+    # for _artist_sort_sql's two LIKE guards (leading "the " and trailing
+    # ", the") instead of _the_comma_form_sql's one -- see
+    # docs/specifications/shaping/2026-08-22-bare-form-artist-fold-design.md.
+    for idx in ("catalog_artist_bare_lower_idx", "stock_items_artist_bare_lower_idx"):
+        indexdef = admin_conn.execute(
+            "SELECT indexdef FROM pg_indexes WHERE indexname = %s", [idx]
+        ).fetchone()["indexdef"]
+        assert "the %%" not in indexdef.lower()
+        assert "the %" in indexdef.lower()
+        assert "%%, the" not in indexdef.lower()
+        assert "%, the" in indexdef.lower()
+
+
+def test_crawl_queue_unique_on_item_key(admin_conn):
     admin_conn.execute(
         "INSERT INTO stock_item_identities (item_key, artist, title) VALUES ('key1', 'A', 'T')"
     )
-    crawler_id = admin_conn.execute(
-        "INSERT INTO crawlers (site_name, module_path) VALUES ('Test Site', '/x.py') RETURNING id"
-    ).fetchone()["id"]
-    admin_conn.execute(
-        "INSERT INTO crawl_queue (item_key, crawler_id) VALUES ('key1', %s)", [crawler_id]
-    )
+    admin_conn.execute("INSERT INTO crawl_queue (item_key) VALUES ('key1')")
     admin_conn.commit()
     with pytest.raises(psycopg.errors.UniqueViolation):
-        admin_conn.execute(
-            "INSERT INTO crawl_queue (item_key, crawler_id) VALUES ('key1', %s)", [crawler_id]
-        )
+        admin_conn.execute("INSERT INTO crawl_queue (item_key) VALUES ('key1')")
     admin_conn.rollback()

@@ -125,10 +125,10 @@ async def test_search_logs_the_error_response_body_at_debug(crawler, caplog):
 
 
 async def test_error_response_body_is_logged_as_a_single_line(crawler, caplog):
-    """routers/logs.py's _line_visible passes through any line it can't parse
-    a level from, so a multi-line body would leak its continuation lines into
-    the default {INFO, WARNING, ERROR} view -- the same reason tracebacks show
-    up there as OTHER -- and the LogViewer would fail to parse them."""
+    """Each app_logs row is one record rendered as one line by the LogViewer,
+    so an uncollapsed multi-line body reads as a single unreadable smear there.
+    Level filtering itself is unaffected (routers/logs.py filters in SQL on the
+    stored level column) -- this is legibility, not visibility."""
     pretty_json = '{\n  "errors": [\n    {\n      "errorId": 12001\n    }\n  ]\n}'
     with respx.mock:
         respx.post(_TOKEN_URL).mock(return_value=httpx.Response(200, json=_TOKEN_RESP))
@@ -146,7 +146,7 @@ async def test_error_response_body_is_logged_as_a_single_line(crawler, caplog):
 
 async def test_error_response_body_logging_is_truncated(crawler, caplog):
     """A non-JSON error page (a proxy's HTML, say) must not dump tens of KB
-    into a rotating log file the viewer has to render."""
+    into a single app_logs row the viewer has to render."""
     with respx.mock:
         respx.post(_TOKEN_URL).mock(return_value=httpx.Response(200, json=_TOKEN_RESP))
         respx.get(_SEARCH_URL).mock(

@@ -41,7 +41,7 @@ Net effect: no filesystem state for browser sessions at all. `browser_state.json
 
 ## Plugin interface change — remove `login_url`
 
-`login_url` was declared on 4 bundled crawlers: `amazon.py` (real sign-in URL), `ebay.py`, `discogs_marketplace.py`, `ebay_general.py` (all three set to `""` specifically to suppress the old UI section). Remove the attribute from all four, plus:
+`login_url` was declared on the bundled crawlers `amazon.py` (real sign-in URL), `ebay.py`, `discogs_marketplace.py`, `ebay_general.py` (all three set to `""` specifically to suppress the old UI section). Remove the attribute from all of them, plus:
 
 - `backend/db.py` (`get_all_crawlers`) — remove the `d["login_url"] = ...` assignment in both the success and exception branches.
 - `frontend/src/api/types.ts` — remove `login_url` from the `Crawler` type.
