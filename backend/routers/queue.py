@@ -10,6 +10,9 @@ from crawl_manager import crawl_manager
 router = APIRouter()
 
 NEXT_LIMIT_MAX = 100
+# Under the client's own deadline, so the database gives up first and the
+# failure arrives as an error rather than as a silently abandoned transaction.
+QUERY_TIMEOUT_MS = 15_000
 
 
 # Read-only, by design. Nothing in this router writes -- in particular it does
@@ -34,6 +37,19 @@ def queue_summary():
         # reads it. Safe to hold: every statement here is a read, so there is
         # nothing for the stricter isolation to serialization-fail on.
         conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        # A client-side deadline frees the browser but not this handler: the
+        # request runs in FastAPI's threadpool and a disconnect does not
+        # interrupt it, so without this a timed-out poll could keep holding a
+        # pool connection -- the one the crawl workers claim through -- while
+        # the client already scheduled its replacement. Postgres enforces the
+        # bound the client cannot: the statement is cancelled, the connection
+        # goes back, and the view renders the failure as a stale snapshot.
+        # LOCAL, so it lasts exactly this transaction and never leaks to the
+        # next borrower of a pooled connection.
+        # SET LOCAL takes no bind parameters, so the value is interpolated --
+        # safely: it is a module constant coerced to int here, never anything
+        # request-derived.
+        conn.execute(f"SET LOCAL statement_timeout = {int(QUERY_TIMEOUT_MS)}")
         # Read through the admin pool, not this one: app_user has no grant on
         # app_config. It feeds the stranded threshold, which is derived from
         # the pacing rather than fixed.

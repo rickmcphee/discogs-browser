@@ -378,10 +378,34 @@ export function avatarUrl(version: number): string {
 // Same mechanism checkHealth uses.
 const QUEUE_TIMEOUT_MS = 20_000
 
-export async function getQueueSummary(): Promise<QueueSummary> {
-  const r = await apiFetch('/queue/summary', { signal: AbortSignal.timeout(QUEUE_TIMEOUT_MS) })
-  if (!r.ok) throw new Error(await r.text())
-  return r.json()
+// Coalesced at module scope, not per component. QueueView's own guard is
+// component-local, so it cannot survive the view being unmounted -- and the
+// Queue tab is mounted only while it is active, so leaving and reopening it
+// during a slow report built a fresh instance that immediately issued another.
+// Same escape hatch the timer and the hide/show path had; this closes the class
+// rather than a third instance of it. A summary is a REPEATABLE READ
+// transaction on the pool the crawl workers claim through, so overlapping them
+// is the one thing this request must never do.
+let summaryInFlight: Promise<QueueSummary> | null = null
+
+export function getQueueSummary(): Promise<QueueSummary> {
+  if (summaryInFlight) return summaryInFlight
+  summaryInFlight = (async () => {
+    try {
+      const r = await apiFetch('/queue/summary', { signal: AbortSignal.timeout(QUEUE_TIMEOUT_MS) })
+      if (!r.ok) throw new Error(await r.text())
+      return await r.json()
+    } finally {
+      // Cleared here rather than by chaining onto this promise: a trailing
+      // .finally() settles a microtask after an awaiter resumes, so a caller
+      // that awaited and immediately called again would be handed the spent
+      // slot. Inside the function it is already null when this promise
+      // settles -- and it settles either way, so a rejection cannot wedge
+      // every later caller.
+      summaryInFlight = null
+    }
+  })()
+  return summaryInFlight
 }
 
 export async function getQueueNext(crawlerId: number, limit = 25): Promise<QueueNextItem[]> {

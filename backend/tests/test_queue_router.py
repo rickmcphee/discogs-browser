@@ -479,3 +479,44 @@ def test_summary_endpoint_returns_the_payload_for_an_admin(pg_test_db, authed_cl
     assert body["totals"]["claimable_rows"] == 0
     assert body["stranded_after_seconds"] >= db.QUEUE_STRANDED_FLOOR_SECONDS
     assert "pool_running" in body and "generated_at" in body
+
+
+def test_summary_bounds_its_own_runtime_server_side(pg_test_db, authed_client_factory):
+    """A client deadline frees the browser but not this handler -- the request
+    runs in FastAPI's threadpool and a disconnect does not interrupt it. Without
+    a server-side bound a timed-out poll could keep holding a pool connection
+    while the client scheduled its replacement."""
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=5, discogs_username="root4")
+        conn.execute("UPDATE users SET is_admin = TRUE WHERE id = %s", [user["id"]])
+        conn.commit()
+    client = authed_client_factory(user["id"])
+
+    captured = []
+    real_summary = db.queue_summary
+
+    def _capture(conn, *args, **kwargs):
+        captured.append(conn.execute("SHOW statement_timeout").fetchone()["statement_timeout"])
+        return real_summary(conn, *args, **kwargs)
+
+    db.queue_summary = _capture
+    try:
+        assert client.get("/api/queue/summary", headers={"X-Requested-With": "fetch"}).status_code == 200
+    finally:
+        db.queue_summary = real_summary
+
+    assert captured == ["15s"]
+
+
+def test_statement_timeout_does_not_leak_to_the_next_pooled_borrower(pg_test_db, authed_client_factory):
+    """SET LOCAL, not SET: a pooled connection is handed to the crawl workers
+    next, and they must not inherit a 15-second cap on their own queries."""
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=6, discogs_username="root5")
+        conn.execute("UPDATE users SET is_admin = TRUE WHERE id = %s", [user["id"]])
+        conn.commit()
+    client = authed_client_factory(user["id"])
+    client.get("/api/queue/summary", headers={"X-Requested-With": "fetch"})
+
+    with db.get_app_pool().connection() as conn:
+        assert conn.execute("SHOW statement_timeout").fetchone()["statement_timeout"] == "0"

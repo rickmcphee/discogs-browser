@@ -307,6 +307,27 @@ never settles would wedge the loop permanently — the last snapshot left on
 screen, no stale warning, no recovery. The deadline turns that into an ordinary
 rejection the view already renders, and polling continues.
 
+The guard against overlap is enforced at three layers, because each of the
+first two has an escape hatch the next one closes:
+
+1. **In the view** — the loop is self-scheduling and defers to an in-flight
+   request, covering the timer and the hide/show paths.
+2. **In the client, at module scope** — `getQueueSummary` coalesces concurrent
+   callers onto one promise. The view's guard is component state and the Queue
+   tab is mounted only while active, so leaving and reopening it during a slow
+   report would otherwise build a fresh instance that immediately issued
+   another request. The slot is cleared inside the async function rather than
+   by chaining a `.finally()` onto its promise: that chain settles a microtask
+   after an awaiter resumes, handing a caller that awaited and immediately
+   called again the spent slot.
+3. **In the database** — `SET LOCAL statement_timeout`. A client-side deadline
+   frees the browser but not the handler: the request runs in FastAPI's
+   threadpool and a disconnect does not interrupt it, so a timed-out poll could
+   keep holding a pool connection while the client scheduled its replacement.
+   Postgres enforces the bound the client cannot. `LOCAL`, so the cap lasts
+   exactly that transaction and is never inherited by the crawl workers, who
+   borrow the same pooled connections next.
+
 **Top half.**
 
 - A KPI row of stat tiles: pool state, claimable rows, in progress, held,

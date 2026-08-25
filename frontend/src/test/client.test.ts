@@ -322,4 +322,36 @@ describe('queue client functions', () => {
     const [, init] = fetchMock.mock.calls[0]
     expect(init.signal).toBeInstanceOf(AbortSignal)
   })
+
+  // The view's own guard is component-local, so it cannot survive the Queue tab
+  // being unmounted. Coalescing here is what stops a leave/reopen during a slow
+  // report issuing a second repeatable-read transaction alongside the first.
+  it('coalesces concurrent summary requests into one', async () => {
+    let release: (v: unknown) => void = () => {}
+    fetchMock.mockReturnValue(new Promise((r) => {
+      release = () => r({ ok: true, status: 200, json: async () => ({}) })
+    }))
+
+    const a = getQueueSummary()
+    const b = getQueueSummary()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(a).toBe(b)
+
+    release(null)
+    await a
+  })
+
+  it('releases the coalescing slot once a summary settles', async () => {
+    await getQueueSummary()
+    await getQueueSummary()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('releases the coalescing slot when a summary fails', async () => {
+    fetchMock.mockRejectedValueOnce(new Error('boom'))
+    await expect(getQueueSummary()).rejects.toThrow('boom')
+    // A rejection must not wedge every later caller on a dead promise.
+    fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({}) })
+    await expect(getQueueSummary()).resolves.toBeDefined()
+  })
 })
