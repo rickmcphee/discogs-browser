@@ -25,6 +25,15 @@ name: Sync integration with main
 # Note both jobs go through a PR rather than pushing to `integration` directly:
 # that ruleset requires a pull request, allows only squash merges, and lists no
 # bypass actors, so a direct push is rejected however the workflow authenticates.
+#
+# SETUP: INTEGRATION_PROMOTE_TOKEN is a prerequisite for the first sync, not
+# just a convenience. That sync carries this very file plus a change to
+# integration-promote.yml, and GITHUB_TOKEN may not create or update anything
+# under .github/workflows/, so the push is rejected outright without a token
+# holding the `workflow` scope. Later syncs only need it when `main` has
+# touched a workflow file. It separately removes the weekly "Approve and run"
+# click described on the sync step below; the two are unrelated, and the second
+# reason is the weaker one.
 
 on:
   push:
@@ -86,6 +95,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+          # actions/checkout persists whichever token it used as the git
+          # credential for every later push in this job. GH_TOKEN below only
+          # authenticates the `gh` CLI, so without this line `git push` would
+          # authenticate as GITHUB_TOKEN even where INTEGRATION_PROMOTE_TOKEN
+          # is configured -- and GITHUB_TOKEN may not create or update files
+          # under .github/workflows/. The first sync necessarily carries
+          # exactly that: this workflow file, and the promote workflow's
+          # comment. Distinct from the parked-CI caveat below, and not fixed
+          # by it.
+          token: ${{ secrets.INTEGRATION_PROMOTE_TOKEN || github.token }}
 
       - name: Open/update the sync PR if integration has fallen behind
         id: sync
@@ -305,7 +324,14 @@ jobs:
 
           # No sync PR is open at this point, so nothing references the branch
           # and rebuilding it wholesale is safe.
-          git push --force origin "$SYNC_BRANCH"
+          if ! git push --force origin "$SYNC_BRANCH"; then
+            if ! git diff --quiet origin/integration HEAD -- .github/workflows/; then
+              echo "::error::pushing $SYNC_BRANCH failed, and this sync carries changes under .github/workflows/ ($(git diff --name-only origin/integration HEAD -- .github/workflows/ | tr '\n' ' ')). GITHUB_TOKEN cannot create or update workflow files: set INTEGRATION_PROMOTE_TOKEN to a token holding the workflow scope. The checkout step above passes it to git as well as gh, so it covers this once configured."
+            else
+              echo "::error::pushing $SYNC_BRANCH failed."
+            fi
+            exit 1
+          fi
 
           gh pr create \
             --repo "$REPO" \
