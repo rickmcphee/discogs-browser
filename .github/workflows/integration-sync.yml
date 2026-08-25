@@ -257,21 +257,13 @@ jobs:
                 fi
                 ;;
               dirty)
-                # Actually disable it. A conflict blocks auto-merge but does
-                # not clear it, so an armed request survives -- and the moment
-                # someone pushes a resolution it merges on the spot, unreviewed,
-                # into a branch that requires no approving review. Saying
-                # auto-merge is off while leaving it armed is the worst of both.
-                if ! gh pr merge "$existing" --repo "$REPO" --disable-auto; then
-                  # Stop here rather than print the instructions below. Those
-                  # tell someone to resolve the conflict and push, and an armed
-                  # auto-merge would take that push straight into `integration`
-                  # the moment its checks pass.
-                  echo "::error::could not disable auto-merge on sync PR #$existing, which conflicts with integration. Do not resolve it yet: disable auto-merge by hand first, or the resolution merges itself."
-                  exit 1
-                fi
-                # Label it, so the re-arm guard above keeps auto-merge off once
-                # the resolution makes this PR `clean` again.
+                # Label FIRST, disable auto-merge second. The label is the
+                # durable half: it survives to the next run and is what stops
+                # a re-arm over someone's hand-written resolution, whereas
+                # disabling only clears the request that exists right now.
+                # Ordered the other way round, any failure disabling cost the
+                # label too -- and the case below makes that reachable.
+                #
                 # `|| true` only because --force already makes this a no-op
                 # when the label exists; the attach below is the call that has
                 # to work, and it reports its own failure loudly.
@@ -285,7 +277,26 @@ jobs:
                   # quietly because labelling failed quietly.
                   echo "::error::could not label #$existing with $CONFLICT_LABEL. A later run will re-arm auto-merge on it: keep auto-merge disabled by hand, or check the token has Issues: write."
                 fi
-                echo "::error::Sync PR #$existing conflicts with integration. Auto-merge has been disabled: resolve $SYNC_BRANCH by hand, push it, and merge it deliberately -- WITH A MERGE COMMIT, not a squash. This is the one path where nothing here can enforce that, and a squash re-freezes git's merge base between main and integration for good. Setting allowed_merge_methods to merge only on integration-branch-protection removes the choice."
+                # Only disable what is actually armed. `--disable-auto` fails
+                # when there is no auto-merge request, and treating that as
+                # fatal aborted the job with auto-merge already safely off --
+                # pure loss, and reachable whenever an earlier arm failed or
+                # someone turned it off by hand. Every retry repeated it.
+                #
+                # A conflict blocks auto-merge but does not clear it, so an
+                # armed request does survive: the moment someone pushes a
+                # resolution it merges on the spot, unreviewed, into a branch
+                # that requires no approving review. That is why an armed one
+                # must still be cleared, and why failing to clear it stops the
+                # job before the instructions below invite exactly that push.
+                dirty_automerge="$(gh pr view "$existing" --repo "$REPO" \
+                  --json autoMergeRequest --jq '.autoMergeRequest.mergeMethod // empty')"
+                if [ -n "$dirty_automerge" ] \
+                   && ! gh pr merge "$existing" --repo "$REPO" --disable-auto; then
+                  echo "::error::could not disable auto-merge on sync PR #$existing, which conflicts with integration. Do not resolve it yet: disable auto-merge by hand first, or the resolution merges itself. The $CONFLICT_LABEL label is already applied, so a later run will not re-arm it."
+                  exit 1
+                fi
+                echo "::error::Sync PR #$existing conflicts with integration. Auto-merge is off: resolve $SYNC_BRANCH by hand, push it, and merge it deliberately -- WITH A MERGE COMMIT, not a squash. This is the one path where nothing here can enforce that, and a squash re-freezes git's merge base between main and integration for good. Setting allowed_merge_methods to merge only on integration-branch-protection removes the choice."
 
                 exit 1
                 ;;
