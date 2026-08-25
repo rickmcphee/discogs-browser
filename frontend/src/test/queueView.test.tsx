@@ -159,6 +159,62 @@ describe('QueueView', () => {
       expect(screen.getByRole('button', { name: /eBay/ })).toHaveTextContent('3'))
   })
 
+  it('drops a selected crawler from the detail panels when a filter hides it', async () => {
+    getQueueSummary.mockResolvedValue(summary({
+      crawlers: [
+        crawler({ crawler_id: 1, site_name: 'Amazon', held_units: 0 }),
+        crawler({ crawler_id: 2, site_name: 'eBay', held_units: 4 }),
+      ],
+    }))
+    render(<QueueView />)
+    fireEvent.click(await screen.findByRole('button', { name: /Amazon/ }))
+    expect(await screen.findByText('Age & composition')).toBeInTheDocument()
+
+    // Amazon has no held work, so filtering to Held hides it from the list.
+    // The panels below must not keep showing a crawler the list says isn't there.
+    fireEvent.click(screen.getByRole('button', { name: /^Held/ }))
+    await waitFor(() =>
+      expect(screen.queryByText('Age & composition')).not.toBeInTheDocument())
+    expect(screen.getByText(/Select a crawler above/)).toBeInTheDocument()
+  })
+
+  it('stops polling next-up for a crawler a filter has hidden', async () => {
+    getQueueSummary.mockResolvedValue(summary({
+      crawlers: [
+        crawler({ crawler_id: 1, site_name: 'Amazon', held_units: 0 }),
+        crawler({ crawler_id: 2, site_name: 'eBay', held_units: 4 }),
+      ],
+    }))
+    render(<QueueView />)
+    fireEvent.click(await screen.findByRole('button', { name: /Amazon/ }))
+    await waitFor(() => expect(getQueueNext).toHaveBeenCalledWith(1))
+
+    getQueueNext.mockClear()
+    fireEvent.click(screen.getByRole('button', { name: /^Held/ }))
+    // A hidden crawler must not keep costing a request on every poll.
+    await waitFor(() =>
+      expect(screen.queryByText('Age & composition')).not.toBeInTheDocument())
+    expect(getQueueNext).not.toHaveBeenCalled()
+  })
+
+  it('restores the selection when the filter is cleared', async () => {
+    getQueueSummary.mockResolvedValue(summary({
+      crawlers: [
+        crawler({ crawler_id: 1, site_name: 'Amazon', held_units: 0 }),
+        crawler({ crawler_id: 2, site_name: 'eBay', held_units: 4 }),
+      ],
+    }))
+    render(<QueueView />)
+    fireEvent.click(await screen.findByRole('button', { name: /Amazon/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^Held/ }))
+    await waitFor(() =>
+      expect(screen.queryByText('Age & composition')).not.toBeInTheDocument())
+
+    // Hiding is a view change, not a destruction of the selection.
+    fireEvent.click(screen.getByRole('button', { name: /^Held/ }))
+    expect(await screen.findByText('Age & composition')).toBeInTheDocument()
+  })
+
   it('counts unactionable rows in the ring centre so it cannot contradict the tile', async () => {
     getQueueSummary.mockResolvedValue(summary({
       totals: {

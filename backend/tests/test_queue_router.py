@@ -577,3 +577,39 @@ def test_next_bounds_its_own_runtime_server_side(pg_test_db, authed_client_facto
 
     assert r.status_code == 200
     assert captured == [f"{queue_router.QUERY_TIMEOUT_MS}ms"]
+
+
+def test_summary_reads_config_before_borrowing_the_app_connection(pg_test_db, authed_client_factory):
+    """load_config() goes through the admin pool, so it sits outside the
+    statement cap on the app connection. Doing it while that connection is
+    already held -- and inside the REPEATABLE READ transaction -- meant its time
+    counted against nothing, and held a connection the crawl workers claim
+    through while waiting on an unrelated pool."""
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=8, discogs_username="root7")
+        conn.execute("UPDATE users SET is_admin = TRUE WHERE id = %s", [user["id"]])
+        conn.commit()
+    client = authed_client_factory(user["id"])
+
+    order = []
+    real_load_config = queue_router.load_config
+    real_pool = db.get_app_pool
+
+    def _load_config():
+        order.append("config")
+        return real_load_config()
+
+    def _get_app_pool():
+        order.append("borrow")
+        return real_pool()
+
+    queue_router.load_config = _load_config
+    db.get_app_pool = _get_app_pool
+    try:
+        r = client.get("/api/queue/summary", headers={"X-Requested-With": "fetch"})
+    finally:
+        queue_router.load_config = real_load_config
+        db.get_app_pool = real_pool
+
+    assert r.status_code == 200
+    assert order[:2] == ["config", "borrow"], order

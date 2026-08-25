@@ -368,20 +368,6 @@ export default function QueueView() {
     }
   }, [load])
 
-  useEffect(() => {
-    if (selectedId === null) { setNext([]); setNextError(null); return }
-    let cancelled = false
-    setNextLoading(true)
-    getQueueNext(selectedId)
-      .then((items) => { if (!cancelled) { setNext(items); setNextError(null) } })
-      // Not folded into an empty list: in a diagnostic view "nothing claimable
-      // for this crawler" is a finding, and a failed request must never be
-      // mistaken for one.
-      .catch((e: any) => { if (!cancelled) { setNext([]); setNextError(e?.message || 'Could not load') } })
-      .finally(() => { if (!cancelled) setNextLoading(false) })
-    return () => { cancelled = true }
-  }, [selectedId, summary?.generated_at])
-
   const visibleCrawlers = useMemo(() => {
     const all = summary?.crawlers ?? []
     // Every state the donut offers filters for real. Leaving one as a no-op
@@ -394,7 +380,29 @@ export default function QueueView() {
     return [...filtered].sort((a, b) => weight(b) - weight(a))
   }, [summary, selectedState])
 
-  const selected = summary?.crawlers.find((c) => c.crawler_id === selectedId) ?? null
+  // Derived from the *visible* list, not the full one. Filtering to a state the
+  // selected crawler has no work in used to leave the bar list saying nothing
+  // matched while the panels below still rendered that crawler -- and the
+  // next-up effect kept polling for it on every tick. Deriving it here drops
+  // the crawler from both, and brings it back if the filter is cleared, without
+  // destroying the selection the way clearing selectedId would.
+  const selected = visibleCrawlers.find((c) => c.crawler_id === selectedId) ?? null
+  const visibleSelectedId = selected?.crawler_id ?? null
+
+  useEffect(() => {
+    if (visibleSelectedId === null) { setNext([]); setNextError(null); return }
+    let cancelled = false
+    setNextLoading(true)
+    getQueueNext(visibleSelectedId)
+      .then((items) => { if (!cancelled) { setNext(items); setNextError(null) } })
+      // Not folded into an empty list: in a diagnostic view "nothing claimable
+      // for this crawler" is a finding, and a failed request must never be
+      // mistaken for one.
+      .catch((e: any) => { if (!cancelled) { setNext([]); setNextError(e?.message || 'Could not load') } })
+      .finally(() => { if (!cancelled) setNextLoading(false) })
+    return () => { cancelled = true }
+  }, [visibleSelectedId, summary?.generated_at])
+
 
   if (error && !summary) {
     return <div className="p-6 text-sm text-red-400">{error}</div>
