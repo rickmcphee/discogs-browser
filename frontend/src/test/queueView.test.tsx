@@ -17,6 +17,7 @@ function crawler(over: Partial<QueueCrawlerSummary> = {}): QueueCrawlerSummary {
     requires_discogs_release: false,
     claimable_units: 10,
     held_units: 0,
+    in_progress_units: 0,
     release_units: 7,
     stock_units: 3,
     oldest_wait_seconds: 7200,
@@ -45,8 +46,14 @@ function summary(over: Partial<QueueSummary> = {}): QueueSummary {
   }
 }
 
+function setVisibility(state: 'visible' | 'hidden') {
+  Object.defineProperty(document, 'visibilityState', { value: state, configurable: true })
+  fireEvent(document, new Event('visibilitychange'))
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
+  Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
   getQueueSummary.mockResolvedValue(summary())
   getQueueNext.mockResolvedValue([])
 })
@@ -117,6 +124,44 @@ describe('QueueView', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Held/ }))
     await waitFor(() => expect(screen.queryByRole('button', { name: /Amazon/ })).not.toBeInTheDocument())
     expect(screen.getByRole('button', { name: /eBay/ })).toBeInTheDocument()
+  })
+
+  it('filters the crawler list on the In progress segment too', async () => {
+    getQueueSummary.mockResolvedValue(summary({
+      crawlers: [
+        crawler({ crawler_id: 1, site_name: 'Amazon', in_progress_units: 0 }),
+        crawler({ crawler_id: 2, site_name: 'eBay', in_progress_units: 3 }),
+      ],
+    }))
+    render(<QueueView />)
+    await screen.findByRole('button', { name: /Amazon/ })
+
+    fireEvent.click(screen.getByRole('button', { name: /^In progress/ }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Amazon/ })).not.toBeInTheDocument())
+    expect(screen.getByRole('button', { name: /eBay/ })).toBeInTheDocument()
+  })
+
+  it('marks the snapshot stale when a later poll fails', async () => {
+    render(<QueueView />)
+    await screen.findByText('Worker pool')
+
+    getQueueSummary.mockRejectedValue(new Error('backend gone'))
+    // Hiding then re-showing the tab is what actually re-triggers a load; a
+    // bare visibilitychange while already visible is a no-op by design.
+    setVisibility('hidden')
+    setVisibility('visible')
+    // Still showing the last good numbers, but no longer claiming they are live.
+    expect(await screen.findByText(/Showing a stale snapshot/)).toBeInTheDocument()
+    expect(screen.getByText('Worker pool')).toBeInTheDocument()
+  })
+
+  it('reports a failed next-up fetch instead of calling it empty', async () => {
+    getQueueNext.mockRejectedValue(new Error('next blew up'))
+    render(<QueueView />)
+    fireEvent.click(await screen.findByRole('button', { name: /Amazon/ }))
+
+    expect(await screen.findByText('next blew up')).toBeInTheDocument()
+    expect(screen.queryByText(/Nothing claimable for this crawler/)).not.toBeInTheDocument()
   })
 
   it('reports a failure to load rather than rendering an empty frame', async () => {

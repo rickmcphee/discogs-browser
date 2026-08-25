@@ -287,16 +287,37 @@ def test_next_marks_narrowed_rows(admin_conn):
 
 
 def test_next_clamps_limit(pg_test_db, authed_client_factory):
+    # Enqueued past the cap on purpose: an empty queue would let this pass with
+    # the clamp deleted, since every limit returns the same zero rows.
     with db.get_admin_pool().connection() as conn:
         user = db.create_user(conn, discogs_user_id=2, discogs_username="root")
         conn.execute("UPDATE users SET is_admin = TRUE WHERE id = %s", [user["id"]])
+        amazon = _crawler(conn, "Amazon")
+        for i in range(queue_router.NEXT_LIMIT_MAX + 5):
+            db.enqueue_crawl_queue(conn, _release(conn, f"r{i}"))
         conn.commit()
     client = authed_client_factory(user["id"])
+
     r = client.get(
-        f"/api/queue/crawlers/1/next?limit={queue_router.NEXT_LIMIT_MAX + 500}",
+        f"/api/queue/crawlers/{amazon}/next?limit={queue_router.NEXT_LIMIT_MAX + 500}",
         headers={"X-Requested-With": "fetch"},
     )
     assert r.status_code == 200
+    assert len(r.json()["items"]) == queue_router.NEXT_LIMIT_MAX
+
+
+def test_next_honours_a_limit_under_the_cap(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=4, discogs_username="root3")
+        conn.execute("UPDATE users SET is_admin = TRUE WHERE id = %s", [user["id"]])
+        amazon = _crawler(conn, "Amazon")
+        for i in range(10):
+            db.enqueue_crawl_queue(conn, _release(conn, f"r{i}"))
+        conn.commit()
+    client = authed_client_factory(user["id"])
+
+    r = client.get(f"/api/queue/crawlers/{amazon}/next?limit=3", headers={"X-Requested-With": "fetch"})
+    assert len(r.json()["items"]) == 3
 
 
 # --- Activity and rates ---------------------------------------------------
@@ -327,6 +348,74 @@ def test_eta_is_null_while_nothing_has_drained(admin_conn):
     assert summary["totals"]["rows_done_last_hour"] == 0
     assert summary["totals"]["eta_seconds"] is None
     assert _by_name(summary)["Amazon"]["eta_seconds"] is None
+
+
+def test_drain_rate_counts_rows_that_finished_not_rows_that_were_claimed(admin_conn):
+    _crawler(admin_conn, "Amazon")
+    for i in range(2):
+        db.enqueue_crawl_queue(admin_conn, _release(admin_conn, f"r{i}"))
+    admin_conn.commit()
+    rows = db.claim_crawl_queue_batch(admin_conn, "w", limit=2)
+    # A row fans out to one sequential search per crawler, so a long claim that
+    # completes now is routine. Measured off claimed_at this would report a zero
+    # drain rate while rows were actively finishing.
+    admin_conn.execute(
+        "UPDATE crawl_queue SET claimed_at = CURRENT_TIMESTAMP - INTERVAL '5 hours'"
+    )
+    for row in rows:
+        db.mark_crawl_queue_done(admin_conn, row["id"])
+    admin_conn.commit()
+
+    assert db.queue_summary(admin_conn)["totals"]["rows_done_last_hour"] == 2
+
+
+def test_reviving_a_done_row_clears_its_completion_stamp(admin_conn):
+    _crawler(admin_conn, "Amazon")
+    db.enqueue_crawl_queue(admin_conn, _release(admin_conn, "r1"))
+    admin_conn.commit()
+    [row] = db.claim_crawl_queue_batch(admin_conn, "w", limit=1)
+    db.mark_crawl_queue_done(admin_conn, row["id"])
+    db.enqueue_crawl_queue(admin_conn, "r1")
+    admin_conn.commit()
+
+    # Otherwise a revived row keeps counting toward the drain rate for an hour
+    # after it went back to pending, having drained nothing.
+    assert db.queue_summary(admin_conn)["totals"]["rows_done_last_hour"] == 0
+    assert db.queue_summary(admin_conn)["totals"]["claimable_rows"] == 1
+
+
+def test_held_work_still_counts_toward_composition_and_age(admin_conn):
+    amazon = _crawler(admin_conn, "Amazon")
+    db.enqueue_crawl_queue(admin_conn, _release(admin_conn, "r1"))
+    admin_conn.commit()
+    [row] = db.claim_crawl_queue_batch(admin_conn, "w", limit=1)
+    db.defer_crawl_queue_row(admin_conn, row["id"], [amazon], delay_seconds=600)
+    admin_conn.commit()
+
+    # A crawler reached through the Held filter must not report a real held
+    # backlog beside an empty composition panel.
+    crawler = _by_name(db.queue_summary(admin_conn))["Amazon"]
+    assert crawler["held_units"] == 1
+    assert crawler["claimable_units"] == 0
+    assert crawler["release_units"] == 1
+    assert crawler["oldest_wait_seconds"] is not None
+    assert sum(crawler["age_buckets"].values()) == 1
+
+
+def test_in_progress_units_are_broken_down_per_crawler(admin_conn):
+    _crawler(admin_conn, "Amazon")
+    _crawler(admin_conn, "Discogs", requires_discogs_release=True)
+    db.enqueue_crawl_queue(admin_conn, _release(admin_conn, "r1"))
+    db.enqueue_crawl_queue_for_stock_item(admin_conn, _stock_identity(admin_conn, "k1"))
+    admin_conn.commit()
+    db.claim_crawl_queue_batch(admin_conn, "w", limit=2)
+    admin_conn.commit()
+
+    summary = db.queue_summary(admin_conn)
+    crawlers = _by_name(summary)
+    assert crawlers["Amazon"]["in_progress_units"] == 2
+    assert crawlers["Discogs"]["in_progress_units"] == 1
+    assert summary["totals"]["in_progress_units"] == 3
 
 
 def test_eta_uses_the_recent_drain_rate(admin_conn):

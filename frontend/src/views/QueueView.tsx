@@ -21,6 +21,12 @@ const STATUS_WARNING = '#fab219'
 
 type StateKey = keyof typeof STATE_COLORS
 
+function unitsInState(crawler: QueueCrawlerSummary, state: StateKey): number {
+  if (state === 'held') return crawler.held_units
+  if (state === 'claimable') return crawler.claimable_units
+  return crawler.in_progress_units
+}
+
 const STATE_LABELS: Record<StateKey, string> = {
   in_progress: 'In progress',
   claimable: 'Claimable',
@@ -170,11 +176,12 @@ function Field({ label, value, hint }: { label: string; value: string; hint?: st
   )
 }
 
-function CrawlerDetail({ crawler, window, next, nextLoading }: {
+function CrawlerDetail({ crawler, window, next, nextLoading, nextError }: {
   crawler: QueueCrawlerSummary
   window: number
   next: QueueNextItem[]
   nextLoading: boolean
+  nextError: string | null
 }) {
   const units = crawler.release_units + crawler.stock_units
   const releasePct = units > 0 ? (crawler.release_units / units) * 100 : 0
@@ -220,6 +227,8 @@ function CrawlerDetail({ crawler, window, next, nextLoading }: {
       <Panel title="Next up">
         {nextLoading ? (
           <div className="text-sm text-gray-600 italic">Loading…</div>
+        ) : nextError ? (
+          <div className="text-sm text-red-400">{nextError}</div>
         ) : next.length === 0 ? (
           <div className="text-sm text-gray-600 italic">Nothing claimable for this crawler.</div>
         ) : (
@@ -249,6 +258,7 @@ export default function QueueView() {
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [next, setNext] = useState<QueueNextItem[]>([])
   const [nextLoading, setNextLoading] = useState(false)
+  const [nextError, setNextError] = useState<string | null>(null)
   const timer = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const load = useCallback(async () => {
@@ -285,23 +295,26 @@ export default function QueueView() {
   }, [load])
 
   useEffect(() => {
-    if (selectedId === null) { setNext([]); return }
+    if (selectedId === null) { setNext([]); setNextError(null); return }
     let cancelled = false
     setNextLoading(true)
     getQueueNext(selectedId)
-      .then((items) => { if (!cancelled) setNext(items) })
-      .catch(() => { if (!cancelled) setNext([]) })
+      .then((items) => { if (!cancelled) { setNext(items); setNextError(null) } })
+      // Not folded into an empty list: in a diagnostic view "nothing claimable
+      // for this crawler" is a finding, and a failed request must never be
+      // mistaken for one.
+      .catch((e: any) => { if (!cancelled) { setNext([]); setNextError(e?.message || 'Could not load') } })
       .finally(() => { if (!cancelled) setNextLoading(false) })
     return () => { cancelled = true }
   }, [selectedId, summary?.generated_at])
 
   const visibleCrawlers = useMemo(() => {
     const all = summary?.crawlers ?? []
-    const filtered = selectedState === 'held'
-      ? all.filter((c) => c.held_units > 0)
-      : selectedState === 'claimable'
-        ? all.filter((c) => c.claimable_units > 0)
-        : all
+    // Every state the donut offers filters for real. Leaving one as a no-op
+    // that still reads aria-pressed presents a filter that isn't one.
+    const filtered = selectedState === null
+      ? all
+      : all.filter((c) => unitsInState(c, selectedState) > 0)
     return [...filtered].sort(
       (a, b) => (b.claimable_units + b.held_units) - (a.claimable_units + a.held_units),
     )
@@ -321,6 +334,14 @@ export default function QueueView() {
 
   return (
     <div className="h-full overflow-y-auto p-6 flex flex-col gap-6 text-left">
+      {/* A poll that fails after the first success would otherwise leave the
+          last good snapshot on screen looking live, which in an operational
+          view is worse than showing nothing. */}
+      {error && (
+        <div className="text-sm text-red-400 border border-red-900 rounded-lg px-4 py-2">
+          Showing a stale snapshot — the last refresh failed: {error}
+        </div>
+      )}
       <div className="flex flex-wrap gap-3">
         <StatTile
           label="Worker pool"
@@ -413,6 +434,7 @@ export default function QueueView() {
               window={summary.activity_window_seconds}
               next={next}
               nextLoading={nextLoading}
+              nextError={nextError}
             />
           </>
         ) : (

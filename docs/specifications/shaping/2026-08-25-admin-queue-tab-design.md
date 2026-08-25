@@ -113,13 +113,22 @@ medians). The tab therefore reports **oldest wait plus age buckets**, which
 shows a starving tail more directly than a median would anyway.
 
 `listings` gains `listings_crawler_last_checked_idx ON (crawler_id,
-last_checked)` so the per-crawler recency aggregate is an index scan rather
-than a sequential scan of every listing on every poll.
+last_checked)`, and the activity query is driven *from* `crawlers` rather than
+grouped over `listings`, so neither half visits rows outside the window. A bare
+`GROUP BY crawler_id` has no `WHERE` to restrict it — the all-time `MAX` forces
+every row of the table, or of the index, to be visited on each poll. Two
+correlated subqueries ride the index instead: the recent count as a range scan
+of just that slice, the recency as a single backward probe of one entry.
 
 ## API
 
 Both endpoints are `dependencies=[Depends(require_admin)]`, in a new
-`backend/routers/queue.py`. Both read global tables (`crawl_queue`, `crawlers`,
+`backend/routers/queue.py`. The summary runs under a single `REPEATABLE READ`
+transaction: it issues several queries while the worker pool is claiming and
+finishing rows throughout, and at `READ COMMITTED` each would see a different
+queue — a routine poll could count one row as claimable in the stat tiles and
+its units as in progress in the donut. Every statement is a read, so the
+stricter isolation has nothing to serialization-fail on. Both read global tables (`crawl_queue`, `crawlers`,
 `listings`, `catalog`, `stock_item_identities`), none of which carry a per-user
 owner column, so they use `db.get_app_pool()` — the same pool
 `_drain_one_batch` reads them through — not `user_scope`.
@@ -138,15 +147,15 @@ owner column, so they use `db.get_app_pool()` — the same pool
     "in_progress_rows": int,
     "stranded_rows": int,       // in_progress, claimed_at older than the threshold
     "unactionable_rows": int,   // pending, no eligible enabled crawler, plus dead stock rows
-    "release_rows": int, "stock_rows": int,
-    "rows_done_last_hour": int, // done rows whose claimed_at falls in the window
+    "claimable_release_rows": int, "claimable_stock_rows": int,
+    "rows_done_last_hour": int, // done rows whose completed_at falls in the window
     "eta_seconds": float|null,  // claimable_rows / drain rate; null when the rate is 0
     "claimable_units": int, "held_units": int, "in_progress_units": int
   },
   "crawlers": [{
     "crawler_id": int, "site_name": str, "requires_discogs_release": bool,
-    "claimable_units": int, "held_units": int,
-    "release_units": int, "stock_units": int,
+    "claimable_units": int, "held_units": int, "in_progress_units": int,
+    "release_units": int, "stock_units": int,   // whole pending backlog, held included
     "oldest_wait_seconds": float|null,
     "age_buckets": {"under_1h": int, "under_24h": int, "over_24h": int},
     "results_last_hour": int, "last_result_seconds_ago": float|null,
@@ -159,17 +168,30 @@ owner column, so they use `db.get_app_pool()` — the same pool
 outstanding work — an enabled crawler sitting at zero while the queue is deep
 is itself worth seeing, and an inner join would hide it.
 
-`rows_done_last_hour` is measured off `claimed_at` on `done` rows. That is
-sound because every revival path (`enqueue_crawl_queue`,
-`enqueue_crawl_queue_for_stock_item`) clears `claimed_at` when it flips a
-`done` row back to `pending`, so a `done` row's `claimed_at` is always the
-moment its most recent pass started.
+`rows_done_last_hour` is measured off a dedicated `crawl_queue.completed_at`,
+stamped by `mark_crawl_queue_done` and cleared by every revival path
+(`enqueue_crawl_queue`, `enqueue_crawl_queue_for_stock_item`,
+`backfill_crawl_queue_for_crawler`), so it is set only on a row that is
+currently `done`. `claimed_at` cannot stand in for it: a row fans out to one
+sequential search per eligible crawler, paced by `crawl_delay_seconds`, so a
+row claimed well outside the window routinely completes inside it. Counting
+claims would report a zero drain rate — and a null ETA everywhere — precisely
+while long-running rows were finishing.
+
+`release_units`, `stock_units`, `oldest_wait_seconds` and `age_buckets` cover a
+crawler's whole pending backlog, claimable and held alike; only
+`claimable_units`/`held_units`/`in_progress_units` split it by state. Excluding
+held work from composition would empty the detail panel for exactly the crawler
+an admin reached by asking what is held — a fully held crawler would report a
+real held backlog beside "0 release, 0 stock item" and no oldest wait. The ETA
+below does need the claimable stock figure specifically; that is tracked
+separately rather than by narrowing what `stock_units` means.
 
 Per-crawler `eta_seconds` divides a position estimate by the same drain rate.
 The estimate leans on the fixed claim order, in which every claimable release
-row sorts ahead of every claimable stock row: a crawler with no claimable stock
-units is positioned behind the release rows only, everything else behind the
-whole claimable queue. It is an estimate and is labelled as one; it ignores
+row sorts ahead of every claimable stock row: a crawler with no *claimable*
+stock units is positioned behind the release rows only, everything else behind
+the whole claimable queue. It is an estimate and is labelled as one; it ignores
 narrowing, which can only make a crawler's true position earlier.
 
 `results_last_hour` counts `listings` rows touched, not searches performed — a

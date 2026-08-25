@@ -23,6 +23,16 @@ NEXT_LIMIT_MAX = 100
 @router.get("/queue/summary", dependencies=[Depends(require_admin)])
 def queue_summary():
     with db.get_app_pool().connection() as conn:
+        # One snapshot for the whole report. db.queue_summary runs several
+        # queries -- totals, drain rate, fan-out, activity, in-progress -- and
+        # the worker pool is claiming and finishing rows the entire time. At
+        # READ COMMITTED each query would see a different queue, so a routine
+        # poll could count one row as claimable in the stat tiles and its units
+        # as in progress in the donut. REPEATABLE READ takes the snapshot once,
+        # at the first statement, and every later query in the transaction
+        # reads it. Safe to hold: every statement here is a read, so there is
+        # nothing for the stricter isolation to serialization-fail on.
+        conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
         summary = db.queue_summary(conn)
     summary["pool_running"] = crawl_manager.pool_running
     summary["generated_at"] = datetime.now(timezone.utc).isoformat()

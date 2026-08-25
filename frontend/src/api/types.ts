@@ -194,6 +194,9 @@ export interface QueueCrawlerSummary {
   requires_discogs_release: boolean
   claimable_units: number
   held_units: number
+  in_progress_units: number
+  // Composition and age cover the crawler's whole pending backlog, claimable
+  // and held alike; only claimable_units/held_units split it.
   release_units: number
   stock_units: number
   oldest_wait_seconds: number | null
