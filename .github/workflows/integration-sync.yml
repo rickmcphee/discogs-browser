@@ -58,6 +58,10 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  # Labels are issues-scoped, even on a PR. Without this the `dirty` path cannot
+  # attach CONFLICT_LABEL, and that label is the only thing stopping a later run
+  # re-arming auto-merge under someone's hand-written conflict resolution.
+  issues: write
 
 concurrency:
   group: integration-sync
@@ -124,8 +128,9 @@ jobs:
           # "Backend tests" and "Frontend tests" reporting, so auto-merge below
           # waits on someone clicking "Approve and run". Adding
           # INTEGRATION_PROMOTE_TOKEN (a fine-grained PAT or GitHub App token
-          # with Contents: read/write + Pull requests: read/write) removes the
-          # click for both workflows.
+          # with Contents: read/write, Pull requests: read/write and Issues:
+          # read/write -- the last for the conflict label) removes the click for
+          # both workflows.
           #
           # Parked, not absent -- worth stating plainly because the opposite is
           # a natural reading of GitHub's recursion guard, and a reviewer has
@@ -214,7 +219,13 @@ jobs:
           # hand over: it is equally what integration's own unpromoted bumps
           # look like. Merging in that case is not just wasted work, it is the
           # spurious conflict described above, so check before attempting it.
-          if [ -n "$marker" ] && git diff --quiet "$marker" origin/main; then
+          # Commit identity, not tree equality. The marker is allowed to lag a
+          # completed sync, so `integration` can already hold `main` changes the
+          # marker does not name -- and if `main` then reverts to the marker's
+          # tree, comparing trees reads as "main has not advanced" and skips.
+          # The revert never reaches `integration`, and the next promotion
+          # carries the reverted changes straight back into `main`.
+          if [ -n "$marker" ] && [ "$marker" = "$(git rev-parse origin/main)" ]; then
             echo "main has not advanced since it was last folded in; the remaining difference is integration's own."
             echo "pending=false" >> "$GITHUB_OUTPUT"
             exit 0
@@ -285,8 +296,13 @@ jobs:
                 gh label create "$CONFLICT_LABEL" --repo "$REPO" --color B60205 \
                   --description "Sync PR whose conflict needs resolving and merging by hand" \
                   --force >/dev/null 2>&1 || true
-                gh pr edit "$existing" --repo "$REPO" --add-label "$CONFLICT_LABEL" \
-                  || echo "::warning::could not label #$existing; a later run may re-arm auto-merge on it."
+                if ! gh pr edit "$existing" --repo "$REPO" --add-label "$CONFLICT_LABEL"; then
+                  # Say this loudly. Without the label the guard above is absent,
+                  # so the next run re-arms auto-merge and the resolution merges
+                  # itself -- the failure the label exists to prevent, arriving
+                  # quietly because labelling failed quietly.
+                  echo "::error::could not label #$existing with $CONFLICT_LABEL. A later run will re-arm auto-merge on it: keep auto-merge disabled by hand, or check the token has Issues: write."
+                fi
                 echo "pending=false" >> "$GITHUB_OUTPUT"
                 echo "::error::Sync PR #$existing conflicts with integration. Auto-merge has been disabled: resolve $SYNC_BRANCH by hand, push it, and merge it deliberately."
                 exit 1
@@ -316,7 +332,13 @@ jobs:
               --json autoMergeRequest --jq '.autoMergeRequest // empty')"
 
             if printf '%s\n' "$pr_labels" | grep -qx "$CONFLICT_LABEL"; then
+              # pending=false, for the same reason the `dirty` path reports it:
+              # auto-merge is off, so nothing is queued and `integration` is not
+              # about to move. Claiming otherwise suppresses `refresh` and keeps
+              # unrelated PRs behind until the human gets round to merging.
               echo "Sync PR #$existing is labelled $CONFLICT_LABEL; leaving auto-merge off for whoever resolves it."
+              echo "pending=false" >> "$GITHUB_OUTPUT"
+              exit 0
             elif [ -n "$pr_automerge" ]; then
               echo "Sync PR #$existing already has auto-merge armed."
             else

@@ -144,10 +144,15 @@ containment and record the marker — the only two points at which it advances.
 
 1. Resolve a marker (above).
 2. Trees identical? Record the marker; done.
-3. Has `main` advanced past the marker? If not, the remaining difference is
-   `integration`'s own unpromoted bumps and there is nothing to bring over.
-   Skip **without attempting the merge** — attempting it is what produces the
-   spurious conflict described above.
+3. Is `main` still *at* the marker? Compared by commit id, not tree. If it is,
+   the remaining difference is `integration`'s own unpromoted bumps and there is
+   nothing to bring over: skip **without attempting the merge**, since
+   attempting it is what produces the spurious conflict described above.
+   Tree equality is not sufficient — because the marker may lag, `integration`
+   can already hold `main` changes the marker does not name, and a `main` that
+   reverts to the marker's tree would read as "not advanced". The revert would
+   never reach `integration`, and the next promotion would carry the reverted
+   changes back into `main`.
 4. A sync PR already open? Resolve its own `mergeable_state`: `behind` gets
    `update-branch` before auto-merge is re-armed; `dirty` fails loudly and
    leaves auto-merge off. Do not rebuild its branch — it may carry a
@@ -221,6 +226,11 @@ is passed to `actions/checkout`, not only exported as `GH_TOKEN`: checkout
 persists whichever token it used as the git credential for every later push,
 and `GH_TOKEN` authenticates only the `gh` CLI.
 
+It needs Contents, Pull requests **and Issues** write. Issues because labels are
+issues-scoped even on a PR, and `sync-conflict-needs-hand-merge` is the only
+thing keeping auto-merge off a hand-resolved conflict. The workflow's own
+`permissions:` block grants the same three.
+
 Separately, and more weakly, the token removes a weekly "Approve and run" click:
 a PR opened with `GITHUB_TOKEN` has its `pull_request` checks parked in an
 approval-required state. Parked, not absent — on #182 the run was created three
@@ -242,6 +252,9 @@ prevent.
 | Unreachable recovery mechanism | Read the incorporated `main` SHA off the landed sync branch, but `delete_branch_on_merge` removes that branch on merge | Removed; the marker lags instead, and lagging is always valid |
 | **Pending bumps silently deleted** | `update-branch` on a behind sync PR makes the tip's `^2` an *integration* commit; recorded as the base, a bump `main` never had reads as "removed on main" and is dropped with no conflict | The on-`main` invariant, and later removing sync-branch recovery altogether so nothing reads `^2` |
 | Hand-resolved conflict auto-merged anyway | The `dirty` path disabled auto-merge, but the resolution made the PR `clean` and the next run re-armed it unconditionally | `sync-conflict-needs-hand-merge` label gates the re-arm |
+| That label never actually applied | Labels need `issues: write`, which the workflow did not grant; the failure was swallowed and the guard silently absent | `issues: write`, and the attach failure now reports as an error |
+| Guard failed open on an API error | Both reads sat inside `if` tests, where `set -e` cannot see a command fail, so an auth error read as "no label, not armed" | Hoisted into assignments |
+| A revert on `main` never reaching `integration` | "Has main advanced" compared trees, so a `main` reverting to the marker's tree read as no advance | Compare commit ids |
 | Sync PR open forever | `\|\| true` swallowed total auto-merge failure while `pending=true` suppressed `refresh` | Let it fail |
 | Unrelated PRs blocked by someone else's conflict | A conflicted sync PR reported a pending sync, suppressing `refresh`, though auto-merge was off and nothing was about to move | `pending=false` on that path |
 | Refresh silently doing nothing | `for n in $(gh pr list …)` is a word expansion, so `set -e` never saw the command fail | Assign first |
