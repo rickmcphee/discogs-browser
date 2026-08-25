@@ -146,14 +146,18 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
+          # Every branch ref, pruned, and no `|| true`. Fetching $SYNC_BRANCH
+          # by name needed one for the case where it does not exist -- which
+          # swallowed transport and auth failures too, and an empty $remote_tip
+          # from a failed fetch reads as "no branch to preserve", disarming the
+          # very guard it feeds. Fetching the whole namespace makes an absent
+          # branch simply an absent ref, so a genuine failure can stay fatal.
+          # --prune, so a branch deleted on merge does not leave a stale tip
+          # behind that the guard would refuse to push past forever.
+          #
           # No --tags: the marker and pending tags this used to maintain are
           # gone, and nothing here reads a tag any more.
-          git fetch --quiet origin main integration
-          # $SYNC_BRANCH may not exist; the force-push guard below needs its
-          # remote tip when it does, to tell a hand-resolved conflict from a
-          # branch this job generated.
-          git fetch --quiet origin \
-            "+refs/heads/$SYNC_BRANCH:refs/remotes/origin/$SYNC_BRANCH" 2>/dev/null || true
+          git fetch --quiet --prune origin "+refs/heads/*:refs/remotes/origin/*"
 
           arm_auto_merge() {  # $1 = PR number
             # --merge, with no squash fallback, and this is load-bearing rather
@@ -362,7 +366,15 @@ jobs:
 
           if ! git merge --no-edit origin/main; then
             git merge --abort || true
-            echo "::error::main and integration have both changed the same lines since they diverged. Resolve $SYNC_BRANCH by hand, push it, and open a PR into integration. Unlike the frozen-base era this is a real disagreement: git derives the base from actual ancestry now, so a conflict here means both sides genuinely touched the same lines."
+            # Do NOT tell anyone to push $SYNC_BRANCH and open its PR. This
+            # exit happens before any PR exists, so the `dirty` path that
+            # applies CONFLICT_LABEL never runs -- and a PR opened from this
+            # branch is indistinguishable from one this job opened. The next
+            # run adopts it, finds it clean and unlabelled, and arms
+            # auto-merge, merging a hand-written resolution unreviewed. A
+            # branch of their own is never adopted, and the force-push guard
+            # below covers them if they use this one anyway.
+            echo "::error::main and integration have both changed the same lines since they diverged. Resolve this by hand on a branch of your OWN -- not $SYNC_BRANCH, which this job rebuilds and would adopt as its own sync PR, arming auto-merge on your resolution. Branch from integration, merge main into it, resolve, and open a PR into integration, merging it deliberately with a merge commit. Unlike the frozen-base era this is a real disagreement: git derives the base from actual ancestry now, so a conflict here means both sides genuinely touched the same lines."
             exit 1
           fi
 
@@ -393,7 +405,14 @@ jobs:
             exit 1
           fi
 
-          if ! git push --force origin "$SYNC_BRANCH"; then
+          # --force-with-lease, not --force. The check above reads the tip as
+          # of the fetch, and a person can push between that fetch and this
+          # line -- exactly the window the instructions create. The lease makes
+          # git re-verify at push time and reject anything that moved since.
+          # An empty $remote_tip means "expect this ref not to exist", which is
+          # the correct lease for the branch-absent case.
+          if ! git push --force-with-lease="$SYNC_BRANCH:$remote_tip" \
+                 origin "$SYNC_BRANCH"; then
             if ! git diff --quiet origin/integration HEAD -- .github/workflows/; then
               echo "::error::pushing $SYNC_BRANCH failed, and this sync carries changes under .github/workflows/ ($(git diff --name-only origin/integration HEAD -- .github/workflows/ | tr '\n' ' ')). GITHUB_TOKEN cannot create or update workflow files: set INTEGRATION_PROMOTE_TOKEN to a token holding the workflow scope. The checkout step above passes it to git as well as gh, so it covers this once configured."
             else

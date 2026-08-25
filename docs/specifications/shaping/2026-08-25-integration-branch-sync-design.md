@@ -203,8 +203,7 @@ day `INTEGRATION_PROMOTE_TOKEN` is configured and the author changes.
 ## Conflict handling
 
 A conflict now means one thing: both sides genuinely changed the same lines
-since a base git derived from real ancestry. Resolve by hand, push, open a PR
-into `integration`.
+since a base git derived from real ancestry.
 
 This is a simplification worth noting rather than passing over. Under the
 recorded marker a conflict had *two* readings — a real disagreement, or a
@@ -213,12 +212,30 @@ to present both, because resolving a conflict that does not exist is its own
 way to lose work. With the base derived rather than recorded, the second
 reading is gone.
 
-The job fails with the branch named either way, and the next run leaves that
-branch alone rather than rebuilding it. A sync PR whose conflict needs hand
-resolution also has auto-merge disabled and is labelled
-`sync-conflict-needs-hand-merge`, which stops a later run re-arming auto-merge
-once the resolution makes it mergeable — the resolution is merged by whoever
-wrote it.
+There are two conflict paths, and they are not interchangeable.
+
+**A conflict on an open sync PR** (`mergeable_state=dirty`). Auto-merge is
+disabled and `sync-conflict-needs-hand-merge` applied, both attempted
+independently so a failure in one does not skip the other. The label is the
+durable half: it survives to the next run and is what stops a re-arm once the
+resolution makes the PR clean. If either fails, the job says which and tells
+the resolver **not** to proceed, rather than printing instructions that invite
+a push it cannot protect.
+
+**A conflict while building the branch**, before any PR exists. This exit
+cannot use the label at all — there is nothing to label — so the instruction
+deliberately sends the resolver to *their own branch*, not `$SYNC_BRANCH`. A
+PR opened from `$SYNC_BRANCH` is indistinguishable from one this job opened:
+the next run adopts it, finds it clean and unlabelled, and arms auto-merge,
+merging a hand-written resolution unreviewed. A branch of their own is never
+adopted.
+
+`$SYNC_BRANCH` is protected regardless of which instruction is followed. The
+job force-pushes it only when the remote tip is one it could have produced —
+contained in the merge just built, or identical in tree (its own earlier build,
+differing only by commit timestamp, left by a failed `gh pr create`) — and the
+push uses `--force-with-lease` against the tip it fetched, so anything pushed
+between that fetch and the push is rejected rather than overwritten.
 
 ## Tokens
 
