@@ -1,0 +1,243 @@
+# Admin Queue tab
+
+## Problem
+
+The crawl queue is the app's central piece of shared machinery and it is
+completely opaque. `GET /api/crawl/status` returns one number —
+`count_pending_crawl_queue_for_user`, scoped to the calling user's own
+`library_items` — and nothing else. Everything an operator would actually want
+to know about the queue is either unexposed or unrecorded:
+
+- How much work is outstanding, and how it splits between the two target kinds
+  (release rows and stock-item rows, which claim in that fixed priority order).
+- Which marketplace crawlers that work fans out to. A queue row names a
+  *target*, never a crawler, so this is not a column anyone can read — it is a
+  join against live `crawlers` state, resolved per row at dispatch.
+- How much of the queue is *held* behind `available_at` because a pass deferred
+  it into a circuit-breaker cooldown, versus genuinely claimable now.
+- Whether any row is stranded `in_progress`. `claim_crawl_queue_batch`'s own
+  comment documents that there is no reclaim or timeout path: a row left
+  `in_progress` by a crashed browser or a hung worker "stays unclaimable by
+  anyone else indefinitely", and `count_pending_crawl_queue_for_user` counts it
+  without being able to tell it from real work. Today nothing surfaces it.
+- Whether any pending row is unactionable — gate-failing stock rows that
+  `delete_dead_stock_crawl_queue_rows` will sweep, and rows whose narrowed
+  `pending_crawler_ids` are all disabled, which `_drain_one_batch` marks done
+  only when it happens to reach them.
+
+The operator-facing question this is all in service of is "why isn't the queue
+draining", and there is currently no way to answer it short of opening a psql
+session.
+
+## Goals
+
+- An admin-only **Queue** tab giving a live, read-only view of the shared crawl
+  queue: its overall shape, its per-crawler fan-out, and a drill-down for one
+  selected crawler.
+- Surface the two conditions nothing surfaces today — stranded `in_progress`
+  rows and unactionable pending rows — as first-class numbers.
+- Cost the view so it can be polled continuously without competing with the
+  worker pool for the database.
+
+## Non-goals
+
+- **Any write path.** The tab is strictly read-only. It does not reclaim
+  stranded rows, purge dead rows, clear a cooldown, or enable/disable a
+  crawler. Adding the reclaim path `claim_crawl_queue_batch` documents as
+  missing is a separate change with its own correctness argument to make;
+  observing the problem does not require fixing it, and shipping the observer
+  first means that change can be validated against real numbers.
+- Surfacing in-process circuit-breaker state (`_site_consecutive_failures`,
+  `_site_cooldown_until`). Those dicts live in one `CrawlManager` instance, so
+  on a two-Machine deployment an admin would see whichever Machine served the
+  request and have no way to know it. `available_at` is the same signal
+  recorded in the database, is globally true, and is what the tab reports
+  instead.
+- Queue history or trend lines. Nothing records queue depth over time, and
+  inventing a sampler is out of scope.
+- Changing how the queue is claimed, ordered, or drained.
+
+## The counting model
+
+A `crawl_queue` row names a target — `discogs_id` xor `item_key` — and no
+crawler. The `crawler_id` column was deliberately dropped (see the migration
+guarded on `information_schema` in `backend/db.py`); `_drain_one_batch` calls
+`db.get_eligible_crawlers` per claimed row against live `crawlers` state, so a
+row's crawler set is a runtime decision, not row data.
+
+Two units follow from that, and the tab must never conflate them:
+
+- A **row** is one target. This is what the queue's length actually is, what
+  drains, and what the ETA is denominated in.
+- A **work unit** is one (row, crawler) pair — one search a worker will
+  perform. This is the fan-out, and it is what a per-crawler number counts.
+
+Work units sum to far more than rows, because almost every enabled crawler is
+eligible for almost every row. That is also why the per-crawler breakdown is
+rendered as a sorted bar list rather than as ring segments: segmented by
+crawler, a ring comes out near-uniform, and the signal an admin wants — a
+crawler whose share is *short* — is the one thing a donut of near-equal arcs
+cannot show.
+
+Eligibility mirrors `get_eligible_crawlers` exactly: `enabled`,
+`crawler_type = 'release'`, `discogs_id IS NOT NULL OR NOT
+requires_discogs_release`, and `pending_crawler_ids IS NULL OR id = ANY(...)`.
+The claim-side gates from `claim_crawl_queue_batch` apply too: a stock row
+counts only while `_enabled_stock_source_exists` still holds for its
+`item_key`, and `available_at > CURRENT_TIMESTAMP` marks a row held rather than
+claimable. Any divergence between this resolution and dispatch's is a bug in
+this feature, not a difference of opinion.
+
+## Cost: why the fan-out is not a join
+
+The obvious query — pending rows joined to eligible crawlers — materializes a
+cross product. A stock sync can enqueue on the order of 20,000 rows, and with
+the bundled release crawlers between them that is on the order of a million
+rows to aggregate, on every poll, against the same database the worker pool is
+claiming from.
+
+It is not necessary. `pending_crawler_ids IS NULL` is the common case (the
+schema comment calls narrowed rows "a small minority"), and every NULL row
+resolves to the *same* crawler set for a given target kind. So the summary is
+computed as two aggregates and combined per crawler in Python:
+
+- **Broad**: rows with `pending_crawler_ids IS NULL`, grouped by target kind
+  and held-ness. A handful of output rows regardless of queue size.
+- **Narrowed**: rows with an array, `unnest`ed and grouped by crawler id as
+  well. Proportional to the narrowed minority, not to the whole queue.
+
+This constrains which per-crawler statistics are available: only those that
+compose across the two aggregates. `MIN(requested_at)` and bucketed age counts
+compose; a median does not (the median of a union is not derivable from two
+medians). The tab therefore reports **oldest wait plus age buckets**, which
+shows a starving tail more directly than a median would anyway.
+
+`listings` gains `listings_crawler_last_checked_idx ON (crawler_id,
+last_checked)` so the per-crawler recency aggregate is an index scan rather
+than a sequential scan of every listing on every poll.
+
+## API
+
+Both endpoints are `dependencies=[Depends(require_admin)]`, in a new
+`backend/routers/queue.py`. Both read global tables (`crawl_queue`, `crawlers`,
+`listings`, `catalog`, `stock_item_identities`), none of which carry a per-user
+owner column, so they use `db.get_app_pool()` — the same pool
+`_drain_one_batch` reads them through — not `user_scope`.
+
+### `GET /api/queue/summary`
+
+```
+{
+  "pool_running": bool,
+  "generated_at": iso8601,
+  "stranded_after_seconds": 1800,
+  "activity_window_seconds": 3600,
+  "totals": {
+    "claimable_rows": int,      // pending, available now, gate-passing, actionable
+    "held_rows": int,           // pending, available_at > now
+    "in_progress_rows": int,
+    "stranded_rows": int,       // in_progress, claimed_at older than the threshold
+    "unactionable_rows": int,   // pending, no eligible enabled crawler, plus dead stock rows
+    "release_rows": int, "stock_rows": int,
+    "rows_done_last_hour": int, // done rows whose claimed_at falls in the window
+    "eta_seconds": float|null,  // claimable_rows / drain rate; null when the rate is 0
+    "claimable_units": int, "held_units": int, "in_progress_units": int
+  },
+  "crawlers": [{
+    "crawler_id": int, "site_name": str, "requires_discogs_release": bool,
+    "claimable_units": int, "held_units": int,
+    "release_units": int, "stock_units": int,
+    "oldest_wait_seconds": float|null,
+    "age_buckets": {"under_1h": int, "under_24h": int, "over_24h": int},
+    "results_last_hour": int, "last_result_seconds_ago": float|null,
+    "eta_seconds": float|null
+  }]
+}
+```
+
+`crawlers` lists every enabled release crawler, including those with no
+outstanding work — an enabled crawler sitting at zero while the queue is deep
+is itself worth seeing, and an inner join would hide it.
+
+`rows_done_last_hour` is measured off `claimed_at` on `done` rows. That is
+sound because every revival path (`enqueue_crawl_queue`,
+`enqueue_crawl_queue_for_stock_item`) clears `claimed_at` when it flips a
+`done` row back to `pending`, so a `done` row's `claimed_at` is always the
+moment its most recent pass started.
+
+Per-crawler `eta_seconds` divides a position estimate by the same drain rate.
+The estimate leans on the fixed claim order, in which every claimable release
+row sorts ahead of every claimable stock row: a crawler with no claimable stock
+units is positioned behind the release rows only, everything else behind the
+whole claimable queue. It is an estimate and is labelled as one; it ignores
+narrowing, which can only make a crawler's true position earlier.
+
+`results_last_hour` counts `listings` rows touched, not searches performed — a
+crawler that runs and finds nothing writes no row (the "no listings
+pre-population" invariant). It is a floor on activity, and the UI says so
+rather than presenting it as a throughput rate.
+
+### `GET /api/queue/crawlers/{crawler_id}/next?limit=25`
+
+The next targets this crawler will actually be run against, in
+`claim_crawl_queue_batch`'s own sort order — `(item_key IS NOT NULL),
+requested_at, id` — filtered by the same eligibility and gate predicates.
+Returns `artist`, `title`, `kind` (`release`/`stock`), `waiting_seconds`, and
+`narrowed` (whether the row carries a `pending_crawler_ids` array). Split out
+from the summary because it needs `catalog`/`stock_item_identities` joins and
+is only wanted on click.
+
+## UI
+
+`frontend/src/views/QueueView.tsx`, reached from a **Queue** nav button gated
+on `showAdminNav` exactly as Logs and Settings are. Like `LogViewer`, the view
+is not mounted at all for a non-admin. It polls `/api/queue/summary` every 10
+seconds, only while the tab is the active view and the document is visible.
+
+**Top half.**
+
+- A KPI row of stat tiles: pool state, claimable rows, in progress, held,
+  stranded, unactionable, drain rate, queue ETA. Stranded and unactionable
+  carry status colors (`critical` `#d03b3b`, `warning` `#fab219`) with their
+  labels beside them, never colour alone; the rest wear text tokens.
+- One donut, showing the part-to-whole a ring is actually good at: total
+  outstanding **work units** split into In progress / Claimable / Held. Three
+  segments, coloured on a single-hue ordinal ramp — `#86b6ef`, `#3987e5`,
+  `#184f95`, light for work in flight through dark for work that is stuck —
+  validated as an ordinal ramp against the app's `#030712` surface. The centre
+  reads the row count, labelled as rows, so the two units cannot be confused.
+- A sorted horizontal bar list, one row per enabled release crawler: name, bar
+  sized by claimable units, the count, and a held badge when non-zero. This is
+  the clickable surface. Bars use emphasis — the selected crawler in the accent
+  hue, the rest recessive — rather than a per-crawler hue, which past a handful
+  of series would carry no information.
+- Clicking a ring segment filters the bar list to crawlers with units in that
+  state.
+
+**Bottom half.** The selected crawler's detail, in three panels:
+
+1. **Age & composition** — oldest wait, the age buckets, and a two-segment
+   stacked bar splitting release units from stock units.
+2. **Throughput & ETA** — results written in the window (with its floor caveat
+   stated inline), time since this crawler last wrote any result at all, and
+   the estimated drain time with the rate it was derived from.
+3. **Next up** — the `next` endpoint's table.
+
+With nothing selected the bottom half prompts for a selection rather than
+rendering an empty frame.
+
+## Testing
+
+Backend tests build queue state through the code under test —
+`enqueue_crawl_queue`, `enqueue_crawl_queue_for_stock_item`,
+`register_crawler`, `claim_crawl_queue_batch`, `defer_crawl_queue_row` — never
+by hand-writing `crawl_queue` rows, so the fixture cannot drift from what
+dispatch actually produces. Coverage: admin gating on both endpoints; fan-out
+arithmetic for broad and narrowed rows and for both target kinds; the
+`requires_discogs_release` exclusion; held rows counted as held and not
+claimable; the stock source gate; stranded and unactionable counts; and `next`
+returning claim order.
+
+Frontend tests cover the nav button's admin gating (alongside the existing Logs
+and Settings assertions), that the view is not mounted and does not poll for a
+non-admin, segment/bar selection driving the detail fetch, and the empty state.
