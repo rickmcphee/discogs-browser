@@ -35,11 +35,14 @@ on:
     # 05:00 UTC daily -- an hour ahead of Dependabot's Monday 06:00 UTC run
     # (.github/dependabot.yml), so Monday's PRs are cut from an `integration`
     # that already matches `main`. The daily cadence is the safety net for the
-    # push triggers above: a push made with GITHUB_TOKEN does not start another
-    # workflow run (GitHub's recursion guard), so `integration` moving under
-    # auto-merge -- the promotion PR, or the sync PR this workflow opens --
-    # raises no `push` event here. Both jobs no-op cheaply when there is
-    # nothing to do.
+    # push triggers above: a push made with GITHUB_TOKEN starts no further
+    # workflow run (GitHub's recursion guard), and both auto-merges in this
+    # setup are made that way. The promotion PR advances `main`, so no
+    # `push: main` event arrives to drive `sync`; the sync PR this workflow
+    # opens advances `integration`, so no `push: integration` event arrives to
+    # drive `refresh`. Each trigger is therefore blind to exactly the merge it
+    # most needs to see, and the cron covers both. Both jobs no-op cheaply when
+    # there is nothing to do.
     - cron: "0 5 * * *"
   workflow_dispatch:
 
@@ -151,9 +154,16 @@ jobs:
           # Leave an open sync PR alone. Its branch may carry a conflict
           # someone resolved by hand (see the error path below), and rebuilding
           # it from scratch here would throw that away.
+          #
+          # isCrossRepository, because --head matches on branch *name* alone.
+          # Anyone can fork this repo and open a PR from a branch called
+          # chore/integration-sync, and without this filter that PR would be
+          # taken for the workflow's own and handed auto-merge into a branch
+          # that requires no approving review.
           existing="$(gh pr list --repo "$REPO" --base integration \
-            --head "$SYNC_BRANCH" --state open --json number \
-            --jq '.[0].number // empty')"
+            --head "$SYNC_BRANCH" --state open \
+            --json number,isCrossRepository \
+            --jq 'map(select(.isCrossRepository == false)) | .[0].number // empty')"
           if [ -n "$existing" ]; then
             # An open sync PR goes "behind" if `integration` moves while its
             # checks run, and strict branch protection then refuses to merge it.
@@ -235,8 +245,9 @@ jobs:
             --label dependencies
 
           opened="$(gh pr list --repo "$REPO" --base integration \
-            --head "$SYNC_BRANCH" --state open --json number \
-            --jq '.[0].number // empty')"
+            --head "$SYNC_BRANCH" --state open \
+            --json number,isCrossRepository \
+            --jq 'map(select(.isCrossRepository == false)) | .[0].number // empty')"
 
           # Auto-merge is the right primitive here, and safe in a way it is not
           # on `main`: integration-branch-protection requires no approving
