@@ -2,7 +2,9 @@
 import asyncio
 import logging
 import os
+import threading
 import time
+import psycopg
 import pytest
 import respx
 import httpx
@@ -10,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import db
 import recommendations
 import token_encryption
-from crawl_manager import CrawlManager
+from crawl_manager import CrawlManager, STOCK_SYNC_LOCK_KEY, _shielded
 
 
 @pytest.fixture
@@ -353,7 +355,7 @@ async def test_sync_collection_mode_new_backfills_date_added_for_skipped_item(pg
     assert str(row["collection_date_added"]) == "2024-03-15 10:00:00"
 
 
-async def test_sync_collection_wishlist_captures_date_added_and_does_not_enqueue(pg_schema, monkeypatch):
+async def test_sync_collection_wishlist_captures_date_added_and_enqueues(pg_schema, monkeypatch):
     import config
     import crawl_manager as crawl_manager_module
     import discogs
@@ -406,8 +408,8 @@ async def test_sync_collection_wishlist_captures_date_added_and_does_not_enqueue
     assert str(row["wishlist_date_added"]) == "2024-05-01 00:00:00"
 
     with db.get_admin_pool().connection() as conn:
-        queued = conn.execute("SELECT discogs_id FROM crawl_queue").fetchall()
-    assert queued == []
+        queued = conn.execute("SELECT discogs_id, status FROM crawl_queue").fetchall()
+    assert [(q["discogs_id"], q["status"]) for q in queued] == [("r111", "pending")]
 
 
 async def test_sync_collection_wishlist_does_not_wipe_a_collection_discogs_price(pg_schema, monkeypatch):
@@ -663,6 +665,7 @@ async def test_sync_collection_broadcasts_page_fetched_before_that_pages_progres
     first_page_fetched = statuses.index("sync_page_fetched")
     first_progress = statuses.index("sync_progress")
     assert first_page_fetched < first_progress
+    assert all(e.get("user_id") == user["id"] for e in events)
 
 
 @respx.mock
@@ -994,6 +997,7 @@ async def test_run_plex_match_broadcasts_error_when_no_music_section_found(pg_sc
 
     statuses = [e["status"] for e in manager.recent_events()]
     assert statuses == ["plex_match_started", "plex_match_error"]
+    assert all(e.get("user_id") == user["id"] for e in manager.recent_events())
 
 
 @respx.mock
@@ -1143,6 +1147,25 @@ async def test_sync_collection_does_not_block_event_loop(pg_schema, monkeypatch)
 # write them.
 # ---------------------------------------------------------------------------
 
+def _stock_item_with_source(conn, item_key="key1", source_site_name="Source Store"):
+    """A stock item needs an enabled crawler stocking it, or the source gate in
+    claim_crawl_queue_batch treats it as dead and never claims its jobs."""
+    conn.execute(
+        "INSERT INTO stock_item_identities (item_key, artist, title) VALUES (%s, 'A', 'T') "
+        "ON CONFLICT (item_key) DO NOTHING",
+        [item_key],
+    )
+    db.register_crawler(conn, source_site_name, "/src.py", crawler_type="catalog")
+    source_id = conn.execute(
+        "SELECT id FROM crawlers WHERE site_name = %s", [source_site_name]
+    ).fetchone()["id"]
+    conn.execute(
+        "INSERT INTO stock_items (crawler_id, artist, title, url, item_key) "
+        "VALUES (%s, 'A', 'T', %s, %s)",
+        [source_id, f"https://src/{item_key}", item_key],
+    )
+
+
 async def test_worker_claims_and_completes_one_queue_row(pg_schema):
     with db.get_admin_pool().connection() as conn:
         db.register_crawler(conn, "Amazon", "/x.py")
@@ -1152,7 +1175,7 @@ async def test_worker_claims_and_completes_one_queue_row(pg_schema):
             "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
             "discogs_url": None,
         })
-        db.enqueue_crawl_queue(conn, "r1", crawler_id)
+        db.enqueue_crawl_queue(conn, "r1")
         conn.commit()
 
     manager = CrawlManager()
@@ -1178,10 +1201,8 @@ async def test_worker_claims_and_completes_one_stock_item_queue_row(pg_schema):
     with db.get_admin_pool().connection() as conn:
         db.register_crawler(conn, "Amazon", "/x.py")
         crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
-        conn.execute(
-            "INSERT INTO stock_item_identities (item_key, artist, title) VALUES ('key1', 'A', 'T')"
-        )
-        db.enqueue_crawl_queue_for_stock_item(conn, "key1", crawler_id)
+        _stock_item_with_source(conn, "key1")
+        db.enqueue_crawl_queue_for_stock_item(conn, "key1")
         conn.commit()
 
     manager = CrawlManager()
@@ -1204,6 +1225,178 @@ async def test_worker_claims_and_completes_one_stock_item_queue_row(pg_schema):
     assert queue_row["status"] == "done"
 
 
+async def test_worker_release_match_also_creates_a_stock_items_row(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": "LP", "discogs_price": None, "barcode": None,
+            "cover_image_url": "https://img/r1.jpg", "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1")
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(return_value=[{"url": "https://x", "price": 9.99, "shipping": None, "currency": "USD", "condition": None}])
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT artist, title, format, price, url, cover_image_url FROM stock_items WHERE crawler_id = %s AND release_id = 'r1'",
+            [crawler_id],
+        ).fetchone()
+    assert row["artist"] == "A"
+    assert row["title"] == "T"
+    assert row["format"] == "LP"
+    assert row["price"] == 9.99
+    assert row["url"] == "https://x"
+    assert row["cover_image_url"] == "https://img/r1.jpg"
+
+
+async def test_worker_release_not_found_deletes_an_existing_stock_items_row(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        catalog_release = conn.execute("SELECT * FROM catalog WHERE discogs_id = 'r1'").fetchone()
+        db.upsert_stock_item_from_release(
+            conn, "r1", crawler_id, catalog_release, {"url": "https://x", "price": 9.99, "currency": "USD"},
+        )
+        db.enqueue_crawl_queue(conn, "r1")
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(return_value=[])
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    with db.get_admin_pool().connection() as conn:
+        rows = conn.execute("SELECT * FROM stock_items WHERE release_id = 'r1'").fetchall()
+    assert rows == []
+
+
+async def test_worker_bot_detected_empty_retry_leaves_stock_items_row_untouched(pg_schema):
+    from crawler import BotDetectedError
+
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        catalog_release = conn.execute("SELECT * FROM catalog WHERE discogs_id = 'r1'").fetchone()
+        db.upsert_stock_item_from_release(
+            conn, "r1", crawler_id, catalog_release, {"url": "https://x", "price": 9.99, "currency": "USD"},
+        )
+        db.enqueue_crawl_queue(conn, "r1")
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(side_effect=[BotDetectedError(), []])
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("crawler._reset_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute("SELECT price FROM stock_items WHERE crawler_id = %s AND release_id = 'r1'", [crawler_id]).fetchone()
+    assert row is not None and row["price"] == 9.99
+
+
+async def test_worker_release_not_found_makes_release_missing_again(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        catalog_release = conn.execute("SELECT * FROM catalog WHERE discogs_id = 'r1'").fetchone()
+        db.upsert_stock_item_from_release(
+            conn, "r1", crawler_id, catalog_release, {"url": "https://x", "price": 9.99, "currency": "USD"},
+        )
+        db.upsert_listing(conn, "r1", crawler_id, "https://x", 9.99, None, "USD", None)
+        db.upsert_library_item(conn, alice["id"], "r1", in_collection=True)
+        db.enqueue_crawl_queue(conn, "r1")
+        conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.get_missing_releases(conn, alice["id"]) == []
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(return_value=[])
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.get_missing_releases(conn, alice["id"]) == ["r1"]
+
+
+async def test_worker_release_crawl_exception_leaves_an_existing_stock_items_row_untouched(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        catalog_release = conn.execute("SELECT * FROM catalog WHERE discogs_id = 'r1'").fetchone()
+        db.upsert_stock_item_from_release(
+            conn, "r1", crawler_id, catalog_release, {"url": "https://x", "price": 9.99, "currency": "USD"},
+        )
+        db.enqueue_crawl_queue(conn, "r1")
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(side_effect=RuntimeError("boom"))
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute("SELECT price FROM stock_items WHERE crawler_id = %s AND release_id = 'r1'", [crawler_id]).fetchone()
+    assert row["price"] == 9.99
+
+
 async def test_worker_dispatches_both_target_kinds_when_claimed_in_one_batch(pg_schema):
     with db.get_admin_pool().connection() as conn:
         db.register_crawler(conn, "Amazon", "/x.py")
@@ -1213,11 +1406,9 @@ async def test_worker_dispatches_both_target_kinds_when_claimed_in_one_batch(pg_
             "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
             "discogs_url": None,
         })
-        db.enqueue_crawl_queue(conn, "r1", crawler_id)
-        conn.execute(
-            "INSERT INTO stock_item_identities (item_key, artist, title) VALUES ('key1', 'A', 'T')"
-        )
-        db.enqueue_crawl_queue_for_stock_item(conn, "key1", crawler_id)
+        db.enqueue_crawl_queue(conn, "r1")
+        _stock_item_with_source(conn, "key1")
+        db.enqueue_crawl_queue_for_stock_item(conn, "key1")
         conn.commit()
 
     manager = CrawlManager()
@@ -1250,10 +1441,8 @@ async def test_worker_broadcasts_stock_listing_changed_with_no_discogs_id(pg_sch
     with db.get_admin_pool().connection() as conn:
         db.register_crawler(conn, "Amazon", "/x.py")
         crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
-        conn.execute(
-            "INSERT INTO stock_item_identities (item_key, artist, title) VALUES ('key1', 'A', 'T')"
-        )
-        db.enqueue_crawl_queue_for_stock_item(conn, "key1", crawler_id)
+        _stock_item_with_source(conn, "key1")
+        db.enqueue_crawl_queue_for_stock_item(conn, "key1")
         conn.commit()
 
     manager = CrawlManager()
@@ -1284,7 +1473,7 @@ async def test_worker_retries_once_on_bot_detection_then_succeeds(pg_schema):
             "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
             "discogs_url": None,
         })
-        db.enqueue_crawl_queue(conn, "r1", crawler_id)
+        db.enqueue_crawl_queue(conn, "r1")
         conn.commit()
 
     manager = CrawlManager()
@@ -1312,10 +1501,8 @@ async def test_drain_one_batch_excludes_empty_stock_item_result_from_circuit_bre
     with db.get_admin_pool().connection() as conn:
         db.register_crawler(conn, "Amazon", "/x.py")
         crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
-        conn.execute(
-            "INSERT INTO stock_item_identities (item_key, artist, title) VALUES ('key1', 'A', 'T')"
-        )
-        db.enqueue_crawl_queue_for_stock_item(conn, "key1", crawler_id)
+        _stock_item_with_source(conn, "key1")
+        db.enqueue_crawl_queue_for_stock_item(conn, "key1")
         conn.commit()
 
     manager = CrawlManager()
@@ -1344,10 +1531,8 @@ async def test_drain_one_batch_counts_bot_detected_stock_item_search_as_a_failur
     with db.get_admin_pool().connection() as conn:
         db.register_crawler(conn, "Amazon", "/x.py")
         crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
-        conn.execute(
-            "INSERT INTO stock_item_identities (item_key, artist, title) VALUES ('key1', 'A', 'T')"
-        )
-        db.enqueue_crawl_queue_for_stock_item(conn, "key1", crawler_id)
+        _stock_item_with_source(conn, "key1")
+        db.enqueue_crawl_queue_for_stock_item(conn, "key1")
         conn.commit()
 
     manager = CrawlManager()
@@ -1377,10 +1562,8 @@ async def test_drain_one_batch_resets_failure_count_on_a_found_stock_item_match(
     with db.get_admin_pool().connection() as conn:
         db.register_crawler(conn, "Amazon", "/x.py")
         crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
-        conn.execute(
-            "INSERT INTO stock_item_identities (item_key, artist, title) VALUES ('key1', 'A', 'T')"
-        )
-        db.enqueue_crawl_queue_for_stock_item(conn, "key1", crawler_id)
+        _stock_item_with_source(conn, "key1")
+        db.enqueue_crawl_queue_for_stock_item(conn, "key1")
         conn.commit()
 
     manager = CrawlManager()
@@ -1397,6 +1580,35 @@ async def test_drain_one_batch_resets_failure_count_on_a_found_stock_item_match(
         await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
 
     assert manager._site_consecutive_failures[crawler_id] == 0
+
+
+async def test_drain_one_batch_logs_readable_target_on_stock_item_crawl_failure(pg_schema, caplog):
+    """The stock-item exception branch logs `target["artist"]`/`target["title"]`
+    alongside the raw item_key -- an opaque sha256 hash on its own -- so a
+    crawl failure is legible in the logs without a DB lookup."""
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        _stock_item_with_source(conn, "key1")
+        db.enqueue_crawl_queue_for_stock_item(conn, "key1")
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(side_effect=RuntimeError("boom"))
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("config.load_config", return_value={"crawl_delay_seconds": 0}), \
+         caplog.at_level(logging.ERROR, logger="crawl_manager"):
+        await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    failure_logs = [r.getMessage() for r in caplog.records if "Crawl failed for" in r.getMessage()]
+    assert len(failure_logs) == 1
+    assert "A - T (key1)" in failure_logs[0]
 
 
 async def test_run_catalog_crawler_calls_zero_arg_crawl_catalog_for_plain_catalog_type(manager):
@@ -1431,6 +1643,76 @@ async def test_run_catalog_crawler_broadcasts_a_page_fetched_event_per_reported_
         ("The Sound Garden", 1, 250),
         ("The Sound Garden", 2, 17),
     ]
+
+
+async def test_run_catalog_crawler_logs_each_reported_page(manager, caplog):
+    """The SSE status bar only ever shows the latest event and is gone on
+    reload; the Log Viewer is where someone goes back to ask whether a long
+    crawl was moving, so page progress has to reach it too."""
+    from crawl_progress import report_page
+
+    fake_plugin = MagicMock()
+    fake_plugin.crawler_type = "catalog"
+    fake_plugin._db_site_name = "The Sound Garden"
+
+    async def fake_crawl_catalog():
+        await report_page(3, 42)
+        yield {"artist": "A", "title": "T", "url": "https://x"}
+    fake_plugin.crawl_catalog = fake_crawl_catalog
+
+    with caplog.at_level(logging.INFO, logger="crawl_manager"):
+        await manager._run_catalog_crawler(fake_plugin)
+
+    lines = [r.getMessage() for r in caplog.records if "Fetched catalog page" in r.getMessage()]
+    assert lines == ["[The Sound Garden] Fetched catalog page 3: 42 items"]
+
+
+async def test_run_catalog_crawler_broadcasts_and_logs_detail_progress(manager, caplog):
+    """A two-phase crawler's gap between two report_page() calls is a whole
+    listing page of paced detail fetches -- tens of minutes on
+    dischordrecords.py -- so it reports each detail fetch as well."""
+    from crawl_progress import report_detail
+
+    fake_plugin = MagicMock()
+    fake_plugin.crawler_type = "catalog"
+    fake_plugin._db_site_name = "Dischord Records"
+
+    async def fake_crawl_catalog():
+        await report_detail(0, 36, "listing page 1/8")
+        await report_detail(1, 36, "listing page 1/8")
+        yield {"artist": "A", "title": "T", "url": "https://x"}
+    fake_plugin.crawl_catalog = fake_crawl_catalog
+
+    with caplog.at_level(logging.INFO, logger="crawl_manager"):
+        await manager._run_catalog_crawler(fake_plugin)
+
+    events = [e for e in manager.recent_events() if e["status"] == "stock_sync_detail_progress"]
+    assert [(e["source"], e["done"], e["total"], e["label"]) for e in events] == [
+        ("Dischord Records", 0, 36, "listing page 1/8"),
+        ("Dischord Records", 1, 36, "listing page 1/8"),
+    ]
+    lines = [r.getMessage() for r in caplog.records if "detail pages on" in r.getMessage()]
+    assert lines == [
+        "[Dischord Records] Fetched 0/36 detail pages on listing page 1/8",
+        "[Dischord Records] Fetched 1/36 detail pages on listing page 1/8",
+    ]
+
+
+async def test_run_catalog_crawler_clears_the_detail_reporter_when_the_crawl_ends(manager):
+    from crawl_progress import report_detail
+
+    fake_plugin = MagicMock()
+    fake_plugin.crawler_type = "catalog"
+    fake_plugin._db_site_name = "Site"
+
+    async def fake_crawl_catalog():
+        yield {"artist": "A", "title": "T", "url": "https://x"}
+    fake_plugin.crawl_catalog = fake_crawl_catalog
+
+    await manager._run_catalog_crawler(fake_plugin)
+    await report_detail(1, 5, "listing page 1/1")
+
+    assert [e for e in manager.recent_events() if e["status"] == "stock_sync_detail_progress"] == []
 
 
 async def test_run_catalog_crawler_clears_the_page_reporter_when_the_crawl_ends(manager):
@@ -1578,12 +1860,18 @@ async def test_run_catalog_crawler_propagates_when_retry_also_fails(manager):
 
 
 async def test_worker_row_commit_is_isolated_from_a_later_rows_failure(pg_schema):
-    # Proves per-row connection/commit scoping: row 1 finishing successfully
-    # must not be rolled back by row 2 blowing up afterward. Before the fix,
+    # Proves per-unit connection/commit scoping: row 1's listing write must
+    # not be rolled back by row 2 blowing up afterward. Before the fix,
     # both rows shared one connection/transaction committed once at the very
     # end of the batch loop, so anything that escaped mid-batch (a crash, a
     # worker cancellation) would have taken row 1's already-finished work
     # down with it.
+    #
+    # Row 1's crawl_queue status IS asserted 'done' here: each row is now
+    # resolved as soon as its own last unit finishes, not in a single pass
+    # after the whole batch drains, so row 2's CancelledError -- raised only
+    # once row 1's status write has already committed -- can't strand row 1
+    # at 'in_progress'.
     #
     # asyncio.CancelledError specifically (not a plain Exception subclass,
     # e.g. RuntimeError) is what actually distinguishes old vs. new behavior
@@ -1607,8 +1895,8 @@ async def test_worker_row_commit_is_isolated_from_a_later_rows_failure(pg_schema
             "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
             "discogs_url": None,
         })
-        db.enqueue_crawl_queue(conn, "r1", crawler_id)
-        db.enqueue_crawl_queue(conn, "r2", crawler_id)
+        db.enqueue_crawl_queue(conn, "r1")
+        db.enqueue_crawl_queue(conn, "r2")
         conn.commit()
 
     manager = CrawlManager()
@@ -1645,9 +1933,151 @@ async def test_worker_row_commit_is_isolated_from_a_later_rows_failure(pg_schema
     succeeded_id = processed_ids[0]
     with db.get_admin_pool().connection() as conn:
         listing = conn.execute("SELECT price FROM listings WHERE release_id = %s", [succeeded_id]).fetchone()
-        queue_row1 = conn.execute("SELECT status FROM crawl_queue WHERE discogs_id = %s", [succeeded_id]).fetchone()
+        queue_row = conn.execute("SELECT status FROM crawl_queue WHERE discogs_id = %s", [succeeded_id]).fetchone()
     assert listing["price"] == 9.99
-    assert queue_row1["status"] == "done"
+    assert queue_row["status"] == "done"
+
+
+async def test_worker_completed_row_is_not_stranded_by_a_later_rows_cancellation(pg_schema):
+    # Direct regression test for the stranding bug this fix closes: before
+    # per-row resolution, _drain_one_batch resolved every claimed row's
+    # crawl_queue status in a single pass run only after the whole batch's
+    # units had all been attempted. An uncaught CancelledError from a later
+    # row's search (task.cancel() during worker-pool shutdown, per
+    # stop_worker_pool) skipped that pass entirely, leaving an already-fully-
+    # crawled, already-committed row stuck at 'in_progress' forever: neither
+    # claim_crawl_queue_batch (no reclaim/timeout path) nor
+    # enqueue_crawl_queue's revival (gated on status = 'done') ever picks it
+    # back up. With per-row resolution, the finished row's status commits
+    # before the later row's search even runs, so the CancelledError can no
+    # longer reach it.
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r2", "artist": "B", "title": "T2", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1")
+        db.enqueue_crawl_queue(conn, "r2")
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+
+    # Same call-order-not-identity tracking as
+    # test_worker_row_commit_is_isolated_from_a_later_rows_failure just above,
+    # since claim_crawl_queue_batch's claim order for two same-instant rows
+    # isn't guaranteed to track discogs_id: whichever row this crawler
+    # searches first succeeds, whichever it searches second raises.
+    processed_ids = []
+
+    async def _search(release, page):
+        processed_ids.append(release["discogs_id"])
+        if len(processed_ids) == 1:
+            return [{"url": "https://x/1", "price": 9.99, "shipping": None, "currency": "USD", "condition": None}]
+        raise asyncio.CancelledError()
+
+    fake_plugin.search = AsyncMock(side_effect=_search)
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("config.load_config", return_value={"crawl_delay_seconds": 0}):
+        with pytest.raises(asyncio.CancelledError):
+            await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    assert len(processed_ids) == 2
+    done_id, stranded_id = processed_ids[0], processed_ids[1]
+    with db.get_admin_pool().connection() as conn:
+        done_status = conn.execute(
+            "SELECT status FROM crawl_queue WHERE discogs_id = %s", [done_id]
+        ).fetchone()["status"]
+        stranded_status = conn.execute(
+            "SELECT status FROM crawl_queue WHERE discogs_id = %s", [stranded_id]
+        ).fetchone()["status"]
+    assert done_status == "done"
+    assert stranded_status != "done"
+
+
+async def test_worker_row_is_resolved_before_the_cancellable_broadcast(pg_schema):
+    # Ordering guard, not a live-bug regression test. The last unit's listing
+    # commits, then the row is resolved, then the SSE broadcast runs. Nothing
+    # awaitable may separate the first two: a finished row left at
+    # 'in_progress' is unreachable by both claim_crawl_queue_batch (no reclaim
+    # path) and enqueue_crawl_queue's revival (gated on status = 'done').
+    #
+    # In today's code neither ordering could actually strand a row -- the
+    # broadcasts use put_nowait, and even `await q.put()` on an unbounded queue
+    # does not suspend, so task.cancel() has no window to land in. This test
+    # pins the ordering anyway by making the broadcast itself raise, which is
+    # what a future await in that path would let a cancellation do.
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1")
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(return_value=[
+        {"url": "https://x", "price": 9.99, "shipping": None, "currency": "USD", "condition": None}
+    ])
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    # Cancellation delivered exactly at the broadcast await, which is where a
+    # shutdown lands once the unit's own write has already committed.
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("config.load_config", return_value={"crawl_delay_seconds": 0}), \
+         patch.object(manager, "_broadcast_listing_changed", new=AsyncMock(side_effect=asyncio.CancelledError())):
+        with pytest.raises(asyncio.CancelledError):
+            await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT status FROM crawl_queue WHERE discogs_id = 'r1'"
+        ).fetchone()
+        listing = conn.execute(
+            "SELECT price FROM listings WHERE release_id = 'r1'"
+        ).fetchone()
+    # Both the work and its status survive the cancellation.
+    assert listing["price"] == 9.99
+    assert row["status"] == "done"
+
+
+async def test_listing_broadcasts_reach_subscribers_without_awaiting_a_put(pg_schema):
+    # listing_changed is never buffered in _recent and _events_to_replay's gate
+    # closes once the row is 'done', so a dropped event is gone for good: the
+    # frontend drives its refetch off this event, and its SSE error path only
+    # reopens the stream. Hence put_nowait -- which also keeps a slow consumer
+    # from stalling a crawl worker. Delivery is what must not regress.
+    manager = CrawlManager()
+    q = manager.subscribe()
+
+    await manager._broadcast_listing_changed("r1", 7, "found")
+    await manager._broadcast_stock_listing_changed("key1", 8, "not_found")
+
+    # Both already queued, with no scheduler pass in between.
+    assert q.qsize() == 2
+    first, second = q.get_nowait(), q.get_nowait()
+    assert first == {"id": 1, "type": "listing_changed", "discogs_id": "r1", "crawler_id": 7, "status": "found"}
+    assert second == {"id": 2, "type": "listing_changed", "item_key": "key1", "crawler_id": 8, "status": "not_found"}
 
 
 async def test_drain_one_batch_records_failure_and_cools_down_after_limit(pg_schema):
@@ -1659,7 +2089,7 @@ async def test_drain_one_batch_records_failure_and_cools_down_after_limit(pg_sch
             "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
             "discogs_url": None,
         })
-        db.enqueue_crawl_queue(conn, "r1", crawler_id)
+        db.enqueue_crawl_queue(conn, "r1")
         conn.commit()
 
     manager = CrawlManager()
@@ -1691,11 +2121,8 @@ async def test_successive_ebay_api_errors_cool_down_the_site(pg_schema):
         db.register_crawler(conn, "eBay/CCmusic", "/ebay.py")
         crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'eBay/CCmusic'").fetchone()["id"]
         for i in range(3):
-            conn.execute(
-                "INSERT INTO stock_item_identities (item_key, artist, title) VALUES (%s, 'A', 'T')",
-                [f"key{i}"],
-            )
-            db.enqueue_crawl_queue_for_stock_item(conn, f"key{i}", crawler_id)
+            _stock_item_with_source(conn, f"key{i}")
+            db.enqueue_crawl_queue_for_stock_item(conn, f"key{i}")
         conn.commit()
 
     manager = CrawlManager()
@@ -1718,7 +2145,10 @@ async def test_successive_ebay_api_errors_cool_down_the_site(pg_schema):
             with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
                  patch("crawlers.ebay.load_config", return_value={"ebay_app_id": "a", "ebay_cert_id": "c"}), \
                  patch("config.load_config", return_value={"crawl_delay_seconds": 0, "consecutive_failure_limit": 3}):
-                await manager._drain_one_batch("worker-test", {crawler_id: plugin}, pages={})
+                # batch_size=3: all 3 stock-item rows must claim in this one
+                # call so the 409 storm across all of them reaches the
+                # consecutive_failure_limit of 3 within a single batch.
+                await manager._drain_one_batch("worker-test", {crawler_id: plugin}, pages={}, batch_size=3)
     finally:
         ebay_api._token = None
         ebay_api._token_expires_at = 0.0
@@ -1727,7 +2157,7 @@ async def test_successive_ebay_api_errors_cool_down_the_site(pg_schema):
 
 
 async def test_failures_pool_across_crawlers_sharing_a_failure_domain(pg_schema):
-    """The two eBay plugins are separate crawler rows but one eBay app, one
+    """The eBay plugins are separate crawler rows but one eBay app, one
     token, and one API. Counting their failures separately meant a 409 storm
     had to hit consecutive_failure_limit twice over -- once per crawler --
     before both stopped calling the API."""
@@ -1740,9 +2170,11 @@ async def test_failures_pool_across_crawlers_sharing_a_failure_domain(pg_schema)
         db.register_crawler(conn, "eBay", "/ebay_general.py")
         ccmusic_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'eBay/CCmusic'").fetchone()["id"]
         general_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'eBay'").fetchone()["id"]
-        conn.execute("INSERT INTO stock_item_identities (item_key, artist, title) VALUES ('key1', 'A', 'T')")
-        db.enqueue_crawl_queue_for_stock_item(conn, "key1", ccmusic_id)
-        db.enqueue_crawl_queue_for_stock_item(conn, "key1", general_id)
+        _stock_item_with_source(conn, "key1")
+        # One row for the target -- the eBay crawlers are resolved as
+        # eligible for it at dispatch time, so a single enqueue is enough to
+        # fan out to both.
+        db.enqueue_crawl_queue_for_stock_item(conn, "key1")
         conn.commit()
 
     manager = CrawlManager()
@@ -1783,7 +2215,9 @@ async def test_failures_pool_across_crawlers_sharing_a_failure_domain(pg_schema)
 
 async def test_a_crawler_with_no_failure_domain_keeps_its_own_counter(pg_schema):
     """The pooling must not leak across unrelated sites: Amazon failing has
-    no bearing on eBay's counter."""
+    no bearing on eBay's counter, even though both are now dispatched from the
+    same claimed row -- a release row's eligible set is every enabled release
+    crawler, not just whichever crawler happened to enqueue it."""
     with db.get_admin_pool().connection() as conn:
         db.register_crawler(conn, "Amazon", "/x.py")
         db.register_crawler(conn, "eBay", "/ebay_general.py")
@@ -1794,43 +2228,389 @@ async def test_a_crawler_with_no_failure_domain_keeps_its_own_counter(pg_schema)
             "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
             "discogs_url": None,
         })
-        db.enqueue_crawl_queue(conn, "r1", amazon_id)
+        db.enqueue_crawl_queue(conn, "r1")
         conn.commit()
-
-    from crawlers.ebay_general import Crawler as EbayGeneral
-    ebay_plugin = EbayGeneral()
-    ebay_plugin._db_id = ebay_id
-    ebay_plugin._db_site_name = "eBay"
 
     manager = CrawlManager()
     manager._browser = MagicMock()
     manager._stealth = MagicMock()
     fake_amazon = AsyncMock()
-    fake_amazon.search = AsyncMock(return_value=[])
+    fake_amazon.search = AsyncMock(return_value=[])  # not_found -- counts as a failure
     fake_amazon._db_id = amazon_id
     fake_amazon._db_site_name = "Amazon"
-    manager._set_failure_domains({amazon_id: fake_amazon, ebay_id: ebay_plugin})
+    fake_ebay = AsyncMock()
+    fake_ebay.search = AsyncMock(return_value=[{"url": "https://x", "price": 5.0, "shipping": None, "currency": "USD", "condition": None}])
+    fake_ebay._db_id = ebay_id
+    fake_ebay._db_site_name = "eBay"
+    manager._set_failure_domains({amazon_id: fake_amazon, ebay_id: fake_ebay})
 
     with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
          patch("config.load_config", return_value={"crawl_delay_seconds": 0, "consecutive_failure_limit": 10}):
-        await manager._drain_one_batch("worker-test", {amazon_id: fake_amazon}, pages={})
+        await manager._drain_one_batch("worker-test", {amazon_id: fake_amazon, ebay_id: fake_ebay}, pages={})
 
     assert manager._site_consecutive_failures[amazon_id] == 1
     assert manager._site_consecutive_failures.get(ebay_id, 0) == 0
 
 
-def test_tripping_the_cooldown_is_logged_at_info(caplog):
-    """The log viewer filters by exact level membership, not level-and-above
-    (`routers/logs.py:_line_visible`), so a WARNING-only cooloff notice is
-    invisible to anyone watching INFO -- which is where the rest of the crawl
-    narrative is."""
+async def test_tripping_the_cooldown_is_logged_at_warning(caplog):
     manager = CrawlManager()
     with patch("config.load_config", return_value={"consecutive_failure_limit": 1}), \
          caplog.at_level(logging.INFO, logger="crawl_manager"):
-        manager._record_site_result(7, succeeded=False)
+        await manager._record_site_result(7, succeeded=False)
 
     cooldown_records = [r for r in caplog.records if "cooling down" in r.getMessage()]
-    assert [r.levelname for r in cooldown_records] == ["INFO"]
+    assert [r.levelname for r in cooldown_records] == ["WARNING"]
+
+
+async def test_record_site_result_serializes_concurrent_calls_for_the_same_domain():
+    """load_config() being offloaded (asyncio.to_thread) makes it a real
+    yield point, unlike before it was async -- so two concurrent
+    _record_site_result calls for the same failure domain (e.g. both eBay
+    crawler_ids) must not interleave their read-modify-write of
+    _site_consecutive_failures/_site_cooldown_until. A failure's write
+    landing after a later success's reset would resurrect a stale count
+    (flagged in PR #146 review)."""
+    class DomainPlugin:
+        failure_domain = "shared-domain"
+
+    manager = CrawlManager()
+    manager._set_failure_domains({1: DomainPlugin(), 2: DomainPlugin()})
+
+    entries = []
+
+    def slow_load_config():
+        entries.append("enter")
+        time.sleep(0.05)
+        entries.append("exit")
+        return {"consecutive_failure_limit": 10}
+
+    with patch("config.load_config", side_effect=slow_load_config):
+        await asyncio.gather(
+            manager._record_site_result(1, succeeded=False),
+            manager._record_site_result(2, succeeded=True),
+        )
+
+    # If the two calls' critical sections overlapped, thread-scheduling would
+    # let a second "enter" land before the first "exit".
+    assert entries == ["enter", "exit", "enter", "exit"]
+
+
+# Three separate load_config() calls sit on one claimed row's happy path,
+# in this order: the eBay plugin's own (inside its search()), _paced_search's
+# pacing read (its finally block, right after search() returns), and
+# _record_site_result's failure-limit read (right after _paced_search
+# returns). Slowing exactly one call by its 1-based position in that
+# sequence -- rather than every load_config() call -- isolates which of the
+# three offloads is actually under test: with the other two still fast, a
+# heartbeat ticking throughout proves nothing (there'd be plenty of ticks
+# regardless), but a heartbeat that stops precisely when the picked one goes
+# synchronous does not.
+async def _run_worker_crawl_with_slow_load_config_call(slow_call_number: int) -> int:
+    import config as config_module
+    from crawlers.ebay_general import Crawler as EbayCrawler
+
+    real_load_config = config_module.load_config
+    cfg = real_load_config()
+    cfg["ebay_app_id"] = "app-id"
+    cfg["ebay_cert_id"] = "cert-id"
+    cfg["crawl_delay_seconds"] = 0
+    config_module.save_config(cfg)
+
+    call_count = 0
+
+    def load_config_at_position():
+        nonlocal call_count
+        call_count += 1
+        if call_count == slow_call_number:
+            time.sleep(0.3)
+        return real_load_config()
+
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "eBay", "/ebay_general.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'eBay'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "Miles Davis", "title": "Kind of Blue", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1")
+        conn.commit()
+
+    respx.post("https://api.ebay.com/identity/v1/oauth2/token").mock(
+        return_value=httpx.Response(200, json={"access_token": "test-token", "expires_in": 7200})
+    )
+    respx.get("https://api.ebay.com/buy/browse/v1/item_summary/search").mock(
+        return_value=httpx.Response(200, json={"itemSummaries": []})
+    )
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    plugin = EbayCrawler()
+    plugin._db_id = crawler_id
+    plugin._db_site_name = "eBay"
+
+    heartbeat_count = 0
+
+    async def heartbeat():
+        nonlocal heartbeat_count
+        while True:
+            heartbeat_count += 1
+            await asyncio.sleep(0.02)
+
+    hb_task = asyncio.create_task(heartbeat())
+    try:
+        with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+             patch("config.load_config", side_effect=load_config_at_position), \
+             patch("crawlers.ebay_general.load_config", side_effect=load_config_at_position):
+            # crawlers/ebay_general.py does `from config import load_config` at
+            # module level, a one-time binding -- patching config.load_config
+            # alone (as everywhere else in this file) doesn't touch it, since
+            # crawl_manager.py's own two call sites instead re-resolve
+            # `from config import load_config` fresh on every call (a
+            # function-local import), which does pick up that patch. Both
+            # patches share load_config_at_position, so its call_count
+            # counts every load_config() call across both regardless of
+            # which name resolved it.
+            await manager._drain_one_batch("worker-test", {crawler_id: plugin}, pages={})
+    finally:
+        hb_task.cancel()
+
+    return heartbeat_count
+
+
+@respx.mock
+async def test_ebay_plugins_own_load_config_call_does_not_block_event_loop(pg_schema):
+    """The regression this whole PR targets: a synchronous load_config()
+    call anywhere in the worker path stalls the process's single event
+    loop for the length of that Postgres round trip, including
+    /api/health. test_record_site_result_serializes_concurrent_calls_...
+    above proves the per-domain lock is correct, but would still pass even
+    if load_config() were called synchronously -- a blocking call can't be
+    interleaved by another coroutine either, so serialization alone isn't
+    a regression guard for the offloading itself. This test (and the two
+    below it) isolate one specific load_config() call each so that
+    reverting any single one back to a bare call makes exactly that test
+    fail, not just an ambiguous shared threshold (caught in PR #146
+    review, including on an earlier attempt at this same test)."""
+    # Call #1 in the sequence: the eBay plugin's own, inside search().
+    heartbeat_count = await _run_worker_crawl_with_slow_load_config_call(slow_call_number=1)
+    assert heartbeat_count >= 10
+
+
+@respx.mock
+async def test_paced_search_load_config_call_does_not_block_event_loop(pg_schema):
+    """See test_ebay_plugins_own_load_config_call_does_not_block_event_loop
+    for the shared setup and why isolating one call at a time matters."""
+    # Call #2: _paced_search's pacing read, in its finally block right
+    # after plugin.search() returns.
+    heartbeat_count = await _run_worker_crawl_with_slow_load_config_call(slow_call_number=2)
+    assert heartbeat_count >= 10
+
+
+@respx.mock
+async def test_record_site_result_load_config_call_does_not_block_event_loop(pg_schema):
+    """See test_ebay_plugins_own_load_config_call_does_not_block_event_loop
+    for the shared setup and why isolating one call at a time matters."""
+    # Call #3: _record_site_result's failure-limit read, right after
+    # _paced_search returns.
+    heartbeat_count = await _run_worker_crawl_with_slow_load_config_call(slow_call_number=3)
+    assert heartbeat_count >= 10
+
+
+async def test_shielded_runs_the_coroutine_to_completion_despite_cancellation():
+    """Plain asyncio.shield() only protects the shielded coroutine itself --
+    the awaiting coroutine still gets CancelledError immediately. _shielded
+    additionally waits for the shielded coroutine before re-raising, so a
+    sequence of awaits inside it (not just a single blocking call) always
+    finishes before cancellation propagates. Used to protect
+    _process_claimed_rows in full, since a claimed crawl_queue row has no
+    reclaim path if cancellation interrupts it before its terminal write
+    (flagged across four rounds of PR #146 review)."""
+    finished = threading.Event()
+
+    def slow_write():
+        time.sleep(0.05)
+        finished.set()
+
+    async def slow_sequence():
+        await asyncio.sleep(0)  # a first await, distinct from the to_thread below
+        await asyncio.to_thread(slow_write)
+
+    async def runner():
+        await _shielded(slow_sequence())
+
+    task = asyncio.ensure_future(runner())
+    await asyncio.sleep(0.01)  # let the thread pool actually start slow_write
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert finished.is_set()
+
+
+async def test_shielded_reraises_cancellation_even_if_the_coroutine_then_fails():
+    """`await task` inside _shielded's except block can itself raise -- if
+    the shielded coroutine fails with a real exception while a
+    cancellation is already pending, that exception must not replace the
+    CancelledError. _worker_loop checks `except asyncio.CancelledError`
+    before `except Exception` specifically so a cancelled worker actually
+    stops instead of being treated as a routine error and retried after a
+    5s sleep (caught in PR #146 review)."""
+    async def failing_sequence():
+        await asyncio.sleep(0.02)
+        raise ValueError("boom")
+
+    async def runner():
+        await _shielded(failing_sequence())
+
+    task = asyncio.ensure_future(runner())
+    await asyncio.sleep(0.005)  # cancel while failing_sequence is still asleep, before it raises
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_drain_one_batch_reverts_a_cancelled_claim_instead_of_orphaning_it(pg_schema):
+    """stop_worker_pool()'s task.cancel() landing while _claim_batch's
+    thread is still committing must not leave the claimed row stuck
+    'in_progress' forever -- db.py's claim_crawl_queue_batch docstring is
+    explicit there's no reclaim path for that (caught in PR #146 review):
+    the claim's own commit finishing doesn't help if the claimed rows are
+    discarded on cancellation, so _drain_one_batch must revert the claim
+    instead."""
+    with db.get_admin_pool().connection() as conn:
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1")
+        conn.commit()
+
+    manager = CrawlManager()
+    real_claim = db.claim_crawl_queue_batch
+    started = threading.Event()
+
+    def slow_claim(conn, worker_id, limit):
+        started.set()
+        time.sleep(0.05)
+        return real_claim(conn, worker_id, limit)
+
+    with patch("db.claim_crawl_queue_batch", side_effect=slow_claim):
+        task = asyncio.ensure_future(manager._drain_one_batch("worker-test", {}, pages={}))
+        while not started.is_set():  # deterministic: wait for the claim to actually start
+            await asyncio.sleep(0.005)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT status, claimed_by FROM crawl_queue WHERE discogs_id = 'r1'"
+        ).fetchone()
+    assert row["status"] == "pending"
+    assert row["claimed_by"] is None
+
+
+async def test_drain_one_batch_resolves_the_row_even_if_cancelled_during_the_result_write(pg_schema):
+    """A cancellation landing between _write_result's commit and the
+    resolve_row call that must follow it must not let the listing write
+    commit while the row's terminal crawl_queue status never gets written
+    -- that stranded the row 'in_progress' forever even though its data was
+    already correct (caught in PR #146 review)."""
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1")
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(return_value=[
+        {"url": "https://x", "price": 5.0, "shipping": None, "currency": "USD", "condition": None}
+    ])
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    real_upsert_listing = db.upsert_listing
+    started = threading.Event()
+
+    def slow_upsert_listing(*args, **kwargs):
+        started.set()
+        time.sleep(0.05)
+        return real_upsert_listing(*args, **kwargs)
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("config.load_config", return_value={"crawl_delay_seconds": 0, "consecutive_failure_limit": 10}), \
+         patch("db.upsert_listing", side_effect=slow_upsert_listing):
+        task = asyncio.ensure_future(manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={}))
+        while not started.is_set():  # deterministic: wait for the write to actually start
+            await asyncio.sleep(0.005)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute("SELECT status FROM crawl_queue WHERE discogs_id = 'r1'").fetchone()
+        listing = conn.execute(
+            "SELECT price FROM listings WHERE release_id = 'r1' AND crawler_id = %s", [crawler_id]
+        ).fetchone()
+    assert row["status"] == "done"
+    assert listing is not None and listing["price"] == 5.0
+
+
+async def test_drain_one_batch_resolves_the_row_even_if_cancelled_right_after_the_claim(pg_schema):
+    """Earlier fixes each protected one specific write _drain_one_batch
+    makes (the claim, then the result write) after review kept finding the
+    next unprotected await in between. This proves the general fix instead
+    of one more instance of it: a cancellation landing at the *earliest*
+    point after a row is claimed -- during _resolve_target, before
+    anything else has run -- must still leave the row resolved, not
+    orphaned 'in_progress', because _process_claimed_rows now runs to
+    completion as one shielded unit regardless of where cancellation
+    lands."""
+    with db.get_admin_pool().connection() as conn:
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1")
+        conn.commit()
+
+    manager = CrawlManager()
+    real_get_catalog_release = db.get_catalog_release
+    started = threading.Event()
+
+    def slow_get_catalog_release(*args, **kwargs):
+        started.set()
+        time.sleep(0.05)
+        return real_get_catalog_release(*args, **kwargs)
+
+    with patch("db.get_catalog_release", side_effect=slow_get_catalog_release):
+        task = asyncio.ensure_future(manager._drain_one_batch("worker-test", {}, pages={}))
+        while not started.is_set():  # deterministic: wait for the read to actually start
+            await asyncio.sleep(0.005)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute("SELECT status FROM crawl_queue WHERE discogs_id = 'r1'").fetchone()
+    # No eligible crawlers were registered, so a resolved row lands 'done'
+    # (mark_crawl_queue_done via the zero-eligible-crawlers path), not
+    # 'in_progress'.
+    assert row["status"] == "done"
 
 
 def test_empty_failure_domain_does_not_pool_crawlers():
@@ -1847,7 +2627,12 @@ def test_empty_failure_domain_does_not_pool_crawlers():
     assert manager._domain_peers(2) == [2]
 
 
-async def test_drain_one_batch_excludes_cooling_down_crawler_from_claim(pg_schema):
+async def test_drain_one_batch_defers_a_row_whose_only_crawler_is_cooling_down(pg_schema):
+    """Cooldown exclusion happens inside the dispatch loop now, not at claim
+    time: a queue row names no crawler for claim_crawl_queue_batch to filter
+    on, so the row is still claimed. Its one eligible crawler is skipped
+    without being searched, and the row goes back to pending narrowed to that
+    crawler instead."""
     with db.get_admin_pool().connection() as conn:
         db.register_crawler(conn, "Amazon", "/x.py")
         crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
@@ -1856,7 +2641,7 @@ async def test_drain_one_batch_excludes_cooling_down_crawler_from_claim(pg_schem
             "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
             "discogs_url": None,
         })
-        db.enqueue_crawl_queue(conn, "r1", crawler_id)
+        db.enqueue_crawl_queue(conn, "r1")
         conn.commit()
 
     manager = CrawlManager()
@@ -1865,8 +2650,14 @@ async def test_drain_one_batch_excludes_cooling_down_crawler_from_claim(pg_schem
     fake_plugin = AsyncMock()
     claimed = await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
 
-    assert claimed == 0  # nothing claimed -- the only pending row belongs to the cooling-down site
+    assert claimed == 1  # the row was claimed; its only crawler was deferred, not searched
     fake_plugin.search.assert_not_called()
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT status, pending_crawler_ids FROM crawl_queue WHERE discogs_id = 'r1'"
+        ).fetchone()
+    assert row["status"] == "pending"
+    assert row["pending_crawler_ids"] == [crawler_id]
 
 
 async def test_drain_one_batch_resets_failure_count_on_success(pg_schema):
@@ -1878,7 +2669,7 @@ async def test_drain_one_batch_resets_failure_count_on_success(pg_schema):
             "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
             "discogs_url": None,
         })
-        db.enqueue_crawl_queue(conn, "r1", crawler_id)
+        db.enqueue_crawl_queue(conn, "r1")
         conn.commit()
 
     manager = CrawlManager()
@@ -1913,7 +2704,7 @@ async def test_drain_one_batch_counts_recovered_bot_detection_as_a_failure(pg_sc
             "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
             "discogs_url": None,
         })
-        db.enqueue_crawl_queue(conn, "r1", crawler_id)
+        db.enqueue_crawl_queue(conn, "r1")
         conn.commit()
 
     manager = CrawlManager()
@@ -1943,6 +2734,311 @@ async def test_drain_one_batch_counts_recovered_bot_detection_as_a_failure(pg_sc
     assert listing is not None and float(listing["price"]) == 9.99
 
 
+async def test_worker_fans_one_target_out_to_every_enabled_crawler(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/a.py")
+        db.register_crawler(conn, "eBay", "/b.py")
+        amazon_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        ebay_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'eBay'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1")
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    plugins = {}
+    for crawler_id, name, price in ((amazon_id, "Amazon", 9.99), (ebay_id, "eBay", 12.50)):
+        plugin = AsyncMock()
+        plugin.search = AsyncMock(return_value=[{"url": f"https://{name}", "price": price, "shipping": None, "currency": "USD", "condition": None}])
+        plugin._db_id = crawler_id
+        plugin._db_site_name = name
+        plugins[crawler_id] = plugin
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        claimed = await manager._drain_one_batch("worker-test", plugins, pages={})
+
+    # One claimed row, two crawls, two listings.
+    assert claimed == 1
+    with db.get_admin_pool().connection() as conn:
+        prices = conn.execute(
+            "SELECT crawler_id, price FROM listings WHERE release_id = 'r1' ORDER BY crawler_id"
+        ).fetchall()
+        queue_row = conn.execute("SELECT status FROM crawl_queue WHERE discogs_id = 'r1'").fetchone()
+    assert [(p["crawler_id"], p["price"]) for p in prices] == [(amazon_id, 9.99), (ebay_id, 12.50)]
+    assert queue_row["status"] == "done"
+
+
+async def test_worker_skips_a_crawler_disabled_after_the_row_was_enqueued(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/a.py")
+        db.register_crawler(conn, "eBay", "/b.py")
+        amazon_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        ebay_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'eBay'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1")
+        db.set_crawler_enabled(conn, ebay_id, False)
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    plugins = {}
+    for crawler_id, name in ((amazon_id, "Amazon"), (ebay_id, "eBay")):
+        plugin = AsyncMock()
+        plugin.search = AsyncMock(return_value=[{"url": f"https://{name}", "price": 5.0, "shipping": None, "currency": "USD", "condition": None}])
+        plugin._db_id = crawler_id
+        plugin._db_site_name = name
+        plugins[crawler_id] = plugin
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        await manager._drain_one_batch("worker-test", plugins, pages={})
+
+    plugins[amazon_id].search.assert_awaited_once()
+    plugins[ebay_id].search.assert_not_awaited()
+
+
+async def test_worker_excludes_requires_discogs_release_crawlers_for_stock_items(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/a.py")
+        db.register_crawler(conn, "Discogs", "/d.py", requires_discogs_release=True)
+        amazon_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        discogs_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Discogs'").fetchone()["id"]
+        _stock_item_with_source(conn, "key1")
+        db.enqueue_crawl_queue_for_stock_item(conn, "key1")
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    plugins = {}
+    for crawler_id, name in ((amazon_id, "Amazon"), (discogs_id, "Discogs")):
+        plugin = AsyncMock()
+        plugin.search = AsyncMock(return_value=[])
+        plugin._db_id = crawler_id
+        plugin._db_site_name = name
+        plugins[crawler_id] = plugin
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        await manager._drain_one_batch("worker-test", plugins, pages={})
+
+    plugins[amazon_id].search.assert_awaited_once()
+    plugins[discogs_id].search.assert_not_awaited()
+
+
+async def test_worker_defers_a_cooling_down_crawler_and_crawls_the_rest(pg_schema):
+    import time
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/a.py")
+        db.register_crawler(conn, "eBay", "/b.py")
+        amazon_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        ebay_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'eBay'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1")
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    manager._site_cooldown_until = {ebay_id: time.monotonic() + 1800}
+    plugins = {}
+    for crawler_id, name in ((amazon_id, "Amazon"), (ebay_id, "eBay")):
+        plugin = AsyncMock()
+        plugin.search = AsyncMock(return_value=[{"url": f"https://{name}", "price": 5.0, "shipping": None, "currency": "USD", "condition": None}])
+        plugin._db_id = crawler_id
+        plugin._db_site_name = name
+        plugins[crawler_id] = plugin
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        await manager._drain_one_batch("worker-test", plugins, pages={})
+
+    plugins[amazon_id].search.assert_awaited_once()
+    plugins[ebay_id].search.assert_not_awaited()
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT status, pending_crawler_ids, available_at > CURRENT_TIMESTAMP AS still_deferred "
+            "FROM crawl_queue WHERE discogs_id = 'r1'"
+        ).fetchone()
+    # Back to pending, narrowed to the crawler that never ran, and held off
+    # until its cooldown expires -- not marked done with a silent gap.
+    assert row["status"] == "pending"
+    assert row["pending_crawler_ids"] == [ebay_id]
+    assert row["still_deferred"] is True
+
+
+async def test_worker_honours_a_narrowed_pending_crawler_set(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/a.py")
+        db.register_crawler(conn, "eBay", "/b.py")
+        amazon_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        ebay_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'eBay'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1")
+        conn.execute(
+            "UPDATE crawl_queue SET pending_crawler_ids = ARRAY[%s] WHERE discogs_id = 'r1'", [ebay_id]
+        )
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    plugins = {}
+    for crawler_id, name in ((amazon_id, "Amazon"), (ebay_id, "eBay")):
+        plugin = AsyncMock()
+        plugin.search = AsyncMock(return_value=[])
+        plugin._db_id = crawler_id
+        plugin._db_site_name = name
+        plugins[crawler_id] = plugin
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        await manager._drain_one_batch("worker-test", plugins, pages={})
+
+    plugins[ebay_id].search.assert_awaited_once()
+    plugins[amazon_id].search.assert_not_awaited()
+
+
+async def test_worker_marks_a_target_done_when_no_crawler_is_eligible(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/a.py")
+        amazon_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1")
+        db.set_crawler_enabled(conn, amazon_id, False)
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        await manager._drain_one_batch("worker-test", {}, pages={})
+
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute("SELECT status FROM crawl_queue WHERE discogs_id = 'r1'").fetchone()
+        listing = conn.execute("SELECT 1 FROM listings WHERE release_id = 'r1'").fetchone()
+    assert row["status"] == "done"
+    # listing is None here for the same reason it's None in the plugin-is-None
+    # path below (test_worker_skips_a_unit_whose_plugin_failed_to_load_
+    # without_deferring_it) -- that branch also continues before any
+    # upsert_listing, so it writes no listing either. It's
+    # _site_consecutive_failures == {} that actually distinguishes this path:
+    # no unit ever runs at all here, so no failure is recorded, whereas the
+    # plugin-is-None path does record one.
+    assert listing is None
+    assert manager._site_consecutive_failures == {}
+
+
+async def test_worker_skips_a_unit_whose_plugin_failed_to_load_without_deferring_it(pg_schema):
+    """The plugin is None branch in _drain_one_batch: a crawler enabled in the
+    crawlers table but whose module failed to load at boot, so its id is
+    absent from plugins_by_crawler_id. The design calls this "skipped,
+    recorded as a failure, and does not defer the row" -- deferring would let
+    a permanently broken module hold its rows pending forever."""
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/a.py")
+        amazon_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1")
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+
+    # amazon_id is enabled and eligible, but is missing from the plugins dict
+    # handed to _drain_one_batch -- exactly what a module that failed to
+    # import at boot looks like to this code.
+    #
+    # _record_site_result reads consecutive_failure_limit from the real
+    # config, and at a limit of 1 it would reset the just-recorded failure
+    # back to 0 -- patch it fixed, same as test_worker_drains_units_target_
+    # major_across_a_batch does for crawl_delay_seconds, so the assertion
+    # below doesn't depend on the ambient config file being absent or having
+    # a limit above 1.
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("config.load_config", return_value={"consecutive_failure_limit": 10}):
+        await manager._drain_one_batch("worker-test", {}, pages={})
+
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT status, pending_crawler_ids FROM crawl_queue WHERE discogs_id = 'r1'"
+        ).fetchone()
+    assert row["status"] == "done"
+    assert row["pending_crawler_ids"] is None
+    assert manager._site_consecutive_failures.get(amazon_id) == 1
+
+
+async def test_worker_drains_units_target_major_across_a_batch(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/a.py")
+        db.register_crawler(conn, "eBay", "/b.py")
+        amazon_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        ebay_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'eBay'").fetchone()["id"]
+        for rid in ("r1", "r2"):
+            db.upsert_catalog_release(conn, {
+                "discogs_id": rid, "artist": "A", "title": "T", "year": None, "label": None,
+                "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+                "discogs_url": None,
+            })
+            db.enqueue_crawl_queue(conn, rid)
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    order = []
+    plugins = {}
+    for crawler_id, name in ((amazon_id, "Amazon"), (ebay_id, "eBay")):
+        async def search(target, page, _name=name):
+            order.append((target["discogs_id"], _name))
+            return []
+        plugin = AsyncMock()
+        plugin.search = search
+        plugin._db_id = crawler_id
+        plugin._db_site_name = name
+        plugins[crawler_id] = plugin
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("config.load_config", return_value={"crawl_delay_seconds": 0}):
+        await manager._drain_one_batch("worker-test", plugins, pages={})
+
+    # Both crawlers run for one target before either runs for the other --
+    # the property the old (target, crawler) row layout only produced by
+    # accident of insert order. Asserted without assuming claim order tracks
+    # discogs_id (same claim-order caveat as
+    # test_worker_row_commit_is_isolated_from_a_later_rows_failure's comment):
+    # whichever target claim_crawl_queue_batch hands back first, both of its
+    # crawler calls land contiguously before either call for the other target.
+    rids = [rid for rid, _name in order]
+    assert len(rids) == 4
+    assert rids[0] == rids[1] and rids[2] == rids[3]
+    assert {rids[0], rids[2]} == {"r1", "r2"}
+
+
 # ---------------------------------------------------------------------------
 # stock sync task
 # ---------------------------------------------------------------------------
@@ -1951,39 +3047,154 @@ async def test_stock_sync_not_running_initially(manager):
     assert manager.stock_sync_running is False
 
 
-async def test_start_stock_sync_returns_true_when_idle(manager):
-    async def _fake_sync(crawler_id=None):
+# pg_test_db, not just `manager`: start_stock_sync now opens a real
+# connection to take the cross-process advisory lock before creating the
+# task, so these can no longer run against no database at all. The fakes
+# close the lock connection the real _sync_stock's finally would have.
+async def test_start_stock_sync_returns_true_when_idle(pg_test_db, manager):
+    conns = []
+
+    async def _fake_sync(crawler_id=None, lock_conn=None):
+        conns.append(lock_conn)
         await asyncio.sleep(0)
+        lock_conn.close()
 
     manager._sync_stock = _fake_sync  # type: ignore
     started = await manager.start_stock_sync()
-    assert started is True
+    assert started["started"] is True
     await asyncio.sleep(0.01)
+    assert conns and conns[0] is not None
 
 
-async def test_start_stock_sync_returns_false_when_already_running(manager):
+async def test_start_stock_sync_takes_its_lock_on_the_unpooled_dsn(pg_test_db, manager, monkeypatch):
+    """APP_DATABASE_URL is derived from Neon's pooled (PgBouncer transaction-
+    mode) DSN, which can move a logical session between backends statement by
+    statement -- a session-scoped pg_try_advisory_lock through it is not mutual
+    exclusion at all. The lock connection must use DIRECT_APP_DATABASE_URL.
+    APP_DATABASE_URL is pointed at an unroutable DSN here so using it would
+    fail outright rather than pass by coincidence."""
+    seen = []
+    real_connect = psycopg.connect
+
+    def _spy(dsn, *args, **kwargs):
+        seen.append(dsn)
+        return real_connect(dsn, *args, **kwargs)
+
+    monkeypatch.setattr(psycopg, "connect", _spy)
+    monkeypatch.setattr(db.config, "DIRECT_APP_DATABASE_URL", os.environ["TEST_DATABASE_URL"])
+    monkeypatch.setattr(db.config, "APP_DATABASE_URL", "postgresql://nobody:nobody@127.0.0.1:1/nope")
+
+    async def _instant(crawler_id=None, lock_conn=None):
+        lock_conn.close()
+
+    manager._sync_stock = _instant  # type: ignore
+    assert (await manager.start_stock_sync())["started"] is True
+    await asyncio.sleep(0.05)
+
+    assert seen == [os.environ["TEST_DATABASE_URL"]]
+
+
+async def test_start_stock_sync_returns_false_when_already_running(pg_test_db, manager):
     event = asyncio.Event()
 
-    async def _fake_sync(crawler_id=None):
+    async def _fake_sync(crawler_id=None, lock_conn=None):
         await event.wait()
+        lock_conn.close()
 
     manager._sync_stock = _fake_sync  # type: ignore
     await manager.start_stock_sync()
     assert manager.stock_sync_running is True
     second = await manager.start_stock_sync()
-    assert second is False
+    assert second["started"] is False
+    assert second["on_another_instance"] is False
     event.set()
     await asyncio.sleep(0.01)
 
 
-async def test_stock_sync_running_false_after_completion(manager):
-    async def _instant(crawler_id=None):
-        pass
+async def test_stock_sync_running_false_after_completion(pg_test_db, manager):
+    async def _instant(crawler_id=None, lock_conn=None):
+        lock_conn.close()
 
     manager._sync_stock = _instant  # type: ignore
     await manager.start_stock_sync()
     await asyncio.sleep(0.05)
     assert manager.stock_sync_running is False
+
+
+async def test_start_stock_sync_returns_false_when_another_instance_holds_the_lock(pg_test_db, manager):
+    # The real cross-Machine case: stock_sync_running is per-process, so
+    # without the advisory lock both Machines' schedulers would start a sync
+    # on the same cron tick and interleave replace_stock_items().
+    calls = []
+
+    async def _fake_sync(crawler_id=None, lock_conn=None):
+        calls.append(lock_conn)
+
+    manager._sync_stock = _fake_sync  # type: ignore
+    holder = psycopg.connect(db.config.APP_DATABASE_URL)
+    try:
+        assert holder.execute(
+            "SELECT pg_try_advisory_lock(%s)", [STOCK_SYNC_LOCK_KEY]
+        ).fetchone()[0] is True
+        rejected = await manager.start_stock_sync()
+        await asyncio.sleep(0.01)
+        assert calls == []
+        # The holder is another Machine, so this process has no _stock_task
+        # and the local stock_sync_state() would deny a sync is running at
+        # all. Saying so would put "already running -- starting up, unknown in
+        # total" in the status bar for a sync this process cannot see.
+        assert rejected == {
+            "started": False, "on_another_instance": True, "running": True,
+            "source": None, "elapsed_seconds": None, "source_elapsed_seconds": None,
+        }
+    finally:
+        holder.close()
+
+
+async def test_concurrent_starts_on_one_process_are_not_reported_as_another_instance(
+    pg_test_db, manager
+):
+    """_stock_task is only assigned after the threadpool lock acquisition, so
+    two callers on this process could both clear the stock_sync_running guard
+    and the loser would find the advisory lock held -- by the other local
+    request. Classifying that as on_another_instance is a flatly wrong
+    diagnosis, and the UI now states it out loud."""
+    event = asyncio.Event()
+
+    async def _fake_sync(crawler_id=None, lock_conn=None):
+        await event.wait()
+        lock_conn.close()
+
+    manager._sync_stock = _fake_sync  # type: ignore
+    first, second = await asyncio.gather(
+        manager.start_stock_sync(), manager.start_stock_sync()
+    )
+    event.set()
+    await asyncio.sleep(0.01)
+
+    started = [r for r in (first, second) if r["started"]]
+    rejected = [r for r in (first, second) if not r["started"]]
+    assert len(started) == 1
+    assert len(rejected) == 1
+    assert rejected[0]["on_another_instance"] is False
+    assert rejected[0]["running"] is True
+
+
+async def test_sync_stock_releases_the_advisory_lock_when_it_finishes(pg_schema, manager):
+    lock_conn = psycopg.connect(db.config.APP_DATABASE_URL)
+    assert lock_conn.execute(
+        "SELECT pg_try_advisory_lock(%s)", [STOCK_SYNC_LOCK_KEY]
+    ).fetchone()[0] is True
+
+    # No enabled catalog crawlers -> returns early, exercising that the
+    # finally releases the lock on every exit path, not just the happy one.
+    await manager._sync_stock(lock_conn=lock_conn)
+
+    assert lock_conn.closed
+    with psycopg.connect(db.config.APP_DATABASE_URL) as other:
+        assert other.execute(
+            "SELECT pg_try_advisory_lock(%s)", [STOCK_SYNC_LOCK_KEY]
+        ).fetchone()[0] is True
 
 
 async def test_sync_stock_replaces_items_for_each_enabled_catalog_crawler(pg_schema):
@@ -2023,7 +3234,10 @@ async def test_sync_stock_replaces_items_for_each_enabled_catalog_crawler(pg_sch
     ]
 
 
-async def test_sync_stock_enqueues_crawl_queue_for_eligible_price_crawlers(pg_schema):
+async def test_sync_stock_enqueues_one_row_with_no_narrowed_crawler_set(pg_schema):
+    """A stock sync enqueue no longer names a crawler at all -- both Amazon and
+    eBay are resolved as eligible for the item by get_eligible_crawlers at
+    dispatch time, not frozen into separate rows at enqueue time."""
     with db.get_admin_pool().connection() as conn:
         db.register_crawler(conn, "Stock Site", "/x.py", crawler_type="catalog")
         db.register_crawler(conn, "Amazon", "/amazon.py", crawler_type="release")
@@ -2048,13 +3262,19 @@ async def test_sync_stock_enqueues_crawl_queue_for_eligible_price_crawlers(pg_sc
 
     item_key = db.compute_item_key("A".title(), "T", "https://x/1")
     with db.get_admin_pool().connection() as conn:
-        queued = conn.execute(
-            "SELECT crawler_id FROM crawl_queue WHERE item_key = %s ORDER BY crawler_id", [item_key]
+        rows = conn.execute(
+            "SELECT pending_crawler_ids FROM crawl_queue WHERE item_key = %s", [item_key]
         ).fetchall()
-    assert sorted(q["crawler_id"] for q in queued) == sorted([amazon_id, ebay_id])
+        eligible = db.get_eligible_crawlers(conn, is_release=False, pending_crawler_ids=rows[0]["pending_crawler_ids"])
+    assert len(rows) == 1
+    assert rows[0]["pending_crawler_ids"] is None
+    assert sorted(c["id"] for c in eligible) == sorted([amazon_id, ebay_id])
 
 
-async def test_sync_stock_does_not_enqueue_for_a_crawler_requiring_discogs_release(pg_schema):
+async def test_sync_stock_enqueues_a_row_but_dispatch_excludes_a_crawler_requiring_discogs_release(pg_schema):
+    """The queue row still gets created -- requires_discogs_release is now
+    purely a dispatch-time predicate in get_eligible_crawlers, not an
+    enqueue-time gate that would have kept the row from existing at all."""
     with db.get_admin_pool().connection() as conn:
         db.register_crawler(conn, "Stock Site", "/x.py", crawler_type="catalog")
         db.register_crawler(conn, "Discogs", "/discogs.py", crawler_type="release", requires_discogs_release=True)
@@ -2074,9 +3294,14 @@ async def test_sync_stock_does_not_enqueue_for_a_crawler_requiring_discogs_relea
     with patch("crawler.load_enabled_crawlers", return_value=[fake_plugin]):
         await manager._sync_stock()
 
+    item_key = db.compute_item_key("A".title(), "T", "https://x/1")
     with db.get_admin_pool().connection() as conn:
-        queued = conn.execute("SELECT * FROM crawl_queue").fetchall()
-    assert queued == []
+        queued = conn.execute(
+            "SELECT pending_crawler_ids FROM crawl_queue WHERE item_key = %s", [item_key]
+        ).fetchall()
+        eligible = db.get_eligible_crawlers(conn, is_release=False, pending_crawler_ids=queued[0]["pending_crawler_ids"])
+    assert len(queued) == 1
+    assert eligible == []
 
 
 async def test_sync_stock_broadcasts_error_and_continues_when_a_crawler_fails(pg_schema):
@@ -2296,11 +3521,112 @@ async def test_sync_stock_completion_log_names_failed_and_skipped_sources(pg_sch
     assert "Cooling Site" in complete[0]
 
 
-async def test_start_stock_sync_forwards_crawler_id_to_sync_stock(manager):
+async def test_sync_stock_logs_the_source_it_is_starting(pg_schema, caplog):
+    """The matching "found N items" line only lands when the source finishes,
+    which on a two-phase catalog crawler is over an hour later. Without this
+    line, nothing in the Log Viewer named the source being crawled -- the run
+    went silent right after "Loaded crawler"."""
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Dischord Records", "/x.py", crawler_type="catalog")
+        conn.commit()
+        crawler_id = conn.execute(
+            "SELECT id FROM crawlers WHERE site_name = 'Dischord Records'"
+        ).fetchone()["id"]
+
+    plugin = AsyncMock()
+
+    async def _empty():
+        return
+        yield  # pragma: no cover -- unreachable, but keeps this an async generator
+
+    plugin.crawl_catalog = lambda: _empty()
+    plugin.crawler_type = "catalog"
+    plugin._db_id = crawler_id
+    plugin._db_site_name = "Dischord Records"
+
+    manager = CrawlManager()
+    with patch("crawler.load_enabled_crawlers", return_value=[plugin]), \
+         caplog.at_level(logging.INFO, logger="crawl_manager"):
+        await manager._sync_stock()
+
+    assert "[Dischord Records] Stock crawl started" in [r.getMessage() for r in caplog.records]
+    found = [r.getMessage() for r in caplog.records if "Stock sync found" in r.getMessage()]
+    # Prefix, not the whole line: pinning "in 0s" asserts that every real
+    # database round-trip _sync_stock() makes lands inside one integer second,
+    # which a slow runner can miss while the elapsed-time logging under test
+    # is working perfectly.
+    assert len(found) == 1
+    assert found[0].startswith("[Dischord Records] Stock sync found 0 items in ")
+
+
+async def test_stock_sync_state_reports_the_current_source_and_elapsed_time(manager):
+    manager._stock_task = MagicMock()
+    manager._stock_task.done.return_value = False
+    manager._stock_sync_started_at = time.monotonic() - 3600
+    manager._stock_sync_source = "Dischord Records"
+    manager._stock_sync_source_started_at = time.monotonic() - 900
+
+    state = manager.stock_sync_state()
+    assert state["running"] is True
+    assert state["source"] == "Dischord Records"
+    assert state["elapsed_seconds"] >= 3600
+    assert 900 <= state["source_elapsed_seconds"] < 3600
+
+
+async def test_stock_sync_state_is_empty_when_nothing_is_running(manager):
+    assert manager.stock_sync_state() == {
+        "running": False, "source": None,
+        "elapsed_seconds": None, "source_elapsed_seconds": None,
+    }
+
+
+async def test_start_stock_sync_rejection_log_names_the_source_holding_the_lock(manager, caplog):
+    """"Stock sync already running, ignoring start request" on its own gave no
+    way to tell a long crawl apart from a wedged one -- and the lock rejects
+    every other source's Refresh meanwhile."""
+    manager._stock_task = MagicMock()
+    manager._stock_task.done.return_value = False
+    manager._stock_sync_started_at = time.monotonic() - 5400
+    manager._stock_sync_source = "Dischord Records"
+    manager._stock_sync_source_started_at = time.monotonic() - 4500
+
+    with caplog.at_level(logging.WARNING, logger="crawl_manager"):
+        assert (await manager.start_stock_sync())["started"] is False
+
+    rejected = [r.getMessage() for r in caplog.records if "already running" in r.getMessage()]
+    assert len(rejected) == 1
+    assert "on Dischord Records for 1h 15m" in rejected[0]
+    assert "running 1h 30m in total" in rejected[0]
+
+
+async def test_start_stock_sync_rejection_log_copes_with_no_source_reached_yet(manager, caplog):
+    manager._stock_task = MagicMock()
+    manager._stock_task.done.return_value = False
+    manager._stock_sync_started_at = time.monotonic() - 2
+
+    with caplog.at_level(logging.WARNING, logger="crawl_manager"):
+        assert (await manager.start_stock_sync())["started"] is False
+
+    rejected = [r.getMessage() for r in caplog.records if "already running" in r.getMessage()]
+    assert len(rejected) == 1
+    assert "no source reached yet" in rejected[0]
+
+
+@pytest.mark.parametrize("seconds,expected", [
+    (None, "unknown"), (0, "0s"), (59, "59s"), (60, "1m"), (3599, "59m"),
+    (3600, "1h 0m"), (6480, "1h 48m"),
+])
+def test_format_duration(seconds, expected):
+    from crawl_manager import _format_duration
+    assert _format_duration(seconds) == expected
+
+
+async def test_start_stock_sync_forwards_crawler_id_to_sync_stock(pg_test_db, manager):
     calls = []
 
-    async def _fake_sync(crawler_id=None):
+    async def _fake_sync(crawler_id=None, lock_conn=None):
         calls.append(crawler_id)
+        lock_conn.close()
 
     manager._sync_stock = _fake_sync  # type: ignore
     await manager.start_stock_sync(42)
@@ -2612,6 +3938,7 @@ async def test_run_judgment_phase_broadcasts_error_when_no_api_key(pg_schema):
 
     statuses = [e["status"] for e in manager.recent_events()]
     assert statuses == ["stock_judgment_started", "stock_judgment_error"]
+    assert all(e.get("user_id") == alice["id"] for e in manager.recent_events())
 
 
 async def test_sync_stock_aborts_after_two_consecutive_429_crawlers(pg_schema, manager, monkeypatch):
@@ -2823,7 +4150,7 @@ async def test_run_judgment_phase_broadcasts_complete_when_nothing_unjudged(pg_s
     statuses = [e["status"] for e in manager.recent_events()]
     assert statuses == ["stock_judgment_started", "stock_judgment_complete"]
     events = [e for e in manager.recent_events() if e["status"] == "stock_judgment_complete"]
-    assert events == [{"status": "stock_judgment_complete", "judged": 0, "id": 2}]
+    assert events == [{"status": "stock_judgment_complete", "judged": 0, "id": 2, "user_id": alice["id"]}]
     assert any("nothing to do" in r.message for r in caplog.records)
 
 
@@ -3020,7 +4347,7 @@ async def test_judgment_running_for_one_user_does_not_block_another_users_judgme
     await asyncio.sleep(0.01)
 
 
-async def test_start_stock_sync_and_start_judgment_only_run_independently(manager):
+async def test_start_stock_sync_and_start_judgment_only_run_independently(pg_test_db, manager):
     # Stock sync (global, no user context) and judgment (always per-user) no
     # longer share a mutex -- unlike the old single-owner build, one user
     # running a judgment pass must not block another crawl of the shared
@@ -3028,8 +4355,9 @@ async def test_start_stock_sync_and_start_judgment_only_run_independently(manage
     stock_event = asyncio.Event()
     judgment_event = asyncio.Event()
 
-    async def _fake_sync_stock(crawler_id=None):
+    async def _fake_sync_stock(crawler_id=None, lock_conn=None):
         await stock_event.wait()
+        lock_conn.close()
 
     async def _fake_judgment_phase(user_id):
         await judgment_event.wait()
@@ -3063,10 +4391,14 @@ async def test_paced_search_serializes_same_site_calls_across_concurrent_invocat
     pages = {1: (MagicMock(), MagicMock())}
 
     # Two "concurrent" calls for the SAME crawler_id (1) must not overlap.
-    await asyncio.gather(
-        manager._paced_search(1, plugin, {}, pages),
-        manager._paced_search(1, plugin, {}, pages),
-    )
+    # load_config is patched, as everywhere else in this file: _paced_search
+    # reads crawl_delay_seconds from it, and it's a Postgres query now, so
+    # an unpatched call needs a database this test otherwise has no use for.
+    with patch("config.load_config", return_value={"crawl_delay_seconds": 0}):
+        await asyncio.gather(
+            manager._paced_search(1, plugin, {}, pages),
+            manager._paced_search(1, plugin, {}, pages),
+        )
     # call_log should read start,end,start,end (serialized), never start,start,end,end.
     assert [entry[0] for entry in call_log] == ["start", "end", "start", "end"]
 
@@ -3089,10 +4421,11 @@ async def test_paced_search_does_not_serialize_different_sites():
     plugin_b.search = await make_fake_search("b")
     pages = {1: (MagicMock(), MagicMock()), 2: (MagicMock(), MagicMock())}
 
-    await asyncio.gather(
-        manager._paced_search(1, plugin_a, {}, pages),
-        manager._paced_search(2, plugin_b, {}, pages),
-    )
+    with patch("config.load_config", return_value={"crawl_delay_seconds": 0}):
+        await asyncio.gather(
+            manager._paced_search(1, plugin_a, {}, pages),
+            manager._paced_search(2, plugin_b, {}, pages),
+        )
     # Different crawler_ids run concurrently — both "start"s happen before either "end".
     assert call_log[0].endswith("start") and call_log[1].endswith("start")
 
@@ -3122,7 +4455,8 @@ async def test_paced_search_covers_bot_detection_retry_under_one_lock_acquisitio
     plugin.search = AsyncMock(side_effect=[BotDetectedError(), []])
     pages = {1: (MagicMock(), MagicMock())}
 
-    with patch("crawler._reset_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+    with patch("crawler._reset_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("config.load_config", return_value={"crawl_delay_seconds": 0}):
         # Must not raise -- the retry succeeds under the same _paced_search call.
         matches, bot_detected = await manager._paced_search(1, plugin, {}, pages)
     assert matches == []
@@ -3139,7 +4473,8 @@ async def test_paced_search_records_backoff_even_when_retry_also_fails():
     plugin.search = AsyncMock(side_effect=[BotDetectedError(), RuntimeError("still blocked")])
     pages = {1: (MagicMock(), MagicMock())}
 
-    with patch("crawler._reset_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+    with patch("crawler._reset_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("config.load_config", return_value={"crawl_delay_seconds": 30}):
         before = time.monotonic()
         with pytest.raises(RuntimeError):
             await manager._paced_search(1, plugin, {}, pages)
@@ -3404,3 +4739,86 @@ async def test_mode_all_sync_clears_a_price_the_user_removed(pg_schema, monkeypa
             "SELECT price_paid FROM library_items WHERE user_id = %s AND discogs_id = 'r111'",
             [alice["id"]],
         ).fetchone()["price_paid"] is None
+
+
+async def test_sync_stock_sweeps_dead_stock_jobs_at_end_of_run(pg_schema):
+    """Nothing disables a store when an item merely sells out, so the end-of-run
+    sweep is the only thing that stops it being priced forever. Two enabled
+    catalog sources are looped over so a per-source implementation of the
+    sweep (instead of once per run) would be caught by the call count below."""
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Stock Site", "/x.py", crawler_type="catalog")
+        db.register_crawler(conn, "Stock Site B", "/y.py", crawler_type="catalog")
+        db.register_crawler(conn, "Amazon", "/amazon.py", crawler_type="release")
+        _stock_item_with_source(conn, "dead", source_site_name="Dead Store")
+        dead_store_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Dead Store'").fetchone()["id"]
+        db.enqueue_crawl_queue_for_stock_item(conn, "dead")
+        db.set_crawler_enabled(conn, dead_store_id, False)
+        conn.commit()
+
+    fake_plugin = AsyncMock()
+    fake_plugin_b = AsyncMock()
+
+    async def _items():
+        yield {"artist": "A", "title": "T", "url": "https://x/1", "price": 5.0, "currency": "USD"}
+
+    async def _items_b():
+        return
+        yield  # pragma: no cover - makes this an async generator with no items
+
+    fake_plugin.crawl_catalog = lambda: _items()
+    fake_plugin._db_site_name = "Stock Site"
+    fake_plugin_b.crawl_catalog = lambda: _items_b()
+    fake_plugin_b._db_site_name = "Stock Site B"
+    with db.get_admin_pool().connection() as conn:
+        fake_plugin._db_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Stock Site'").fetchone()["id"]
+        fake_plugin_b._db_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Stock Site B'").fetchone()["id"]
+
+    real_delete = db.delete_dead_stock_crawl_queue_rows
+    call_count = 0
+
+    def _counting_delete(conn):
+        nonlocal call_count
+        call_count += 1
+        return real_delete(conn)
+
+    manager = CrawlManager()
+    with patch("crawler.load_enabled_crawlers", return_value=[fake_plugin, fake_plugin_b]), \
+         patch("db.delete_dead_stock_crawl_queue_rows", side_effect=_counting_delete):
+        await manager._sync_stock()
+
+    assert call_count == 1
+
+    live_key = db.compute_item_key("A".title(), "T", "https://x/1")
+    with db.get_admin_pool().connection() as conn:
+        keys = [r["item_key"] for r in conn.execute("SELECT item_key FROM crawl_queue").fetchall()]
+    assert keys == [live_key]
+
+
+def test_cooldown_remaining_seconds_returns_the_earliest_expiry():
+    import time
+    manager = CrawlManager()
+    now = time.monotonic()
+    manager._site_cooldown_until = {1: now + 600, 2: now + 120}
+
+    remaining = manager._cooldown_remaining_seconds([1, 2])
+
+    assert 100 < remaining <= 120
+
+
+def test_cooldown_remaining_seconds_is_zero_when_nothing_is_cooling_down():
+    manager = CrawlManager()
+    manager._site_cooldown_until = {}
+
+    assert manager._cooldown_remaining_seconds([1, 2]) == 0.0
+
+
+def test_cooldown_remaining_seconds_ignores_expired_cooldowns():
+    import time
+    manager = CrawlManager()
+    now = time.monotonic()
+    manager._site_cooldown_until = {1: now - 5, 2: now + 300}
+
+    remaining = manager._cooldown_remaining_seconds([1, 2])
+
+    assert 250 < remaining <= 300

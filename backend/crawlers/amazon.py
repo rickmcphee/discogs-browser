@@ -6,8 +6,6 @@ from crawler import BotDetectedError, clean_search_text, strip_stop_words, title
 
 log = get_logger("crawlers.amazon")
 
-_VERSION = "v5-format-aware"
-
 # Map Discogs format strings to Amazon format link keywords (case-insensitive contains match)
 _FORMAT_MAP = {
     "vinyl":     ["vinyl"],
@@ -141,7 +139,7 @@ class Crawler:
         fmt = release.get("format", "vinyl") or "vinyl"
         fmt_keywords = _amazon_format_keywords(fmt)
         sc = release.get("_screenshotter")
-        log.info("[Amazon] %s — searching for: %s %s [format: %s]", _VERSION, artist, title, fmt)
+        log.info("[Amazon] searching for: %s %s [format: %s]", artist, title, fmt)
 
         vinyl_url = None
         vinyl_price = None
@@ -150,8 +148,9 @@ class Crawler:
         # Long titles (> 5 words) often return zero results on Amazon.
         title_variants_list = title_variants(title)
         for attempt, title_attempt in enumerate(title_variants_list):
+            search_str = f"{artist} {title_attempt} {fmt}".strip()
             if attempt > 0:
-                log.debug("[Amazon] retrying with shortened title: %r", title_attempt)
+                log.debug("[Amazon] retrying with shortened title: %r", search_str)
             query = f"{artist}+{title_attempt}+{fmt}".strip("+").replace(" ", "+")
             url = f"https://www.amazon.com/s?k={query}&i=popular"
             await page.goto(url, wait_until="domcontentloaded")

@@ -1,11 +1,12 @@
 import json
+import logging
 import os
+import socket
 from pathlib import Path
 from urllib.parse import quote, urlsplit, urlunsplit
 
 _data_env = os.environ.get("DISCOGS_BROWSER_DATA", "")
 CONFIG_DIR = Path(_data_env) if _data_env else Path.home() / ".discogs-browser"
-CONFIG_FILE = CONFIG_DIR / "config.json"
 DB_FILE = CONFIG_DIR / "db.sqlite"
 CRAWLERS_DIR = CONFIG_DIR / "crawlers"
 SCREENSHOTS_DIR = CONFIG_DIR / "screenshots"
@@ -47,6 +48,35 @@ APP_DATABASE_URL = os.environ.get(
     "APP_DATABASE_URL",
     _with_userinfo(DATABASE_URL, "app_user", APP_DB_PASSWORD),
 )
+# DATABASE_URL is the *pooled* (PgBouncer transaction-mode) connection string on
+# a managed Postgres like Neon, which multiplexes one logical session across
+# backends -- so a session-scoped pg_try_advisory_lock taken through it is not
+# mutual exclusion at all. Anything holding session state across statements
+# (today: crawl_manager's stock-sync lock) must connect through this unpooled
+# DSN instead. Defaults to DATABASE_URL, which is correct for local/CI Postgres
+# with nothing pooling in front of it, and is why DIRECT_DATABASE_URL is a
+# required secret against Neon rather than an optional one.
+DIRECT_DATABASE_URL = os.environ.get("DIRECT_DATABASE_URL", DATABASE_URL)
+DIRECT_APP_DATABASE_URL = os.environ.get(
+    "DIRECT_APP_DATABASE_URL",
+    _with_userinfo(DIRECT_DATABASE_URL, "app_user", APP_DB_PASSWORD),
+)
+# Not a RuntimeError like FRONTEND_ORIGINS's "*" check below: unlike that
+# case, this module can't yet tell a real misconfiguration from a
+# deliberately-unpooled local DSN that happens to omit "-pooler", and a
+# stock-sync mutual-exclusion gap degrades one feature rather than making
+# the whole app unsafe to serve traffic -- so this warns instead of
+# refusing to boot. Deliberately can't use logging_config.get_logger here:
+# logging_config imports config at module level, so calling it from here
+# would be the exact import cycle this file's other Postgres-URL derivations
+# already work around with function-local imports elsewhere in this codebase.
+if DIRECT_DATABASE_URL == DATABASE_URL and "-pooler" in (urlsplit(DATABASE_URL).hostname or ""):
+    logging.getLogger("config").warning(
+        "DIRECT_DATABASE_URL is unset and DATABASE_URL looks like a Neon pooled "
+        "endpoint (hostname contains '-pooler') -- the stock-sync advisory lock "
+        "will silently provide no mutual exclusion. Set DIRECT_DATABASE_URL to "
+        "Neon's unpooled connection string."
+    )
 
 # Empty in production (SPA served same-origin, so a relative redirect from
 # a backend-issued Location header lands on the SPA correctly). Set to
@@ -73,6 +103,15 @@ if "*" in FRONTEND_ORIGINS:
 # port; must be set to the real public URL in any non-local deployment.
 BACKEND_BASE_URL = os.environ.get("BACKEND_BASE_URL", "http://localhost:8000")
 
+# FLY_MACHINE_ID is set automatically by Fly for every Machine; checked
+# first only because it's the more precise, documented identifier when
+# present. socket.gethostname() covers every other case without any
+# deployment-specific assumption: it resolves to the container's own
+# hostname under Docker (unique per container automatically, so this is
+# already correct if docker-compose is ever scaled to multiple replicas)
+# and to the host machine's hostname for bare local dev.
+MACHINE_ID = os.environ.get("FLY_MACHINE_ID") or socket.gethostname()
+
 # "" in env → None → bundled Chromium (Docker); unset → "chrome" → real Chrome (local dev)
 _channel_env = os.environ.get("PLAYWRIGHT_CHANNEL", "chrome")
 PLAYWRIGHT_CHANNEL = _channel_env if _channel_env else None  # None → bundled Chromium
@@ -92,13 +131,80 @@ def ensure_dirs():
 
 
 def load_config() -> dict:
-    if not CONFIG_FILE.exists():
-        return {}
-    return json.loads(CONFIG_FILE.read_text())
+    import db
+
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute("SELECT data FROM app_config WHERE id = TRUE").fetchone()
+    return row["data"] if row else {}
 
 
 def save_config(data: dict):
-    CONFIG_FILE.write_text(json.dumps(data, indent=2))
+    import db
+    from psycopg.types.json import Jsonb
+
+    with db.get_admin_pool().connection() as conn:
+        conn.execute(
+            "INSERT INTO app_config (id, data) VALUES (TRUE, %s) "
+            "ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data",
+            [Jsonb(data)],
+        )
+        conn.commit()
+
+
+# Date-coded bigint, following db.py's pg_advisory_xact_lock(2026080901) and
+# crawl_manager's STOCK_SYNC_LOCK_KEY (2026081601) convention.
+LEGACY_CONFIG_MIGRATION_LOCK_KEY = 2026081702
+
+
+def migrate_legacy_config_file():
+    """One-shot: fold a pre-Postgres deploy's local config.json into app_config.
+
+    Settings used to live in one config.json per Machine; they now live in the
+    shared app_config row. Without this, the first boot on this branch reads an
+    empty config -- which stops both cron jobs and, worse, blanks the eBay
+    credentials, making eBay searches return [] that _drain_one_batch treats as
+    "confirmed no listing" and clears every existing eBay price for.
+
+    Safe to call on every boot, on every Machine: a no-op once app_config holds
+    data (one unlocked read, no lock taken) or when this Machine has no legacy
+    file at all (a freshly provisioned second Machine's volume starts empty).
+
+    A malformed legacy file raises and fails the boot rather than being skipped
+    -- booting on with empty config is the data-destroying outcome above, and a
+    crash loop is the visible failure an operator can act on."""
+    legacy_file = CONFIG_DIR / "config.json"
+    if not legacy_file.exists():
+        return
+
+    import db
+    from logging_config import get_logger
+    from psycopg.types.json import Jsonb
+
+    with db.get_admin_pool().connection() as conn:
+        # Double-checked locking, same shape as db.py's discogs_price
+        # migration: the unlocked read is what keeps every boot after the
+        # migrating one from serializing on the advisory lock for a migration
+        # that can never run again. The lock itself is what keeps two Machines
+        # booting at once -- the exact scenario this whole change is for --
+        # from both migrating, the second overwriting whatever the first
+        # already wrote.
+        row = conn.execute("SELECT data FROM app_config WHERE id = TRUE").fetchone()
+        if row and row["data"]:
+            return
+        conn.execute(
+            "SELECT pg_advisory_xact_lock(%s)", [LEGACY_CONFIG_MIGRATION_LOCK_KEY]
+        )
+        row = conn.execute("SELECT data FROM app_config WHERE id = TRUE").fetchone()
+        if row and row["data"]:
+            return
+        conn.execute(
+            "INSERT INTO app_config (id, data) VALUES (TRUE, %s) "
+            "ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data",
+            [Jsonb(json.loads(legacy_file.read_text()))],
+        )
+        conn.commit()
+
+    get_logger("config").info("Migrated legacy config.json into app_config")
 
 
 COOKIE_NAME = "db_session"

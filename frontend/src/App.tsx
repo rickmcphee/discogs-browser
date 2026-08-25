@@ -1,17 +1,20 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import RecordBrowser from './views/RecordBrowser'
 import StockBrowser from './views/StockBrowser'
 import Settings from './views/Settings'
 import Account from './views/Account'
 import LogViewer from './views/LogViewer'
+import QueueView from './views/QueueView'
 import LoginScreen from './views/LoginScreen'
 import InviteCodeScreen from './views/InviteCodeScreen'
+import BackendDownScreen from './views/BackendDownScreen'
 import Avatar from './components/Avatar'
 import { navButtonClass, primaryButtonClass, secondaryButtonClass, dismissButtonClass } from './styles/buttons'
-import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, clearJudgments, exportRecommendationsCsv, importRecommendationsCsv, getCrawlers, getUserSettings, getJudgmentStatus, checkHealth, getAuthStatus, setUnauthorizedHandler, hasAvatar } from './api/client'
+import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, clearJudgments, exportRecommendationsCsv, importRecommendationsCsv, getCrawlers, getUserSettings, getUserHiddenCrawlers, postUserHiddenCrawlers, getJudgmentStatus, getPriceStatus, checkHealth, getAuthStatus, setUnauthorizedHandler, hasAvatar } from './api/client'
+import type { StockSyncStartResult } from './api/client'
 import type { CrawlEvent, CrawlStatus, CollectionStatus, Crawler, AuthStatus } from './api/types'
 
-type View = 'collection' | 'wantlist' | 'store' | 'track' | 'settings' | 'logs' | 'account'
+type View = 'collection' | 'wantlist' | 'store' | 'track' | 'settings' | 'logs' | 'queue' | 'account'
 
 // SSE reconnects (including on browser refresh) replay every buffered event from
 // crawl_manager._recent, so a banner's dismissal has to survive across that replay.
@@ -20,7 +23,35 @@ type View = 'collection' | 'wantlist' | 'store' | 'track' | 'settings' | 'logs' 
 const DISMISSED_SYNC_KEY = 'discogs-browser.dismissedSyncEventId'
 const DISMISSED_CRAWL_KEY = 'discogs-browser.dismissedCrawlEventId'
 const VIEW_AS_USER_KEY = 'discogs-browser.viewAsUser'
-const HIDDEN_CRAWLER_IDS_KEY = 'discogs-browser.hiddenCrawlerIds'
+
+function formatElapsed(seconds: number | null): string {
+  if (seconds === null) return 'unknown'
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m`
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`
+}
+
+// A stock sync is one shared job under one advisory lock, so a Refresh clicked
+// while another source is mid-crawl is rejected outright. That came back as a
+// started=false nobody rendered, so the click looked like it had done nothing --
+// on a catalog source that takes over an hour, indistinguishable from a hang.
+function reportStockSyncRejection(
+  result: StockSyncStartResult,
+  setStatus: (message: string, id?: number | null) => void,
+) {
+  if (result.started) return
+  if (result.on_another_instance) {
+    setStatus('In-stock sync already running on another instance. Try again once it finishes.')
+    return
+  }
+  const on = result.source
+    ? `${result.source} (${formatElapsed(result.source_elapsed_seconds)} so far)`
+    : 'starting up'
+  setStatus(
+    `In-stock sync already running — ${on}, ${formatElapsed(result.elapsed_seconds)} in total. Try again once it finishes.`,
+  )
+}
 
 export default function App() {
   const [view, setView] = useState<View>('collection')
@@ -34,24 +65,25 @@ export default function App() {
 
   const [collectionStatus, setCollectionStatus] = useState<CollectionStatus | null>(null)
   const [crawlers, setCrawlers] = useState<Crawler[]>([])
-  const [hiddenCrawlerIds, setHiddenCrawlerIds] = useState<number[]>(() => {
-    try {
-      const parsed = JSON.parse(localStorage.getItem(HIDDEN_CRAWLER_IDS_KEY) ?? '[]')
-      return Array.isArray(parsed) ? parsed.filter((n) => typeof n === 'number') : []
-    } catch {
-      return []
-    }
-  })
+  const [hiddenCrawlerIds, setHiddenCrawlerIds] = useState<number[]>([])
+  const [hiddenCrawlerIdsLoaded, setHiddenCrawlerIdsLoaded] = useState(false)
+  const hiddenCrawlerIdsSaveChain = useRef<Promise<void>>(Promise.resolve())
+  const latestHiddenCrawlerIdsSaveSeq = useRef(0)
   const [avatarVersion, setAvatarVersion] = useState(0)
   const [hasAnthropicKey, setHasAnthropicKey] = useState(false)
   const [hasJudgedItems, setHasJudgedItems] = useState(false)
-  const [judgmentRunning, setJudgmentRunning] = useState(false)
+  const [hasPriceData, setHasPriceData] = useState(false)
+  const latestPriceStatusSeq = useRef(0)
+  const latestHasJudgedItemsSeq = useRef(0)
   const [serverReady, setServerReady] = useState(false)
+  const [backendUp, setBackendUp] = useState<boolean | null>(null)
+  const [authRevalidating, setAuthRevalidating] = useState(false)
   const [syncMessage, setSyncMessage] = useState<string | null>(null)
   const [syncMessageId, setSyncMessageId] = useState<number | null>(null)
   const [dismissedSyncId, setDismissedSyncId] = useState(() => Number(localStorage.getItem(DISMISSED_SYNC_KEY) ?? 0))
   const [syncing, setSyncing] = useState(false)
   const [syncGeneration, setSyncGeneration] = useState(0)
+  const [stockSyncGeneration, setStockSyncGeneration] = useState(0)
   const [stockSyncTarget, setStockSyncTarget] = useState<number | 'all' | null>(null)
   const [authState, setAuthState] = useState<AuthStatus | null>(null)
   const [viewAsUser, setViewAsUser] = useState(() => localStorage.getItem(VIEW_AS_USER_KEY) === 'true')
@@ -67,45 +99,113 @@ export default function App() {
     setSyncMessageId(eventId)
   }, [])
 
-  const toggleCrawlerView = useCallback((crawlerId: number) => {
-    setHiddenCrawlerIds((current) =>
-      current.includes(crawlerId)
-        ? current.filter((id) => id !== crawlerId)
-        : [...current, crawlerId]
-    )
+  const updateHiddenCrawlerIds = useCallback((ids: number[]) => {
+    setHiddenCrawlerIds(ids)
+    const seq = ++latestHiddenCrawlerIdsSaveSeq.current
+    hiddenCrawlerIdsSaveChain.current = hiddenCrawlerIdsSaveChain.current.then(async () => {
+      try {
+        await postUserHiddenCrawlers(ids)
+      } catch {
+        if (seq !== latestHiddenCrawlerIdsSaveSeq.current) return
+        setSyncStatus('Could not save your source filter — try again.')
+      }
+    })
+  }, [setSyncStatus])
+
+  // Bootstrap and the post-sync refresh below can both have a getPriceStatus()
+  // request in flight at once; without a sequence guard, a slow-arriving
+  // bootstrap response can land after the newer post-sync one and overwrite it
+  // with stale data.
+  const fetchPriceStatus = useCallback(() => {
+    const seq = ++latestPriceStatusSeq.current
+    getPriceStatus().then((s) => {
+      if (seq !== latestPriceStatusSeq.current) return
+      setHasPriceData(s.any_price_paid)
+    }).catch(() => {})
   }, [])
 
-  useEffect(() => {
-    localStorage.setItem(HIDDEN_CRAWLER_IDS_KEY, JSON.stringify(hiddenCrawlerIds))
-  }, [hiddenCrawlerIds])
+  // Same race, same fix, for hasJudgedItems: the bootstrap fetch below and
+  // handleImportRecommendations's post-import refresh can both have a
+  // getJudgmentStatus() request in flight, and the judgment SSE handlers and
+  // handleClearRecommendations's explicit write are two more sources that
+  // can land in between. Every writer shares this one counter -- the SSE
+  // handlers and the clear handler bump it before writing directly (they
+  // already know the answer, no fetch needed), so a slower fetch that was
+  // already in flight loses the race and its stale result is discarded.
+  const refreshJudgmentStatus = useCallback(() => {
+    const seq = ++latestHasJudgedItemsSeq.current
+    getJudgmentStatus().then((s) => {
+      if (seq !== latestHasJudgedItemsSeq.current) return
+      setHasJudgedItems(s.any_judged)
+    }).catch(() => {})
+  }, [])
 
-  // Poll /api/health until the backend is up, then load initial data.
+  // Continuous, unconditional health poll -- drives `backendUp`, which gates
+  // BackendDownScreen for both "backend not up yet" and "backend went down
+  // mid-session" the same way, since the frontend can't tell those apart.
+  // Asymmetric debounce: 2 consecutive failures before flipping down (avoids
+  // flicker from one dropped request), 1 success flips back up immediately.
   useEffect(() => {
-    if (authState?.state !== 'authenticated') return
     let cancelled = false
+    let consecutiveFailures = 0
+    let wasUp = false
     async function poll() {
       while (!cancelled) {
         const ok = await checkHealth()
-        if (ok) {
-          if (!cancelled) {
-            setServerReady(true)
-            getCrawlers().then(setCrawlers).catch(() => {})
-            getUserSettings().then((s) => {
-              setHasAnthropicKey(Boolean(s.anthropic_api_key))
-            }).catch(() => {})
-            getJudgmentStatus().then((s) => setHasJudgedItems(s.any_judged)).catch(() => {})
-            hasAvatar().then((exists) => setAvatarVersion(exists ? Date.now() : 0)).catch(() => {})
+        if (!cancelled) {
+          if (ok) {
+            consecutiveFailures = 0
+            if (!wasUp) {
+              // Set together in the same commit as setBackendUp(true), and
+              // only on the down/null -> up transition (not every routine
+              // tick while already up) -- setting it separately, from the
+              // auth-status effect that only fires afterward (once it
+              // observes backendUp change), would leave a render in between
+              // where backendUp is already true but authRevalidating is
+              // still stale-false, briefly clearing the overlay/inert state
+              // before revalidation has even started.
+              setAuthRevalidating(true)
+            }
+            wasUp = true
+            setBackendUp(true)
+          } else {
+            consecutiveFailures += 1
+            if (consecutiveFailures >= 2) {
+              wasUp = false
+              setBackendUp(false)
+            }
           }
-          return
         }
         await new Promise(r => setTimeout(r, 2000))
       }
     }
     poll()
     return () => { cancelled = true }
-  }, [authState])
+  }, [])
 
-  // Persistent SSE connection — reconnects on error. Waits for server to be ready.
+  // One-time bootstrap once both auth and the backend are confirmed ready.
+  useEffect(() => {
+    if (authState?.state !== 'authenticated') return
+    if (!backendUp || serverReady) return
+    setServerReady(true)
+    getCrawlers().then(setCrawlers).catch(() => {})
+    getUserHiddenCrawlers().then((ids) => {
+      setHiddenCrawlerIds(ids)
+      setHiddenCrawlerIdsLoaded(true)
+    }).catch(() => {
+      setSyncStatus('Could not load your source filter — reload the page to try again.')
+    })
+    getUserSettings().then((s) => {
+      setHasAnthropicKey(Boolean(s.anthropic_api_key))
+    }).catch(() => {})
+    refreshJudgmentStatus()
+    fetchPriceStatus()
+    hasAvatar().then((exists) => setAvatarVersion(exists ? Date.now() : 0)).catch(() => {})
+  }, [authState, backendUp, serverReady, setSyncStatus, fetchPriceStatus, refreshJudgmentStatus])
+
+  // Persistent SSE connection — reconnects on error. Gated on authState only
+  // (not backendUp) -- it reconnects through any backend outage on its own
+  // 3s backoff, independent of the health-poll state machine.
   // Handles both user-triggered and scheduled crawls.
   useEffect(() => {
     if (authState?.state !== 'authenticated') return
@@ -137,6 +237,7 @@ export default function App() {
         } else {
           const wantlistPart = event.wishlist_synced != null ? `, ${event.wishlist_synced} wantlist items` : ''
           setSyncStatus(`Synced ${event.synced} records for ${event.username}${wantlistPart}`, event.id ?? null)
+          fetchPriceStatus()
         }
         setSyncGeneration(g => g + 1)
         return
@@ -144,6 +245,10 @@ export default function App() {
       if (event.status === 'sync_error') {
         setSyncing(false)
         setSyncStatus(`Sync failed: ${event.error}`, event.id ?? null)
+        // Each page's writes (including price_paid) commit before the next page
+        // starts, so a sync that fails partway through can still have changed
+        // stored prices -- refetch regardless of which scope errored.
+        fetchPriceStatus()
         return
       }
       if (event.status === 'plex_match_started') {
@@ -180,14 +285,27 @@ export default function App() {
         )
         return
       }
+      if (event.status === 'stock_sync_detail_progress') {
+        // "detail pages", not "releases": Dark Descent's total counts the
+        // variable products on a listing page that also carries simple ones,
+        // so a release count would understate the page it names.
+        const pages = event.total === 1 ? 'detail page' : 'detail pages'
+        setSyncStatus(
+          `Syncing in-stock catalog… ${event.source} ${event.label} — ${event.done}/${event.total} ${pages}`,
+          event.id ?? null,
+        )
+        return
+      }
       if (event.status === 'stock_sync_progress') {
         setSyncStatus(`Syncing in-stock catalog… ${event.synced} items (${event.source})`, event.id ?? null)
+        setStockSyncGeneration(g => g + 1)
         return
       }
       if (event.status === 'stock_sync_complete') {
         setSyncing(false)
         setStockSyncTarget(null)
         setSyncStatus(`In-stock sync complete: ${event.synced} items`, event.id ?? null)
+        setStockSyncGeneration(g => g + 1)
         return
       }
       if (event.status === 'stock_sync_error') {
@@ -207,25 +325,35 @@ export default function App() {
       }
       if (event.status === 'stock_judgment_started') {
         setSyncing(true)
-        setJudgmentRunning(true)
         setSyncStatus('Finding recommendations for Store items…', event.id ?? null)
         return
       }
       if (event.status === 'stock_judgment_progress') {
+        if ((event.judged ?? 0) > 0) {
+          latestHasJudgedItemsSeq.current++
+          setHasJudgedItems(true)
+        }
+        setStockSyncGeneration(g => g + 1)
         setSyncStatus(`Finding recommendations for Store items… ${event.judged}/${event.total}`, event.id ?? null)
         return
       }
       if (event.status === 'stock_judgment_complete') {
         setSyncing(false)
-        setJudgmentRunning(false)
-        setHasJudgedItems(true)
+        if ((event.judged ?? 0) > 0) {
+          latestHasJudgedItemsSeq.current++
+          setHasJudgedItems(true)
+        }
+        setStockSyncGeneration(g => g + 1)
         setSyncStatus(`Finished finding recommendations — ${event.judged} items checked`, event.id ?? null)
         return
       }
       if (event.status === 'stock_judgment_error') {
         setSyncing(false)
-        setJudgmentRunning(false)
         setSyncStatus(`Finding recommendations failed: ${event.error}`, event.id ?? null)
+        return
+      }
+      if (event.type === 'listing_changed') {
+        setStockSyncGeneration(g => g + 1)
         return
       }
       if (event.status === 'started') {
@@ -261,12 +389,33 @@ export default function App() {
       source?.close()
       clearTimeout(reconnectTimer)
     }
-  }, [authState, setSyncStatus])
+  }, [authState, setSyncStatus, fetchPriceStatus])
 
   useEffect(() => {
     setUnauthorizedHandler(() => setAuthState({ state: 'unauthenticated' }))
-    getAuthStatus().then(setAuthState).catch(() => setAuthState({ state: 'unauthenticated' }))
   }, [])
+
+  // Re-checked every time the backend transitions from down to up -- covers
+  // both the first successful check and revalidating the session after an
+  // outage. A stale authState from before an outage is harmless to render
+  // in the meantime: pre-auth, the render guard still shows BackendDownScreen
+  // until this fetch gets a chance to run; post-auth, authRevalidating keeps
+  // the overlay/inert state active (see the bottom of this component) until
+  // this fetch actually resolves, not just until backendUp flips true --
+  // otherwise the frozen app would briefly un-freeze before its session is
+  // reconfirmed. The `cancelled` guard discards a response from a request
+  // superseded by a later down/up flap, so an older response can never
+  // overwrite a newer one.
+  useEffect(() => {
+    if (!backendUp) return
+    let cancelled = false
+    setAuthRevalidating(true)
+    getAuthStatus()
+      .then((status) => { if (!cancelled) setAuthState(status) })
+      .catch(() => { if (!cancelled) setAuthState({ state: 'unauthenticated' }) })
+      .finally(() => { if (!cancelled) setAuthRevalidating(false) })
+    return () => { cancelled = true }
+  }, [backendUp])
 
   const startRefresh = useCallback(async (mode: 'all' | 'new') => {
     setCollectionStatus(null)
@@ -340,7 +489,7 @@ export default function App() {
 
   const handleRefreshStock = useCallback(async () => {
     try {
-      await postStockSyncStart()
+      reportStockSyncRejection(await postStockSyncStart(), setSyncStatus)
     } catch (e: any) {
       setSyncStatus(`In-stock sync failed to start: ${e.message}`)
     }
@@ -348,7 +497,7 @@ export default function App() {
 
   const handleRefreshStoreCrawler = useCallback(async (crawlerId: number) => {
     try {
-      await postStockSyncStart(crawlerId)
+      reportStockSyncRejection(await postStockSyncStart(crawlerId), setSyncStatus)
     } catch (e: any) {
       setSyncStatus(`In-stock sync failed to start: ${e.message}`)
     }
@@ -405,8 +554,7 @@ export default function App() {
         }
         setSyncStatus(`${message}${skippedClause}.`)
       }
-      const status = await getJudgmentStatus()
-      setHasJudgedItems(status.any_judged)
+      refreshJudgmentStatus()
     } catch (e: any) {
       let message = e.message || 'Import failed'
       try {
@@ -417,7 +565,7 @@ export default function App() {
       }
       setSyncStatus(`Import recommendations failed: ${message}`)
     }
-  }, [setSyncStatus])
+  }, [setSyncStatus, refreshJudgmentStatus])
 
   const handleClearRecommendations = useCallback(async () => {
     if (!window.confirm('Clear all recommendations? This removes every recommended and not-recommended judgment from the database — every Store item will need to be re-evaluated from scratch, which costs Anthropic API calls to redo.')) {
@@ -429,6 +577,7 @@ export default function App() {
         setSyncStatus('Cannot clear recommendations while a sync or recommendation run is in progress')
         return
       }
+      latestHasJudgedItemsSeq.current++
       setHasJudgedItems(false)
       setSyncStatus(`Cleared ${result.count} recommendation judgments`)
     } catch (e: any) {
@@ -447,6 +596,9 @@ export default function App() {
     })
   }, [])
 
+  if (backendUp === false && authState?.state !== 'authenticated') {
+    return <BackendDownScreen />
+  }
   if (authState === null) {
     return <div className="min-h-screen flex items-center justify-center text-gray-500">Loading…</div>
   }
@@ -469,7 +621,7 @@ export default function App() {
   const isRealAdmin = authState.user.is_admin
   const showAdminNav = isRealAdmin && !viewAsUser
 
-  const recommendedAvailable = hasAnthropicKey && hasJudgedItems && !judgmentRunning
+  const recommendedAvailable = hasAnthropicKey && hasJudgedItems
   const syncBannerVisible = syncMessage !== null && (syncMessageId === null || syncMessageId > dismissedSyncId)
   const crawlBannerVisible = crawlBannerId > dismissedCrawlId
 
@@ -488,6 +640,13 @@ export default function App() {
 
   return (
     <div className="h-screen bg-gray-950 text-gray-100 flex flex-col overflow-hidden">
+      {/* Wrapper is `inert` while the backend is confirmed down, or while a
+          post-recovery session revalidation is still in flight, so a
+          keyboard or screen-reader user can't tab into the frozen app
+          underneath the BackendDownScreen overlay. `display: contents` keeps
+          it invisible to layout -- header/main/etc. stay direct flex
+          children of the h-screen container above. */}
+      <div inert={backendUp === false || authRevalidating} className="contents">
       {/* Header */}
       <header className="bg-gray-900 border-b border-gray-800 px-6 py-3 flex items-center gap-4">
         <nav className="flex gap-2">
@@ -519,18 +678,28 @@ export default function App() {
         <nav className="flex items-center gap-2 ml-auto">
           {showAdminNav && (
             <button
+              onClick={() => setView('queue')}
+              className={`px-3 py-1.5 text-sm font-medium ${navButtonClass(view === 'queue')}`}
+            >
+              Queue
+            </button>
+          )}
+          {showAdminNav && (
+            <button
               onClick={() => setView('logs')}
               className={`px-3 py-1.5 text-sm font-medium ${navButtonClass(view === 'logs')}`}
             >
               Logs
             </button>
           )}
-          <button
-            onClick={() => setView('settings')}
-            className={`px-3 py-1.5 text-sm font-medium ${navButtonClass(view === 'settings')}`}
-          >
-            Settings
-          </button>
+          {showAdminNav && (
+            <button
+              onClick={() => setView('settings')}
+              className={`px-3 py-1.5 text-sm font-medium ${navButtonClass(view === 'settings')}`}
+            >
+              Settings
+            </button>
+          )}
           <button
             onClick={() => setView('account')}
             aria-label="Profile"
@@ -551,6 +720,7 @@ export default function App() {
             syncing={syncing}
             onRefreshCollection={() => handleRefresh()}
             syncGeneration={syncGeneration}
+            hasPriceField={hasPriceData}
           />
         </div>
         <div className={view === 'wantlist' ? 'h-full' : 'hidden'}>
@@ -559,13 +729,14 @@ export default function App() {
             syncing={syncing}
             onRefreshCollection={() => handleRefreshWantlist()}
             syncGeneration={syncGeneration}
+            hasPriceField={hasPriceData}
           />
         </div>
         <div className={view === 'store' ? 'h-full' : 'hidden'}>
-          <StockBrowser recommendedAvailable={recommendedAvailable} hiddenCrawlerIds={hiddenCrawlerIds} />
+          <StockBrowser recommendedAvailable={recommendedAvailable} hiddenCrawlerIds={hiddenCrawlerIds} crawlers={crawlers} onHiddenCrawlerIdsChange={updateHiddenCrawlerIds} hiddenCrawlerIdsLoaded={hiddenCrawlerIdsLoaded} syncGeneration={stockSyncGeneration} isAdmin={showAdminNav} />
         </div>
         <div className={view === 'track' ? 'h-full' : 'hidden'}>
-          <StockBrowser scope="track" hiddenCrawlerIds={hiddenCrawlerIds} />
+          <StockBrowser scope="track" hiddenCrawlerIds={hiddenCrawlerIds} crawlers={crawlers} onHiddenCrawlerIdsChange={updateHiddenCrawlerIds} hiddenCrawlerIdsLoaded={hiddenCrawlerIdsLoaded} syncGeneration={stockSyncGeneration} isAdmin={showAdminNav} hasPriceField={hasPriceData} />
         </div>
         <div className={view === 'settings' ? 'h-full overflow-y-auto' : 'hidden'}>
           <Settings
@@ -574,8 +745,6 @@ export default function App() {
             onRefreshPrices={handleRefreshPricesFromSettings}
             onRefreshStock={handleRefreshStock}
             isAdmin={showAdminNav}
-            hiddenCrawlerIds={hiddenCrawlerIds}
-            onToggleCrawlerView={toggleCrawlerView}
             stockSyncBusy={stockSyncTarget !== null}
             stockSyncCrawlerId={typeof stockSyncTarget === 'number' ? stockSyncTarget : null}
             onRefreshStoreCrawler={handleRefreshStoreCrawler}
@@ -595,7 +764,15 @@ export default function App() {
             hasJudgedItems={hasJudgedItems}
           />
         </div>
-        <div className={view === 'logs' ? 'h-full' : 'hidden'}><LogViewer /></div>
+        {/* Gated on showAdminNav, not just hidden: LogViewer opens its SSE
+            stream on mount regardless of visibility, so mounting it for every
+            user would hand each one an open stream of the operator's log. */}
+        {showAdminNav && <div className={view === 'logs' ? 'h-full' : 'hidden'}><LogViewer /></div>}
+        {/* Gated on showAdminNav for the same reason LogViewer is, and mounted
+            only while it is the active view: QueueView polls the queue on a
+            timer from mount, so a hidden-but-mounted copy would keep querying
+            in the background behind whatever tab the admin is actually on. */}
+        {showAdminNav && view === 'queue' && <div className="h-full"><QueueView /></div>}
       </main>
 
       {/* Collection refresh modal */}
@@ -728,6 +905,14 @@ export default function App() {
           )}
         </div>
       )}
+      </div>
+
+      {/* Backend down overlay -- shown on top of the still-mounted (but now
+          inert) app so in-progress state (search filters, unsaved Settings
+          fields) survives a transient outage instead of being unmounted.
+          Stays up through authRevalidating too, so recovery never exposes
+          the stale authenticated app before its session is reconfirmed. */}
+      {(backendUp === false || authRevalidating) && <BackendDownScreen />}
     </div>
   )
 }

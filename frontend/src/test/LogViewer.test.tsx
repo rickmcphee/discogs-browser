@@ -3,7 +3,6 @@ import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import LogViewer from '../views/LogViewer'
 import { openLogsStream } from '../api/client'
 
-// Mock the EventSource used by openLogsStream
 class MockEventSource {
   static instance: MockEventSource | null = null
   onmessage: ((e: MessageEvent) => void) | null = null
@@ -25,12 +24,24 @@ vi.mock('../api/client', () => ({
   clearLogs: vi.fn(),
 }))
 
-function emitLine(line: string) {
-  act(() => { MockEventSource.instance?.emit({ line }) })
+let nextId = 1
+function emitEntry(overrides: Partial<{ time: string; level: string; logger: string; message: string; machine: string }>) {
+  act(() => {
+    MockEventSource.instance?.emit({
+      id: nextId++,
+      time: '2026-06-27 15:30:32',
+      level: 'INFO',
+      logger: 'main',
+      machine: 'fdca1234',
+      message: 'default message',
+      ...overrides,
+    })
+  })
 }
 
 beforeEach(() => {
   MockEventSource.instance = null
+  nextId = 1
   ;(openLogsStream as any).mockClear()
 })
 afterEach(() => { vi.restoreAllMocks() })
@@ -41,26 +52,25 @@ describe('LogViewer', () => {
     expect(screen.getByText(/No log entries/i)).toBeInTheDocument()
   })
 
-  it('displays a parsed INFO log line', () => {
+  it('displays a structured INFO log entry, including its machine tag', () => {
     render(<LogViewer />)
-    emitLine('2026-06-27 15:30:32  INFO      main  Discogs Browser started')
+    emitEntry({ level: 'INFO', logger: 'main', machine: 'fdca1234', message: 'Discogs Browser started' })
     expect(screen.getByText('Discogs Browser started')).toBeInTheDocument()
-    // INFO appears in both the toggle button and the log row — at least 2
     expect(screen.getAllByText('INFO').length).toBeGreaterThanOrEqual(2)
     expect(screen.getByText('main')).toBeInTheDocument()
+    expect(screen.getByText('fdca1234')).toBeInTheDocument()
   })
 
-  it('displays an ERROR line', () => {
+  it('displays an ERROR entry', () => {
     render(<LogViewer />)
-    emitLine('2026-06-27 15:31:00  ERROR     routers.crawl  Something broke')
+    emitEntry({ level: 'ERROR', logger: 'routers.crawl', message: 'Something broke' })
     expect(screen.getByText('Something broke')).toBeInTheDocument()
-    // ERROR appears in both the toggle button and the log row
     expect(screen.getAllByText('ERROR').length).toBeGreaterThanOrEqual(2)
   })
 
   it('hides INFO lines when INFO toggle is off', () => {
     render(<LogViewer />)
-    emitLine('2026-06-27 10:00:00  INFO      main  Hello world')
+    emitEntry({ level: 'INFO', message: 'Hello world' })
     expect(screen.getByText('Hello world')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'INFO' }))
@@ -69,8 +79,8 @@ describe('LogViewer', () => {
 
   it('filters by message regexp', () => {
     render(<LogViewer />)
-    emitLine('2026-06-27 10:00:00  INFO      main  Collection refresh started')
-    emitLine('2026-06-27 10:00:01  INFO      main  Crawler loaded successfully')
+    emitEntry({ message: 'Collection refresh started' })
+    emitEntry({ message: 'Crawler loaded successfully' })
 
     const input = screen.getByPlaceholderText(/Filter message/i)
     fireEvent.change(input, { target: { value: 'refresh' } })
@@ -88,7 +98,7 @@ describe('LogViewer', () => {
 
   it('clears all entries when Clear is clicked', () => {
     render(<LogViewer />)
-    emitLine('2026-06-27 10:00:00  INFO      main  Something happened')
+    emitEntry({ message: 'Something happened' })
     expect(screen.getByText('Something happened')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Clear' }))
@@ -98,8 +108,8 @@ describe('LogViewer', () => {
 
   it('shows line count', () => {
     render(<LogViewer />)
-    emitLine('2026-06-27 10:00:00  INFO      main  Line one')
-    emitLine('2026-06-27 10:00:01  INFO      main  Line two')
+    emitEntry({ message: 'Line one' })
+    emitEntry({ message: 'Line two' })
     expect(screen.getByText('2 lines')).toBeInTheDocument()
   })
 
@@ -112,14 +122,11 @@ describe('LogViewer', () => {
 
   it('shows DEBUG lines only when DEBUG toggle is enabled', () => {
     render(<LogViewer />)
-    // DEBUG is off by default: a debug line pushed now is filtered out
-    emitLine('2026-06-27 10:00:00  DEBUG     main  debug detail')
+    emitEntry({ level: 'DEBUG', message: 'debug detail' })
     expect(screen.queryByText('debug detail')).not.toBeInTheDocument()
 
-    // Enabling DEBUG reconnects the stream (with DEBUG); the reseeded stream
-    // then delivers debug lines, which are displayed
     fireEvent.click(screen.getByRole('button', { name: 'DEBUG' }))
-    emitLine('2026-06-27 10:00:01  DEBUG     main  debug after enable')
+    emitEntry({ level: 'DEBUG', message: 'debug after enable' })
     expect(screen.getByText('debug after enable')).toBeInTheDocument()
   })
 
@@ -136,5 +143,12 @@ describe('LogViewer', () => {
       const levels = (openLogsStream as any).mock.calls.at(-1)[0]
       expect(new Set(levels)).toEqual(new Set(['DEBUG', 'INFO', 'WARNING', 'ERROR']))
     })
+  })
+
+  it('renders a multi-line message with its line breaks intact', () => {
+    render(<LogViewer />)
+    emitEntry({ level: 'ERROR', message: 'caught something\nTraceback (most recent call last):\n  File "x.py", line 1' })
+    const cell = screen.getByText(/caught something/)
+    expect(cell.className).toContain('whitespace-pre-wrap')
   })
 })

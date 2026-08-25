@@ -11,7 +11,7 @@ from routers import stock as stock_router
 
 EXPORTED_HEADER = [
     "artist", "title", "format", "price", "source", "link", "reason",
-    "item_key", "recommended", "judged_at",
+    "item_key", "recommended", "judged_at", "currency",
 ]
 
 
@@ -43,7 +43,10 @@ def test_post_stock_sync_start_forwards_crawler_id_as_admin(pg_test_db, authed_c
 
     async def _fake_start_stock_sync(crawler_id=None):
         calls.append(crawler_id)
-        return True
+        return {
+            "started": True, "on_another_instance": False, "running": True,
+            "source": None, "elapsed_seconds": None, "source_elapsed_seconds": None,
+        }
 
     monkeypatch.setattr(crawl_manager, "start_stock_sync", _fake_start_stock_sync)
 
@@ -55,12 +58,74 @@ def test_post_stock_sync_start_forwards_crawler_id_as_admin(pg_test_db, authed_c
 
     r = client.post("/api/stock/sync/start", json={"crawler_id": 42}, headers={"X-Requested-With": "fetch"})
     assert r.status_code == 200
-    assert r.json() == {"started": True, "running": False}
+    assert r.json() == {
+        "started": True, "on_another_instance": False, "running": True,
+        "source": None, "elapsed_seconds": None, "source_elapsed_seconds": None,
+    }
 
     r = client.post("/api/stock/sync/start", headers={"X-Requested-With": "fetch"})
     assert r.status_code == 200
 
     assert calls == [42, None]
+
+
+def test_post_stock_sync_start_reports_what_is_holding_the_lock_when_rejected(
+    pg_test_db, authed_client_factory, monkeypatch
+):
+    """A rejected Refresh used to come back as a bare started=false the
+    frontend dropped on the floor, so the click looked like it had done
+    nothing -- on a source that takes over an hour, indistinguishable from a
+    hang."""
+    async def _fake_start_stock_sync(crawler_id=None):
+        return {
+            "started": False, "on_another_instance": False, "running": True,
+            "source": "Dischord Records",
+            "elapsed_seconds": 5400, "source_elapsed_seconds": 4500,
+        }
+
+    monkeypatch.setattr(crawl_manager, "start_stock_sync", _fake_start_stock_sync)
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute("UPDATE users SET is_admin = TRUE WHERE id = %s", [user["id"]])
+        conn.commit()
+    client = authed_client_factory(user["id"])
+
+    r = client.post("/api/stock/sync/start", json={"crawler_id": 7}, headers={"X-Requested-With": "fetch"})
+    assert r.status_code == 200
+    assert r.json() == {
+        "started": False, "on_another_instance": False, "running": True,
+        "source": "Dischord Records",
+        "elapsed_seconds": 5400, "source_elapsed_seconds": 4500,
+    }
+
+
+def test_post_stock_sync_start_reports_a_sync_held_by_another_instance(
+    pg_test_db, authed_client_factory, monkeypatch
+):
+    """The cross-Machine rejection: the holder is another Machine, so this
+    process's stock_sync_state() would report the idle shape for a sync that
+    is genuinely running. `on_another_instance` is what separates that from
+    "running here, not yet past its first crawler," which shares the same
+    all-null source and timings."""
+    async def _fake_start_stock_sync(crawler_id=None):
+        return {
+            "started": False, "on_another_instance": True, "running": True,
+            "source": None, "elapsed_seconds": None, "source_elapsed_seconds": None,
+        }
+
+    monkeypatch.setattr(crawl_manager, "start_stock_sync", _fake_start_stock_sync)
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute("UPDATE users SET is_admin = TRUE WHERE id = %s", [user["id"]])
+        conn.commit()
+    client = authed_client_factory(user["id"])
+
+    r = client.post("/api/stock/sync/start", headers={"X-Requested-With": "fetch"})
+    assert r.status_code == 200
+    assert r.json()["on_another_instance"] is True
+    assert r.json()["running"] is True
 
 
 @pytest.fixture(autouse=True)
@@ -376,6 +441,92 @@ def test_list_stock_artists_library_scope_narrows_the_sidebar(pg_test_db, authed
     assert r.json()["artists"] == []
 
 
+def test_put_stock_saved_marks_item_saved(pg_test_db, authed_client_factory):
+    crawler_id = _make_crawler()
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        db.replace_stock_items(conn, crawler_id, [
+            {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+        ])
+        conn.commit()
+    item_key = db.compute_item_key("Artist A", "Album A", "https://x/1")
+    client = authed_client_factory(user["id"])
+
+    r = client.put(f"/api/stock/saved/{item_key}", headers={"X-Requested-With": "fetch"})
+    assert r.status_code == 200
+    assert r.json() == {"saved": True}
+
+    r = client.get("/api/stock?saved=true", headers={"X-Requested-With": "fetch"})
+    assert r.json()["total"] == 1
+
+
+def test_delete_stock_saved_unmarks_item_saved(pg_test_db, authed_client_factory):
+    crawler_id = _make_crawler()
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        db.replace_stock_items(conn, crawler_id, [
+            {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+        ])
+        conn.commit()
+    item_key = db.compute_item_key("Artist A", "Album A", "https://x/1")
+    client = authed_client_factory(user["id"])
+    client.put(f"/api/stock/saved/{item_key}", headers={"X-Requested-With": "fetch"})
+
+    r = client.delete(f"/api/stock/saved/{item_key}", headers={"X-Requested-With": "fetch"})
+    assert r.status_code == 200
+    assert r.json() == {"saved": False}
+
+    r = client.get("/api/stock?saved=true", headers={"X-Requested-With": "fetch"})
+    assert r.json()["total"] == 0
+
+
+def test_delete_stock_saved_on_never_saved_item_is_a_noop(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    client = authed_client_factory(user["id"])
+
+    r = client.delete("/api/stock/saved/never-saved-key", headers={"X-Requested-With": "fetch"})
+    assert r.status_code == 200
+    assert r.json() == {"saved": False}
+
+
+def test_stock_saved_isolated_per_user(pg_test_db, authed_client_factory):
+    crawler_id = _make_crawler()
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        bob = db.create_user(conn, discogs_user_id=2, discogs_username="bob")
+        db.replace_stock_items(conn, crawler_id, [
+            {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+        ])
+        conn.commit()
+    item_key = db.compute_item_key("Artist A", "Album A", "https://x/1")
+    alice_client = authed_client_factory(alice["id"])
+    bob_client = authed_client_factory(bob["id"])
+
+    alice_client.put(f"/api/stock/saved/{item_key}", headers={"X-Requested-With": "fetch"})
+
+    r = bob_client.get("/api/stock?saved=true", headers={"X-Requested-With": "fetch"})
+    assert r.json()["total"] == 0
+
+
+def test_list_stock_artists_saved_filters(pg_test_db, authed_client_factory):
+    crawler_id = _make_crawler()
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        db.replace_stock_items(conn, crawler_id, [
+            {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+            {"artist": "Artist B", "title": "Album B", "url": "https://x/2", "price": 15.0, "currency": "USD"},
+        ])
+        conn.commit()
+    item_key = db.compute_item_key("Artist A", "Album A", "https://x/1")
+    client = authed_client_factory(user["id"])
+    client.put(f"/api/stock/saved/{item_key}", headers={"X-Requested-With": "fetch"})
+
+    r = client.get("/api/stock/artists?saved=true", headers={"X-Requested-With": "fetch"})
+    assert r.json()["artists"] == ["Artist A"]
+
+
 def test_list_stock_excludes_hidden_crawler_ids(pg_test_db, authed_client_factory):
     amazon_id = _make_crawler("Amazon")
     nb_id = _make_crawler("Nuclear Blast")
@@ -529,7 +680,53 @@ def _seed_judged_item(user_id, artist="Artist A", title="Album A", url="https://
     return item_key
 
 
-def test_export_emits_the_ten_column_header_and_not_recommended_rows(pg_test_db, authed_client_factory):
+def test_export_carries_a_non_usd_currency(pg_test_db, authed_client_factory):
+    # Without a currency column an exported EUR row is a bare "27.99" that
+    # reads as dollars. Some sources already price in EUR (jetglowrecordings.py
+    # hardcodes it; darkdescentrecords.py passes its feed's value through), so
+    # this is live data, not a hypothetical.
+    crawler_id = _make_crawler("Jetglow Recordings")
+    with db.get_admin_pool().connection() as conn:
+        db.replace_stock_items(conn, crawler_id, [
+            {"artist": "Lowdrive", "title": "Rise", "format": "Vinyl",
+             "price": 27.99, "currency": "EUR", "url": "https://x/eur"},
+        ])
+        user = db.create_user(conn, discogs_user_id=7, discogs_username="eur")
+        conn.commit()
+
+    item_key = db.compute_item_key("Lowdrive", "Rise", "https://x/eur")
+    with db.user_scope(user["id"]) as conn:
+        db.upsert_stock_judgments(conn, user["id"], [
+            {"item_key": item_key, "recommended": True, "reason": "eur"},
+        ])
+        conn.commit()
+
+    client = authed_client_factory(user["id"])
+    rows = list(csv.reader(io.StringIO(client.get("/api/stock/export").text)))
+    assert rows[0] == EXPORTED_HEADER
+    assert rows[1][3] == "27.99"
+    assert rows[1][EXPORTED_HEADER.index("currency")] == "EUR"
+
+
+def test_export_leaves_currency_empty_when_the_row_has_none(pg_test_db, authed_client_factory):
+    # A judgment whose item is no longer in stock has no joined row at all, so
+    # every live-price column is NULL. Currency must come out empty rather than
+    # defaulting to a currency nothing recorded.
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=8, discogs_username="nostock")
+        conn.commit()
+    with db.user_scope(alice["id"]) as conn:
+        db.upsert_stock_judgments(conn, alice["id"], [
+            {"item_key": "c" * 64, "recommended": True, "reason": "gone"},
+        ])
+        conn.commit()
+
+    client = authed_client_factory(alice["id"])
+    rows = list(csv.reader(io.StringIO(client.get("/api/stock/export").text)))
+    assert rows[1][EXPORTED_HEADER.index("currency")] == ""
+
+
+def test_export_emits_the_eleven_column_header_and_not_recommended_rows(pg_test_db, authed_client_factory):
     with db.get_admin_pool().connection() as conn:
         alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
         conn.commit()

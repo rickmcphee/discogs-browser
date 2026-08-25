@@ -110,3 +110,107 @@ def test_aggregate_query_also_respects_isolation(two_users_one_shared_release):
     with db.user_scope(alice_id) as conn:
         row = conn.execute("SELECT COUNT(*) AS n FROM library_items").fetchone()
     assert row["n"] == 1
+
+
+@pytest.fixture
+def two_users_one_shared_crawler(pg_test_db, monkeypatch):
+    db.init_global_schema()
+    db.init_tenant_schema()
+    monkeypatch.setattr(
+        db.config,
+        "APP_DATABASE_URL",
+        db.config._with_userinfo(
+            os.environ["TEST_DATABASE_URL"], "app_user", os.environ["APP_DB_PASSWORD"]
+        ),
+    )
+    with db.get_admin_pool().connection() as admin:
+        alice = admin.execute(
+            "INSERT INTO users (discogs_user_id, discogs_username) VALUES (1, 'alice') RETURNING id",
+        ).fetchone()
+        bob = admin.execute(
+            "INSERT INTO users (discogs_user_id, discogs_username) VALUES (2, 'bob') RETURNING id",
+        ).fetchone()
+        db.register_crawler(admin, "Amazon", "/x.py")
+        crawler = admin.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()
+        # Both users hide the same crawler in their own row, so a leak in
+        # either direction has something real to leak.
+        admin.execute(
+            "INSERT INTO user_hidden_crawlers (user_id, crawler_id) VALUES (%s, %s)",
+            [alice["id"], crawler["id"]],
+        )
+        admin.commit()
+
+    yield alice["id"], bob["id"], crawler["id"]
+
+    with db.get_admin_pool().connection() as admin:
+        admin.execute("TRUNCATE users, crawlers, user_hidden_crawlers CASCADE")
+        admin.commit()
+
+
+def test_user_sees_only_their_own_hidden_crawlers(two_users_one_shared_crawler):
+    alice_id, _bob_id, crawler_id = two_users_one_shared_crawler
+    with db.user_scope(alice_id) as conn:
+        assert db.get_hidden_crawler_ids(conn, alice_id) == [crawler_id]
+
+
+def test_other_user_does_not_see_the_first_users_hidden_crawler(two_users_one_shared_crawler):
+    _alice_id, bob_id, _crawler_id = two_users_one_shared_crawler
+    with db.user_scope(bob_id) as conn:
+        assert db.get_hidden_crawler_ids(conn, bob_id) == []
+
+
+def test_set_hidden_crawler_ids_replaces_the_full_set(two_users_one_shared_crawler):
+    alice_id, _bob_id, crawler_id = two_users_one_shared_crawler
+    with db.get_admin_pool().connection() as admin:
+        db.register_crawler(admin, "eBay", "/y.py")
+        second = admin.execute("SELECT id FROM crawlers WHERE site_name = 'eBay'").fetchone()["id"]
+        admin.commit()
+
+    with db.user_scope(alice_id) as conn:
+        db.set_hidden_crawler_ids(conn, alice_id, [second])
+        conn.commit()
+
+    with db.user_scope(alice_id) as conn:
+        assert db.get_hidden_crawler_ids(conn, alice_id) == [second]
+    # crawler_id (the original hidden one) must be gone -- this is a replace,
+    # not a merge.
+    with db.user_scope(alice_id) as conn:
+        assert crawler_id not in db.get_hidden_crawler_ids(conn, alice_id)
+
+
+def test_set_hidden_crawler_ids_with_mismatched_user_id_is_rejected(two_users_one_shared_crawler):
+    alice_id, bob_id, crawler_id = two_users_one_shared_crawler
+    with db.user_scope(alice_id) as conn:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            conn.execute(
+                "INSERT INTO user_hidden_crawlers (user_id, crawler_id) VALUES (%s, %s)",
+                [bob_id, crawler_id],
+            )
+
+
+def test_set_hidden_crawler_ids_dedupes_duplicate_ids(two_users_one_shared_crawler):
+    """A stale client double-posting (or a genuinely duplicated id in the
+    payload) must not hit the table's (user_id, crawler_id) primary key
+    twice in one executemany -- that raises UniqueViolation today and 500s
+    the endpoint."""
+    alice_id, _bob_id, crawler_id = two_users_one_shared_crawler
+    with db.user_scope(alice_id) as conn:
+        db.set_hidden_crawler_ids(conn, alice_id, [crawler_id, crawler_id])
+        conn.commit()
+
+    with db.user_scope(alice_id) as conn:
+        assert db.get_hidden_crawler_ids(conn, alice_id) == [crawler_id]
+
+
+def test_set_hidden_crawler_ids_drops_nonexistent_crawler_id(two_users_one_shared_crawler):
+    """A crawler id that no longer references a real row (renamed/deleted
+    crawler, stale tab) must be silently dropped rather than raising
+    ForeignKeyViolation and 500ing the endpoint."""
+    alice_id, _bob_id, crawler_id = two_users_one_shared_crawler
+    nonexistent_id = crawler_id + 1_000_000
+    with db.user_scope(alice_id) as conn:
+        db.set_hidden_crawler_ids(conn, alice_id, [crawler_id, nonexistent_id])
+        conn.commit()
+
+    with db.user_scope(alice_id) as conn:
+        assert db.get_hidden_crawler_ids(conn, alice_id) == [crawler_id]

@@ -140,6 +140,24 @@ this endpoint. (Settings' nav item itself is unaffected by this toggle,
 since it's already visible to every user regardless of admin status.) See
 [`2026-08-02-account-role-toggle-design.md`](2026-08-02-account-role-toggle-design.md).
 
+**Amendment (2026-08-17, branch `claude/store-crawler-filter-design-d16b80`):**
+both amendments above are stale. The Settings nav item is `is_admin`-gated
+again — the personal display filter that had made it visible to every user
+moved out of Settings into a per-tab "Source" button, and Settings was
+removed entirely for non-admins. Consequently the `viewAsUser` toggle once
+again hides *both* the Settings and Logs nav items:
+`showAdminNav = isRealAdmin && !viewAsUser` (`frontend/src/App.tsx`) gates
+both. See
+[`2026-08-16-store-track-source-filter-design.md`](2026-08-16-store-track-source-filter-design.md).
+**Amendment (2026-08-25, branch `claude/admin-queue-visualization-xoasb7`):** the
+"*both* the Settings and Logs nav items" enumeration above is no longer
+exhaustive. `showAdminNav` now also gates a **Queue** nav button and the
+admin-only `QueueView` behind it. The mechanism is unchanged — this is one more
+item on the same flag, not a new gate — so read that sentence as naming the
+admin-only nav items that existed when it was written rather than as a complete
+list. See
+[`../../specifications/shaping/2026-08-25-admin-queue-tab-design.md`](../../specifications/shaping/2026-08-25-admin-queue-tab-design.md).
+
 **`GET /api/auth/discogs/start`** — begins the handshake. Calls Discogs'
 `POST /oauth/request_token` (signed with `DISCOGS_CONSUMER_KEY`/`SECRET`),
 stores the resulting request token + secret in `oauth_request_state`, then

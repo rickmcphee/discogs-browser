@@ -64,10 +64,12 @@ def test_get_missing_releases_is_scoped_per_user(pg_test_db):
         assert db.get_missing_releases(conn, bob["id"]) == ["r2"]
 
 
-def test_get_missing_releases_excludes_wishlist_only_items(pg_test_db):
-    # The scheduled/mode=missing sweep shouldn't spend crawl budget on
-    # wishlist-only items against sites that are already hard to crawl at
-    # scale -- only in_collection rows are candidates.
+def test_get_missing_releases_includes_wishlist_only_items(pg_test_db):
+    # Wishlist items are auto-enqueued the same as collection items (see
+    # crawl_manager._sync_collection's wishlist loop), so the scheduled/
+    # mode=missing sweep must offer them as candidates too, or a wishlist-
+    # only release enqueued once would never get picked up again after its
+    # first listing goes stale.
     with db.get_admin_pool().connection() as conn:
         alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
         db.register_crawler(conn, "Amazon", "/x.py")
@@ -82,7 +84,31 @@ def test_get_missing_releases_excludes_wishlist_only_items(pg_test_db):
         conn.commit()
 
     with db.user_scope(alice["id"]) as conn:
-        assert db.get_missing_releases(conn, alice["id"]) == ["r1"]
+        # No ORDER BY in get_missing_releases -- compare as a set.
+        assert set(db.get_missing_releases(conn, alice["id"])) == {"r1", "r2"}
+
+
+def test_get_missing_releases_counts_only_release_crawlers(pg_test_db):
+    # A catalog crawler never writes a `listings` row -- only release-type
+    # crawlers do, via upsert_listing -- so counting catalog crawlers in the
+    # enabled-crawler denominator makes every release permanently "missing"
+    # even once every release crawler has priced it.
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        db.register_crawler(conn, "Amazon", "/x.py", crawler_type="release")
+        db.register_crawler(conn, "Some Store", "/y.py", crawler_type="catalog")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.upsert_library_item(conn, alice["id"], "r1", in_collection=True)
+        db.upsert_listing(conn, "r1", crawler_id, "https://x", 9.99, None, "USD", None)
+        conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.get_missing_releases(conn, alice["id"]) == []
 
 
 def test_get_crawl_status_for_user(pg_test_db):
@@ -103,12 +129,36 @@ def test_get_crawl_status_for_user(pg_test_db):
     assert status == {"total": 1, "missing": 1, "oldest_checked": None}
 
 
-def test_get_crawl_status_for_user_excludes_wishlist_only_items(pg_test_db):
-    # get_missing_releases (mode=missing enqueue target) is collection-only;
-    # if this status count still included wishlist-only rows, the checkpoint
-    # modal could report missing > 0 from wishlist rows alone while a
-    # mode=missing crawl enqueues nothing for them, making "Resume" appear
-    # to do nothing.
+def test_get_crawl_status_for_user_counts_only_release_crawlers(pg_test_db):
+    # Same mismatch as get_missing_releases: an enabled catalog crawler can
+    # never contribute a listings row, so it must not inflate the completeness
+    # denominator either -- otherwise `missing` never reaches 0.
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        db.register_crawler(conn, "Amazon", "/x.py", crawler_type="release")
+        db.register_crawler(conn, "Some Store", "/y.py", crawler_type="catalog")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.upsert_library_item(conn, alice["id"], "r1", in_collection=True)
+        db.upsert_listing(conn, "r1", crawler_id, "https://x", 9.99, None, "USD", None)
+        conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        status = db.get_crawl_status_for_user(conn, alice["id"])
+    assert status["total"] == 1
+    assert status["missing"] == 0
+    assert status["oldest_checked"] is not None
+
+
+def test_get_crawl_status_for_user_includes_wishlist_only_items(pg_test_db):
+    # get_missing_releases (mode=missing enqueue target) now counts
+    # wishlist-only rows too -- this status must match, or the checkpoint
+    # modal's "Resume" could report missing == 0 while a mode=missing crawl
+    # actually has wishlist candidates to enqueue.
     with db.get_admin_pool().connection() as conn:
         alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
         db.register_crawler(conn, "Amazon", "/x.py")
@@ -122,7 +172,7 @@ def test_get_crawl_status_for_user_excludes_wishlist_only_items(pg_test_db):
 
     with db.user_scope(alice["id"]) as conn:
         status = db.get_crawl_status_for_user(conn, alice["id"])
-    assert status == {"total": 0, "missing": 0, "oldest_checked": None}
+    assert status == {"total": 1, "missing": 1, "oldest_checked": None}
 
 
 def test_get_crawl_status_for_user_with_zero_total(pg_test_db):

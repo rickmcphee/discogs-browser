@@ -80,7 +80,14 @@ change that).
   now **Track**. The Price column renders under all three of its filter
   values, not just the collection one — the price subquery is pinned to
   `'collection'` scope, so a wantlist-only row returns NULL and renders
-  `—` with no conditional rendering. "Out of scope: any change to wishlist
+  `—` with no conditional rendering.
+
+  **Amendment (2026-08-18, branch `discogs-price-column-detection`):** "no
+  conditional rendering" is superseded — the column is now conditional on
+  whether the calling user has any collection `price_paid` value at all,
+  independent of which filter is selected. See
+  [`2026-08-18-price-column-auto-hide-design.md`](2026-08-18-price-column-auto-hide-design.md).
+  "Out of scope: any change to wishlist
   items (they never carry a `discogs_price` today and this doesn't change
   that)" is superseded: wantlist items are now matched, and still never
   carry a `discogs_price`, deliberately. The `sort == "discogs_price" and
@@ -107,6 +114,36 @@ change that).
   single well-formed numeric substring first avoids that. No validation or
   normalization of the underlying free-text value itself; this only affects
   sort order, never what's displayed.
+
+  (As of 2026-08-24 the extraction moved into a shared `_price_sort_sql()`
+  helper, now used by `get_library_releases` too, and the single pattern above
+  became a branch on format. The token it matches admits both separators, and
+  which one is the decimal mark is decided by which format the token fits:
+  `1,200` / `1,200.50` / `1,234,567` are comma grouping and lose their commas;
+  `1.234.567` / `1.234,56` are dot grouping and lose their dots, the comma
+  becoming the point; `25,50` is a decimal comma; `25` / `25.50` are already
+  plain; a bare decimal part (`.99`, `,99`) gets its leading zero back; and
+  anything unrecognised falls back to its *leading digit run*, everything from
+  the first separator on discarded. Not "digits only" — removing the separators
+  from `"25.00.00"` yields 250000, which is the behaviour this fallback exists
+  to avoid.
+
+  An intermediate version of this amendment described the helper as stripping
+  every comma. That is what it did for one commit, and it was wrong: `"€25,50"`
+  came out as 2550, a hundredfold overstatement. Recorded here rather than
+  quietly overwritten, because the mistake is the reason the branch table
+  exists.
+
+  Everything else above still holds: still a single well-formed substring
+  rather than a blanket strip-then-cast — every branch yields digits with at
+  most one dot, so `::numeric` cannot fail — still NULL-and-last for a value
+  with no digits, still sort-order-only. See
+  [`2026-08-24-numeric-price-sort-design.md`](2026-08-24-numeric-price-sort-design.md).
+
+  "Sorts as NULL, last" above was only ever true ascending. `get_stock_items`
+  derived its `null_order` from the requested order, so a descending sort put
+  the digit-less rows first; it is pinned to `ASC` as of the same date, making
+  the sentence true in both directions as it always claimed.)
 - **Missing value renders as `—`**, matching `Format`'s existing convention
   in the same table.
 - **Shared match logic, not duplicated.** `_not_owned_clause`'s
@@ -170,6 +207,20 @@ else:
     sort_col = sort if sort in _STOCK_ALLOWED_SORT else "artist"
     sort_expr = f"s.{sort_col}"
 ```
+
+(As of 2026-08-14 the `else` branch's last line reads
+`sort_expr = "LOWER(s.artist)" if sort_col == "artist" else f"s.{sort_col}"` —
+the artist sort became case-insensitive so an artist's casing variants stay
+adjacent. Nothing else about the gate above changed. See
+[`2026-08-14-artist-casing-canonicalization-design.md`](2026-08-14-artist-casing-canonicalization-design.md).)
+
+(As of 2026-08-24 the `if` branch's inline `regexp_match` is gone too: the
+extraction moved into a shared `_price_sort_sql()` helper, with the
+format-dependent normalization described under "Best-effort numeric sort"
+above. The subquery wrapper
+and the match fragment around it are unchanged; the column it reads is
+`li.price_paid`, per the storage correction at the top of this document. See
+[`2026-08-24-numeric-price-sort-design.md`](2026-08-24-numeric-price-sort-design.md).)
 
 `_STOCK_ALLOWED_SORT` is left unchanged — `"discogs_price"` is deliberately
 *not* a member. `routers/stock.py` passes `sort` straight through to
