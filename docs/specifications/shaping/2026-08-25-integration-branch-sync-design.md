@@ -93,10 +93,25 @@ holds. That is its entire meaning, and every rule below is a consequence:
 
 In order, first hit wins:
 
-1. **The tag**, if it exists.
+1. **The tag**, if it exists — possibly advanced by promotion, below.
 2. **`BOOTSTRAP_BASE`**, a constant naming the `main` commit `integration` held
    when this workflow was written (`43217e9`; #184 synced `integration` to
    exactly that tree).
+
+### Keeping it current: the pending tag
+
+Opening a sync PR writes `integration-sync-pending`, naming the `main` commit
+that PR carries. A later run resolves it:
+
+| Sync PR state | Action |
+| --- | --- |
+| still open | leave pending; nothing is proven yet |
+| merged | promote to `integration-sync-base`, then delete pending |
+| closed unmerged | delete pending, promote nothing |
+
+The PR itself is looked up by head branch, which survives the branch's deletion
+because GitHub keeps the pull request record. That is the whole reason this is a
+tag rather than something read off the branch: the branch is gone on merge.
 
 There is deliberately **no recovery from the sync branch**, though several
 drafts had one: read the incorporated `main` SHA back off the landed sync
@@ -106,11 +121,26 @@ the instant its PR merges — verified against the head branches of #157, #178 a
 #184, none of which survive. A mechanism that can never execute is worse than
 its absence: it reads as covering a case it does not.
 
-The consequence is that the marker may **lag** — the path that opens a sync PR
-proves nothing, so the marker only advances at the two exits below. It is always
-*valid* (the invariant guarantees that), occasionally older than it could be,
-and an older-but-valid base costs a possible real-looking conflict, never a
-wrong merge.
+A lagging marker is not merely stale — it is **wrong**, and an earlier draft of
+this document said otherwise. Valid and current are different properties, and
+only the second makes the merge correct:
+
+```
+main   M0(off) -> M1(on) -> M2(reverts to off)
+integration    holds M1's change, from a sync that landed
+
+marker M0 (lagging)  -> base=off ours=on theirs=off -> keeps ON   revert DROPPED
+marker M1 (current)  -> base=on  ours=on theirs=off -> takes OFF  revert applied
+```
+
+With the marker lagging, git sees `base == theirs` and treats `integration`'s
+side as the only change, so `main`'s revert never arrives and the next promotion
+carries the reverted change back into `main`. Worse, that merge is a no-op, so
+an exit that recorded "containment proven" there would stamp the revert as
+incorporated without ever applying it.
+
+So the marker must be kept current, which needs the incorporated commit recorded
+somewhere that outlives the sync branch.
 
 ### Where a marker is recorded
 
@@ -119,7 +149,12 @@ Only these two, and each has proven containment at that point:
 | Point | What proves containment |
 | --- | --- |
 | Trees identical | `integration` and `main` hold the same files |
-| Merge was a no-op | Bringing `main` in changed nothing on `integration` |
+| A sync PR merged | The pending tag named what it carried, and it landed |
+
+A merge that changes nothing on `integration` deliberately records **nothing**.
+It only proves containment *relative to the base used*, so with a lagging marker
+it proves nothing at all — and that is precisely the case where stamping the
+current `main` marks a revert incorporated without applying it.
 
 The path that *opens* a sync PR deliberately records nothing: the merge has not
 landed, so containment is not yet true.
@@ -260,6 +295,9 @@ prevent.
 | Guard failed open on an API error | Both reads sat inside `if` tests, where `set -e` cannot see a command fail, so an auth error read as "no label, not armed" | Hoisted into assignments |
 | A revert on `main` never reaching `integration` | "Has main advanced" compared trees, so a `main` reverting to the marker's tree read as no advance | Compare commit ids |
 | Refresh suppressed for days | The pending guard held `refresh` off while a sync PR was queued, and a queued PR can wait indefinitely on parked checks | Guard removed; a redundant `update-branch` is cheaper than a stranded PR |
+| **A revert on `main` silently dropped** | The marker lagged what `integration` held, so the three-way merge read `main`'s revert as no change at all and kept the old side | The pending tag keeps the marker current |
+| A dropped revert recorded as incorporated | The no-op exit stamped the current `main` even though the no-op was an artefact of the lagging base | That exit records nothing |
+| Resolver told auto-merge was off when it was not | `--disable-auto` failing only warned, then the instructions printed anyway | That path fails instead |
 | Sync PR open forever | `\|\| true` swallowed a total auto-merge failure, and the run reported success | Let it fail |
 | Unrelated PRs blocked by someone else's conflict | A conflicted sync PR reported a pending sync, suppressing `refresh`, though auto-merge was off and nothing was about to move | Superseded: the pending guard is gone entirely |
 | Refresh silently doing nothing | `for n in $(gh pr list …)` is a word expansion, so `set -e` never saw the command fail | Assign first |
