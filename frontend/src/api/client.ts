@@ -1,6 +1,7 @@
 import type {
   ReleasesResponse, Crawler, Settings, UserSettings, SortField, SortOrder, CrawlStatus, CollectionStatus, ScreenshotSession,
   AuthStatus, RecordScope, StockResponse, StockSortField, LibraryScope, RecommendationImportResult, Invite,
+  QueueSummary, QueueNextItem,
 } from './types'
 
 const BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/+$/, '')
@@ -381,4 +382,69 @@ export async function deleteAvatar(): Promise<void> {
 
 export function avatarUrl(version: number): string {
   return `${BASE}/auth/avatar?v=${version}`
+}
+
+// Both carry a deadline. QueueView holds at most one summary in flight, so a
+// request that never settles would wedge its polling loop for good -- the last
+// snapshot left on screen, no stale warning, no recovery. A timeout turns that
+// into an ordinary rejection the view already renders, and the loop continues.
+// Same mechanism checkHealth uses.
+const QUEUE_TIMEOUT_MS = 20_000
+
+// Coalesced at module scope, not per component. QueueView's own guard is
+// component-local, so it cannot survive the view being unmounted -- and the
+// Queue tab is mounted only while it is active, so leaving and reopening it
+// during a slow report built a fresh instance that immediately issued another.
+// Same escape hatch the timer and the hide/show path had; this closes the class
+// rather than a third instance of it. A summary is a REPEATABLE READ
+// transaction on the pool the crawl workers claim through, so overlapping them
+// is the one thing this request must never do.
+let summaryInFlight: Promise<QueueSummary> | null = null
+
+export function getQueueSummary(): Promise<QueueSummary> {
+  if (summaryInFlight) return summaryInFlight
+  summaryInFlight = (async () => {
+    try {
+      const r = await apiFetch('/queue/summary', { signal: AbortSignal.timeout(QUEUE_TIMEOUT_MS) })
+      if (!r.ok) throw new Error(await r.text())
+      return await r.json()
+    } finally {
+      // Cleared here rather than by chaining onto this promise: a trailing
+      // .finally() settles a microtask after an awaiter resumes, so a caller
+      // that awaited and immediately called again would be handed the spent
+      // slot. Inside the function it is already null when this promise
+      // settles -- and it settles either way, so a rejection cannot wedge
+      // every later caller.
+      summaryInFlight = null
+    }
+  })()
+  return summaryInFlight
+}
+
+// Coalesced per (crawler, limit) for the same reason as the summary. The view
+// re-runs this on every poll -- the effect depends on the summary's timestamp --
+// so a next-up query slower than the poll interval would otherwise start
+// another alongside it, and a tab unmount/remount is the same escape again.
+const nextInFlight = new Map<string, Promise<QueueNextItem[]>>()
+
+export function getQueueNext(crawlerId: number, limit = 25): Promise<QueueNextItem[]> {
+  const key = `${crawlerId}:${limit}`
+  const existing = nextInFlight.get(key)
+  if (existing) return existing
+  const request = (async () => {
+    try {
+      const r = await apiFetch(`/queue/crawlers/${crawlerId}/next?limit=${limit}`, {
+        signal: AbortSignal.timeout(QUEUE_TIMEOUT_MS),
+      })
+      if (!r.ok) throw new Error(await r.text())
+      return (await r.json()).items
+    } finally {
+      // Cleared inside, not by chaining onto the promise -- a trailing
+      // .finally() settles a microtask after an awaiter resumes and would hand
+      // the next caller a spent entry. Same reason as the summary above.
+      nextInFlight.delete(key)
+    }
+  })()
+  nextInFlight.set(key, request)
+  return request
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { postCrawlStart, postStockSyncStart, getUserSettings, saveUserSettings, logout, getStock, getStockArtists, getReleases, getArtists, postPlexMatchStart, refreshCollection, openCrawlStream, openLogsStream, importRecommendationsCsv, listInvites, createInvite, getUserHiddenCrawlers, postUserHiddenCrawlers, saveStockItem, unsaveStockItem, checkHealth } from '../api/client'
+import { postCrawlStart, postStockSyncStart, getUserSettings, saveUserSettings, logout, getStock, getStockArtists, getReleases, getArtists, postPlexMatchStart, refreshCollection, openCrawlStream, openLogsStream, importRecommendationsCsv, listInvites, createInvite, getUserHiddenCrawlers, postUserHiddenCrawlers, saveStockItem, unsaveStockItem, checkHealth, getQueueSummary, getQueueNext } from '../api/client'
 
 describe('crawl/user-settings client functions', () => {
   let fetchMock: ReturnType<typeof vi.fn>
@@ -297,5 +297,101 @@ describe('crawl/user-settings client functions', () => {
     await unsaveStockItem('abc123')
     expect(fetchMock.mock.calls[0][0]).toContain('/stock/saved/abc123')
     expect(fetchMock.mock.calls[0][1].method).toBe('DELETE')
+  })
+})
+
+describe('queue client functions', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ items: [] }) })
+    vi.stubGlobal('fetch', fetchMock)
+  })
+
+  // QueueView holds at most one summary in flight, so a request that never
+  // settles would wedge its polling loop for good -- last snapshot on screen,
+  // no stale warning, no recovery.
+  it('gives the summary request a deadline', async () => {
+    await getQueueSummary()
+    const [, init] = fetchMock.mock.calls[0]
+    expect(init.signal).toBeInstanceOf(AbortSignal)
+  })
+
+  it('gives the next-up request a deadline', async () => {
+    await getQueueNext(1)
+    const [, init] = fetchMock.mock.calls[0]
+    expect(init.signal).toBeInstanceOf(AbortSignal)
+  })
+
+  // The view's own guard is component-local, so it cannot survive the Queue tab
+  // being unmounted. Coalescing here is what stops a leave/reopen during a slow
+  // report issuing a second repeatable-read transaction alongside the first.
+  it('coalesces concurrent summary requests into one', async () => {
+    let release: (v: unknown) => void = () => {}
+    fetchMock.mockReturnValue(new Promise((r) => {
+      release = () => r({ ok: true, status: 200, json: async () => ({}) })
+    }))
+
+    const a = getQueueSummary()
+    const b = getQueueSummary()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(a).toBe(b)
+
+    release(null)
+    await a
+  })
+
+  it('releases the coalescing slot once a summary settles', async () => {
+    await getQueueSummary()
+    await getQueueSummary()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('coalesces concurrent next-up requests for the same crawler', async () => {
+    let release: (v: unknown) => void = () => {}
+    fetchMock.mockReturnValue(new Promise((r) => {
+      release = () => r({ ok: true, status: 200, json: async () => ({ items: [] }) })
+    }))
+
+    const a = getQueueNext(1)
+    const b = getQueueNext(1)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(a).toBe(b)
+
+    release(null)
+    await a
+  })
+
+  it('does not coalesce next-up requests for different crawlers', async () => {
+    let release: (v: unknown) => void = () => {}
+    const pending = new Promise((r) => {
+      release = () => r({ ok: true, status: 200, json: async () => ({ items: [] }) })
+    })
+    fetchMock.mockReturnValue(pending)
+
+    const a = getQueueNext(1)
+    const b = getQueueNext(2)
+    // Different crawlers are different reports; sharing one would be wrong.
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    // Settled before the test ends: the coalescing map is module state, so
+    // leaving an unresolved entry behind hands it to the next test.
+    release(null)
+    await Promise.all([a, b])
+  })
+
+  it('releases the next-up slot when a request fails', async () => {
+    fetchMock.mockRejectedValueOnce(new Error('boom'))
+    await expect(getQueueNext(1)).rejects.toThrow('boom')
+    fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({ items: [] }) })
+    await expect(getQueueNext(1)).resolves.toEqual([])
+  })
+
+  it('releases the coalescing slot when a summary fails', async () => {
+    fetchMock.mockRejectedValueOnce(new Error('boom'))
+    await expect(getQueueSummary()).rejects.toThrow('boom')
+    // A rejection must not wedge every later caller on a dead promise.
+    fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({}) })
+    await expect(getQueueSummary()).resolves.toBeDefined()
   })
 })

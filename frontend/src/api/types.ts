@@ -171,3 +171,57 @@ export interface RecommendationImportResult {
   matched_stock_items: number
   running: boolean
 }
+
+// Two units, never conflated (see the Queue tab design spec): a *row* is one
+// queue target and is what the queue's length and its ETA are denominated in;
+// a *work unit* is one (row, crawler) pair -- one search a worker will perform
+// -- and is what every per-crawler number counts.
+export interface QueueTotals {
+  claimable_rows: number
+  claimable_release_rows: number
+  claimable_stock_rows: number
+  held_rows: number
+  unactionable_rows: number
+  in_progress_rows: number
+  stranded_rows: number
+  rows_done_last_hour: number
+  eta_seconds: number | null
+  claimable_units: number
+  held_units: number
+  in_progress_units: number
+}
+
+export interface QueueCrawlerSummary {
+  crawler_id: number
+  site_name: string
+  requires_discogs_release: boolean
+  claimable_units: number
+  held_units: number
+  in_progress_units: number
+  // Composition and age cover the crawler's whole pending backlog, claimable
+  // and held alike; only claimable_units/held_units split it.
+  release_units: number
+  stock_units: number
+  oldest_wait_seconds: number | null
+  age_buckets: { under_1h: number; under_24h: number; over_24h: number }
+  results_last_hour: number
+  last_result_seconds_ago: number | null
+  eta_seconds: number | null
+}
+
+export interface QueueSummary {
+  totals: QueueTotals
+  crawlers: QueueCrawlerSummary[]
+  stranded_after_seconds: number
+  activity_window_seconds: number
+  pool_running: boolean
+  generated_at: string
+}
+
+export interface QueueNextItem {
+  artist: string | null
+  title: string | null
+  kind: 'release' | 'stock'
+  waiting_seconds: number
+  narrowed: boolean
+}
