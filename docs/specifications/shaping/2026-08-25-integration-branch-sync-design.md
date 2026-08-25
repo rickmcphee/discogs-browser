@@ -45,8 +45,8 @@ out of it.
 
 - Changing what `integration` is for, or how the promotion works.
 - Pushing to `main` or `integration` directly. Both rulesets require a pull
-  request, allow only squash merges, and name no bypass actors, so a direct
-  push is rejected however the workflow authenticates.
+  request and name no bypass actors, so a direct push is rejected however the
+  workflow authenticates.
 - Deleting the `integration` branch, or otherwise resetting its history.
 
 ## The merge base
@@ -253,9 +253,10 @@ guard that failed open.
 **Taken:** allow merge commits on `integration` — the repository's "Allow merge
 commits" toggle plus `"merge"` in `allowed_merge_methods` on
 `integration-branch-protection`. This is what retired the marker, the pending
-tag, the bootstrap constant and their invariants. It is recorded here as a settings prerequisite, not an
-optimisation: the workflow fails loudly if merge commits become unavailable
-again, because the alternative is silently re-freezing the base.
+tag, the bootstrap constant and their invariants. It is recorded here as a
+settings prerequisite, not an optimisation: the workflow fails loudly if merge
+commits become unavailable again, because the alternative is silently
+re-freezing the base.
 
 **Still available:**
 

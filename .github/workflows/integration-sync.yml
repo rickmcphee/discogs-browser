@@ -23,8 +23,8 @@ name: Sync integration with main
 # behind `main`. Fixing either alone would have left the other.
 #
 # Note both jobs go through a PR rather than pushing to `integration` directly:
-# that ruleset requires a pull request, allows only squash merges, and lists no
-# bypass actors, so a direct push is rejected however the workflow authenticates.
+# that ruleset requires a pull request and lists no bypass actors, so a direct
+# push is rejected however the workflow authenticates.
 #
 # SETUP: INTEGRATION_PROMOTE_TOKEN is a prerequisite for the first sync, not
 # just a convenience. That sync carries this very file plus a change to
