@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add `angryyoungandpoor.com` as a 32nd Store-tab catalog source, introducing a new `catalog_browser` crawler kind (Playwright-backed) alongside the existing pure-`httpx` `catalog` kind, since this site's Cloudflare protection blocks any non-browser request.
+**Goal:** Add `angryyoungandpoor.com` as a new Store-tab catalog source, introducing a new `catalog_browser` crawler kind (Playwright-backed) alongside the existing pure-`httpx` `catalog` kind, since this site's Cloudflare protection blocks any non-browser request.
 
 **Architecture:** `CrawlManager._sync_stock` gains a small `_run_catalog_crawler(crawler)` helper that dispatches on `crawler.crawler_type`: plain `catalog` crawlers call `crawl_catalog()` exactly as today (zero-arg, `httpx`-only, untouched); `catalog_browser` crawlers get a Playwright page opened from the already-running shared stealth Chromium instance (`self._browser`/`self._stealth`, started in `start_worker_pool()`), with the same one-retry-on-`BotDetectedError` convention the release-crawl path already uses (`_new_context`/`_reset_context`). `backend/crawlers/angryyoungandpoor.py` is the first `catalog_browser` crawler: it loads four PinnacleCart category pages via `?viewAll=yes`, extracts product data with a single `page.evaluate()` call per category (no new HTML-parsing dependency — mirrors how `amazon.py` already queries the live DOM), and does the artist/title/format/condition parsing and cross-category pid dedup in plain Python.
 

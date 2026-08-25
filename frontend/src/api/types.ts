@@ -21,6 +21,8 @@ export interface ReleasesResponse {
   releases: Release[]
 }
 
+export type CrawlerGenre = 'marketplace' | 'punk' | 'metal' | 'rock' | 'pop'
+
 export interface Crawler {
   id: number
   site_name: string
@@ -29,6 +31,8 @@ export interface Crawler {
   enabled: boolean
   last_run: string | null
   base_url: string | null
+  genre_summary?: string | null
+  genre: CrawlerGenre
 }
 
 export interface Settings {
@@ -57,13 +61,16 @@ export type LibraryScope = 'collection' | 'wantlist' | 'all'
 
 export interface CrawlEvent {
   id?: number
+  type?: 'listing_changed'
   status?: 'found' | 'not_found' | 'error' | 'complete' | 'started' | 'stopped' | 'ping'
     | 'sync_started' | 'sync_page_fetched' | 'sync_progress' | 'sync_complete' | 'sync_error'
     | 'stock_sync_started' | 'stock_sync_source_started' | 'stock_sync_page_fetched'
+    | 'stock_sync_detail_progress'
     | 'stock_sync_progress' | 'stock_sync_complete' | 'stock_sync_error' | 'stock_sync_aborted'
     | 'stock_judgment_started' | 'stock_judgment_progress' | 'stock_judgment_complete' | 'stock_judgment_error'
     | 'plex_match_started' | 'plex_match_progress' | 'plex_match_complete' | 'plex_match_error'
   discogs_id?: string
+  item_key?: string
   release?: string
   artist?: string
   site?: string
@@ -81,6 +88,8 @@ export interface CrawlEvent {
   source?: string
   sources?: string[]
   judged?: number
+  done?: number
+  label?: string
   matched?: number
   crawler_id?: number | null
 }
@@ -112,6 +121,15 @@ export type AuthStatus =
   | { state: 'unauthenticated' }
   | { state: 'authenticated'; user: { discogs_username: string; is_admin: boolean } }
 
+export interface Invite {
+  code: string
+  note: string | null
+  created_by_username: string | null
+  created_at: string
+  redeemed_by_username: string | null
+  redeemed_at: string | null
+}
+
 export interface StockItem {
   id: number | string
   item_key: string
@@ -127,6 +145,7 @@ export interface StockItem {
   reason: string | null
   is_own: boolean
   discogs_price: string | null
+  saved: boolean
 }
 
 export interface StockResponse {
@@ -151,4 +170,58 @@ export interface RecommendationImportResult {
   errors: RecommendationImportError[]
   matched_stock_items: number
   running: boolean
+}
+
+// Two units, never conflated (see the Queue tab design spec): a *row* is one
+// queue target and is what the queue's length and its ETA are denominated in;
+// a *work unit* is one (row, crawler) pair -- one search a worker will perform
+// -- and is what every per-crawler number counts.
+export interface QueueTotals {
+  claimable_rows: number
+  claimable_release_rows: number
+  claimable_stock_rows: number
+  held_rows: number
+  unactionable_rows: number
+  in_progress_rows: number
+  stranded_rows: number
+  rows_done_last_hour: number
+  eta_seconds: number | null
+  claimable_units: number
+  held_units: number
+  in_progress_units: number
+}
+
+export interface QueueCrawlerSummary {
+  crawler_id: number
+  site_name: string
+  requires_discogs_release: boolean
+  claimable_units: number
+  held_units: number
+  in_progress_units: number
+  // Composition and age cover the crawler's whole pending backlog, claimable
+  // and held alike; only claimable_units/held_units split it.
+  release_units: number
+  stock_units: number
+  oldest_wait_seconds: number | null
+  age_buckets: { under_1h: number; under_24h: number; over_24h: number }
+  results_last_hour: number
+  last_result_seconds_ago: number | null
+  eta_seconds: number | null
+}
+
+export interface QueueSummary {
+  totals: QueueTotals
+  crawlers: QueueCrawlerSummary[]
+  stranded_after_seconds: number
+  activity_window_seconds: number
+  pool_running: boolean
+  generated_at: string
+}
+
+export interface QueueNextItem {
+  artist: string | null
+  title: string | null
+  kind: 'release' | 'stock'
+  waiting_seconds: number
+  narrowed: boolean
 }

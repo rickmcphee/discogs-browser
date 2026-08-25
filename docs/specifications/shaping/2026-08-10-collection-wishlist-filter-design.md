@@ -142,7 +142,16 @@ Out of scope:
   there's no conditional column rendering and no filter-dependent
   `colCount`. Hiding the column under the Wantlist filter was considered
   and rejected: it would make the header row shift as the filter changes,
-  for a cosmetic gain. Its *sort header*, however, goes plain text under
+  for a cosmetic gain.
+
+  **Amendment (2026-08-18, branch `discogs-price-column-detection`):** the
+  column's presence is now conditional after all, but on a different axis
+  than what was rejected here — it hides only when the *user* has no
+  collection price data at all (refetched at app bootstrap and after every
+  non-wishlist collection sync, not per filter toggle),
+  never in response to switching the Track filter. See
+  [`2026-08-18-price-column-auto-hide-design.md`](2026-08-18-price-column-auto-hide-design.md).
+  Its *sort header*, however, goes plain text under
   the Wantlist filter — no button, no `aria-sort`, no handler — because the
   collection-pinned sort expression degrades to artist order there (see
   "Sort"), and a control that silently reorders by something other than
@@ -315,6 +324,29 @@ else:
     sort_expr = f"s.{sort_col}"
 ```
 
+(As of 2026-08-14 the final line reads
+`sort_expr = "LOWER(s.artist)" if sort_col == "artist" else f"s.{sort_col}"`;
+the artist sort is case-insensitive now. See
+[`2026-08-14-artist-casing-canonicalization-design.md`](2026-08-14-artist-casing-canonicalization-design.md).)
+
+(As of 2026-08-24 the inline `regexp_match(..., '\d+\.?\d*')` above is gone.
+The extraction moved into a shared `_price_sort_sql()` helper, also used by
+`get_library_releases`. The old pattern stopped at the first non-digit, so
+`"$1,200.50"` read as `1`; the helper instead matches the token against the
+formats that occur and picks the normalization from that — comma grouping
+(`1,200.50`) loses its commas, dot grouping (`1.234,56`) loses its dots with the
+comma becoming the point, a bare decimal comma (`25,50`) becomes a point, a
+value written without its leading zero (`.99`) gets one, and an unrecognised
+token falls back to its *leading digit run*, everything from the first separator
+on discarded. Note this is *not* a blanket strip in either place: an
+intermediate version stripped every comma and turned `"€25,50"` into 2550, and
+an intermediate fallback stripped every separator and turned `"25.00.00"` into
+250000. The
+subquery wrapper and `_library_match_fragment` call around it are unchanged. The
+column it reads is `li.price_paid`, per this document's storage-superseded
+banner. See
+[`2026-08-24-numeric-price-sort-design.md`](2026-08-24-numeric-price-sort-design.md).)
+
 Under the Wantlist filter every value the expression produces is `NULL`,
 so the sort is a harmless no-op (all rows tie and fall to the NULL-last
 branch) rather than a case needing its own gate. Harmless on the wire, but
@@ -462,6 +494,15 @@ invisible filter with no sidebar button highlighted (`All` highlights on
 tab's `All`/`Recommended` switch had the same latent bug and is fixed by
 the same shared path.
 
+**Amendment (2026-08-14, branch `artist-name-normalization`):** `changeFilter`
+is no longer the only guard against that state. Every artist-list refetch —
+whichever cause: a filter change, a hidden crawler, a `syncGeneration` tick —
+now runs `reconcileSelectedArtist` (`frontend/src/views/artistSelection.ts`) in
+both browsers, which clears a selection the refetched list no longer contains
+and follows one whose canonical casing changed. `changeFilter`'s eager clear
+stays as-is; the reconciliation is a backstop for the refetches it doesn't
+mediate. See [`2026-08-14-artist-casing-canonicalization-design.md`](2026-08-14-artist-casing-canonicalization-design.md).
+
 The dropdown renders for both scopes now, with scope-dependent options —
 `All`/`Recommended` for Store (unchanged, `Recommended` still disabled when
 `!recommendedAvailable`), `All`/`Collection`/`Wantlist` for Track. The
@@ -470,8 +511,26 @@ existing `recommendedAvailable` reset effect needs no change —
 effect's `filter === 'recommended'` condition can never fire there and it
 cannot clobber a Track filter value.
 
+**Amendment (2026-08-16, branch `store-saved-items`):** "`All`/`Recommended`
+for Store (unchanged...)" is superseded — the Store dropdown gained a third
+option, `Saved`, for a per-user "save for later" bookmark unrelated to
+`Recommended`. See
+[`2026-08-16-store-saved-items-design.md`](2026-08-16-store-saved-items-design.md).
+
 `colCount` stays 7 for Track and 6 for Store — the Price column renders
 under every filter value, so no filter-dependent column math.
+
+**Amendment (2026-08-16, branch `store-saved-items`):** "6 for Store" is
+stale. The bookmark column the above amendment's `Saved` option shipped
+alongside brought Store's `colCount` to 7 as well — see
+`frontend/src/views/StockBrowser.tsx`'s `colCount` (now `scope === 'track'
+? 7 : 7`) and
+[`2026-08-16-store-saved-items-design.md`](2026-08-16-store-saved-items-design.md).
+
+**Amendment (2026-08-18, branch `discogs-price-column-detection`):** Track's
+`colCount` is no longer flatly 7 — it's now `scope === 'track' ? (hasPriceField
+? 7 : 6) : 7`, dropping to 6 when the user has no collection price data. See
+[`2026-08-18-price-column-auto-hide-design.md`](2026-08-18-price-column-auto-hide-design.md).
 
 Empty-state copy becomes filter-aware in both list and tile views. Today's
 "No in-stock items yet. Click "Refresh Stock Now" in Settings." is wrong
@@ -487,6 +546,15 @@ all. Its `Recommended` filter has the same defect this section describes —
 stock exists, nothing matched — and the generic copy tells a user whose
 stock is fine to go refresh stock, so it gets "Nothing recommended is in
 stock right now." Store / `all` keeps the original string.
+
+**Amendment (2026-08-13, marketplace/store terminology rename):** Store /
+`all` no longer keeps one original string — `StockBrowser` now takes an
+`isAdmin` prop (threaded from `App.tsx`'s `showAdminNav`) and branches on
+it, since the original copy pointed every visitor at a "Refresh" button
+that only admins can see. Admin: "No in-stock items yet. Click Refresh
+under Store Management in Settings." Non-admin: "No in-stock items yet.
+Check back after the next store sync." See
+`frontend/src/views/StockBrowser.tsx`.
 
 ### Nav labels that double as dropdown options are ambiguous in App-level tests
 

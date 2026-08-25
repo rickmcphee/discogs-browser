@@ -3,12 +3,14 @@ import { getReleases, getArtists } from '../api/client'
 import type { Release, SortField, SortOrder, RecordScope } from '../api/types'
 import { navButtonClass, dismissButtonClass } from '../styles/buttons'
 import { textInputClass, selectClass } from '../styles/inputs'
+import { reconcileSelectedArtist } from './artistSelection'
 
 interface Props {
   scope: RecordScope
   syncing?: boolean
   onRefreshCollection?: () => void
   syncGeneration?: number
+  hasPriceField?: boolean
 }
 
 // Rendered from both the tile and table branches below, which would otherwise
@@ -16,7 +18,7 @@ interface Props {
 const WANTLIST_EMPTY = 'No wantlist items yet. Add records to your wantlist on Discogs, then sync.'
 const COLLECTION_EMPTY = 'No records found. Click the sync icon above to load your collection from Discogs.'
 
-export default function RecordBrowser({ scope, syncing, onRefreshCollection, syncGeneration }: Props) {
+export default function RecordBrowser({ scope, syncing, onRefreshCollection, syncGeneration, hasPriceField = true }: Props) {
   const [releases, setReleases] = useState<Release[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -25,11 +27,11 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
   const [artists, setArtists] = useState<string[]>([])
   const [sort, setSort] = useState<SortField>('artist')
   const [order, setOrder] = useState<SortOrder>('asc')
-  const [loading, setLoading] = useState(false)
   const [viewMode, setViewMode] = useState<'list' | 'tiles'>(
     () => (localStorage.getItem(`collectionViewMode_${scope}`) === 'tiles' ? 'tiles' : 'list')
   )
   const [unmatched, setUnmatched] = useState(false)
+  const [hasLoaded, setHasLoaded] = useState(false)
   const PER_PAGE = 250
 
   const tableScrollRef = useRef<HTMLDivElement>(null)
@@ -38,40 +40,70 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
     tableScrollRef.current?.scrollTo({ top: 0 })
   }, [selectedArtist])
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const result = await getReleases({
-        search: search || undefined,
-        artist: selectedArtist || undefined,
-        sort,
-        order,
-        page,
-        per_page: PER_PAGE,
-        scope,
-        unmatched: scope === 'collection' ? unmatched : undefined,
-      })
-      setReleases(result.releases)
-      setTotal(result.total)
-    } finally {
-      setLoading(false)
-    }
+  // isLatest gates the commit, not the request -- see StockBrowser's copy: a
+  // request started under a selection the reconciliation then clears or re-cases
+  // must not paint its filtered rows under a sidebar that has moved on.
+  const load = useCallback(async (isLatest: () => boolean = () => true) => {
+    const result = await getReleases({
+      search: search || undefined,
+      artist: selectedArtist || undefined,
+      sort,
+      order,
+      page,
+      per_page: PER_PAGE,
+      scope,
+      unmatched: scope === 'collection' ? unmatched : undefined,
+    })
+    if (!isLatest()) return
+    setReleases(result.releases)
+    setTotal(result.total)
+    setHasLoaded(true)
   }, [search, selectedArtist, sort, order, page, scope, unmatched])
 
-  useEffect(() => { load() }, [load])
   // syncGeneration ticks on every sync_progress/sync_complete SSE event so the
   // collection/wantlist tables fill in as pages land, not just once the whole
-  // sync finishes. Guarded on truthy (not just changed) so the initial render's
-  // generation of 0 doesn't trigger a redundant second load alongside the
-  // mount effect above.
+  // sync finishes. One effect keyed on both, matching StockBrowser: as two
+  // effects (a mount one on [load], a tick one on [syncGeneration, load]) a
+  // load-identity change re-ran both and issued two requests for the same
+  // query, and each kept its own `latest` flag, so a tick could not invalidate
+  // an in-flight request from the other -- letting the older snapshot land last
+  // and overwrite the fresher one mid-sync. The truthy guard the tick effect
+  // needed to avoid a duplicate mount load goes away with it.
   useEffect(() => {
-    if (syncGeneration) load()
-  }, [syncGeneration, load])
+    let latest = true
+    load(() => latest)
+    return () => { latest = false }
+  }, [load, syncGeneration])
   // Also refetches on syncGeneration ticks, same as load() above -- otherwise
   // the nav list stays stuck at whatever it was on mount while a collection
   // sync fills the table in page by page.
-  useEffect(() => { getArtists(scope).then(setArtists) }, [scope, syncGeneration])
+  // The `latest` guard is load-bearing, not hygiene: syncGeneration ticks per
+  // sync_progress event, faster than a round-trip, so these requests overlap
+  // and a late-arriving stale list would drive the reconciliation below.
+  useEffect(() => {
+    let latest = true
+    getArtists(scope).then((list) => { if (latest) setArtists(list) })
+    return () => { latest = false }
+  }, [scope, syncGeneration])
+  // A collection sync can re-case the selected artist's label -- the canonical
+  // casing follows the catalog, which the sync itself writes. See
+  // reconcileSelectedArtist; same handling as StockBrowser.
+  useEffect(() => {
+    const next = reconcileSelectedArtist(artists, selectedArtist)
+    if (next === selectedArtist) return
+    if (next) setSelectedArtist(next)
+    else selectArtist('')
+  }, [artists, selectedArtist])
   useEffect(() => { localStorage.setItem(`collectionViewMode_${scope}`, viewMode) }, [viewMode, scope])
+  // The Price column and its sort header disappear when hasPriceField goes
+  // false (e.g. a sync clears the user's last stored price) -- without this,
+  // sort would stay pinned to discogs_price with no visible control claiming it.
+  useEffect(() => {
+    if (!hasPriceField && sort === 'discogs_price') {
+      setSort('artist')
+      setOrder('asc')
+    }
+  }, [hasPriceField, sort])
 
   function toggleSort(field: SortField) {
     if (sort === field) {
@@ -193,13 +225,12 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
         {/* Tiles */}
         {viewMode === 'tiles' && (
           <div className="flex-1 overflow-auto" ref={tableScrollRef}>
-            {loading && <div className="text-center py-8 text-gray-500">Loading…</div>}
-            {!loading && releases.length === 0 && (
+            {hasLoaded && releases.length === 0 && (
               <div className="text-center py-8 text-gray-500">
                 {scope === 'wantlist' ? WANTLIST_EMPTY : COLLECTION_EMPTY}
               </div>
             )}
-            {!loading && releases.length > 0 && (
+            {releases.length > 0 && (
               <div className="grid gap-4 p-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))' }}>
                 {releases.map((r) => (
                   <div key={r.discogs_id}>
@@ -281,14 +312,16 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
                     Format {sort === 'format' ? (order === 'asc' ? '↑' : '↓') : ''}
                   </button>
                 </th>
-                <th
-                  className="text-center"
-                  aria-sort={sort === 'discogs_price' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}
-                >
-                  <button type="button" onClick={() => toggleSort('discogs_price')} className={`${sortButtonClass} text-center`}>
-                    Price {sort === 'discogs_price' ? (order === 'asc' ? '↑' : '↓') : ''}
-                  </button>
-                </th>
+                {hasPriceField && (
+                  <th
+                    className="text-center"
+                    aria-sort={sort === 'discogs_price' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}
+                  >
+                    <button type="button" onClick={() => toggleSort('discogs_price')} className={`${sortButtonClass} text-center`}>
+                      Price {sort === 'discogs_price' ? (order === 'asc' ? '↑' : '↓') : ''}
+                    </button>
+                  </th>
+                )}
                 <th
                   className="text-center"
                   aria-sort={sort === 'date_added' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}
@@ -300,16 +333,9 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
               </tr>
             </thead>
             <tbody>
-              {loading && (
+              {hasLoaded && releases.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="text-center py-8 text-gray-500">
-                    Loading…
-                  </td>
-                </tr>
-              )}
-              {!loading && releases.length === 0 && (
-                <tr>
-                  <td colSpan={8} className="text-center py-8 text-gray-500">
+                  <td colSpan={hasPriceField ? 8 : 7} className="text-center py-8 text-gray-500">
                     {scope === 'wantlist' ? WANTLIST_EMPTY : COLLECTION_EMPTY}
                   </td>
                 </tr>
@@ -344,7 +370,7 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
                   <td className="px-3 py-2 text-gray-400">{r.year ?? '—'}</td>
                   <td className="px-3 py-2 text-gray-400 truncate max-w-32">{r.label}</td>
                   <td className="px-3 py-2 text-gray-400">{r.format}</td>
-                  <td className="px-3 py-2 text-gray-400">{r.discogs_price ?? '—'}</td>
+                  {hasPriceField && <td className="px-3 py-2 text-gray-400">{r.discogs_price ?? '—'}</td>}
                   <td className="px-3 py-2 text-gray-400">
                     {r.date_added ? new Date(r.date_added).toLocaleDateString() : '—'}
                   </td>

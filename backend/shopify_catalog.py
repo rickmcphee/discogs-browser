@@ -58,7 +58,12 @@ async def iter_products(base_url: str, collection_slug: str) -> AsyncIterator[di
             products = r.json().get("products", [])
             if not products:
                 break
-            log.info("[%s] Fetched page %d: %d products", base_url, page, len(products))
+            # No log line here: _run_catalog_crawler logs every reported page
+            # centrally, for every catalog crawler rather than only the
+            # Shopify-backed ones, and names the store by its `site_name`
+            # instead of by base_url. Keeping this one too put two
+            # near-identical rows in app_logs for every Shopify listing page,
+            # which is the opposite of what that centralisation was for.
             await report_page(page, len(products))
             for product in products:
                 yield product

@@ -20,11 +20,39 @@ _2026-07-18_
 
 **Amendment (2026-08-09, branch `recommendations-import`):** the 2026-08-04 amendment's description of `Export` as "the last row in that section's table" no longer holds — a new "Import" row was inserted between `Export` and `Clear`, so the order is now `Refresh`, `Export`, `Import`, `Clear`, with `Import` the last row. `Import` is ungated, unlike its three siblings — having no judgments is the main reason to import. See [`2026-08-09-recommendations-import-design.md`](../../specifications/shaping/2026-08-09-recommendations-import-design.md).
 
+**Amendment (2026-08-17, branch `claude/store-crawler-filter-design-d16b80`):** the 2026-08-02 (`user-settings-store-filter`) amendment's claim that "Settings visible to every authenticated user" no longer holds. Settings is admin-only again — the personal display filter it referred to moved out of Settings into a per-tab "Source" button, and the Settings nav item was removed entirely for non-admins. See [`2026-08-16-store-track-source-filter-design.md`](2026-08-16-store-track-source-filter-design.md).
+
+**Amendment (2026-08-17, branch `fly-io-second-machine`):** the 2026-07-26
+amendment above claiming the avatar-upload design "remain[s] accurate as
+described below" no longer holds for the Backend changes section — avatar
+storage moved off a per-machine file. `POST`/`GET`/`DELETE /api/auth/avatar`
+now read/write a new `users.avatar_image BYTEA` column
+(`backend/avatar.py`'s `save_avatar`/`get_avatar`/`delete_avatar`, keyed by
+`user_id`) instead of `CONFIG_DIR / "avatar.png"`; `GET` returns the bytes via
+`Response(..., media_type="image/png", headers={"Cache-Control": "private"})`
+instead of `FileResponse`. This was forced by adding a second always-on Fly
+Machine: a Fly volume attaches to one Machine only, so a file-based avatar
+would fork into two independent copies the moment a second Machine existed —
+and it made the avatar a real per-user concept for the first time, since it
+had stayed a single shared file even after the app went multi-tenant. Upload
+validation/crop/resize (Pillow, 512×512, PNG re-encode) is unchanged. See
+[`2026-08-16-fly-multi-machine-design.md`](../../specifications/shaping/2026-08-16-fly-multi-machine-design.md).
+The "No database changes" line and file-based description in the Backend
+changes section below are accordingly historical, not current.
+
+**Amendment (2026-08-22, branch `store-filter-recommendations-refresh`):** the 2026-08-04 and 2026-08-07 amendments' description of `hasJudgedItems` as gating `Export`/`Clear` "disabled until a judgment run has completed" is no longer fully accurate. `hasJudgedItems` now also flips true progressively, off the first non-zero-judged `stock_judgment_progress` batch, not only off `stock_judgment_complete` — so both buttons can become enabled mid-run, on a user's very first-ever refresh, once at least one item has been judged. See [`2026-08-22-live-recommended-filter-design.md`](2026-08-22-live-recommended-filter-design.md).
+
 ---
 
 ## Overview
 
 `Settings.tsx` currently has an "Account & Security" section (current/new password, TOTP code, "Change password", "Log out") mixed in with unrelated app-config sections (Collection Management, Crawler Management, Store Management, Recommendations Management). This spec moves account/security out of Settings entirely, into a dedicated "Account" view reached via a profile avatar button in the header — the standard SaaS pattern (GitHub, Slack, etc.) of a circular avatar in the top-right corner that opens the account page. It also adds the ability to upload a photo to replace the default avatar glyph.
+
+> This paragraph is a 2026-07-18 snapshot, not current state: password/TOTP
+> auth predates the later Discogs-OAuth migration, Recommendations
+> Management later moved to the Account view, and Crawler Management was
+> later renamed to Marketplace Management — each by a separately-documented
+> change. See `frontend/src/views/Settings.tsx` for current sections.
 
 The app is single-owner (one `owner` row in SQLite, no multi-user concept — see `backend/auth_core.py`, `backend/routers/session.py`). "Profile" here means the one owner's avatar and account/security controls, not a multi-user profile system.
 
