@@ -83,6 +83,10 @@ env:
   # token is configured, so matching on author would silently stop working the
   # day INTEGRATION_PROMOTE_TOKEN is added.
   RECREATE_MARKER: "<!-- integration-sync: recreate requested -->"
+  # Applied to a sync PR whose conflict someone has to resolve by hand. It is
+  # what stops the next run re-arming auto-merge underneath them; see the
+  # `dirty` branch and the re-arm guard.
+  CONFLICT_LABEL: sync-conflict-needs-hand-merge
 
 jobs:
   sync:
@@ -175,9 +179,9 @@ jobs:
           if [ -z "$marker" ] && git cat-file -e "$BOOTSTRAP_BASE^{commit}" 2>/dev/null \
              && on_main "$BOOTSTRAP_BASE"; then
             marker="$BOOTSTRAP_BASE"
-            # Before the first sync this is simply expected. Afterwards it means
-            # neither the tag nor a landed sync branch survived, so a base that
-            # only grows staler is standing in for something newer and the
+            # Before the first sync this is simply expected. Afterwards it
+            # means the tag is missing or was never written, so a base that only
+            # grows staler is standing in for something newer and the
             # frozen-base conflicts can creep back. Warn rather than fail: a hard
             # stop cannot be recovered from by the workflow itself, since every
             # path that records a marker lies past it.
@@ -276,19 +280,43 @@ jobs:
                 # auto-merge is off while leaving it armed is the worst of both.
                 gh pr merge "$existing" --repo "$REPO" --disable-auto \
                   || echo "::warning::could not disable auto-merge on #$existing; check it by hand before resolving."
+                # Label it, so the re-arm guard above keeps auto-merge off once
+                # the resolution makes this PR `clean` again.
+                gh label create "$CONFLICT_LABEL" --repo "$REPO" --color B60205 \
+                  --description "Sync PR whose conflict needs resolving and merging by hand" \
+                  --force >/dev/null 2>&1 || true
+                gh pr edit "$existing" --repo "$REPO" --add-label "$CONFLICT_LABEL" \
+                  || echo "::warning::could not label #$existing; a later run may re-arm auto-merge on it."
                 echo "pending=false" >> "$GITHUB_OUTPUT"
                 echo "::error::Sync PR #$existing conflicts with integration. Auto-merge has been disabled: resolve $SYNC_BRANCH by hand, push it, and merge it deliberately."
                 exit 1
                 ;;
             esac
             echo "Sync PR #$existing is already open; leaving its branch as-is."
-            # Same merge-then-squash preference as the freshly-opened PR below.
-            # No `|| true`: if neither call can arm auto-merge, this path
-            # would otherwise set pending=true, suppress `refresh`, and report a
-            # green run while the sync PR sits open forever with nothing driving
-            # it. Fail here, exactly as the freshly-opened PR below does.
-            gh pr merge "$existing" --repo "$REPO" --auto --merge \
-              || gh pr merge "$existing" --repo "$REPO" --auto --squash
+
+            # Re-arming has to be conditional, or it undoes the `dirty` branch
+            # one cron later: that path disables auto-merge so a hand-resolved
+            # conflict gets merged by whoever resolved it, but the resolution
+            # makes the PR `clean`, and an unconditional re-arm would then sweep
+            # their work into an approval-free branch before they looked at it.
+            # The label is what survives between runs to say so.
+            #
+            # Still re-arm when auto-merge is simply absent and unlabelled --
+            # arming can fail after `gh pr create` succeeds, and without this the
+            # PR would sit with nothing driving it.
+            if gh pr view "$existing" --repo "$REPO" --json labels \
+                 --jq '.labels[].name' | grep -qx "$CONFLICT_LABEL"; then
+              echo "Sync PR #$existing is labelled $CONFLICT_LABEL; leaving auto-merge off for whoever resolves it."
+            elif [ -n "$(gh pr view "$existing" --repo "$REPO" \
+                          --json autoMergeRequest --jq '.autoMergeRequest // empty')" ]; then
+              echo "Sync PR #$existing already has auto-merge armed."
+            else
+              # No `|| true`: if neither call can arm auto-merge, this path
+              # would otherwise set pending=true, suppress `refresh`, and report
+              # a green run while the sync PR sits open with nothing driving it.
+              gh pr merge "$existing" --repo "$REPO" --auto --merge \
+                || gh pr merge "$existing" --repo "$REPO" --auto --squash
+            fi
             echo "pending=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -304,7 +332,7 @@ jobs:
           if [ -n "$marker" ]; then
             if ! merged="$(git merge-tree --write-tree --merge-base="$marker" \
                              HEAD origin/main)"; then
-              echo "::error::main and integration have both changed the same lines since $marker. Resolve $SYNC_BRANCH by hand, push it, and open a PR into integration. Unlike the frozen-base case this one is a real disagreement -- read both sides before picking."
+              echo "::error::main and integration have both changed the same lines since $marker. Resolve $SYNC_BRANCH by hand, push it, and open a PR into integration. Before resolving, check whether $marker is simply stale: the marker only advances at the containment exits, so it can lag a completed sync, and merging from a lagging base reproduces the frozen-base artefact on files nobody disagrees about. If integration already holds the newer side, move $MARKER_TAG forward and re-run rather than resolving by hand."
               exit 1
             fi
             git reset --hard --quiet "$(git commit-tree "$merged" \

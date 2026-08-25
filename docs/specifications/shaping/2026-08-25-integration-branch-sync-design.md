@@ -189,13 +189,27 @@ day `INTEGRATION_PROMOTE_TOKEN` is configured and the author changes.
 
 ## Conflict handling
 
-A conflict from a merge against a *valid* marker is a real disagreement — both
-sides changed the same lines since a base both genuinely share. The job fails
-with the branch named, for a human to resolve and push. The next run leaves that
-branch alone rather than rebuilding it.
+Valid does not mean current. The marker only advances at the two containment
+exits, so it can lag a completed sync — and merging from a lagging base
+reproduces the frozen-base artefact in miniature, on files nobody actually
+disagrees about. So a conflict has two possible readings, and the diagnostic
+says so rather than asserting the first:
 
-A conflict against an *invalid* base is the frozen-base artefact, and the design
-above exists to make it unreachable.
+- **A real disagreement.** Both sides changed the same lines since a base they
+  genuinely share. Resolve by hand, push, open a PR into `integration`.
+- **A stale marker.** `integration` already holds the newer side. Moving
+  `integration-sync-base` forward and re-running is the fix; resolving by hand
+  would be committing to a conflict that does not exist.
+
+Check which before resolving. A conflict against a base that is not on `main`
+is neither — the invariant makes that unreachable.
+
+The job fails with the branch named either way, and the next run leaves that
+branch alone rather than rebuilding it. A sync PR whose conflict needs hand
+resolution also has auto-merge disabled and is labelled
+`sync-conflict-needs-hand-merge`, which stops a later run re-arming auto-merge
+once the resolution makes it mergeable — the resolution is merged by whoever
+wrote it.
 
 ## Tokens
 
@@ -226,7 +240,8 @@ prevent.
 | First run impossible | Inferred base predates `integration-promote.yml`; add/add conflict, and it died before recording a marker | `BOOTSTRAP_BASE` |
 | Deadlock after the first success | "No marker + workflow file present ⇒ tag lost ⇒ fail" — but the PR-opening path never records a marker, so this fired the moment the first sync landed | The stale-bootstrap case warns instead of failing |
 | Unreachable recovery mechanism | Read the incorporated `main` SHA off the landed sync branch, but `delete_branch_on_merge` removes that branch on merge | Removed; the marker lags instead, and lagging is always valid |
-| **Pending bumps silently deleted** | `update-branch` on a behind sync PR makes the tip's `^2` an *integration* commit; recorded as the base, a bump `main` never had reads as "removed on main" and is dropped with no conflict | First-parent walk plus the on-`main` invariant |
+| **Pending bumps silently deleted** | `update-branch` on a behind sync PR makes the tip's `^2` an *integration* commit; recorded as the base, a bump `main` never had reads as "removed on main" and is dropped with no conflict | The on-`main` invariant, and later removing sync-branch recovery altogether so nothing reads `^2` |
+| Hand-resolved conflict auto-merged anyway | The `dirty` path disabled auto-merge, but the resolution made the PR `clean` and the next run re-armed it unconditionally | `sync-conflict-needs-hand-merge` label gates the re-arm |
 | Sync PR open forever | `\|\| true` swallowed total auto-merge failure while `pending=true` suppressed `refresh` | Let it fail |
 | Unrelated PRs blocked by someone else's conflict | A conflicted sync PR reported a pending sync, suppressing `refresh`, though auto-merge was off and nothing was about to move | `pending=false` on that path |
 | Refresh silently doing nothing | `for n in $(gh pr list …)` is a word expansion, so `set -e` never saw the command fail | Assign first |
