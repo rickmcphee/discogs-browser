@@ -68,6 +68,12 @@ env:
   # into `integration` conflicts on integration-promote.yml and CLAUDE.md with
   # the inferred base, and is clean with this one.
   BOOTSTRAP_BASE: 43217e92921fe0164854b28798dfcb10792368f1
+  # Stamped into every recreate request this workflow posts, and the only thing
+  # the don't-ask-twice guard counts. Identity-independent on purpose: the
+  # comment author is github-actions[bot] or the PAT's owner depending on which
+  # token is configured, so matching on author would silently stop working the
+  # day INTEGRATION_PROMOTE_TOKEN is added.
+  RECREATE_MARKER: "<!-- integration-sync: recreate requested -->"
 
 jobs:
   sync:
@@ -137,6 +143,13 @@ jobs:
                && git diff --quiet "origin/$SYNC_BRANCH" origin/integration; then
               marker="$(git rev-parse "origin/$SYNC_BRANCH^2")"
               echo "recovered the marker from the last landed sync: $marker"
+              # Persist it now. Recovery depends on the sync branch still
+              # matching integration's tree, which stops being true the moment
+              # any integration-only bump lands -- and the exits below can
+              # return without ever reaching a record_marker call, so relying
+              # on one of those would let the recovered value evaporate and
+              # drop the next run back onto the stale bootstrap base.
+              recover_persist=1
             fi
           fi
 
@@ -157,20 +170,23 @@ jobs:
             fi
           fi
 
-          record_marker() {
-            # Only ever called where integration was just shown to hold main's
-            # files. Recording it anywhere else would make a later run skip a
-            # sync that really was needed.
-            git push --force --quiet origin \
-              "$(git rev-parse origin/main):refs/tags/$MARKER_TAG" \
-              && echo "marker: integration now holds main $(git rev-parse --short origin/main)" \
-              || echo "::warning::could not move $MARKER_TAG; the next run re-attempts the merge instead"
+          record_marker() {  # $1 = a main commit integration provably holds
+            # Only ever called where that containment was just established:
+            # the two nothing-to-do exits, and marker recovery below. Recording
+            # it anywhere else would make a later run skip a real sync.
+            git push --force --quiet origin "$1:refs/tags/$MARKER_TAG" \
+              && echo "marker: integration holds main $(git rev-parse --short "$1")" \
+              || echo "::warning::could not move $MARKER_TAG; the next run will try to recover it from $SYNC_BRANCH instead"
           }
+
+          if [ "${recover_persist:-0}" = 1 ]; then
+            record_marker "$marker"
+          fi
 
           # Compare trees, not ancestry -- same squash-merge reason as above.
           if git diff --quiet origin/main origin/integration; then
             echo "integration already holds main's files; nothing to sync."
-            record_marker
+            record_marker "$(git rev-parse origin/main)"
             echo "pending=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -265,7 +281,7 @@ jobs:
 
           if git diff --quiet origin/integration HEAD; then
             echo "merge changed nothing on integration; nothing to sync."
-            record_marker
+            record_marker "$(git rev-parse origin/main)"
             echo "pending=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -379,16 +395,30 @@ jobs:
                 # matches Dependabot's own cadence. Paginated, since `since`
                 # bounds how old the comments are but not how many.
                 since="$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)"
+                # Match this workflow's own marker, not the command text.
+                # Anyone who can comment on the PR could otherwise post -- or
+                # merely quote -- "@dependabot recreate" and suppress the real
+                # request for the whole window, without Dependabot having acted
+                # on theirs at all.
+                # Interpolated rather than passed with --arg: gh's --jq takes
+                # one filter string and forwards no jq options, so --arg would
+                # be swallowed as the filter itself. Safe here because the
+                # marker contains no double quotes.
                 asked="$(gh api --paginate \
                   "repos/$REPO/issues/$n/comments?since=$since&per_page=100" \
-                  --jq '.[] | select(.body | startswith("@dependabot recreate")) | .id' \
+                  --jq ".[] | select(.body | contains(\"$RECREATE_MARKER\")) | .id" \
                   | wc -l)"
                 if [ "$asked" -gt 0 ]; then
                   echo "PR #$n conflicts but was already asked to recreate since $since; leaving it."
                   continue
                 fi
                 echo "PR #$n conflicts with integration; asking Dependabot to recreate it."
-                gh pr comment "$n" --repo "$REPO" --body "@dependabot recreate"
+                # printf, not a multi-line string: the marker would otherwise
+                # inherit this block's indentation, and four leading spaces make
+                # markdown render it as a code block -- an HTML comment meant to
+                # be invisible, shown verbatim on the PR.
+                gh pr comment "$n" --repo "$REPO" \
+                  --body "$(printf '@dependabot recreate\n\n%s' "$RECREATE_MARKER")"
                 ;;
 
               *)
