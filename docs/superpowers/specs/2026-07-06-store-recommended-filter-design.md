@@ -136,7 +136,7 @@ These reuse the same bottom status bar the existing `stock_sync_*` events alread
 - Cap/spillover: seed more unseen items than the cap constant, assert only the capped subset is passed to the (mocked) Claude call, and the rest remain unseen for a follow-up run.
 - Batch response handling against a mocked Anthropic client: a well-formed JSON array upserts every entry correctly; a malformed/unparseable response leaves those items unseen without raising or aborting the sync.
 - `get_stock_items(recommended=True)` / `get_distinct_stock_artists(recommended=True)` filtering, mirroring the existing `overlapping` tests.
-- No live-API test — the Anthropic client call is mocked, the same way `respx` mocks httpx for the eBay crawler; Claude-dependent code is not exercised against the real API in the test suite.
+- No live-API test — the Anthropic client call is mocked, the same way `respx` mocks httpx for the eBay crawler; Claude-dependent code is not exercised against the real API in the test suite. **(Corrected 2026-08-24, branch `claude/prs-175-177-test-failures-ghjcr4`:** the shared point is only that neither is exercised against a live API — the *mechanism* differs, and must. The eBay crawler is mocked at the HTTP transport (`respx` patches `httpx`); the Anthropic client is mocked at the method boundary, with a stub `messages.create()` and no `respx` involved. These tests did originally use `respx`, and that is precisely what broke: the Anthropic SDK moved off `httpx` onto `httpx2`, which `respx` does not patch, so the mock silently stopped intercepting and the tests began issuing real, billable API calls that failed CI with a genuine 401. Do not re-couple Anthropic mocking to the HTTP layer — see `backend/tests/test_recommendations.py`.**)
 
 ---
 
