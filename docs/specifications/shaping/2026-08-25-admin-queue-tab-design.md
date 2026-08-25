@@ -230,7 +230,11 @@ enabled. A fixed threshold contradicted the `completed_at` argument above — th
 same fan-out that makes `claimed_at` useless as a completion proxy also means
 healthy rows stay claimed well past half an hour on any realistic crawler set,
 and they would have lit a tile coloured *critical*. The threshold is
-`max(floor, enabled_release_crawlers × crawl_delay_seconds × slack)`, reported
+`max(floor, enabled_release_crawlers × crawl_delay_seconds × slack)` *(amended
+2026-08-25: `× QUEUE_CLAIM_BATCH_SIZE` too — a claim covers a whole batch of
+rows, not one, and leaving that out put the threshold below a healthy claim on a
+slow-loading crawler set. Harmless while the value only coloured this tile;
+not once the reclaim acts on it)*, reported
 in the response so the UI can label the tile with the figure actually used. The
 slack is generous on purpose: a tile that cries wolf is worth less than one that
 notices late.

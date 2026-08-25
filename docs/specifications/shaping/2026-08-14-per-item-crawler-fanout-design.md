@@ -224,6 +224,12 @@ The resolution itself:
   row returns near its original queue position rather than at the back.
 - Otherwise `mark_crawl_queue_done`.
 
+*Amended 2026-08-25: both writes now also match `claimed_by = <this worker>`, and return their
+rowcount. The reclaim added a case this passage predates — two workers holding one row, because an
+age-based reclaim cannot tell a dead worker from a slow one — and without the match a stale `done`
+overwrites a fresh deferral, dropping that crawler for the target. Worker ids are namespaced by
+`config.MACHINE_ID` so the match identifies one worker across Machines rather than one per Machine.*
+
 A row whose eligible set resolves to empty — no enabled marketplace crawlers at all, or a narrowed
 `pending_crawler_ids` whose every member has since been disabled — is marked `done`. There is no
 work to do and nothing to wait for.

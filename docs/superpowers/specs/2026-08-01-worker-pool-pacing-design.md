@@ -39,9 +39,15 @@ did not ship on the first pass and was fixed in this review.
 5. **Cooldown exclusion is claim-time only.** A site whose breaker trips partway
    through a batch still has that batch's already-claimed rows crawled to
    completion; the cooldown only keeps its rows from being claimed on subsequent
-   drain cycles. Bounded by `batch_size` (5) and not worth the complexity of
+   drain cycles. Bounded by `batch_size` and not worth the complexity of
    re-checking mid-loop, but it is not the "stops immediately" reading the
-   Design section invites.
+   Design section invites. *(Amended 2026-08-25: the value 5 stated here went
+   stale when per-item fan-out dropped it to 2, and it no longer lives in this
+   method's signature at all — it is `db.QUEUE_CLAIM_BATCH_SIZE`, shared with
+   `_queue_stranded_after_seconds`, which derives how long a claim may
+   legitimately run from it. Also: cooldown exclusion being claim-time only is
+   still true, but a batch is no longer bounded by rows alone — each claimed
+   row fans out to one search per eligible crawler.)*
 6. **No cooldown-expiry test shipped.** The Testing section's "Cooldown expires"
    item is unimplemented: expiry is structural rather than behavioral —
    `_drain_one_batch` recomputes `_cooling_down_crawler_ids()` from
