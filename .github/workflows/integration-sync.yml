@@ -155,9 +155,18 @@ jobs:
           on_main() { git merge-base --is-ancestor "$1" origin/main 2>/dev/null; }
 
           record_marker() {  # $1 = the main commit integration provably holds
-            git push --force --quiet origin "$1:refs/tags/$MARKER_TAG" \
-              && echo "marker: integration holds main $(git rev-parse --short "$1")" \
-              || echo "::warning::could not move $MARKER_TAG. Nothing recovers it automatically: the next run falls back to BOOTSTRAP_BASE, which only grows staler. If this persists, check the token's contents permission and re-create the tag at the newest main commit integration provably holds."
+            # Returns non-zero on failure, and callers must respect that. It
+            # used to swallow the error, which on the promotion path meant
+            # deleting the pending tag -- the only durable record of what the
+            # sync carried -- after failing to write what replaces it. The next
+            # run then had neither, fell back to a staler base, and dropped
+            # main's reverts.
+            if git push --force --quiet origin "$1:refs/tags/$MARKER_TAG"; then
+              echo "marker: integration holds main $(git rev-parse --short "$1")"
+            else
+              echo "::error::could not move $MARKER_TAG to $(git rev-parse --short "$1"). Check the token's contents permission; until this succeeds the merge base only grows staler."
+              return 1
+            fi
           }
 
           # The marker names the `main` commit `integration` already holds, and
@@ -202,13 +211,21 @@ jobs:
                 --jq 'map(select(.isCrossRepository == false)) | .[0].state // empty')"
               if [ "$last_state" = "MERGED" ] && on_main "$pending"; then
                 echo "last sync PR merged; promoting $PENDING_TAG to the marker."
-                marker="$pending"
-                record_marker "$marker"
+                if record_marker "$pending"; then
+                  marker="$pending"
+                  git push --force --quiet origin ":refs/tags/$PENDING_TAG" \
+                    || echo "::warning::could not delete $PENDING_TAG; a later run may promote it against the wrong sync."
+                else
+                  # Keep it. It is the only record of what that sync carried,
+                  # and deleting it after failing to write the marker loses the
+                  # information entirely. The next run retries the promotion.
+                  echo "::error::promotion failed; leaving $PENDING_TAG in place to retry."
+                fi
               else
                 echo "last sync PR ended '$last_state'; discarding $PENDING_TAG without promoting."
+                git push --force --quiet origin ":refs/tags/$PENDING_TAG" \
+                  || echo "::warning::could not delete $PENDING_TAG; a later run may promote it against the wrong sync."
               fi
-              git push --force --quiet origin ":refs/tags/$PENDING_TAG" \
-                || echo "::warning::could not delete $PENDING_TAG; a later run may promote it against the wrong sync."
             fi
           fi
 
