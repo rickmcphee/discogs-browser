@@ -37,6 +37,8 @@ vi.mock('../api/client', () => ({
   checkHealth: vi.fn().mockResolvedValue(true),
   getAuthStatus: vi.fn().mockResolvedValue({ state: 'authenticated', user: { discogs_username: 'test', is_admin: true } }),
   setUnauthorizedHandler: vi.fn(),
+  getUserHiddenCrawlers: vi.fn().mockResolvedValue([]),
+  postUserHiddenCrawlers: vi.fn().mockResolvedValue(undefined),
   refreshCollection: vi.fn().mockResolvedValue({ synced: 0, username: 'test' }),
   getCollectionStatus: vi.fn().mockResolvedValue({ total: 0, last_synced: null }),
   getCrawlStatus: vi.fn().mockResolvedValue({ total: 0, missing: 0, oldest_checked: null }),
@@ -67,7 +69,10 @@ vi.mock('../api/client', () => ({
   postStockSyncStart: vi.fn().mockResolvedValue({ started: true, running: true }),
   postJudgmentStart: vi.fn().mockResolvedValue({ started: true, running: true }),
   getJudgmentStatus: vi.fn().mockResolvedValue({ any_judged: false }),
+  getPriceStatus: vi.fn().mockResolvedValue({ any_price_paid: false }),
   importRecommendationsCsv: vi.fn(),
+  listInvites: vi.fn().mockResolvedValue([]),
+  createInvite: vi.fn().mockResolvedValue({ code: '' }),
 }))
 
 function getLastCrawlSource() {

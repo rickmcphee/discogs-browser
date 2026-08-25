@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Three refinements to the already-merged Store "Recommended" filter: never suggest an item the user already owns, rewrite the judgment prompt so reasons read as factual item descriptions (not "matches your collection" phrasing) and move it into its own file, and add a way to re-run judgment without a full 13-source stock re-crawl.
+**Goal:** Three refinements to the already-merged Store "Recommended" filter: never suggest an item the user already owns, rewrite the judgment prompt so reasons read as factual item descriptions (not "matches your collection" phrasing) and move it into its own file, and add a way to re-run judgment without a full stock re-crawl.
 
 **Architecture:** A single reusable SQL exclusion clause (artist + title-prefix match against `in_collection = 1`) applied at both judgment time (`get_unjudged_stock_items`) and read time (`get_stock_items`/`get_distinct_stock_artists`). The judgment prompt moves from a Python string constant into `backend/recommendations_prompt.md`, loaded once at import. `CrawlManager` gains a second, independently-triggerable entry point (`start_judgment_only`) that runs the existing `_run_judgment_phase` without the catalog crawl, mutually exclusive with the full stock sync.
 
@@ -714,4 +714,4 @@ git commit -m "store-recommended-filter: add Refresh Recommendations button"
 - [ ] Run the full backend suite: `cd backend && pytest -v` — expect all green.
 - [ ] Run the full frontend suite: `cd frontend && npx vitest run` — expect all green.
 - [ ] Type-check the frontend: `cd frontend && npx tsc -b --noEmit` — expect no errors.
-- [ ] Manual smoke test: with a real Anthropic API key and a non-trivial collection, confirm a store item matching an owned title never appears under Recommended even after a full sync; read a few generated reasons and confirm they read as factual item descriptions, not "matches your collection" phrasing; click "Refresh Recommendations" in Settings and confirm the status bar shows judgment progress without any of the 13 catalog crawlers running.
+- [ ] Manual smoke test: with a real Anthropic API key and a non-trivial collection, confirm a store item matching an owned title never appears under Recommended even after a full sync; read a few generated reasons and confirm they read as factual item descriptions, not "matches your collection" phrasing; click "Refresh Recommendations" in Settings and confirm the status bar shows judgment progress without any catalog crawler running.

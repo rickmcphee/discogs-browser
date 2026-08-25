@@ -20,7 +20,7 @@ This is the second slice of the v3.0 redesign (see
 (`crawler_type='release'`: amazon, discogs_marketplace, ebay) only ever
 search on behalf of a Discogs release — `crawl_queue` and `listings` are
 both hard-FK'd to `catalog(discogs_id)`. Store-crawler stock items
-(`crawler_type='catalog'`/`'catalog_browser'`, ~36 small-site crawlers)
+(`crawler_type='catalog'`/`'catalog_browser'`, the small-site crawlers)
 have no `catalog.discogs_id` and get no cross-site price comparison at
 all today; `stock_items` only ever holds the one price the store itself
 reported. This slice lets amazon and ebay search on behalf of a stock item
@@ -100,8 +100,8 @@ it doesn't show it.
   decision.** The original plan deferred queue prioritization, on the
   reasoning that a large stock-item enqueue burst "could in principle
   delay" a user's collection crawl. A whole-branch review found that
-  premise false at actual scale: with 34 store crawlers able to enqueue on
-  the order of 20,000 stock-item jobs per sync against a shared ~7,700
+  premise false at actual scale: with the store crawlers collectively able to
+  enqueue on the order of 20,000 stock-item jobs per sync against a shared ~7,700
   jobs/day drain ceiling, and enqueued-but-undrained rows never advancing
   their `requested_at` (only a `'done'` row's re-enqueue does), the FIFO
   queue's backlog grows every sync rather than draining — starvation, not
@@ -140,7 +140,10 @@ would silently destroy crawl history on every re-sync. `stock_item_identities`
 exists specifically to be the thing that isn't wiped: it's populated by
 `ON CONFLICT (item_key) DO UPDATE`, never bulk-deleted, and is the FK anchor
 `crawl_queue`/`listings` need — structurally identical to the role `catalog`
-already plays for releases.
+already plays for releases. That guarantee covers `stock_item_identities`,
+`listings`, and `done` `crawl_queue` rows; it doesn't extend to `pending`
+`crawl_queue` rows for an item no enabled store still lists, which a later
+change deliberately deletes — see 2026-08-10-dead-stock-crawl-jobs-design.md.
 
 ## Backend design
 
@@ -169,6 +172,16 @@ ALTER TABLE listings ALTER COLUMN release_id DROP NOT NULL;
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS item_key TEXT REFERENCES stock_item_identities(item_key);
 CREATE UNIQUE INDEX IF NOT EXISTS listings_item_key_crawler_idx ON listings (item_key, crawler_id);
 ```
+
+**Amendment (2026-08-14):** the `crawl_queue_item_key_crawler_idx` created
+above is dropped again, along with `crawl_queue.crawler_id` itself.
+`crawl_queue` becomes a table of targets, not target/crawler pairs:
+`discogs_id` and `item_key` each get their own unique index
+(`crawl_queue_discogs_id_idx`, `crawl_queue_item_key_idx`), with no
+`crawler_id` column on the row at all. The `listings_item_key_crawler_idx`
+immediately above is unaffected — `listings` still keys per `(item_key,
+crawler_id)`, unchanged. See
+[`2026-08-14-per-item-crawler-fanout-design.md`](2026-08-14-per-item-crawler-fanout-design.md).
 
 The existing table-level `UNIQUE(discogs_id, crawler_id)` /
 `UNIQUE(release_id, crawler_id)` constraints are untouched. Postgres treats
@@ -229,6 +242,20 @@ successfully-crawled source rather than once before the loop, and it is
 belt-and-braces either way now that the enqueue statement carries the guard
 itself. See
 [`2026-08-09-stop-crawling-disabled-stores-design.md`](2026-08-09-stop-crawling-disabled-stores-design.md).
+
+**Amendment (2026-08-14):** `enqueue_crawl_queue_for_stock_item`'s signature
+shown above, `(conn, item_key, crawler_id)`, is stale in the same way
+`enqueue_crawl_queue`'s already-amended body is — it drops `crawler_id`
+entirely, taking only `(conn, item_key)`; there is no crawler on the row left
+to gate or conflict on. `claim_crawl_queue_batch`'s `RETURNING` clause
+(described below as changing from `id, discogs_id, crawler_id` to `id,
+discogs_id, item_key, crawler_id`) is stale a second time: it now returns
+`id, discogs_id, item_key, pending_crawler_ids`, with no `crawler_id` at all.
+And the `_drain_one_batch` code further down that reads `row["crawler_id"]`
+to pick one plugin per claimed row no longer applies — a claimed row fans out
+across every crawler `db.get_eligible_crawlers` resolves for it, one work
+unit per crawler, not one plugin lookup per row. See
+[`2026-08-14-per-item-crawler-fanout-design.md`](2026-08-14-per-item-crawler-fanout-design.md).
 
 `upsert_stock_item_listing` (new, same shape as `upsert_listing`):
 
@@ -357,7 +384,10 @@ for row in rows:
     try:
         matches, bot_detected = await self._paced_search(row["crawler_id"], plugin, target, pages)
     except Exception as e:
-        log.error("[%s] Crawl failed for %s: %s", plugin._db_site_name, row.get("discogs_id") or row["item_key"], e)
+        log.error(
+            "[%s] Crawl failed for %s - %s (%s): %s",
+            plugin._db_site_name, target["artist"], target["title"], row.get("discogs_id") or row["item_key"], e,
+        )
         self._record_site_result(row["crawler_id"], succeeded=False)
         with get_app_pool().connection() as conn:
             mark_crawl_queue_done(conn, row["id"])
@@ -407,14 +437,36 @@ async def _broadcast_stock_listing_changed(self, item_key: str, crawler_id: int,
         await q.put(event)
 ```
 
-This is deliberate, not an oversight: `routers/crawl.py`'s
-`_event_touches_user` already does `if not discogs_id: return True` — an
-event carrying no `discogs_id` key is replayed/streamed to every connected
-user unconditionally. That's exactly the right behavior for a stock-item
-event: stock inventory is global (no per-user ownership the way a Discogs
+**Amendment (2026-08-23):** `_event_touches_user`, named throughout this
+section as the mechanism, was deleted by commit `5e1890e` (2026-08-12) —
+it does not exist anywhere in `backend/` today. Its deletion went further
+than this document assumed: `listing_changed` is now unconditionally
+global for *every* target, release or stock-item, with no `discogs_id`
+check of any kind gating it. Per-user filtering does still exist in
+`routers/crawl.py`, as `_visible_to()`, but it applies only to events
+explicitly tagged with a `user_id` (the `sync_*`/`stock_judgment_*`/
+`plex_match_*` events tagged by closures in `crawl_manager.py`) —
+`listing_changed` carries no `user_id` and is never filtered by it. The
+conclusion in the paragraph below — that a stock-item `listing_changed`
+event reaches every connected user, including one with no relationship to
+it — is still correct; only the named mechanism is stale.
+
+This is deliberate, not an oversight: `routers/crawl.py` streams
+`listing_changed` events unconditionally to every connected user
+regardless of `discogs_id` — an event carrying no `discogs_id` key is
+delivered to every connected user, same as one that does. (2026-08-23: the
+original wording here said "replayed/streamed". Only *streamed* is right —
+both listing broadcasters deliberately bypass `_recent`, putting events
+straight onto subscriber queues (`crawl_manager.py:533-557`), so a
+reconnecting client never replays a `listing_changed` event at all. And
+"every connected user" here means every subscriber on the broadcasting
+process: `_subscribers` is in-process, so across Machines a stream misses
+events produced elsewhere — an accepted gap, see
+[`2026-08-16-fly-multi-machine-design.md`](2026-08-16-fly-multi-machine-design.md)'s
+"Cross-Machine SSE fan-out". The no-filtering point is unaffected.) That's exactly the right behavior for a stock-item event:
+stock inventory is global (no per-user ownership the way a Discogs
 release has via `library_items`), so every user's Store tab should see the
-same price updates. Zero changes needed to `_event_touches_user` or the SSE
-router itself.
+same price updates.
 
 ### `discogs_marketplace.py`
 
@@ -477,10 +529,21 @@ written into the new column on both insert and the existing `ON CONFLICT
   cases it already covers.
 - `backend/tests/test_crawl_router.py` — a `listing_changed` event with no
   `discogs_id` key (the shape `_broadcast_stock_listing_changed` produces)
-  is replayed/streamed to a user with no relationship to it, verifying the
-  existing `_event_touches_user`'s `if not discogs_id: return True` fallback
-  already does the right thing for stock-item events without any change to
-  that function.
+  reaches a user with no relationship to it. **(2026-08-23:** two
+  corrections. The mechanism is no longer `_event_touches_user` (deleted in
+  `5e1890e`) but the plain fact that `listing_changed` is never filtered at
+  all — `_visible_to()` acts only on `user_id`-tagged events. And the
+  coverage is not what this bullet implies: `test_crawl_stream_replay_includes_listing_changed_events_for_every_release`
+  hand-seeds `_recent` and calls `_events_to_replay`, exercising the replay
+  path on state production never actually produces, since both listing
+  broadcasters bypass `_recent` entirely (`crawl_manager.py:547-557`). No
+  test streams a `listing_changed` event through the live generator. What
+  covers live global delivery is compositional:
+  `test_crawl_stream_live_loop_drops_another_users_tagged_event` streams an
+  *untagged* event and asserts it reaches a user it isn't addressed to, and
+  the manager tests assert `listing_changed` events carry no `user_id` — so
+  they fall in the untagged class the router test covers. The conclusion
+  holds; the route to it is indirect.)**
 - `discogs_marketplace.py` needs no test changes — it's simply never
   invoked with a stock-item target, by construction.
 

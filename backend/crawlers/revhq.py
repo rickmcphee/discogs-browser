@@ -10,6 +10,8 @@ _COLLECTION_SLUG = "vinyl"
 class Crawler:
     site_name: str = "Rev HQ"
     base_url: str = "https://revhq.com"
+    genre_summary: str = "Hardcore punk label/store (Revelation Records)."
+    genre: str = "punk"
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:

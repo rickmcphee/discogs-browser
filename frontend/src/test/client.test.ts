@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { postCrawlStart, postStockSyncStart, getUserSettings, saveUserSettings, logout, getStock, getStockArtists, getReleases, getArtists, postPlexMatchStart, refreshCollection, openCrawlStream, openLogsStream, importRecommendationsCsv } from '../api/client'
+import { postCrawlStart, postStockSyncStart, getUserSettings, saveUserSettings, logout, getStock, getStockArtists, getReleases, getArtists, postPlexMatchStart, refreshCollection, openCrawlStream, openLogsStream, importRecommendationsCsv, listInvites, createInvite, getUserHiddenCrawlers, postUserHiddenCrawlers, saveStockItem, unsaveStockItem, checkHealth, getQueueSummary, getQueueNext } from '../api/client'
 
 describe('crawl/user-settings client functions', () => {
   let fetchMock: ReturnType<typeof vi.fn>
@@ -22,6 +22,19 @@ describe('crawl/user-settings client functions', () => {
     fetchMock.mockResolvedValue({ ok: true, json: async () => ({ enqueued: 3 }) })
     const result = await postCrawlStart('all')
     expect(result.enqueued).toBe(3)
+  })
+
+  it('checkHealth passes an AbortSignal, and resolves false when the request is aborted', async () => {
+    let capturedSignal: AbortSignal | undefined
+    fetchMock.mockImplementation((_url: string, init: RequestInit) => {
+      capturedSignal = init.signal as AbortSignal
+      // Simulates what a hung connection's timeout firing does to fetch() --
+      // this is what a removed or miswired signal would fail to reproduce.
+      return Promise.reject(new DOMException('The operation was aborted.', 'TimeoutError'))
+    })
+
+    await expect(checkHealth()).resolves.toBe(false)
+    expect(capturedSignal).toBeInstanceOf(AbortSignal)
   })
 
   it('postStockSyncStart posts an empty crawler_id for a bulk call', async () => {
@@ -49,6 +62,21 @@ describe('crawl/user-settings client functions', () => {
     await saveUserSettings({ anthropic_api_key: 'sk-ant-test', recommendation_item_limit: 300, plex_base_url: '', plex_token: '', plex_match_threshold: 90 })
     expect(fetchMock.mock.calls[0][0]).toContain('/user-settings')
     expect(fetchMock.mock.calls[0][1].method).toBe('POST')
+  })
+
+  it('getUserHiddenCrawlers fetches /user-hidden-crawlers', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ hidden_crawler_ids: [3, 7] }) })
+    const result = await getUserHiddenCrawlers()
+    expect(fetchMock.mock.calls[0][0]).toContain('/user-hidden-crawlers')
+    expect(result).toEqual([3, 7])
+  })
+
+  it('postUserHiddenCrawlers posts the full id list to /user-hidden-crawlers', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ ok: true }) })
+    await postUserHiddenCrawlers([3, 7])
+    expect(fetchMock.mock.calls[0][0]).toContain('/user-hidden-crawlers')
+    expect(fetchMock.mock.calls[0][1].method).toBe('POST')
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ hidden_crawler_ids: [3, 7] })
   })
 
   it('logout resolves on a successful response', async () => {
@@ -216,5 +244,154 @@ describe('crawl/user-settings client functions', () => {
     // The browser must supply the multipart boundary; setting Content-Type by
     // hand omits it and the request fails to parse server-side.
     expect(new Headers(init.headers).has('Content-Type')).toBe(false)
+  })
+
+  it('listInvites fetches /auth/invites', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => [] })
+    await listInvites()
+    expect(fetchMock.mock.calls[0][0]).toContain('/auth/invites')
+  })
+
+  it('createInvite posts the note and returns the minted code', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ code: 'ABC123' }) })
+    const result = await createInvite('for a friend')
+    expect(fetchMock.mock.calls[0][0]).toContain('/auth/invites')
+    expect(fetchMock.mock.calls[0][1].method).toBe('POST')
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ note: 'for a friend' })
+    expect(result).toEqual({ code: 'ABC123' })
+  })
+
+  it('createInvite sends a null note when none is given', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ code: 'XYZ789' }) })
+    await createInvite()
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ note: null })
+  })
+
+  it('getStock forwards saved=true when saved is set', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ total: 0, page: 1, per_page: 250, items: [] }) })
+    await getStock({ saved: true })
+    expect(fetchMock.mock.calls[0][0]).toContain('saved=true')
+  })
+
+  it('getStock omits saved when unset', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ total: 0, page: 1, per_page: 250, items: [] }) })
+    await getStock({})
+    expect(fetchMock.mock.calls[0][0]).not.toContain('saved=')
+  })
+
+  it('getStockArtists forwards saved=true', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ artists: [] }) })
+    await getStockArtists(undefined, false, undefined, true)
+    expect(fetchMock.mock.calls[0][0]).toContain('saved=true')
+  })
+
+  it('saveStockItem PUTs to /stock/saved/:item_key', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ saved: true }) })
+    await saveStockItem('abc123')
+    expect(fetchMock.mock.calls[0][0]).toContain('/stock/saved/abc123')
+    expect(fetchMock.mock.calls[0][1].method).toBe('PUT')
+  })
+
+  it('unsaveStockItem DELETEs to /stock/saved/:item_key', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ saved: false }) })
+    await unsaveStockItem('abc123')
+    expect(fetchMock.mock.calls[0][0]).toContain('/stock/saved/abc123')
+    expect(fetchMock.mock.calls[0][1].method).toBe('DELETE')
+  })
+})
+
+describe('queue client functions', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ items: [] }) })
+    vi.stubGlobal('fetch', fetchMock)
+  })
+
+  // QueueView holds at most one summary in flight, so a request that never
+  // settles would wedge its polling loop for good -- last snapshot on screen,
+  // no stale warning, no recovery.
+  it('gives the summary request a deadline', async () => {
+    await getQueueSummary()
+    const [, init] = fetchMock.mock.calls[0]
+    expect(init.signal).toBeInstanceOf(AbortSignal)
+  })
+
+  it('gives the next-up request a deadline', async () => {
+    await getQueueNext(1)
+    const [, init] = fetchMock.mock.calls[0]
+    expect(init.signal).toBeInstanceOf(AbortSignal)
+  })
+
+  // The view's own guard is component-local, so it cannot survive the Queue tab
+  // being unmounted. Coalescing here is what stops a leave/reopen during a slow
+  // report issuing a second repeatable-read transaction alongside the first.
+  it('coalesces concurrent summary requests into one', async () => {
+    let release: (v: unknown) => void = () => {}
+    fetchMock.mockReturnValue(new Promise((r) => {
+      release = () => r({ ok: true, status: 200, json: async () => ({}) })
+    }))
+
+    const a = getQueueSummary()
+    const b = getQueueSummary()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(a).toBe(b)
+
+    release(null)
+    await a
+  })
+
+  it('releases the coalescing slot once a summary settles', async () => {
+    await getQueueSummary()
+    await getQueueSummary()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('coalesces concurrent next-up requests for the same crawler', async () => {
+    let release: (v: unknown) => void = () => {}
+    fetchMock.mockReturnValue(new Promise((r) => {
+      release = () => r({ ok: true, status: 200, json: async () => ({ items: [] }) })
+    }))
+
+    const a = getQueueNext(1)
+    const b = getQueueNext(1)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(a).toBe(b)
+
+    release(null)
+    await a
+  })
+
+  it('does not coalesce next-up requests for different crawlers', async () => {
+    let release: (v: unknown) => void = () => {}
+    const pending = new Promise((r) => {
+      release = () => r({ ok: true, status: 200, json: async () => ({ items: [] }) })
+    })
+    fetchMock.mockReturnValue(pending)
+
+    const a = getQueueNext(1)
+    const b = getQueueNext(2)
+    // Different crawlers are different reports; sharing one would be wrong.
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    // Settled before the test ends: the coalescing map is module state, so
+    // leaving an unresolved entry behind hands it to the next test.
+    release(null)
+    await Promise.all([a, b])
+  })
+
+  it('releases the next-up slot when a request fails', async () => {
+    fetchMock.mockRejectedValueOnce(new Error('boom'))
+    await expect(getQueueNext(1)).rejects.toThrow('boom')
+    fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({ items: [] }) })
+    await expect(getQueueNext(1)).resolves.toEqual([])
+  })
+
+  it('releases the coalescing slot when a summary fails', async () => {
+    fetchMock.mockRejectedValueOnce(new Error('boom'))
+    await expect(getQueueSummary()).rejects.toThrow('boom')
+    // A rejection must not wedge every later caller on a dead promise.
+    fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({}) })
+    await expect(getQueueSummary()).resolves.toBeDefined()
   })
 })

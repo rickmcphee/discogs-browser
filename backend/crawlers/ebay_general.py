@@ -1,3 +1,4 @@
+import asyncio
 import urllib.parse
 from config import load_config
 from crawler import clean_search_text
@@ -17,7 +18,11 @@ class Crawler:
         return f"https://www.ebay.com/sch/i.html?_nkw={query}"
 
     async def search(self, release: dict, page) -> list[dict]:
-        cfg = load_config()
+        # load_config() is a blocking Postgres call; offloaded so it can't
+        # stall the process's single event loop -- see crawl_manager.py's
+        # _paced_search/_record_site_result for the same fix and why it
+        # matters (Fly healthcheck timeouts).
+        cfg = await asyncio.to_thread(load_config)
         return await search_ebay(
             release,
             cfg.get("ebay_app_id", ""),

@@ -243,6 +243,155 @@ def test_get_stock_items_recommended_filters_to_calling_users_judgments(admin_co
         assert result["total"] == 0
 
 
+def test_save_stock_item_then_unsave_round_trips(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+
+    db.save_stock_item(admin_conn, alice["id"], "some-item-key")
+    admin_conn.commit()
+    row = admin_conn.execute(
+        "SELECT * FROM stock_item_saves WHERE user_id = %s AND item_key = %s",
+        [alice["id"], "some-item-key"],
+    ).fetchone()
+    assert row is not None
+
+    db.unsave_stock_item(admin_conn, alice["id"], "some-item-key")
+    admin_conn.commit()
+    row = admin_conn.execute(
+        "SELECT * FROM stock_item_saves WHERE user_id = %s AND item_key = %s",
+        [alice["id"], "some-item-key"],
+    ).fetchone()
+    assert row is None
+
+
+def test_save_stock_item_is_idempotent(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+
+    db.save_stock_item(admin_conn, alice["id"], "some-item-key")
+    db.save_stock_item(admin_conn, alice["id"], "some-item-key")
+    admin_conn.commit()
+
+    rows = admin_conn.execute(
+        "SELECT * FROM stock_item_saves WHERE user_id = %s AND item_key = %s",
+        [alice["id"], "some-item-key"],
+    ).fetchall()
+    assert len(rows) == 1
+
+
+def test_unsave_stock_item_never_saved_is_a_noop(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+
+    db.unsave_stock_item(admin_conn, alice["id"], "never-saved-key")
+    admin_conn.commit()  # must not raise
+
+
+def _make_amazon_item(admin_conn, artist="Artist A", title="Album A", url="https://x/1", price=10.0):
+    # A distinct site_name per call: replace_stock_items deletes all
+    # stock_items for the given crawler_id before inserting, so reusing one
+    # "Amazon" crawler across calls would delete the previous call's item.
+    site_name = f"Amazon-{url}"
+    db.register_crawler(admin_conn, site_name, "/x.py", crawler_type="catalog")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = %s", [site_name]).fetchone()["id"]
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": artist, "title": title, "url": url, "price": price, "currency": "USD"},
+    ])
+    admin_conn.commit()
+    return db.compute_item_key(artist, title, url)
+
+
+def test_get_stock_items_saved_only_filters_to_calling_users_saves(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    bob = db.create_user(admin_conn, discogs_user_id=2, discogs_username="bob")
+    admin_conn.commit()
+    item_key = _make_amazon_item(admin_conn)
+
+    db.save_stock_item(admin_conn, alice["id"], item_key)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], saved_only=True)
+        assert result["total"] == 1
+
+    with db.user_scope(bob["id"]) as conn:
+        result = db.get_stock_items(conn, bob["id"], saved_only=True)
+        assert result["total"] == 0
+
+
+def test_get_stock_items_saved_only_does_not_exclude_owned_items(admin_conn):
+    # Unlike `recommended`, `saved_only` has no not-owned gate: a saved item
+    # the user already owns must still appear.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+    item_key = _make_amazon_item(admin_conn)
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r1", "artist": "Artist A", "title": "Album A", "year": None, "label": None,
+        "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+        "discogs_url": None,
+    })
+    db.upsert_library_item(admin_conn, alice["id"], "r1", in_collection=True)
+    db.save_stock_item(admin_conn, alice["id"], item_key)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], saved_only=True)
+        assert result["total"] == 1
+
+
+def test_get_stock_items_saved_field_present_on_every_row(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+    saved_key = _make_amazon_item(admin_conn, artist="Artist Saved", title="Album Saved", url="https://x/saved")
+    unsaved_key = _make_amazon_item(admin_conn, artist="Artist Unsaved", title="Album Unsaved", url="https://x/unsaved")
+    db.save_stock_item(admin_conn, alice["id"], saved_key)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"])
+        by_key = {r["item_key"]: r["saved"] for r in result["items"]}
+        assert by_key[saved_key] is True
+        assert by_key[unsaved_key] is False
+
+
+def test_get_stock_items_saved_state_shared_across_comparison_rows(admin_conn):
+    # A record's saved flag must be identical on its own row and every
+    # cross-crawler comparison row for the same item_key.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    db.register_crawler(admin_conn, "Nuclear Blast", "/x.py", crawler_type="catalog")
+    db.register_crawler(admin_conn, "Amazon", "/y.py", crawler_type="release")
+    admin_conn.commit()
+    store_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()["id"]
+    amazon_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+    item_key = db.replace_stock_items(admin_conn, store_id, [
+        {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+    ])[0]
+    db.upsert_stock_item_listing(admin_conn, item_key, amazon_id, "https://amazon/1", 12.5, None, "USD", "New")
+    admin_conn.commit()
+    db.save_stock_item(admin_conn, alice["id"], item_key)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"])
+        rows_for_item = [r for r in result["items"] if r["item_key"] == item_key]
+        assert len(rows_for_item) == 2  # own row + one comparison row
+        assert all(r["saved"] for r in rows_for_item)
+
+
+def test_get_distinct_stock_artists_saved_only_filters(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+    saved_key = _make_amazon_item(admin_conn, artist="Artist Saved", title="Album Saved", url="https://x/saved")
+    _make_amazon_item(admin_conn, artist="Artist Unsaved", title="Album Unsaved", url="https://x/unsaved")
+    db.save_stock_item(admin_conn, alice["id"], saved_key)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        artists = db.get_distinct_stock_artists(conn, alice["id"], saved_only=True)
+        assert artists == ["Artist Saved"]
+
+
 def test_get_stock_items_excludes_hidden_crawler_ids(admin_conn):
     alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
     db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")
@@ -571,11 +720,19 @@ def test_get_stock_items_sort_by_discogs_price_orders_numerically_nulls_last(adm
         {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
         {"artist": "Artist B", "title": "Album B", "url": "https://x/2", "price": 10.0, "currency": "USD"},
         {"artist": "Artist C", "title": "Album C", "url": "https://x/3", "price": 10.0, "currency": "USD"},
+        {"artist": "Artist D", "title": "Album D", "url": "https://x/4", "price": 10.0, "currency": "USD"},
     ])
+    # Artist D's thousands separator is what makes this test discriminate
+    # _price_sort_sql from the narrower inline regex it replaced: under
+    # '\d+\.?\d*' the match stops at the comma and "$1,200.50" reads as 1,
+    # sorting below "10" instead of above "$30.00". The other three values
+    # order identically under both, so without it the call site could be
+    # reverted with every assertion still passing.
     for discogs_id, artist, title, price in [
         ("r1", "Artist A", "Album A", "$30.00"),
         ("r2", "Artist B", "Album B", "10"),
         ("r3", "Artist C", "Album C", "N/A"),
+        ("r4", "Artist D", "Album D", "$1,200.50"),
     ]:
         db.upsert_catalog_release(admin_conn, {
             "discogs_id": discogs_id, "artist": artist, "title": title, "year": None, "label": None,
@@ -587,7 +744,94 @@ def test_get_stock_items_sort_by_discogs_price_orders_numerically_nulls_last(adm
 
     with db.user_scope(alice["id"]) as conn:
         result = db.get_stock_items(conn, alice["id"], library_scope="collection", sort="discogs_price", order="asc")
-    assert [r["artist"] for r in result["items"]] == ["Artist B", "Artist A", "Artist C"]
+    assert [r["artist"] for r in result["items"]] == ["Artist B", "Artist A", "Artist D", "Artist C"]
+
+    # Descending reverses the priced rows but must not promote the unpriced
+    # one: "nulls last" means last in both directions. This is the half the
+    # test name always claimed and only the ascending call ever checked.
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], library_scope="collection", sort="discogs_price", order="desc")
+    assert [r["artist"] for r in result["items"]] == ["Artist D", "Artist A", "Artist B", "Artist C"]
+
+
+def test_get_stock_items_sort_by_discogs_price_reads_decimal_commas_as_decimals(admin_conn):
+    # The Track tab shares _price_sort_sql with the library path, so the
+    # decimal-comma resolution has to hold here too -- see the matching test in
+    # test_catalog_crud.py. Covered on both paths deliberately: the two sorts
+    # had already drifted apart once before the helper was shared.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+        {"artist": "Artist B", "title": "Album B", "url": "https://x/2", "price": 10.0, "currency": "USD"},
+        {"artist": "Artist C", "title": "Album C", "url": "https://x/3", "price": 10.0, "currency": "USD"},
+        {"artist": "Artist D", "title": "Album D", "url": "https://x/4", "price": 10.0, "currency": "USD"},
+        {"artist": "Artist E", "title": "Album E", "url": "https://x/5", "price": 10.0, "currency": "USD"},
+        {"artist": "Artist F", "title": "Album F", "url": "https://x/6", "price": 10.0, "currency": "USD"},
+    ])
+    for discogs_id, artist, title, price in [
+        ("r1", "Artist A", "Album A", "$100"),
+        ("r2", "Artist B", "Album B", "\u20ac25,50"),
+        ("r3", "Artist C", "Album C", "1.234,56"),
+        ("r4", "Artist D", "Album D", "$1,200.50"),
+        ("r5", "Artist E", "Album E", "1.234"),
+        ("r6", "Artist F", "Album F", "1,23,456.78"),
+    ]:
+        db.upsert_catalog_release(admin_conn, {
+            "discogs_id": discogs_id, "artist": artist, "title": title, "year": None, "label": None,
+            "format": None, "price_paid": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.upsert_library_item(admin_conn, alice["id"], discogs_id, in_collection=True, price_paid=price)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], library_scope="collection", sort="discogs_price", order="asc")
+    # 1.234 < 25.50 < 100 < 1200.50 < 1234.56 -- the whole matrix, not a subset.
+    # Under a blanket comma strip B reads as 2550 and leads; under the old
+    # narrow regex C reads as 1.234 and D as 1.
+    assert [r["artist"] for r in result["items"]] == [
+        "Artist E", "Artist B", "Artist A", "Artist D", "Artist C", "Artist F",
+    ]
+
+
+def test_get_stock_items_sort_by_discogs_price_reads_a_bare_decimal_part(admin_conn):
+    # The leading-zero rule on the Track path -- see the matching library test.
+    # Both paths share _price_sort_sql, and both are covered for the same
+    # reason the separator matrix is: they had drifted apart once already.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+        {"artist": "Artist B", "title": "Album B", "url": "https://x/2", "price": 10.0, "currency": "USD"},
+        {"artist": "Artist C", "title": "Album C", "url": "https://x/3", "price": 10.0, "currency": "USD"},
+    ])
+    for discogs_id, artist, title, price in [
+        ("r1", "Artist A", "Album A", "$.99"),
+        ("r2", "Artist B", "Album B", "$50"),
+        ("r3", "Artist C", "Album C", ",99"),
+    ]:
+        db.upsert_catalog_release(admin_conn, {
+            "discogs_id": discogs_id, "artist": artist, "title": title, "year": None, "label": None,
+            "format": None, "price_paid": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.upsert_library_item(admin_conn, alice["id"], discogs_id, in_collection=True, price_paid=price)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], library_scope="collection", sort="discogs_price", order="asc")
+    # Both leading-separator forms, 0.99 each, ahead of 50. Under a digit-first
+    # token they read as 99 and trail. C's ",99" goes through the decimal-comma
+    # branch after the zero is prepended, A's "$.99" through the plain one --
+    # different branches, so both are worth pinning here.
+    ordered = [r["artist"] for r in result["items"]]
+    assert set(ordered[:2]) == {"Artist A", "Artist C"}
+    assert ordered[2] == "Artist B"
 
 
 def test_get_stock_items_sort_by_discogs_price_falls_back_to_artist_when_no_library_scope(admin_conn):
@@ -961,3 +1205,600 @@ def test_get_distinct_stock_artists_wishlist_scope_and_recommended_intersect(adm
             conn, alice["id"], library_scope="wishlist", recommended=True
         ) == ["Artist B"]
         assert db.get_distinct_stock_artists(conn, alice["id"], recommended=True) == ["Artist B", "Artist C"]
+
+
+def _stock_row(conn, item_key, source_site_name, price_site_name="Amazon", source_enabled=True):
+    """Builds the production shape: a catalog crawler stocking an item, a
+    separate eligible price crawler, and a pending queue row for the target.
+    The queue row itself names no crawler; the price crawler exists only so
+    the item has something eligible to price it."""
+    db.register_crawler(conn, source_site_name, "/src.py", crawler_type="catalog")
+    source_id = conn.execute(
+        "SELECT id FROM crawlers WHERE site_name = %s", [source_site_name]
+    ).fetchone()["id"]
+    db.register_crawler(conn, price_site_name, "/price.py")
+    conn.execute(
+        "INSERT INTO stock_item_identities (item_key, artist, title) VALUES (%s, 'A', 'T') "
+        "ON CONFLICT (item_key) DO NOTHING",
+        [item_key],
+    )
+    conn.execute(
+        "INSERT INTO stock_items (crawler_id, artist, title, url, item_key) "
+        "VALUES (%s, 'A', 'T', %s, %s)",
+        [source_id, f"https://x/{item_key}", item_key],
+    )
+    conn.execute("INSERT INTO crawl_queue (item_key) VALUES (%s)", [item_key])
+    if not source_enabled:
+        db.set_crawler_enabled(conn, source_id, False)
+
+
+def test_delete_dead_stock_crawl_queue_rows_deletes_a_disabled_source_row(admin_conn):
+    _stock_row(admin_conn, "key1", "Dead Store", source_enabled=False)
+    admin_conn.commit()
+
+    assert db.delete_dead_stock_crawl_queue_rows(admin_conn) == 1
+    admin_conn.commit()
+    assert admin_conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 0
+
+
+def test_delete_dead_stock_crawl_queue_rows_deletes_a_row_whose_item_has_no_stock_row(admin_conn):
+    _stock_row(admin_conn, "key1", "Live Store")
+    admin_conn.execute("DELETE FROM stock_items WHERE item_key = 'key1'")
+    admin_conn.execute(
+        "INSERT INTO stock_item_identities (item_key, artist, title) VALUES ('gone', 'A', 'T')"
+    )
+    admin_conn.execute("INSERT INTO crawl_queue (item_key) VALUES ('gone')")
+    admin_conn.commit()
+
+    assert db.delete_dead_stock_crawl_queue_rows(admin_conn) == 2
+    admin_conn.commit()
+    assert admin_conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 0
+
+
+def test_delete_dead_stock_crawl_queue_rows_keeps_a_live_row(admin_conn):
+    _stock_row(admin_conn, "key1", "Live Store")
+    admin_conn.commit()
+
+    assert db.delete_dead_stock_crawl_queue_rows(admin_conn) == 0
+    admin_conn.commit()
+    assert admin_conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 1
+
+
+def test_delete_dead_stock_crawl_queue_rows_keeps_in_progress_and_done_rows(admin_conn):
+    """in_progress rows belong to a worker that is mid-crawl and finishes by
+    design; done rows are the historical record and are never re-claimed."""
+    _stock_row(admin_conn, "key1", "Dead Store", source_enabled=False)
+    _stock_row(admin_conn, "key2", "Dead Store", source_enabled=False)
+    admin_conn.execute("UPDATE crawl_queue SET status = 'in_progress' WHERE item_key = 'key1'")
+    admin_conn.execute("UPDATE crawl_queue SET status = 'done' WHERE item_key = 'key2'")
+    admin_conn.commit()
+
+    assert db.delete_dead_stock_crawl_queue_rows(admin_conn) == 0
+    admin_conn.commit()
+    assert admin_conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 2
+
+
+def test_delete_dead_stock_crawl_queue_rows_keeps_release_rows(admin_conn):
+    db.register_crawler(admin_conn, "Amazon", "/price.py")
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+        "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+        "discogs_url": None,
+    })
+    db.enqueue_crawl_queue(admin_conn, "r1")
+    admin_conn.commit()
+
+    assert db.delete_dead_stock_crawl_queue_rows(admin_conn) == 0
+    admin_conn.commit()
+    assert admin_conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 1
+
+
+def _release_crawler_and_catalog_row(conn, site_name="Amazon", discogs_id="r1", cover_image_url="https://img/r1.jpg"):
+    db.register_crawler(conn, site_name, "/x.py", crawler_type="release")
+    conn.commit()
+    crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = %s", [site_name]).fetchone()["id"]
+    db.upsert_catalog_release(conn, {
+        "discogs_id": discogs_id, "artist": "Aphex Twin", "title": "Selected Ambient Works",
+        "year": None, "label": None, "format": "LP", "discogs_price": None,
+        "barcode": None, "cover_image_url": cover_image_url, "discogs_url": None,
+    })
+    conn.commit()
+    catalog_release = conn.execute("SELECT * FROM catalog WHERE discogs_id = %s", [discogs_id]).fetchone()
+    return crawler_id, catalog_release
+
+
+def test_upsert_stock_item_from_release_creates_a_stock_items_row(admin_conn):
+    crawler_id, catalog_release = _release_crawler_and_catalog_row(admin_conn)
+
+    db.upsert_stock_item_from_release(
+        admin_conn, "r1", crawler_id, catalog_release,
+        {"url": "https://amazon/x", "price": 24.99, "currency": "USD"},
+    )
+    admin_conn.commit()
+
+    row = admin_conn.execute(
+        "SELECT * FROM stock_items WHERE crawler_id = %s AND release_id = 'r1'", [crawler_id]
+    ).fetchone()
+    assert row["artist"] == "Aphex Twin"
+    assert row["title"] == "Selected Ambient Works"
+    assert row["format"] == "LP"
+    assert row["price"] == 24.99
+    assert row["currency"] == "USD"
+    assert row["url"] == "https://amazon/x"
+    assert row["cover_image_url"] == "https://img/r1.jpg"
+    assert row["item_key"] == db.compute_item_key("Aphex Twin", "Selected Ambient Works", "https://amazon/x")
+
+
+def test_upsert_stock_item_from_release_updates_in_place_on_rerun(admin_conn):
+    crawler_id, catalog_release = _release_crawler_and_catalog_row(admin_conn)
+
+    db.upsert_stock_item_from_release(
+        admin_conn, "r1", crawler_id, catalog_release,
+        {"url": "https://amazon/x", "price": 24.99, "currency": "USD"},
+    )
+    admin_conn.commit()
+    db.upsert_stock_item_from_release(
+        admin_conn, "r1", crawler_id, catalog_release,
+        {"url": "https://amazon/x-new", "price": 19.99, "currency": "USD"},
+    )
+    admin_conn.commit()
+
+    rows = admin_conn.execute(
+        "SELECT * FROM stock_items WHERE crawler_id = %s AND release_id = 'r1'", [crawler_id]
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["price"] == 19.99
+    assert rows[0]["url"] == "https://amazon/x-new"
+
+
+def test_upsert_stock_item_from_release_upserts_stock_item_identities(admin_conn):
+    crawler_id, catalog_release = _release_crawler_and_catalog_row(admin_conn)
+
+    db.upsert_stock_item_from_release(
+        admin_conn, "r1", crawler_id, catalog_release,
+        {"url": "https://amazon/x", "price": 24.99, "currency": "USD"},
+    )
+    admin_conn.commit()
+
+    item_key = db.compute_item_key("Aphex Twin", "Selected Ambient Works", "https://amazon/x")
+    row = admin_conn.execute(
+        "SELECT artist, title, format FROM stock_item_identities WHERE item_key = %s", [item_key]
+    ).fetchone()
+    assert row["artist"] == "Aphex Twin"
+    assert row["format"] == "LP"
+
+
+def test_upsert_stock_item_from_release_allows_two_crawlers_for_the_same_release(admin_conn):
+    amazon_id, catalog_release = _release_crawler_and_catalog_row(admin_conn, site_name="Amazon")
+    db.register_crawler(admin_conn, "eBay", "/y.py", crawler_type="release")
+    admin_conn.commit()
+    ebay_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'eBay'").fetchone()["id"]
+
+    db.upsert_stock_item_from_release(
+        admin_conn, "r1", amazon_id, catalog_release,
+        {"url": "https://amazon/x", "price": 24.99, "currency": "USD"},
+    )
+    db.upsert_stock_item_from_release(
+        admin_conn, "r1", ebay_id, catalog_release,
+        {"url": "https://ebay/x", "price": 21.99, "currency": "USD"},
+    )
+    admin_conn.commit()
+
+    rows = admin_conn.execute(
+        "SELECT crawler_id FROM stock_items WHERE release_id = 'r1' ORDER BY crawler_id"
+    ).fetchall()
+    assert sorted(r["crawler_id"] for r in rows) == sorted([amazon_id, ebay_id])
+
+
+def test_delete_stock_item_for_release_removes_only_that_crawlers_row(admin_conn):
+    amazon_id, catalog_release = _release_crawler_and_catalog_row(admin_conn, site_name="Amazon")
+    db.register_crawler(admin_conn, "eBay", "/y.py", crawler_type="release")
+    admin_conn.commit()
+    ebay_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'eBay'").fetchone()["id"]
+    db.upsert_stock_item_from_release(
+        admin_conn, "r1", amazon_id, catalog_release,
+        {"url": "https://amazon/x", "price": 24.99, "currency": "USD"},
+    )
+    db.upsert_stock_item_from_release(
+        admin_conn, "r1", ebay_id, catalog_release,
+        {"url": "https://ebay/x", "price": 21.99, "currency": "USD"},
+    )
+    admin_conn.commit()
+
+    db.delete_stock_item_for_release(admin_conn, "r1", amazon_id)
+    admin_conn.commit()
+
+    rows = admin_conn.execute("SELECT crawler_id FROM stock_items WHERE release_id = 'r1'").fetchall()
+    assert [r["crawler_id"] for r in rows] == [ebay_id]
+
+
+def test_delete_stock_item_for_release_leaves_the_identity_row(admin_conn):
+    crawler_id, catalog_release = _release_crawler_and_catalog_row(admin_conn)
+    db.upsert_stock_item_from_release(
+        admin_conn, "r1", crawler_id, catalog_release,
+        {"url": "https://amazon/x", "price": 24.99, "currency": "USD"},
+    )
+    admin_conn.commit()
+    item_key = db.compute_item_key("Aphex Twin", "Selected Ambient Works", "https://amazon/x")
+
+    db.delete_stock_item_for_release(admin_conn, "r1", crawler_id)
+    admin_conn.commit()
+
+    assert admin_conn.execute("SELECT * FROM stock_items WHERE release_id = 'r1'").fetchall() == []
+    row = admin_conn.execute(
+        "SELECT artist FROM stock_item_identities WHERE item_key = %s", [item_key]
+    ).fetchone()
+    assert row is not None
+
+
+def test_clear_listing_price_nulls_an_existing_row(admin_conn):
+    db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="release")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+        "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+        "discogs_url": None,
+    })
+    admin_conn.commit()
+    db.upsert_listing(admin_conn, "r1", crawler_id, "https://x", 9.99, None, "USD", None)
+    admin_conn.commit()
+
+    db.clear_listing_price(admin_conn, "r1", crawler_id)
+    admin_conn.commit()
+
+    row = admin_conn.execute("SELECT price, url FROM listings WHERE release_id = 'r1' AND crawler_id = %s", [crawler_id]).fetchone()
+    assert row["price"] is None
+    assert row["url"] == "https://x"
+
+
+def test_clear_listing_price_is_a_noop_when_no_row_exists(admin_conn):
+    db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="release")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+
+    db.clear_listing_price(admin_conn, "r1", crawler_id)
+    admin_conn.commit()
+
+
+def test_upsert_stock_item_from_release_item_key_uses_legacy_title_convention(admin_conn):
+    # item_key must hash the raw .title() artist/title so existing
+    # stock_item_judgments rows keyed on that hash don't orphan.
+    # This test verifies the convention matches replace_stock_items.
+    crawler_id, _ = _release_crawler_and_catalog_row(admin_conn, discogs_id="r2")
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r2", "artist": "NAILS", "title": "UNSILENT NIGHT",
+        "year": None, "label": None, "format": "LP", "discogs_price": None,
+        "barcode": None, "cover_image_url": "https://img/r2.jpg", "discogs_url": None,
+    })
+    admin_conn.commit()
+    catalog_release = admin_conn.execute("SELECT * FROM catalog WHERE discogs_id = 'r2'").fetchone()
+
+    db.upsert_stock_item_from_release(
+        admin_conn, "r2", crawler_id, catalog_release,
+        {"url": "https://amazon/y", "price": 15.0, "currency": "USD"},
+    )
+    admin_conn.commit()
+
+    # Catalog artist/title are stored raw (unnormalized) -- catalog metadata
+    # is already curated, unlike scraped stock-page text.
+    row = admin_conn.execute(
+        "SELECT artist, title FROM stock_items WHERE crawler_id = %s AND release_id = 'r2'", [crawler_id]
+    ).fetchone()
+    assert row["artist"] == "NAILS"
+    assert row["title"] == "UNSILENT NIGHT"
+
+    # But the item_key was computed using .title() on the raw values, matching legacy convention
+    item_key = db.compute_item_key("NAILS".title(), "UNSILENT NIGHT", "https://amazon/y")
+    assert admin_conn.execute(
+        "SELECT * FROM stock_items WHERE crawler_id = %s AND release_id = 'r2' AND item_key = %s",
+        [crawler_id, item_key]
+    ).fetchone() is not None
+
+
+def _register(admin_conn, site_name):
+    db.register_crawler(admin_conn, site_name, f"/{site_name}.py", crawler_type="catalog")
+    admin_conn.commit()
+    return admin_conn.execute(
+        "SELECT id FROM crawlers WHERE site_name = %s", [site_name]
+    ).fetchone()["id"]
+
+
+def test_get_distinct_stock_artists_collapses_casing_variants_onto_catalog_casing(admin_conn):
+    # Two stores disagree on the preposition: one vendor field reads "Jets to
+    # Brazil" (mixed case, so normalize_artist_casing leaves it alone), the
+    # other shouts and comes out "Jets To Brazil". Discogs' curated casing
+    # decides which one the sidebar shows, and there is only one entry.
+    #
+    # Stock deliberately holds *two* "Jets to Brazil" rows against one "Jets To
+    # Brazil": that makes the stock-only answer "Jets to Brazil" (see the next
+    # test), so the expected result here can only come from the catalog
+    # preference. With one row each, the byte-order tie-break would return
+    # "Jets To Brazil" too and the assertion would pass with the catalog
+    # lookup deleted.
+    jade = _register(admin_conn, "Jade Tree")
+    amoeba = _register(admin_conn, "Amoeba")
+    db.replace_stock_items(admin_conn, jade, [
+        {"artist": "Jets to Brazil", "title": "Orange Rhyming Dictionary", "url": "https://j/1",
+         "price": 20.0, "currency": "USD"},
+        {"artist": "Jets to Brazil", "title": "Perfecting Loneliness", "url": "https://j/2",
+         "price": 21.0, "currency": "USD"},
+    ])
+    db.replace_stock_items(admin_conn, amoeba, [
+        {"artist": "JETS TO BRAZIL", "title": "Four Cornered Night", "url": "https://a/1",
+         "price": 25.0, "currency": "USD"},
+    ])
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r1", "artist": "Jets To Brazil", "title": "Orange Rhyming Dictionary",
+        "year": None, "label": None, "format": None, "barcode": None,
+        "cover_image_url": None, "discogs_url": None,
+    })
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.get_distinct_stock_artists(conn, alice["id"]) == ["Jets To Brazil"]
+
+
+def test_get_distinct_stock_artists_uses_commonest_stock_casing_when_not_in_catalog(admin_conn):
+    jade = _register(admin_conn, "Jade Tree")
+    amoeba = _register(admin_conn, "Amoeba")
+    db.replace_stock_items(admin_conn, jade, [
+        {"artist": "Jets to Brazil", "title": "Orange Rhyming Dictionary", "url": "https://j/1",
+         "price": 20.0, "currency": "USD"},
+        {"artist": "Jets to Brazil", "title": "Perfecting Loneliness", "url": "https://j/2",
+         "price": 21.0, "currency": "USD"},
+    ])
+    db.replace_stock_items(admin_conn, amoeba, [
+        {"artist": "JETS TO BRAZIL", "title": "Four Cornered Night", "url": "https://a/1",
+         "price": 25.0, "currency": "USD"},
+    ])
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.get_distinct_stock_artists(conn, alice["id"]) == ["Jets to Brazil"]
+
+
+def test_get_stock_items_artist_filter_spans_casing_variants_and_labels_them_canonically(admin_conn):
+    # Same 2-vs-1 stock split as above, so the rows can only carry the catalog
+    # label, not a tie-break that happens to agree with it.
+    jade = _register(admin_conn, "Jade Tree")
+    amoeba = _register(admin_conn, "Amoeba")
+    db.replace_stock_items(admin_conn, jade, [
+        {"artist": "Jets to Brazil", "title": "Orange Rhyming Dictionary", "url": "https://j/1",
+         "price": 20.0, "currency": "USD"},
+        {"artist": "Jets to Brazil", "title": "Perfecting Loneliness", "url": "https://j/2",
+         "price": 21.0, "currency": "USD"},
+    ])
+    db.replace_stock_items(admin_conn, amoeba, [
+        {"artist": "JETS TO BRAZIL", "title": "Four Cornered Night", "url": "https://a/1",
+         "price": 25.0, "currency": "USD"},
+    ])
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r1", "artist": "Jets To Brazil", "title": "Orange Rhyming Dictionary",
+        "year": None, "label": None, "format": None, "barcode": None,
+        "cover_image_url": None, "discogs_url": None,
+    })
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], artist="Jets To Brazil")
+    assert result["total"] == 3
+    assert {i["title"] for i in result["items"]} == {
+        "Orange Rhyming Dictionary", "Perfecting Loneliness", "Four Cornered Night",
+    }
+    assert {i["artist"] for i in result["items"]} == {"Jets To Brazil"}
+
+
+def test_get_stock_items_sorts_the_prefixed_artists_by_the_following_word(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    crawler_id = _register(admin_conn, "Amazon")
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "The Beatles", "title": "Abbey Road", "url": "https://x/1", "price": 20.0, "currency": "USD"},
+        {"artist": "Aphex Twin", "title": "Selected Ambient Works", "url": "https://x/2", "price": 15.0, "currency": "USD"},
+        {"artist": "Pavement", "title": "Slanted and Enchanted", "url": "https://x/3", "price": 12.0, "currency": "USD"},
+        {"artist": "Zappa", "title": "Hot Rats", "url": "https://x/4", "price": 18.0, "currency": "USD"},
+    ])
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], sort="artist", order="asc")
+    # "Beatles, The" sorts ahead of "Pavement" only with article-stripping --
+    # the full-string key "the beatles" would put it after "pavement".
+    assert [i["title"] for i in result["items"]] == [
+        "Selected Ambient Works", "Abbey Road", "Slanted and Enchanted", "Hot Rats",
+    ]
+    assert result["items"][1]["artist"] == "Beatles, The"
+
+
+def test_get_stock_items_the_prefix_sort_leaves_false_positives_alone(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    crawler_id = _register(admin_conn, "Amazon")
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "The", "title": "Untitled", "url": "https://x/1", "price": 5.0, "currency": "USD"},
+        {"artist": "Theatre of Hate", "title": "Westworld", "url": "https://x/2", "price": 6.0, "currency": "USD"},
+        {"artist": "The Who", "title": "Tommy", "url": "https://x/3", "price": 7.0, "currency": "USD"},
+    ])
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], sort="artist", order="asc")
+    assert [i["title"] for i in result["items"]] == ["Untitled", "Westworld", "Tommy"]
+
+
+def test_get_distinct_stock_artists_sorts_the_prefixed_artists_by_the_following_word(admin_conn):
+    crawler_id = _register(admin_conn, "Amazon")
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "The Beatles", "title": "Abbey Road", "url": "https://x/1", "price": 20.0, "currency": "USD"},
+        {"artist": "Aphex Twin", "title": "Selected Ambient Works", "url": "https://x/2", "price": 15.0, "currency": "USD"},
+        {"artist": "Pavement", "title": "Slanted and Enchanted", "url": "https://x/3", "price": 12.0, "currency": "USD"},
+        {"artist": "Zappa", "title": "Hot Rats", "url": "https://x/4", "price": 18.0, "currency": "USD"},
+    ])
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        artists = db.get_distinct_stock_artists(conn, alice["id"])
+    assert artists == ["Aphex Twin", "Beatles, The", "Pavement", "Zappa"]
+
+
+def test_get_distinct_stock_artists_merges_the_prefix_and_comma_suffix_spellings(admin_conn):
+    # Two crawlers disagreeing about convention for the same band must
+    # collapse to one sidebar entry, not two -- the actual motivation for the
+    # fold, not just a display cosmetic.
+    amazon = _register(admin_conn, "Amazon")
+    asian_man = _register(admin_conn, "Asian Man Records")
+    db.replace_stock_items(admin_conn, amazon, [
+        {"artist": "The Mountain Goats", "title": "All Hail West Texas", "url": "https://a/1",
+         "price": 15.0, "currency": "USD"},
+    ])
+    db.replace_stock_items(admin_conn, asian_man, [
+        {"artist": "Mountain Goats, The", "title": "The Sunset Tree", "url": "https://b/1",
+         "price": 12.0, "currency": "USD"},
+    ])
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        artists = db.get_distinct_stock_artists(conn, alice["id"])
+        result = db.get_stock_items(conn, alice["id"], artist="Mountain Goats, The")
+    assert artists == ["Mountain Goats, The"]
+    assert result["total"] == 2
+    assert {i["title"] for i in result["items"]} == {"All Hail West Texas", "The Sunset Tree"}
+    assert {i["artist"] for i in result["items"]} == {"Mountain Goats, The"}
+
+
+def test_get_stock_items_sorts_mixed_the_prefix_and_comma_suffix_the_same(admin_conn):
+    # Same interleaving hazard as the catalog test: a sort key that only
+    # strips the "The X" convention would land the "Amoeba" row between the
+    # two raw spellings of the same artist instead of adjacent to them.
+    amazon = _register(admin_conn, "Amazon")
+    amoeba = _register(admin_conn, "Amoeba")
+    asian_man = _register(admin_conn, "Asian Man Records")
+    db.replace_stock_items(admin_conn, amazon, [
+        {"artist": "The Beatles", "title": "Abbey Road", "url": "https://x/1",
+         "price": 20.0, "currency": "USD"},
+    ])
+    db.replace_stock_items(admin_conn, amoeba, [
+        {"artist": "Beatles A", "title": "Boundary Album", "url": "https://x/2",
+         "price": 10.0, "currency": "USD"},
+    ])
+    db.replace_stock_items(admin_conn, asian_man, [
+        {"artist": "Beatles, The", "title": "Let It Be", "url": "https://x/3",
+         "price": 22.0, "currency": "USD"},
+    ])
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], sort="artist", order="asc")
+    assert [i["title"] for i in result["items"]] == ["Abbey Road", "Let It Be", "Boundary Album"]
+
+
+def test_get_stock_items_search_matches_comma_form_against_the_prefixed_row(admin_conn):
+    crawler_id = _register(admin_conn, "Amazon")
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "The Beatles", "title": "Abbey Road", "url": "https://x/1",
+         "price": 20.0, "currency": "USD"},
+    ])
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], search="Beatles, The")
+    assert result["total"] == 1
+    assert result["items"][0]["title"] == "Abbey Road"
+
+
+def test_get_distinct_stock_artists_folds_bare_form_across_tables(admin_conn):
+    # The bare "Beatles" row lives only in stock_items; the "The Beatles"
+    # spelling lives only in catalog. canonical_artist_labels' bare lookup
+    # must check both tables before falling back to the bare input's own
+    # casing group -- a naive single-table-first resolution would stop at
+    # stock_items (which already has a winner for bare "Beatles" itself) and
+    # never check catalog for the variant. See
+    # docs/specifications/shaping/2026-08-22-bare-form-artist-fold-design.md.
+    # Deliberately does not also assert on get_stock_items(artist=...) here:
+    # that filter's own bare-form fold is Task 4's scope
+    # (test_get_stock_items_artist_filter_matches_bare_form_row), not this
+    # task's -- this test is about canonical_artist_labels'/
+    # get_distinct_stock_artists' grouping alone, which the assertion below
+    # already fully exercises.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r1", "artist": "The Beatles", "title": "Abbey Road",
+        "year": None, "label": None, "format": None, "barcode": None,
+        "cover_image_url": None, "discogs_url": None,
+    })
+    crawler_id = _register(admin_conn, "Amazon")
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "Beatles", "title": "Let It Be", "url": "https://x/1", "price": 20.0, "currency": "USD"},
+    ])
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        artists = db.get_distinct_stock_artists(conn, alice["id"])
+    assert artists == ["Beatles, The"]
+
+
+def test_get_stock_items_artist_filter_matches_bare_form_row(admin_conn):
+    # Same shape as the catalog version in test_catalog_crud.py: clicking
+    # "Beatles, The" must also surface a stock row stored with no article.
+    # All three raw spellings ("The Beatles", "Beatles", "Beatles, The") are
+    # seeded here so one filter call pins all three collapsing under a single
+    # filter value, not just the bare/prefix pair.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    crawler_id = _register(admin_conn, "Amazon")
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "The Beatles", "title": "Abbey Road", "url": "https://x/1", "price": 20.0, "currency": "USD"},
+        {"artist": "Beatles", "title": "Let It Be", "url": "https://x/2", "price": 18.0, "currency": "USD"},
+        {"artist": "Beatles, The", "title": "Revolver", "url": "https://x/3", "price": 22.0, "currency": "USD"},
+    ])
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], artist="Beatles, The")
+    assert result["total"] == 3
+    assert {i["artist"] for i in result["items"]} == {"Beatles, The"}
+
+
+def test_get_distinct_artists_bare_in_catalog_folds_to_stock_items_variant(admin_conn):
+    # The discriminating case for the bare lookup being its own pass rather
+    # than a check folded into the existing per-table casing loop. The two
+    # tables are deliberately the opposite way round from
+    # test_get_distinct_stock_artists_folds_bare_form_across_tables above:
+    # the BARE spelling is in `catalog` (the table checked first) and the
+    # marked "The Beatles" spelling exists only in `stock_items` (checked
+    # second).
+    #
+    # That ordering is what makes this test able to fail. A merged
+    # implementation -- one that resolved each input at the first table
+    # having any winner for it -- would, at the catalog stage, find bare
+    # "Beatles" a winner for its own key and resolve to "Beatles", never
+    # reaching stock_items to discover the "The Beatles" variant. With the
+    # bare lookup as its own catalog-then-stock_items pass, the catalog
+    # stage finds nothing folding to "beatles, the", so the pass continues
+    # to stock_items and picks up the variant. See the design doc's
+    # "Running the bare lookup as its own ... pass" paragraph.
+    #
+    # The sibling test above cannot catch this: it puts the marked spelling
+    # in catalog, which is checked first under either implementation, so
+    # both produce "Beatles, The" and the test passes either way.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": "r1", "artist": "Beatles", "title": "Let It Be",
+        "year": None, "label": None, "format": None, "barcode": None,
+        "cover_image_url": None, "discogs_url": None,
+    })
+    db.upsert_library_item(admin_conn, alice["id"], "r1", in_collection=True)
+    crawler_id = _register(admin_conn, "Amazon")
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "The Beatles", "title": "Abbey Road", "url": "https://x/1", "price": 20.0, "currency": "USD"},
+    ])
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        artists = db.get_distinct_artists(conn, alice["id"])
+    assert artists == ["Beatles, The"]

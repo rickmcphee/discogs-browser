@@ -60,6 +60,22 @@ def test_configure_crawl_schedule_invalid_cron_raises():
     assert scheduler._scheduler.get_job("crawl") is None
 
 
+def test_configure_crawl_schedule_invalid_cron_keeps_the_existing_job():
+    # The bug this replaced: the current job was removed before the
+    # replacement was known to parse, so one bad expression left no schedule
+    # at all -- and with main.py's 5-minute resync re-reading that same stored
+    # value, it wiped the schedule again on every Machine, every 5 minutes.
+    scheduler.configure("*/5 * * * *", "missing")
+    before = str(scheduler._scheduler.get_job("crawl").trigger)
+
+    with pytest.raises(ValueError):
+        scheduler.configure("not a cron expression", "missing")
+
+    job = scheduler._scheduler.get_job("crawl")
+    assert job is not None
+    assert str(job.trigger) == before
+
+
 # ---------------------------------------------------------------------------
 # configure_stock — unchanged by this task
 # ---------------------------------------------------------------------------
@@ -80,6 +96,18 @@ def test_configure_stock_invalid_cron_raises():
     with pytest.raises(ValueError):
         scheduler.configure_stock("garbage")
     assert scheduler._scheduler.get_job("stock_sync") is None
+
+
+def test_configure_stock_invalid_cron_keeps_the_existing_job():
+    scheduler.configure_stock("0 3 * * *")
+    before = str(scheduler._scheduler.get_job("stock_sync").trigger)
+
+    with pytest.raises(ValueError):
+        scheduler.configure_stock("garbage")
+
+    job = scheduler._scheduler.get_job("stock_sync")
+    assert job is not None
+    assert str(job.trigger) == before
 
 
 async def test_configure_stock_job_invokes_start_stock_sync():

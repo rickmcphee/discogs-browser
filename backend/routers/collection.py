@@ -17,6 +17,13 @@ def collection_status(request: Request):
     return {"total": row["total"], "last_synced": row["last_synced"]}
 
 
+@router.get("/collection/price-status")
+def collection_price_status(request: Request):
+    user_id = request.state.user_id
+    with db.user_scope(user_id) as conn:
+        return {"any_price_paid": db.has_any_price_paid(conn, user_id)}
+
+
 @router.post("/collection/refresh")
 async def refresh_collection(request: Request, mode: Optional[str] = None, scope: Optional[str] = None):
     if mode is not None and mode not in ("all", "new"):

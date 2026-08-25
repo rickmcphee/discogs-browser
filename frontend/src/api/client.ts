@@ -1,6 +1,7 @@
 import type {
   ReleasesResponse, Crawler, Settings, UserSettings, SortField, SortOrder, CrawlStatus, CollectionStatus, ScreenshotSession,
-  AuthStatus, RecordScope, StockResponse, StockSortField, LibraryScope, RecommendationImportResult,
+  AuthStatus, RecordScope, StockResponse, StockSortField, LibraryScope, RecommendationImportResult, Invite,
+  QueueSummary, QueueNextItem,
 } from './types'
 
 const BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/+$/, '')
@@ -35,7 +36,7 @@ async function apiFetch(path: string, init: RequestInit = {}): Promise<Response>
 
 export async function checkHealth(): Promise<boolean> {
   try {
-    const r = await apiFetch('/health')
+    const r = await apiFetch('/health', { signal: AbortSignal.timeout(4000) })
     // Any non-5xx means the backend is reachable (5xx = nginx gateway error)
     return r.status < 500
   } catch {
@@ -130,6 +131,22 @@ export async function saveUserSettings(settings: UserSettings): Promise<void> {
   if (!r.ok) throw new Error(await r.text())
 }
 
+export async function getUserHiddenCrawlers(): Promise<number[]> {
+  const r = await apiFetch('/user-hidden-crawlers')
+  if (!r.ok) throw new Error(await r.text())
+  const data = await r.json()
+  return data.hidden_crawler_ids
+}
+
+export async function postUserHiddenCrawlers(hiddenCrawlerIds: number[]): Promise<void> {
+  const r = await apiFetch('/user-hidden-crawlers', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ hidden_crawler_ids: hiddenCrawlerIds }),
+  })
+  if (!r.ok) throw new Error(await r.text())
+}
+
 export async function setCrawlerEnabled(id: number, enabled: boolean): Promise<{ ok: boolean; discarded: number }> {
   const r = await apiFetch(`/crawlers/${id}`, {
     method: 'PATCH',
@@ -169,6 +186,7 @@ export async function getStock(params: {
   per_page?: number
   libraryScope?: LibraryScope
   recommended?: boolean
+  saved?: boolean
   hiddenCrawlerIds?: number[]
 }): Promise<StockResponse> {
   const q = new URLSearchParams()
@@ -180,16 +198,18 @@ export async function getStock(params: {
   if (params.per_page) q.set('per_page', String(params.per_page))
   if (params.libraryScope) q.set('library_scope', LIBRARY_SCOPE_PARAM[params.libraryScope])
   if (params.recommended) q.set('recommended', 'true')
+  if (params.saved) q.set('saved', 'true')
   if (params.hiddenCrawlerIds?.length) q.set('hidden_crawler_ids', params.hiddenCrawlerIds.join(','))
   const r = await apiFetch(`/stock?${q}`)
   if (!r.ok) throw new Error(await r.text())
   return r.json()
 }
 
-export async function getStockArtists(libraryScope?: LibraryScope, recommended?: boolean, hiddenCrawlerIds?: number[]): Promise<string[]> {
+export async function getStockArtists(libraryScope?: LibraryScope, recommended?: boolean, hiddenCrawlerIds?: number[], saved?: boolean): Promise<string[]> {
   const q = new URLSearchParams()
   if (libraryScope) q.set('library_scope', LIBRARY_SCOPE_PARAM[libraryScope])
   if (recommended) q.set('recommended', 'true')
+  if (saved) q.set('saved', 'true')
   if (hiddenCrawlerIds?.length) q.set('hidden_crawler_ids', hiddenCrawlerIds.join(','))
   const qs = q.toString() ? `?${q}` : ''
   const r = await apiFetch(`/stock/artists${qs}`)
@@ -198,7 +218,32 @@ export async function getStockArtists(libraryScope?: LibraryScope, recommended?:
   return data.artists
 }
 
-export async function postStockSyncStart(crawlerId?: number): Promise<{ started: boolean; running: boolean }> {
+export async function saveStockItem(itemKey: string): Promise<{ saved: boolean }> {
+  const r = await apiFetch(`/stock/saved/${encodeURIComponent(itemKey)}`, { method: 'PUT' })
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
+}
+
+export async function unsaveStockItem(itemKey: string): Promise<{ saved: boolean }> {
+  const r = await apiFetch(`/stock/saved/${encodeURIComponent(itemKey)}`, { method: 'DELETE' })
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
+}
+
+export interface StockSyncStartResult {
+  started: boolean
+  running: boolean
+  // True when the sync holding the lock belongs to another Machine. Its source
+  // and timings live in that process's memory and are null here, so this flag
+  // is the only thing separating "running elsewhere, details unknowable" from
+  // "running here but not yet past its first crawler."
+  on_another_instance: boolean
+  source: string | null
+  elapsed_seconds: number | null
+  source_elapsed_seconds: number | null
+}
+
+export async function postStockSyncStart(crawlerId?: number): Promise<StockSyncStartResult> {
   const r = await apiFetch('/stock/sync/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -222,6 +267,12 @@ export async function postJudgmentStart(): Promise<{ started: boolean; running: 
 
 export async function getJudgmentStatus(): Promise<{ any_judged: boolean }> {
   const r = await apiFetch('/stock/judge/status')
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
+}
+
+export async function getPriceStatus(): Promise<{ any_price_paid: boolean }> {
+  const r = await apiFetch('/collection/price-status')
   if (!r.ok) throw new Error(await r.text())
   return r.json()
 }
@@ -294,6 +345,22 @@ export async function logout(): Promise<void> {
   if (!r.ok) throw new Error(await r.text())
 }
 
+export async function listInvites(): Promise<Invite[]> {
+  const r = await apiFetch('/auth/invites')
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
+}
+
+export async function createInvite(note?: string): Promise<{ code: string }> {
+  const r = await apiFetch('/auth/invites', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ note: note || null }),
+  })
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
+}
+
 export async function hasAvatar(): Promise<boolean> {
   const r = await apiFetch('/auth/avatar')
   if (r.status === 404) return false
@@ -315,4 +382,69 @@ export async function deleteAvatar(): Promise<void> {
 
 export function avatarUrl(version: number): string {
   return `${BASE}/auth/avatar?v=${version}`
+}
+
+// Both carry a deadline. QueueView holds at most one summary in flight, so a
+// request that never settles would wedge its polling loop for good -- the last
+// snapshot left on screen, no stale warning, no recovery. A timeout turns that
+// into an ordinary rejection the view already renders, and the loop continues.
+// Same mechanism checkHealth uses.
+const QUEUE_TIMEOUT_MS = 20_000
+
+// Coalesced at module scope, not per component. QueueView's own guard is
+// component-local, so it cannot survive the view being unmounted -- and the
+// Queue tab is mounted only while it is active, so leaving and reopening it
+// during a slow report built a fresh instance that immediately issued another.
+// Same escape hatch the timer and the hide/show path had; this closes the class
+// rather than a third instance of it. A summary is a REPEATABLE READ
+// transaction on the pool the crawl workers claim through, so overlapping them
+// is the one thing this request must never do.
+let summaryInFlight: Promise<QueueSummary> | null = null
+
+export function getQueueSummary(): Promise<QueueSummary> {
+  if (summaryInFlight) return summaryInFlight
+  summaryInFlight = (async () => {
+    try {
+      const r = await apiFetch('/queue/summary', { signal: AbortSignal.timeout(QUEUE_TIMEOUT_MS) })
+      if (!r.ok) throw new Error(await r.text())
+      return await r.json()
+    } finally {
+      // Cleared here rather than by chaining onto this promise: a trailing
+      // .finally() settles a microtask after an awaiter resumes, so a caller
+      // that awaited and immediately called again would be handed the spent
+      // slot. Inside the function it is already null when this promise
+      // settles -- and it settles either way, so a rejection cannot wedge
+      // every later caller.
+      summaryInFlight = null
+    }
+  })()
+  return summaryInFlight
+}
+
+// Coalesced per (crawler, limit) for the same reason as the summary. The view
+// re-runs this on every poll -- the effect depends on the summary's timestamp --
+// so a next-up query slower than the poll interval would otherwise start
+// another alongside it, and a tab unmount/remount is the same escape again.
+const nextInFlight = new Map<string, Promise<QueueNextItem[]>>()
+
+export function getQueueNext(crawlerId: number, limit = 25): Promise<QueueNextItem[]> {
+  const key = `${crawlerId}:${limit}`
+  const existing = nextInFlight.get(key)
+  if (existing) return existing
+  const request = (async () => {
+    try {
+      const r = await apiFetch(`/queue/crawlers/${crawlerId}/next?limit=${limit}`, {
+        signal: AbortSignal.timeout(QUEUE_TIMEOUT_MS),
+      })
+      if (!r.ok) throw new Error(await r.text())
+      return (await r.json()).items
+    } finally {
+      // Cleared inside, not by chaining onto the promise -- a trailing
+      // .finally() settles a microtask after an awaiter resumes and would hand
+      // the next caller a spent entry. Same reason as the summary above.
+      nextInFlight.delete(key)
+    }
+  })()
+  nextInFlight.set(key, request)
+  return request
 }

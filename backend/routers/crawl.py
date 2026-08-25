@@ -32,7 +32,6 @@ def crawl_status(request: Request):
 def crawl_start(body: CrawlStartRequest, request: Request):
     user_id = request.state.user_id
     with db.user_scope(user_id) as conn:
-        enabled_crawlers = db.get_enabled_crawlers(conn)
         if body.release_id:
             # A release_id the caller doesn't actually own in their own
             # library_items must not be enqueueable -- library_items is the
@@ -51,10 +50,11 @@ def crawl_start(body: CrawlStartRequest, request: Request):
             ).fetchall()]
         enqueued = 0
         for discogs_id in target_ids:
-            for crawler in enabled_crawlers:
-                db.enqueue_crawl_queue(conn, discogs_id, crawler["id"])
-                enqueued += 1
+            db.enqueue_crawl_queue(conn, discogs_id)
+            enqueued += 1
         conn.commit()
+    # Counts targets, not (target, crawler) pairs -- one queue row per target
+    # now, with the crawler set resolved at dispatch.
     return {"enqueued": enqueued}
 
 
@@ -65,6 +65,17 @@ def _events_to_replay(request: Request) -> list[dict]:
     history for no benefit. Gated on any per-user-relevant job being active,
     not a single global crawl task, since there's no single "the crawl"
     anymore under a shared queue.
+
+    listing_changed events themselves are never filtered by library
+    ownership here -- Store/Track are global (any user's tab can show any
+    release-crawler match), so a listing_changed event for a release outside
+    the calling user's own library still needs to reach them so their
+    Store/Track tab repaints.
+
+    sync_*/stock_judgment_*/plex_match_* events, in contrast, are tagged with
+    the broadcasting user's id (see crawl_manager.py's per-job `broadcast`
+    closures) and ARE filtered here by that id -- one user's collection sync
+    or judgment run must not appear as another user's job status.
     """
     user_id = request.state.user_id
     with db.user_scope(user_id) as conn:
@@ -75,21 +86,18 @@ def _events_to_replay(request: Request) -> list[dict]:
     )
     if not any_active:
         return []
-    return [
-        e for e in crawl_manager.recent_events()
-        if e.get("type") != "listing_changed" or _event_touches_user(e, user_id)
-    ]
+    return [e for e in crawl_manager.recent_events() if _visible_to(e, user_id)]
 
 
-def _event_touches_user(event: dict, user_id: int) -> bool:
-    discogs_id = event.get("discogs_id")
-    if not discogs_id:
-        return True
-    with db.user_scope(user_id) as conn:
-        row = conn.execute(
-            "SELECT 1 FROM library_items WHERE user_id = %s AND discogs_id = %s", [user_id, discogs_id]
-        ).fetchone()
-    return row is not None
+def _visible_to(event: dict, user_id: int) -> bool:
+    """A per-user event (sync/judgment/plex-match, tagged with the broadcasting
+    user's id) is visible only to that user. An untagged event (stock sync,
+    listing_changed, ping) has no owner and is visible to everyone. A missing
+    "user_id" key and an explicit `"user_id": None` are treated identically as
+    "no owner" -- every current caller tags with a real int, so this distinction
+    is unreachable today, not a guarded case."""
+    owner = event.get("user_id")
+    return owner is None or owner == user_id
 
 
 @router.get("/crawl/stream")
@@ -107,7 +115,7 @@ async def crawl_stream(request: Request):
                 except asyncio.TimeoutError:
                     yield {"data": json.dumps({"status": "ping"})}
                     continue
-                if event.get("type") == "listing_changed" and not _event_touches_user(event, user_id):
+                if not _visible_to(event, user_id):
                     continue
                 yield {"data": json.dumps(event)}
         finally:
