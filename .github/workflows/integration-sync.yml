@@ -304,11 +304,20 @@ jobs:
             # Still re-arm when auto-merge is simply absent and unlabelled --
             # arming can fail after `gh pr create` succeeds, and without this the
             # PR would sit with nothing driving it.
-            if gh pr view "$existing" --repo "$REPO" --json labels \
-                 --jq '.labels[].name' | grep -qx "$CONFLICT_LABEL"; then
+            # Fetched into variables first, deliberately. Called inside the
+            # `if` tests below, a failing `gh pr view` is invisible to `set -e`
+            # -- the test simply reads false, so an API or auth error would
+            # present as "no label, no auto-merge" and re-arm a PR reserved for
+            # hand merging. A guard that fails open is not a guard. As
+            # assignments they abort the step instead.
+            pr_labels="$(gh pr view "$existing" --repo "$REPO" \
+              --json labels --jq '.labels[].name')"
+            pr_automerge="$(gh pr view "$existing" --repo "$REPO" \
+              --json autoMergeRequest --jq '.autoMergeRequest // empty')"
+
+            if printf '%s\n' "$pr_labels" | grep -qx "$CONFLICT_LABEL"; then
               echo "Sync PR #$existing is labelled $CONFLICT_LABEL; leaving auto-merge off for whoever resolves it."
-            elif [ -n "$(gh pr view "$existing" --repo "$REPO" \
-                          --json autoMergeRequest --jq '.autoMergeRequest // empty')" ]; then
+            elif [ -n "$pr_automerge" ]; then
               echo "Sync PR #$existing already has auto-merge armed."
             else
               # No `|| true`: if neither call can arm auto-merge, this path
