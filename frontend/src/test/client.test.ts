@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { postCrawlStart, postStockSyncStart, getUserSettings, saveUserSettings, logout, getStock, getStockArtists, getReleases, getArtists, postPlexMatchStart, refreshCollection, openCrawlStream, openLogsStream, importRecommendationsCsv, listInvites, createInvite, getUserHiddenCrawlers, postUserHiddenCrawlers, saveStockItem, unsaveStockItem, checkHealth } from '../api/client'
+import { postCrawlStart, postStockSyncStart, getUserSettings, saveUserSettings, logout, getStock, getStockArtists, getReleases, getArtists, postPlexMatchStart, refreshCollection, openCrawlStream, openLogsStream, importRecommendationsCsv, listInvites, createInvite, getUserHiddenCrawlers, postUserHiddenCrawlers, saveStockItem, unsaveStockItem, checkHealth, getQueueSummary, getQueueNext } from '../api/client'
 
 describe('crawl/user-settings client functions', () => {
   let fetchMock: ReturnType<typeof vi.fn>
@@ -297,5 +297,29 @@ describe('crawl/user-settings client functions', () => {
     await unsaveStockItem('abc123')
     expect(fetchMock.mock.calls[0][0]).toContain('/stock/saved/abc123')
     expect(fetchMock.mock.calls[0][1].method).toBe('DELETE')
+  })
+})
+
+describe('queue client functions', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ items: [] }) })
+    vi.stubGlobal('fetch', fetchMock)
+  })
+
+  // QueueView holds at most one summary in flight, so a request that never
+  // settles would wedge its polling loop for good -- last snapshot on screen,
+  // no stale warning, no recovery.
+  it('gives the summary request a deadline', async () => {
+    await getQueueSummary()
+    const [, init] = fetchMock.mock.calls[0]
+    expect(init.signal).toBeInstanceOf(AbortSignal)
+  })
+
+  it('gives the next-up request a deadline', async () => {
+    await getQueueNext(1)
+    const [, init] = fetchMock.mock.calls[0]
+    expect(init.signal).toBeInstanceOf(AbortSignal)
   })
 })

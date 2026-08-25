@@ -271,7 +271,10 @@ circuit-breaker cooldown this tab does not expose and only then moves
 `available_at` forward. Everything the database can see says the row is
 claimable; whether the crawler runs is decided in a worker process.
 Returns `artist`, `title`, `kind` (`release`/`stock`), `waiting_seconds`, and
-`narrowed` (whether the row carries a `pending_crawler_ids` array). Split out
+`narrowed` (whether the row carries a `pending_crawler_ids` array). `narrowed`
+is reported as the observable fact only — that the target runs for a subset of
+crawlers — not attributed to a cause: a deferral sets that array, but so does
+`backfill_crawl_queue_for_crawler` when a crawler is enabled. Split out
 from the summary because it needs `catalog`/`stock_item_identities` joins and
 is only wanted on click.
 
@@ -297,6 +300,12 @@ mechanisms, because the timer is not the only way to stack:
 A generation counter on each poll remains as defence in depth: no ordinary path
 can now render a stale response, and the counter is what makes that a guarantee
 rather than an assumption if `load` ever gains a second caller.
+
+Both requests carry a deadline (`AbortSignal.timeout`, the mechanism
+`checkHealth` already uses). Holding one request in flight means a request that
+never settles would wedge the loop permanently — the last snapshot left on
+screen, no stale warning, no recovery. The deadline turns that into an ordinary
+rejection the view already renders, and polling continues.
 
 **Top half.**
 

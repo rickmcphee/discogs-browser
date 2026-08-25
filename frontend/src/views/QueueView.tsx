@@ -259,7 +259,7 @@ function CrawlerDetail({ crawler, window, next, nextLoading, nextError }: {
                 </span>
                 <span className="shrink-0 text-xs text-gray-400 tabular-nums">
                   {item.kind === 'stock' ? 'stock' : 'release'} · {formatDuration(item.waiting_seconds)}
-                  {item.narrowed && <span title="Narrowed by an earlier pass"> · ↩</span>}
+                  {item.narrowed && <span title="Narrowed: this target runs for a subset of crawlers, not all of them"> · ↩</span>}
                 </span>
               </div>
             ))}

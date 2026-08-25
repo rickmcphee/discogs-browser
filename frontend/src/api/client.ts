@@ -371,14 +371,23 @@ export function avatarUrl(version: number): string {
   return `${BASE}/auth/avatar?v=${version}`
 }
 
+// Both carry a deadline. QueueView holds at most one summary in flight, so a
+// request that never settles would wedge its polling loop for good -- the last
+// snapshot left on screen, no stale warning, no recovery. A timeout turns that
+// into an ordinary rejection the view already renders, and the loop continues.
+// Same mechanism checkHealth uses.
+const QUEUE_TIMEOUT_MS = 20_000
+
 export async function getQueueSummary(): Promise<QueueSummary> {
-  const r = await apiFetch('/queue/summary')
+  const r = await apiFetch('/queue/summary', { signal: AbortSignal.timeout(QUEUE_TIMEOUT_MS) })
   if (!r.ok) throw new Error(await r.text())
   return r.json()
 }
 
 export async function getQueueNext(crawlerId: number, limit = 25): Promise<QueueNextItem[]> {
-  const r = await apiFetch(`/queue/crawlers/${crawlerId}/next?limit=${limit}`)
+  const r = await apiFetch(`/queue/crawlers/${crawlerId}/next?limit=${limit}`, {
+    signal: AbortSignal.timeout(QUEUE_TIMEOUT_MS),
+  })
   if (!r.ok) throw new Error(await r.text())
   return (await r.json()).items
 }
