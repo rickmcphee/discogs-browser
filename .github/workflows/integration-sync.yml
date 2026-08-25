@@ -44,14 +44,25 @@ on:
     # 05:00 UTC daily -- an hour ahead of Dependabot's Monday 06:00 UTC run
     # (.github/dependabot.yml), so Monday's PRs are cut from an `integration`
     # that already matches `main`. The daily cadence is the safety net for the
-    # push triggers above: a push made with GITHUB_TOKEN starts no further
-    # workflow run (GitHub's recursion guard), and both auto-merges in this
-    # setup are made that way. The promotion PR advances `main`, so no
-    # `push: main` event arrives to drive `sync`; the sync PR this workflow
-    # opens advances `integration`, so no `push: integration` event arrives to
-    # drive `refresh`. Each trigger is therefore blind to exactly the merge it
-    # most needs to see, and the cron covers both. Both jobs no-op cheaply when
-    # there is nothing to do.
+    # push triggers above, and which of them is the safety net depends on how
+    # this workflow is authenticated.
+    #
+    # A push made with GITHUB_TOKEN starts no further workflow run (GitHub's
+    # recursion guard). Where this falls back to it, the auto-merges below are
+    # invisible to exactly the triggers that need them: the promotion PR
+    # advances `main` with no `push: main` event to drive `sync`, and the sync
+    # PR advances `integration` with no `push: integration` event to drive
+    # `refresh`. Each trigger is blind to the one merge it most needs to see,
+    # and the cron is the only thing covering either.
+    #
+    # With INTEGRATION_PROMOTE_TOKEN configured -- a prerequisite anyway, see
+    # SETUP above -- the recursion guard does not apply: those merges are
+    # PAT-authenticated and do emit their push events, so the triggers work and
+    # the cron is a backstop rather than the mechanism. It stays because the
+    # fallback is reachable without anyone intending it, by the secret being
+    # removed or its token expiring.
+    #
+    # Both jobs no-op cheaply when there is nothing to do.
     - cron: "0 5 * * *"
   workflow_dispatch:
 
