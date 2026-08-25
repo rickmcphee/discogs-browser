@@ -48,6 +48,7 @@ concurrency:
 
 env:
   SYNC_BRANCH: chore/integration-sync
+  MARKER_TAG: integration-sync-base
 
 jobs:
   sync:
@@ -68,21 +69,61 @@ jobs:
           # GITHUB_TOKEN gets its fly-deploy.yml checks parked in an
           # approval-required state, and `integration` cannot merge without
           # "Backend tests" and "Frontend tests" reporting, so auto-merge below
-          # would wait forever on a click. Adding INTEGRATION_PROMOTE_TOKEN (a
-          # fine-grained PAT or GitHub App token with Contents: read/write +
-          # Pull requests: read/write) removes the click for both workflows.
+          # waits on someone clicking "Approve and run". Adding
+          # INTEGRATION_PROMOTE_TOKEN (a fine-grained PAT or GitHub App token
+          # with Contents: read/write + Pull requests: read/write) removes the
+          # click for both workflows.
+          #
+          # Parked, not absent -- worth stating plainly because the opposite is
+          # a natural reading of GitHub's recursion guard, and a reviewer has
+          # already raised it once. On PR #182, opened by github-actions[bot]
+          # with this same fallback, the "CI / Fly Deploy" run was created at
+          # 06:26:44, three seconds after the PR at 06:26:41; it then sat until
+          # run_attempt 2 started at 11:56:18 with triggering_actor=rickmcphee,
+          # and the PR merged at 11:59:50. The run exists and is approvable, so
+          # a missing PAT costs a weekly click rather than making the PR
+          # permanently unmergeable -- which is why the fallback stays rather
+          # than being turned into a hard failure.
           GH_TOKEN: ${{ secrets.INTEGRATION_PROMOTE_TOKEN || github.token }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          git fetch origin main integration
+          git fetch --quiet --tags --force origin main integration
 
-          # Compare trees, not ancestry. The promotion PR squash-merges, so
-          # integration's own commits never appear in main's history even when
-          # the two hold byte-identical files -- `git log main..integration`
-          # would report work to sync forever and this would open a PR a day.
+          # The commit on `main` that `integration` provably already holds.
+          # This is the correct merge base for bringing main forward, and git
+          # cannot work it out for itself: both branches only ever squash-merge,
+          # so neither gains an ancestor from the other and `git merge-base`
+          # stays pinned to the last commit they genuinely shared -- b24e568e,
+          # 2026-08-10 -- for good. Merging against a base that old makes a
+          # dependency pin `integration` has re-bumped look changed on both
+          # sides, and conflicts on a file nobody actually disagrees about.
+          marker="$(git rev-parse -q --verify "refs/tags/$MARKER_TAG^{commit}" || true)"
+
+          record_marker() {
+            # Only ever called where integration was just shown to hold main's
+            # files. Recording it anywhere else would make a later run skip a
+            # sync that really was needed.
+            git push --force --quiet origin \
+              "$(git rev-parse origin/main):refs/tags/$MARKER_TAG" \
+              && echo "marker: integration now holds main $(git rev-parse --short origin/main)" \
+              || echo "::warning::could not move $MARKER_TAG; the next run re-attempts the merge instead"
+          }
+
+          # Compare trees, not ancestry -- same squash-merge reason as above.
           if git diff --quiet origin/main origin/integration; then
             echo "integration already holds main's files; nothing to sync."
+            record_marker
+            echo "pending=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # A tree difference on its own does not mean main has anything to
+          # hand over: it is equally what integration's own unpromoted bumps
+          # look like. Merging in that case is not just wasted work, it is the
+          # spurious conflict described above, so check before attempting it.
+          if [ -n "$marker" ] && git diff --quiet "$marker" origin/main; then
+            echo "main has not advanced since it was last folded in; the remaining difference is integration's own."
             echo "pending=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -105,18 +146,35 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # Branch off `integration` and merge `main` in -- not the reverse --
+          # Branch off `integration` and bring `main` in -- not the reverse --
           # so the head contains integration's tip and satisfies that same
           # strict up-to-date policy on the way back in.
           git checkout -B "$SYNC_BRANCH" origin/integration
-          if ! git merge --no-edit origin/main; then
-            git merge --abort || true
-            echo "::error::main and integration changed the same lines; resolve $SYNC_BRANCH by hand, push it, and open a PR into integration. If this recurs, it is the frozen merge-base described at the merge step below -- allowing merge commits into integration retires it."
-            exit 1
+
+          if [ -n "$marker" ]; then
+            if ! merged="$(git merge-tree --write-tree --merge-base="$marker" \
+                             HEAD origin/main)"; then
+              echo "::error::main and integration have both changed the same lines since $marker. Resolve $SYNC_BRANCH by hand, push it, and open a PR into integration. Unlike the frozen-base case this one is a real disagreement -- read both sides before picking."
+              exit 1
+            fi
+            git reset --hard --quiet "$(git commit-tree "$merged" \
+              -p HEAD -p "$(git rev-parse origin/main)" \
+              -m "Merge main into integration")"
+          else
+            # No marker yet -- first run, or the tag was lost. Git's inferred
+            # base is all there is; a conflict here may well be the spurious
+            # kind, and the marker written on the next clean pass prevents a
+            # repeat.
+            if ! git merge --no-edit origin/main; then
+              git merge --abort || true
+              echo "::error::could not merge main into integration and no $MARKER_TAG marker exists yet to supply a better base. Resolve $SYNC_BRANCH by hand and push it."
+              exit 1
+            fi
           fi
 
           if git diff --quiet origin/integration HEAD; then
             echo "merge changed nothing on integration; nothing to sync."
+            record_marker
             echo "pending=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -130,7 +188,7 @@ jobs:
             --base integration \
             --head "$SYNC_BRANCH" \
             --title "chore: sync integration with main" \
-            --body "Replays \`main\`'s current files onto \`integration\` so Dependabot branches from an up-to-date base. Opened automatically by .github/workflows/integration-sync.yml; auto-merges once CI is green. No changes of its own -- the merged tree matches \`main\` exactly." \
+            --body "Brings \`main\`'s current files into \`integration\` so Dependabot branches from an up-to-date base, keeping any bumps \`integration\` is still holding. Opened automatically by .github/workflows/integration-sync.yml; auto-merges once CI is green. Nothing is authored here -- every change comes from one side or the other." \
             --label dependencies
 
           opened="$(gh pr list --repo "$REPO" --base integration \
@@ -143,24 +201,14 @@ jobs:
           # race -- and the content merging in is main's own, already reviewed
           # on its way there.
           #
-          # Prefer a real merge commit, and mean it. Both branch rulesets
-          # currently allow only squash merges, which leaves
-          # `git merge-base main integration` frozen at the last commit the two
-          # genuinely shared -- b24e568e, 2026-08-10 -- because a squash gives
-          # neither branch an ancestor from the other. It never advances on its
-          # own, so every future sync three-way-merges against an ever-older
-          # base: a line edited once between two syncs and again after is
-          # "changed on both sides" against that ancient base, and conflicts,
-          # even though integration's side is only an older snapshot of main's.
-          # A merge commit makes `main` a real ancestor of `integration` and
-          # resets the base each time, which retires that whole class of
-          # conflict. Two settings gate it, and both are currently off: the
-          # repository's own "Allow merge commits", and "merge" in
-          # allowed_merge_methods on integration-branch-protection. Turning on
-          # both -- `main`'s ruleset does not need to change, so `main` keeps
-          # its squash-only history -- makes this line start using a merge
-          # commit with no edit here. Until then it falls back to squash and
-          # behaves exactly as before.
+          # Prefer a real merge commit. It would make `main` an ancestor of
+          # `integration` and keep git's own merge base current, which is what
+          # the marker above is standing in for. Two settings gate it and both
+          # are off today: the repository's "Allow merge commits", and "merge"
+          # in allowed_merge_methods on integration-branch-protection. Turning
+          # both on -- `main`'s ruleset need not change, so `main` keeps its
+          # squash-only history -- makes this start using one with no edit
+          # here. Until then it falls back to squash.
           gh pr merge "$opened" --repo "$REPO" --auto --merge \
             || gh pr merge "$opened" --repo "$REPO" --auto --squash
           echo "pending=true" >> "$GITHUB_OUTPUT"
@@ -223,10 +271,18 @@ jobs:
                 # Don't ask twice in a day: a request Dependabot silently drops
                 # would otherwise collect one comment per day on that PR for as
                 # long as it stayed open.
-                since="$(date -u -d '23 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
-                asked="$(gh api \
+                # The window has to be longer than the schedule above, or it
+                # cannot do its job: with a daily cron, yesterday's request is
+                # already outside a 24-hour lookback, so a PR Dependabot never
+                # answers collects one comment a day regardless. A week means
+                # at most one ask per stuck PR per week, which also matches
+                # Dependabot's own cadence. Paginated, since `since` bounds how
+                # old the comments are but not how many.
+                since="$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)"
+                asked="$(gh api --paginate \
                   "repos/$REPO/issues/$n/comments?since=$since&per_page=100" \
-                  --jq '[.[] | select(.body | startswith("@dependabot recreate"))] | length')"
+                  --jq '.[] | select(.body | startswith("@dependabot recreate")) | .id' \
+                  | wc -l)"
                 if [ "$asked" -gt 0 ]; then
                   echo "PR #$n conflicts but was already asked to recreate since $since; leaving it."
                   continue
