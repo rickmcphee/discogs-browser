@@ -259,9 +259,10 @@ describe('In Stock tab', () => {
   })
 
   it('surfaces per-release stock_sync_detail_progress in the bottom status bar', async () => {
-    // A two-phase crawler goes an hour between two page_fetched events, so
-    // without this the status bar sat on "source started" long enough to read
-    // as a hang.
+    // A two-phase crawler goes tens of minutes between two page_fetched
+    // events -- one listing page of paced detail fetches, against roughly 108
+    // minutes for the whole Dischord run -- so without this the status bar sat
+    // on "source started" long enough to read as a hang.
     render(<App />)
     await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
     const source = getLastCrawlSource()
