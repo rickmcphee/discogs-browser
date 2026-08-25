@@ -4614,3 +4614,86 @@ def test_cooldown_remaining_seconds_ignores_expired_cooldowns():
     remaining = manager._cooldown_remaining_seconds([1, 2])
 
     assert 250 < remaining <= 300
+
+
+async def test_drain_one_batch_reclaims_and_crawls_a_stranded_row(pg_schema):
+    # The end-to-end assertion for the reclaim path. A row abandoned
+    # 'in_progress' by a dead worker used to be unreachable by everything --
+    # claim_crawl_queue_batch takes only 'pending', and every other writer of
+    # crawl_queue is gated to 'pending' or 'done' -- so the row's target was
+    # never priced again. Now the drain reclaims it before it claims, in the
+    # same transaction, and picks it up on the same pass.
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1")
+        conn.commit()
+        # Claimed by a worker that never came back, long enough ago to be past
+        # any derived threshold, and narrowed to the one crawler it still owes.
+        db.claim_crawl_queue_batch(conn, "dead-worker", limit=1)
+        conn.execute(
+            "UPDATE crawl_queue SET claimed_at = CURRENT_TIMESTAMP - INTERVAL '10 hours', "
+            "pending_crawler_ids = %s WHERE discogs_id = 'r1'",
+            [[crawler_id]],
+        )
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(return_value=[{"url": "https://x", "price": 9.99, "shipping": None, "currency": "USD", "condition": None}])
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        claimed = await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    assert claimed == 1
+    with db.get_admin_pool().connection() as conn:
+        listing = conn.execute("SELECT price FROM listings WHERE release_id = 'r1'").fetchone()
+        queue_row = conn.execute("SELECT status FROM crawl_queue WHERE discogs_id = 'r1'").fetchone()
+    assert listing["price"] == 9.99
+    assert queue_row["status"] == "done"
+
+
+async def test_drain_one_batch_leaves_a_recently_claimed_row_to_its_worker(pg_schema):
+    # The other side of the same path: an age-based reclaim cannot tell a dead
+    # worker from a slow one, so the only thing keeping it from stealing live
+    # work is the threshold. A row claimed moments ago must stay claimed.
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1")
+        conn.commit()
+        db.claim_crawl_queue_batch(conn, "busy-worker", limit=1)
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(return_value=[])
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        claimed = await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    assert claimed == 0
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute(
+            "SELECT status, claimed_by FROM crawl_queue WHERE discogs_id = 'r1'"
+        ).fetchone()
+    assert row["status"] == "in_progress"
+    assert row["claimed_by"] == "busy-worker"

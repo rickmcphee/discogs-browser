@@ -820,3 +820,138 @@ def test_backfill_ignores_a_catalog_crawler(admin_conn):
     ).fetchone()
     assert row["status"] == "done"
     assert row["pending_crawler_ids"] is None
+
+
+# --- stranded-row reclaim ---------------------------------------------------
+#
+# A row left 'in_progress' by a crashed browser or a hung worker used to be
+# frozen forever: every other writer of crawl_queue is gated to 'pending' or
+# 'done', so no sync, re-enable or sweep could reach it. These cover the path
+# that unfreezes it.
+
+
+def _strand(conn, seconds_ago, pending_crawler_ids=None):
+    """Claims the row, then backdates the claim. The passage of time is the one
+    thing simulated -- everything else is the real claim/reclaim path."""
+    db.claim_crawl_queue_batch(conn, "dead-worker", limit=1)
+    conn.execute(
+        "UPDATE crawl_queue SET claimed_at = CURRENT_TIMESTAMP - %s * INTERVAL '1 second', "
+        "pending_crawler_ids = %s WHERE status = 'in_progress'",
+        [seconds_ago, pending_crawler_ids],
+    )
+    conn.commit()
+
+
+def test_reclaim_returns_a_stranded_row_with_its_pending_crawler_ids_intact(admin_conn):
+    # The narrowed set is the whole point of preserving it: a row deferred to
+    # one crawler and then stranded owes that crawler and no other. Clearing it
+    # would re-run crawlers an earlier pass already paid for.
+    crawler_id = _make_catalog_and_crawler(admin_conn, "r1")
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1")
+    admin_conn.commit()
+    threshold = db._queue_stranded_after_seconds(admin_conn, 30.0)
+    _strand(admin_conn, threshold + 60, pending_crawler_ids=[crawler_id])
+
+    assert db.reclaim_stranded_crawl_queue_rows(admin_conn, 30.0) == 1
+    admin_conn.commit()
+
+    row = admin_conn.execute(
+        "SELECT status, claimed_by, claimed_at, pending_crawler_ids FROM crawl_queue WHERE discogs_id = 'r1'"
+    ).fetchone()
+    assert row["status"] == "pending"
+    assert row["claimed_by"] is None
+    assert row["claimed_at"] is None
+    assert row["pending_crawler_ids"] == [crawler_id]
+
+    # And it is genuinely claimable again, carrying that same narrowed set
+    # through to the worker that picks it up.
+    claimed = db.claim_crawl_queue_batch(admin_conn, "live-worker", limit=5)
+    admin_conn.commit()
+    assert [r["discogs_id"] for r in claimed] == ["r1"]
+    assert claimed[0]["pending_crawler_ids"] == [crawler_id]
+
+
+def test_reclaim_leaves_a_row_claimed_inside_the_threshold_alone(admin_conn):
+    _make_catalog_and_crawler(admin_conn, "r1")
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1")
+    admin_conn.commit()
+    threshold = db._queue_stranded_after_seconds(admin_conn, 30.0)
+    _strand(admin_conn, threshold - 60)
+
+    assert db.reclaim_stranded_crawl_queue_rows(admin_conn, 30.0) == 0
+    admin_conn.commit()
+
+    row = admin_conn.execute("SELECT status FROM crawl_queue WHERE discogs_id = 'r1'").fetchone()
+    assert row["status"] == "in_progress"
+
+
+def test_reclaim_cutoff_moves_with_the_stranded_after_threshold(admin_conn):
+    # The reclaim must share _queue_stranded_after_seconds with the Queue tab's
+    # Stranded tile rather than carry its own constant -- if the two disagree,
+    # the tile stops being usable as the instrument for judging the reclaim. A
+    # hardcoded cutoff passes every other test in this file; only this one sees
+    # it. Enough crawlers that the derived value clears the floor at the slow
+    # pacing and not at the fast one.
+    for i in range(30):
+        _make_catalog_and_crawler(admin_conn, f"r{i}", site_name=f"Site {i}")
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r0")
+    admin_conn.commit()
+
+    fast_threshold = db._queue_stranded_after_seconds(admin_conn, 1.0)
+    slow_threshold = db._queue_stranded_after_seconds(admin_conn, 60.0)
+    assert fast_threshold < slow_threshold
+    _strand(admin_conn, (fast_threshold + slow_threshold) / 2)
+
+    # Same row, same age: stranded by the fast deployment's standard, healthy
+    # by the slow one's.
+    assert db.reclaim_stranded_crawl_queue_rows(admin_conn, 60.0) == 0
+    assert db.reclaim_stranded_crawl_queue_rows(admin_conn, 1.0) == 1
+    admin_conn.commit()
+
+
+def test_reclaim_does_not_move_a_row_to_the_back_of_the_queue(admin_conn):
+    # requested_at is what claim_crawl_queue_batch orders by. Bumping it would
+    # punish a row for having been stranded, sending it behind everything
+    # enqueued while it was stuck. Same reasoning defer_crawl_queue_row carries.
+    _make_catalog_and_crawler(admin_conn, "r1")
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1")
+    admin_conn.commit()
+    before = admin_conn.execute(
+        "SELECT requested_at, available_at FROM crawl_queue WHERE discogs_id = 'r1'"
+    ).fetchone()
+    threshold = db._queue_stranded_after_seconds(admin_conn, 30.0)
+    _strand(admin_conn, threshold + 60)
+
+    db.reclaim_stranded_crawl_queue_rows(admin_conn, 30.0)
+    admin_conn.commit()
+
+    after = admin_conn.execute(
+        "SELECT requested_at, available_at FROM crawl_queue WHERE discogs_id = 'r1'"
+    ).fetchone()
+    assert after["requested_at"] == before["requested_at"]
+    assert after["available_at"] == before["available_at"]
+
+
+def test_reclaim_leaves_pending_and_done_rows_alone(admin_conn):
+    _make_catalog_and_crawler(admin_conn, "r1")
+    _make_catalog_and_crawler(admin_conn, "r2")
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1")
+    db.enqueue_crawl_queue(admin_conn, "r2")
+    admin_conn.execute("UPDATE crawl_queue SET status = 'done' WHERE discogs_id = 'r2'")
+    # Old enough to be past any threshold, in both cases.
+    admin_conn.execute("UPDATE crawl_queue SET claimed_at = CURRENT_TIMESTAMP - INTERVAL '10 hours'")
+    admin_conn.commit()
+
+    assert db.reclaim_stranded_crawl_queue_rows(admin_conn, 30.0) == 0
+    admin_conn.commit()
+
+    rows = {
+        r["discogs_id"]: r["status"]
+        for r in admin_conn.execute("SELECT discogs_id, status FROM crawl_queue").fetchall()
+    }
+    assert rows == {"r1": "pending", "r2": "done"}

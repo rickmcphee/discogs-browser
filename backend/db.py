@@ -1435,19 +1435,24 @@ def enqueue_crawl_queue_for_stock_item(conn, item_key: str):
 # must mark_crawl_queue_done() on these rows before/without another worker's
 # claim call being able to grab them.
 #
-# Known gap, not an oversight: there is no reclaim/timeout path for a row
-# left 'in_progress' by a worker that never resolves it. This function's own
-# UPDATE commits immediately -- a short transaction, separate from whatever
-# processes the claimed rows afterward (see crawl_manager.py's
-# _drain_one_batch) -- so the claim itself is already durable by the time
-# this returns: a Machine crash or a genuinely hung worker during the
-# processing that follows does not roll it back. (Cancellation during
-# graceful shutdown is a different case, handled separately:
-# _drain_one_batch reverts an in-flight claim on cancellation, and shields
-# everything after a successful one, so that path isn't this gap.) A row
-# stranded this way stays unclaimable by anyone else indefinitely;
-# count_pending_crawl_queue_for_user counts it but has no way to tell it
-# apart from a row genuinely mid-crawl.
+# This function's own UPDATE commits immediately -- a short transaction,
+# separate from whatever processes the claimed rows afterward (see
+# crawl_manager.py's _drain_one_batch) -- so the claim itself is already
+# durable by the time this returns: a Machine crash or a genuinely hung
+# worker during the processing that follows does not roll it back. That is
+# what strands a row: it stays 'in_progress', and this function takes only
+# 'pending'. (Cancellation during graceful shutdown is a different case,
+# handled separately: _drain_one_batch reverts an in-flight claim on
+# cancellation, and shields everything after a successful one, so that path
+# never strands anything.)
+#
+# Such a row used to be unclaimable by anyone else indefinitely.
+# reclaim_stranded_crawl_queue_rows now hands it back once the claim has
+# outlasted _queue_stranded_after_seconds, and _drain_one_batch calls it in
+# the same transaction as this claim -- so the window is bounded by that
+# threshold rather than open-ended. Nothing here distinguishes a stranded row
+# from one genuinely mid-crawl, and neither does the reclaim: age is the only
+# evidence either has.
 def claim_crawl_queue_batch(conn, worker_id: str, limit: int) -> list[dict]:
     stock_source_gate = _enabled_stock_source_exists("crawl_queue.item_key")
     return conn.execute(
@@ -1527,6 +1532,51 @@ def revert_crawl_queue_claim(conn, queue_ids: list):
     )
 
 
+# revert_crawl_queue_claim's out-of-process counterpart, and the answer to the
+# gap claim_crawl_queue_batch documents above: a row abandoned 'in_progress' by
+# a crashed Machine or a hung worker cannot be handed back by that worker,
+# because it is gone. Nothing else could reach the row either -- every other
+# writer of crawl_queue is gated to 'pending' or 'done' -- so its target was
+# frozen out of every future sync, re-enable and schedule. Age is the only
+# evidence available without a liveness signal this app does not have.
+#
+# The cutoff is _queue_stranded_after_seconds and must stay that way. It is the
+# same derived value the Queue tab's Stranded tile reports, and it moves when an
+# admin enables a crawler or changes the pacing setting; a constant here would
+# drift out of agreement with the tile the first time either changed, which is
+# worse than either being wrong alone -- that tile is the only instrument an
+# operator has for judging whether this reclaim is working. Defined further down
+# with the rest of the reporting code and called rather than copied.
+#
+# Writes exactly the three columns a claim wrote, like revert_crawl_queue_claim.
+# pending_crawler_ids in particular is left alone: a row deferred to one crawler
+# and then stranded resumes owing that crawler, not every eligible one. Clearing
+# it would re-crawl work an earlier pass already paid for. requested_at is left
+# alone for defer_crawl_queue_row's reason -- it orders the claim, so bumping it
+# would send a row that was stranded for hours behind everything enqueued while
+# it was stuck. available_at was already in the past for the row to have been
+# claimed at all.
+#
+# FOR UPDATE SKIP LOCKED rather than a bare UPDATE ... WHERE: every worker on
+# every Machine runs this, so a plain UPDATE would have them queue on each
+# other's row locks. Skipping a row another worker is already reclaiming loses
+# nothing -- that worker is reclaiming it.
+def reclaim_stranded_crawl_queue_rows(conn, crawl_delay_seconds: float) -> int:
+    stranded_after = _queue_stranded_after_seconds(conn, crawl_delay_seconds)
+    return conn.execute(
+        """
+        UPDATE crawl_queue SET status = 'pending', claimed_by = NULL, claimed_at = NULL
+        WHERE id IN (
+            SELECT id FROM crawl_queue
+            WHERE status = 'in_progress'
+              AND claimed_at < CURRENT_TIMESTAMP - %(stranded)s * INTERVAL '1 second'
+            FOR UPDATE SKIP LOCKED
+        )
+        """,
+        {"stranded": stranded_after},
+    ).rowcount
+
+
 # Global rather than scoped to one crawler: idempotent, self-correcting, and it
 # also clears residue predating the source gate. The cost is that the count a
 # disable reports can include rows from another store's delisted items -- it
@@ -1559,12 +1609,13 @@ def delete_dead_stock_crawl_queue_rows(conn) -> int:
 # 'pending' in the table. _drain_one_batch marks such rows done when it reaches
 # them.
 #
-# That claim doesn't hold for 'in_progress': a row stranded by a crashed
-# browser or hung worker is still counted here and is not actually claimable
-# by anyone -- see claim_crawl_queue_batch's own comment on the missing
-# reclaim/timeout path. This function has no way to distinguish a stranded
-# in_progress row from one a worker is genuinely mid-crawl on, so it counts
-# both.
+# That claim holds more weakly for 'in_progress': a row stranded by a crashed
+# browser or hung worker is counted here while nothing is actually working on
+# it. reclaim_stranded_crawl_queue_rows bounds how long that can last, so the
+# count still reaches zero on its own -- but only after the strand ages past
+# _queue_stranded_after_seconds and a worker picks the row back up. This
+# function has no way to distinguish a stranded in_progress row from one a
+# worker is genuinely mid-crawl on, so it counts both.
 def count_pending_crawl_queue_for_user(conn, user_id: int) -> int:
     return conn.execute(
         """
@@ -1603,6 +1654,12 @@ QUEUE_ACTIVITY_WINDOW_SECONDS = 3600
 # floor keeps a tiny or unconfigured deployment from reporting strands within
 # seconds; the slack is deliberately generous, because a tile that cries wolf is
 # worth less than one that notices late.
+#
+# This is no longer only a reporting threshold: reclaim_stranded_crawl_queue_rows
+# hands a row back at exactly this cutoff, so the generosity now buys something
+# concrete. An age-based reclaim cannot tell a dead worker from a slow one, and
+# the slack is what keeps it from taking live work away from a pass that is
+# merely running long.
 QUEUE_STRANDED_FLOOR_SECONDS = 1800
 QUEUE_STRANDED_SLACK = 4
 
@@ -1874,14 +1931,16 @@ def queue_summary(conn, crawl_delay_seconds: float = 30.0) -> dict:
 # join the pending population deliberately avoids, which also breaks down per
 # crawler while it is there.
 #
-# That bound is not absolute, and this feature is what demonstrates it: a row
-# stranded by a crashed worker is never reclaimed (see claim_crawl_queue_batch),
-# so repeated crashes accumulate 'in_progress' rows and this join grows with
-# them. Left as a join anyway, deliberately. Reaching the scale where that
-# matters means thousands of strands, which is a deployment in serious trouble
-# and exactly what the Stranded tile exists to shout about -- optimizing this
-# query for that state would be optimizing for the case an operator is meant to
-# fix, at the cost of the decomposition being harder to follow in the normal one.
+# That bound is not absolute: a crash strands its claimed rows, and until
+# reclaim_stranded_crawl_queue_rows ages them out they sit 'in_progress' and
+# this join grows with them. Bounded now rather than monotonic -- strands used
+# to accumulate forever -- but a crash loop can still hold a population here
+# well above workers x batch size. Left as a join anyway, deliberately.
+# Reaching the scale where that matters means thousands of concurrent strands,
+# which is a deployment in serious trouble and exactly what the Stranded tile
+# exists to shout about -- optimizing this query for that state would be
+# optimizing for the case an operator is meant to fix, at the cost of the
+# decomposition being harder to follow in the normal one.
 def _queue_in_progress_units(conn) -> dict:
     rows = conn.execute(
         """

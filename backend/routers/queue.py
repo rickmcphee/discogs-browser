@@ -28,9 +28,10 @@ QUERY_TIMEOUT_MS = QUEUE_REPORT_BUDGET_MS // QUEUE_REPORT_MAX_STATEMENTS
 
 
 # Read-only, by design. Nothing in this router writes -- in particular it does
-# not reclaim the stranded 'in_progress' rows it reports, which
-# claim_crawl_queue_batch documents as having no reclaim path; that needs its
-# own correctness argument and is not smuggled in behind an observability tab.
+# not reclaim the stranded 'in_progress' rows it reports. That reclaim now
+# exists (db.reclaim_stranded_crawl_queue_rows) but lives on the worker path,
+# where the claim it undoes lives; it is not reachable from an observability
+# tab, and polling this endpoint must never be what recovers the queue.
 #
 # Global tables (crawl_queue, crawlers, listings, catalog,
 # stock_item_identities), none of which carry a per-user owner column, so these

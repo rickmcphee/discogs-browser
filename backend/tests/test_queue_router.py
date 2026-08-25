@@ -185,8 +185,10 @@ def test_long_claimed_row_is_reported_stranded(admin_conn):
     admin_conn.commit()
     db.claim_crawl_queue_batch(admin_conn, "w", limit=1)
     threshold = db.queue_summary(admin_conn)["stranded_after_seconds"]
-    # No reclaim path exists to age a row through -- see claim_crawl_queue_batch's
-    # own comment -- so the passage of time is the one thing simulated here.
+    # The passage of time is the one thing simulated here. Nothing in this file
+    # runs the reclaim, so the row stays stranded for the tile to report it --
+    # which is the state an operator sees between a strand and the drain pass
+    # that hands it back.
     admin_conn.execute(
         "UPDATE crawl_queue SET claimed_at = CURRENT_TIMESTAMP - %s * INTERVAL '1 second'",
         [threshold + 60],
