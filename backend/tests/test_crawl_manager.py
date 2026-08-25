@@ -1669,8 +1669,8 @@ async def test_run_catalog_crawler_logs_each_reported_page(manager, caplog):
 
 async def test_run_catalog_crawler_broadcasts_and_logs_detail_progress(manager, caplog):
     """A two-phase crawler's gap between two report_page() calls is a whole
-    listing page of paced detail fetches -- over an hour on dischordrecords.py
-    -- so it reports each detail fetch as well."""
+    listing page of paced detail fetches -- tens of minutes on
+    dischordrecords.py -- so it reports each detail fetch as well."""
     from crawl_progress import report_detail
 
     fake_plugin = MagicMock()
@@ -3551,7 +3551,12 @@ async def test_sync_stock_logs_the_source_it_is_starting(pg_schema, caplog):
 
     assert "[Dischord Records] Stock crawl started" in [r.getMessage() for r in caplog.records]
     found = [r.getMessage() for r in caplog.records if "Stock sync found" in r.getMessage()]
-    assert found == ["[Dischord Records] Stock sync found 0 items in 0s"]
+    # Prefix, not the whole line: pinning "in 0s" asserts that every real
+    # database round-trip _sync_stock() makes lands inside one integer second,
+    # which a slow runner can miss while the elapsed-time logging under test
+    # is working perfectly.
+    assert len(found) == 1
+    assert found[0].startswith("[Dischord Records] Stock sync found 0 items in ")
 
 
 async def test_stock_sync_state_reports_the_current_source_and_elapsed_time(manager):

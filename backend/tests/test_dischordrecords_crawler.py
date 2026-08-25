@@ -373,9 +373,10 @@ async def test_crawl_catalog_reports_progress_through_each_listing_page_of_detai
     monkeypatch, tmp_config_dir
 ):
     """report_page() alone leaves a whole listing page's worth of paced detail
-    fetches -- over an hour at the default crawl_delay_seconds -- with nothing
-    reported at all, which reads as a hang while the stock sync's advisory lock
-    rejects every other source's Refresh."""
+    fetches -- tens of minutes at the default crawl_delay_seconds, against
+    roughly 108 minutes for the whole run -- with nothing reported at all,
+    which reads as a hang while the stock sync's advisory lock rejects every
+    other source's Refresh."""
     import crawl_progress
 
     save_config({"crawl_delay_seconds": 0})
