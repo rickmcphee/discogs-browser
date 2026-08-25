@@ -54,6 +54,17 @@ concurrency:
 env:
   SYNC_BRANCH: chore/integration-sync
   MARKER_TAG: integration-sync-base
+  # The `main` commit `integration` held when this workflow was written: #184
+  # synced `integration` to exactly this tree, and `git diff 43217e9
+  # origin/integration` was empty at the time. It stands in for the marker tag
+  # until the workflow has recorded one of its own, and is then never consulted
+  # again. Without it the very first run has no base but git's inferred one,
+  # which is b24e568e -- old enough to predate integration-promote.yml, so both
+  # sides look like they added that file and the merge dies on an add/add
+  # conflict before it can ever record a marker. Verified: merging this branch
+  # into `integration` conflicts on integration-promote.yml and CLAUDE.md with
+  # the inferred base, and is clean with this one.
+  BOOTSTRAP_BASE: 43217e92921fe0164854b28798dfcb10792368f1
 
 jobs:
   sync:
@@ -104,6 +115,10 @@ jobs:
           # dependency pin `integration` has re-bumped look changed on both
           # sides, and conflicts on a file nobody actually disagrees about.
           marker="$(git rev-parse -q --verify "refs/tags/$MARKER_TAG^{commit}" || true)"
+          if [ -z "$marker" ] && git cat-file -e "$BOOTSTRAP_BASE^{commit}" 2>/dev/null; then
+            marker="$BOOTSTRAP_BASE"
+            echo "no $MARKER_TAG yet; bootstrapping from $BOOTSTRAP_BASE"
+          fi
 
           record_marker() {
             # Only ever called where integration was just shown to hold main's
@@ -140,7 +155,30 @@ jobs:
             --head "$SYNC_BRANCH" --state open --json number \
             --jq '.[0].number // empty')"
           if [ -n "$existing" ]; then
-            echo "Sync PR #$existing is already open; leaving it as-is."
+            # An open sync PR goes "behind" if `integration` moves while its
+            # checks run, and strict branch protection then refuses to merge it.
+            # Re-arming auto-merge alone would spin here for good: setting
+            # pending=true below also holds off the refresh job, which is the
+            # only other thing that would have caught it up.
+            sync_state="unknown"
+            for _ in 1 2 3; do
+              sync_state="$(gh api "repos/$REPO/pulls/$existing" --jq '.mergeable_state')"
+              [ "$sync_state" != "unknown" ] && break
+              sleep 10
+            done
+            case "$sync_state" in
+              behind)
+                echo "Sync PR #$existing is behind; catching it up before re-arming auto-merge."
+                gh api -X PUT "repos/$REPO/pulls/$existing/update-branch" \
+                  || echo "::warning::could not update sync PR #$existing automatically"
+                ;;
+              dirty)
+                echo "pending=true" >> "$GITHUB_OUTPUT"
+                echo "::error::Sync PR #$existing conflicts with integration. Resolve $SYNC_BRANCH by hand and push it; auto-merge is deliberately left off until then."
+                exit 1
+                ;;
+            esac
+            echo "Sync PR #$existing is already open; leaving its branch as-is."
             # Same merge-then-squash preference as the freshly-opened PR below.
             gh pr merge "$existing" --repo "$REPO" --auto --merge \
               || gh pr merge "$existing" --repo "$REPO" --auto --squash || true
@@ -239,8 +277,10 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
+          # --limit, because `gh pr list` returns 30 by default and this step
+          # promises to catch up *every* open PR, not the newest thirty.
           for n in $(gh pr list --repo "$REPO" --base integration --state open \
-                       --json number --jq '.[].number'); do
+                       --limit 200 --json number --jq '.[].number'); do
             # mergeable_state is computed asynchronously; a PR polled too soon
             # after integration moved answers "unknown", which is neither state
             # below and would quietly skip the one PR that needed this most.
