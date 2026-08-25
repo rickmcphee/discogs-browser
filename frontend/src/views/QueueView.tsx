@@ -49,7 +49,7 @@ function StatTile({ label, value, hint, accent }: {
 }) {
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-lg px-4 py-3 min-w-36">
-      <div className="flex items-center gap-1.5 text-xs text-gray-500">
+      <div className="flex items-center gap-1.5 text-xs text-gray-400">
         {accent && <span className="w-2 h-2 rounded-full shrink-0" style={{ background: accent }} />}
         {label}
       </div>
@@ -99,7 +99,7 @@ function StateDonut({ segments, centreValue, centreLabel, selected, onSelect }: 
         )
       })}
       <text x="80" y="76" textAnchor="middle" className="fill-gray-100" style={{ fontSize: 22 }}>{centreValue}</text>
-      <text x="80" y="94" textAnchor="middle" className="fill-gray-500" style={{ fontSize: 10 }}>{centreLabel}</text>
+      <text x="80" y="94" textAnchor="middle" className="fill-gray-400" style={{ fontSize: 10 }}>{centreLabel}</text>
     </svg>
   )
 }
@@ -119,7 +119,7 @@ function CrawlerBars({ crawlers, selectedState, selectedId, onSelect }: {
   const secondary = (c: QueueCrawlerSummary) => (selectedState ? 0 : c.held_units)
   const max = Math.max(1, ...crawlers.map((c) => primary(c) + secondary(c)))
   if (crawlers.length === 0) {
-    return <div className="text-sm text-gray-600 italic px-1 py-4">No crawler has work in this state.</div>
+    return <div className="text-sm text-gray-400 italic px-1 py-4">No crawler has work in this state.</div>
   }
   return (
     <div className="flex flex-col gap-0.5">
@@ -156,7 +156,7 @@ function CrawlerBars({ crawlers, selectedState, selectedId, onSelect }: {
             </span>
             <span className="text-sm text-gray-400 text-right tabular-nums">
               {primary(c).toLocaleString()}
-              {secondary(c) > 0 && <span className="text-gray-600"> +{secondary(c).toLocaleString()}</span>}
+              {secondary(c) > 0 && <span className="text-gray-400"> +{secondary(c).toLocaleString()}</span>}
             </span>
           </button>
         )
@@ -168,7 +168,7 @@ function CrawlerBars({ crawlers, selectedState, selectedId, onSelect }: {
 function Panel({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-lg p-4 min-w-0">
-      <div className="text-xs uppercase tracking-wide text-gray-500 mb-3">{title}</div>
+      <div className="text-xs uppercase tracking-wide text-gray-400 mb-3">{title}</div>
       {children}
     </div>
   )
@@ -177,7 +177,7 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
 function Field({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
     <div className="flex items-baseline justify-between gap-4 py-1">
-      <span className="text-sm text-gray-500">{label}</span>
+      <span className="text-sm text-gray-400">{label}</span>
       <span className="text-sm text-gray-200 text-right tabular-nums">
         {value}
         {hint && <span className="block text-xs text-gray-400">{hint}</span>}
@@ -245,17 +245,17 @@ function CrawlerDetail({ crawler, window, next, nextLoading, nextError }: {
 
       <Panel title="Next up">
         {nextLoading ? (
-          <div className="text-sm text-gray-600 italic">Loading…</div>
+          <div className="text-sm text-gray-400 italic">Loading…</div>
         ) : nextError ? (
           <div className="text-sm text-red-400">{nextError}</div>
         ) : next.length === 0 ? (
-          <div className="text-sm text-gray-600 italic">Nothing claimable for this crawler.</div>
+          <div className="text-sm text-gray-400 italic">Nothing claimable for this crawler.</div>
         ) : (
           <div className="flex flex-col gap-1 max-h-64 overflow-y-auto">
             {next.map((item, i) => (
               <div key={i} className="flex items-baseline justify-between gap-3 text-sm">
                 <span className="truncate text-gray-300">
-                  {item.artist || '—'} <span className="text-gray-600">–</span> {item.title || '—'}
+                  {item.artist || '—'} <span className="text-gray-400">–</span> {item.title || '—'}
                 </span>
                 <span className="shrink-0 text-xs text-gray-400 tabular-nums">
                   {item.kind === 'stock' ? 'stock' : 'release'} · {formatDuration(item.waiting_seconds)}
@@ -400,7 +400,7 @@ export default function QueueView() {
     return <div className="p-6 text-sm text-red-400">{error}</div>
   }
   if (!summary) {
-    return <div className="p-6 text-sm text-gray-500">Loading queue…</div>
+    return <div className="p-6 text-sm text-gray-400">Loading queue…</div>
   }
 
   const t = summary.totals
@@ -445,7 +445,7 @@ export default function QueueView() {
         <StatTile
           label="Unactionable"
           value={t.unactionable_rows.toLocaleString()}
-          hint="no enabled crawler"
+          hint="no crawler, or no live source"
           accent={t.unactionable_rows > 0 ? STATUS_WARNING : undefined}
         />
         <StatTile
@@ -453,7 +453,12 @@ export default function QueueView() {
           value={t.rows_done_last_hour.toLocaleString()}
           hint={`rows / ${formatDuration(summary.activity_window_seconds)}`}
         />
-        <StatTile label="Queue ETA" value={formatDuration(t.eta_seconds)} hint="at that rate" />
+        {/* Claimable, not the whole queue: this divides claimable rows by the
+            drain rate, so a queue holding only held or in-progress rows would
+            otherwise report "0s" while plainly not being empty. Held rows
+            cannot be estimated without the cooldown state this tab
+            deliberately does not expose. */}
+        <StatTile label="Claimable ETA" value={formatDuration(t.eta_seconds)} hint="at that rate" />
       </div>
 
       <div className="flex flex-col lg:flex-row gap-6 items-start">
@@ -484,7 +489,7 @@ export default function QueueView() {
                 >
                   <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: STATE_COLORS[key] }} />
                   {STATE_LABELS[key]}
-                  <span className="text-gray-500 tabular-nums">{value.toLocaleString()}</span>
+                  <span className="text-gray-400 tabular-nums">{value.toLocaleString()}</span>
                 </button>
               )
             })}
@@ -499,11 +504,11 @@ export default function QueueView() {
 
         <div className="flex-1 min-w-0 w-full">
           <div className="flex items-baseline justify-between mb-2">
-            <div className="text-xs uppercase tracking-wide text-gray-500">
+            <div className="text-xs uppercase tracking-wide text-gray-400">
               Work units by crawler
             </div>
             {selectedState && (
-              <button onClick={() => setSelectedState(null)} className="text-xs text-gray-500 hover:text-gray-300">
+              <button onClick={() => setSelectedState(null)} className="text-xs text-gray-400 hover:text-gray-300">
                 Clear {STATE_LABELS[selectedState].toLowerCase()} filter
               </button>
             )}
@@ -530,7 +535,7 @@ export default function QueueView() {
             />
           </>
         ) : (
-          <div className="text-sm text-gray-600 italic">
+          <div className="text-sm text-gray-400 italic">
             Select a crawler above to see its backlog in detail.
           </div>
         )}

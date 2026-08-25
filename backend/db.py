@@ -363,6 +363,15 @@ ALTER TABLE crawl_queue ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP;
 CREATE INDEX IF NOT EXISTS crawl_queue_completed_idx
     ON crawl_queue (completed_at) WHERE status = 'done';
 
+-- The other half of the same problem. queue_summary's totals aggregate reads
+-- every row that is not 'done', and crawl_queue_claimable_idx cannot serve it
+-- (partial on 'pending', so it sees neither in_progress rows nor the deferred
+-- ones). Without this the poll seq-scans the whole table to find what is
+-- usually a handful of live rows. Partial on the complement of 'done', so it
+-- stays proportional to work in flight rather than to the catalog.
+CREATE INDEX IF NOT EXISTS crawl_queue_active_idx
+    ON crawl_queue (status) WHERE status <> 'done';
+
 -- available_at is a not-before marker, set when a pass defers a crawler whose
 -- site is in circuit-breaker cooldown. Without it the row would be re-claimed
 -- on the very next batch and re-deferred in a hot loop.
@@ -1860,9 +1869,19 @@ def queue_summary(conn, crawl_delay_seconds: float = 30.0) -> dict:
 # reporting figure, which is the wrong trade; the tab names the segment for what
 # this actually measures instead.
 #
-# In-progress rows are few (bounded by workers x batch size), so their fan-out
-# is small enough to resolve the honest way -- the join the pending population
-# deliberately avoids -- and to break down per crawler while it is there.
+# In-progress rows are normally few -- a live claim is bounded by workers x
+# batch size -- so their fan-out is small enough to resolve the honest way: the
+# join the pending population deliberately avoids, which also breaks down per
+# crawler while it is there.
+#
+# That bound is not absolute, and this feature is what demonstrates it: a row
+# stranded by a crashed worker is never reclaimed (see claim_crawl_queue_batch),
+# so repeated crashes accumulate 'in_progress' rows and this join grows with
+# them. Left as a join anyway, deliberately. Reaching the scale where that
+# matters means thousands of strands, which is a deployment in serious trouble
+# and exactly what the Stranded tile exists to shout about -- optimizing this
+# query for that state would be optimizing for the case an operator is meant to
+# fix, at the cost of the decomposition being harder to follow in the normal one.
 def _queue_in_progress_units(conn) -> dict:
     rows = conn.execute(
         """
@@ -1893,8 +1912,13 @@ def _queue_crawler_eta(bucket: dict, claimable_stock_units: int, totals: dict, d
     return position / drain_per_second
 
 
-# The next targets this crawler will actually be run against, in
-# claim_crawl_queue_batch's own sort order and behind its own gates.
+# The next targets this crawler is a candidate for, in claim_crawl_queue_batch's
+# own sort order and behind its own gates. Candidates, not a schedule: a row
+# past its available_at can still be deferred at dispatch, because
+# _drain_one_batch consults the process-local circuit-breaker cooldown that this
+# tab deliberately does not expose, and only then moves available_at forward.
+# Everything this query can see says the row is claimable; whether the crawler
+# actually runs is decided by state living in a worker process.
 def queue_next_for_crawler(conn, crawler_id: int, limit: int) -> list:
     gate = _enabled_stock_source_exists("cq.item_key")
     return conn.execute(

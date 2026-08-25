@@ -112,9 +112,28 @@ compose; a median does not (the median of a union is not derivable from two
 medians). The tab therefore reports **oldest wait plus age buckets**, which
 shows a starving tail more directly than a median would anyway.
 
-`crawl_queue` gains `crawl_queue_completed_idx ON (completed_at) WHERE status =
-'done'`, so the drain-rate window is a bounded range scan rather than a walk of
-a row per target this app has ever queued.
+`crawl_queue` gains two partial indexes, for the two halves of the same
+problem. `crawl_queue_completed_idx ON (completed_at) WHERE status = 'done'`
+makes the drain-rate window a bounded range scan rather than a walk of a row per
+target this app has ever queued. `crawl_queue_active_idx ON (status) WHERE
+status <> 'done'` does the same for the totals aggregate: the existing
+`crawl_queue_claimable_idx` is partial on `'pending'` and so serves neither the
+`in_progress` rows nor the deferred ones, leaving the poll to seq-scan the whole
+table for what is usually a handful of live rows.
+
+The ETA is **claimable-only, and named that way in the UI.** It divides
+claimable rows by the drain rate, so a queue holding nothing but held or
+in-progress rows would otherwise report "0s" while plainly not being empty.
+Estimating held rows would need the cooldown state this tab deliberately does
+not expose.
+
+`in_progress_units` is resolved with the join the pending path avoids, on the
+grounds that a live claim is bounded by workers × batch size. That bound is not
+absolute and this feature is what shows why: a row stranded by a crashed worker
+is never reclaimed, so repeated crashes accumulate `in_progress` rows and the
+join grows with them. It stays a join deliberately — reaching a scale where that
+matters means thousands of strands, a deployment in serious trouble and exactly
+what the Stranded tile exists to shout about.
 
 `listings` gains `listings_crawler_last_checked_idx ON (crawler_id,
 last_checked)`, and the activity query is driven *from* `crawlers` rather than
@@ -153,7 +172,8 @@ owner column, so they use `db.get_app_pool()` — the same pool
     "unactionable_rows": int,   // pending, no eligible enabled crawler, plus dead stock rows
     "claimable_release_rows": int, "claimable_stock_rows": int,
     "rows_done_last_hour": int, // done rows whose completed_at falls in the window
-    "eta_seconds": float|null,  // claimable_rows / drain rate; null when the rate is 0
+    "eta_seconds": float|null,  // claimable_rows / drain rate; null when the rate is 0.
+                                // Claimable only -- see below; the UI says so.
     "claimable_units": int, "held_units": int, "in_progress_units": int
   },
   "crawlers": [{
@@ -181,6 +201,11 @@ sequential search per eligible crawler, paced by `crawl_delay_seconds`, so a
 row claimed well outside the window routinely completes inside it. Counting
 claims would report a zero drain rate — and a null ETA everywhere — precisely
 while long-running rows were finishing.
+
+`unactionable_rows` covers two distinct causes — a pending row no enabled
+crawler resolves for, and a stock row whose last enabled source stopped listing
+it — so the tile names both. Naming only the crawler case would send an operator
+to the wrong setting.
 
 **Stranded is derived, not a constant.** A claimed row runs one sequential
 search per eligible crawler, each preceded by a wait of 50–100% of
@@ -237,9 +262,14 @@ the blind spots rather than presenting it as a throughput rate:
 
 ### `GET /api/queue/crawlers/{crawler_id}/next?limit=25`
 
-The next targets this crawler will actually be run against, in
+The next targets this crawler is a *candidate* for, in
 `claim_crawl_queue_batch`'s own sort order — `(item_key IS NOT NULL),
 requested_at, id` — filtered by the same eligibility and gate predicates.
+Candidates, not a schedule: a row past its `available_at` can still be deferred
+at dispatch, because `_drain_one_batch` consults the process-local
+circuit-breaker cooldown this tab does not expose and only then moves
+`available_at` forward. Everything the database can see says the row is
+claimable; whether the crawler runs is decided in a worker process.
 Returns `artist`, `title`, `kind` (`release`/`stock`), `waiting_seconds`, and
 `narrowed` (whether the row carries a `pending_crawler_ids` array). Split out
 from the summary because it needs `catalog`/`stock_item_identities` joins and
@@ -271,14 +301,15 @@ rather than an assumption if `load` ever gains a second caller.
 **Top half.**
 
 - A KPI row of stat tiles: pool state, claimable rows, in progress, held,
-  stranded, unactionable, drain rate, queue ETA. The pool tile is labelled
+  stranded, unactionable, drain rate, claimable ETA. The pool tile is labelled
   "this machine only": `crawl_manager.pool_running` is process-local, so on a
   multi-Machine deployment consecutive polls can land on different Machines, and
   neither value says anything about the other's pool. Every other tile is global
-  database state. Small print carrying diagnostic meaning — every tile hint, the
-  composition labels, the activity caveat — is rendered at a contrast that
-  clears 4.5:1 against the tile surface rather than the app's usual recessive
-  grey, which measured about 2.3:1. Stranded and unactionable
+  database state. Every piece of text on this tab that carries diagnostic
+  meaning — tile labels and hints, panel headings, field labels, empty states,
+  the ring's unit label — is rendered at a token clearing 4.5:1 against its
+  surface. The app's usual recessive greys measure about 3.7:1 and 2.4:1 there,
+  which is fine for chrome and not for values an operator is meant to read. Stranded and unactionable
   carry status colors (`critical` `#d03b3b`, `warning` `#fab219`) with their
   labels beside them, never colour alone; the rest wear text tokens.
 - One donut, showing the part-to-whole a ring is actually good at: total

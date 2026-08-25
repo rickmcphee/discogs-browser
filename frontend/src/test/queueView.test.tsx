@@ -243,6 +243,27 @@ describe('QueueView', () => {
     }
   })
 
+  it('names the ETA tile claimable, since it ignores held and in-progress work', async () => {
+    getQueueSummary.mockResolvedValue(summary({
+      totals: {
+        ...summary().totals,
+        claimable_rows: 0, held_rows: 5, in_progress_rows: 2,
+        rows_done_last_hour: 20, eta_seconds: 0,
+      },
+    }))
+    render(<QueueView />)
+    // "Queue ETA: 0s" beside five held rows would be a plain lie about the queue.
+    expect(await screen.findByText('Claimable ETA')).toBeInTheDocument()
+    expect(screen.queryByText('Queue ETA')).not.toBeInTheDocument()
+  })
+
+  it('names both causes of an unactionable row', async () => {
+    render(<QueueView />)
+    // Blaming only the crawler setting sends an operator to the wrong place
+    // when the real cause is a stock item no enabled store lists any more.
+    expect(await screen.findByText('no crawler, or no live source')).toBeInTheDocument()
+  })
+
   it('says the worker pool tile is machine-local', async () => {
     render(<QueueView />)
     expect(await screen.findByText('this machine only')).toBeInTheDocument()
