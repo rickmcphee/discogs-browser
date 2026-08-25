@@ -280,11 +280,10 @@ export default function QueueView() {
   const [nextError, setNextError] = useState<string | null>(null)
   const generation = useRef(0)
 
-  // setInterval will happily start a second request while the first is still
-  // in flight, and responses can then land out of order -- an older snapshot,
-  // or an older error, overwriting a newer one. In a view whose whole job is to
-  // report live state that is the worst possible failure, so a stale response
-  // is dropped rather than rendered.
+  // Defence in depth. The scheduler below now guarantees one request at a time,
+  // so no ordinary path can render a stale response -- but this is what makes
+  // that a guarantee rather than an assumption, and it is what keeps the
+  // property if load() ever gains a second caller.
   const load = useCallback(async () => {
     const mine = ++generation.current
     try {
@@ -317,16 +316,39 @@ export default function QueueView() {
     // Bumped on every stop, so an in-flight request whose continuation lands
     // after a hide/show cannot leave a second loop running alongside the new one.
     let run = 0
+    // The token alone is not enough. stop() can invalidate a loop but cannot
+    // recall the HTTP request it already issued, so a hide/show while one is
+    // pending would have start() launch a second alongside it -- and a user
+    // alt-tabbing during a slow query could stack several, which is the very
+    // thing the self-scheduling exists to prevent. start() therefore defers to
+    // an in-flight request, and that request resumes the loop when it settles.
+    let inFlight = false
+
+    function schedule(token: number) {
+      handle = setTimeout(() => tick(token), POLL_MS)
+    }
 
     async function tick(token: number) {
       if (disposed || token !== run) return
-      await load()
-      if (disposed || token !== run) return
-      handle = setTimeout(() => tick(token), POLL_MS)
+      inFlight = true
+      try {
+        await load()
+      } finally {
+        inFlight = false
+      }
+      if (disposed) return
+      // Superseded by a stop while in flight: hand the loop back to whatever
+      // the current run is, rather than leaving it dead or doubling it.
+      if (token !== run) {
+        if (active) schedule(run)
+        return
+      }
+      schedule(token)
     }
     function start() {
       if (active) return
       active = true
+      if (inFlight) return
       tick(++run)
     }
     function stop() {

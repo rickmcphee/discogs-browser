@@ -251,15 +251,22 @@ is only wanted on click.
 on `showAdminNav` exactly as Logs and Settings are. Like `LogViewer`, the view
 is not mounted at all for a non-admin. It polls `/api/queue/summary` every 10
 seconds, only while the tab is the active view and the document is visible.
-The next poll is scheduled only once the current one settles, so at most one
-summary is ever in flight, and each carries a generation counter so a superseded
-response is dropped rather than rendered. Both halves are needed and neither
-substitutes for the other: the counter stops an older snapshot or error landing
-last in a view whose job is to report live state, while the self-scheduling
-stops a slow query from stacking. A summary is a `REPEATABLE READ` transaction on
-the same app pool the crawl workers claim through, so an interval firing faster
-than the query settles would have this tab competing with the workers for
-connections — causing the very condition it exists to detect.
+At most one summary is ever in flight. This matters more than it sounds: a
+summary is a `REPEATABLE READ` transaction on the same app pool the crawl
+workers claim through, so a tab that stacked requests would compete with the
+workers for connections — causing the very condition it exists to detect. Two
+mechanisms, because the timer is not the only way to stack:
+
+- The next poll is scheduled only once the current one settles, so a query
+  slower than the interval cannot pile up behind itself.
+- Pausing cannot recall a request already issued, so resuming defers to one
+  still in flight and that request hands the loop back when it settles.
+  Otherwise alt-tabbing during a slow query would launch a fresh request
+  alongside each pending one.
+
+A generation counter on each poll remains as defence in depth: no ordinary path
+can now render a stale response, and the counter is what makes that a guarantee
+rather than an assumption if `load` ever gains a second caller.
 
 **Top half.**
 

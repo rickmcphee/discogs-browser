@@ -188,21 +188,42 @@ describe('QueueView', () => {
     expect(container.querySelector('span.rounded-l-sm')).toBeNull()
   })
 
-  it('discards a slow poll that resolves after a newer one', async () => {
-    let releaseFirst: (v: unknown) => void = () => {}
-    const first = new Promise((resolve) => { releaseFirst = resolve })
-    getQueueSummary.mockReturnValueOnce(first.then(() => summary({ pool_running: false })))
+  it('does not stack requests when the tab is hidden and shown mid-request', async () => {
+    let release: (v: unknown) => void = () => {}
+    getQueueSummary.mockReturnValueOnce(new Promise((r) => { release = r }))
     render(<QueueView />)
+    expect(getQueueSummary).toHaveBeenCalledTimes(1)
 
-    // A newer poll lands first and wins; the stale one must not overwrite it.
-    getQueueSummary.mockResolvedValue(summary({ pool_running: true }))
+    // Stopping cannot recall the request already in flight, so restarting must
+    // defer to it rather than issuing a second alongside. Alt-tabbing during a
+    // slow query would otherwise stack repeatable-read transactions on the
+    // pool the crawl workers claim through.
     setVisibility('hidden')
     setVisibility('visible')
-    expect(await screen.findByText('Running')).toBeInTheDocument()
+    setVisibility('hidden')
+    setVisibility('visible')
+    expect(getQueueSummary).toHaveBeenCalledTimes(1)
 
-    releaseFirst(null)
-    await waitFor(() => expect(screen.getByText('Running')).toBeInTheDocument())
-    expect(screen.queryByText('Stopped')).not.toBeInTheDocument()
+    release(summary({ pool_running: true }))
+    expect(await screen.findByText('Running')).toBeInTheDocument()
+  })
+
+  it('keeps polling after a hide/show that landed mid-request', async () => {
+    vi.useFakeTimers()
+    try {
+      let release: (v: unknown) => void = () => {}
+      getQueueSummary.mockReturnValueOnce(new Promise((r) => { release = r }))
+      render(<QueueView />)
+      setVisibility('hidden')
+      setVisibility('visible')
+
+      // The superseded request must hand the loop back, not leave it dead.
+      release(summary())
+      await vi.advanceTimersByTimeAsync(11_000)
+      expect(getQueueSummary.mock.calls.length).toBeGreaterThan(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('never runs two summary requests at once', async () => {
