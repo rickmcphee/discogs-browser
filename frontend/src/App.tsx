@@ -286,9 +286,12 @@ export default function App() {
         return
       }
       if (event.status === 'stock_sync_detail_progress') {
-        const releases = event.total === 1 ? 'release' : 'releases'
+        // "detail pages", not "releases": Dark Descent's total counts the
+        // variable products on a listing page that also carries simple ones,
+        // so a release count would understate the page it names.
+        const pages = event.total === 1 ? 'detail page' : 'detail pages'
         setSyncStatus(
-          `Syncing in-stock catalog… ${event.source} ${event.label} — ${event.done}/${event.total} ${releases}`,
+          `Syncing in-stock catalog… ${event.source} ${event.label} — ${event.done}/${event.total} ${pages}`,
           event.id ?? null,
         )
         return

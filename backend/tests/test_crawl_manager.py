@@ -1691,10 +1691,10 @@ async def test_run_catalog_crawler_broadcasts_and_logs_detail_progress(manager, 
         ("Dischord Records", 0, 36, "listing page 1/8"),
         ("Dischord Records", 1, 36, "listing page 1/8"),
     ]
-    lines = [r.getMessage() for r in caplog.records if "release pages on" in r.getMessage()]
+    lines = [r.getMessage() for r in caplog.records if "detail pages on" in r.getMessage()]
     assert lines == [
-        "[Dischord Records] Fetched 0/36 release pages on listing page 1/8",
-        "[Dischord Records] Fetched 1/36 release pages on listing page 1/8",
+        "[Dischord Records] Fetched 0/36 detail pages on listing page 1/8",
+        "[Dischord Records] Fetched 1/36 detail pages on listing page 1/8",
     ]
 
 

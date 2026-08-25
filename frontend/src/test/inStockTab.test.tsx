@@ -258,7 +258,7 @@ describe('In Stock tab', () => {
     )
   })
 
-  it('surfaces per-release stock_sync_detail_progress in the bottom status bar', async () => {
+  it('surfaces per-detail-page stock_sync_detail_progress in the bottom status bar', async () => {
     // A two-phase crawler goes tens of minutes between two page_fetched
     // events -- one listing page of paced detail fetches, against roughly 108
     // minutes for the whole Dischord run -- so without this the status bar sat
@@ -272,12 +272,12 @@ describe('In Stock tab', () => {
     })
     await waitFor(() =>
       expect(
-        screen.getByText(/Dischord Records listing page 2\/8 — 14\/36 releases/)
+        screen.getByText(/Dischord Records listing page 2\/8 — 14\/36 detail pages/)
       ).toBeInTheDocument()
     )
   })
 
-  it('says "1 release", not "1 releases", on a page with a single new release', async () => {
+  it('says "1 detail page", not "1 detail pages", on a page with a single fetch', async () => {
     // Reachable on this crawler: dedup is crawl-wide, so a listing page whose
     // releases mostly appeared on the previous one can contribute just one.
     render(<App />)
@@ -288,7 +288,7 @@ describe('In Stock tab', () => {
       done: 1, total: 1, label: 'listing page 4/8', id: 1,
     })
     await waitFor(() =>
-      expect(screen.getByText(/listing page 4\/8 — 1\/1 release$/)).toBeInTheDocument()
+      expect(screen.getByText(/listing page 4\/8 — 1\/1 detail page$/)).toBeInTheDocument()
     )
   })
 

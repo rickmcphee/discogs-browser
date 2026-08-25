@@ -966,7 +966,11 @@ class CrawlManager:
 
         async def _report_detail(done: int, total: int, label: str):
             log.info(
-                "[%s] Fetched %d/%d release pages on %s",
+                # "detail pages", not "release pages": this reporter is shared,
+                # and Dark Descent counts variable *products* on a listing page
+                # that also carries simple ones. "14/30 release pages" on a page
+                # of 100 releases would read as a page total it isn't.
+                "[%s] Fetched %d/%d detail pages on %s",
                 crawler._db_site_name, done, total, label,
             )
             await self._broadcast({

@@ -98,9 +98,13 @@ carrying a `user_id` (see
 [`2026-08-23-per-user-sse-event-filtering-design.md`](2026-08-23-per-user-sse-event-filtering-design.md)).
 
 `App.tsx` renders it into the existing bottom status bar as
-`Syncing in-stock catalog… {source} {label} — {done}/{total} releases`,
-singular `release` when `total` is 1, matching what the page-progress
-handler beside it already does for products. Reachable here rather than
+`Syncing in-stock catalog… {source} {label} — {done}/{total} detail pages`,
+singular `detail page` when `total` is 1, matching what the page-progress
+handler beside it already does for products. The unit is deliberately
+neither "releases" nor "products": one detail fetch is a release on
+`dischordrecords.py` and a variable product on `darkdescentrecords.py`, and
+the latter's listing page also carries simple products needing no fetch, so
+a release count would name a smaller number than the page actually holds. Reachable here rather than
 hypothetical: dedup is crawl-wide, so a listing page whose releases
 mostly appeared on the previous one can contribute a single new href.
 

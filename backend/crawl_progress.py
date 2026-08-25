@@ -42,7 +42,13 @@ async def report_page(page: int, count: int) -> None:
 
 async def report_detail(done: int, total: int, label: str) -> None:
     """Report progress *within* one listing page, for a two-phase crawler that
-    fetches a detail page per release before it can report the page at all.
+    must fetch a detail page per item before it can report the page at all.
+
+    Deliberately unit-neutral. What one detail fetch covers differs by crawler
+    -- a release on dischordrecords.py, a variable product on
+    darkdescentrecords.py, whose listing page also carries simple products
+    needing no fetch at all -- so `done`/`total` count detail *pages*, and both
+    the log line and the status bar say so.
 
     report_page() is the only progress signal a one-phase crawler needs: it
     fires once per HTTP request, so the gap between two of them is one paced
