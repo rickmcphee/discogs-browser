@@ -6,6 +6,15 @@ _2026-08-02_
 
 **Amendment (2026-08-17, branch `claude/store-crawler-filter-design-d16b80`):** the previous amendment is itself stale. Settings is admin-only again — `store-view-filter`'s personal display filter moved out of Settings into a per-tab "Source" button, and the now-empty Settings nav item was removed for non-admins (see [`2026-08-16-store-track-source-filter-design.md`](2026-08-16-store-track-source-filter-design.md)). `showAdminNav = isRealAdmin && !viewAsUser` (`frontend/src/App.tsx`) once again gates both the Settings and Logs nav buttons, so this spec's original description of the toggle hiding both is accurate again.
 
+**Amendment (2026-08-25, branch `claude/admin-queue-visualization-xoasb7`):** the previous
+amendment's "both the Settings and Logs nav buttons" is no longer an exhaustive
+list. `showAdminNav` now also gates a **Queue** nav button and the
+admin-only `QueueView` behind it. The mechanism is unchanged — this is one more
+item on the same flag, not a new gate — so read that sentence as naming the
+admin-only nav items that existed when it was written rather than as a complete
+list. See
+[`../../specifications/shaping/2026-08-25-admin-queue-tab-design.md`](../../specifications/shaping/2026-08-25-admin-queue-tab-design.md).
+
 ## Overview
 
 An admin has no way to see the app as a regular user does short of logging in

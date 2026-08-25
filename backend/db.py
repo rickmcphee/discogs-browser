@@ -348,6 +348,30 @@ CREATE INDEX IF NOT EXISTS crawl_queue_claimable_idx
 -- distinguishes "not attempted" from "attempted, found nothing".
 ALTER TABLE crawl_queue ADD COLUMN IF NOT EXISTS pending_crawler_ids INTEGER[];
 
+-- When a pass finished a row, as distinct from when a pass claimed it.
+-- claimed_at cannot stand in for it: a row fans out to one sequential search
+-- per eligible crawler, so a row claimed well outside a reporting window can
+-- still complete inside it. Measuring the drain rate off claimed_at therefore
+-- reads zero -- and every ETA null -- while rows are actively completing.
+ALTER TABLE crawl_queue ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP;
+
+-- The drain-rate query asks for 'done' rows completed inside a short window,
+-- on a timer, against a table holding a row for every target this app has ever
+-- queued. Without this the poll scans the whole catalog's worth of history to
+-- find a few minutes of it. Partial, so it indexes only the 'done' population
+-- and stays out of the way of the pending path's own index.
+CREATE INDEX IF NOT EXISTS crawl_queue_completed_idx
+    ON crawl_queue (completed_at) WHERE status = 'done';
+
+-- The other half of the same problem. queue_summary's totals aggregate reads
+-- every row that is not 'done', and crawl_queue_claimable_idx cannot serve it
+-- (partial on 'pending', so it sees neither in_progress rows nor the deferred
+-- ones). Without this the poll seq-scans the whole table to find what is
+-- usually a handful of live rows. Partial on the complement of 'done', so it
+-- stays proportional to work in flight rather than to the catalog.
+CREATE INDEX IF NOT EXISTS crawl_queue_active_idx
+    ON crawl_queue (status) WHERE status <> 'done';
+
 -- available_at is a not-before marker, set when a pass defers a crawler whose
 -- site is in circuit-breaker cooldown. Without it the row would be re-claimed
 -- on the very next batch and re-deferred in a hot loop.
@@ -406,6 +430,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS crawl_queue_item_key_idx ON crawl_queue (item_
 ALTER TABLE listings ALTER COLUMN release_id DROP NOT NULL;
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS item_key TEXT REFERENCES stock_item_identities(item_key);
 CREATE UNIQUE INDEX IF NOT EXISTS listings_item_key_crawler_idx ON listings (item_key, crawler_id);
+
+-- Serves queue_summary's per-crawler activity lookups, which run on a timer:
+-- for each enabled crawler, a count over a recent window (a range scan of just
+-- that slice) and an ORDER BY last_checked DESC LIMIT 1 probe for recency (one
+-- backward entry read). Both are correlated subqueries driven from crawlers,
+-- specifically so neither has to visit listings outside the window.
+CREATE INDEX IF NOT EXISTS listings_crawler_last_checked_idx ON listings (crawler_id, last_checked);
 
 -- stock_items.item_key is not unique (the same artist/title/url can be seen
 -- by several crawlers) so this is a plain index, not a unique one. Needed by
@@ -1278,7 +1309,7 @@ def backfill_crawl_queue_for_crawler(conn, crawler_id: int) -> int:
         UPDATE crawl_queue SET
             status = 'pending', requested_at = CURRENT_TIMESTAMP,
             available_at = CURRENT_TIMESTAMP, claimed_by = NULL, claimed_at = NULL,
-            pending_crawler_ids = ARRAY[%(crawler_id)s]
+            completed_at = NULL, pending_crawler_ids = ARRAY[%(crawler_id)s]
         WHERE id IN (
             SELECT id FROM crawl_queue
             WHERE status = 'done'
@@ -1374,7 +1405,7 @@ def enqueue_crawl_queue(conn, discogs_id: str):
         ON CONFLICT (discogs_id) DO UPDATE SET
             status = 'pending', requested_at = CURRENT_TIMESTAMP,
             available_at = CURRENT_TIMESTAMP, claimed_by = NULL, claimed_at = NULL,
-            pending_crawler_ids = NULL
+            completed_at = NULL, pending_crawler_ids = NULL
         WHERE crawl_queue.status = 'done'
         """,
         {"discogs_id": discogs_id},
@@ -1392,7 +1423,7 @@ def enqueue_crawl_queue_for_stock_item(conn, item_key: str):
         ON CONFLICT (item_key) DO UPDATE SET
             status = 'pending', requested_at = CURRENT_TIMESTAMP,
             available_at = CURRENT_TIMESTAMP, claimed_by = NULL, claimed_at = NULL,
-            pending_crawler_ids = NULL
+            completed_at = NULL, pending_crawler_ids = NULL
         WHERE crawl_queue.status = 'done'
         """,
         {"item_key": item_key},
@@ -1451,7 +1482,10 @@ def claim_crawl_queue_batch(conn, worker_id: str, limit: int) -> list[dict]:
 
 
 def mark_crawl_queue_done(conn, queue_id: int):
-    conn.execute("UPDATE crawl_queue SET status = 'done' WHERE id = %s", [queue_id])
+    conn.execute(
+        "UPDATE crawl_queue SET status = 'done', completed_at = CURRENT_TIMESTAMP WHERE id = %s",
+        [queue_id],
+    )
 
 
 # The inverse of mark_crawl_queue_done: hands a claimed row back as pending
@@ -1545,6 +1579,372 @@ def count_pending_crawl_queue_for_user(conn, user_id: int) -> int:
         """,
         {"user_id": user_id},
     ).fetchone()["count"]
+
+
+# --- Admin Queue tab -------------------------------------------------------
+#
+# Read-only reporting over the shared crawl queue. Two units, deliberately kept
+# apart everywhere below: a *row* is one target (discogs_id xor item_key) and is
+# what the queue's length and its ETA are denominated in; a *work unit* is one
+# (row, crawler) pair -- one search a worker will perform -- and is what every
+# per-crawler number counts. Units sum to far more than rows, because almost
+# every enabled crawler is eligible for almost every row.
+
+QUEUE_ACTIVITY_WINDOW_SECONDS = 3600
+
+# A claim is evidence of a strand only once it has outlasted what the row could
+# legitimately take. A claimed row runs one sequential search per eligible
+# crawler, each preceded by a wait of 50-100% of crawl_delay_seconds and capped
+# by a page-load timeout, so its honest upper bound scales with both the pacing
+# setting and how many crawlers are enabled. A fixed half hour contradicted the
+# rest of this module -- the same fan-out that makes claimed_at useless as a
+# completion proxy also means healthy rows routinely stay claimed well past it,
+# and they would have lit the Stranded tile, which is coloured critical. The
+# floor keeps a tiny or unconfigured deployment from reporting strands within
+# seconds; the slack is deliberately generous, because a tile that cries wolf is
+# worth less than one that notices late.
+QUEUE_STRANDED_FLOOR_SECONDS = 1800
+QUEUE_STRANDED_SLACK = 4
+
+
+def _queue_stranded_after_seconds(conn, crawl_delay_seconds: float) -> float:
+    enabled = conn.execute(
+        "SELECT COUNT(*) FROM crawlers WHERE enabled AND crawler_type = 'release'"
+    ).fetchone()["count"]
+    return max(QUEUE_STRANDED_FLOOR_SECONDS, enabled * crawl_delay_seconds * QUEUE_STRANDED_SLACK)
+
+
+def _queue_eligible_crawler_exists(alias: str) -> str:
+    """SQL fragment: does any enabled crawler currently resolve for this queue
+    row? Mirrors get_eligible_crawlers' WHERE clause exactly. If the two ever
+    disagree, the Queue tab reports work no worker will do (or hides work one
+    will), so this is written against that function and not re-derived.
+
+    alias is always a literal chosen at the call site -- a table alias, never
+    request-derived -- the same contract _enabled_stock_source_exists carries."""
+    return f"""
+        EXISTS (
+            SELECT 1 FROM crawlers c
+            WHERE c.enabled AND c.crawler_type = 'release'
+              AND ({alias}.discogs_id IS NOT NULL OR NOT c.requires_discogs_release)
+              AND ({alias}.pending_crawler_ids IS NULL OR c.id = ANY({alias}.pending_crawler_ids))
+        )
+    """
+
+
+# Rows a worker could claim right now, in the same terms claim_crawl_queue_batch
+# uses: 'pending', past its available_at, and -- for a stock row -- still listed
+# by some enabled store. "Actionable" is the extra condition
+# count_pending_crawl_queue_for_user already applies: a row whose narrowed
+# pending_crawler_ids are all disabled is still 'pending' in the table but
+# nothing will ever run for it, and _drain_one_batch marks it done on sight.
+def _queue_row_state_sql() -> str:
+    return f"""
+        SELECT cq.status,
+               cq.discogs_id IS NOT NULL AS is_release,
+               cq.claimed_at,
+               cq.available_at > CURRENT_TIMESTAMP AS held,
+               (cq.item_key IS NULL OR {_enabled_stock_source_exists("cq.item_key")}) AS live,
+               {_queue_eligible_crawler_exists("cq")} AS actionable
+        FROM crawl_queue cq
+        WHERE cq.status <> 'done'
+    """
+
+
+def _queue_totals(conn, stranded_after_seconds: float) -> dict:
+    row = conn.execute(
+        f"""
+        WITH q AS ({_queue_row_state_sql()})
+        SELECT
+            COUNT(*) FILTER (WHERE status = 'pending' AND live AND actionable AND NOT held) AS claimable_rows,
+            COUNT(*) FILTER (WHERE status = 'pending' AND live AND actionable AND NOT held AND is_release) AS claimable_release_rows,
+            COUNT(*) FILTER (WHERE status = 'pending' AND live AND actionable AND NOT held AND NOT is_release) AS claimable_stock_rows,
+            COUNT(*) FILTER (WHERE status = 'pending' AND live AND actionable AND held) AS held_rows,
+            COUNT(*) FILTER (WHERE status = 'pending' AND NOT (live AND actionable)) AS unactionable_rows,
+            COUNT(*) FILTER (WHERE status = 'in_progress') AS in_progress_rows,
+            COUNT(*) FILTER (WHERE status = 'in_progress'
+                             AND claimed_at < CURRENT_TIMESTAMP - %(stranded)s * INTERVAL '1 second') AS stranded_rows
+        FROM q
+        """,
+        {"stranded": stranded_after_seconds},
+    ).fetchone()
+    return dict(row)
+
+
+# Off completed_at, the moment the row finished -- not claimed_at, the moment
+# its pass began. The two are far apart by design: a row fans out to one
+# sequential search per eligible crawler, paced by crawl_delay_seconds, so a
+# row claimed well outside this window routinely completes inside it. Counting
+# claims instead would report a zero drain rate, and a null ETA, precisely
+# while long-running rows were finishing.
+def _queue_drain_rate(conn) -> tuple:
+    done = conn.execute(
+        """
+        SELECT COUNT(*) FROM crawl_queue
+        WHERE status = 'done' AND completed_at >= CURRENT_TIMESTAMP - %(window)s * INTERVAL '1 second'
+        """,
+        {"window": QUEUE_ACTIVITY_WINDOW_SECONDS},
+    ).fetchone()["count"]
+    return done / QUEUE_ACTIVITY_WINDOW_SECONDS, done
+
+
+_QUEUE_FANOUT_COLUMNS = """
+    COUNT(*) AS units,
+    MAX(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - cq.requested_at))) AS oldest_seconds,
+    COUNT(*) FILTER (WHERE cq.requested_at > CURRENT_TIMESTAMP - INTERVAL '1 hour') AS under_1h,
+    COUNT(*) FILTER (WHERE cq.requested_at <= CURRENT_TIMESTAMP - INTERVAL '1 hour'
+                       AND cq.requested_at > CURRENT_TIMESTAMP - INTERVAL '24 hours') AS under_24h,
+    COUNT(*) FILTER (WHERE cq.requested_at <= CURRENT_TIMESTAMP - INTERVAL '24 hours') AS over_24h
+"""
+
+
+# The fan-out, without ever materializing pending-rows x crawlers. A stock sync
+# enqueues rows in numbers that make that cross product large enough to compete
+# with the worker pool on every poll of a tab that polls on a timer.
+#
+# It isn't needed: pending_crawler_ids IS NULL is the common case, and every
+# such row resolves to the *same* crawler set for a given target kind. So the
+# broad population collapses to a handful of grouped rows whatever the queue's
+# size, and only the narrowed minority is grouped per crawler. The cost of that
+# split is that only statistics which *compose* across the two halves can be
+# reported per crawler -- MIN and bucket counts do, a median does not, which is
+# why oldest-plus-buckets is what the tab shows.
+def _queue_fanout(conn) -> tuple:
+    gate = _enabled_stock_source_exists("cq.item_key")
+    broad = conn.execute(
+        f"""
+        SELECT cq.discogs_id IS NOT NULL AS is_release,
+               cq.available_at > CURRENT_TIMESTAMP AS held,
+               {_QUEUE_FANOUT_COLUMNS}
+        FROM crawl_queue cq
+        WHERE cq.status = 'pending' AND cq.pending_crawler_ids IS NULL
+          AND (cq.item_key IS NULL OR {gate})
+        GROUP BY 1, 2
+        """
+    ).fetchall()
+    narrowed = conn.execute(
+        f"""
+        SELECT u.cid AS crawler_id,
+               cq.discogs_id IS NOT NULL AS is_release,
+               cq.available_at > CURRENT_TIMESTAMP AS held,
+               {_QUEUE_FANOUT_COLUMNS}
+        FROM crawl_queue cq
+        CROSS JOIN LATERAL unnest(cq.pending_crawler_ids) AS u(cid)
+        WHERE cq.status = 'pending' AND cq.pending_crawler_ids IS NOT NULL
+          AND (cq.item_key IS NULL OR {gate})
+        GROUP BY 1, 2, 3
+        """
+    ).fetchall()
+    return broad, narrowed
+
+
+# Distinct listing rows whose last_checked moved -- not searches performed, and
+# not "results", since the difference runs in both directions. A release crawl
+# that finds nothing still counts: _drain_one_batch calls clear_listing_price,
+# which bumps last_checked on the existing row. What touches nothing is a
+# first-ever release miss (no row yet for that UPDATE to match, and the "no
+# listings pre-population" invariant means none is created) and any stock-item
+# miss (the clear path is guarded on is_release). Repeat passes over one
+# (target, crawler) inside the window collapse to a single row, because
+# upsert_listing updates in place. The caller names it accordingly.
+#
+# Driven from crawlers rather than grouping over listings, so neither half
+# revisits rows outside the window. A bare GROUP BY over listings has no WHERE
+# to restrict it -- the all-time MAX forces every row of the table (or of the
+# index) to be visited on every poll, and this runs on a 10-second timer. Both
+# correlated subqueries ride listings_crawler_last_checked_idx instead: the
+# count as a range scan of just the recent slice, the recency as a single
+# backward probe of one index entry.
+def _queue_crawler_activity(conn) -> dict:
+    rows = conn.execute(
+        """
+        SELECT c.id AS crawler_id,
+               (SELECT COUNT(*) FROM listings l
+                WHERE l.crawler_id = c.id
+                  AND l.last_checked >= CURRENT_TIMESTAMP - %(window)s * INTERVAL '1 second') AS results,
+               (SELECT EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - l.last_checked)) FROM listings l
+                WHERE l.crawler_id = c.id AND l.last_checked IS NOT NULL
+                ORDER BY l.last_checked DESC LIMIT 1) AS last_seconds_ago
+        FROM crawlers c
+        WHERE c.enabled AND c.crawler_type = 'release'
+        """,
+        {"window": QUEUE_ACTIVITY_WINDOW_SECONDS},
+    ).fetchall()
+    return {r["crawler_id"]: r for r in rows}
+
+
+# Composition and age cover a crawler's whole pending backlog, claimable and
+# held alike; only claimable_units/held_units split it. Counting held work out
+# of them would empty the composition panel for exactly the crawler an admin
+# reached by asking what is held -- a fully held crawler would report a real
+# held backlog beside "0 release, 0 stock item" and no oldest wait. The ETA
+# does need the claimable stock figure specifically, so that is tracked
+# separately rather than by narrowing what stock_units means.
+def _queue_accumulate(bucket: dict, agg, is_release: bool, held: bool):
+    if held:
+        bucket["held_units"] += agg["units"]
+    else:
+        bucket["claimable_units"] += agg["units"]
+        if not is_release:
+            bucket["_claimable_stock_units"] += agg["units"]
+    bucket["release_units" if is_release else "stock_units"] += agg["units"]
+    bucket["age_buckets"]["under_1h"] += agg["under_1h"]
+    bucket["age_buckets"]["under_24h"] += agg["under_24h"]
+    bucket["age_buckets"]["over_24h"] += agg["over_24h"]
+    # Max of the ages, not min of the timestamps: an age composes across the
+    # broad/narrowed split the same way, and stays in one type either side of
+    # the timestamp/timestamptz line CURRENT_TIMESTAMP sits on.
+    oldest = agg["oldest_seconds"]
+    if oldest is not None and (bucket["_oldest"] is None or oldest > bucket["_oldest"]):
+        bucket["_oldest"] = float(oldest)
+
+
+def queue_summary(conn, crawl_delay_seconds: float = 30.0) -> dict:
+    stranded_after = _queue_stranded_after_seconds(conn, crawl_delay_seconds)
+    totals = _queue_totals(conn, stranded_after)
+    drain_per_second, rows_done = _queue_drain_rate(conn)
+    broad, narrowed = _queue_fanout(conn)
+    activity = _queue_crawler_activity(conn)
+    in_progress_units = _queue_in_progress_units(conn)
+    crawlers = conn.execute(
+        """
+        SELECT id, site_name, requires_discogs_release FROM crawlers
+        WHERE enabled AND crawler_type = 'release' ORDER BY site_name
+        """
+    ).fetchall()
+
+    out = []
+    for crawler in crawlers:
+        bucket = {
+            "crawler_id": crawler["id"],
+            "site_name": crawler["site_name"],
+            "requires_discogs_release": crawler["requires_discogs_release"],
+            "claimable_units": 0, "held_units": 0, "release_units": 0, "stock_units": 0,
+            "in_progress_units": in_progress_units.get(crawler["id"], 0),
+            "age_buckets": {"under_1h": 0, "under_24h": 0, "over_24h": 0},
+            "_oldest": None, "_claimable_stock_units": 0,
+        }
+        for agg in broad:
+            if not agg["is_release"] and crawler["requires_discogs_release"]:
+                continue
+            _queue_accumulate(bucket, agg, agg["is_release"], agg["held"])
+        for agg in narrowed:
+            if agg["crawler_id"] != crawler["id"]:
+                continue
+            if not agg["is_release"] and crawler["requires_discogs_release"]:
+                continue
+            _queue_accumulate(bucket, agg, agg["is_release"], agg["held"])
+
+        bucket["oldest_wait_seconds"] = bucket.pop("_oldest")
+        claimable_stock = bucket.pop("_claimable_stock_units")
+        seen = activity.get(crawler["id"]) or {}
+        bucket["results_last_hour"] = seen.get("results") or 0
+        last_seen = seen.get("last_seconds_ago")
+        bucket["last_result_seconds_ago"] = float(last_seen) if last_seen is not None else None
+        bucket["eta_seconds"] = _queue_crawler_eta(bucket, claimable_stock, totals, drain_per_second)
+        out.append(bucket)
+
+    totals["rows_done_last_hour"] = rows_done
+    totals["eta_seconds"] = (
+        totals["claimable_rows"] / drain_per_second if drain_per_second else None
+    )
+    totals["claimable_units"] = sum(c["claimable_units"] for c in out)
+    totals["held_units"] = sum(c["held_units"] for c in out)
+    totals["in_progress_units"] = sum(c["in_progress_units"] for c in out)
+    return {
+        "totals": totals,
+        "crawlers": out,
+        "stranded_after_seconds": stranded_after,
+        "activity_window_seconds": QUEUE_ACTIVITY_WINDOW_SECONDS,
+    }
+
+
+# Units in the rows a worker currently holds -- NOT units still to run. A
+# claimed row's unit list is built once by _drain_one_batch and worked through
+# in memory; nothing narrows pending_crawler_ids as individual units finish (only
+# a deferral rewrites it). So a unit already crawled earlier in the row keeps
+# counting until that row resolves, and enabling or disabling a crawler mid-row
+# moves this number even though the worker's own list is fixed. Narrowing the
+# row per completed unit would put a write on the crawl hot path to sharpen a
+# reporting figure, which is the wrong trade; the tab names the segment for what
+# this actually measures instead.
+#
+# In-progress rows are normally few -- a live claim is bounded by workers x
+# batch size -- so their fan-out is small enough to resolve the honest way: the
+# join the pending population deliberately avoids, which also breaks down per
+# crawler while it is there.
+#
+# That bound is not absolute, and this feature is what demonstrates it: a row
+# stranded by a crashed worker is never reclaimed (see claim_crawl_queue_batch),
+# so repeated crashes accumulate 'in_progress' rows and this join grows with
+# them. Left as a join anyway, deliberately. Reaching the scale where that
+# matters means thousands of strands, which is a deployment in serious trouble
+# and exactly what the Stranded tile exists to shout about -- optimizing this
+# query for that state would be optimizing for the case an operator is meant to
+# fix, at the cost of the decomposition being harder to follow in the normal one.
+def _queue_in_progress_units(conn) -> dict:
+    rows = conn.execute(
+        """
+        SELECT c.id AS crawler_id, COUNT(*) AS units
+        FROM crawl_queue cq
+        JOIN crawlers c ON c.enabled AND c.crawler_type = 'release'
+          AND (cq.discogs_id IS NOT NULL OR NOT c.requires_discogs_release)
+          AND (cq.pending_crawler_ids IS NULL OR c.id = ANY(cq.pending_crawler_ids))
+        WHERE cq.status = 'in_progress'
+        GROUP BY c.id
+        """
+    ).fetchall()
+    return {r["crawler_id"]: r["units"] for r in rows}
+
+
+# An estimate, and labelled as one. It leans on the one thing the claim order
+# guarantees: every claimable release row sorts ahead of every claimable stock
+# row. So a crawler that takes no stock work waits only on the release rows,
+# and anything else waits on the whole claimable queue. Narrowing is ignored,
+# which can only make a crawler's true position earlier than reported.
+def _queue_crawler_eta(bucket: dict, claimable_stock_units: int, totals: dict, drain_per_second: float):
+    if not drain_per_second or not bucket["claimable_units"]:
+        return None
+    if claimable_stock_units == 0 and totals["claimable_stock_rows"] > 0:
+        position = totals["claimable_release_rows"]
+    else:
+        position = totals["claimable_rows"]
+    return position / drain_per_second
+
+
+# The next targets this crawler is a candidate for, in claim_crawl_queue_batch's
+# own sort order and behind its own gates. Candidates, not a schedule: a row
+# past its available_at can still be deferred at dispatch, because
+# _drain_one_batch consults the process-local circuit-breaker cooldown that this
+# tab deliberately does not expose, and only then moves available_at forward.
+# Everything this query can see says the row is claimable; whether the crawler
+# actually runs is decided by state living in a worker process.
+def queue_next_for_crawler(conn, crawler_id: int, limit: int) -> list:
+    gate = _enabled_stock_source_exists("cq.item_key")
+    return conn.execute(
+        f"""
+        SELECT COALESCE(cat.artist, sii.artist) AS artist,
+               COALESCE(cat.title, sii.title) AS title,
+               CASE WHEN cq.discogs_id IS NOT NULL THEN 'release' ELSE 'stock' END AS kind,
+               EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - cq.requested_at)) AS waiting_seconds,
+               cq.pending_crawler_ids IS NOT NULL AS narrowed
+        FROM crawl_queue cq
+        LEFT JOIN catalog cat ON cat.discogs_id = cq.discogs_id
+        LEFT JOIN stock_item_identities sii ON sii.item_key = cq.item_key
+        WHERE cq.status = 'pending'
+          AND cq.available_at <= CURRENT_TIMESTAMP
+          AND (cq.item_key IS NULL OR {gate})
+          AND (cq.pending_crawler_ids IS NULL OR %(crawler_id)s = ANY(cq.pending_crawler_ids))
+          AND EXISTS (
+              SELECT 1 FROM crawlers c
+              WHERE c.id = %(crawler_id)s AND c.enabled AND c.crawler_type = 'release'
+                AND (cq.discogs_id IS NOT NULL OR NOT c.requires_discogs_release)
+          )
+        ORDER BY (cq.item_key IS NOT NULL), cq.requested_at, cq.id
+        LIMIT %(limit)s
+        """,
+        {"crawler_id": crawler_id, "limit": limit},
+    ).fetchall()
 
 
 def compute_item_key(artist: str, title: str, url: str) -> str:
