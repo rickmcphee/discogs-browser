@@ -1,21 +1,26 @@
 name: Sync integration with main
 
-# Keeps `integration` holding the same files as `main`, and catches up the PRs
-# that go stale each time `integration` moves. Both halves exist because of one
-# fact about this repo's rulesets:
+# Two jobs, for two different failures. Keeping them apart matters, because
+# they have different causes and only one of them is about drift.
 #
-#   integration-branch-protection sets strict_required_status_checks_policy,
-#   i.e. "require branches to be up to date before merging". Every open PR
-#   based on `integration` therefore turns un-mergeable ("behind") the moment
-#   anything lands on `integration`, and stays that way until its own head
-#   catches up.
+#   `refresh` -- integration-branch-protection sets
+#   strict_required_status_checks_policy, which compares a PR's head with *its
+#   own base*. So every open PR based on `integration` turns un-mergeable
+#   ("behind") the moment anything at all lands on `integration` -- a Dependabot
+#   bump merging, or the sync job below -- and stays that way until something
+#   moves its head forward. Nothing used to. Note this has nothing to do with
+#   `main`: `main` is not an input to that comparison, and `integration`
+#   trailing `main` does not by itself make a single PR "behind".
 #
-# Nothing used to do either job. integration-promote.yml squash-merges
-# `integration` into `main`, which moves `main` and never moves `integration`,
-# so `integration` drifted further behind every week while Dependabot PRs piled
-# up unmergeable against it -- six of them at once, some for a fortnight, and
-# the bumps that did land were vetted against a base weeks stale and then
-# promoted into a `main` they had never been tested against.
+#   `sync` -- integration-promote.yml squash-merges `integration` into `main`,
+#   which advances `main` and leaves `integration` exactly where it stood. With
+#   nothing carrying `main` back, Dependabot bumps are vetted against an
+#   ever-staler base and then promoted into a `main` they were never tested
+#   against.
+#
+# Both bit at once on 2026-08-25: six Dependabot PRs sat unmergeable, the oldest
+# for a fortnight, against an `integration` that had by then fallen 64 commits
+# behind `main`. Fixing either alone would have left the other.
 #
 # Note both jobs go through a PR rather than pushing to `integration` directly:
 # that ruleset requires a pull request, allows only squash merges, and lists no
