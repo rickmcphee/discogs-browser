@@ -219,7 +219,10 @@ and they would have lit a tile coloured *critical*. The threshold is
 in the response so the UI can label the tile with the figure actually used. The
 slack is generous on purpose: a tile that cries wolf is worth less than one that
 notices late. `crawl_delay_seconds` is read by the router through the admin
-pool, since `app_user` has no grant on `app_config`.
+pool, since `app_user` has no grant on `app_config` — and *before* the app
+connection is borrowed, so that read is never waiting on one pool while holding
+a connection from another, outside the statement cap that bounds everything
+inside the transaction.
 
 **`in_progress_units` counts units in claimed rows, not units remaining.** A
 claimed row's unit list is built once by `_drain_one_batch` and worked through in
@@ -366,7 +369,12 @@ endpoint over.
   validated as an ordinal ramp against the app's `#030712` surface. The centre
   reads the row count, labelled as rows, so the two units cannot be confused.
 - A sorted horizontal bar list, one row per enabled release crawler: name, bar,
-  count, and a held badge. With a ring segment selected, the bar, the number and
+  count, and a held badge. The detail selection is derived from *this* list
+  rather than from the full crawler set, so a crawler a filter hides leaves the
+  panels and stops being polled — otherwise the list could say nothing matched
+  while the panels below still rendered that crawler and re-fetched it every
+  tick. Hiding is a view change, not a destruction of the selection: clearing
+  the filter brings it back. With a ring segment selected, the bar, the number and
   the ordering all describe *that* state; otherwise they describe claimable work
   with held alongside. Filtering by a state and then rendering a matching
   crawler as a bare "0" — which sizing everything on claimable units alone did
