@@ -210,6 +210,12 @@ and contiguous per row, and resolving at batch end meant a `CancelledError` esca
 `in_progress`. With no reclaim path and `enqueue_crawl_queue`'s revival gated on `status = 'done'`,
 such a row is unclaimable and unrevivable forever — its target never priced again.
 
+*Amended 2026-08-25: `db.reclaim_stranded_crawl_queue_rows` now ages such a row back to `pending`,
+so "forever" is now "until the stranded threshold elapses". Per-row resolution is still the fix —
+the reclaim is a crash backstop measured in tens of minutes, not a substitute for resolving a row
+when its last unit finishes. See
+[`2026-08-25-stranded-crawl-queue-row-reclaim-design.md`](2026-08-25-stranded-crawl-queue-row-reclaim-design.md).*
+
 The resolution itself:
 
 - Any deferred crawlers → `status = 'pending'`, `claimed_by = NULL`, `claimed_at = NULL`,
@@ -384,7 +390,10 @@ tests, the per-row commit isolation test, `_sync_stock`'s 429 abort and streak t
   change is reverted.
 - **Longer claim residency.** A row is `in_progress` for `N × pace` rather than one request,
   widening the existing hung-worker stranding window. Mitigated by `batch_size = 2`, not
-  eliminated — the reclaim gap remains a known, accepted gap.
+  eliminated — the reclaim gap remains a known, accepted gap. *(Amended 2026-08-25: closed —
+  `db.reclaim_stranded_crawl_queue_rows`. The longer residency this change introduced is also why
+  the reclaim threshold is derived from the enabled-crawler count and the pacing setting rather
+  than fixed.)*
 - **Repeated toggling re-enqueues not-found targets**, as described under Backfill on enable.
 - **A crawler enabled mid-pass misses the targets already in flight.** Both backfill statements
   filter on `status` — `done` for the revive, `pending` for the widen — so neither touches a row a
@@ -415,5 +424,7 @@ tests, the per-row commit isolation test, `_sync_stock`'s 429 abort and streak t
   (`requested_at = now() + row_index × spacing`) so a later, smaller sync interleaves near the
   front. That preserves the claim index, the tier ordering, and FIFO reasoning, and needs no owner
   column. It touches producers and queue ordering rather than dispatch, so it is shaped separately.
-- A reclaim/timeout path for rows stranded `in_progress` by a hung worker.
+- A reclaim/timeout path for rows stranded `in_progress` by a hung worker. *(Shipped separately,
+  2026-08-25 — see
+  [`2026-08-25-stranded-crawl-queue-row-reclaim-design.md`](2026-08-25-stranded-crawl-queue-row-reclaim-design.md).)*
 - Freshness-driven re-enqueue based on `listings.last_checked`.
