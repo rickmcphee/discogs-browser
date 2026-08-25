@@ -65,6 +65,7 @@ export interface CrawlEvent {
   status?: 'found' | 'not_found' | 'error' | 'complete' | 'started' | 'stopped' | 'ping'
     | 'sync_started' | 'sync_page_fetched' | 'sync_progress' | 'sync_complete' | 'sync_error'
     | 'stock_sync_started' | 'stock_sync_source_started' | 'stock_sync_page_fetched'
+    | 'stock_sync_detail_progress'
     | 'stock_sync_progress' | 'stock_sync_complete' | 'stock_sync_error' | 'stock_sync_aborted'
     | 'stock_judgment_started' | 'stock_judgment_progress' | 'stock_judgment_complete' | 'stock_judgment_error'
     | 'plex_match_started' | 'plex_match_progress' | 'plex_match_complete' | 'plex_match_error'
@@ -87,6 +88,8 @@ export interface CrawlEvent {
   source?: string
   sources?: string[]
   judged?: number
+  done?: number
+  label?: string
   matched?: number
   crawler_id?: number | null
 }

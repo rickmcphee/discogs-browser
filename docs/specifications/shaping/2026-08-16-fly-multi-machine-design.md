@@ -352,7 +352,7 @@ Follows this codebase's existing advisory-lock convention (`db.py`'s
 `pg_advisory_xact_lock(2026080901)`, guarding the `discogs_price` column
 migration against two Machines booting concurrently) — same numbering
 scheme, a fixed bigint key rather than a name. If the lock is already held
-(another Machine's sync is running), `start_stock_sync()` returns `False`
+(another Machine's sync is running), `start_stock_sync()` rejects the request
 without starting a task, exactly like today's in-process guard. The
 dedicated connection is closed when `_sync_stock()` finishes (in a `finally`
 block), which releases the session-scoped lock automatically — no explicit
@@ -369,6 +369,17 @@ and the `pg_try_advisory_lock` query are both blocking calls; `start_stock_sync(
 runs them via `run_in_threadpool`, matching the `_sync_collection_blocking`
 pattern already used elsewhere in `crawl_manager.py`, rather than calling them
 inline on the event loop as this section originally described.
+
+**Amendment (2026-08-25):** the rejection described above -- whose wording
+this same change updated, since it no longer returns a bool at all -- is now
+literally `{"started": False, "on_another_instance": True, "running": True,
+...}`. The distinction this records is exactly the cross-Machine one: on this
+rejection the process has no `_stock_task`, so a local state read denies a
+sync is running at all, and the caller needs to be told that a sync *is*
+running and simply isn't ours. The holder's source and elapsed time stay
+null -- they live in that Machine's memory, and surfacing them would need
+shared lock-holder metadata in Postgres. See
+[`2026-08-25-catalog-crawl-progress-visibility-design.md`](2026-08-25-catalog-crawl-progress-visibility-design.md).
 
 **Amendment (2026-08-17, GitHub Copilot PR review):** `config.APP_DATABASE_URL`
 is derived from `DATABASE_URL`, and this deployment's `DATABASE_URL` is Neon's

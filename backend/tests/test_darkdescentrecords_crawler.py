@@ -233,6 +233,131 @@ async def test_crawl_catalog_raises_on_http_error(monkeypatch, tmp_config_dir):
         [item async for item in Crawler().crawl_catalog()]
 
 
+def test_needs_detail_fetch_matches_the_products_items_actually_fetches():
+    """crawl_catalog counts these before a page's loop while _items branches on
+    the same predicate, so the progress total cannot drift from what the loop
+    fetches."""
+    assert Crawler._needs_detail_fetch(_VARIABLE_PRODUCT) is True
+    assert Crawler._needs_detail_fetch(_SIMPLE_PRODUCT) is False
+    assert Crawler._needs_detail_fetch({**_VARIABLE_PRODUCT, "is_in_stock": False}) is False
+    assert Crawler._needs_detail_fetch({**_VARIABLE_PRODUCT, "is_purchasable": False}) is False
+    assert Crawler._needs_detail_fetch({**_VARIABLE_PRODUCT, "name": "No Separator LP"}) is False
+
+
+@respx.mock
+async def test_crawl_catalog_reports_progress_through_a_pages_variable_product_fetches(
+    monkeypatch, tmp_config_dir
+):
+    """report_page() fires only once the whole page is done, which at the
+    default crawl_delay_seconds is many paced detail fetches later -- silence
+    long enough to read as a hang."""
+    import crawl_progress
+
+    save_config({"crawl_delay_seconds": 0})
+    variable_b = {**_VARIABLE_PRODUCT,
+                  "name": "Other &#8211; Second LP",
+                  "permalink": "https://www.darkdescentrecords.com/shop/product/second-lp/"}
+    respx.get(_PRODUCTS_URL, params={"category": "vinyl-lp", "per_page": "100", "page": "1"}).mock(
+        return_value=httpx.Response(200, json=[_VARIABLE_PRODUCT, _SIMPLE_PRODUCT, variable_b]))
+    respx.get(_VARIABLE_PRODUCT["permalink"]).mock(
+        return_value=httpx.Response(200, text=_variation_page_html()))
+    respx.get(variable_b["permalink"]).mock(
+        return_value=httpx.Response(200, text=_variation_page_html()))
+
+    reported = []
+
+    async def reporter(done, total, label):
+        reported.append((done, total, label))
+
+    token = crawl_progress.set_detail_reporter(reporter)
+    try:
+        [item async for item in Crawler().crawl_catalog()]
+    finally:
+        crawl_progress.reset_detail_reporter(token)
+
+    # The simple product costs no request, so it neither advances the counter
+    # nor counts toward the total: progress advances once per paced fetch, and
+    # the asserted sequence is N+1 long because of the leading 0/N that lands
+    # before the first fetch.
+    assert reported == [
+        (0, 2, "listing page 1"),
+        (1, 2, "listing page 1"),
+        (2, 2, "listing page 1"),
+    ]
+
+
+@respx.mock
+async def test_crawl_catalog_reports_nothing_for_a_page_of_only_simple_products(
+    monkeypatch, tmp_config_dir
+):
+    """A page with no detail fetches has no wait to announce, so "0/0" would
+    describe one that isn't coming."""
+    import crawl_progress
+
+    save_config({"crawl_delay_seconds": 0})
+    respx.get(_PRODUCTS_URL, params={"category": "vinyl-lp", "per_page": "100", "page": "1"}).mock(
+        return_value=httpx.Response(200, json=[_SIMPLE_PRODUCT]))
+
+    reported = []
+
+    async def reporter(done, total, label):
+        reported.append((done, total, label))
+
+    token = crawl_progress.set_detail_reporter(reporter)
+    try:
+        items = [item async for item in Crawler().crawl_catalog()]
+    finally:
+        crawl_progress.reset_detail_reporter(token)
+
+    assert len(items) == 1
+    assert reported == []
+
+
+@respx.mock
+async def test_crawl_catalog_labels_progress_with_the_listing_page_it_is_on(
+    monkeypatch, tmp_config_dir
+):
+    import crawl_progress
+
+    save_config({"crawl_delay_seconds": 0})
+    full_page = [{**_SIMPLE_PRODUCT, "permalink": f"https://www.darkdescentrecords.com/shop/product/p{i}/"}
+                 for i in range(100)]
+    respx.get(_PRODUCTS_URL, params={"category": "vinyl-lp", "per_page": "100", "page": "1"}).mock(
+        return_value=httpx.Response(200, json=full_page))
+    respx.get(_PRODUCTS_URL, params={"category": "vinyl-lp", "per_page": "100", "page": "2"}).mock(
+        return_value=httpx.Response(200, json=[_VARIABLE_PRODUCT]))
+    respx.get(_VARIABLE_PRODUCT["permalink"]).mock(
+        return_value=httpx.Response(200, text=_variation_page_html()))
+
+    reported = []
+
+    async def reporter(done, total, label):
+        reported.append((done, total, label))
+
+    token = crawl_progress.set_detail_reporter(reporter)
+    try:
+        [item async for item in Crawler().crawl_catalog()]
+    finally:
+        crawl_progress.reset_detail_reporter(token)
+
+    assert reported == [(0, 1, "listing page 2"), (1, 1, "listing page 2")]
+
+
+@respx.mock
+async def test_crawl_catalog_runs_with_no_detail_reporter_installed(monkeypatch, tmp_config_dir):
+    """Same contract report_page() already has: a crawler stays directly
+    runnable outside a stock sync."""
+    save_config({"crawl_delay_seconds": 0})
+    respx.get(_PRODUCTS_URL, params={"category": "vinyl-lp", "per_page": "100", "page": "1"}).mock(
+        return_value=httpx.Response(200, json=[_VARIABLE_PRODUCT]))
+    respx.get(_VARIABLE_PRODUCT["permalink"]).mock(
+        return_value=httpx.Response(200, text=_variation_page_html()))
+
+    items = [item async for item in Crawler().crawl_catalog()]
+
+    assert len(items) == 2
+
+
 def test_site_metadata():
     assert Crawler.site_name == "Dark Descent Records"
     assert Crawler.base_url == "https://www.darkdescentrecords.com/shop"
