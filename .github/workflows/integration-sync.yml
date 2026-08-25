@@ -190,9 +190,16 @@ jobs:
               # means integration now holds that commit; closed unmerged means
               # it never will, and the tag must go either way or it would be
               # promoted against some later, unrelated sync.
+              # isCrossRepository here too. This was the last lookup matching
+              # on branch name alone, and it decides whether to discard the
+              # pending marker: a fork could open a PR from a branch of this
+              # name, close it, and have that read as "the sync was abandoned",
+              # throwing away a marker that a real merge had earned and leaving
+              # the next sync on a stale base.
               last_state="$(gh pr list --repo "$REPO" --base integration \
-                --head "$SYNC_BRANCH" --state all --limit 1 \
-                --json state --jq '.[0].state // empty')"
+                --head "$SYNC_BRANCH" --state all --limit 5 \
+                --json state,isCrossRepository \
+                --jq 'map(select(.isCrossRepository == false)) | .[0].state // empty')"
               if [ "$last_state" = "MERGED" ] && on_main "$pending"; then
                 echo "last sync PR merged; promoting $PENDING_TAG to the marker."
                 marker="$pending"
@@ -347,6 +354,12 @@ jobs:
             elif [ -n "$pr_automerge" ]; then
               echo "Sync PR #$existing already has auto-merge armed."
             else
+              if [ -z "$pending" ]; then
+                # Arming now would let this PR merge with nothing to promote,
+                # leaving the marker behind what `integration` holds.
+                echo "::error::sync PR #$existing is open but $PENDING_TAG is missing, so the marker cannot advance when it merges. Not arming auto-merge. Set $PENDING_TAG to the main commit that PR carries, or close it and let the next run rebuild it."
+                exit 1
+              fi
               # No `|| true`: if neither call can arm auto-merge, the sync PR
               # sits open with nothing driving it, and a green run would say
               # otherwise.
@@ -434,17 +447,20 @@ jobs:
           # both on -- `main`'s ruleset need not change, so `main` keeps its
           # squash-only history -- makes this start using one with no edit
           # here. Until then it falls back to squash.
+          # Record which `main` commit this PR carries BEFORE arming auto-merge,
+          # and fail if it cannot be recorded. Once auto-merge is armed the PR
+          # can land at any moment, and if it lands with no pending tag the
+          # marker never advances -- which is the lag that silently drops main's
+          # reverts. The branch that would otherwise have named the commit is
+          # deleted on merge, so there is no recovering this afterwards.
+          if ! git push --force --quiet origin \
+               "$(git rev-parse origin/main):refs/tags/$PENDING_TAG"; then
+            echo "::error::could not record $PENDING_TAG for sync PR #$opened, so the marker could not advance when it merges. Auto-merge has deliberately not been armed. Fix the push (check the token's contents permission) and re-run; #$opened is waiting."
+            exit 1
+          fi
+
           gh pr merge "$opened" --repo "$REPO" --auto --merge \
             || gh pr merge "$opened" --repo "$REPO" --auto --squash
-
-          # Record which `main` commit this PR carries, before it can merge. The
-          # branch that would otherwise say so is deleted on merge, and without
-          # this the marker stays where it was while `integration` moves past it
-          # -- the lag that silently drops main's reverts. Promoted to
-          # MARKER_TAG by a later run once this PR is seen merged.
-          git push --force --quiet origin \
-            "$(git rev-parse origin/main):refs/tags/$PENDING_TAG" \
-            || echo "::error::could not record $PENDING_TAG for sync PR #$opened. The marker will not advance when it merges, and a lagging marker drops main's reverts: set $MARKER_TAG to $(git rev-parse --short origin/main) by hand once #$opened has merged."
           echo "Sync PR #$opened is queued to merge."
 
   refresh:

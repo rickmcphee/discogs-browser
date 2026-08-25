@@ -101,7 +101,11 @@ In order, first hit wins:
 ### Keeping it current: the pending tag
 
 Opening a sync PR writes `integration-sync-pending`, naming the `main` commit
-that PR carries. A later run resolves it:
+that PR carries — **before** auto-merge is armed, and the job fails if it cannot
+be written. Ordering matters: an armed PR can land at any moment, and one that
+lands with no pending tag leaves the marker behind what `integration` holds,
+which is the lag that drops reverts. For the same reason the workflow refuses to
+arm auto-merge on an already-open sync PR whose pending tag has gone missing. A later run resolves it:
 
 | Sync PR state | Action |
 | --- | --- |
@@ -174,8 +178,8 @@ cannot be recovered from by the workflow itself.
 
 Triggers: push to `main`, push to `integration`, a daily cron, and
 `workflow_dispatch`. The `integration` trigger is there because a sync landing
-is when `integration` has just caught up with `main`, so steps 2 and 3 can prove
-containment and record the marker — the only two points at which it advances.
+is the moment the pending tag can be promoted, and step 2 may be able to record
+the marker outright.
 
 1. Resolve a marker (above).
 2. Trees identical? Record the marker; done.
@@ -298,6 +302,8 @@ prevent.
 | **A revert on `main` silently dropped** | The marker lagged what `integration` held, so the three-way merge read `main`'s revert as no change at all and kept the old side | The pending tag keeps the marker current |
 | A dropped revert recorded as incorporated | The no-op exit stamped the current `main` even though the no-op was an artefact of the lagging base | That exit records nothing |
 | Resolver told auto-merge was off when it was not | `--disable-auto` failing only warned, then the instructions printed anyway | That path fails instead |
+| A sync landing with no pending tag | The tag was written after auto-merge was armed, and its failure was swallowed | Written first, and failure is fatal |
+| A fork discarding the pending marker | The closed-PR lookup matched on branch name alone, so a fork's closed PR read as "the sync was abandoned" | `isCrossRepository` on that lookup too |
 | Sync PR open forever | `\|\| true` swallowed a total auto-merge failure, and the run reported success | Let it fail |
 | Unrelated PRs blocked by someone else's conflict | A conflicted sync PR reported a pending sync, suppressing `refresh`, though auto-merge was off and nothing was about to move | Superseded: the pending guard is gone entirely |
 | Refresh silently doing nothing | `for n in $(gh pr list …)` is a word expansion, so `set -e` never saw the command fail | Assign first |
