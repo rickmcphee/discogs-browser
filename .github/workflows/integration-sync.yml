@@ -170,7 +170,7 @@ jobs:
     # always(): on a push to `integration` the sync job is skipped, and a
     # skipped dependency would otherwise skip this one too. The pending guard
     # holds off while a sync PR is still queued -- `integration` is about to
-    # move again, and rebasing everything onto the tip it is leaving would
+    # move again, and catching everything up to the tip it is leaving would
     # just have to be redone.
     if: >-
       always()
@@ -178,7 +178,7 @@ jobs:
       && needs.sync.outputs.pending != 'true'
     runs-on: ubuntu-latest
     steps:
-      - name: Update every open PR that is behind integration
+      - name: Catch up every open PR that integration outran
         env:
           GH_TOKEN: ${{ secrets.INTEGRATION_PROMOTE_TOKEN || github.token }}
           REPO: ${{ github.repository }}
@@ -187,8 +187,8 @@ jobs:
           for n in $(gh pr list --repo "$REPO" --base integration --state open \
                        --json number --jq '.[].number'); do
             # mergeable_state is computed asynchronously; a PR polled too soon
-            # after integration moved answers "unknown", which is not "behind"
-            # and would quietly skip the one PR that needed this most.
+            # after integration moved answers "unknown", which is neither state
+            # below and would quietly skip the one PR that needed this most.
             state="unknown"
             for _ in 1 2 3 4 5 6; do
               state="$(gh api "repos/$REPO/pulls/$n" --jq '.mergeable_state')"
@@ -196,34 +196,45 @@ jobs:
               sleep 10
             done
 
-            if [ "$state" != "behind" ]; then
-              echo "PR #$n is '$state'; leaving it alone."
-              continue
-            fi
+            case "$state" in
+              behind)
+                # Merge the base in. Deterministic, reports a status, and needs
+                # nothing of the PR's author -- including Dependabot, whose own
+                # branches take this happily: it leaves the bump commit in place
+                # and does not close or abandon the PR.
+                echo "PR #$n is behind; merging integration into it."
+                gh api -X PUT "repos/$REPO/pulls/$n/update-branch" \
+                  || echo "::warning::could not update PR #$n automatically"
+                ;;
 
-            author="$(gh api "repos/$REPO/pulls/$n" --jq '.user.login')"
-            if [ "$author" = "dependabot[bot]" ]; then
-              # Don't ask twice in a day. Dependabot normally answers by moving
-              # the head (so the PR stops being "behind" and never reaches this
-              # branch again) or by leaving a conflict (which reads as "dirty",
-              # not "behind"), but a request it silently drops would otherwise
-              # collect one comment per day on that PR forever.
-              since="$(date -u -d '23 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
-              asked="$(gh api \
-                "repos/$REPO/issues/$n/comments?since=$since&per_page=100" \
-                --jq '[.[] | select(.body | startswith("@dependabot rebase"))] | length')"
-              if [ "$asked" -gt 0 ]; then
-                echo "PR #$n is behind but was already asked to rebase since $since; leaving it."
-                continue
-              fi
-              # Dependabot owns its branches: asking it to rebase keeps the
-              # single clean bump commit, where update-branch would graft a
-              # merge commit on that it discards on its next run anyway.
-              echo "PR #$n is behind; asking Dependabot to rebase."
-              gh pr comment "$n" --repo "$REPO" --body "@dependabot rebase"
-            else
-              echo "PR #$n is behind; updating its branch."
-              gh api -X PUT "repos/$REPO/pulls/$n/update-branch" \
-                || echo "::warning::could not update PR #$n automatically"
-            fi
+              dirty)
+                # A conflict, which update-branch cannot fix. For a Dependabot
+                # PR only Dependabot can: a bump that conflicts is usually a
+                # lockfile, and regenerating one by merge resolution produces a
+                # file no package manager would have written. `recreate` throws
+                # the branch away and re-derives it from the current base.
+                author="$(gh api "repos/$REPO/pulls/$n" --jq '.user.login')"
+                if [ "$author" != "dependabot[bot]" ]; then
+                  echo "::warning::PR #$n conflicts with integration and only its author can rebuild it; it needs a human."
+                  continue
+                fi
+                # Don't ask twice in a day: a request Dependabot silently drops
+                # would otherwise collect one comment per day on that PR for as
+                # long as it stayed open.
+                since="$(date -u -d '23 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
+                asked="$(gh api \
+                  "repos/$REPO/issues/$n/comments?since=$since&per_page=100" \
+                  --jq '[.[] | select(.body | startswith("@dependabot recreate"))] | length')"
+                if [ "$asked" -gt 0 ]; then
+                  echo "PR #$n conflicts but was already asked to recreate since $since; leaving it."
+                  continue
+                fi
+                echo "PR #$n conflicts with integration; asking Dependabot to recreate it."
+                gh pr comment "$n" --repo "$REPO" --body "@dependabot recreate"
+                ;;
+
+              *)
+                echo "PR #$n is '$state'; nothing for this job to do."
+                ;;
+            esac
           done
