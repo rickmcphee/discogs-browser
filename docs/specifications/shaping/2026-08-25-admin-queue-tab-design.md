@@ -20,6 +20,13 @@ to know about the queue is either unexposed or unrecorded:
   `in_progress` by a crashed browser or a hung worker "stays unclaimable by
   anyone else indefinitely", and `count_pending_crawl_queue_for_user` counts it
   without being able to tell it from real work. Today nothing surfaces it.
+
+  *Amended 2026-08-25: a reclaim path now exists —
+  `db.reclaim_stranded_crawl_queue_rows`, called from `_drain_one_batch` before
+  each claim. A strand is bounded by the same threshold this tile reports
+  rather than permanent. See
+  [`2026-08-25-stranded-crawl-queue-row-reclaim-design.md`](2026-08-25-stranded-crawl-queue-row-reclaim-design.md).
+  The tile is what made the problem measurable and is unchanged by it.*
 - Whether any pending row is unactionable — gate-failing stock rows that
   `delete_dead_stock_crawl_queue_rows` will sweep, and rows whose narrowed
   `pending_crawler_ids` are all disabled, which `_drain_one_batch` marks done
@@ -47,6 +54,10 @@ session.
   missing is a separate change with its own correctness argument to make;
   observing the problem does not require fixing it, and shipping the observer
   first means that change can be validated against real numbers.
+
+  *Amended 2026-08-25: that separate change shipped, and this non-goal held —
+  the reclaim lives on the worker path (`_drain_one_batch`), not in
+  `routers/queue.py`, which is still strictly read-only.*
 - Surfacing in-process circuit-breaker state (`_site_consecutive_failures`,
   `_site_cooldown_until`). Those dicts live in one `CrawlManager` instance, so
   on a two-Machine deployment an admin would see whichever Machine served the
@@ -135,6 +146,10 @@ join grows with them. It stays a join deliberately — reaching a scale where th
 matters means thousands of strands, a deployment in serious trouble and exactly
 what the Stranded tile exists to shout about.
 
+*Amended 2026-08-25: strands are no longer monotonic — the reclaim ages them
+out — so the accumulation is bounded by the crash rate rather than unbounded.
+The join stays, for the same reason.*
+
 `listings` gains `listings_crawler_last_checked_idx ON (crawler_id,
 last_checked)`, and the activity query is driven *from* `crawlers` rather than
 grouped over `listings`, so neither half visits rows outside the window. A bare
@@ -215,10 +230,24 @@ enabled. A fixed threshold contradicted the `completed_at` argument above — th
 same fan-out that makes `claimed_at` useless as a completion proxy also means
 healthy rows stay claimed well past half an hour on any realistic crawler set,
 and they would have lit a tile coloured *critical*. The threshold is
-`max(floor, enabled_release_crawlers × crawl_delay_seconds × slack)`, reported
+`max(floor, enabled_release_crawlers × crawl_delay_seconds × slack)` *(amended
+2026-08-25: `× QUEUE_CLAIM_BATCH_SIZE` too — a claim covers a whole batch of
+rows, not one, and leaving that out put the threshold below a healthy claim on a
+slow-loading crawler set. Harmless while the value only coloured this tile;
+not once the reclaim acts on it)*, reported
 in the response so the UI can label the tile with the figure actually used. The
 slack is generous on purpose: a tile that cries wolf is worth less than one that
-notices late. `crawl_delay_seconds` is read by the router through the admin
+notices late.
+
+*Amended 2026-08-25: this threshold is no longer only a reporting figure —
+`db.reclaim_stranded_crawl_queue_rows` hands a row back at exactly this cutoff,
+calling `_queue_stranded_after_seconds` rather than carrying its own constant,
+so the tile and the reclaim cannot disagree about what "stranded" means. The
+generous slack now buys something concrete: an age-based reclaim cannot tell a
+dead worker from a slow one, and the slack is what keeps it from taking work
+away from a pass that is merely running long.*
+
+`crawl_delay_seconds` is read by the router through the admin
 pool, since `app_user` has no grant on `app_config` — and *before* the app
 connection is borrowed, so that read is never waiting on one pool while holding
 a connection from another, outside the statement cap that bounds everything
@@ -368,6 +397,13 @@ endpoint over.
   `#184f95`, light for work in flight through dark for work that is stuck —
   validated as an ordinal ramp against the app's `#030712` surface. The centre
   reads the row count, labelled as rows, so the two units cannot be confused.
+
+  *Amended 2026-08-25: labelling the ring centre was not enough. The "In
+  progress" stat tile (rows) and the "In progress" donut legend entry (units)
+  carried the same label with only the centre disambiguated, and the two
+  legitimately different numbers read as the tab disagreeing with itself. Every
+  row-denominated tile now states `rows` in its hint and every legend entry
+  states `units` beside its number.*
 - A sorted horizontal bar list, one row per enabled release crawler: name, bar,
   count, and a held badge. The detail selection is derived from *this* list
   rather than from the full crawler set, so a crawler a filter hides leaves the

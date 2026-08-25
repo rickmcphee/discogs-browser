@@ -104,7 +104,7 @@ def test_narrowed_rows_only_count_for_their_own_crawlers(admin_conn):
     admin_conn.commit()
     [row] = db.claim_crawl_queue_batch(admin_conn, "w", limit=1)
     # A pass that deferred only Amazon hands the row back narrowed to it.
-    db.defer_crawl_queue_row(admin_conn, row["id"], [amazon], delay_seconds=0)
+    db.defer_crawl_queue_row(admin_conn, row["id"], [amazon], delay_seconds=0, worker_id="w")
     admin_conn.commit()
 
     crawlers = _by_name(db.queue_summary(admin_conn))
@@ -155,7 +155,7 @@ def test_deferred_rows_count_as_held_not_claimable(admin_conn):
     db.enqueue_crawl_queue(admin_conn, _release(admin_conn, "r1"))
     admin_conn.commit()
     [row] = db.claim_crawl_queue_batch(admin_conn, "w", limit=1)
-    db.defer_crawl_queue_row(admin_conn, row["id"], [amazon], delay_seconds=600)
+    db.defer_crawl_queue_row(admin_conn, row["id"], [amazon], delay_seconds=600, worker_id="w")
     admin_conn.commit()
 
     summary = db.queue_summary(admin_conn)
@@ -185,8 +185,10 @@ def test_long_claimed_row_is_reported_stranded(admin_conn):
     admin_conn.commit()
     db.claim_crawl_queue_batch(admin_conn, "w", limit=1)
     threshold = db.queue_summary(admin_conn)["stranded_after_seconds"]
-    # No reclaim path exists to age a row through -- see claim_crawl_queue_batch's
-    # own comment -- so the passage of time is the one thing simulated here.
+    # The passage of time is the one thing simulated here. Nothing in this file
+    # runs the reclaim, so the row stays stranded for the tile to report it --
+    # which is the state an operator sees between a strand and the drain pass
+    # that hands it back.
     admin_conn.execute(
         "UPDATE crawl_queue SET claimed_at = CURRENT_TIMESTAMP - %s * INTERVAL '1 second'",
         [threshold + 60],
@@ -223,7 +225,9 @@ def test_stranded_threshold_scales_with_pacing_and_crawler_count(admin_conn):
 
     slow = db.queue_summary(admin_conn, crawl_delay_seconds=60.0)["stranded_after_seconds"]
     fast = db.queue_summary(admin_conn, crawl_delay_seconds=1.0)["stranded_after_seconds"]
-    assert slow == 30 * 60.0 * db.QUEUE_STRANDED_SLACK
+    # Batch size is in there too: a claim covers a whole batch of rows, each
+    # fanning out to every eligible crawler.
+    assert slow == db.QUEUE_CLAIM_BATCH_SIZE * 30 * 60.0 * db.QUEUE_STRANDED_SLACK
     # Never below the floor, however fast the pacing or small the deployment.
     assert fast == db.QUEUE_STRANDED_FLOOR_SECONDS
 
@@ -299,7 +303,7 @@ def test_next_excludes_held_rows(admin_conn):
     db.enqueue_crawl_queue(admin_conn, _release(admin_conn, "r1"))
     admin_conn.commit()
     [row] = db.claim_crawl_queue_batch(admin_conn, "w", limit=1)
-    db.defer_crawl_queue_row(admin_conn, row["id"], [amazon], delay_seconds=600)
+    db.defer_crawl_queue_row(admin_conn, row["id"], [amazon], delay_seconds=600, worker_id="w")
     admin_conn.commit()
 
     assert db.queue_next_for_crawler(admin_conn, amazon, 10) == []
@@ -310,7 +314,7 @@ def test_next_marks_narrowed_rows(admin_conn):
     db.enqueue_crawl_queue(admin_conn, _release(admin_conn, "r1"))
     admin_conn.commit()
     [row] = db.claim_crawl_queue_batch(admin_conn, "w", limit=1)
-    db.defer_crawl_queue_row(admin_conn, row["id"], [amazon], delay_seconds=0)
+    db.defer_crawl_queue_row(admin_conn, row["id"], [amazon], delay_seconds=0, worker_id="w")
     admin_conn.commit()
 
     [item] = db.queue_next_for_crawler(admin_conn, amazon, 10)
@@ -394,7 +398,7 @@ def test_drain_rate_counts_rows_that_finished_not_rows_that_were_claimed(admin_c
         "UPDATE crawl_queue SET claimed_at = CURRENT_TIMESTAMP - INTERVAL '5 hours'"
     )
     for row in rows:
-        db.mark_crawl_queue_done(admin_conn, row["id"])
+        db.mark_crawl_queue_done(admin_conn, row["id"], "w")
     admin_conn.commit()
 
     assert db.queue_summary(admin_conn)["totals"]["rows_done_last_hour"] == 2
@@ -405,7 +409,7 @@ def test_reviving_a_done_row_clears_its_completion_stamp(admin_conn):
     db.enqueue_crawl_queue(admin_conn, _release(admin_conn, "r1"))
     admin_conn.commit()
     [row] = db.claim_crawl_queue_batch(admin_conn, "w", limit=1)
-    db.mark_crawl_queue_done(admin_conn, row["id"])
+    db.mark_crawl_queue_done(admin_conn, row["id"], "w")
     db.enqueue_crawl_queue(admin_conn, "r1")
     admin_conn.commit()
 
@@ -420,7 +424,7 @@ def test_held_work_still_counts_toward_composition_and_age(admin_conn):
     db.enqueue_crawl_queue(admin_conn, _release(admin_conn, "r1"))
     admin_conn.commit()
     [row] = db.claim_crawl_queue_batch(admin_conn, "w", limit=1)
-    db.defer_crawl_queue_row(admin_conn, row["id"], [amazon], delay_seconds=600)
+    db.defer_crawl_queue_row(admin_conn, row["id"], [amazon], delay_seconds=600, worker_id="w")
     admin_conn.commit()
 
     # A crawler reached through the Held filter must not report a real held
@@ -455,7 +459,7 @@ def test_eta_uses_the_recent_drain_rate(admin_conn):
         db.enqueue_crawl_queue(admin_conn, _release(admin_conn, f"r{i}"))
     admin_conn.commit()
     for row in db.claim_crawl_queue_batch(admin_conn, "w", limit=2):
-        db.mark_crawl_queue_done(admin_conn, row["id"])
+        db.mark_crawl_queue_done(admin_conn, row["id"], "w")
     admin_conn.commit()
 
     summary = db.queue_summary(admin_conn)
