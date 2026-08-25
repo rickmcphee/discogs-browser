@@ -209,8 +209,12 @@ raise still aborts before reporting, since the crawl is over either way.
 
 No `.agents/INPUTS.md`, `.agents/OUTPUTS.md`, or `.agents/INSTRUCTIONS.md`
 exist in this repo. This change adds no new trigger, no new outbound host,
-and no new inbound interface — one added SSE event on an existing stream
-and three added keys on an existing endpoint's response.
+and no new inbound interface — `stock_sync_detail_progress` added to an
+existing SSE stream, and `on_another_instance`, `source`, `elapsed_seconds`,
+and `source_elapsed_seconds` added to an existing endpoint's response.
+Named rather than counted, per `CLAUDE.md`: the enumeration stays correct
+when the shape changes, and this sentence's count had already gone stale
+once within the same branch.
 
 `backend/version.py`'s `VERSION` is derived from git and is not edited by
 this change.
