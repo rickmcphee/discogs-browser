@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends
 
 import db
 from admin import require_admin
+from config import load_config
 from crawl_manager import crawl_manager
 
 router = APIRouter()
@@ -33,7 +34,15 @@ def queue_summary():
         # reads it. Safe to hold: every statement here is a read, so there is
         # nothing for the stricter isolation to serialization-fail on.
         conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
-        summary = db.queue_summary(conn)
+        # Read through the admin pool, not this one: app_user has no grant on
+        # app_config. It feeds the stranded threshold, which is derived from
+        # the pacing rather than fixed.
+        summary = db.queue_summary(conn, float(load_config().get("crawl_delay_seconds", 30)))
+    # Process-local, and labelled as such by the tab. Every other number here is
+    # global database state, but there is no durable record of whether another
+    # Machine's pool is up -- so this says "this machine" rather than quietly
+    # presenting one Machine's flag as the deployment's queue health. Same
+    # reasoning that keeps the in-process circuit breaker off this tab entirely.
     summary["pool_running"] = crawl_manager.pool_running
     summary["generated_at"] = datetime.now(timezone.utc).isoformat()
     return summary

@@ -172,6 +172,44 @@ describe('QueueView', () => {
     expect(donut).toHaveTextContent('4')
   })
 
+  it('renders no composition bar for a crawler with nothing pending', async () => {
+    getQueueSummary.mockResolvedValue(summary({
+      crawlers: [crawler({
+        claimable_units: 0, held_units: 0, in_progress_units: 2,
+        release_units: 0, stock_units: 0,
+      })],
+    }))
+    const { container } = render(<QueueView />)
+    fireEvent.click(await screen.findByRole('button', { name: /Amazon/ }))
+    await screen.findByText('Age & composition')
+
+    // A 0% release segment used to leave the stock segment filling the whole
+    // track, showing a full stock bar beside "0 release, 0 stock item".
+    expect(container.querySelector('span.rounded-l-sm')).toBeNull()
+  })
+
+  it('discards a slow poll that resolves after a newer one', async () => {
+    let releaseFirst: (v: unknown) => void = () => {}
+    const first = new Promise((resolve) => { releaseFirst = resolve })
+    getQueueSummary.mockReturnValueOnce(first.then(() => summary({ pool_running: false })))
+    render(<QueueView />)
+
+    // A newer poll lands first and wins; the stale one must not overwrite it.
+    getQueueSummary.mockResolvedValue(summary({ pool_running: true }))
+    setVisibility('hidden')
+    setVisibility('visible')
+    expect(await screen.findByText('Running')).toBeInTheDocument()
+
+    releaseFirst(null)
+    await waitFor(() => expect(screen.getByText('Running')).toBeInTheDocument())
+    expect(screen.queryByText('Stopped')).not.toBeInTheDocument()
+  })
+
+  it('says the worker pool tile is machine-local', async () => {
+    render(<QueueView />)
+    expect(await screen.findByText('this machine only')).toBeInTheDocument()
+  })
+
   it('names the activity metric after what it measures', async () => {
     render(<QueueView />)
     fireEvent.click(await screen.findByRole('button', { name: /Amazon/ }))

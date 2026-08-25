@@ -184,17 +184,48 @@ def test_long_claimed_row_is_reported_stranded(admin_conn):
     db.enqueue_crawl_queue(admin_conn, _release(admin_conn, "r1"))
     admin_conn.commit()
     db.claim_crawl_queue_batch(admin_conn, "w", limit=1)
+    threshold = db.queue_summary(admin_conn)["stranded_after_seconds"]
     # No reclaim path exists to age a row through -- see claim_crawl_queue_batch's
     # own comment -- so the passage of time is the one thing simulated here.
     admin_conn.execute(
         "UPDATE crawl_queue SET claimed_at = CURRENT_TIMESTAMP - %s * INTERVAL '1 second'",
-        [db.QUEUE_STRANDED_AFTER_SECONDS + 60],
+        [threshold + 60],
     )
     admin_conn.commit()
 
     summary = db.queue_summary(admin_conn)
     assert summary["totals"]["stranded_rows"] == 1
     assert summary["totals"]["in_progress_rows"] == 1
+
+
+def test_a_row_claimed_inside_the_threshold_is_not_stranded(admin_conn):
+    _crawler(admin_conn, "Amazon")
+    db.enqueue_crawl_queue(admin_conn, _release(admin_conn, "r1"))
+    admin_conn.commit()
+    db.claim_crawl_queue_batch(admin_conn, "w", limit=1)
+    threshold = db.queue_summary(admin_conn)["stranded_after_seconds"]
+    admin_conn.execute(
+        "UPDATE crawl_queue SET claimed_at = CURRENT_TIMESTAMP - %s * INTERVAL '1 second'",
+        [threshold - 60],
+    )
+    admin_conn.commit()
+
+    assert db.queue_summary(admin_conn)["totals"]["stranded_rows"] == 0
+
+
+def test_stranded_threshold_scales_with_pacing_and_crawler_count(admin_conn):
+    # A claimed row runs one paced search per eligible crawler, so what counts
+    # as "too long" depends on both. A fixed threshold marked healthy rows
+    # stranded on any realistic crawler set.
+    for i in range(30):
+        _crawler(admin_conn, f"Site {i}")
+    admin_conn.commit()
+
+    slow = db.queue_summary(admin_conn, crawl_delay_seconds=60.0)["stranded_after_seconds"]
+    fast = db.queue_summary(admin_conn, crawl_delay_seconds=1.0)["stranded_after_seconds"]
+    assert slow == 30 * 60.0 * db.QUEUE_STRANDED_SLACK
+    # Never below the floor, however fast the pacing or small the deployment.
+    assert fast == db.QUEUE_STRANDED_FLOOR_SECONDS
 
 
 def test_row_with_no_enabled_crawler_is_unactionable(admin_conn):
@@ -446,5 +477,5 @@ def test_summary_endpoint_returns_the_payload_for_an_admin(pg_test_db, authed_cl
     body = r.json()
     assert [c["site_name"] for c in body["crawlers"]] == ["Amazon"]
     assert body["totals"]["claimable_rows"] == 0
-    assert body["stranded_after_seconds"] == db.QUEUE_STRANDED_AFTER_SECONDS
+    assert body["stranded_after_seconds"] >= db.QUEUE_STRANDED_FLOOR_SECONDS
     assert "pool_running" in body and "generated_at" in body

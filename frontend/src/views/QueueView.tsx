@@ -54,7 +54,7 @@ function StatTile({ label, value, hint, accent }: {
         {label}
       </div>
       <div className="text-2xl text-gray-100 mt-1">{value}</div>
-      {hint && <div className="text-xs text-gray-600 mt-0.5">{hint}</div>}
+      {hint && <div className="text-xs text-gray-400 mt-0.5">{hint}</div>}
     </div>
   )
 }
@@ -180,7 +180,7 @@ function Field({ label, value, hint }: { label: string; value: string; hint?: st
       <span className="text-sm text-gray-500">{label}</span>
       <span className="text-sm text-gray-200 text-right tabular-nums">
         {value}
-        {hint && <span className="block text-xs text-gray-600">{hint}</span>}
+        {hint && <span className="block text-xs text-gray-400">{hint}</span>}
       </span>
     </div>
   )
@@ -195,6 +195,10 @@ function CrawlerDetail({ crawler, window, next, nextLoading, nextError }: {
 }) {
   const units = crawler.release_units + crawler.stock_units
   const releasePct = units > 0 ? (crawler.release_units / units) * 100 : 0
+  // With no pending units at all, a 0% release segment left the stock segment
+  // filling the whole track -- a full stock-composition bar beside "0 release,
+  // 0 stock item" for an idle crawler, or one reached via the In progress
+  // filter. Nothing to compose means no bar.
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
       <Panel title="Age & composition">
@@ -203,16 +207,18 @@ function CrawlerDetail({ crawler, window, next, nextLoading, nextError }: {
         <Field label="1–24h" value={crawler.age_buckets.under_24h.toLocaleString()} />
         <Field label="Over 24h" value={crawler.age_buckets.over_24h.toLocaleString()} />
         <div className="mt-3">
-          <div className="flex h-2.5 gap-0.5">
-            <span className="rounded-l-sm" style={{ width: `${releasePct}%`, background: STATE_COLORS.claimable }} />
-            <span className="rounded-r-sm" style={{ width: `${100 - releasePct}%`, background: '#4b5563' }} />
-          </div>
-          <div className="flex justify-between text-xs text-gray-500 mt-1.5">
+          {units > 0 && (
+            <div className="flex h-2.5 gap-0.5">
+              <span className="rounded-l-sm" style={{ width: `${releasePct}%`, background: STATE_COLORS.claimable }} />
+              <span className="rounded-r-sm" style={{ width: `${100 - releasePct}%`, background: '#6b7280' }} />
+            </div>
+          )}
+          <div className="flex justify-between text-xs text-gray-400 mt-1.5">
             <span>{crawler.release_units.toLocaleString()} release</span>
             <span>{crawler.stock_units.toLocaleString()} stock item</span>
           </div>
           {crawler.requires_discogs_release && (
-            <div className="text-xs text-gray-600 mt-2">
+            <div className="text-xs text-gray-400 mt-2">
               Requires a Discogs release, so stock-item targets never reach it.
             </div>
           )}
@@ -226,7 +232,7 @@ function CrawlerDetail({ crawler, window, next, nextLoading, nextError }: {
         />
         <Field label="Last listing touched" value={formatDuration(crawler.last_result_seconds_ago)} />
         <Field label="Est. drain" value={formatDuration(crawler.eta_seconds)} />
-        <div className="text-xs text-gray-600 mt-3 leading-relaxed">
+        <div className="text-xs text-gray-400 mt-3 leading-relaxed">
           Distinct listing rows whose last-checked stamp moved — not a count of
           searches. A release crawl that finds nothing still counts, because it
           clears the price on an existing row; a first-ever miss writes no row
@@ -251,7 +257,7 @@ function CrawlerDetail({ crawler, window, next, nextLoading, nextError }: {
                 <span className="truncate text-gray-300">
                   {item.artist || '—'} <span className="text-gray-600">–</span> {item.title || '—'}
                 </span>
-                <span className="shrink-0 text-xs text-gray-600 tabular-nums">
+                <span className="shrink-0 text-xs text-gray-400 tabular-nums">
                   {item.kind === 'stock' ? 'stock' : 'release'} · {formatDuration(item.waiting_seconds)}
                   {item.narrowed && <span title="Narrowed by an earlier pass"> · ↩</span>}
                 </span>
@@ -273,12 +279,22 @@ export default function QueueView() {
   const [nextLoading, setNextLoading] = useState(false)
   const [nextError, setNextError] = useState<string | null>(null)
   const timer = useRef<ReturnType<typeof setInterval> | null>(null)
+  const generation = useRef(0)
 
+  // setInterval will happily start a second request while the first is still
+  // in flight, and responses can then land out of order -- an older snapshot,
+  // or an older error, overwriting a newer one. In a view whose whole job is to
+  // report live state that is the worst possible failure, so a stale response
+  // is dropped rather than rendered.
   const load = useCallback(async () => {
+    const mine = ++generation.current
     try {
-      setSummary(await getQueueSummary())
+      const next = await getQueueSummary()
+      if (mine !== generation.current) return
+      setSummary(next)
       setError(null)
     } catch (e: any) {
+      if (mine !== generation.current) return
       setError(e?.message || 'Could not load the queue')
     }
   }, [])
@@ -361,9 +377,15 @@ export default function QueueView() {
         </div>
       )}
       <div className="flex flex-wrap gap-3">
+        {/* Every other tile is global database state. This one is the flag of
+            whichever Machine served the poll, and on a multi-Machine
+            deployment consecutive polls can land on different ones -- so it
+            says whose pool it is rather than implying deployment-wide health.
+            Nothing durable records another Machine's pool state. */}
         <StatTile
           label="Worker pool"
           value={summary.pool_running ? 'Running' : 'Stopped'}
+          hint="this machine only"
           accent={summary.pool_running ? undefined : STATUS_CRITICAL}
         />
         <StatTile label="Claimable" value={t.claimable_rows.toLocaleString()} hint="rows" />
@@ -421,9 +443,11 @@ export default function QueueView() {
                 </button>
               )
             })}
-            <div className="text-xs text-gray-600 max-w-52 leading-relaxed mt-1">
+            <div className="text-xs text-gray-400 max-w-52 leading-relaxed mt-1">
               Work units — one search per (target, crawler) pair. A queue row
-              names a target, not a crawler, so units far outnumber rows.
+              names a target, not a crawler, so units far outnumber rows. In
+              progress counts every unit of a claimed row, including ones that
+              row has already finished.
             </div>
           </div>
         </div>

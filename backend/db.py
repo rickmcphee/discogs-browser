@@ -355,6 +355,14 @@ ALTER TABLE crawl_queue ADD COLUMN IF NOT EXISTS pending_crawler_ids INTEGER[];
 -- reads zero -- and every ETA null -- while rows are actively completing.
 ALTER TABLE crawl_queue ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP;
 
+-- The drain-rate query asks for 'done' rows completed inside a short window,
+-- on a timer, against a table holding a row for every target this app has ever
+-- queued. Without this the poll scans the whole catalog's worth of history to
+-- find a few minutes of it. Partial, so it indexes only the 'done' population
+-- and stays out of the way of the pending path's own index.
+CREATE INDEX IF NOT EXISTS crawl_queue_completed_idx
+    ON crawl_queue (completed_at) WHERE status = 'done';
+
 -- available_at is a not-before marker, set when a pass defers a crawler whose
 -- site is in circuit-breaker cooldown. Without it the row would be re-claimed
 -- on the very next batch and re-deferred in a hot loop.
@@ -1572,8 +1580,28 @@ def count_pending_crawl_queue_for_user(conn, user_id: int) -> int:
 # per-crawler number counts. Units sum to far more than rows, because almost
 # every enabled crawler is eligible for almost every row.
 
-QUEUE_STRANDED_AFTER_SECONDS = 1800
 QUEUE_ACTIVITY_WINDOW_SECONDS = 3600
+
+# A claim is evidence of a strand only once it has outlasted what the row could
+# legitimately take. A claimed row runs one sequential search per eligible
+# crawler, each preceded by a wait of 50-100% of crawl_delay_seconds and capped
+# by a page-load timeout, so its honest upper bound scales with both the pacing
+# setting and how many crawlers are enabled. A fixed half hour contradicted the
+# rest of this module -- the same fan-out that makes claimed_at useless as a
+# completion proxy also means healthy rows routinely stay claimed well past it,
+# and they would have lit the Stranded tile, which is coloured critical. The
+# floor keeps a tiny or unconfigured deployment from reporting strands within
+# seconds; the slack is deliberately generous, because a tile that cries wolf is
+# worth less than one that notices late.
+QUEUE_STRANDED_FLOOR_SECONDS = 1800
+QUEUE_STRANDED_SLACK = 4
+
+
+def _queue_stranded_after_seconds(conn, crawl_delay_seconds: float) -> float:
+    enabled = conn.execute(
+        "SELECT COUNT(*) FROM crawlers WHERE enabled AND crawler_type = 'release'"
+    ).fetchone()["count"]
+    return max(QUEUE_STRANDED_FLOOR_SECONDS, enabled * crawl_delay_seconds * QUEUE_STRANDED_SLACK)
 
 
 def _queue_eligible_crawler_exists(alias: str) -> str:
@@ -1613,7 +1641,7 @@ def _queue_row_state_sql() -> str:
     """
 
 
-def _queue_totals(conn) -> dict:
+def _queue_totals(conn, stranded_after_seconds: float) -> dict:
     row = conn.execute(
         f"""
         WITH q AS ({_queue_row_state_sql()})
@@ -1628,7 +1656,7 @@ def _queue_totals(conn) -> dict:
                              AND claimed_at < CURRENT_TIMESTAMP - %(stranded)s * INTERVAL '1 second') AS stranded_rows
         FROM q
         """,
-        {"stranded": QUEUE_STRANDED_AFTER_SECONDS},
+        {"stranded": stranded_after_seconds},
     ).fetchone()
     return dict(row)
 
@@ -1756,8 +1784,9 @@ def _queue_accumulate(bucket: dict, agg, is_release: bool, held: bool):
         bucket["_oldest"] = float(oldest)
 
 
-def queue_summary(conn) -> dict:
-    totals = _queue_totals(conn)
+def queue_summary(conn, crawl_delay_seconds: float = 30.0) -> dict:
+    stranded_after = _queue_stranded_after_seconds(conn, crawl_delay_seconds)
+    totals = _queue_totals(conn, stranded_after)
     drain_per_second, rows_done = _queue_drain_rate(conn)
     broad, narrowed = _queue_fanout(conn)
     activity = _queue_crawler_activity(conn)
@@ -1810,11 +1839,21 @@ def queue_summary(conn) -> dict:
     return {
         "totals": totals,
         "crawlers": out,
-        "stranded_after_seconds": QUEUE_STRANDED_AFTER_SECONDS,
+        "stranded_after_seconds": stranded_after,
         "activity_window_seconds": QUEUE_ACTIVITY_WINDOW_SECONDS,
     }
 
 
+# Units in the rows a worker currently holds -- NOT units still to run. A
+# claimed row's unit list is built once by _drain_one_batch and worked through
+# in memory; nothing narrows pending_crawler_ids as individual units finish (only
+# a deferral rewrites it). So a unit already crawled earlier in the row keeps
+# counting until that row resolves, and enabling or disabling a crawler mid-row
+# moves this number even though the worker's own list is fixed. Narrowing the
+# row per completed unit would put a write on the crawl hot path to sharpen a
+# reporting figure, which is the wrong trade; the tab names the segment for what
+# this actually measures instead.
+#
 # In-progress rows are few (bounded by workers x batch size), so their fan-out
 # is small enough to resolve the honest way -- the join the pending population
 # deliberately avoids -- and to break down per crawler while it is there.

@@ -112,6 +112,10 @@ compose; a median does not (the median of a union is not derivable from two
 medians). The tab therefore reports **oldest wait plus age buckets**, which
 shows a starving tail more directly than a median would anyway.
 
+`crawl_queue` gains `crawl_queue_completed_idx ON (completed_at) WHERE status =
+'done'`, so the drain-rate window is a bounded range scan rather than a walk of
+a row per target this app has ever queued.
+
 `listings` gains `listings_crawler_last_checked_idx ON (crawler_id,
 last_checked)`, and the activity query is driven *from* `crawlers` rather than
 grouped over `listings`, so neither half visits rows outside the window. A bare
@@ -139,7 +143,7 @@ owner column, so they use `db.get_app_pool()` — the same pool
 {
   "pool_running": bool,
   "generated_at": iso8601,
-  "stranded_after_seconds": 1800,
+  "stranded_after_seconds": float,   // derived; see below
   "activity_window_seconds": 3600,
   "totals": {
     "claimable_rows": int,      // pending, available now, gate-passing, actionable
@@ -177,6 +181,29 @@ sequential search per eligible crawler, paced by `crawl_delay_seconds`, so a
 row claimed well outside the window routinely completes inside it. Counting
 claims would report a zero drain rate — and a null ETA everywhere — precisely
 while long-running rows were finishing.
+
+**Stranded is derived, not a constant.** A claimed row runs one sequential
+search per eligible crawler, each preceded by a wait of 50–100% of
+`crawl_delay_seconds` and capped by a page-load timeout, so how long a claim can
+legitimately last scales with both the pacing setting and how many crawlers are
+enabled. A fixed threshold contradicted the `completed_at` argument above — the
+same fan-out that makes `claimed_at` useless as a completion proxy also means
+healthy rows stay claimed well past half an hour on any realistic crawler set,
+and they would have lit a tile coloured *critical*. The threshold is
+`max(floor, enabled_release_crawlers × crawl_delay_seconds × slack)`, reported
+in the response so the UI can label the tile with the figure actually used. The
+slack is generous on purpose: a tile that cries wolf is worth less than one that
+notices late. `crawl_delay_seconds` is read by the router through the admin
+pool, since `app_user` has no grant on `app_config`.
+
+**`in_progress_units` counts units in claimed rows, not units remaining.** A
+claimed row's unit list is built once by `_drain_one_batch` and worked through in
+memory; nothing narrows `pending_crawler_ids` as individual units finish (only a
+deferral rewrites it). So a unit already crawled earlier in the row keeps
+counting until that row resolves, and toggling a crawler mid-row moves the number
+even though the worker's own list is fixed. Narrowing the row per completed unit
+would put a write on the crawl hot path to sharpen a reporting figure — the wrong
+trade — so the tab names the segment for what it measures instead.
 
 `release_units`, `stock_units`, `oldest_wait_seconds` and `age_buckets` cover a
 crawler's whole pending backlog, claimable and held alike; only
@@ -224,11 +251,22 @@ is only wanted on click.
 on `showAdminNav` exactly as Logs and Settings are. Like `LogViewer`, the view
 is not mounted at all for a non-admin. It polls `/api/queue/summary` every 10
 seconds, only while the tab is the active view and the document is visible.
+Each poll carries a generation counter and a response from a superseded one is
+dropped: `setInterval` will start a second request while the first is in flight,
+and an older snapshot or error landing last would be exactly the wrong failure
+in a view whose job is to report live state.
 
 **Top half.**
 
 - A KPI row of stat tiles: pool state, claimable rows, in progress, held,
-  stranded, unactionable, drain rate, queue ETA. Stranded and unactionable
+  stranded, unactionable, drain rate, queue ETA. The pool tile is labelled
+  "this machine only": `crawl_manager.pool_running` is process-local, so on a
+  multi-Machine deployment consecutive polls can land on different Machines, and
+  neither value says anything about the other's pool. Every other tile is global
+  database state. Small print carrying diagnostic meaning — every tile hint, the
+  composition labels, the activity caveat — is rendered at a contrast that
+  clears 4.5:1 against the tile surface rather than the app's usual recessive
+  grey, which measured about 2.3:1. Stranded and unactionable
   carry status colors (`critical` `#d03b3b`, `warning` `#fab219`) with their
   labels beside them, never colour alone; the rest wear text tokens.
 - One donut, showing the part-to-whole a ring is actually good at: total
