@@ -276,8 +276,9 @@ async def test_crawl_catalog_reports_progress_through_a_pages_variable_product_f
         crawl_progress.reset_detail_reporter(token)
 
     # The simple product costs no request, so it neither advances the counter
-    # nor counts toward the total -- one report per paced fetch, the property
-    # report_page() already has for a one-phase crawler.
+    # nor counts toward the total: progress advances once per paced fetch, and
+    # the asserted sequence is N+1 long because of the leading 0/N that lands
+    # before the first fetch.
     assert reported == [
         (0, 2, "listing page 1"),
         (1, 2, "listing page 1"),

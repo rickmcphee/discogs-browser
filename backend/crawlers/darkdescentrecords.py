@@ -50,10 +50,11 @@ class Crawler:
 
                 # Only a variable product costs a paced detail fetch, so the
                 # progress total counts those rather than every product on the
-                # page. That keeps one report per paced request -- the property
-                # report_page() already has for a one-phase crawler -- instead
-                # of a burst of instant reports for the simple products
-                # followed by an unexplained pause on each variable one.
+                # page. That keeps the reporting rate tied to pacing -- one
+                # report per paced fetch after the leading 0/N, so N fetches
+                # produce N+1 reports -- instead of a burst of instant reports
+                # for the simple products followed by an unexplained pause on
+                # each variable one.
                 # report_page() alone fires only after the whole page is done,
                 # which at the default crawl_delay_seconds is many minutes of
                 # silence on a page carrying a lot of variable products.
