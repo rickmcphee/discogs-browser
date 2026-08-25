@@ -104,12 +104,20 @@ function StateDonut({ segments, centreValue, centreLabel, selected, onSelect }: 
   )
 }
 
-function CrawlerBars({ crawlers, selectedId, onSelect }: {
+// With a state selected the bar, the number and the ordering all describe that
+// state. Otherwise filtering by In progress surfaced crawlers rendered as a
+// bare "0" with a zero-width bar, sorted by counts that had nothing to do with
+// why they matched.
+function CrawlerBars({ crawlers, selectedState, selectedId, onSelect }: {
   crawlers: QueueCrawlerSummary[]
+  selectedState: StateKey | null
   selectedId: number | null
   onSelect: (id: number) => void
 }) {
-  const max = Math.max(1, ...crawlers.map((c) => c.claimable_units + c.held_units))
+  const primary = (c: QueueCrawlerSummary) =>
+    selectedState ? unitsInState(c, selectedState) : c.claimable_units
+  const secondary = (c: QueueCrawlerSummary) => (selectedState ? 0 : c.held_units)
+  const max = Math.max(1, ...crawlers.map((c) => primary(c) + secondary(c)))
   if (crawlers.length === 0) {
     return <div className="text-sm text-gray-600 italic px-1 py-4">No crawler has work in this state.</div>
   }
@@ -133,20 +141,22 @@ function CrawlerBars({ crawlers, selectedId, onSelect }: {
               <span
                 className="h-2.5 rounded-r-sm"
                 style={{
-                  width: `${(c.claimable_units / max) * 100}%`,
-                  background: isSelected ? STATE_COLORS.claimable : '#4b5563',
+                  width: `${(primary(c) / max) * 100}%`,
+                  background: isSelected
+                    ? STATE_COLORS[selectedState ?? 'claimable']
+                    : '#4b5563',
                 }}
               />
-              {c.held_units > 0 && (
+              {secondary(c) > 0 && (
                 <span
                   className="h-2.5 rounded-r-sm ml-0.5"
-                  style={{ width: `${(c.held_units / max) * 100}%`, background: STATE_COLORS.held }}
+                  style={{ width: `${(secondary(c) / max) * 100}%`, background: STATE_COLORS.held }}
                 />
               )}
             </span>
             <span className="text-sm text-gray-400 text-right tabular-nums">
-              {c.claimable_units.toLocaleString()}
-              {c.held_units > 0 && <span className="text-gray-600"> +{c.held_units.toLocaleString()}</span>}
+              {primary(c).toLocaleString()}
+              {secondary(c) > 0 && <span className="text-gray-600"> +{secondary(c).toLocaleString()}</span>}
             </span>
           </button>
         )
@@ -211,14 +221,17 @@ function CrawlerDetail({ crawler, window, next, nextLoading, nextError }: {
 
       <Panel title="Throughput & ETA">
         <Field
-          label={`Results written / ${formatDuration(window)}`}
+          label={`Listing rows touched / ${formatDuration(window)}`}
           value={crawler.results_last_hour.toLocaleString()}
         />
-        <Field label="Last result written" value={formatDuration(crawler.last_result_seconds_ago)} />
+        <Field label="Last listing touched" value={formatDuration(crawler.last_result_seconds_ago)} />
         <Field label="Est. drain" value={formatDuration(crawler.eta_seconds)} />
         <div className="text-xs text-gray-600 mt-3 leading-relaxed">
-          A crawl that runs and finds nothing writes no listing, so results
-          written is a floor on activity, not a count of searches. The estimate
+          Distinct listing rows whose last-checked stamp moved — not a count of
+          searches. A release crawl that finds nothing still counts, because it
+          clears the price on an existing row; a first-ever miss writes no row
+          at all and does not, and neither does a stock-item miss. Repeat passes
+          over the same listing inside the window count once. The estimate
           divides this crawler's position in the claim order by the queue's
           recent drain rate.
         </div>
@@ -315,9 +328,9 @@ export default function QueueView() {
     const filtered = selectedState === null
       ? all
       : all.filter((c) => unitsInState(c, selectedState) > 0)
-    return [...filtered].sort(
-      (a, b) => (b.claimable_units + b.held_units) - (a.claimable_units + a.held_units),
-    )
+    const weight = (c: QueueCrawlerSummary) =>
+      selectedState ? unitsInState(c, selectedState) : c.claimable_units + c.held_units
+    return [...filtered].sort((a, b) => weight(b) - weight(a))
   }, [summary, selectedState])
 
   const selected = summary?.crawlers.find((c) => c.crawler_id === selectedId) ?? null
@@ -330,7 +343,12 @@ export default function QueueView() {
   }
 
   const t = summary.totals
-  const rows = t.claimable_rows + t.held_rows + t.in_progress_rows
+  // Unactionable rows are pending rows too. Leaving them out made the centre
+  // read "0 rows" while the Unactionable tile showed a non-zero count -- the
+  // ring claiming an empty queue next to a tile saying otherwise. They
+  // contribute no arc, by definition (no enabled crawler resolves for them),
+  // which is exactly why the centre counts rows and the segments count units.
+  const rows = t.claimable_rows + t.held_rows + t.in_progress_rows + t.unactionable_rows
 
   return (
     <div className="h-full overflow-y-auto p-6 flex flex-col gap-6 text-left">
@@ -421,7 +439,12 @@ export default function QueueView() {
               </button>
             )}
           </div>
-          <CrawlerBars crawlers={visibleCrawlers} selectedId={selectedId} onSelect={setSelectedId} />
+          <CrawlerBars
+            crawlers={visibleCrawlers}
+            selectedState={selectedState}
+            selectedId={selectedId}
+            onSelect={setSelectedId}
+          />
         </div>
       </div>
 

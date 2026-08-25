@@ -141,6 +141,44 @@ describe('QueueView', () => {
     expect(screen.getByRole('button', { name: /eBay/ })).toBeInTheDocument()
   })
 
+  it('shows the filtered state\'s own units, not the pending ones', async () => {
+    getQueueSummary.mockResolvedValue(summary({
+      crawlers: [crawler({
+        crawler_id: 2, site_name: 'eBay',
+        claimable_units: 0, held_units: 0, in_progress_units: 3,
+      })],
+    }))
+    render(<QueueView />)
+    // Unfiltered it has no claimable work, so its row reads 0.
+    expect(await screen.findByRole('button', { name: /eBay/ })).toHaveTextContent('0')
+
+    // Filtered by In progress it must not still render as a bare "0" -- that
+    // is a crawler matching the filter while appearing to have no work.
+    fireEvent.click(screen.getByRole('button', { name: /^In progress/ }))
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /eBay/ })).toHaveTextContent('3'))
+  })
+
+  it('counts unactionable rows in the ring centre so it cannot contradict the tile', async () => {
+    getQueueSummary.mockResolvedValue(summary({
+      totals: {
+        ...summary().totals,
+        claimable_rows: 0, held_rows: 0, in_progress_rows: 0, unactionable_rows: 4,
+        claimable_units: 0, held_units: 0, in_progress_units: 0,
+      },
+    }))
+    render(<QueueView />)
+    const donut = await screen.findByRole('img', { name: /work units by queue state/i })
+    expect(donut).toHaveTextContent('4')
+  })
+
+  it('names the activity metric after what it measures', async () => {
+    render(<QueueView />)
+    fireEvent.click(await screen.findByRole('button', { name: /Amazon/ }))
+    expect(await screen.findByText(/Listing rows touched/)).toBeInTheDocument()
+    expect(screen.getByText(/not a count of searches/)).toBeInTheDocument()
+  })
+
   it('marks the snapshot stale when a later poll fails', async () => {
     render(<QueueView />)
     await screen.findByText('Worker pool')

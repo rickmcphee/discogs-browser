@@ -194,10 +194,19 @@ stock units is positioned behind the release rows only, everything else behind
 the whole claimable queue. It is an estimate and is labelled as one; it ignores
 narrowing, which can only make a crawler's true position earlier.
 
-`results_last_hour` counts `listings` rows touched, not searches performed — a
-crawler that runs and finds nothing writes no row (the "no listings
-pre-population" invariant). It is a floor on activity, and the UI says so
-rather than presenting it as a throughput rate.
+`results_last_hour` counts **distinct `listings` rows whose `last_checked`
+moved** inside the window. It is not a count of searches, and the difference
+runs in both directions, so the UI names it "listing rows touched" and states
+the blind spots rather than presenting it as a throughput rate:
+
+- A release crawl that finds *nothing* still counts, because `_drain_one_batch`
+  calls `clear_listing_price`, which bumps `last_checked` on the existing row.
+- A first-ever miss counts for nothing: with no row yet that `UPDATE` matches
+  nothing, and the "no listings pre-population" invariant means none is
+  created. A stock-item miss never touches anything either — the clear path is
+  guarded on `is_release`.
+- Repeat passes over the same (target, crawler) inside the window collapse to
+  one row, since `upsert_listing` is an `ON CONFLICT DO UPDATE` in place.
 
 ### `GET /api/queue/crawlers/{crawler_id}/next?limit=25`
 
@@ -223,14 +232,20 @@ seconds, only while the tab is the active view and the document is visible.
   carry status colors (`critical` `#d03b3b`, `warning` `#fab219`) with their
   labels beside them, never colour alone; the rest wear text tokens.
 - One donut, showing the part-to-whole a ring is actually good at: total
-  outstanding **work units** split into In progress / Claimable / Held. Three
+  outstanding **work units** split into In progress / Claimable / Held. Its
+  centre counts *rows*, and counts unactionable ones too even though they
+  contribute no arc — leaving them out let the centre read "0 rows" beside a
+  non-zero Unactionable tile. Three
   segments, coloured on a single-hue ordinal ramp — `#86b6ef`, `#3987e5`,
   `#184f95`, light for work in flight through dark for work that is stuck —
   validated as an ordinal ramp against the app's `#030712` surface. The centre
   reads the row count, labelled as rows, so the two units cannot be confused.
-- A sorted horizontal bar list, one row per enabled release crawler: name, bar
-  sized by claimable units, the count, and a held badge when non-zero. This is
-  the clickable surface. Bars use emphasis — the selected crawler in the accent
+- A sorted horizontal bar list, one row per enabled release crawler: name, bar,
+  count, and a held badge. With a ring segment selected, the bar, the number and
+  the ordering all describe *that* state; otherwise they describe claimable work
+  with held alongside. Filtering by a state and then rendering a matching
+  crawler as a bare "0" — which sizing everything on claimable units alone did
+  for In progress — is worse than not filtering. This is the clickable surface. Bars use emphasis — the selected crawler in the accent
   hue, the rest recessive — rather than a per-crawler hue, which past a handful
   of series would carry no information.
 - Clicking a ring segment filters the bar list to crawlers with units in that
