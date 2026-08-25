@@ -214,13 +214,22 @@ jobs:
             # checks run, and strict branch protection then refuses to merge it.
             # Re-arming auto-merge alone would spin here for good: setting
             # nothing else would catch it up.
-            sync_state="unknown"
+            # Guarded for the same reason as the poll in `refresh`: `set -e`
+            # sees an assignment's command substitution, so an unguarded read
+            # would abort the job on one transient 5xx -- defeating the retry
+            # this loop exists to provide, and doing it with no diagnostic. A
+            # read that never succeeds falls through to `unknown`, which fails
+            # closed below and says why.
+            sync_state=""
             for _ in 1 2 3; do
-              sync_state="$(gh api "repos/$REPO/pulls/$existing" --jq '.mergeable_state')"
-              [ "$sync_state" != "unknown" ] && break
+              if sync_state="$(gh api "repos/$REPO/pulls/$existing" --jq '.mergeable_state')"; then
+                [ "$sync_state" != "unknown" ] && break
+              else
+                sync_state=""
+              fi
               sleep 10
             done
-            case "$sync_state" in
+            case "${sync_state:-unknown}" in
               unknown)
                 # Fail closed. Falling through to the re-arm used to look
                 # harmless on the grounds that arming is idempotent, but that
