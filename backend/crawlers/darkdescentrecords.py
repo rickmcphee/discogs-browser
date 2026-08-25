@@ -8,7 +8,7 @@ from typing import AsyncIterator, Optional
 import httpx
 
 from config import load_config
-from crawl_progress import report_page
+from crawl_progress import report_detail, report_page
 
 _CATEGORY_SLUG = "vinyl-lp"
 _PER_PAGE = 100
@@ -48,9 +48,27 @@ class Crawler:
                 if not products:
                     break
 
+                # Only a variable product costs a paced detail fetch, so the
+                # progress total counts those rather than every product on the
+                # page. That keeps one report per paced request -- the property
+                # report_page() already has for a one-phase crawler -- instead
+                # of a burst of instant reports for the simple products
+                # followed by an unexplained pause on each variable one.
+                # report_page() alone fires only after the whole page is done,
+                # which at the default crawl_delay_seconds is many minutes of
+                # silence on a page carrying a lot of variable products.
+                to_fetch = sum(1 for p in products if self._needs_detail_fetch(p))
+                label = f"listing page {page}"
+                if to_fetch:
+                    await report_detail(0, to_fetch, label)
                 page_items = []
+                fetched = 0
                 for product in products:
+                    will_fetch = self._needs_detail_fetch(product)
                     page_items.extend(await self._items(product, client, delay))
+                    if will_fetch:
+                        fetched += 1
+                        await report_detail(fetched, to_fetch, label)
                 await report_page(page, len(page_items))
                 for item in page_items:
                     yield item
@@ -71,7 +89,7 @@ class Crawler:
         url = product.get("permalink", "")
         currency = (product.get("prices") or {}).get("currency_code", "USD")
 
-        if product.get("type") == "variable":
+        if cls._needs_detail_fetch(product):
             await sleep(random.uniform(delay * 0.5, delay))
             r = await client.get(url)
             r.raise_for_status()
@@ -86,6 +104,23 @@ class Crawler:
             "url": url,
             "cover_image_url": cls._cover_image(product),
         }]
+
+    @classmethod
+    def _needs_detail_fetch(cls, product: dict) -> bool:
+        """True when _items() will spend a paced HTTP request on this product.
+
+        _items() branches on this rather than on `type` directly, so the total
+        crawl_catalog() counts before a page's loop cannot drift from what the
+        loop actually fetches. The purchasable/in-stock/artist gates are
+        redundant at _items()'s call site -- it has already returned [] for
+        those -- and are what make the count correct at crawl_catalog()'s,
+        where nothing has been filtered yet."""
+        return (
+            bool(product.get("is_purchasable"))
+            and bool(product.get("is_in_stock"))
+            and cls._parse_artist_title(product.get("name", ""))[0] is not None
+            and product.get("type") == "variable"
+        )
 
     @classmethod
     def _variable_items(cls, page_html: str, product: dict, artist: str, album: str,

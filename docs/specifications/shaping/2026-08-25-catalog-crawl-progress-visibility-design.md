@@ -67,8 +67,10 @@ way to see *what* holds it.
 - **A watchdog that cancels a stalled crawl.** This change makes a stall
   visible; deciding what to do about one is separate.
 - **Retrofitting every crawler.** `report_detail()` is available to any
-  plugin with a per-item phase; only `dischordrecords.py` calls it today,
-  because it is the crawler whose silence was reported.
+  plugin with a per-item phase. `dischordrecords.py` and
+  `darkdescentrecords.py` call it -- the crawlers here whose pacing puts a
+  page's worth of paced requests between two `report_page()` calls. A
+  one-phase crawler gains nothing from it.
 
 ## Design
 
@@ -178,14 +180,37 @@ both carry a null source and null timings.
 Durations are formatted `45s` / `14m` / `1h 48m` by matching helpers on
 each side (`crawl_manager._format_duration`, `App.tsx`'s `formatElapsed`).
 
-### `dischordrecords.py` reports its detail phase
+### The two-phase crawlers report their detail phase
+
+#### `dischordrecords.py`
 
 One `report_detail(0, N, label)` before the loop over a page's release
 hrefs — which puts the size of the wait on the record before the first
 fetch has even finished — then one per href after its fetch resolves,
 including an href skipped on 404 (a skip still advances the count, so the
 last report of a page never sits below its total and reads as a stall). A
-raise still aborts before reporting, since the crawl is over either way.
+raise still aborts before reporting, since the crawl is over either way. The
+leading `0/N` is skipped when a page's releases were all seen on an earlier
+one, where `0/0` would announce a wait that isn't coming.
+
+#### `darkdescentrecords.py`
+
+Same silence, different shape. Its listing request returns a page of products
+at once, and only a *variable* product costs a paced detail fetch; a simple
+one is priced from the listing payload. So `total` counts the page's variable
+products rather than all of its products, which is what keeps the reporting
+rate at one line per paced request. Counting every product instead would emit
+a burst of instant reports for the simple ones and then fall silent on each
+variable one -- the opposite of the signal this is for.
+
+`_needs_detail_fetch(product)` is the single predicate deciding that, and
+`_items()` branches on it rather than on `type` directly, so the total counted
+before a page's loop cannot drift from what the loop actually fetches. Its
+purchasable/in-stock/artist gates are redundant where `_items()` calls it --
+that path has already returned `[]` for those -- and are exactly what make the
+count right where `crawl_catalog()` calls it, before anything is filtered.
+The label is `"listing page {page}"`; there is no total, since this crawler
+pages until a short response rather than reading a page count up front.
 
 ## Testing
 
@@ -201,6 +226,12 @@ raise still aborts before reporting, since the crawl is over either way.
   across every listing page including the leading `0/N`; a 404-skipped
   release still advances the count; the crawl still runs with no reporter
   installed.
+- `backend/tests/test_darkdescentrecords_crawler.py`: a page's variable
+  products reported one per paced fetch while its simple products neither
+  advance the counter nor count toward the total; `_needs_detail_fetch`
+  agreeing with every gate `_items()` applies; a page of only simple
+  products reporting nothing at all; the label naming the listing page it
+  is on; the crawl still runs with no reporter installed.
 - `backend/tests/test_stock_router.py`: the start endpoint's payload when
   accepted, when rejected in-process, and when rejected because another
   Machine holds the advisory lock.

@@ -92,9 +92,12 @@ class Crawler:
                 # started", which is indistinguishable from a hang while the
                 # sync's advisory lock rejects every other Refresh. The 0/N
                 # report before the loop is what puts the size of the wait on
-                # the record before the first fetch has even finished.
+                # the record before the first fetch has even finished --
+                # skipped when a page's releases were all seen on an earlier
+                # one, where "0/0" would announce a wait that isn't coming.
                 label = f"listing page {page}/{total_pages}"
-                await report_detail(0, len(new_hrefs), label)
+                if new_hrefs:
+                    await report_detail(0, len(new_hrefs), label)
                 page_items = []
                 for done, href in enumerate(new_hrefs, start=1):
                     await sleep(random.uniform(delay * 0.5, delay))
