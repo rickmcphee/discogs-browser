@@ -141,6 +141,15 @@ jobs:
             "+refs/heads/$SYNC_BRANCH:refs/remotes/origin/$SYNC_BRANCH" 2>/dev/null || true
 
           # The commit on `main` that `integration` provably already holds.
+          #
+          # There is deliberately no recovery from the sync branch here. An
+          # earlier draft read the incorporated `main` SHA back off
+          # `origin/$SYNC_BRANCH` after its PR landed, which cannot work in this
+          # repository: delete_branch_on_merge is on, so the branch is gone
+          # before any later run could read it. The marker is therefore written
+          # only at the two exits below that prove containment, and may lag a
+          # sync or two behind -- always valid, never wrong, occasionally older
+          # than it could be.
           # This is the correct merge base for bringing main forward, and git
           # cannot work it out for itself: both branches only ever squash-merge,
           # so neither gains an ancestor from the other and `git merge-base`
@@ -152,44 +161,6 @@ jobs:
 
           marker="$(git rev-parse -q --verify "refs/tags/$MARKER_TAG^{commit}" || true)"
 
-          # Attempted whether or not a tag exists. The path that opens a sync PR
-          # deliberately records nothing, so once that PR lands the tag still
-          # names the *previous* `main` commit -- valid, but older than what
-          # `integration` now holds, and an older base brings back a smaller
-          # version of the same false conflicts. Only ever advance: a recovered
-          # commit is adopted when it is a strict descendant of the marker.
-          if git rev-parse -q --verify "origin/$SYNC_BRANCH" >/dev/null 2>&1 \
-             && git diff --quiet "origin/$SYNC_BRANCH" origin/integration; then
-            # A sync that has already landed records its own base: this job
-            # builds its merge with `main` as the second parent, and
-            # `integration` holding that same tree proves the PR merged. That is
-            # how the marker normally first appears -- the path that opens a
-            # sync PR cannot record one at the time, since the merge has not
-            # landed and recording it early would make a later run skip a sync
-            # that was genuinely needed.
-            #
-            # Walk first parents rather than reading the tip's second parent.
-            # When a sync PR falls behind, update-branch adds a merge whose
-            # second parent is `integration`, so the tip's ^2 can name an
-            # integration commit. Recording that as the base is not merely
-            # wrong: with a base that already carries a bump `main` never had,
-            # the three-way merge reads the bump as "removed on main" and drops
-            # it -- cleanly, with no conflict and no warning. The synthetic
-            # merge is still down the first-parent chain, and its ^2 is on main.
-            for c in $(git rev-list --first-parent -n 50 "origin/$SYNC_BRANCH"); do
-              p2="$(git rev-parse -q --verify "$c^2" 2>/dev/null)" || continue
-              on_main "$p2" || continue
-              if [ -z "$marker" ]; then
-                marker="$p2"; recover_persist=1
-                echo "recovered the marker from the last landed sync: $marker"
-              elif [ "$p2" != "$marker" ] && git merge-base --is-ancestor "$marker" "$p2"; then
-                marker="$p2"; recover_persist=1
-                echo "advanced the marker from the last landed sync: $marker"
-              fi
-              break
-            done
-          fi
-
           # Whatever the source, a marker has exactly one meaning: "integration
           # already holds `main` up to here". A commit that is not on `main`
           # cannot say that, and used as a merge base it invents changes neither
@@ -198,7 +169,6 @@ jobs:
           if [ -n "$marker" ] && ! on_main "$marker"; then
             echo "::warning::discarding marker $marker -- it is not a commit on main, so it cannot describe what integration holds"
             marker=""
-            recover_persist=0
           fi
 
           if [ -z "$marker" ] && git cat-file -e "$BOOTSTRAP_BASE^{commit}" 2>/dev/null \
@@ -226,10 +196,6 @@ jobs:
               && echo "marker: integration holds main $(git rev-parse --short "$1")" \
               || echo "::warning::could not move $MARKER_TAG; the next run will try to recover it from $SYNC_BRANCH instead"
           }
-
-          if [ "${recover_persist:-0}" = 1 ]; then
-            record_marker "$marker"
-          fi
 
           # Compare trees, not ancestry -- same squash-merge reason as above.
           if git diff --quiet origin/main origin/integration; then

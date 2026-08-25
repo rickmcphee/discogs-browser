@@ -94,30 +94,32 @@ holds. That is its entire meaning, and every rule below is a consequence:
 In order, first hit wins:
 
 1. **The tag**, if it exists.
-2. **Recovery from a landed sync.** The sync builds its merge with `main` as the
-   second parent, so a sync branch that has landed names the commit it
-   incorporated. `integration` holding that same tree proves the PR merged.
-   Recovery **walks first parents** looking for a second parent that satisfies
-   the invariant — it must not read the branch tip's `^2` directly, because
-   `update-branch` on a behind sync PR adds a merge whose second parent is
-   `integration`. See "Failure modes retired" below for what that costs.
-3. **`BOOTSTRAP_BASE`**, a constant naming the `main` commit `integration` held
+2. **`BOOTSTRAP_BASE`**, a constant naming the `main` commit `integration` held
    when this workflow was written (`43217e9`; #184 synced `integration` to
    exactly that tree).
 
-A recovered marker is persisted immediately. Recovery depends on the sync branch
-still matching `integration`'s tree, which stops being true as soon as any
-integration-only bump lands — recovery that is not persisted works exactly once.
+There is deliberately **no recovery from the sync branch**, though several
+drafts had one: read the incorporated `main` SHA back off the landed sync
+branch, prove containment by tree equality, adopt it. It cannot work here.
+`delete_branch_on_merge` is on for this repository, so the sync branch is gone
+the instant its PR merges — verified against the head branches of #157, #178 and
+#184, none of which survive. A mechanism that can never execute is worse than
+its absence: it reads as covering a case it does not.
+
+The consequence is that the marker may **lag** — the path that opens a sync PR
+proves nothing, so the marker only advances at the two exits below. It is always
+*valid* (the invariant guarantees that), occasionally older than it could be,
+and an older-but-valid base costs a possible real-looking conflict, never a
+wrong merge.
 
 ### Where a marker is recorded
 
-Only these three, and each has proven containment at that point:
+Only these two, and each has proven containment at that point:
 
 | Point | What proves containment |
 | --- | --- |
 | Trees identical | `integration` and `main` hold the same files |
 | Merge was a no-op | Bringing `main` in changed nothing on `integration` |
-| Recovery succeeded | The landed sync branch's tree matches `integration` |
 
 The path that *opens* a sync PR deliberately records nothing: the merge has not
 landed, so containment is not yet true.
@@ -219,7 +221,8 @@ prevent.
 | --- | --- | --- |
 | Spurious conflict on a re-bumped pin | Merged against the frozen inferred base | The marker |
 | First run impossible | Inferred base predates `integration-promote.yml`; add/add conflict, and it died before recording a marker | `BOOTSTRAP_BASE` |
-| Deadlock after the first success | "No marker + workflow file present ⇒ tag lost ⇒ fail" — but the PR-opening path never records a marker, so this fired the moment the first sync landed | Recovery from the landed sync; the stale-bootstrap case warns instead |
+| Deadlock after the first success | "No marker + workflow file present ⇒ tag lost ⇒ fail" — but the PR-opening path never records a marker, so this fired the moment the first sync landed | The stale-bootstrap case warns instead of failing |
+| Unreachable recovery mechanism | Read the incorporated `main` SHA off the landed sync branch, but `delete_branch_on_merge` removes that branch on merge | Removed; the marker lags instead, and lagging is always valid |
 | **Pending bumps silently deleted** | `update-branch` on a behind sync PR makes the tip's `^2` an *integration* commit; recorded as the base, a bump `main` never had reads as "removed on main" and is dropped with no conflict | First-parent walk plus the on-`main` invariant |
 | Sync PR open forever | `\|\| true` swallowed total auto-merge failure while `pending=true` suppressed `refresh` | Let it fail |
 | Unrelated PRs blocked by someone else's conflict | A conflicted sync PR reported a pending sync, suppressing `refresh`, though auto-merge was off and nothing was about to move | `pending=false` on that path |
