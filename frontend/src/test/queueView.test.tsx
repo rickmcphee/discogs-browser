@@ -76,6 +76,49 @@ describe('QueueView', () => {
     expect(screen.getByText('Work units by crawler')).toBeInTheDocument()
   })
 
+  // "In progress", "Claimable" and "Held" each name a stat tile and a donut
+  // legend entry, so the label alone does not identify one. The legend entries
+  // are buttons; the tiles are not.
+  function tileFor(label: string): HTMLElement {
+    const own = screen.getAllByText(label).find((el) => el.closest('button') === null)
+    return own!.parentElement as HTMLElement
+  }
+
+  it('gives the in-progress tile and the in-progress segment their own units', async () => {
+    // The two numbers differ by design -- the tile counts rows, the donut
+    // counts work units -- and they come from one snapshot in one render. Read
+    // without units, an "In progress" tile of 147 beside an "In progress"
+    // legend entry of 162 reads as the tab disagreeing with itself.
+    getQueueSummary.mockResolvedValue(summary({
+      totals: {
+        claimable_rows: 0, claimable_release_rows: 0, claimable_stock_rows: 0,
+        held_rows: 0, unactionable_rows: 0, in_progress_rows: 147, stranded_rows: 137,
+        rows_done_last_hour: 0, eta_seconds: null,
+        claimable_units: 0, held_units: 0, in_progress_units: 162,
+      },
+      crawlers: [crawler({ claimable_units: 0, in_progress_units: 162 })],
+    }))
+    render(<QueueView />)
+    await screen.findByText('Worker pool')
+
+    const tile = tileFor('In progress')
+    expect(tile).toHaveTextContent('147')
+    expect(tile).toHaveTextContent('rows')
+
+    const legendEntry = screen.getByRole('button', { name: /^In progress/ })
+    expect(legendEntry).toHaveTextContent('162 units')
+  })
+
+  it('states rows on every tile that counts rows', async () => {
+    render(<QueueView />)
+    await screen.findByText('Worker pool')
+
+    expect(tileFor('Claimable')).toHaveTextContent('rows')
+    expect(tileFor('Held')).toHaveTextContent('rows waiting on a cooldown')
+    expect(tileFor('Stranded')).toHaveTextContent('rows claimed over')
+    expect(tileFor('Unactionable')).toHaveTextContent('rows with no crawler, or no live source')
+  })
+
   it('prompts for a selection before a crawler is chosen', async () => {
     render(<QueueView />)
     expect(await screen.findByText(/Select a crawler above/)).toBeInTheDocument()
@@ -317,7 +360,7 @@ describe('QueueView', () => {
     render(<QueueView />)
     // Blaming only the crawler setting sends an operator to the wrong place
     // when the real cause is a stock item no enabled store lists any more.
-    expect(await screen.findByText('no crawler, or no live source')).toBeInTheDocument()
+    expect(await screen.findByText('rows with no crawler, or no live source')).toBeInTheDocument()
   })
 
   it('says the worker pool tile is machine-local', async () => {
