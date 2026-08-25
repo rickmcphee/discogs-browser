@@ -115,6 +115,17 @@ outside the INFO stream is invisible to someone watching the rest of the
 crawl narrative — the same reasoning that already governs the
 dead-queue-row sweep line.
 
+Centralising the page log meant removing the one `shopify_catalog.iter_products()`
+already emitted beside its own `report_page()` call. Left in place it produced
+two near-identical `app_logs` rows for every Shopify listing page -- the
+opposite of what centralising it was for, and it would have made the
+one-row-per-paced-request figure below wrong for every Shopify-backed store.
+The central line supersedes it outright: it covers every catalog crawler
+rather than only the Shopify-backed ones, and names the store by its
+`site_name` instead of by `base_url`. `iter_products()` is only ever reached
+through `_run_catalog_crawler`, which always installs the reporter, so
+nothing loses output.
+
 The reporting *rate* -- not the total -- is what pacing bounds. A line lands
 only as fast as the paced request it reports, so at the default delay a
 Dischord run emits on the order of one line every 22 seconds however large
