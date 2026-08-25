@@ -191,9 +191,11 @@ class _FakePage:
         self._pages = pages
         self._title = title
         self.goto_url = None
+        self.goto_wait_until = None
 
-    async def goto(self, url, timeout=None):
+    async def goto(self, url, wait_until=None, timeout=None):
         self.goto_url = url
+        self.goto_wait_until = wait_until
         await self._real_page.set_content(
             "<html><head></head><body></body></html>", wait_until="domcontentloaded"
         )
@@ -307,6 +309,7 @@ async def test_crawl_catalog_paces_every_request(fake_page, monkeypatch):
 async def test_crawl_catalog_navigates_to_the_category_page_first(fake_page):
     [item async for item in Crawler().crawl_catalog(fake_page)]
     assert fake_page.goto_url == "https://www.amoeba.com/music/cd-and-vinyl"
+    assert fake_page.goto_wait_until == "domcontentloaded"
 
 
 async def test_crawl_catalog_raises_on_cloudflare_block_page(browser_page, window_pages):

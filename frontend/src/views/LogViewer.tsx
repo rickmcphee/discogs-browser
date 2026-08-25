@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useMemo, memo } from 'react'
+import { useEffect, useState, useMemo, memo } from 'react'
 import { openLogsStream, screenshotUrl, clearLogs } from '../api/client'
 import { textInputClass } from '../styles/inputs'
 
@@ -10,14 +10,14 @@ interface LogEntry {
   level: Level
   logger: string
   message: string
-  raw: string
+  machine: string
   screenshotPath?: string  // parsed from SCREENSHOT: marker
 }
 
-const LOG_RE = /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+(DEBUG|INFO|WARNING|ERROR)\s+(\S+)\s+(.+)$/
 const SCREENSHOT_RE = /\s+SCREENSHOT:(\S+\.png)\s*$/
 const URL_RE = /(https?:\/\/[^\s]+)/g
 const BROWSABLE_URL_RE = /^https?:\/\/www\./
+const KNOWN_LEVELS: Level[] = ['DEBUG', 'INFO', 'WARNING', 'ERROR']
 
 function renderMessage(msg: string) {
   const parts = msg.split(URL_RE)
@@ -29,19 +29,24 @@ function renderMessage(msg: string) {
   )
 }
 
-function parseLine(raw: string, id: number): LogEntry {
-  const m = raw.match(LOG_RE)
-  if (m) {
-    let message = m[4]
-    let screenshotPath: string | undefined
-    const sm = message.match(SCREENSHOT_RE)
-    if (sm) {
-      screenshotPath = sm[1]
-      message = message.slice(0, message.length - sm[0].length)
-    }
-    return { id, time: m[1], level: m[2] as Level, logger: m[3], message, screenshotPath, raw }
+function parsePayload(data: any): LogEntry {
+  let message: string = data.message ?? ''
+  let screenshotPath: string | undefined
+  const sm = message.match(SCREENSHOT_RE)
+  if (sm) {
+    screenshotPath = sm[1]
+    message = message.slice(0, message.length - sm[0].length)
   }
-  return { id, time: '', level: 'OTHER', logger: '', message: raw, raw }
+  const level = (KNOWN_LEVELS as string[]).includes(data.level) ? (data.level as Level) : 'OTHER'
+  return {
+    id: data.id,
+    time: data.time ?? '',
+    level,
+    logger: data.logger ?? '',
+    message,
+    machine: data.machine ?? '',
+    screenshotPath,
+  }
 }
 
 const LEVEL_COLORS: Record<Level, string> = {
@@ -69,20 +74,17 @@ function LogViewer() {
   const [levelFilter, setLevelFilter] = useState<Set<Level>>(new Set(['INFO', 'WARNING', 'ERROR']))
   const [msgFilter, setMsgFilter] = useState('')
   const [regexError, setRegexError] = useState(false)
-  const idRef = useRef(0)
 
   useEffect(() => {
     // Reconnect with the active levels so the server-side stream (history seed
     // + live tail) only carries the levels being viewed; a DEBUG burst can no
     // longer crowd INFO/WARNING/ERROR out of the buffer.
     setEntries([])
-    idRef.current = 0
     const source = openLogsStream(Array.from(levelFilter))
     source.onmessage = (e) => {
-      const { line } = JSON.parse(e.data)
-      if (!line) return
+      const data = JSON.parse(e.data)
       setEntries((prev) => {
-        const entry = parseLine(line, idRef.current++)
+        const entry = parsePayload(data)
         const next = [...prev, entry]
         return next.length > 2000 ? next.slice(-2000) : next
       })
@@ -175,6 +177,7 @@ function LogViewer() {
         <span className="w-36 shrink-0">Time</span>
         <span className="w-16 shrink-0">Level</span>
         <span className="w-28 shrink-0">Logger</span>
+        <span className="w-24 shrink-0">Machine</span>
         <span>Message</span>
       </div>
 
@@ -191,7 +194,8 @@ function LogViewer() {
             <span className="w-36 shrink-0 text-gray-600">{e.time}</span>
             <span className={`w-16 shrink-0 font-semibold ${LEVEL_COLORS[e.level]}`}>{e.level}</span>
             <span className="w-28 shrink-0 text-gray-500 truncate">{e.logger}</span>
-            <span className={`flex-1 break-all text-left ${LEVEL_COLORS[e.level]}`}>
+            <span className="w-24 shrink-0 text-gray-600 truncate">{e.machine}</span>
+            <span className={`flex-1 break-all whitespace-pre-wrap text-left ${LEVEL_COLORS[e.level]}`}>
               {renderMessage(e.message)}
               {e.screenshotPath && (
                 <a

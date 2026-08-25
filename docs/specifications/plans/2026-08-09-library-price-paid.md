@@ -45,7 +45,7 @@ It is not caused by this branch: a diff to `upsert_library_item`'s SQL cannot ma
 
 **Task ordering is load-bearing, and Task 3 is deliberately large.** The write path, both read paths, and the test seeding all reference the price together, so moving any one of them alone leaves the suite red — there is no smaller green step. Task 3 is therefore a single atomic cutover with one green gate at its end; its sub-steps are individually small, but do not commit partway through. Task 4 then drops the column, which is only safe once Task 3 has stopped both writing and reading it.
 
-**One psycopg detail that dictates the above:** psycopg raises `query parameter missing` when a named placeholder in the statement is absent from the params dict (extra keys, by contrast, are ignored harmlessly). So `upsert_catalog_release` cannot reference a renamed price key while ~40 existing fixtures still pass the old one — the reference has to be deleted, not repointed.
+**One psycopg detail that dictates the above:** psycopg raises `query parameter missing` when a named placeholder in the statement is absent from the params dict (extra keys, by contrast, are ignored harmlessly). So `upsert_catalog_release` cannot reference a renamed price key while existing fixtures still pass the old one — the reference has to be deleted, not repointed.
 
 ---
 
@@ -343,7 +343,7 @@ One atomic task: nothing writes the global column, both read paths and all test 
 
 - [ ] **Step 1: Remove the price from `upsert_catalog_release`**
 
-This comes first precisely because of the psycopg rule above: once the statement stops referencing any price placeholder, both the old `discogs_price` key and the new `price_paid` key become harmless extras, and the ~40 unrelated fixtures that pass `"discogs_price": None` keep working untouched.
+This comes first precisely because of the psycopg rule above: once the statement stops referencing any price placeholder, both the old `discogs_price` key and the new `price_paid` key become harmless extras, and the unrelated fixtures that pass `"discogs_price": None` keep working untouched.
 
 Replace the whole function. Delete the parameter, the `price_assignment` interpolation, and the comment block that exists only to justify the flag. It no longer needs to be an f-string:
 

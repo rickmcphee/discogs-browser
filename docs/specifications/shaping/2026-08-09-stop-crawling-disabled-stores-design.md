@@ -3,12 +3,55 @@
 Date: 2026-08-09
 Branch: `claude/stop-crawls-disabled-stores-ff6645`
 
+> **2026-08-10 amendment.** Every gate below checks the crawler *doing* the
+> crawling. On the stock-item path the crawler the work came *from* is a
+> different row, and none of this reached it: disabling a store left its items'
+> Amazon/eBay jobs queued and running. Extended by
+> [2026-08-10-dead-stock-crawl-jobs-design.md](2026-08-10-dead-stock-crawl-jobs-design.md),
+> which adds a source-side predicate to `claim_crawl_queue_batch`,
+> `enqueue_crawl_queue_for_stock_item`, and a new global sweep. "Out of scope:
+> existing data" below still holds for recorded `listings`/`stock_items` rows;
+> it never meant queued work.
+
+**Amendment (2026-08-14, branch `per-item-crawler-fanout`).** The
+crawler-doing-the-crawling gate this spec builds, and the amendment above
+extends, is itself superseded — `crawl_queue.crawler_id` is dropped, so there
+is no longer a `crawler_id` on a row for any of these mechanisms to key on.
+Specifically: §1's live claim-time gate, `AND crawler_id IN (SELECT id FROM
+crawlers WHERE enabled)`, is removed from `claim_crawl_queue_batch` outright;
+eligibility is now resolved per claimed row at dispatch time
+(`db.get_eligible_crawlers`), immediately, against live `crawlers` state —
+the same "takes effect on the very next claim" property, by a different
+mechanism. §2's `delete_pending_crawl_queue_for_crawler` is deleted;
+disabling a marketplace crawler now purges nothing and reports `discarded:
+0`, because there are no per-crawler pending rows left to purge — dispatch
+simply stops selecting a disabled crawler for future work units. (The
+store-disable purge this spec's own 2026-08-10 amendment points at,
+`delete_dead_stock_crawl_queue_rows`, is unaffected and keeps running on both
+disable and enable.) §3's `enqueue_crawl_queue(conn, discogs_id, crawler_id)`
+drops the `crawler_id` parameter entirely, and with it the per-call `WHERE
+EXISTS (... crawlers ... enabled)` guard — there is no crawler on the row to
+gate at enqueue time any more. §4 (stock sync's per-source live check) and §5
+(loading all plugins, gating on `enabled` at runtime via
+`plugins_by_crawler_id`) are both unaffected by this — the plugin-loading and
+per-source-disable mechanics they describe are unchanged.
+`count_pending_crawl_queue_for_user`'s "counts enabled crawlers only" (Scope,
+and §3's closing paragraph) is superseded by a query that instead checks, per
+target row, whether `pending_crawler_ids` is NULL or intersects the
+currently-enabled set — same property (a row counts only if something can
+actually claim it), different mechanism. See
+[`2026-08-14-per-item-crawler-fanout-design.md`](2026-08-14-per-item-crawler-fanout-design.md).
+
 ## Problem
 
 Disabling a crawler in Settings' "Crawler Management" / "Store Management"
 tables (`PATCH /crawlers/{id}` → `db.set_crawler_enabled`) only stops *future*
 enqueues. Work already in motion for that store carries on, on two independent
 paths:
+
+> "Crawler Management" was renamed to "Marketplace Management" by a later,
+> separately-documented rename; see `frontend/src/views/Settings.tsx` for
+> current heading text.
 
 - **Price/release crawl.** `db.claim_crawl_queue_batch` selects pending rows
   with no reference to `crawlers.enabled`, and the worker pool's
@@ -156,11 +199,23 @@ including one with nothing pending — and the rollback takes the `enabled` flip
 down with it, leaving the crawler running. No migration file: `TENANT_SCHEMA`
 and its grants re-run on every boot, so the grant lands on redeploy.
 
-INFO, not WARNING: `routers/logs.py`'s `_line_visible` filters by exact level
-membership rather than level-and-above, so a WARNING here would be invisible to
+INFO, not WARNING: `routers/logs.py`'s ~~`_line_visible` filters by exact level
+membership rather than level-and-above~~ (see 2026-08-17 amendment below — the
+log viewer still filters by exact level membership, just not via
+`_line_visible` any more), so a WARNING here would be invisible to
 anyone watching the INFO stream that carries the rest of the crawl narrative —
-the same reasoning already recorded on the cooldown log line in
-`_record_site_result`.
+the same reasoning previously recorded on the cooldown log line in
+`_record_site_result`, which as of 2026-08-18 has itself reverted to WARNING
+(see the amendment on `2026-08-01-worker-pool-pacing-design.md` item 12).
+
+**Amendment (2026-08-17, branch `flyio-log-files-machines`):** `_line_visible`
+no longer exists — `routers/logs.py` reads a Postgres `app_logs` table with a
+real `level` column per row, and level filtering is now a SQL `WHERE level =
+ANY(...)` clause, not a regex parsed off a tailed text line. The "INFO not
+WARNING" reasoning above is unaffected: the log viewer still filters by exact
+level set, not level-and-above, so a WARNING-only line is still invisible to
+anyone watching the INFO stream. See
+[`2026-08-17-unified-log-store-design.md`](2026-08-17-unified-log-store-design.md).
 
 `routers/settings.py` currently has no module logger; add the standard
 `log = get_logger("routers.settings")` used by the other routers.

@@ -9,7 +9,7 @@ This repository is specification-driven. The design spec and implementation plan
 
 ## Workspace isolation
 
-**Always work in a git worktree, never directly on `main` (or any other checked-out branch) in the primary checkout.** This includes spec/plan edits, not just code. Use the harness's native worktree tool (e.g. `EnterWorktree`) when available; fall back to `git worktree add` (conventionally under `.worktrees/`, gitignored) only when no native tool exists. One worktree per unit of work — branch, implement, commit, and open the PR from there, then remove it.
+**For all development in a session, always work in a git worktree — never just check out or create a branch in the primary checkout.** A branch alone is not isolation: the primary checkout is shared state, so checking one out there (even a fresh feature branch) still risks clobbering whatever the user or another session has checked out. This includes spec/plan edits, not just code. Use the harness's native worktree tool (e.g. `EnterWorktree`) when available; fall back to `git worktree add` (conventionally under `.worktrees/`, gitignored) only when no native tool exists. One worktree per unit of work — branch, implement, commit, and open the PR from there, then remove it.
 
 ## Repository layout
 
@@ -38,9 +38,9 @@ discogs-browser/
 
 ## Key invariants
 
-- **Crawl is a shared queue, not a per-request job.** An in-process worker pool (`CrawlManager.start_worker_pool()`) starts once at app boot and continuously drains `crawl_queue` via `SELECT ... FOR UPDATE SKIP LOCKED`. `POST /api/crawl/start` and collection sync (`_sync_collection`) both just enqueue rows for the calling user — the always-running pool picks them up; there's nothing left for either endpoint to "start." `GET /api/crawl/stream` is a persistent, per-user-filtered SSE connection — it never starts a crawl, only observes. The frontend opens the stream on mount.
-- **`crawlers.enabled` is a runtime gate, not a plugin-loading filter.** `start_worker_pool` loads plugins for *every* release crawler (`db.get_crawlers`), enabled or not, so a crawler enabled after boot works without an app restart. Enabled state is consulted at the points where work is created or picked up instead: `db.enqueue_crawl_queue`/`enqueue_crawl_queue_for_stock_item` insert nothing for a disabled crawler, `db.claim_crawl_queue_batch` re-evaluates `crawler_id IN (SELECT id FROM crawlers WHERE enabled)` on every batch, `PATCH /api/crawlers/{id}` deletes that crawler's `pending` rows on disable, and `_sync_stock` re-reads the enabled catalog set per source. Filtering at load time instead puts a disabled-then-re-enabled crawler's claimed rows down `_drain_one_batch`'s `plugin is None` branch, which marks them `done` with no listing, no error, and no log line. See [`docs/specifications/shaping/2026-08-09-stop-crawling-disabled-stores-design.md`](docs/specifications/shaping/2026-08-09-stop-crawling-disabled-stores-design.md).
-- **No listings pre-population.** A `listings` row only exists once a crawl_queue job actually ran for that `(discogs_id, crawler_id)` pair — no row means "not yet crawled," not a NULL-price placeholder. There's no separate pre-population step; collection sync enqueues real crawl jobs directly.
+- **Crawl is a shared queue, not a per-request job.** An in-process worker pool (`CrawlManager.start_worker_pool()`) starts once at app boot and continuously drains `crawl_queue` via `SELECT ... FOR UPDATE SKIP LOCKED`. `POST /api/crawl/start` and collection sync (`_sync_collection`) both just enqueue one row per target for the calling user — the always-running pool picks them up; there's nothing left for either endpoint to "start." `GET /api/crawl/stream` is a persistent SSE connection — it never starts a crawl, only observes. The frontend opens the stream on mount. It is per-user-filtered, but only for events that carry an owner: `_visible_to` (`routers/crawl.py`) gates both the replay buffer and the live loop on a `user_id` tag, which `crawl_manager.py`'s per-job `broadcast` closures stamp onto `sync_*`/`stock_judgment_*`/`plex_match_*`. Everything untagged is global by design and must stay that way — `stock_sync_*` (one shared catalog refresh, no per-user owner) and `listing_changed` (Store/Track are global tabs; filtering it by library ownership starved every user's view once already, fixed in `5e1890e`). See [`docs/specifications/shaping/2026-08-23-per-user-sse-event-filtering-design.md`](docs/specifications/shaping/2026-08-23-per-user-sse-event-filtering-design.md).
+- **`crawlers.enabled` is resolved at dispatch, not baked into queue rows.** A `crawl_queue` row names a *target* (`discogs_id` xor `item_key`), never a crawler. `_drain_one_batch` claims target rows and calls `db.get_eligible_crawlers` per row, so enabling or disabling a marketplace crawler takes effect on the next batch with no restart, no purge, and no re-sync. `start_worker_pool` loads plugins for *every* release crawler (`db.get_crawlers`), enabled or not, so a crawler enabled after boot already has its plugin. `pending_crawler_ids` on a row narrows the next pass to crawlers a previous pass deferred behind a circuit-breaker cooldown; `available_at` holds the row out of the claim until the earliest of those cooldowns expires. A stock-item row additionally requires an enabled store to still list its `item_key` in `stock_items` — that gate lives in `claim_crawl_queue_batch` and `enqueue_crawl_queue_for_stock_item`, with `db.delete_dead_stock_crawl_queue_rows` sweeping rows that fail it on disable and at the end of each stock sync. Enabling a marketplace crawler also calls `db.backfill_crawl_queue_for_crawler`, which revives `done` targets it has no priced `listings` row for, narrowed via `pending_crawler_ids` so only the newly enabled crawler runs for them. See [`docs/specifications/shaping/2026-08-14-per-item-crawler-fanout-design.md`](docs/specifications/shaping/2026-08-14-per-item-crawler-fanout-design.md), which supersedes the enqueue-time-selection parts of [`2026-08-09-stop-crawling-disabled-stores-design.md`](docs/specifications/shaping/2026-08-09-stop-crawling-disabled-stores-design.md) and [`2026-08-10-dead-stock-crawl-jobs-design.md`](docs/specifications/shaping/2026-08-10-dead-stock-crawl-jobs-design.md).
+- **No listings pre-population.** A `listings` row only exists once a crawl pass actually ran that crawler for that target — no row means "not yet crawled," not a NULL-price placeholder. There's no separate pre-population step; collection sync enqueues real crawl jobs directly.
 - **Amazon price extraction is scoped.** All selectors in `extract_price()` are scoped to buybox containers (`#corePrice_feature_div`, `#desktop_buybox`, etc.) to avoid matching carousel/recommendation prices.
 - **Playwright channel is configurable.** `PLAYWRIGHT_CHANNEL=""` uses bundled Chromium (Docker). `PLAYWRIGHT_CHANNEL="chrome"` uses the user's real Chrome (local dev default).
 - **App authentication is Discogs OAuth 1.0a, gated by invite code for new accounts, always enforced.** `AuthMiddleware` (`backend/auth_middleware.py`) guards every `/api` request via `backend/routers/session.py`. The app is multi-tenant, not single-owner — see [`docs/superpowers/specs/2026-07-26-multi-tenant-architecture-design.md`](docs/superpowers/specs/2026-07-26-multi-tenant-architecture-design.md) and [`docs/superpowers/specs/2026-07-26-discogs-oauth-auth-design.md`](docs/superpowers/specs/2026-07-26-discogs-oauth-auth-design.md). There is no password/TOTP/recovery-code concept to lose access to; losing access to your Discogs account is outside this app's control.
@@ -49,13 +49,10 @@ discogs-browser/
 
 ## Data directory
 
-Catalog, listings, and per-user data (collections, sessions, invites) live in Postgres (see `DATABASE_URL` below), not on disk. Local filesystem state under `DISCOGS_BROWSER_DATA` (default `~/.discogs-browser/`) is now limited to:
+App settings, avatars, catalog, listings, logs, and per-user data live in Postgres (see `DATABASE_URL` below). Local filesystem state under `DISCOGS_BROWSER_DATA` (default `~/.discogs-browser/`) is now limited to:
 
 ```
 ~/.discogs-browser/
-├── config.json          # settings
-├── app.log              # rotating application log
-├── avatar.png           # optional profile photo (512x512 PNG) — not yet re-scoped per-user; see multi-tenant spec's decomposition
 ├── crawlers/            # bundled crawler plugins only — no runtime plugin loading from user-writable paths in the hosted deployment
 └── screenshots/         # debug screenshots, YYYYMMDD_HHMMSS/
 ```
@@ -96,9 +93,117 @@ class Crawler:
 
 The backend owns the Playwright browser. Plugins receive a live `Page` and must raise `BotDetectedError` on bot interstitials.
 
+Catalog crawlers (`crawl_catalog`, not shown above) may additionally declare an optional `genre_summary: str` attribute — a one-sentence description read by Settings to show as a hover tooltip on the store link.
+
 **`[]` means "the site answered and has nothing." Any failure must raise.** The consecutive-failure circuit breaker cannot tell the two apart otherwise, and on the stock-item path an empty result is deliberately not counted as a failure at all — so a crawler that swallows its errors into `[]` never cools its site off.
 
-`failure_domain` is optional: crawlers declaring the same value count as one site to that breaker. Only the two eBay plugins use it (`"ebay-browse-api"` — one app, one token, one API across two `crawlers` rows). Omit it and the crawler is its own domain.
+`failure_domain` is optional: crawlers declaring the same value count as one site to that breaker. Only the eBay plugins use it (`"ebay-browse-api"` — one app, one token, one API across more than one `crawlers` row). Omit it and the crawler is its own domain.
+
+## Documentation — never write down a count of things that change
+
+**No document in this repo may state how many crawlers, stores, catalog
+sources, sites, plugins, tests, or *files* of any of those kinds exist.** Not in `CLAUDE.md`, not in a spec,
+not in a plan, not in a README, not in a commit message or PR description. This
+covers exact counts ("34 store crawlers"), approximations ("~40 catalog crawler
+plugins"), spelled-out counts ("thirty-three sources ship"), ordinals that imply
+a total ("a 34th `catalog`-type source", "the thirty-fifth crawler"), and
+running totals ("bringing the total to twenty-six"). Whole-suite test totals
+("738 tests") and file-tree annotations ("~100 pytest files") are the same rule.
+
+Several forms hide from a naive `grep` for a number next to a noun, and each of
+these slipped through a sweep that looked only for the obvious pattern — check
+for them by hand. Note also that `\w+` does not span a hyphen, so a pattern like
+`\d+ \w+ plugins` never matches `35 label-store plugins`; allow `[\w-]+`, and
+search unwrapped text, since a wrapped line can split the number from its noun:
+
+- **Ordinals fused to the digits** — `32nd catalog source`, `33rd Shopify-based
+  source`. `\d+ catalog` doesn't match `32nd catalog`.
+- **The number trailing the noun** — `brings the Store tab's total catalog
+  sources to eighteen`, `re-crawls all catalog sources (31 as of this writing)`.
+  Search for `total .* to`, `as of this writing`, and `\b\d+(st|nd|rd|th)\b`
+  as well as the obvious pattern.
+- **A generic noun standing in for the inventory** — `all 40 files listed in the
+  table below`, `~8 other test files`, `~100 pytest files`. Searching only for
+  `crawler|source|site|plugin` misses these, so sweep `files?|fixtures?` too.
+- **A spelled-out number**, especially a small one — `the four crawler test
+  files`, `six App-rendering test files`. A digit-only pattern never sees them,
+  so match `one|two|…|fifty` as well as `\d+`. Do **not** skip the low numbers on
+  the theory that they are scoped to one change: filtering out `four` is exactly
+  how `the four crawler test files` survived two sweeps.
+- **The number hyphenated onto the noun** — `a 40-file edit`, `the ~40-crawler
+  list`, `all 30-odd catalog crawler plugins`. There is no space to anchor on,
+  and a modifier can sit between the hyphen and the noun, so `\d+ \w+ files` and
+  a bare `\d+-(file|crawler)` both miss cases; search `\d+-[\w-]+` followed by an
+  inventory noun within a few words.
+
+Why: these numbers change every time a crawler is added, and nothing depends on
+them. Every one of them went stale within weeks, and each staleness cost real
+work — spec amendments written only to correct a number, then further amendments
+correcting the correction, then a plan step instructing the next session to
+propagate the new number into three other specs. The count was never load-bearing
+for any decision; the churn was pure overhead.
+
+Write it count-free instead:
+
+| Don't | Do |
+| --- | --- |
+| `~50 bundled plugins` | `bundled plugins` |
+| `Thirty-four sources ship: Nuclear Blast, …` | `These sources ship: Nuclear Blast, …` |
+| `a 33rd catalog-type source, The Sound Garden` | `another catalog-type source, The Sound Garden` |
+| `confirmed against all 31 crawlers` | `confirmed against every crawler` |
+| `the 36 catalog crawler plugins` | `every catalog crawler plugin` |
+| `a schema column with 31 crawlers writing NULL` | `a schema column with every other crawler writing NULL` |
+| `a 32nd catalog source for the Store tab` | `a new catalog source for the Store tab` |
+| `brings the total catalog sources to eighteen` | *(delete the clause)* |
+| `Total catalog crawlers registered: twenty-two` | *(delete the sentence)* |
+
+Naming the members of a set is fine — an enumerated list of source names carries
+real information and updates naturally when a source is added. It's the
+*cardinality* that must not be written down. If a reader needs the number, it's
+one `ls backend/crawlers/` away.
+
+Scope, so this doesn't over-apply. These stay:
+
+- Configuration values and thresholds — `consecutive_failure_limit`, a
+  30-minute cooldown, a 1,000-item cap, port numbers, timeouts.
+- Live-data findings from a specific investigation — "3,605 products, 15 pages",
+  "58/566 titles mismatch", "all 114 options report `sold_out: false`". These are
+  dated observations, not claims about current state.
+- Counts scoped to one change and fixed by it — "four new crawlers in this
+  batch", "run and confirm all 5 tests pass" for a test file the task just wrote.
+- Counts a single sentence defines by enumerating, where the number *is* the
+  fact — "`colCount` stays 7 for Track and 6 for Store" describes actual columns
+  in actual code. This does not cover a number that merely restates a list
+  printed next to it: "read in nine places across five files — a.py:1, b.py:2,
+  …" carries nothing the list doesn't, so the count goes and the list stays.
+- A count that is a fixed historical fact an argument rests on — "the helper
+  wasn't extracted until nine Shopify crawlers had converged on identical
+  logic" records when a threshold was crossed; it does not go stale.
+- **A test run's own result, reported as verification** in a PR description or
+  commit message — "1441 passed, 38 errors". That records what one command did
+  on one date; nobody maintains it and no reader takes it as a standing claim.
+  What this rule forbids is asserting the suite's *size* ("the suite is 738
+  tests"), especially in a spec or README where it reads as current fact. The
+  distinction matters because `.github/pull_request_template.md` requires the
+  opposite of silence here — "Commands run and their result. 'Tests pass'
+  without output is not verification." — so stripping run output from a PR
+  description would trade a real verification record for a cosmetic win.
+
+One trap worth calling out: when you de-number a sentence, make sure you don't
+change what it claims. "with 34 store crawlers able to enqueue on the order of
+20,000 jobs per sync" is an *aggregate* — rewriting it to "with every store
+crawler able to enqueue 20,000 jobs" silently multiplies the estimate. Reach for
+"collectively", "between them", or "in aggregate" when the count was doing that
+work. And read the whole passage, not just the sentence you edited: these
+documents often restate the same set a few lines later ("all seven files" after
+an enumerated list of seven), and a half-de-numbered passage is worse than an
+untouched one.
+
+**If you find yourself about to add or update an inventory count, delete it
+instead.** An amendment whose only content is "this count is now N" should not be
+written; if you're amending a doc that already carries such a count, remove the
+count rather than refreshing it. And do not "restore" a count you notice is
+missing from a spec — it is missing on purpose.
 
 ## Spec-first workflow
 
@@ -111,7 +216,7 @@ For small iterative fixes, updating the spec after the fact is acceptable.
 
 ### Plan execution mode
 
-When a written implementation plan (`docs/superpowers/plans/`) is ready to execute, always use `superpowers:subagent-driven-development` (fresh subagent per task, review between tasks) without asking which execution mode to use. Don't offer the inline-execution alternative by default — only fall back to it if the user explicitly asks for inline/in-session execution instead.
+When a written implementation plan (`docs/superpowers/plans/` or `docs/specifications/plans/` — this repo has both trees, see "Pre-PR spec-drift check" below) is ready to execute, always use `superpowers:subagent-driven-development` (fresh subagent per task, review between tasks) without asking which execution mode to use. Don't offer the inline-execution alternative by default — only fall back to it if the user explicitly asks for inline/in-session execution instead.
 
 ### Pre-PR spec-drift check (required, every branch)
 
@@ -121,7 +226,8 @@ Before opening a PR — including ad hoc changes that never went through the spe
 2. For each match, confirm the spec text still describes what actually shipped on this branch.
 3. If any spec has drifted, amend it — with a short note or inline correction, not a full rewrite of history — as its own commit on this branch, and push it before opening or merging the PR. A PR should not merge with known spec drift, even drift it didn't cause but exposed.
 4. This applies even when the current change itself has no spec/plan of its own (e.g., a small reorg with no new behavior) — the check is about what the diff broke in other docs, not about whether this change needed a spec.
-5. Note in the PR description what drift was found and fixed (or that none was found).
+5. While you're in each spec: if it carries a crawler/store/source/plugin/test **count**, delete the count — see "Documentation — never write down a count of things that change" above. Never update one to a newer number.
+6. Note in the PR description what drift was found and fixed (or that none was found).
 
 Plans (`docs/superpowers/plans/` and `docs/specifications/plans/`) are historical per-feature task logs, not living reference — they don't need backporting for this check.
 
@@ -129,8 +235,16 @@ Plans (`docs/superpowers/plans/` and `docs/specifications/plans/`) are historica
 
 Always open PRs as ready for review, not as drafts — pass `--draft=false` (or omit `--draft` and don't add `Draft PR` state) whenever creating a PR via `gh`, the GitHub API, or any PR-opening skill. Don't ask which mode to use.
 
+**Never enable auto-merge on a PR you open, and disable it if you find it already enabled** (`gh pr merge <PR> --disable-auto`) before ending your turn. `main`'s branch-protection ruleset now requires 1 approving review before merge — raised from 0 after PR #134 merged without one, closing the race at the platform level so no PR can merge unattended regardless of what triggers merge. But GitHub's own Copilot code review (`copilot_code_review.review_on_push`) still runs asynchronously and is not itself a required reviewer, so the required-approval rule stops an *unattended* merge, it doesn't guarantee whoever approves has actually seen Copilot's comments first — a human can still approve before that review has posted. This was a real, observed failure before the ruleset change: on PR #134 (`required_approving_review_count: 0` at the time), CI going green and auto-merge together let the PR merge in 2 seconds, with Copilot's review posting 20 seconds *after* the merge, too late to matter.
+
+A single check right after CI passes has the same race shifted one step later: Copilot's review can still land after that check finds nothing, and #134's own review + comments were posted together, after the merge. Checking merely "does *a* review from `copilot-pull-request-reviewer[bot]` exist" is also insufficient once you've pushed more than once: `/pulls/{number}/reviews` returns the PR's full history, so that check is satisfied by a stale review left over from an earlier push while a newer push sits unreviewed. Before considering a PR-opening task finished: capture the head SHA right after your final push (`git rev-parse HEAD`), then **poll** `gh api repos/{owner}/{repo}/pulls/{number}/reviews --paginate` every ~20-30s until a review from `copilot-pull-request-reviewer[bot]` whose `commit_id` matches that exact SHA appears (the reviews endpoint is paginated too — on a long-lived PR with many review rounds, the matching review can land past the first page while an unpaginated poll loops to timeout without ever seeing it), capped at ~5-6 minutes (Copilot's #134 review took ~3.5 minutes end to end) — if it times out, say so explicitly rather than silently treating "no review yet" as "no feedback." Once that review has landed, fetch inline comments with `gh api repos/{owner}/{repo}/pulls/{number}/comments --paginate` (an unpaginated call can silently truncate on a PR with many comments). If a PR merges before this check can complete (auto-merge enabled by something outside your control), treat any legitimate finding the same as if caught pre-merge: fix it and open a small follow-up PR immediately, don't let it slide because the original PR is already closed. For each inline comment you address after the fact, reply on that comment thread (`gh api repos/{owner}/{repo}/pulls/{number}/comments/{comment_id}/replies`) naming the fixing commit, then resolve the thread — but only for comments that actually have a `comment_id` (a "suppressed"/non-inline comment in a review body has none; just fix it, nothing to reply to).
+
 ## Tests
 
+- In a Claude Code cloud session, `scripts/cloud-setup.sh` provisions everything the
+  suite needs (Postgres, test database, `backend/.env`, backend + Playwright +
+  frontend dependencies). It runs automatically via the `SessionStart` hook in
+  `.claude/settings.json` — the one file under `.claude/` that is not gitignored.
 - `pytest-asyncio` with `asyncio_mode = "auto"` (all async tests run automatically)
 - HTML fixtures for Amazon price regression tests: `backend/tests/fixtures/crawlers/amazon/`
 - To capture a new fixture: `python backend/scripts/capture_fixture.py amazon <url> "Artist - Title"`
@@ -138,7 +252,7 @@ Always open PRs as ready for review, not as drafts — pass `--draft=false` (or 
 - **A test may never assume pre-existing schema or role state.** The session-scoped `pg_run_database` fixture (`backend/tests/conftest.py`) builds each pytest session a fresh `<base>_run_<hex>` database from `TEMPLATE template0` and poisons `app_user`/`app_identity`'s `BYPASSRLS` attributes (inverted from what `_ensure_role` sets) before the run's first `init_tenant_schema()`. Anything a test asserts on must therefore be constructed by the code under test during that run, not inherited from a prior run or a hand-provisioned local database. See `docs/specifications/shaping/2026-08-09-test-database-freshness-design.md`.
 - Poisoning also rotates both roles' passwords to random values; `init_tenant_schema()` rewrites them from `IDENTITY_DB_PASSWORD`/`APP_DB_PASSWORD`. Teardown restores both `BYPASSRLS` bits but *not* the passwords — they are unknowable after the fact, and the next run sets them again. A crashed run can therefore leave the cluster's roles holding random passwords until something re-runs `init_tenant_schema()`; `make test-db-clean` repairs the bits only.
 - Sharp edge: roles are cluster-level, not per-database, so two suites running concurrently against one Postgres cluster still interfere at the role level for up to one test (the next `init_tenant_schema()` in each session repairs it). Give each worktree its own Postgres container if running suites in parallel. For the same reason, never run `make test-db-clean` while a suite is in flight — pools close between tests, so a live run's database momentarily has zero backends.
-- Tests that don't touch Postgres run with no database at all: with `TEST_DATABASE_URL` unset, `pg_run_database` no-ops and only the Postgres-backed files fail.
+- With `TEST_DATABASE_URL` unset, `pg_run_database` no-ops and only the tests that need a database fail. That set is wider than "tests about Postgres": `tmp_config_dir` now depends on `pg_test_db` (settings live in `app_config`, not a file), so `test_config.py`, `test_logging_config.py`, and the crawler test files requesting it need `TEST_DATABASE_URL` too, whatever they're actually asserting.
 
 ## Commits — AI attribution trailers (required, every commit)
 
@@ -167,13 +281,15 @@ Create the commit via `git commit -F <message-file>`, not `git commit -m` — tr
 
 ## Versioning
 
-`backend/version.py`'s `VERSION` string is bumped as part of every PR that merges to `main` — not a separate follow-up commit, and not something that needs to be asked for each time:
+`backend/version.py`'s `VERSION` is **derived, never edited**. A PR that changes a version number is wrong by definition; there is nothing to bump.
 
-- **Minor bump is the default, automatic action.** Increment the second number (`1.48` → `1.49`) on every PR merge, regardless of how small the change is.
-- **Major bump (reset to `X.0`) only happens on the repo owner's explicit instruction.** Never take a major bump on your own judgment, no matter how large the change looks.
+The value is `YYYY.MM.DD+<short-sha>` (e.g. `2026.08.10+8fac644`), resolved at import from, in order: the `APP_VERSION` environment variable, then git, then `"dev"`. CI bakes the real value into the Fly image as a Docker build argument.
+
+The old scheme required each PR to bump a shared literal before merge, but whether the number was right could only be known at merge — so concurrent PRs collided routinely (see `docs/specifications/shaping/2026-08-10-derived-version-design.md`). There are no major/minor components any more, and no `3.x` successor.
 
 ## Style notes
 
+- No inventory counts in prose — see "Documentation — never write down a count of things that change"
 - No comments unless the WHY is non-obvious
 - No backwards-compat shims — just change the code
 - Python ≥3.9 (no `str | None` syntax — use `Optional[str]` or untyped)

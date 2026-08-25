@@ -36,7 +36,7 @@ which hit the same question and originally made the same mistake — see
 
 ## Overview
 
-Add `angryyoungandpoor.com` as a 32nd catalog source for the Store tab —
+Add `angryyoungandpoor.com` as a new catalog source for the Store tab —
 but unlike every existing catalog source, this one can't reuse
 `shopify_catalog.py`. Direct inspection (`curl` with a real browser UA)
 confirms Cloudflare returns "Attention Required!" (403) for any non-browser
@@ -274,8 +274,8 @@ in-browser extraction.
 title as a `" (Used)"` suffix when the source title ends in `"(USED)"` —
 the same pattern `is_preorder` suffixes already use elsewhere (e.g.
 `secretlystore.py` appending `" (Pre-Order)"`). A dedicated `condition`
-column was considered and rejected for now: every other of the 31 existing
-catalog sources is new-only, so a schema column with 31 crawlers writing
+column was considered and rejected for now: every other existing
+catalog source is new-only, so a schema column with every other crawler writing
 `NULL` for one crawler's benefit is more invasive than the value justifies
 at this scale. If a second used/vintage source shows up later, revisit.
 

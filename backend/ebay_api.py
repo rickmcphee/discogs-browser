@@ -157,15 +157,15 @@ async def search_ebay(
         # body's errors[] array (errorId + longMessage), and documents no
         # per-status meaning for Browse search failures at all. Debug, and
         # truncated: an error page from something other than eBay (a proxy's
-        # HTML, say) would otherwise dump tens of KB into a rotating log file
+        # HTML, say) would otherwise dump tens of KB into a single app_logs row
         # the viewer has to render. Same reason shopify_catalog logs 429
         # headers at debug.
         #
-        # Whitespace is collapsed so the record stays one line: routers/logs.py's
-        # _line_visible passes through any line it can't read a level from, so a
-        # body's second and subsequent lines would appear in *every* level view,
-        # DEBUG filter or not -- the same path that puts tracebacks in the INFO
-        # stream as OTHER.
+        # Whitespace is collapsed so the record stays one line -- purely for
+        # legibility now that every row carries its own level column and
+        # routers/logs.py filters in SQL (WHERE level = ANY(...)); a multi-line
+        # body is stored and levelled correctly either way, it just reads badly
+        # in the viewer.
         body = " ".join(e.response.text.split())[:2000]
         log.debug(
             "[%s] search HTTP %s response body: %s",

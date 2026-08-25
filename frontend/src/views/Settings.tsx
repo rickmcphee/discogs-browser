@@ -47,8 +47,6 @@ interface Props {
   onRefreshPrices: (mode: 'missing' | 'all') => void
   onRefreshStock: () => void
   isAdmin: boolean
-  hiddenCrawlerIds: number[]
-  onToggleCrawlerView: (crawlerId: number) => void
   stockSyncBusy: boolean
   stockSyncCrawlerId: number | null
   onRefreshStoreCrawler: (crawlerId: number) => void
@@ -80,7 +78,7 @@ function toggleButtonClass(on: boolean): string {
 }
 
 function Settings({
-  crawlers, onCrawlersChange, onRefreshPrices, onRefreshStock, isAdmin, hiddenCrawlerIds, onToggleCrawlerView,
+  crawlers, onCrawlersChange, onRefreshPrices, onRefreshStock, isAdmin,
   stockSyncBusy, stockSyncCrawlerId, onRefreshStoreCrawler,
 }: Props) {
   const [settings, setSettings] = useState<SettingsType>({
@@ -155,7 +153,6 @@ function Settings({
           <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-800">
             <th className="text-left py-2 pr-4 w-40">Site</th>
             {isAdmin && <th className="text-left py-2 pr-4 w-48">Last run</th>}
-            <th className="text-left py-2 pr-4">View</th>
             {isAdmin && <th className="text-left py-2 pr-4">Crawl</th>}
             {isAdmin && showRefresh && <th className="text-left py-2 w-24">Refresh</th>}
           </tr>
@@ -166,22 +163,15 @@ function Settings({
               <td className="py-3 pr-4 text-left text-gray-200 font-medium">
                 {c.base_url
                   ? <a href={c.base_url} target="_blank" rel="noreferrer"
+                       title={c.genre_summary ?? undefined}
                        className="text-gray-400 hover:text-white underline">{c.site_name}</a>
-                  : c.site_name}
+                  : <span title={c.genre_summary ?? undefined}>{c.site_name}</span>}
               </td>
               {isAdmin && (
                 <td className="py-3 pr-4 text-left text-gray-500 text-xs">
                   {c.last_run ? new Date(c.last_run).toLocaleString() : '—'}
                 </td>
               )}
-              <td className="py-3 pr-4 text-left">
-                <button
-                  onClick={() => onToggleCrawlerView(c.id)}
-                  className={toggleButtonClass(!hiddenCrawlerIds.includes(c.id))}
-                >
-                  {hiddenCrawlerIds.includes(c.id) ? 'Hidden' : 'Visible'}
-                </button>
-              </td>
               {isAdmin && (
                 <td className="py-3 pr-4 text-left">
                   <button
@@ -271,12 +261,12 @@ function Settings({
       {/* Crawler Management */}
       <section>
         <h2 className="text-lg font-semibold text-white mb-1 text-left">
-          {isAdmin ? 'Crawler Management' : 'Store Sources'}
+          {isAdmin ? 'Marketplace Management' : 'Marketplaces'}
         </h2>
         <p className="text-sm text-gray-500 mb-4 text-left">
           {isAdmin
             ? <>Run price crawlers on a schedule. Leave blank to disable. Example: <code className="text-gray-400 font-mono">0 2 * * *</code> = 2 am daily.</>
-            : 'Choose which stores\' items you want to see in the Store tab.'}
+            : 'Choose which marketplaces\' prices you want to see — for items in your collection or wantlist, and items found in Stores.'}
         </p>
         {isAdmin && settingsSaveError && <p className="text-xs text-red-400 mb-3 text-left">{settingsSaveError}</p>}
         {isAdmin && (
@@ -343,7 +333,7 @@ function Settings({
       {/* Store Management */}
       <section>
         <h2 className="text-lg font-semibold text-white mb-1 text-left">
-          {isAdmin ? 'Store Management' : 'Store Catalog Sources'}
+          {isAdmin ? 'Store Management' : 'Stores'}
         </h2>
         <p className="text-sm text-gray-500 mb-4 text-left">
           {isAdmin
