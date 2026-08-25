@@ -420,7 +420,7 @@ class CrawlManager:
         DB call below is a plain asyncio.to_thread rather than wrapped
         again -- protecting the same thing twice would be redundant."""
         from crawler import _new_context
-        from db import get_app_pool, mark_crawl_queue_done, defer_crawl_queue_row, upsert_listing, get_catalog_release, get_stock_item_identity, upsert_stock_item_listing, upsert_stock_item_from_release, delete_stock_item_for_release, clear_listing_price, get_eligible_crawlers
+        from db import get_app_pool, mark_crawl_queue_done, defer_crawl_queue_row, upsert_listing, get_catalog_release, get_stock_item_identity, upsert_stock_item_listing, upsert_stock_item_from_release, delete_stock_item_for_release, clear_listing_price, get_eligible_crawlers, crawl_queue_claim_held
 
         # Two passes: resolve every claimed row's target and eligible crawler
         # set first, then drain the resulting work units in target-major order.
@@ -482,9 +482,11 @@ class CrawlManager:
             # running, the write applies to nothing and is dropped rather than
             # overwriting the new claimant's own resolution -- a stale 'done'
             # landing on a fresh deferral would silently drop the deferred
-            # crawler for that target. The crawl results themselves are already
-            # committed by then and are idempotent upserts, so nothing is lost
-            # but the redundant work.
+            # crawler for that target. A worker that lost its claim has usually
+            # already stopped at the result gate above and never reaches this;
+            # this one still matters for the paths that resolve a row without
+            # writing a result at all -- an unresolvable target, a plugin that
+            # failed to load, a search that raised.
             def _write():
                 with get_app_pool().connection() as conn:
                     if row_id in deferred:
@@ -557,8 +559,18 @@ class CrawlManager:
                 # as either outcome.
                 await self._record_site_result(crawler_id, succeeded=not bot_detected)
 
+            # Ownership is re-checked here, in the same transaction as the
+            # writes and holding the queue row's lock, not just at the terminal
+            # write below. These writes are last-write-wins, not idempotent for
+            # a changing result: a claim reclaimed during the search above would
+            # let this worker's older price overwrite the new claimant's fresher
+            # one, or clear a price the new claimant had just found. Dropping
+            # the terminal write afterwards does not undo either.
             def _write_result():
                 with get_app_pool().connection() as conn:
+                    if not crawl_queue_claim_held(conn, row_id, worker_id):
+                        conn.rollback()
+                        return False
                     if matches:
                         best = matches[0]
                         if is_release:
@@ -576,7 +588,18 @@ class CrawlManager:
                         delete_stock_item_for_release(conn, row["discogs_id"], crawler_id)
                         clear_listing_price(conn, row["discogs_id"], crawler_id)
                     conn.commit()
-            await asyncio.to_thread(_write_result)
+                    return True
+            if not await asyncio.to_thread(_write_result):
+                # The row belongs to another worker now, so it is that worker's
+                # to resolve and broadcast for -- skip both rather than
+                # reporting a change this pass did not make. Anything this row
+                # deferred on an earlier unit goes with it; the new claimant is
+                # redoing the row from its own pending_crawler_ids anyway.
+                log.warning(
+                    "[%s] Queue row %s was reclaimed mid-search; dropping this worker's result for crawler %s",
+                    worker_id, row_id, crawler_id,
+                )
+                continue
 
             # Before the broadcast, not after, so a broadcast failure can't
             # separate the listing write from the row's status write in the

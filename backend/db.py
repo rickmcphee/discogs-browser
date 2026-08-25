@@ -1496,6 +1496,28 @@ def claim_crawl_queue_batch(conn, worker_id: str, limit: int) -> list[dict]:
     ).fetchall()
 
 
+# Locks the row for the rest of the caller's transaction, so a result write
+# guarded by this cannot be raced by a reclaim landing between the check and the
+# write -- reclaim_stranded_crawl_queue_rows selects FOR UPDATE SKIP LOCKED, so
+# it skips a row a worker is mid-write on and takes it on a later pass instead.
+#
+# Needed because the terminal-write gate below is not enough on its own. The
+# listing writes run earlier, and they are last-write-wins rather than
+# idempotent for a *changing* result: a worker whose claim was reclaimed after
+# its search would otherwise overwrite the new claimant's fresher price, or --
+# worse -- clear_listing_price a price the new claimant had just found. Refusing
+# that worker's terminal write afterwards does not undo either.
+def crawl_queue_claim_held(conn, queue_id: int, worker_id: str) -> bool:
+    return conn.execute(
+        """
+        SELECT 1 FROM crawl_queue
+        WHERE id = %(queue_id)s AND claimed_by = %(worker_id)s
+        FOR UPDATE
+        """,
+        {"queue_id": queue_id, "worker_id": worker_id},
+    ).fetchone() is not None
+
+
 # Gated on the claim, not just the id. The reclaim made "two workers holding
 # one row" reachable -- it cannot tell a dead worker from a slow one, so a pass
 # that outruns the stranded threshold has its row handed to someone else while

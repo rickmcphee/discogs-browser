@@ -91,8 +91,9 @@ crawl_delay_seconds)` — the *same function* the Queue tab's Stranded tile is
 computed from, not a second definition that happens to agree today.
 
 This is the central constraint of the design. `_queue_stranded_after_seconds`
-returns `max(QUEUE_STRANDED_FLOOR_SECONDS, enabled_release_crawlers ×
-crawl_delay_seconds × QUEUE_STRANDED_SLACK)` — a derived value that moves when
+returns `max(QUEUE_STRANDED_FLOOR_SECONDS, QUEUE_CLAIM_BATCH_SIZE ×
+enabled_release_crawlers × crawl_delay_seconds × QUEUE_STRANDED_SLACK)` — a
+derived value that moves when
 an admin enables a crawler or changes the pacing setting. A reclaim carrying
 its own constant would drift out of agreement with the tile the moment either
 changed, and the two disagreeing is worse than either being wrong alone: the
@@ -189,10 +190,32 @@ The reclaim infers death from a claim's age. It cannot distinguish a dead
 worker from a live one that is merely slow, so a sufficiently slow pass will
 have its row reclaimed out from under it and crawled twice, concurrently.
 
-**The two workers must not both be able to resolve the row.** The crawl results
-themselves are safe to duplicate — `upsert_listing` is an upsert keyed on the
-(target, crawler) pair, so a second pass overwrites with an equal-or-fresher
-price. The *terminal* writes are not. `defer_crawl_queue_row` is not idempotent
+**The two workers must not both be able to write for the row** — neither its
+results nor its resolution.
+
+The results are *not* safe to duplicate, which an earlier draft of this design
+got wrong. `upsert_listing` is an upsert keyed on the (target, crawler) pair, so
+a second pass with the *same* answer is harmless — but the answers differ, and
+the write is last-write-wins, not idempotent. A worker whose claim was reclaimed
+after its search would overwrite the new claimant's fresher price with its own
+older one. The empty-result branch is worse: `clear_listing_price` and
+`delete_stock_item_for_release` would wipe a price the new claimant had just
+found. Refusing that worker's *terminal* write afterwards does not undo any of
+it, because the result write already committed.
+
+So the result write re-checks ownership too, in the same transaction as the
+writes and holding the queue row's lock (`db.crawl_queue_claim_held`, a `SELECT
+… FOR UPDATE`). Holding the lock is what makes the check meaningful rather than
+advisory: the reclaim's own `SELECT … FOR UPDATE SKIP LOCKED` skips a row a
+worker is mid-write on and takes it on a later pass instead, so a reclaim cannot
+land between the check and the write. A worker that finds it no longer owns the
+row drops its result, skips the row's resolution and its `listing_changed`
+broadcast — reporting a change it did not make would be a lie to every connected
+client — and moves to the next unit. Its `_record_site_result` still stands: the
+search really happened, and site health is not the row's to own.
+
+The *terminal* writes need the same gate for their own reason.
+`defer_crawl_queue_row` is not idempotent
 against a second claimant: it sets `status = 'pending'` with one specific
 narrowed `pending_crawler_ids`. So whichever worker wrote last used to win, and
 the damaging order is a stale `done` landing on a fresh deferral — the deferred
@@ -203,8 +226,10 @@ wrong: a stale deferral resurrects a row the new claimant already completed.
 Both terminal writes are therefore gated on the claim — `WHERE id = … AND
 claimed_by = …` — and return their `rowcount` so the caller can tell its write
 was ignored. A worker whose claim was reclaimed drops its resolution and logs
-it; its crawl results are already committed and idempotent, so nothing is lost
-but the redundant work.
+it. In practice that worker has usually already dropped its result at the
+earlier gate and never reaches this one; this gate still matters for the paths
+that resolve a row without writing a result at all — a target that no longer
+resolves, a crawler whose plugin failed to load, a search that raised.
 
 That gate only works if `claimed_by` identifies one worker globally. It did not:
 workers were named `worker-0`, `worker-1` per process, which is the same on
@@ -217,8 +242,9 @@ With that in place the observable cost of an over-eager reclaim is one redundant
 page load per crawler on that row, plus its pacing delay.
 
 It is not free, though, and the honest statement of the trade is: this design
-buys "no infrastructure" with "the threshold has to stay generous, and the
-terminal writes have to be claim-gated so that being wrong is merely wasteful."
+buys "no infrastructure" with "the threshold has to stay generous, and every
+write a claimed row makes has to be claim-gated so that being wrong is merely
+wasteful."
 Recovery inside half an hour, from a condition whose current recovery time is
 *never*, is the win; shaving that to minutes is what heartbeats would be for.
 
@@ -310,6 +336,12 @@ In `backend/tests/test_crawl_manager.py`:
 
 - Worker ids are namespaced by `MACHINE_ID`, so `claimed_by` identifies one
   worker globally rather than one per Machine.
+- A pass whose claim is taken *during its search* drops its result: the new
+  claimant's fresher price survives, and the row stays the new claimant's to
+  resolve. The steal is performed from inside the fake plugin's `search`, so
+  this exercises the real ordering rather than a simulated one.
+- The same, for the empty-result branch: a pass that finds nothing after losing
+  its claim does not clear the price the new claimant just found.
 
 - `_drain_one_batch` claims a row that was stranded before it ran. This is the
   end-to-end assertion and the load-bearing one: against unmodified

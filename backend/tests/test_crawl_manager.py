@@ -4712,3 +4712,99 @@ def test_worker_ids_are_namespaced_by_machine(monkeypatch):
 
     monkeypatch.setattr(config, "MACHINE_ID", "9080e24b73d187")
     assert CrawlManager._worker_id(0) == "9080e24b73d187-worker-0"
+
+
+async def test_drain_one_batch_drops_its_result_when_the_claim_was_taken_mid_search(pg_schema):
+    # Gating only the terminal queue write is not enough. The listing writes
+    # run before it and are last-write-wins, not idempotent for a *changing*
+    # result: if this worker's claim is reclaimed after its search, the new
+    # claimant can crawl and write a fresher price, and this worker's older
+    # upsert would then overwrite it. Rejecting the terminal write afterwards
+    # does not undo that.
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1")
+        conn.commit()
+
+    def _steal_the_claim_and_write_a_fresher_price(*_args, **_kwargs):
+        # Stands in for the reclaim firing while this worker is mid-search,
+        # another worker taking the row, crawling it, and finishing first.
+        with db.get_admin_pool().connection() as conn:
+            row_id = conn.execute("SELECT id FROM crawl_queue WHERE discogs_id = 'r1'").fetchone()["id"]
+            db.revert_crawl_queue_claim(conn, [row_id])
+            db.claim_crawl_queue_batch(conn, "worker-b", limit=1)
+            db.upsert_listing(conn, "r1", crawler_id, "https://b", 5.00, None, "USD", None)
+            conn.commit()
+        return [{"url": "https://a", "price": 9.99, "shipping": None, "currency": "USD", "condition": None}]
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(side_effect=_steal_the_claim_and_write_a_fresher_price)
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        await manager._drain_one_batch("worker-a", {crawler_id: fake_plugin}, pages={})
+
+    with db.get_admin_pool().connection() as conn:
+        listing = conn.execute(
+            "SELECT price, url FROM listings WHERE release_id = 'r1' AND crawler_id = %s", [crawler_id]
+        ).fetchone()
+        queue_row = conn.execute(
+            "SELECT status, claimed_by FROM crawl_queue WHERE discogs_id = 'r1'"
+        ).fetchone()
+    # worker-b's price survives; worker-a's stale result is dropped entirely.
+    assert listing["price"] == 5.00
+    assert listing["url"] == "https://b"
+    # And the row is still worker-b's to resolve.
+    assert queue_row["status"] == "in_progress"
+    assert queue_row["claimed_by"] == "worker-b"
+
+
+async def test_drain_one_batch_does_not_clear_a_price_after_losing_its_claim(pg_schema):
+    # The empty-result branch is the worse direction: this worker finding
+    # nothing would clear a price the new claimant just found.
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1")
+        conn.commit()
+
+    def _steal_the_claim_then_find_nothing(*_args, **_kwargs):
+        with db.get_admin_pool().connection() as conn:
+            row_id = conn.execute("SELECT id FROM crawl_queue WHERE discogs_id = 'r1'").fetchone()["id"]
+            db.revert_crawl_queue_claim(conn, [row_id])
+            db.claim_crawl_queue_batch(conn, "worker-b", limit=1)
+            db.upsert_listing(conn, "r1", crawler_id, "https://b", 5.00, None, "USD", None)
+            conn.commit()
+        return []
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(side_effect=_steal_the_claim_then_find_nothing)
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        await manager._drain_one_batch("worker-a", {crawler_id: fake_plugin}, pages={})
+
+    with db.get_admin_pool().connection() as conn:
+        listing = conn.execute(
+            "SELECT price FROM listings WHERE release_id = 'r1' AND crawler_id = %s", [crawler_id]
+        ).fetchone()
+    assert listing["price"] == 5.00
