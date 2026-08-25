@@ -80,6 +80,15 @@ async def start_stock_sync(body: StockSyncStartRequest = StockSyncStartRequest()
     return {"started": started, "running": crawl_manager.stock_sync_running}
 ```
 
+**Amendment (2026-08-25):** the return is now
+`{"started": started, **crawl_manager.stock_sync_state()}`, which keeps
+`running` with its existing meaning and adds `source`, `elapsed_seconds`,
+and `source_elapsed_seconds`. The rejected case used to come back as a bare
+`started: false` that `handleRefreshStoreCrawler` discarded, so a Refresh
+clicked during a long crawl looked like it had done nothing -- on a source
+that takes over an hour, indistinguishable from a hang. See
+[`2026-08-25-catalog-crawl-progress-visibility-design.md`](2026-08-25-catalog-crawl-progress-visibility-design.md).
+
 One route for both bulk and single-store, matching the existing
 `POST /crawl/start` shape (`CrawlStartRequest.release_id`) rather than adding
 a second endpoint.
@@ -143,7 +152,7 @@ operate per-`crawler_id` and are safe to call for a filtered one-crawler run.
 `frontend/src/api/client.ts`:
 
 ```typescript
-export async function postStockSyncStart(crawlerId?: number): Promise<{ started: boolean; running: boolean }> {
+export async function postStockSyncStart(crawlerId?: number): Promise<StockSyncStartResult> {
   const r = await apiFetch('/stock/sync/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -166,12 +175,21 @@ export async function postStockSyncStart(crawlerId?: number): Promise<{ started:
 ```typescript
 const handleRefreshStoreCrawler = useCallback(async (crawlerId: number) => {
   try {
-    await postStockSyncStart(crawlerId)
+    reportStockSyncRejection(await postStockSyncStart(crawlerId), setSyncStatus)
   } catch (e: any) {
     setSyncStatus(`In-stock sync failed to start: ${e.message}`)
   }
 }, [setSyncStatus])
 ```
+
+**Amendment (2026-08-25):** `reportStockSyncRejection` (and the same call in
+`handleRefreshStock`) is what renders the rejected case -- the `started:
+false` this handler originally awaited and threw away. It puts
+`In-stock sync already running -- {source} ({source elapsed} so far),
+{total elapsed} in total. Try again once it finishes.` in the bottom status
+bar, and returns without touching it when the start was accepted. The
+`postStockSyncStart` signature above is amended to match the endpoint's
+widened response.
 
 - Pass to `Settings`: `stockSyncBusy={stockSyncTarget !== null}`,
   `stockSyncCrawlerId={typeof stockSyncTarget === 'number' ? stockSyncTarget : null}`,

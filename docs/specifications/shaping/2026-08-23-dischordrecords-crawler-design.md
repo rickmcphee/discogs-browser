@@ -73,6 +73,16 @@ two-phase:
 3. For each not-yet-seen release href, fetch the detail page and parse it
    (below).
 
+**Amendment (2026-08-25):** the crawl also reports its detail phase through
+`crawl_progress.report_detail(done, total, label)` -- once as `0/N` before
+each page's loop, then once per href after its fetch resolves (including one
+skipped on 404, so the count always reaches its total). `report_page()`
+alone fires only at the *end* of step 3, which at the pacing below is tens of
+minutes of complete silence per listing page: no log line, no status-bar
+movement, and every other store's Refresh rejected by the stock sync's
+advisory lock meanwhile. See
+[`2026-08-25-catalog-crawl-progress-visibility-design.md`](2026-08-25-catalog-crawl-progress-visibility-design.md).
+
 Release ids are opaque strings, not a clean numeric sequence usable to
 construct URLs directly — confirmed live values include `"001"`, `"007-0"`
 (an individual track sub-page under catalog #7), `"008a"`/`"008b"` (a
@@ -322,6 +332,9 @@ itself directly via `config.load_config()`, the same mechanism
 - a 404 on a detail page → that release is skipped, the crawl continues
 - whole-crawl zero-vinyl-items guard → raises
 - site metadata (`site_name`, `base_url`, `genre`, `crawler_type`)
+- **(2026-08-25)** detail-phase progress reported across every listing page,
+  including the leading `0/N`; a 404-skipped release still advances the
+  count; the crawl still runs with no reporter installed
 
 ## Crawl citizenship and `robots.txt` compliance
 
