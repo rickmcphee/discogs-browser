@@ -102,8 +102,6 @@ jobs:
     # points. Running here costs a few seconds when there is nothing to bring
     # over, and keeps the marker from lagging further than it must.
     runs-on: ubuntu-latest
-    outputs:
-      pending: ${{ steps.sync.outputs.pending }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -211,7 +209,6 @@ jobs:
           if git diff --quiet origin/main origin/integration; then
             echo "integration already holds main's files; nothing to sync."
             record_marker "$(git rev-parse origin/main)"
-            echo "pending=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -227,7 +224,6 @@ jobs:
           # carries the reverted changes straight back into `main`.
           if [ -n "$marker" ] && [ "$marker" = "$(git rev-parse origin/main)" ]; then
             echo "main has not advanced since it was last folded in; the remaining difference is integration's own."
-            echo "pending=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -248,8 +244,7 @@ jobs:
             # An open sync PR goes "behind" if `integration` moves while its
             # checks run, and strict branch protection then refuses to merge it.
             # Re-arming auto-merge alone would spin here for good: setting
-            # pending=true below also holds off the refresh job, which is the
-            # only other thing that would have caught it up.
+            # nothing else would catch it up.
             sync_state="unknown"
             for _ in 1 2 3; do
               sync_state="$(gh api "repos/$REPO/pulls/$existing" --jq '.mergeable_state')"
@@ -266,24 +261,14 @@ jobs:
               behind)
                 echo "Sync PR #$existing is behind; catching it up before re-arming auto-merge."
                 if ! gh api -X PUT "repos/$REPO/pulls/$existing/update-branch"; then
-                  # Not a warning. Swallowing this re-arms auto-merge and reports
-                  # a queued sync for a PR that is still behind and cannot merge
-                  # under the strict policy -- a green run, `refresh` suppressed,
-                  # and nothing moving.
-                  echo "pending=false" >> "$GITHUB_OUTPUT"
+                  # Not a warning: swallowing it re-arms auto-merge on a PR
+                  # that is still behind and cannot merge under the strict
+                  # policy, and reports a green run for it.
                   echo "::error::could not catch up sync PR #$existing, which is behind and cannot merge until it is."
                   exit 1
                 fi
                 ;;
               dirty)
-                # pending=false, unlike every other exit that leaves a sync PR
-                # open. The guard exists because a queued sync is about to move
-                # `integration`, making any catch-up immediately stale -- but
-                # auto-merge is deliberately left off here, so nothing is going
-                # to move. Reporting pending would suppress `refresh` and hold
-                # every unrelated stale PR hostage to a conflict that has
-                # nothing to do with them, until someone resolves it by hand.
-                # The failure below still makes the sync itself loud.
                 # Actually disable it. A conflict blocks auto-merge but does
                 # not clear it, so an armed request survives -- and the moment
                 # someone pushes a resolution it merges on the spot, unreviewed,
@@ -303,7 +288,6 @@ jobs:
                   # quietly because labelling failed quietly.
                   echo "::error::could not label #$existing with $CONFLICT_LABEL. A later run will re-arm auto-merge on it: keep auto-merge disabled by hand, or check the token has Issues: write."
                 fi
-                echo "pending=false" >> "$GITHUB_OUTPUT"
                 echo "::error::Sync PR #$existing conflicts with integration. Auto-merge has been disabled: resolve $SYNC_BRANCH by hand, push it, and merge it deliberately."
                 exit 1
                 ;;
@@ -332,23 +316,17 @@ jobs:
               --json autoMergeRequest --jq '.autoMergeRequest // empty')"
 
             if printf '%s\n' "$pr_labels" | grep -qx "$CONFLICT_LABEL"; then
-              # pending=false, for the same reason the `dirty` path reports it:
-              # auto-merge is off, so nothing is queued and `integration` is not
-              # about to move. Claiming otherwise suppresses `refresh` and keeps
-              # unrelated PRs behind until the human gets round to merging.
               echo "Sync PR #$existing is labelled $CONFLICT_LABEL; leaving auto-merge off for whoever resolves it."
-              echo "pending=false" >> "$GITHUB_OUTPUT"
               exit 0
             elif [ -n "$pr_automerge" ]; then
               echo "Sync PR #$existing already has auto-merge armed."
             else
-              # No `|| true`: if neither call can arm auto-merge, this path
-              # would otherwise set pending=true, suppress `refresh`, and report
-              # a green run while the sync PR sits open with nothing driving it.
+              # No `|| true`: if neither call can arm auto-merge, the sync PR
+              # sits open with nothing driving it, and a green run would say
+              # otherwise.
               gh pr merge "$existing" --repo "$REPO" --auto --merge \
                 || gh pr merge "$existing" --repo "$REPO" --auto --squash
             fi
-            echo "pending=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -384,7 +362,6 @@ jobs:
           if git diff --quiet origin/integration HEAD; then
             echo "merge changed nothing on integration; nothing to sync."
             record_marker "$(git rev-parse origin/main)"
-            echo "pending=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -428,24 +405,25 @@ jobs:
           # here. Until then it falls back to squash.
           gh pr merge "$opened" --repo "$REPO" --auto --merge \
             || gh pr merge "$opened" --repo "$REPO" --auto --squash
-          echo "pending=true" >> "$GITHUB_OUTPUT"
           echo "Sync PR #$opened is queued to merge."
 
   refresh:
     name: Catch up PRs integration left behind
     needs: sync
-    # always(): `sync` runs on every trigger now, but it can fail -- a merge
+    # always(): `sync` runs on every trigger, but it can fail -- a merge
     # conflict, a push rejected for want of the workflow scope -- and a failed
     # dependency would otherwise skip this job too. Those are the moments PRs
     # most need catching up, not least.
     #
-    # The pending guard holds off only while a sync PR is actually queued to
-    # merge: `integration` is about to move again, so catching everything up to
-    # the tip it is leaving would just have to be redone.
+    # This job deliberately does not ask whether a sync is queued. It used to,
+    # on the reasoning that `integration` was about to move and any catch-up
+    # would be redone -- but a queued sync can sit for days when its checks are
+    # parked awaiting approval, and every PR that falls behind meanwhile stays
+    # stranded. That is the failure this workflow exists to prevent, traded
+    # against nothing worse than a redundant update-branch, which is harmless.
     if: >-
       always()
       && (github.event_name != 'push' || github.ref_name == 'integration')
-      && needs.sync.outputs.pending != 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Catch up every open PR that integration outran

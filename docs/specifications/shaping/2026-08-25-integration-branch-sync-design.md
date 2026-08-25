@@ -166,15 +166,19 @@ way back in.
 
 ### `refresh`
 
-Triggers: push to `integration`, the same cron, and `workflow_dispatch`. Held
-off while a sync PR is *queued to merge*, since `integration` is about to move
-again and any catch-up would immediately be stale.
+Triggers: push to `integration`, the same cron, and `workflow_dispatch`. It runs
+whatever `sync` did, including when `sync` failed — those are the moments PRs
+most need catching up, not least.
 
-"Queued" is the precise condition, not "open". A sync PR left conflicted has
-auto-merge deliberately off, so nothing is about to move; holding `refresh` off
-there would keep every unrelated stale PR hostage to a conflict that has nothing
-to do with them. The same applies when auto-merge could not be armed at all —
-those paths fail before reporting a pending sync, so `refresh` still runs.
+It deliberately does **not** ask whether a sync is queued. An earlier design did,
+reasoning that `integration` was about to move so any catch-up would be redone.
+That reasoning holds for minutes and fails for days: a queued sync PR waits on
+its required checks, and those can sit parked awaiting an "Approve and run"
+click whenever the token fallback is in play. Every PR falling behind in the
+meantime stayed stranded — the exact failure this workflow exists to prevent,
+traded against nothing worse than a redundant `update-branch`, which is
+harmless. Getting the condition right also proved hard in its own right: three
+separate findings came from exits that reported the wrong pending state.
 
 Routes each open PR by `mergeable_state`, polled rather than read once because
 GitHub computes it asynchronously and answers `unknown` right after a push:
@@ -255,8 +259,9 @@ prevent.
 | That label never actually applied | Labels need `issues: write`, which the workflow did not grant; the failure was swallowed and the guard silently absent | `issues: write`, and the attach failure now reports as an error |
 | Guard failed open on an API error | Both reads sat inside `if` tests, where `set -e` cannot see a command fail, so an auth error read as "no label, not armed" | Hoisted into assignments |
 | A revert on `main` never reaching `integration` | "Has main advanced" compared trees, so a `main` reverting to the marker's tree read as no advance | Compare commit ids |
-| Sync PR open forever | `\|\| true` swallowed total auto-merge failure while `pending=true` suppressed `refresh` | Let it fail |
-| Unrelated PRs blocked by someone else's conflict | A conflicted sync PR reported a pending sync, suppressing `refresh`, though auto-merge was off and nothing was about to move | `pending=false` on that path |
+| Refresh suppressed for days | The pending guard held `refresh` off while a sync PR was queued, and a queued PR can wait indefinitely on parked checks | Guard removed; a redundant `update-branch` is cheaper than a stranded PR |
+| Sync PR open forever | `\|\| true` swallowed a total auto-merge failure, and the run reported success | Let it fail |
+| Unrelated PRs blocked by someone else's conflict | A conflicted sync PR reported a pending sync, suppressing `refresh`, though auto-merge was off and nothing was about to move | Superseded: the pending guard is gone entirely |
 | Refresh silently doing nothing | `for n in $(gh pr list …)` is a word expansion, so `set -e` never saw the command fail | Assign first |
 | Fork PR handed auto-merge | `--head` matches branch *name* only | `isCrossRepository == false` |
 
