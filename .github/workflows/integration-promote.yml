@@ -1,5 +1,14 @@
 name: Promote integration to main
 
+# One half of a pair: this carries `integration`'s batched Dependabot updates
+# into `main`, and .github/workflows/integration-sync.yml carries `main` back
+# into `integration` afterwards. The second half is not optional. The squash
+# merge below advances `main` and leaves `integration` exactly where it was, so
+# on its own this workflow only ever widens the gap -- and because
+# integration-branch-protection requires branches to be up to date before
+# merging, every open Dependabot PR is stranded on a base it can no longer
+# merge from the moment that gap opens.
+
 on:
   schedule:
     # Tuesday 06:00 UTC -- a full day after Dependabot's Monday 06:00 UTC

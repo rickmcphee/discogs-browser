@@ -1,0 +1,196 @@
+name: Sync integration with main
+
+# Keeps `integration` holding the same files as `main`, and catches up the PRs
+# that go stale each time `integration` moves. Both halves exist because of one
+# fact about this repo's rulesets:
+#
+#   integration-branch-protection sets strict_required_status_checks_policy,
+#   i.e. "require branches to be up to date before merging". Every open PR
+#   based on `integration` therefore turns un-mergeable ("behind") the moment
+#   anything lands on `integration`, and stays that way until its own head
+#   catches up.
+#
+# Nothing used to do either job. integration-promote.yml squash-merges
+# `integration` into `main`, which moves `main` and never moves `integration`,
+# so `integration` drifted further behind every week while Dependabot PRs piled
+# up unmergeable against it -- six of them at once, some for a fortnight, and
+# the bumps that did land were vetted against a base weeks stale and then
+# promoted into a `main` they had never been tested against.
+#
+# Note both jobs go through a PR rather than pushing to `integration` directly:
+# that ruleset requires a pull request, allows only squash merges, and lists no
+# bypass actors, so a direct push is rejected however the workflow authenticates.
+
+on:
+  push:
+    branches:
+      - main
+      - integration
+  schedule:
+    # 05:00 UTC daily -- an hour ahead of Dependabot's Monday 06:00 UTC run
+    # (.github/dependabot.yml), so Monday's PRs are cut from an `integration`
+    # that already matches `main`. The daily cadence is the safety net for the
+    # push triggers above: a push made with GITHUB_TOKEN does not start another
+    # workflow run (GitHub's recursion guard), so `integration` moving under
+    # auto-merge -- the promotion PR, or the sync PR this workflow opens --
+    # raises no `push` event here. Both jobs no-op cheaply when there is
+    # nothing to do.
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: integration-sync
+  cancel-in-progress: false
+
+env:
+  SYNC_BRANCH: chore/integration-sync
+
+jobs:
+  sync:
+    name: Merge main into integration
+    if: github.event_name != 'push' || github.ref_name == 'main'
+    runs-on: ubuntu-latest
+    outputs:
+      pending: ${{ steps.sync.outputs.pending }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Open/update the sync PR if integration has fallen behind
+        id: sync
+        env:
+          # Same caveat as integration-promote.yml: a PR opened with the default
+          # GITHUB_TOKEN gets its fly-deploy.yml checks parked in an
+          # approval-required state, and `integration` cannot merge without
+          # "Backend tests" and "Frontend tests" reporting, so auto-merge below
+          # would wait forever on a click. Adding INTEGRATION_PROMOTE_TOKEN (a
+          # fine-grained PAT or GitHub App token with Contents: read/write +
+          # Pull requests: read/write) removes the click for both workflows.
+          GH_TOKEN: ${{ secrets.INTEGRATION_PROMOTE_TOKEN || github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          git fetch origin main integration
+
+          # Compare trees, not ancestry. The promotion PR squash-merges, so
+          # integration's own commits never appear in main's history even when
+          # the two hold byte-identical files -- `git log main..integration`
+          # would report work to sync forever and this would open a PR a day.
+          if git diff --quiet origin/main origin/integration; then
+            echo "integration already holds main's files; nothing to sync."
+            echo "pending=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Leave an open sync PR alone. Its branch may carry a conflict
+          # someone resolved by hand (see the error path below), and rebuilding
+          # it from scratch here would throw that away.
+          existing="$(gh pr list --repo "$REPO" --base integration \
+            --head "$SYNC_BRANCH" --state open --json number \
+            --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            echo "Sync PR #$existing is already open; leaving it as-is."
+            gh pr merge "$existing" --repo "$REPO" --auto --squash || true
+            echo "pending=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Branch off `integration` and merge `main` in -- not the reverse --
+          # so the head contains integration's tip and satisfies that same
+          # strict up-to-date policy on the way back in.
+          git checkout -B "$SYNC_BRANCH" origin/integration
+          if ! git merge --no-edit origin/main; then
+            git merge --abort || true
+            echo "::error::main and integration changed the same lines; resolve $SYNC_BRANCH by hand, push it, and open a PR into integration."
+            exit 1
+          fi
+
+          if git diff --quiet origin/integration HEAD; then
+            echo "merge changed nothing on integration; nothing to sync."
+            echo "pending=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # No sync PR is open at this point, so nothing references the branch
+          # and rebuilding it wholesale is safe.
+          git push --force origin "$SYNC_BRANCH"
+
+          gh pr create \
+            --repo "$REPO" \
+            --base integration \
+            --head "$SYNC_BRANCH" \
+            --title "chore: sync integration with main" \
+            --body "Replays \`main\`'s current files onto \`integration\` so Dependabot branches from an up-to-date base. Opened automatically by .github/workflows/integration-sync.yml; auto-merges once CI is green. No changes of its own -- the merged tree matches \`main\` exactly." \
+            --label dependencies
+
+          opened="$(gh pr list --repo "$REPO" --base integration \
+            --head "$SYNC_BRANCH" --state open --json number \
+            --jq '.[0].number // empty')"
+
+          # Auto-merge is the right primitive here, and safe in a way it is not
+          # on `main`: integration-branch-protection requires no approving
+          # review and carries no Copilot review rule, so there is no review to
+          # race -- and the content merging in is main's own, already reviewed
+          # on its way there.
+          gh pr merge "$opened" --repo "$REPO" --auto --squash
+          echo "pending=true" >> "$GITHUB_OUTPUT"
+          echo "Sync PR #$opened is queued to merge."
+
+  refresh:
+    name: Catch up PRs integration left behind
+    needs: sync
+    # always(): on a push to `integration` the sync job is skipped, and a
+    # skipped dependency would otherwise skip this one too. The pending guard
+    # holds off while a sync PR is still queued -- `integration` is about to
+    # move again, and rebasing everything onto the tip it is leaving would
+    # just have to be redone.
+    if: >-
+      always()
+      && (github.event_name != 'push' || github.ref_name == 'integration')
+      && needs.sync.outputs.pending != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update every open PR that is behind integration
+        env:
+          GH_TOKEN: ${{ secrets.INTEGRATION_PROMOTE_TOKEN || github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          for n in $(gh pr list --repo "$REPO" --base integration --state open \
+                       --json number --jq '.[].number'); do
+            # mergeable_state is computed asynchronously; a PR polled too soon
+            # after integration moved answers "unknown", which is not "behind"
+            # and would quietly skip the one PR that needed this most.
+            state="unknown"
+            for _ in 1 2 3 4 5 6; do
+              state="$(gh api "repos/$REPO/pulls/$n" --jq '.mergeable_state')"
+              [ "$state" != "unknown" ] && break
+              sleep 10
+            done
+
+            if [ "$state" != "behind" ]; then
+              echo "PR #$n is '$state'; leaving it alone."
+              continue
+            fi
+
+            author="$(gh api "repos/$REPO/pulls/$n" --jq '.user.login')"
+            if [ "$author" = "dependabot[bot]" ]; then
+              # Dependabot owns its branches: asking it to rebase keeps the
+              # single clean bump commit, where update-branch would graft a
+              # merge commit on that it discards on its next run anyway.
+              echo "PR #$n is behind; asking Dependabot to rebase."
+              gh pr comment "$n" --repo "$REPO" --body "@dependabot rebase"
+            else
+              echo "PR #$n is behind; updating its branch."
+              gh api -X PUT "repos/$REPO/pulls/$n/update-branch" \
+                || echo "::warning::could not update PR #$n automatically"
+            fi
+          done
