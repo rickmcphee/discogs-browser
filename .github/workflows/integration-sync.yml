@@ -118,9 +118,25 @@ jobs:
           # dependency pin `integration` has re-bumped look changed on both
           # sides, and conflicts on a file nobody actually disagrees about.
           marker="$(git rev-parse -q --verify "refs/tags/$MARKER_TAG^{commit}" || true)"
-          if [ -z "$marker" ] && git cat-file -e "$BOOTSTRAP_BASE^{commit}" 2>/dev/null; then
-            marker="$BOOTSTRAP_BASE"
-            echo "no $MARKER_TAG yet; bootstrapping from $BOOTSTRAP_BASE"
+          if [ -z "$marker" ]; then
+            # A missing marker is expected exactly once: before this workflow
+            # has ever completed a sync. Later on it means the tag was deleted
+            # or record_marker has been failing, and quietly reaching for a
+            # BOOTSTRAP_BASE that is by then months stale would restore the very
+            # frozen-base conflicts the marker exists to prevent -- reintroduced
+            # silently, which is worse than never having had the marker.
+            #
+            # `integration` carrying this workflow file is the tell. It can only
+            # have arrived there through a sync that already ran, and that sync
+            # would have recorded a marker.
+            if git cat-file -e "origin/integration:.github/workflows/integration-sync.yml" 2>/dev/null; then
+              echo "::error::$MARKER_TAG is missing, but integration already carries this workflow -- so a sync has run before and the marker has been lost. Re-create it at the newest main commit integration provably holds (git push origin <sha>:refs/tags/$MARKER_TAG). Not falling back to BOOTSTRAP_BASE, which is only valid before the first sync."
+              exit 1
+            fi
+            if git cat-file -e "$BOOTSTRAP_BASE^{commit}" 2>/dev/null; then
+              marker="$BOOTSTRAP_BASE"
+              echo "no $MARKER_TAG yet and integration has never been synced by this workflow; bootstrapping from $BOOTSTRAP_BASE"
+            fi
           fi
 
           record_marker() {
@@ -190,8 +206,12 @@ jobs:
             esac
             echo "Sync PR #$existing is already open; leaving its branch as-is."
             # Same merge-then-squash preference as the freshly-opened PR below.
+            # No `|| true`: if neither call can arm auto-merge, this path
+            # would otherwise set pending=true, suppress `refresh`, and report a
+            # green run while the sync PR sits open forever with nothing driving
+            # it. Fail here, exactly as the freshly-opened PR below does.
             gh pr merge "$existing" --repo "$REPO" --auto --merge \
-              || gh pr merge "$existing" --repo "$REPO" --auto --squash || true
+              || gh pr merge "$existing" --repo "$REPO" --auto --squash
             echo "pending=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
