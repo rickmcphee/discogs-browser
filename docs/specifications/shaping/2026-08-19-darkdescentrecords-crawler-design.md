@@ -98,6 +98,19 @@ at a time (8 collection-page requests), plus one request per variable
 product (~72) — ~80 requests per full sync, paced identically to every
 sibling crawler.
 
+**Amendment (2026-08-25):** the per-variable-product fetches described above
+are now reported through `crawl_progress.report_detail()`, once per paced
+fetch, labelled with the listing page they belong to. `report_page()` alone
+fires only after a whole listing page's products are done, which at the
+default `crawl_delay_seconds` is every one of that page's variable-product
+fetches — long enough to read as a hang while the stock sync's advisory lock
+rejects every other store's Refresh. The total counts a page's variable
+products rather than all of its products, since only those cost a request;
+`_needs_detail_fetch()` is the single predicate deciding that, consulted by
+both `crawl_catalog()` (to count) and `_items()` (to fetch), so the two
+cannot drift. See
+[`2026-08-25-catalog-crawl-progress-visibility-design.md`](2026-08-25-catalog-crawl-progress-visibility-design.md).
+
 ### Fields
 
 - **price** — simple products: `int(prices["price"]) /
@@ -162,6 +175,11 @@ no bot-detection risk. Cases:
 - variable product → fetches its product page, decodes
   `data-product_variations`, emits one row per in-stock variation with the
   parsed `display_price`
+- **(2026-08-25)** detail-fetch progress reported per paced variable-product
+  fetch, with a page's simple products neither advancing the counter nor
+  counting toward the total; `_needs_detail_fetch` agreeing with every gate
+  `_items()` applies; a page of only simple products reporting nothing; the
+  crawl still running with no reporter installed
 - a variation that is unpurchasable/out of stock → excluded
 - a variation with no `image` → falls back to the parent product's image
 - markup drift (no `data-product_variations` found) → raises, rather than

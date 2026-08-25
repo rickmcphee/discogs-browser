@@ -47,11 +47,44 @@ async def _shielded(coro):
         raise
 
 
+def _format_duration(seconds: Optional[int]) -> str:
+    if seconds is None:
+        return "unknown"
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes}m"
+    return f"{minutes // 60}h {minutes % 60}m"
+
+
+def _describe_stock_sync(state: dict) -> str:
+    """One-clause summary of an in-flight stock sync, for the log line and the
+    UI message a rejected start request produces."""
+    elapsed = _format_duration(state.get("elapsed_seconds"))
+    source = state.get("source")
+    if not source:
+        return f"running {elapsed}, no source reached yet"
+    source_elapsed = _format_duration(state.get("source_elapsed_seconds"))
+    return f"on {source} for {source_elapsed}, running {elapsed} in total"
+
 
 class CrawlManager:
     def __init__(self):
         self._sync_tasks: dict[int, asyncio.Task] = {}
         self._stock_task: Optional[asyncio.Task] = None
+        # Set by _sync_stock as it walks its sources, read by
+        # stock_sync_state() so a rejected start request can say *what* is
+        # holding the lock and for how long, rather than a bare "already
+        # running" that leaves a stuck-looking crawler unidentifiable.
+        self._stock_sync_started_at: Optional[float] = None
+        self._stock_sync_source: Optional[str] = None
+        self._stock_sync_source_started_at: Optional[float] = None
+        # Serializes start_stock_sync's guard-acquire-assign sequence. Created
+        # lazily, not here: the module-level crawl_manager singleton is built
+        # at import, before any event loop exists -- the same reason
+        # _site_locks is populated on first use.
+        self._stock_start_lock: Optional[asyncio.Lock] = None
         self._judgment_tasks: dict[int, asyncio.Task] = {}
         self._plex_match_tasks: dict[int, asyncio.Task] = {}
         self._worker_tasks: list[asyncio.Task] = []
@@ -900,44 +933,97 @@ class CrawlManager:
     def stock_sync_running(self) -> bool:
         return self._stock_task is not None and not self._stock_task.done()
 
-    async def start_stock_sync(self, crawler_id: Optional[int] = None) -> bool:
-        import psycopg
-        import config
+    def stock_sync_state(self) -> dict:
+        """What the in-flight stock sync is doing, for the start endpoint to
+        hand back when it rejects a request. Empty-ish when nothing is
+        running; `source` is None during the window between the sync starting
+        and the first crawler being reached."""
+        if not self.stock_sync_running or self._stock_sync_started_at is None:
+            return {"running": self.stock_sync_running, "source": None,
+                    "elapsed_seconds": None, "source_elapsed_seconds": None}
+        now = time.monotonic()
+        source_started = self._stock_sync_source_started_at
+        return {
+            "running": True,
+            "source": self._stock_sync_source,
+            "elapsed_seconds": int(now - self._stock_sync_started_at),
+            "source_elapsed_seconds": None if source_started is None else int(now - source_started),
+        }
 
-        if self.stock_sync_running:
-            log.warning("Stock sync already running, ignoring start request")
-            return False
+    async def start_stock_sync(self, crawler_id: Optional[int] = None) -> dict:
+        """Returns `{"started": bool, "on_another_instance": bool, **state}`.
 
-        # Deliberately not a pooled connection: the advisory lock is
-        # session-scoped, and a pooled connection gets handed back out for
-        # unrelated work while it still holds it. Closed in _sync_stock's
-        # finally, which releases the lock. autocommit=True so the session
-        # never sits idle-in-transaction for the sync's full duration --
-        # otherwise a managed Postgres's idle_in_transaction_session_timeout
-        # can kill the backend mid-sync, silently releasing the lock and
-        # readmitting the exact concurrent replace_stock_items() this lock
-        # exists to prevent. connect() + the lock query are both blocking
-        # calls, so run them off the event loop the same way
-        # _sync_collection_blocking does above. DIRECT_APP_DATABASE_URL, not
-        # APP_DATABASE_URL: the latter is derived from Neon's pooled DSN, and a
-        # transaction pooler can put this session's statements on different
-        # backends, so the lock could outlive the connection or be dropped
-        # early (see config.py).
-        def _acquire_lock():
-            conn = psycopg.connect(config.DIRECT_APP_DATABASE_URL, autocommit=True)
-            got = conn.execute(
-                "SELECT pg_try_advisory_lock(%s)", [STOCK_SYNC_LOCK_KEY]
-            ).fetchone()[0]
-            return conn, got
+        Not a bare bool: this method is the only place that knows *which* of
+        the two rejections happened, and they describe different worlds.
+        stock_sync_state() reads this process's memory, so on the
+        cross-Machine rejection below it would report the idle shape --
+        `running: false`, no source, no timings -- for a sync that is
+        genuinely running, just not here."""
+        # The whole sequence below runs under one lock because _stock_task is
+        # not assigned until after the threadpool acquisition awaits: two
+        # callers on this process could otherwise both clear the
+        # stock_sync_running guard, and the loser -- finding the advisory lock
+        # held by the *other local request* -- would be told another Machine
+        # owns it. Serialized, the loser simply waits and then takes the
+        # in-process branch with the winner's real state. The check-and-assign
+        # below has no await between its halves, so it is atomic under
+        # asyncio's single-threaded scheduling.
+        if self._stock_start_lock is None:
+            self._stock_start_lock = asyncio.Lock()
+        async with self._stock_start_lock:
+            import psycopg
+            import config
 
-        lock_conn, got_lock = await run_in_threadpool(_acquire_lock)
-        if not got_lock:
-            lock_conn.close()
-            log.info("Stock sync already running on another instance, ignoring start request")
-            return False
+            if self.stock_sync_running:
+                state = self.stock_sync_state()
+                log.warning(
+                    "Stock sync already running (%s), ignoring start request",
+                    _describe_stock_sync(state),
+                )
+                return {"started": False, "on_another_instance": False, **state}
 
-        self._stock_task = asyncio.create_task(self._sync_stock(crawler_id, lock_conn))
-        return True
+            # Deliberately not a pooled connection: the advisory lock is
+            # session-scoped, and a pooled connection gets handed back out for
+            # unrelated work while it still holds it. Closed in _sync_stock's
+            # finally, which releases the lock. autocommit=True so the session
+            # never sits idle-in-transaction for the sync's full duration --
+            # otherwise a managed Postgres's idle_in_transaction_session_timeout
+            # can kill the backend mid-sync, silently releasing the lock and
+            # readmitting the exact concurrent replace_stock_items() this lock
+            # exists to prevent. connect() + the lock query are both blocking
+            # calls, so run them off the event loop the same way
+            # _sync_collection_blocking does above. DIRECT_APP_DATABASE_URL, not
+            # APP_DATABASE_URL: the latter is derived from Neon's pooled DSN, and a
+            # transaction pooler can put this session's statements on different
+            # backends, so the lock could outlive the connection or be dropped
+            # early (see config.py).
+            def _acquire_lock():
+                conn = psycopg.connect(config.DIRECT_APP_DATABASE_URL, autocommit=True)
+                got = conn.execute(
+                    "SELECT pg_try_advisory_lock(%s)", [STOCK_SYNC_LOCK_KEY]
+                ).fetchone()[0]
+                return conn, got
+
+            lock_conn, got_lock = await run_in_threadpool(_acquire_lock)
+            if not got_lock:
+                lock_conn.close()
+                log.info("Stock sync already running on another instance, ignoring start request")
+                # `running: True` is stated here rather than read from
+                # stock_sync_state(): the holder is another Machine, so this
+                # process has no _stock_task and the local view would flatly deny
+                # that a sync is running. Source and timings live in the holder's
+                # memory and are not readable from here at all -- surfacing them
+                # cross-Machine would need shared lock-holder metadata in
+                # Postgres, which is a bigger change than this one. What this
+                # process can say truthfully is that a sync is running and that it
+                # isn't ours, which is what `on_another_instance` is for.
+                return {
+                    "started": False, "on_another_instance": True, "running": True,
+                    "source": None, "elapsed_seconds": None, "source_elapsed_seconds": None,
+                }
+
+            self._stock_task = asyncio.create_task(self._sync_stock(crawler_id, lock_conn))
+            return {"started": True, "on_another_instance": False, **self.stock_sync_state()}
 
     async def _run_catalog_crawler(self, crawler) -> list[dict]:
         """Runs crawler.crawl_catalog(), handling the catalog_browser kind's
@@ -945,12 +1031,23 @@ class CrawlManager:
         the release-crawl path's _paced_search). Plain catalog crawlers keep
         calling crawl_catalog() zero-arg, unchanged.
 
-        Also installs the page reporter crawlers call from their paging loops,
-        turning each fetched listing page into an SSE event."""
+        Also installs the progress reporters crawlers call from their paging
+        loops, turning each fetched listing page -- and, for a two-phase
+        crawler, each detail fetch within a page -- into both an SSE event and
+        a log line. Both, deliberately: the status bar is transient and only
+        shows the latest event, while the Log Viewer is the durable record
+        someone goes back to when asking whether a long crawl was moving."""
         from crawler import _new_context, _reset_context, BotDetectedError
-        from crawl_progress import set_page_reporter, reset_page_reporter
+        from crawl_progress import (
+            set_page_reporter, reset_page_reporter,
+            set_detail_reporter, reset_detail_reporter,
+        )
 
         async def _report(page_num: int, count: int):
+            log.info(
+                "[%s] Fetched catalog page %d: %d items",
+                crawler._db_site_name, page_num, count,
+            )
             await self._broadcast({
                 "status": "stock_sync_page_fetched",
                 "source": crawler._db_site_name,
@@ -958,7 +1055,25 @@ class CrawlManager:
                 "page_count": count,
             })
 
+        async def _report_detail(done: int, total: int, label: str):
+            log.info(
+                # "detail pages", not "release pages": this reporter is shared,
+                # and Dark Descent counts variable *products* on a listing page
+                # that also carries simple ones. "14/30 release pages" on a page
+                # of 100 releases would read as a page total it isn't.
+                "[%s] Fetched %d/%d detail pages on %s",
+                crawler._db_site_name, done, total, label,
+            )
+            await self._broadcast({
+                "status": "stock_sync_detail_progress",
+                "source": crawler._db_site_name,
+                "done": done,
+                "total": total,
+                "label": label,
+            })
+
         token = set_page_reporter(_report)
+        detail_token = set_detail_reporter(_report_detail)
         try:
             if crawler.crawler_type != "catalog_browser":
                 return [item async for item in crawler.crawl_catalog()]
@@ -974,6 +1089,7 @@ class CrawlManager:
                 await context.close()
         finally:
             reset_page_reporter(token)
+            reset_detail_reporter(detail_token)
 
     async def _sync_stock(self, crawler_id: Optional[int] = None, lock_conn=None):
         # Imports, the broadcast, and the log line all live inside this try
@@ -986,6 +1102,13 @@ class CrawlManager:
             from db import get_app_pool, get_enabled_crawlers, replace_stock_items, update_crawler_last_run, enqueue_crawl_queue_for_stock_item, delete_dead_stock_crawl_queue_rows
             from crawler import load_enabled_crawlers
 
+            # Also held locally: the completion line below reads it after
+            # the loop, and reading it back off self would depend on nothing
+            # having cleared it in between.
+            sync_started_at = time.monotonic()
+            self._stock_sync_started_at = sync_started_at
+            self._stock_sync_source = None
+            self._stock_sync_source_started_at = None
             await self._broadcast({"status": "stock_sync_started", "crawler_id": crawler_id})
             log.info("Stock sync started")
             with get_app_pool().connection() as conn:
@@ -1044,7 +1167,15 @@ class CrawlManager:
                         crawler._db_site_name,
                     )
                     continue
+                self._stock_sync_source = crawler._db_site_name
+                self._stock_sync_source_started_at = time.monotonic()
+                source_started_at = self._stock_sync_source_started_at
                 await self._broadcast({"status": "stock_sync_source_started", "source": crawler._db_site_name})
+                # The matching "found N items" line only lands when the source
+                # finishes, which for a two-phase crawler is well over an hour
+                # later. Without this one, nothing in the Log Viewer named the
+                # source that was actually being crawled.
+                log.info("[%s] Stock crawl started", crawler._db_site_name)
                 try:
                     items = await self._run_catalog_crawler(crawler)
                 except Exception as e:
@@ -1092,7 +1223,11 @@ class CrawlManager:
                         enqueue_crawl_queue_for_stock_item(conn, item_key)
                     conn.commit()
                 total_synced += len(items)
-                log.info("[%s] Stock sync found %d items", crawler._db_site_name, len(items))
+                log.info(
+                    "[%s] Stock sync found %d items in %s",
+                    crawler._db_site_name, len(items),
+                    _format_duration(int(time.monotonic() - source_started_at)),
+                )
                 await self._broadcast({"status": "stock_sync_progress", "synced": total_synced, "source": crawler._db_site_name})
 
             with get_app_pool().connection() as conn:
@@ -1119,8 +1254,9 @@ class CrawlManager:
             if disabled_sources:
                 notes.append(f"{len(disabled_sources)} disabled ({', '.join(disabled_sources)})")
             log.info(
-                "Stock sync complete: %d items%s",
+                "Stock sync complete: %d items in %s%s",
                 total_synced,
+                _format_duration(int(time.monotonic() - sync_started_at)),
                 f" -- {'; '.join(notes)}" if notes else "",
             )
         except asyncio.CancelledError:
@@ -1130,6 +1266,9 @@ class CrawlManager:
             log.error("Stock sync failed: %s", e, exc_info=True)
             await self._broadcast({"status": "stock_sync_error", "error": str(e), "crawler_id": crawler_id})
         finally:
+            self._stock_sync_source = None
+            self._stock_sync_source_started_at = None
+            self._stock_sync_started_at = None
             # Releases the session-scoped advisory lock start_stock_sync took.
             if lock_conn is not None:
                 lock_conn.close()

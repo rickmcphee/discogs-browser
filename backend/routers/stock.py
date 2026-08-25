@@ -100,8 +100,14 @@ class StockSyncStartRequest(BaseModel):
 
 @router.post("/stock/sync/start", dependencies=[Depends(require_admin)])
 async def start_stock_sync(body: Optional[StockSyncStartRequest] = None):
-    started = await crawl_manager.start_stock_sync(body.crawler_id if body else None)
-    return {"started": started, "running": crawl_manager.stock_sync_running}
+    # The rejected case used to come back as a bare started=false the frontend
+    # dropped on the floor, so a Refresh click during a long sync looked like
+    # it had done nothing. The in-flight source and its elapsed time are what
+    # make "already running" actionable. Returned by start_stock_sync itself
+    # rather than assembled here from stock_sync_state(): only it knows which
+    # of its two rejections happened, and a second read here could also catch
+    # a sync that finished in between and report a bare "nothing running."
+    return await crawl_manager.start_stock_sync(body.crawler_id if body else None)
 
 
 @router.post("/stock/judge/start")

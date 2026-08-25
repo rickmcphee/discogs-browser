@@ -1645,6 +1645,76 @@ async def test_run_catalog_crawler_broadcasts_a_page_fetched_event_per_reported_
     ]
 
 
+async def test_run_catalog_crawler_logs_each_reported_page(manager, caplog):
+    """The SSE status bar only ever shows the latest event and is gone on
+    reload; the Log Viewer is where someone goes back to ask whether a long
+    crawl was moving, so page progress has to reach it too."""
+    from crawl_progress import report_page
+
+    fake_plugin = MagicMock()
+    fake_plugin.crawler_type = "catalog"
+    fake_plugin._db_site_name = "The Sound Garden"
+
+    async def fake_crawl_catalog():
+        await report_page(3, 42)
+        yield {"artist": "A", "title": "T", "url": "https://x"}
+    fake_plugin.crawl_catalog = fake_crawl_catalog
+
+    with caplog.at_level(logging.INFO, logger="crawl_manager"):
+        await manager._run_catalog_crawler(fake_plugin)
+
+    lines = [r.getMessage() for r in caplog.records if "Fetched catalog page" in r.getMessage()]
+    assert lines == ["[The Sound Garden] Fetched catalog page 3: 42 items"]
+
+
+async def test_run_catalog_crawler_broadcasts_and_logs_detail_progress(manager, caplog):
+    """A two-phase crawler's gap between two report_page() calls is a whole
+    listing page of paced detail fetches -- tens of minutes on
+    dischordrecords.py -- so it reports each detail fetch as well."""
+    from crawl_progress import report_detail
+
+    fake_plugin = MagicMock()
+    fake_plugin.crawler_type = "catalog"
+    fake_plugin._db_site_name = "Dischord Records"
+
+    async def fake_crawl_catalog():
+        await report_detail(0, 36, "listing page 1/8")
+        await report_detail(1, 36, "listing page 1/8")
+        yield {"artist": "A", "title": "T", "url": "https://x"}
+    fake_plugin.crawl_catalog = fake_crawl_catalog
+
+    with caplog.at_level(logging.INFO, logger="crawl_manager"):
+        await manager._run_catalog_crawler(fake_plugin)
+
+    events = [e for e in manager.recent_events() if e["status"] == "stock_sync_detail_progress"]
+    assert [(e["source"], e["done"], e["total"], e["label"]) for e in events] == [
+        ("Dischord Records", 0, 36, "listing page 1/8"),
+        ("Dischord Records", 1, 36, "listing page 1/8"),
+    ]
+    lines = [r.getMessage() for r in caplog.records if "detail pages on" in r.getMessage()]
+    assert lines == [
+        "[Dischord Records] Fetched 0/36 detail pages on listing page 1/8",
+        "[Dischord Records] Fetched 1/36 detail pages on listing page 1/8",
+    ]
+
+
+async def test_run_catalog_crawler_clears_the_detail_reporter_when_the_crawl_ends(manager):
+    from crawl_progress import report_detail
+
+    fake_plugin = MagicMock()
+    fake_plugin.crawler_type = "catalog"
+    fake_plugin._db_site_name = "Site"
+
+    async def fake_crawl_catalog():
+        yield {"artist": "A", "title": "T", "url": "https://x"}
+    fake_plugin.crawl_catalog = fake_crawl_catalog
+
+    await manager._run_catalog_crawler(fake_plugin)
+    await report_detail(1, 5, "listing page 1/1")
+
+    assert [e for e in manager.recent_events() if e["status"] == "stock_sync_detail_progress"] == []
+
+
 async def test_run_catalog_crawler_clears_the_page_reporter_when_the_crawl_ends(manager):
     from crawl_progress import report_page
 
@@ -2991,7 +3061,7 @@ async def test_start_stock_sync_returns_true_when_idle(pg_test_db, manager):
 
     manager._sync_stock = _fake_sync  # type: ignore
     started = await manager.start_stock_sync()
-    assert started is True
+    assert started["started"] is True
     await asyncio.sleep(0.01)
     assert conns and conns[0] is not None
 
@@ -3018,7 +3088,7 @@ async def test_start_stock_sync_takes_its_lock_on_the_unpooled_dsn(pg_test_db, m
         lock_conn.close()
 
     manager._sync_stock = _instant  # type: ignore
-    assert await manager.start_stock_sync() is True
+    assert (await manager.start_stock_sync())["started"] is True
     await asyncio.sleep(0.05)
 
     assert seen == [os.environ["TEST_DATABASE_URL"]]
@@ -3035,7 +3105,8 @@ async def test_start_stock_sync_returns_false_when_already_running(pg_test_db, m
     await manager.start_stock_sync()
     assert manager.stock_sync_running is True
     second = await manager.start_stock_sync()
-    assert second is False
+    assert second["started"] is False
+    assert second["on_another_instance"] is False
     event.set()
     await asyncio.sleep(0.01)
 
@@ -3065,11 +3136,48 @@ async def test_start_stock_sync_returns_false_when_another_instance_holds_the_lo
         assert holder.execute(
             "SELECT pg_try_advisory_lock(%s)", [STOCK_SYNC_LOCK_KEY]
         ).fetchone()[0] is True
-        assert await manager.start_stock_sync() is False
+        rejected = await manager.start_stock_sync()
         await asyncio.sleep(0.01)
         assert calls == []
+        # The holder is another Machine, so this process has no _stock_task
+        # and the local stock_sync_state() would deny a sync is running at
+        # all. Saying so would put "already running -- starting up, unknown in
+        # total" in the status bar for a sync this process cannot see.
+        assert rejected == {
+            "started": False, "on_another_instance": True, "running": True,
+            "source": None, "elapsed_seconds": None, "source_elapsed_seconds": None,
+        }
     finally:
         holder.close()
+
+
+async def test_concurrent_starts_on_one_process_are_not_reported_as_another_instance(
+    pg_test_db, manager
+):
+    """_stock_task is only assigned after the threadpool lock acquisition, so
+    two callers on this process could both clear the stock_sync_running guard
+    and the loser would find the advisory lock held -- by the other local
+    request. Classifying that as on_another_instance is a flatly wrong
+    diagnosis, and the UI now states it out loud."""
+    event = asyncio.Event()
+
+    async def _fake_sync(crawler_id=None, lock_conn=None):
+        await event.wait()
+        lock_conn.close()
+
+    manager._sync_stock = _fake_sync  # type: ignore
+    first, second = await asyncio.gather(
+        manager.start_stock_sync(), manager.start_stock_sync()
+    )
+    event.set()
+    await asyncio.sleep(0.01)
+
+    started = [r for r in (first, second) if r["started"]]
+    rejected = [r for r in (first, second) if not r["started"]]
+    assert len(started) == 1
+    assert len(rejected) == 1
+    assert rejected[0]["on_another_instance"] is False
+    assert rejected[0]["running"] is True
 
 
 async def test_sync_stock_releases_the_advisory_lock_when_it_finishes(pg_schema, manager):
@@ -3411,6 +3519,106 @@ async def test_sync_stock_completion_log_names_failed_and_skipped_sources(pg_sch
     assert len(complete) == 1
     assert "Blocked Site" in complete[0]
     assert "Cooling Site" in complete[0]
+
+
+async def test_sync_stock_logs_the_source_it_is_starting(pg_schema, caplog):
+    """The matching "found N items" line only lands when the source finishes,
+    which on a two-phase catalog crawler is over an hour later. Without this
+    line, nothing in the Log Viewer named the source being crawled -- the run
+    went silent right after "Loaded crawler"."""
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Dischord Records", "/x.py", crawler_type="catalog")
+        conn.commit()
+        crawler_id = conn.execute(
+            "SELECT id FROM crawlers WHERE site_name = 'Dischord Records'"
+        ).fetchone()["id"]
+
+    plugin = AsyncMock()
+
+    async def _empty():
+        return
+        yield  # pragma: no cover -- unreachable, but keeps this an async generator
+
+    plugin.crawl_catalog = lambda: _empty()
+    plugin.crawler_type = "catalog"
+    plugin._db_id = crawler_id
+    plugin._db_site_name = "Dischord Records"
+
+    manager = CrawlManager()
+    with patch("crawler.load_enabled_crawlers", return_value=[plugin]), \
+         caplog.at_level(logging.INFO, logger="crawl_manager"):
+        await manager._sync_stock()
+
+    assert "[Dischord Records] Stock crawl started" in [r.getMessage() for r in caplog.records]
+    found = [r.getMessage() for r in caplog.records if "Stock sync found" in r.getMessage()]
+    # Prefix, not the whole line: pinning "in 0s" asserts that every real
+    # database round-trip _sync_stock() makes lands inside one integer second,
+    # which a slow runner can miss while the elapsed-time logging under test
+    # is working perfectly.
+    assert len(found) == 1
+    assert found[0].startswith("[Dischord Records] Stock sync found 0 items in ")
+
+
+async def test_stock_sync_state_reports_the_current_source_and_elapsed_time(manager):
+    manager._stock_task = MagicMock()
+    manager._stock_task.done.return_value = False
+    manager._stock_sync_started_at = time.monotonic() - 3600
+    manager._stock_sync_source = "Dischord Records"
+    manager._stock_sync_source_started_at = time.monotonic() - 900
+
+    state = manager.stock_sync_state()
+    assert state["running"] is True
+    assert state["source"] == "Dischord Records"
+    assert state["elapsed_seconds"] >= 3600
+    assert 900 <= state["source_elapsed_seconds"] < 3600
+
+
+async def test_stock_sync_state_is_empty_when_nothing_is_running(manager):
+    assert manager.stock_sync_state() == {
+        "running": False, "source": None,
+        "elapsed_seconds": None, "source_elapsed_seconds": None,
+    }
+
+
+async def test_start_stock_sync_rejection_log_names_the_source_holding_the_lock(manager, caplog):
+    """"Stock sync already running, ignoring start request" on its own gave no
+    way to tell a long crawl apart from a wedged one -- and the lock rejects
+    every other source's Refresh meanwhile."""
+    manager._stock_task = MagicMock()
+    manager._stock_task.done.return_value = False
+    manager._stock_sync_started_at = time.monotonic() - 5400
+    manager._stock_sync_source = "Dischord Records"
+    manager._stock_sync_source_started_at = time.monotonic() - 4500
+
+    with caplog.at_level(logging.WARNING, logger="crawl_manager"):
+        assert (await manager.start_stock_sync())["started"] is False
+
+    rejected = [r.getMessage() for r in caplog.records if "already running" in r.getMessage()]
+    assert len(rejected) == 1
+    assert "on Dischord Records for 1h 15m" in rejected[0]
+    assert "running 1h 30m in total" in rejected[0]
+
+
+async def test_start_stock_sync_rejection_log_copes_with_no_source_reached_yet(manager, caplog):
+    manager._stock_task = MagicMock()
+    manager._stock_task.done.return_value = False
+    manager._stock_sync_started_at = time.monotonic() - 2
+
+    with caplog.at_level(logging.WARNING, logger="crawl_manager"):
+        assert (await manager.start_stock_sync())["started"] is False
+
+    rejected = [r.getMessage() for r in caplog.records if "already running" in r.getMessage()]
+    assert len(rejected) == 1
+    assert "no source reached yet" in rejected[0]
+
+
+@pytest.mark.parametrize("seconds,expected", [
+    (None, "unknown"), (0, "0s"), (59, "59s"), (60, "1m"), (3599, "59m"),
+    (3600, "1h 0m"), (6480, "1h 48m"),
+])
+def test_format_duration(seconds, expected):
+    from crawl_manager import _format_duration
+    assert _format_duration(seconds) == expected
 
 
 async def test_start_stock_sync_forwards_crawler_id_to_sync_stock(pg_test_db, manager):

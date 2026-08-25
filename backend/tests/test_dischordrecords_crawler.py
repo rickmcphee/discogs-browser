@@ -368,6 +368,107 @@ async def test_crawl_catalog_raises_when_entire_crawl_yields_no_vinyl(monkeypatc
         [item async for item in Crawler().crawl_catalog()]
 
 
+@respx.mock
+async def test_crawl_catalog_reports_progress_through_each_listing_page_of_detail_fetches(
+    monkeypatch, tmp_config_dir
+):
+    """report_page() alone leaves a whole listing page's worth of paced detail
+    fetches -- tens of minutes at the default crawl_delay_seconds, against
+    roughly 108 minutes for the whole run -- with nothing reported at all,
+    which reads as a hang while the stock sync's advisory lock rejects every
+    other source's Refresh."""
+    import crawl_progress
+
+    save_config({"crawl_delay_seconds": 0})
+    respx.get(_LABEL_URL, params={"page": "1"}).mock(
+        return_value=httpx.Response(200, text=_LISTING_PAGE_1))
+    respx.get(_release_url("/release/203/the-mark")).mock(
+        return_value=httpx.Response(200, text=_detail_page(_H1_SINGLE, _ONE_VINYL_BUTTON)))
+    respx.get(_release_url("/release/202/plays")).mock(
+        return_value=httpx.Response(200, text=_detail_page(_H1_VARIOUS_ARTISTS, _ONE_VINYL_BUTTON)))
+    for i in range(2, 9):
+        respx.get(_LABEL_URL, params={"page": str(i)}).mock(
+            return_value=httpx.Response(200, text=_listing_page_with_one_release(f"/release/p{i}/r{i}")))
+        respx.get(_release_url(f"/release/p{i}/r{i}")).mock(
+            return_value=httpx.Response(200, text=_detail_page(_H1_SINGLE, _ONE_VINYL_BUTTON)))
+
+    reported = []
+
+    async def reporter(done, total, label):
+        reported.append((done, total, label))
+
+    token = crawl_progress.set_detail_reporter(reporter)
+    try:
+        [item async for item in Crawler().crawl_catalog()]
+    finally:
+        crawl_progress.reset_detail_reporter(token)
+
+    # The 0/N report lands before the first detail fetch, so the size of the
+    # wait is on the record rather than only arriving once a page is done.
+    assert reported[:3] == [
+        (0, 2, "listing page 1/8"),
+        (1, 2, "listing page 1/8"),
+        (2, 2, "listing page 1/8"),
+    ]
+    assert reported[3:5] == [(0, 1, "listing page 2/8"), (1, 1, "listing page 2/8")]
+    assert [r for r in reported if r[2] == "listing page 8/8"] == [
+        (0, 1, "listing page 8/8"),
+        (1, 1, "listing page 8/8"),
+    ]
+
+
+@respx.mock
+async def test_crawl_catalog_reports_progress_for_a_release_skipped_on_404(
+    monkeypatch, tmp_config_dir
+):
+    """A 404 skip still advances the fetch count -- otherwise the last report
+    of a page could sit below its total forever and read as a stall."""
+    import crawl_progress
+
+    save_config({"crawl_delay_seconds": 0})
+    page_html = (
+        _listing_page_with_one_release("/release/gone/x")
+        + _listing_page_with_one_release("/release/here/y")
+    )
+    respx.get(_LABEL_URL, params={"page": "1"}).mock(return_value=httpx.Response(200, text=page_html))
+    respx.get(_release_url("/release/gone/x")).mock(return_value=httpx.Response(404))
+    respx.get(_release_url("/release/here/y")).mock(
+        return_value=httpx.Response(200, text=_detail_page(_H1_SINGLE, _ONE_VINYL_BUTTON)))
+
+    reported = []
+
+    async def reporter(done, total, label):
+        reported.append((done, total, label))
+
+    token = crawl_progress.set_detail_reporter(reporter)
+    try:
+        items = [item async for item in Crawler().crawl_catalog()]
+    finally:
+        crawl_progress.reset_detail_reporter(token)
+
+    assert len(items) == 1
+    assert reported == [
+        (0, 2, "listing page 1/1"),
+        (1, 2, "listing page 1/1"),
+        (2, 2, "listing page 1/1"),
+    ]
+
+
+@respx.mock
+async def test_crawl_catalog_runs_with_no_detail_reporter_installed(monkeypatch, tmp_config_dir):
+    """Same contract report_page() already has: a crawler stays directly
+    runnable outside a stock sync."""
+    save_config({"crawl_delay_seconds": 0})
+    respx.get(_LABEL_URL, params={"page": "1"}).mock(
+        return_value=httpx.Response(200, text=_LISTING_PAGE_NO_PAGINATION))
+    respx.get(_release_url("/release/1/only-release")).mock(
+        return_value=httpx.Response(200, text=_detail_page(_H1_SINGLE, _ONE_VINYL_BUTTON)))
+
+    items = [item async for item in Crawler().crawl_catalog()]
+
+    assert len(items) == 1
+
+
 def test_site_metadata():
     assert Crawler.site_name == "Dischord Records"
     assert Crawler.base_url == "https://dischord.com"

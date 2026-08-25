@@ -230,7 +230,20 @@ export async function unsaveStockItem(itemKey: string): Promise<{ saved: boolean
   return r.json()
 }
 
-export async function postStockSyncStart(crawlerId?: number): Promise<{ started: boolean; running: boolean }> {
+export interface StockSyncStartResult {
+  started: boolean
+  running: boolean
+  // True when the sync holding the lock belongs to another Machine. Its source
+  // and timings live in that process's memory and are null here, so this flag
+  // is the only thing separating "running elsewhere, details unknowable" from
+  // "running here but not yet past its first crawler."
+  on_another_instance: boolean
+  source: string | null
+  elapsed_seconds: number | null
+  source_elapsed_seconds: number | null
+}
+
+export async function postStockSyncStart(crawlerId?: number): Promise<StockSyncStartResult> {
   const r = await apiFetch('/stock/sync/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

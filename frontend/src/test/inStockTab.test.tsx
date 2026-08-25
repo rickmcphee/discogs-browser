@@ -85,7 +85,10 @@ beforeEach(() => {
   MockEventSource.instances = []
   vi.clearAllMocks()
   localStorage.clear()
-  postStockSyncStart.mockResolvedValue({ started: true, running: true })
+  postStockSyncStart.mockResolvedValue({
+    started: true, running: true, on_another_instance: false,
+    source: null, elapsed_seconds: null, source_elapsed_seconds: null,
+  })
   postJudgmentStart.mockResolvedValue({ started: true, running: true })
   clearJudgments.mockResolvedValue({ cleared: true, running: false, count: 7 })
   exportRecommendationsCsv.mockResolvedValue(new Blob(['artist,title\n'], { type: 'text/csv' }))
@@ -253,6 +256,95 @@ describe('In Stock tab', () => {
         screen.getByText(/Syncing in-stock catalog… The Sound Garden fetched page 1, 250 products/)
       ).toBeInTheDocument()
     )
+  })
+
+  it('surfaces per-detail-page stock_sync_detail_progress in the bottom status bar', async () => {
+    // A two-phase crawler goes tens of minutes between two page_fetched
+    // events -- one listing page of paced detail fetches, against roughly 108
+    // minutes for the whole Dischord run -- so without this the status bar sat
+    // on "source started" long enough to read as a hang.
+    render(<App />)
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    const source = getLastCrawlSource()
+    source.emit({
+      status: 'stock_sync_detail_progress', source: 'Dischord Records',
+      done: 14, total: 36, label: 'listing page 2/8', id: 1,
+    })
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Dischord Records listing page 2\/8 — 14\/36 detail pages/)
+      ).toBeInTheDocument()
+    )
+  })
+
+  it('says "1 detail page", not "1 detail pages", on a page with a single fetch', async () => {
+    // Reachable on this crawler: dedup is crawl-wide, so a listing page whose
+    // releases mostly appeared on the previous one can contribute just one.
+    render(<App />)
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    const source = getLastCrawlSource()
+    source.emit({
+      status: 'stock_sync_detail_progress', source: 'Dischord Records',
+      done: 1, total: 1, label: 'listing page 4/8', id: 1,
+    })
+    await waitFor(() =>
+      expect(screen.getByText(/listing page 4\/8 — 1\/1 detail page$/)).toBeInTheDocument()
+    )
+  })
+
+  it('says what is holding the lock when a Refresh is rejected mid-sync', async () => {
+    postStockSyncStart.mockResolvedValue({
+      started: false, running: true, on_another_instance: false,
+      source: 'Dischord Records',
+      elapsed_seconds: 5400, source_elapsed_seconds: 4500,
+    })
+    render(<App />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    const description = await screen.findByText('Scan all enabled catalog crawlers immediately.')
+    fireEvent.click(within(description.closest('tr') as HTMLElement).getByText('Refresh'))
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          /In-stock sync already running — Dischord Records \(1h 15m so far\), 1h 30m in total/
+        )
+      ).toBeInTheDocument()
+    )
+  })
+
+  it('says so when the sync holding the lock is on another instance', async () => {
+    // Its source and timings are unknowable from this Machine, so the
+    // per-source message would read "starting up, unknown in total" -- which
+    // is what a locally-running sync says before its first crawler.
+    postStockSyncStart.mockResolvedValue({
+      started: false, running: true, on_another_instance: true,
+      source: null, elapsed_seconds: null, source_elapsed_seconds: null,
+    })
+    render(<App />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    const description = await screen.findByText('Scan all enabled catalog crawlers immediately.')
+    fireEvent.click(within(description.closest('tr') as HTMLElement).getByText('Refresh'))
+    await waitFor(() =>
+      expect(
+        screen.getByText(/In-stock sync already running on another instance/)
+      ).toBeInTheDocument()
+    )
+    expect(screen.queryByText(/unknown in total/)).not.toBeInTheDocument()
+  })
+
+  it('stays quiet when a Refresh is accepted', async () => {
+    postStockSyncStart.mockResolvedValue({
+      started: true, running: true, on_another_instance: false,
+      source: null, elapsed_seconds: null, source_elapsed_seconds: null,
+    })
+    render(<App />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    const description = await screen.findByText('Scan all enabled catalog crawlers immediately.')
+    fireEvent.click(within(description.closest('tr') as HTMLElement).getByText('Refresh'))
+    await waitFor(() => expect(postStockSyncStart).toHaveBeenCalled())
+    expect(screen.queryByText(/In-stock sync already running/)).not.toBeInTheDocument()
   })
 
   it('says "1 product", not "1 products", on a single-product page', async () => {
