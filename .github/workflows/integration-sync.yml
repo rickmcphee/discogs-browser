@@ -95,7 +95,9 @@ jobs:
             --jq '.[0].number // empty')"
           if [ -n "$existing" ]; then
             echo "Sync PR #$existing is already open; leaving it as-is."
-            gh pr merge "$existing" --repo "$REPO" --auto --squash || true
+            # Same merge-then-squash preference as the freshly-opened PR below.
+            gh pr merge "$existing" --repo "$REPO" --auto --merge \
+              || gh pr merge "$existing" --repo "$REPO" --auto --squash || true
             echo "pending=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
