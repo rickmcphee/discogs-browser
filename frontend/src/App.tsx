@@ -10,6 +10,7 @@ import BackendDownScreen from './views/BackendDownScreen'
 import Avatar from './components/Avatar'
 import { navButtonClass, primaryButtonClass, secondaryButtonClass, dismissButtonClass } from './styles/buttons'
 import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, clearJudgments, exportRecommendationsCsv, importRecommendationsCsv, getCrawlers, getUserSettings, getUserHiddenCrawlers, postUserHiddenCrawlers, getJudgmentStatus, getPriceStatus, checkHealth, getAuthStatus, setUnauthorizedHandler, hasAvatar } from './api/client'
+import type { StockSyncStartResult } from './api/client'
 import type { CrawlEvent, CrawlStatus, CollectionStatus, Crawler, AuthStatus } from './api/types'
 
 type View = 'collection' | 'wantlist' | 'store' | 'track' | 'settings' | 'logs' | 'account'
@@ -21,6 +22,31 @@ type View = 'collection' | 'wantlist' | 'store' | 'track' | 'settings' | 'logs' 
 const DISMISSED_SYNC_KEY = 'discogs-browser.dismissedSyncEventId'
 const DISMISSED_CRAWL_KEY = 'discogs-browser.dismissedCrawlEventId'
 const VIEW_AS_USER_KEY = 'discogs-browser.viewAsUser'
+
+function formatElapsed(seconds: number | null): string {
+  if (seconds === null) return 'unknown'
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m`
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`
+}
+
+// A stock sync is one shared job under one advisory lock, so a Refresh clicked
+// while another source is mid-crawl is rejected outright. That came back as a
+// started=false nobody rendered, so the click looked like it had done nothing --
+// on a catalog source that takes over an hour, indistinguishable from a hang.
+function reportStockSyncRejection(
+  result: StockSyncStartResult,
+  setStatus: (message: string, id?: number | null) => void,
+) {
+  if (result.started) return
+  const on = result.source
+    ? `${result.source} (${formatElapsed(result.source_elapsed_seconds)} so far)`
+    : 'starting up'
+  setStatus(
+    `In-stock sync already running — ${on}, ${formatElapsed(result.elapsed_seconds)} in total. Try again once it finishes.`,
+  )
+}
 
 export default function App() {
   const [view, setView] = useState<View>('collection')
@@ -254,6 +280,13 @@ export default function App() {
         )
         return
       }
+      if (event.status === 'stock_sync_detail_progress') {
+        setSyncStatus(
+          `Syncing in-stock catalog… ${event.source} ${event.label} — ${event.done}/${event.total} releases`,
+          event.id ?? null,
+        )
+        return
+      }
       if (event.status === 'stock_sync_progress') {
         setSyncStatus(`Syncing in-stock catalog… ${event.synced} items (${event.source})`, event.id ?? null)
         setStockSyncGeneration(g => g + 1)
@@ -447,7 +480,7 @@ export default function App() {
 
   const handleRefreshStock = useCallback(async () => {
     try {
-      await postStockSyncStart()
+      reportStockSyncRejection(await postStockSyncStart(), setSyncStatus)
     } catch (e: any) {
       setSyncStatus(`In-stock sync failed to start: ${e.message}`)
     }
@@ -455,7 +488,7 @@ export default function App() {
 
   const handleRefreshStoreCrawler = useCallback(async (crawlerId: number) => {
     try {
-      await postStockSyncStart(crawlerId)
+      reportStockSyncRejection(await postStockSyncStart(crawlerId), setSyncStatus)
     } catch (e: any) {
       setSyncStatus(`In-stock sync failed to start: ${e.message}`)
     }

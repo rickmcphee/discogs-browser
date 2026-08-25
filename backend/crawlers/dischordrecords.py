@@ -7,7 +7,7 @@ from typing import AsyncIterator, Optional
 import httpx
 
 from config import load_config
-from crawl_progress import report_page
+from crawl_progress import report_detail, report_page
 
 _PAGE_LINK_RE = re.compile(r'/label/dischord\?page=(\d+)')
 _RELEASE_LINK_RE = re.compile(r'href="(/release/[^"]+)"')
@@ -84,14 +84,25 @@ class Crawler:
                 new_hrefs = [h for h in hrefs if h not in seen_hrefs]
                 seen_hrefs.update(new_hrefs)
 
+                # Progress is reported per detail fetch, not just per listing
+                # page, because this crawler's two phases put tens of minutes
+                # between one report_page() and the next -- a listing page's
+                # worth of paced detail fetches. Reporting only at the end of
+                # that meant a run showed nothing at all after "Stock crawl
+                # started", which is indistinguishable from a hang while the
+                # sync's advisory lock rejects every other Refresh. The 0/N
+                # report before the loop is what puts the size of the wait on
+                # the record before the first fetch has even finished.
+                label = f"listing page {page}/{total_pages}"
+                await report_detail(0, len(new_hrefs), label)
                 page_items = []
-                for href in new_hrefs:
+                for done, href in enumerate(new_hrefs, start=1):
                     await sleep(random.uniform(delay * 0.5, delay))
                     r = await client.get(href)
-                    if r.status_code == 404:
-                        continue
-                    r.raise_for_status()
-                    page_items.extend(self._parse_release(r.text, href))
+                    if r.status_code != 404:
+                        r.raise_for_status()
+                        page_items.extend(self._parse_release(r.text, href))
+                    await report_detail(done, len(new_hrefs), label)
 
                 await report_page(page, len(page_items))
                 total_yielded += len(page_items)

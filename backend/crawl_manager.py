@@ -46,11 +46,39 @@ async def _shielded(coro):
         raise
 
 
+def _format_duration(seconds: Optional[int]) -> str:
+    if seconds is None:
+        return "unknown"
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes}m"
+    return f"{minutes // 60}h {minutes % 60}m"
+
+
+def _describe_stock_sync(state: dict) -> str:
+    """One-clause summary of an in-flight stock sync, for the log line and the
+    UI message a rejected start request produces."""
+    elapsed = _format_duration(state.get("elapsed_seconds"))
+    source = state.get("source")
+    if not source:
+        return f"running {elapsed}, no source reached yet"
+    source_elapsed = _format_duration(state.get("source_elapsed_seconds"))
+    return f"on {source} for {source_elapsed}, running {elapsed} in total"
+
 
 class CrawlManager:
     def __init__(self):
         self._sync_tasks: dict[int, asyncio.Task] = {}
         self._stock_task: Optional[asyncio.Task] = None
+        # Set by _sync_stock as it walks its sources, read by
+        # stock_sync_state() so a rejected start request can say *what* is
+        # holding the lock and for how long, rather than a bare "already
+        # running" that leaves a stuck-looking crawler unidentifiable.
+        self._stock_sync_started_at: Optional[float] = None
+        self._stock_sync_source: Optional[str] = None
+        self._stock_sync_source_started_at: Optional[float] = None
         self._judgment_tasks: dict[int, asyncio.Task] = {}
         self._plex_match_tasks: dict[int, asyncio.Task] = {}
         self._worker_tasks: list[asyncio.Task] = []
@@ -809,12 +837,33 @@ class CrawlManager:
     def stock_sync_running(self) -> bool:
         return self._stock_task is not None and not self._stock_task.done()
 
+    def stock_sync_state(self) -> dict:
+        """What the in-flight stock sync is doing, for the start endpoint to
+        hand back when it rejects a request. Empty-ish when nothing is
+        running; `source` is None during the window between the sync starting
+        and the first crawler being reached."""
+        if not self.stock_sync_running or self._stock_sync_started_at is None:
+            return {"running": self.stock_sync_running, "source": None,
+                    "elapsed_seconds": None, "source_elapsed_seconds": None}
+        now = time.monotonic()
+        source_started = self._stock_sync_source_started_at
+        return {
+            "running": True,
+            "source": self._stock_sync_source,
+            "elapsed_seconds": int(now - self._stock_sync_started_at),
+            "source_elapsed_seconds": None if source_started is None else int(now - source_started),
+        }
+
     async def start_stock_sync(self, crawler_id: Optional[int] = None) -> bool:
         import psycopg
         import config
 
         if self.stock_sync_running:
-            log.warning("Stock sync already running, ignoring start request")
+            state = self.stock_sync_state()
+            log.warning(
+                "Stock sync already running (%s), ignoring start request",
+                _describe_stock_sync(state),
+            )
             return False
 
         # Deliberately not a pooled connection: the advisory lock is
@@ -854,12 +903,23 @@ class CrawlManager:
         the release-crawl path's _paced_search). Plain catalog crawlers keep
         calling crawl_catalog() zero-arg, unchanged.
 
-        Also installs the page reporter crawlers call from their paging loops,
-        turning each fetched listing page into an SSE event."""
+        Also installs the progress reporters crawlers call from their paging
+        loops, turning each fetched listing page -- and, for a two-phase
+        crawler, each detail fetch within a page -- into both an SSE event and
+        a log line. Both, deliberately: the status bar is transient and only
+        shows the latest event, while the Log Viewer is the durable record
+        someone goes back to when asking whether a long crawl was moving."""
         from crawler import _new_context, _reset_context, BotDetectedError
-        from crawl_progress import set_page_reporter, reset_page_reporter
+        from crawl_progress import (
+            set_page_reporter, reset_page_reporter,
+            set_detail_reporter, reset_detail_reporter,
+        )
 
         async def _report(page_num: int, count: int):
+            log.info(
+                "[%s] Fetched catalog page %d: %d items",
+                crawler._db_site_name, page_num, count,
+            )
             await self._broadcast({
                 "status": "stock_sync_page_fetched",
                 "source": crawler._db_site_name,
@@ -867,7 +927,21 @@ class CrawlManager:
                 "page_count": count,
             })
 
+        async def _report_detail(done: int, total: int, label: str):
+            log.info(
+                "[%s] Fetched %d/%d release pages on %s",
+                crawler._db_site_name, done, total, label,
+            )
+            await self._broadcast({
+                "status": "stock_sync_detail_progress",
+                "source": crawler._db_site_name,
+                "done": done,
+                "total": total,
+                "label": label,
+            })
+
         token = set_page_reporter(_report)
+        detail_token = set_detail_reporter(_report_detail)
         try:
             if crawler.crawler_type != "catalog_browser":
                 return [item async for item in crawler.crawl_catalog()]
@@ -883,6 +957,7 @@ class CrawlManager:
                 await context.close()
         finally:
             reset_page_reporter(token)
+            reset_detail_reporter(detail_token)
 
     async def _sync_stock(self, crawler_id: Optional[int] = None, lock_conn=None):
         # Imports, the broadcast, and the log line all live inside this try
@@ -895,6 +970,13 @@ class CrawlManager:
             from db import get_app_pool, get_enabled_crawlers, replace_stock_items, update_crawler_last_run, enqueue_crawl_queue_for_stock_item, delete_dead_stock_crawl_queue_rows
             from crawler import load_enabled_crawlers
 
+            # Also held locally: the completion line below reads it after
+            # the loop, and reading it back off self would depend on nothing
+            # having cleared it in between.
+            sync_started_at = time.monotonic()
+            self._stock_sync_started_at = sync_started_at
+            self._stock_sync_source = None
+            self._stock_sync_source_started_at = None
             await self._broadcast({"status": "stock_sync_started", "crawler_id": crawler_id})
             log.info("Stock sync started")
             with get_app_pool().connection() as conn:
@@ -953,7 +1035,15 @@ class CrawlManager:
                         crawler._db_site_name,
                     )
                     continue
+                self._stock_sync_source = crawler._db_site_name
+                self._stock_sync_source_started_at = time.monotonic()
+                source_started_at = self._stock_sync_source_started_at
                 await self._broadcast({"status": "stock_sync_source_started", "source": crawler._db_site_name})
+                # The matching "found N items" line only lands when the source
+                # finishes, which for a two-phase crawler is well over an hour
+                # later. Without this one, nothing in the Log Viewer named the
+                # source that was actually being crawled.
+                log.info("[%s] Stock crawl started", crawler._db_site_name)
                 try:
                     items = await self._run_catalog_crawler(crawler)
                 except Exception as e:
@@ -1001,7 +1091,11 @@ class CrawlManager:
                         enqueue_crawl_queue_for_stock_item(conn, item_key)
                     conn.commit()
                 total_synced += len(items)
-                log.info("[%s] Stock sync found %d items", crawler._db_site_name, len(items))
+                log.info(
+                    "[%s] Stock sync found %d items in %s",
+                    crawler._db_site_name, len(items),
+                    _format_duration(int(time.monotonic() - source_started_at)),
+                )
                 await self._broadcast({"status": "stock_sync_progress", "synced": total_synced, "source": crawler._db_site_name})
 
             with get_app_pool().connection() as conn:
@@ -1028,8 +1122,9 @@ class CrawlManager:
             if disabled_sources:
                 notes.append(f"{len(disabled_sources)} disabled ({', '.join(disabled_sources)})")
             log.info(
-                "Stock sync complete: %d items%s",
+                "Stock sync complete: %d items in %s%s",
                 total_synced,
+                _format_duration(int(time.monotonic() - sync_started_at)),
                 f" -- {'; '.join(notes)}" if notes else "",
             )
         except asyncio.CancelledError:
@@ -1039,6 +1134,9 @@ class CrawlManager:
             log.error("Stock sync failed: %s", e, exc_info=True)
             await self._broadcast({"status": "stock_sync_error", "error": str(e), "crawler_id": crawler_id})
         finally:
+            self._stock_sync_source = None
+            self._stock_sync_source_started_at = None
+            self._stock_sync_started_at = None
             # Releases the session-scoped advisory lock start_stock_sync took.
             if lock_conn is not None:
                 lock_conn.close()

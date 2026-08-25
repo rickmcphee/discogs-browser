@@ -255,6 +255,57 @@ describe('In Stock tab', () => {
     )
   })
 
+  it('surfaces per-release stock_sync_detail_progress in the bottom status bar', async () => {
+    // A two-phase crawler goes an hour between two page_fetched events, so
+    // without this the status bar sat on "source started" long enough to read
+    // as a hang.
+    render(<App />)
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    const source = getLastCrawlSource()
+    source.emit({
+      status: 'stock_sync_detail_progress', source: 'Dischord Records',
+      done: 14, total: 36, label: 'listing page 2/8', id: 1,
+    })
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Dischord Records listing page 2\/8 — 14\/36 releases/)
+      ).toBeInTheDocument()
+    )
+  })
+
+  it('says what is holding the lock when a Refresh is rejected mid-sync', async () => {
+    postStockSyncStart.mockResolvedValue({
+      started: false, running: true, source: 'Dischord Records',
+      elapsed_seconds: 5400, source_elapsed_seconds: 4500,
+    })
+    render(<App />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    const description = await screen.findByText('Scan all enabled catalog crawlers immediately.')
+    fireEvent.click(within(description.closest('tr') as HTMLElement).getByText('Refresh'))
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          /In-stock sync already running — Dischord Records \(1h 15m so far\), 1h 30m in total/
+        )
+      ).toBeInTheDocument()
+    )
+  })
+
+  it('stays quiet when a Refresh is accepted', async () => {
+    postStockSyncStart.mockResolvedValue({
+      started: true, running: true, source: null,
+      elapsed_seconds: null, source_elapsed_seconds: null,
+    })
+    render(<App />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    const description = await screen.findByText('Scan all enabled catalog crawlers immediately.')
+    fireEvent.click(within(description.closest('tr') as HTMLElement).getByText('Refresh'))
+    await waitFor(() => expect(postStockSyncStart).toHaveBeenCalled())
+    expect(screen.queryByText(/In-stock sync already running/)).not.toBeInTheDocument()
+  })
+
   it('says "1 product", not "1 products", on a single-product page', async () => {
     render(<App />)
     await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))

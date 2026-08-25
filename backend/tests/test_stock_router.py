@@ -55,12 +55,45 @@ def test_post_stock_sync_start_forwards_crawler_id_as_admin(pg_test_db, authed_c
 
     r = client.post("/api/stock/sync/start", json={"crawler_id": 42}, headers={"X-Requested-With": "fetch"})
     assert r.status_code == 200
-    assert r.json() == {"started": True, "running": False}
+    assert r.json() == {
+        "started": True, "running": False, "source": None,
+        "elapsed_seconds": None, "source_elapsed_seconds": None,
+    }
 
     r = client.post("/api/stock/sync/start", headers={"X-Requested-With": "fetch"})
     assert r.status_code == 200
 
     assert calls == [42, None]
+
+
+def test_post_stock_sync_start_reports_what_is_holding_the_lock_when_rejected(
+    pg_test_db, authed_client_factory, monkeypatch
+):
+    """A rejected Refresh used to come back as a bare started=false the
+    frontend dropped on the floor, so the click looked like it had done
+    nothing -- on a source that takes over an hour, indistinguishable from a
+    hang."""
+    async def _fake_start_stock_sync(crawler_id=None):
+        return False
+
+    monkeypatch.setattr(crawl_manager, "start_stock_sync", _fake_start_stock_sync)
+    monkeypatch.setattr(crawl_manager, "stock_sync_state", lambda: {
+        "running": True, "source": "Dischord Records",
+        "elapsed_seconds": 5400, "source_elapsed_seconds": 4500,
+    })
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute("UPDATE users SET is_admin = TRUE WHERE id = %s", [user["id"]])
+        conn.commit()
+    client = authed_client_factory(user["id"])
+
+    r = client.post("/api/stock/sync/start", json={"crawler_id": 7}, headers={"X-Requested-With": "fetch"})
+    assert r.status_code == 200
+    assert r.json() == {
+        "started": False, "running": True, "source": "Dischord Records",
+        "elapsed_seconds": 5400, "source_elapsed_seconds": 4500,
+    }
 
 
 @pytest.fixture(autouse=True)
