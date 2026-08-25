@@ -87,7 +87,11 @@ env:
 jobs:
   sync:
     name: Merge main into integration
-    if: github.event_name != 'push' || github.ref_name == 'main'
+    # Every trigger, including a push to `integration`. That push is the moment
+    # a landed sync is still identifiable -- the sync branch's tree still equals
+    # integration's -- and the window shuts as soon as anything else lands. The
+    # job no-ops cheaply when there is nothing to bring over, so running it here
+    # costs a few seconds and keeps the marker current.
     runs-on: ubuntu-latest
     outputs:
       pending: ${{ steps.sync.outputs.pending }}
@@ -148,8 +152,13 @@ jobs:
 
           marker="$(git rev-parse -q --verify "refs/tags/$MARKER_TAG^{commit}" || true)"
 
-          if [ -z "$marker" ] \
-             && git rev-parse -q --verify "origin/$SYNC_BRANCH" >/dev/null 2>&1 \
+          # Attempted whether or not a tag exists. The path that opens a sync PR
+          # deliberately records nothing, so once that PR lands the tag still
+          # names the *previous* `main` commit -- valid, but older than what
+          # `integration` now holds, and an older base brings back a smaller
+          # version of the same false conflicts. Only ever advance: a recovered
+          # commit is adopted when it is a strict descendant of the marker.
+          if git rev-parse -q --verify "origin/$SYNC_BRANCH" >/dev/null 2>&1 \
              && git diff --quiet "origin/$SYNC_BRANCH" origin/integration; then
             # A sync that has already landed records its own base: this job
             # builds its merge with `main` as the second parent, and
@@ -169,12 +178,15 @@ jobs:
             # merge is still down the first-parent chain, and its ^2 is on main.
             for c in $(git rev-list --first-parent -n 50 "origin/$SYNC_BRANCH"); do
               p2="$(git rev-parse -q --verify "$c^2" 2>/dev/null)" || continue
-              if on_main "$p2"; then
-                marker="$p2"
-                recover_persist=1
+              on_main "$p2" || continue
+              if [ -z "$marker" ]; then
+                marker="$p2"; recover_persist=1
                 echo "recovered the marker from the last landed sync: $marker"
-                break
+              elif [ "$p2" != "$marker" ] && git merge-base --is-ancestor "$marker" "$p2"; then
+                marker="$p2"; recover_persist=1
+                echo "advanced the marker from the last landed sync: $marker"
               fi
+              break
             done
           fi
 
@@ -265,8 +277,15 @@ jobs:
             case "$sync_state" in
               behind)
                 echo "Sync PR #$existing is behind; catching it up before re-arming auto-merge."
-                gh api -X PUT "repos/$REPO/pulls/$existing/update-branch" \
-                  || echo "::warning::could not update sync PR #$existing automatically"
+                if ! gh api -X PUT "repos/$REPO/pulls/$existing/update-branch"; then
+                  # Not a warning. Swallowing this re-arms auto-merge and reports
+                  # a queued sync for a PR that is still behind and cannot merge
+                  # under the strict policy -- a green run, `refresh` suppressed,
+                  # and nothing moving.
+                  echo "pending=false" >> "$GITHUB_OUTPUT"
+                  echo "::error::could not catch up sync PR #$existing, which is behind and cannot merge until it is."
+                  exit 1
+                fi
                 ;;
               dirty)
                 # pending=false, unlike every other exit that leaves a sync PR
