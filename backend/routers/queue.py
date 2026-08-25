@@ -38,6 +38,14 @@ QUERY_TIMEOUT_MS = QUEUE_REPORT_BUDGET_MS // QUEUE_REPORT_MAX_STATEMENTS
 # through -- rather than user_scope.
 @router.get("/queue/summary", dependencies=[Depends(require_admin)])
 def queue_summary():
+    # Read before borrowing the app connection, deliberately. load_config()
+    # goes through the admin pool, so it is outside the statement cap set below
+    # and could block on a pool of its own -- with the app connection already
+    # held and inside the transaction, that time counted against nothing. It is
+    # also just better shape: nothing should hold a pooled connection while
+    # doing unrelated I/O on another pool. app_user has no grant on app_config,
+    # which is why this cannot simply move inside.
+    crawl_delay_seconds = float(load_config().get("crawl_delay_seconds", 30))
     with db.get_app_pool().connection() as conn:
         # One snapshot for the whole report. db.queue_summary runs several
         # queries -- totals, drain rate, fan-out, activity, in-progress -- and
@@ -62,10 +70,7 @@ def queue_summary():
         # safely: it is a module constant coerced to int here, never anything
         # request-derived.
         conn.execute(f"SET LOCAL statement_timeout = {int(QUERY_TIMEOUT_MS)}")
-        # Read through the admin pool, not this one: app_user has no grant on
-        # app_config. It feeds the stranded threshold, which is derived from
-        # the pacing rather than fixed.
-        summary = db.queue_summary(conn, float(load_config().get("crawl_delay_seconds", 30)))
+        summary = db.queue_summary(conn, crawl_delay_seconds)
     # Process-local, and labelled as such by the tab. Every other number here is
     # global database state, but there is no durable record of whether another
     # Machine's pool is up -- so this says "this machine" rather than quietly
