@@ -124,10 +124,13 @@ jobs:
           # approval-required state, and `integration` cannot merge without
           # "Backend tests" and "Frontend tests" reporting, so auto-merge below
           # waits on someone clicking "Approve and run". Adding
-          # INTEGRATION_PROMOTE_TOKEN (a fine-grained PAT or GitHub App token
-          # with Contents: read/write, Pull requests: read/write and Issues:
-          # read/write -- the last for the conflict label) removes the click for
-          # both workflows.
+          # INTEGRATION_PROMOTE_TOKEN removes the click for both workflows.
+          # A fine-grained PAT needs Contents: read/write, Pull requests:
+          # read/write, Issues: read/write (the conflict label) and Workflows:
+          # write; a classic PAT needs `repo` + `workflow`. Workflows is not
+          # optional and not covered by Contents -- without it the first sync's
+          # push is rejected for carrying this very file, which is the failure
+          # diagnosed at the push below.
           #
           # Parked, not absent -- worth stating plainly because the opposite is
           # a natural reading of GitHub's recursion guard, and a reviewer has
@@ -273,7 +276,7 @@ jobs:
                 # when the label exists; the attach below is the call that has
                 # to work, and it reports its own failure loudly.
                 gh label create "$CONFLICT_LABEL" --repo "$REPO" --color B60205 \
-                  --description "Sync PR whose conflict needs resolving and merging by hand" \
+                  --description "Sync PR whose conflict needs resolving and merging by hand -- with a merge commit, never a squash" \
                   --force >/dev/null 2>&1 || true
                 if ! gh pr edit "$existing" --repo "$REPO" --add-label "$CONFLICT_LABEL"; then
                   # Say this loudly. Without the label the guard above is absent,
@@ -282,7 +285,8 @@ jobs:
                   # quietly because labelling failed quietly.
                   echo "::error::could not label #$existing with $CONFLICT_LABEL. A later run will re-arm auto-merge on it: keep auto-merge disabled by hand, or check the token has Issues: write."
                 fi
-                echo "::error::Sync PR #$existing conflicts with integration. Auto-merge has been disabled: resolve $SYNC_BRANCH by hand, push it, and merge it deliberately."
+                echo "::error::Sync PR #$existing conflicts with integration. Auto-merge has been disabled: resolve $SYNC_BRANCH by hand, push it, and merge it deliberately -- WITH A MERGE COMMIT, not a squash. This is the one path where nothing here can enforce that, and a squash re-freezes git's merge base between main and integration for good. Setting allowed_merge_methods to merge only on integration-branch-protection removes the choice."
+
                 exit 1
                 ;;
             esac
@@ -306,14 +310,27 @@ jobs:
             # assignments they abort the step instead.
             pr_labels="$(gh pr view "$existing" --repo "$REPO" \
               --json labels --jq '.labels[].name')"
+            # .mergeMethod, not just presence. An auto-merge request armed
+            # with SQUASH lands a squash, which re-freezes git's merge base
+            # permanently -- and that is not hypothetical: the previous
+            # revision of this workflow armed `--auto --squash` as a fallback,
+            # so any sync PR it touched still carries exactly that. Treating
+            # "armed" as "safe" would let one through.
             pr_automerge="$(gh pr view "$existing" --repo "$REPO" \
-              --json autoMergeRequest --jq '.autoMergeRequest // empty')"
+              --json autoMergeRequest --jq '.autoMergeRequest.mergeMethod // empty')"
 
             if printf '%s\n' "$pr_labels" | grep -qx "$CONFLICT_LABEL"; then
               echo "Sync PR #$existing is labelled $CONFLICT_LABEL; leaving auto-merge off for whoever resolves it."
               exit 0
+            elif [ "$pr_automerge" = "MERGE" ]; then
+              echo "Sync PR #$existing already has auto-merge armed with a merge commit."
             elif [ -n "$pr_automerge" ]; then
-              echo "Sync PR #$existing already has auto-merge armed."
+              echo "Sync PR #$existing has auto-merge armed with $pr_automerge, which would re-freeze the merge base; re-arming with a merge commit."
+              if ! gh pr merge "$existing" --repo "$REPO" --disable-auto; then
+                echo "::error::sync PR #$existing has auto-merge armed with $pr_automerge and it could not be disabled. Left as-is it will land a $pr_automerge and re-freeze git's merge base. Disable auto-merge on it by hand."
+                exit 1
+              fi
+              arm_auto_merge "$existing"
             else
               arm_auto_merge "$existing"
             fi

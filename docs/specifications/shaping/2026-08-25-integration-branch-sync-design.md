@@ -108,7 +108,22 @@ Two settings, at different scopes, and the difference matters:
   returning `405 Merge commits are not allowed on this repository` regardless
   of what any ruleset says. It is repo-**wide**.
 - `allowed_merge_methods` on a branch ruleset narrows what that branch accepts.
-  `integration`'s must include `merge`.
+  `integration`'s should be **`["merge"]` — merge only**, not merely "including
+  merge".
+
+Merge-only rather than merge-permitted, because `arm_auto_merge` is not the
+only way a sync PR can land. A conflicted sync PR is deliberately handed to a
+person to resolve and merge, and there the workflow enforces nothing: if the
+ruleset offers a squash button, one squash re-freezes the base for good and
+brings the whole marker protocol back. Removing the choice is the only version
+of this that does not rely on the resolver remembering. The cost is that
+Dependabot's own PRs land on `integration` as merge commits too, which is
+invisible — `integration` is squash-promoted into `main` regardless.
+
+Where a squash-armed request already exists — the previous revision of this
+workflow armed `--auto --squash` as a fallback, so this is a real state, not a
+hypothetical — the `sync` job now reads `autoMergeRequest.mergeMethod`,
+disables it, and re-arms with `--merge`.
 
 Because the first is repo-wide, `main` only stays squash-only if **its own
 ruleset pins `allowed_merge_methods` to squash**. Check that when enabling the
@@ -215,10 +230,15 @@ is passed to `actions/checkout`, not only exported as `GH_TOKEN`: checkout
 persists whichever token it used as the git credential for every later push,
 and `GH_TOKEN` authenticates only the `gh` CLI.
 
-It needs Contents, Pull requests **and Issues** write. Issues because labels are
-issues-scoped even on a PR, and `sync-conflict-needs-hand-merge` is the only
-thing keeping auto-merge off a hand-resolved conflict. The workflow's own
-`permissions:` block grants the same three.
+It needs Contents, Pull requests, Issues **and Workflows** write — as a classic
+PAT, `repo` + `workflow`. Issues because labels are issues-scoped even on a PR,
+and `sync-conflict-needs-hand-merge` is the only thing keeping auto-merge off a
+hand-resolved conflict. Workflows because Contents does not cover
+`.github/workflows/`: a token without it hits exactly the push rejection
+described above, so a setup that lists only the first three produces the very
+failure this section diagnoses. The workflow's own `permissions:` block grants
+the three that apply to it (`GITHUB_TOKEN` cannot be given Workflows at all,
+which is why the PAT is the prerequisite).
 
 Separately, and more weakly, the token removes a weekly "Approve and run" click:
 a PR opened with `GITHUB_TOKEN` has its `pull_request` checks parked in an
