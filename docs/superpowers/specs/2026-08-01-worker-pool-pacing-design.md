@@ -97,12 +97,12 @@ had a consequence nobody spotted when it landed.
    plugin against a mocked 409, asserting the cooldown trips) and
    `test_search_raises_on_http_error` / `test_search_raises_on_request_error`.
 10. **The breaker's unit is now a failure domain, not always a crawler.** One
-    `crawlers` row was assumed to mean one upstream; the two eBay plugins
+    `crawlers` row was assumed to mean one upstream; the eBay plugins
     (`eBay/CCmusic` and `eBay`) break that — separate rows, but one eBay app,
     one cached OAuth token and one API, so an error storm answering one
     answers both. With a counter each, a storm had to reach
     `consecutive_failure_limit` twice over before both stopped calling. A
-    plugin may now declare `failure_domain: str` (both eBay plugins declare
+    plugin may now declare `failure_domain: str` (the eBay plugins declare
     `"ebay-browse-api"`); `CrawlManager._set_failure_domains`, called from
     `start_worker_pool`, collects those declarations, and
     `_record_site_result` applies each result to every crawler in the domain.
@@ -136,11 +136,25 @@ follow-ons from items 9 and 10.
     returns `None` without raising, and that is a real answer, not a failure.
     Covered by `tests/crawlers/test_amazon_search_errors.py`.
 12. **The cooldown notice is logged at INFO, not WARNING.** `routers/logs.py`'s
-    `_line_visible` filters by exact level membership rather than
-    level-and-above, so at WARNING the one line explaining a 30-minute crawl
-    pause was invisible to anyone watching the INFO stream that carries the
-    rest of the crawl narrative. Covered by
+    ~~`_line_visible` filters by exact level membership rather than
+    level-and-above~~ (see 2026-08-17 amendment below), so at WARNING the one
+    line explaining a 30-minute crawl pause was invisible to anyone watching
+    the INFO stream that carries the rest of the crawl narrative. Covered by
     `test_tripping_the_cooldown_is_logged_at_info`.
+
+    **Amendment (2026-08-17, branch `flyio-log-files-machines`):**
+    `_line_visible` no longer exists — `routers/logs.py` reads a Postgres
+    `app_logs` table with a real `level` column per row, and level filtering
+    is now a SQL `WHERE level = ANY(...)` clause, not a regex parsed off a
+    tailed text line. The "INFO not WARNING" reasoning above is unaffected:
+    the log viewer still filters by exact level set, not level-and-above. See
+    [`2026-08-17-unified-log-store-design.md`](../../specifications/shaping/2026-08-17-unified-log-store-design.md).
+
+    **Amendment (2026-08-18):** reverted to WARNING; the filtering quirk this
+    item describes still applies (the line is now invisible to an INFO-only
+    view), but WARNING better matches the severity for viewers who filter by
+    level-and-above. Test renamed to
+    `test_tripping_the_cooldown_is_logged_at_warning`.
 13. **The breaker now covers catalog crawlers too, not just the worker pool.**
     `_sync_stock` had no consecutive-failure breaker at all — only the
     2-consecutive-429-sites run abort — so a site that hard-blocks us was
@@ -161,6 +175,29 @@ follow-ons from items 9 and 10.
     quirk an INFO-only view never saw it. It now appends, when non-empty,
     `-- N failed (names); M cooling down (names)`. Covered by
     `test_sync_stock_completion_log_names_failed_and_skipped_sources`.
+
+**Amendment (2026-08-14, branch `per-item-crawler-fanout`):** two more details
+in this document are now stale — `crawl_queue` rows are per-target, not
+per-`(target, crawler)` pair, so cooldown exclusion can no longer be expressed
+as a claim-time exclusion list.
+
+15. **`claim_crawl_queue_batch` has no `excluded_crawler_ids` parameter any
+    more.** Item 5's "passes them ... as a new `excluded_crawler_ids`
+    parameter" and item 10's "keyed by `crawler_id` rather than by domain,
+    because that is what `claim_crawl_queue_batch`'s `excluded_crawler_ids`
+    consumes" both describe a mechanism that no longer exists: a `crawl_queue`
+    row no longer carries a `crawler_id` to exclude by. Cooldown is now an
+    in-loop skip inside `_drain_one_batch`'s per-crawler dispatch, deferred via
+    `pending_crawler_ids`/`available_at` written back onto the row, rather than
+    kept off the claim in the first place. The counters/`_site_cooldown_until`
+    staying keyed by `crawler_id` (item 10) is unchanged.
+16. **The 2026-08-10 amendment's `AND crawler_id IN (SELECT id FROM crawlers
+    WHERE enabled)` clause is gone from the claim query.** There is no
+    `crawler_id` column on `crawl_queue` to filter by any more; the
+    enabled-crawler set is resolved per claimed row at dispatch time
+    (`db.get_eligible_crawlers`), not as a claim-time predicate.
+
+See [`2026-08-14-per-item-crawler-fanout-design.md`](../../specifications/shaping/2026-08-14-per-item-crawler-fanout-design.md).
 
 ---
 

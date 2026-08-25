@@ -1,0 +1,78 @@
+name: Promote integration to main
+
+on:
+  schedule:
+    # Tuesday 06:00 UTC -- a full day after Dependabot's Monday 06:00 UTC
+    # runs on `integration` (.github/dependabot.yml), so stragglers (a rebase
+    # after a merge conflict, a delayed check run) land before this fires.
+    - cron: "0 6 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  promote:
+    name: Open/update the promotion PR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Open the integration -> main PR if there's anything to promote
+        env:
+          # A PR opened with the default GITHUB_TOKEN still triggers
+          # fly-deploy.yml's `pull_request` checks, but GitHub puts that run in
+          # an approval-required state (recursion guard on GITHUB_TOKEN-authored
+          # events) -- see https://docs.github.com/en/actions/concepts/security/github_token.
+          # So until INTEGRATION_PROMOTE_TOKEN (a fine-grained PAT or GitHub App
+          # token with this repo's Contents: read/write + Pull requests:
+          # read/write) is added as a secret, someone has to click "Approve and
+          # run" on the pending workflow run in the Actions tab once a week
+          # before auto-merge can complete. Adding that secret removes the
+          # click with no other change needed here.
+          GH_TOKEN: ${{ secrets.INTEGRATION_PROMOTE_TOKEN || github.token }}
+        run: |
+          set -euo pipefail
+          git fetch origin main integration
+
+          # Ancestry (git log A..B) breaks the moment the promotion PR below
+          # squash-merges: the squash commit on main has no relation to
+          # integration's individual commits, so they'd look "unpromoted"
+          # forever and this would fire every single week even with nothing
+          # new. Compare tree content instead -- that's correctly empty once
+          # main and integration hold the same files, however they got there.
+          if git diff --quiet origin/main origin/integration; then
+            echo "integration and main already match; nothing to promote."
+            exit 0
+          fi
+
+          existing="$(gh pr list --base main --head integration --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            echo "Promotion PR #$existing is already open; leaving it as-is."
+            exit 0
+          fi
+
+          # A tree diff can be non-empty even with nothing to promote, if main
+          # advanced on its own (an unrelated feature PR) while integration
+          # didn't. GitHub's own merge-base diff for the PR would then be
+          # empty and pr create fails with "No commits between" -- treat that
+          # as the benign no-op it is rather than a workflow failure.
+          if ! create_output="$(gh pr create \
+            --base main \
+            --head integration \
+            --title "chore: promote this week's dependency updates to main" \
+            --body "Batches this week's Dependabot updates from \`integration\` into one deploy. Opened automatically by .github/workflows/integration-promote.yml every Tuesday; auto-merges once CI is green." \
+            --label dependencies 2>&1)"; then
+            if echo "$create_output" | grep -qi "no commits between"; then
+              echo "main has no unpromoted commits from integration despite the tree diff (main moved independently); nothing to do."
+              exit 0
+            fi
+            echo "$create_output" >&2
+            exit 1
+          fi
+          echo "$create_output"
+
+          gh pr merge integration --auto --squash

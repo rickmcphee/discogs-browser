@@ -20,6 +20,5 @@ State one of:
 
 ## Checklist
 
-- [ ] `backend/version.py` `VERSION` minor-bumped
 - [ ] Spec drift checked against both spec trees
 - [ ] Commits carry the AI-attribution trailers

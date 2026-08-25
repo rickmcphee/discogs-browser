@@ -37,7 +37,8 @@ Touches:
   `stock_items_item_key_idx`. `get_recommended_stock_items()` is left alone
   — it keeps serving its own purpose and is no longer the export query.
 - `backend/routers/stock.py` — `GET /api/stock/export` re-pointed at the new
-  query and widened to 10 columns; new `POST /api/stock/import`.
+  query and widened to 10 columns; new `POST /api/stock/import`. (**2026-08-23:**
+  an 11th column, `currency`, was appended — see the amendment at the end.)
 - `backend/recommendations_import.py` — new module: CSV parsing, per-row
   validation, in-file de-duplication. Kept out of the router so it is
   unit-testable without HTTP.
@@ -162,12 +163,12 @@ case — one person, two instances — is indistinguishable from it.
 
 ## File format
 
-Header, 10 columns. The existing seven keep their names and positions; three
-are appended, so anything currently reading the file by column name or
-leading position is unaffected:
+Header, 11 columns as of 2026-08-23 (10 as originally shipped). The existing
+seven keep their names and positions; the rest are appended, so anything
+reading the file by column name or leading position is unaffected:
 
 ```
-artist,title,format,price,source,link,reason,item_key,recommended,judged_at
+artist,title,format,price,source,link,reason,item_key,recommended,judged_at,currency
 ```
 
 - `artist`, `title`, `format` — from `stock_item_identities` (durable; keyed
@@ -197,7 +198,7 @@ that's also a hazard for the byte-for-byte round-trip test, since the two
 cases would order differently despite being indistinguishable in the file.
 
 On import, only `item_key`, `recommended`, `judged_at`, and `reason` are
-read. The other six columns exist for humans.
+read. The other seven columns exist for humans.
 
 ## Backend design
 
@@ -211,12 +212,12 @@ SELECT
     COALESCE(i.artist, '') AS artist,
     COALESCE(i.title, '')  AS title,
     COALESCE(i.format, '') AS format,
-    d.price, d.source, d.url,
+    d.price, d.currency, d.source, d.url,
     j.reason, j.item_key, j.recommended, j.judged_at
 FROM stock_item_judgments j
 LEFT JOIN stock_item_identities i ON i.item_key = j.item_key
 LEFT JOIN LATERAL (
-    SELECT s.price, cr.site_name AS source, s.url
+    SELECT s.price, s.currency, cr.site_name AS source, s.url
     FROM stock_items s
     JOIN crawlers cr ON cr.id = s.crawler_id
     WHERE s.item_key = j.item_key
@@ -433,6 +434,22 @@ introducing inline state in `Account`:
 Export's help text updates to the new column list and drops the
 "recommended items" framing — it is now every judgment.
 
+**Amendment (2026-08-23, branch `store-filter-recommendations-refresh`):**
+the `[setSyncStatus]` dep list and the direct `getJudgmentStatus()` →
+`setHasJudgedItems` update described above are superseded. A mount-time
+bootstrap fetch and this handler's post-import fetch can both have a
+`getJudgmentStatus()` request in flight at once, and a slow-arriving
+bootstrap response landing after the newer import-driven one would
+overwrite it with stale data — the same race class as the pre-existing
+`fetchPriceStatus`/`latestPriceStatusSeq` pair. `handleImportRecommendations`
+now calls a shared `refreshJudgmentStatus()` helper instead (mirrors
+`fetchPriceStatus`'s shape, backed by a `latestHasJudgedItemsSeq` ref),
+so its dep list is `[setSyncStatus, refreshJudgmentStatus]`. The two
+judgment SSE handlers and `handleClearRecommendations` participate in the
+same guard, bumping the shared counter before their own direct writes.
+See [`2026-08-22-live-recommended-filter-design.md`](../../superpowers/specs/2026-08-22-live-recommended-filter-design.md)
+for the full design.
+
 ## Testing
 
 Backend, `test_recommendations_import.py` (pure parsing, no DB):
@@ -465,8 +482,11 @@ Backend, `test_judgment_crud.py`:
 
 Backend, `test_stock_router.py`:
 
-- export emits the 10-column header and a round-trip
+- export emits the 11-column header (10 as originally shipped; `currency` was
+  appended on 2026-08-23, see the amendment at the end) and a round-trip
   export → import → export is byte-identical.
+- a non-USD row exports its currency code, and a judgment with no live stock
+  row exports an empty one rather than a defaulted `USD`.
 - import returns the documented counts; returns `running: true` and writes
   nothing while a judgment run is active; `413`/`422` on oversize and on a
   bad header.
@@ -502,3 +522,26 @@ No `.agents/` tree exists in this repo, so `INPUTS.md`, `OUTPUTS.md`, and
   true.
 - `CLAUDE.md` — no change; no invariant, layout, or command changes.
 - `backend/version.py` — minor bump, per the repo's every-PR rule.
+
+## Amendment (2026-08-23, branch `claude/stock-export-currency`)
+
+The file gains an 11th column, `currency`, appended after `judged_at`.
+
+`price` was exported as a bare number with no indication of its unit, which was
+unambiguous only while every source priced in USD. That stopped being true
+before this amendment: `jetglowrecordings.py` hardcodes EUR for an Italian
+store, and `darkdescentrecords.py` passes its feed's `currency_code` through.
+An exported EUR row was therefore a `27.99` that read as dollars — a silent
+misstatement in a file whose whole job is to be a durable record. Found by
+review on PR #165, which added a third non-USD source.
+
+Appended rather than slotted next to `price`, where it would read better:
+every existing column keeps its index, so a consumer reading the file
+positionally is unaffected. Import is name-based (`csv.DictReader` against
+`REQUIRED_COLUMNS`, which is unchanged), so an older 10-column file still
+imports and a newer one still round-trips byte-identically.
+
+The value is empty, not `USD`, when the joined stock row is absent or its
+`currency` is NULL — the export records what was stored rather than asserting a
+currency nothing recorded. `get_all_stock_judgments()` selects `s.currency`
+through the same `LEFT JOIN LATERAL` that already supplies the live price.

@@ -133,6 +133,15 @@ describe('RecordBrowser', () => {
     expect(await screen.findByText('No wantlist items yet. Add records to your wantlist on Discogs, then sync.')).toBeInTheDocument()
   })
 
+  it('does not show the empty state while the initial fetch is still pending', async () => {
+    let resolveFetch: (v: any) => void = () => {}
+    getReleases.mockReturnValue(new Promise((resolve) => { resolveFetch = resolve }))
+    render(<RecordBrowser scope="collection" />)
+    expect(screen.queryByText('No records found. Click the sync icon above to load your collection from Discogs.')).toBeNull()
+    resolveFetch({ total: 0, page: 1, per_page: 250, releases: [] })
+    await screen.findByText('No records found. Click the sync icon above to load your collection from Discogs.')
+  })
+
   it('defaults sort to title when a specific artist is selected, and back to artist for All', async () => {
     getArtists.mockResolvedValue(['Pink Floyd'])
     render(<RecordBrowser scope="collection" />)
@@ -179,5 +188,27 @@ describe('RecordBrowser', () => {
     await waitFor(() => expect(getReleases).toHaveBeenCalled())
     fireEvent.click(screen.getByText(/Date Added/))
     await waitFor(() => expect(getReleases).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'date_added', order: 'asc' })))
+  })
+
+  it('renders the Price column by default', async () => {
+    render(<RecordBrowser scope="collection" />)
+    await waitFor(() => expect(getReleases).toHaveBeenCalled())
+    expect(screen.getByText(/Price/)).toBeTruthy()
+  })
+
+  it('hides the Price column when hasPriceField is false, and widens the empty-state row to match', async () => {
+    render(<RecordBrowser scope="collection" hasPriceField={false} />)
+    const emptyRow = await screen.findByText('No records found. Click the sync icon above to load your collection from Discogs.')
+    expect(screen.queryByText(/Price/)).toBeNull()
+    expect(emptyRow.closest('td')).toHaveAttribute('colSpan', '7')
+  })
+
+  it('resets a discogs_price sort to artist when hasPriceField flips to false', async () => {
+    const { rerender } = render(<RecordBrowser scope="collection" hasPriceField={true} />)
+    await waitFor(() => expect(getReleases).toHaveBeenCalled())
+    fireEvent.click(screen.getByText(/Price/))
+    await waitFor(() => expect(getReleases).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'discogs_price' })))
+    rerender(<RecordBrowser scope="collection" hasPriceField={false} />)
+    await waitFor(() => expect(getReleases).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'artist', order: 'asc' })))
   })
 })

@@ -298,6 +298,157 @@ def test_get_library_releases_date_added_sort_falls_back_to_artist_without_a_sco
     assert all(r["date_added"] is None for r in result["releases"])
 
 
+def _seed_priced(admin_conn, user_id, rows):
+    """rows: [(discogs_id, artist, price_paid)] -- artist order is seeded to
+    disagree with price order so a silent fallback to the artist sort fails."""
+    for discogs_id, artist, price in rows:
+        db.upsert_catalog_release(admin_conn, {
+            "discogs_id": discogs_id, "artist": artist, "title": "T", "year": None,
+            "label": None, "format": None, "discogs_price": None, "barcode": None,
+            "cover_image_url": None, "discogs_url": None,
+        })
+        db.upsert_library_item(
+            admin_conn, user_id, discogs_id, in_collection=True, price_paid=price
+        )
+    admin_conn.commit()
+
+
+def test_get_library_releases_sort_by_discogs_price_orders_numerically(admin_conn):
+    # price_paid is free text carrying the currency, so ordering it as text is
+    # lexicographic: "$100.00" < "$30.00" < "$9.00". The numeric sort key has
+    # to put $9 first.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _seed_priced(admin_conn, alice["id"], [
+        ("r1", "Aaa", "$100.00"),
+        ("r2", "Bbb", "$30.00"),
+        ("r3", "Ccc", "$9.00"),
+    ])
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], sort="discogs_price", order="asc")
+    assert [r["discogs_id"] for r in result["releases"]] == ["r3", "r2", "r1"]
+    # The currency is untouched in what's returned for display.
+    assert [r["discogs_price"] for r in result["releases"]] == ["$9.00", "$30.00", "$100.00"]
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], sort="discogs_price", order="desc")
+    assert [r["discogs_id"] for r in result["releases"]] == ["r1", "r2", "r3"]
+
+
+def test_get_library_releases_price_sort_ignores_currency_and_separators(admin_conn):
+    # Mixed currency symbols are rare but must not break the extraction, and a
+    # thousands separator must not truncate the number to its leading group
+    # ("1,200.50" -> 1200.50, not 1). Values with no digits at all sort last,
+    # with NULL, under the existing NULL guard.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _seed_priced(admin_conn, alice["id"], [
+        ("r1", "Aaa", "N/A"),
+        ("r2", "Bbb", "$1,200.50"),
+        ("r3", "Ccc", "\u00a35.99"),
+        ("r4", "Ddd", None),
+        ("r5", "Eee", "GBP 40"),
+    ])
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], sort="discogs_price", order="asc")
+    ordered = [r["discogs_id"] for r in result["releases"]]
+    assert ordered[:3] == ["r3", "r5", "r2"]
+    assert set(ordered[3:]) == {"r1", "r4"}
+
+
+def test_get_library_releases_price_sort_reads_decimal_commas_as_decimals(admin_conn):
+    # price_paid is free text, so a European collection writes "25,50" for what
+    # a US one writes "25.50". Stripping every comma as a thousands separator
+    # turns that into 2550 -- not merely lossy but a hundredfold overstatement,
+    # which sorts a cheap record above a $100 one. The separators are resolved
+    # by format instead:
+    #
+    #   "25,50"     decimal comma        -> 25.50
+    #   "1.234,56"  dot grouping + comma -> 1234.56
+    #   "1,200.50"  comma grouping + dot -> 1200.50
+    #   "1.234"     lone dot group       -> 1.234, unchanged on purpose
+    #
+    # The last is the deliberately conservative call: reading it as 1234 would
+    # silently reorder every three-decimal value already stored.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _seed_priced(admin_conn, alice["id"], [
+        ("r1", "Aaa", "$1,200.50"),
+        ("r2", "Bbb", "\u20ac25,50"),
+        ("r3", "Ccc", "1.234,56"),
+        ("r4", "Ddd", "$100"),
+        ("r5", "Eee", "1.234"),
+    ])
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], sort="discogs_price", order="asc")
+    # 1.234 < 25.50 < 100 < 1200.50 < 1234.56
+    assert [r["discogs_id"] for r in result["releases"]] == ["r5", "r2", "r4", "r1", "r3"]
+
+
+def test_get_library_releases_price_sort_reads_a_bare_decimal_part(admin_conn):
+    # A price written without its leading zero -- "$.99", or ",99" in a
+    # decimal-comma collection. While the token had to begin with a digit these
+    # captured as "99" and sorted a 99-cent record above a $50 one: the same
+    # inflation the fallback exists to rule out, arriving through the tokeniser
+    # rather than the branches. The token may now start with a separator and
+    # gets the zero back before the branches see it.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _seed_priced(admin_conn, alice["id"], [
+        ("r1", "Aaa", "$.99"),
+        ("r2", "Bbb", ",99"),
+        ("r3", "Ccc", "$50"),
+        ("r4", "Ddd", "$5"),
+    ])
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], sort="discogs_price", order="asc")
+    # 0.99, 0.99, 5, 50 -- the two cent-prices lead; under a digit-first token
+    # they read as 99 and trail $50 instead.
+    ordered = [r["discogs_id"] for r in result["releases"]]
+    assert set(ordered[:2]) == {"r1", "r2"}
+    assert ordered[2:] == ["r4", "r3"]
+
+
+def test_get_library_releases_price_sort_floors_unrecognised_prices(admin_conn):
+    # Two things at once, both about the fallback branch.
+    #
+    # Two rejected approaches, two distinct failure modes, both on this input:
+    #
+    #   strip everything but digits and separators   "25.00.00" -> "25.00.00"
+    #   strip the separators too                     "25.00.00" -> 250000
+    #
+    # The first keeps the currency out but leaves two dots, so ::numeric fails
+    # and takes down the whole query rather than one row -- which is why every
+    # branch has to yield digits with at most one dot. The second casts fine
+    # and is worse: it floats a $25 record four orders of magnitude up, to the
+    # top of a descending sort. The fallback truncates to the leading digit run
+    # instead, so an unrecognised token can only understate, and only as far as
+    # its first group.
+    #
+    # "1,23,456" is the Indian grouping and is recognised outright rather than
+    # left to the fallback, which would have floored it to 1.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _seed_priced(admin_conn, alice["id"], [
+        ("r1", "Aaa", "25.00.00"),
+        ("r2", "Bbb", "1,23,456"),
+        ("r3", "Ccc", "$5"),
+        ("r4", "Ddd", "$40"),
+        ("r5", "Eee", "1,23,456.78"),
+    ])
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], sort="discogs_price", order="asc")
+    # 5 < 25 (floored from "25.00.00") < 40 < 123456 < 123456.78. Under a
+    # separator strip r1 reads as 250000 and leads on desc; under a leading-run
+    # fallback for every unrecognised token r2 reads as 1 and leads on asc.
+    #
+    # r5 carries the decimal the Indian branch originally omitted, which is the
+    # commonest real form of that convention -- a price with cents. Without the
+    # suffix it missed every branch and floored to 1, so recognising the
+    # grouping bought nothing for exactly the values it was added for.
+    assert [r["discogs_id"] for r in result["releases"]] == ["r3", "r1", "r4", "r2", "r5"]
+
+
 def test_get_library_releases_paginates_without_overlap_when_every_sort_key_is_null(admin_conn):
     # discogs_price is a Discogs custom field most collections never set, so
     # sorting by it leaves every row's sort key NULL and every row tied. A
@@ -511,3 +662,240 @@ def test_upsert_library_item_price_paid_is_per_user(admin_conn):
 
     assert _price_paid(admin_conn, alice["id"]) == "$10"
     assert _price_paid(admin_conn, bob["id"]) is None
+
+
+def _catalog(admin_conn, discogs_id, artist, title):
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": discogs_id, "artist": artist, "title": title, "year": None, "label": None,
+        "format": None, "barcode": None, "cover_image_url": None, "discogs_url": None,
+    })
+
+
+def test_get_distinct_artists_collapses_casing_variants_onto_the_commonest(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "Jets To Brazil", "Orange Rhyming Dictionary")
+    _catalog(admin_conn, "r2", "Jets To Brazil", "Four Cornered Night")
+    _catalog(admin_conn, "r3", "Jets to Brazil", "Perfecting Loneliness")
+    for rid in ("r1", "r2", "r3"):
+        db.upsert_library_item(admin_conn, alice["id"], rid, in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.get_distinct_artists(conn, alice["id"]) == ["Jets To Brazil"]
+
+
+def test_get_library_releases_artist_filter_spans_casing_variants(admin_conn):
+    # One row of each casing, so the frequency rule ties and the byte-order
+    # tie-break decides -- "Jets To Brazil" regardless of the cluster's
+    # collation, which under en_US would otherwise pick the lowercase variant.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "Jets To Brazil", "Orange Rhyming Dictionary")
+    _catalog(admin_conn, "r2", "Jets to Brazil", "Perfecting Loneliness")
+    for rid in ("r1", "r2"):
+        db.upsert_library_item(admin_conn, alice["id"], rid, in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], artist="Jets To Brazil")
+    assert result["total"] == 2
+    assert {r["artist"] for r in result["releases"]} == {"Jets To Brazil"}
+
+
+def test_get_distinct_artists_collapses_casing_python_and_postgres_fold_differently(admin_conn):
+    # "İsis" carries U+0130 (capital I with dot above). Postgres LOWER() folds
+    # it to plain "i" -- one character in, one out, per the database collation
+    # -- while Python's str.lower() yields "i" + U+0307. Keying the canonical
+    # label lookup on a Python-computed fold therefore matched no row here, and
+    # the sidebar fell back to listing both raw spellings.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "İsis", "Celestial")
+    _catalog(admin_conn, "r2", "İsis", "Oceanic")
+    _catalog(admin_conn, "r3", "İSIS", "Panopticon")
+    for rid in ("r1", "r2", "r3"):
+        db.upsert_library_item(admin_conn, alice["id"], rid, in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.get_distinct_artists(conn, alice["id"]) == ["İsis"]
+
+
+def test_get_library_releases_sorts_the_prefixed_artists_by_the_following_word(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "The Beatles", "Abbey Road")
+    _catalog(admin_conn, "r2", "Aphex Twin", "Selected Ambient Works")
+    _catalog(admin_conn, "r3", "Pavement", "Slanted and Enchanted")
+    _catalog(admin_conn, "r4", "Zappa", "Hot Rats")
+    for rid in ("r1", "r2", "r3", "r4"):
+        db.upsert_library_item(admin_conn, alice["id"], rid, in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        asc = db.get_library_releases(conn, alice["id"], sort="artist", order="asc")
+        desc = db.get_library_releases(conn, alice["id"], sort="artist", order="desc")
+    # "The Beatles" sorts under B, ahead of "Pavement" -- the full-string
+    # key "the beatles" would instead sort it *after* "pavement", so this
+    # ordering only holds with article-stripping applied, not by accident.
+    assert [r["discogs_id"] for r in asc["releases"]] == ["r2", "r1", "r3", "r4"]
+    assert [r["discogs_id"] for r in desc["releases"]] == ["r4", "r3", "r1", "r2"]
+    # canonical_artist_labels folds "The Beatles" to "Beatles, The" separately
+    # from this sort-key stripping -- see
+    # test_get_distinct_artists_folds_the_prefix_to_comma_suffix.
+    assert asc["releases"][1]["artist"] == "Beatles, The"
+
+
+def test_get_library_releases_the_prefix_sort_leaves_false_positives_alone(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "The", "Untitled")
+    _catalog(admin_conn, "r2", "Theatre of Hate", "Westworld")
+    _catalog(admin_conn, "r3", "The Who", "Tommy")
+    for rid in ("r1", "r2", "r3"):
+        db.upsert_library_item(admin_conn, alice["id"], rid, in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], sort="artist", order="asc")
+    # "The Who" -> sort key "who" (W). "The" and "Theatre of Hate" have no
+    # word after "the " to strip, so they keep their literal spelling (T).
+    assert [r["discogs_id"] for r in result["releases"]] == ["r1", "r2", "r3"]
+
+
+def test_get_distinct_artists_sorts_the_prefixed_artists_by_the_following_word(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "The Beatles", "Abbey Road")
+    _catalog(admin_conn, "r2", "Aphex Twin", "Selected Ambient Works")
+    _catalog(admin_conn, "r3", "Pavement", "Slanted and Enchanted")
+    _catalog(admin_conn, "r4", "Zappa", "Hot Rats")
+    for rid in ("r1", "r2", "r3", "r4"):
+        db.upsert_library_item(admin_conn, alice["id"], rid, in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        artists = db.get_distinct_artists(conn, alice["id"])
+    # "Beatles, The" sorts ahead of "Pavement" only with article-stripping --
+    # the full-string key "the beatles" would put it after "pavement".
+    assert artists == ["Aphex Twin", "Beatles, The", "Pavement", "Zappa"]
+
+
+def test_get_distinct_artists_folds_the_prefix_to_comma_suffix(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "The Beatles", "Abbey Road")
+    db.upsert_library_item(admin_conn, alice["id"], "r1", in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.get_distinct_artists(conn, alice["id"]) == ["Beatles, The"]
+
+
+def test_get_library_releases_the_prefix_fold_leaves_false_positives_alone(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "The", "Untitled")
+    _catalog(admin_conn, "r2", "Theatre of Hate", "Westworld")
+    for rid in ("r1", "r2"):
+        db.upsert_library_item(admin_conn, alice["id"], rid, in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        artists = db.get_distinct_artists(conn, alice["id"])
+    assert artists == ["The", "Theatre of Hate"]
+
+
+def test_get_library_releases_artist_filter_matches_comma_form_against_the_prefixed_row(admin_conn):
+    # The sidebar always hands back the canonical (post-fold) label, so a
+    # click on "Beatles, The" must still find the catalog row literally
+    # stored as "The Beatles" -- this pins the filter side of the fold, not
+    # just the label side.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "The Beatles", "Abbey Road")
+    db.upsert_library_item(admin_conn, alice["id"], "r1", in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], artist="Beatles, The")
+    assert result["total"] == 1
+    assert result["releases"][0]["artist"] == "Beatles, The"
+
+
+def test_get_library_releases_sorts_mixed_the_prefix_and_comma_suffix_the_same(admin_conn):
+    # r1 and r3 are the two raw storage conventions for what canonicalizes to
+    # the same displayed artist; r2 is a distinct, unrelated artist that
+    # happens to sort between their *unstripped* spellings ("beatles" <
+    # "beatles a" < "beatles, the"). A sort key that only strips the "The X"
+    # convention lands r1 before r2 before r3 -- splitting one artist's rows
+    # across a different artist's. Stripping both conventions to the same
+    # bare key ("beatles") keeps r1 and r3 adjacent, both ahead of r2.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "The Beatles", "Abbey Road")
+    _catalog(admin_conn, "r2", "Beatles A", "Boundary Album")
+    _catalog(admin_conn, "r3", "Beatles, The", "Let It Be")
+    for rid in ("r1", "r2", "r3"):
+        db.upsert_library_item(admin_conn, alice["id"], rid, in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], sort="artist", order="asc")
+    assert [r["discogs_id"] for r in result["releases"]] == ["r1", "r3", "r2"]
+
+
+def test_get_library_releases_search_matches_comma_form_against_the_prefixed_row(admin_conn):
+    # The displayed artist is "Beatles, The"; a search for exactly what's on
+    # screen must find the row even though it's stored as "The Beatles".
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "The Beatles", "Abbey Road")
+    db.upsert_library_item(admin_conn, alice["id"], "r1", in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], search="Beatles, The")
+    assert result["total"] == 1
+    assert result["releases"][0]["discogs_id"] == "r1"
+
+
+def test_get_distinct_artists_folds_bare_form_into_the_suffix_group(admin_conn):
+    # "Beatles" carries no article marker at all -- unlike "The Beatles" vs
+    # "Beatles, The", there's no string transform that says these are the
+    # same artist; canonical_artist_labels has to look up whether a
+    # The/comma-form spelling exists elsewhere. See
+    # docs/specifications/shaping/2026-08-22-bare-form-artist-fold-design.md.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "The Beatles", "Abbey Road")
+    _catalog(admin_conn, "r2", "Beatles", "Let It Be")
+    for rid in ("r1", "r2"):
+        db.upsert_library_item(admin_conn, alice["id"], rid, in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.get_distinct_artists(conn, alice["id"]) == ["Beatles, The"]
+
+
+def test_get_distinct_artists_bare_form_with_no_the_variant_stays_bare(admin_conn):
+    # A genuinely bare-named artist, with no "The X"/"X, The" spelling
+    # anywhere, must be unaffected -- the fold only fires when a variant
+    # actually exists to fold into.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "Nirvana", "Nevermind")
+    db.upsert_library_item(admin_conn, alice["id"], "r1", in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.get_distinct_artists(conn, alice["id"]) == ["Nirvana"]
+
+
+def test_get_library_releases_artist_filter_matches_bare_form_row(admin_conn):
+    # Same shape as test_get_library_releases_artist_filter_matches_comma_form_against_the_prefixed_row,
+    # for the bare spelling: clicking "Beatles, The" in the sidebar must also
+    # surface a catalog row stored with no article at all. All three raw
+    # spellings ("The Beatles", "Beatles", "Beatles, The") are seeded here so
+    # one filter call pins all three collapsing under a single filter value,
+    # not just the bare/prefix pair.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    _catalog(admin_conn, "r1", "The Beatles", "Abbey Road")
+    _catalog(admin_conn, "r2", "Beatles", "Let It Be")
+    _catalog(admin_conn, "r3", "Beatles, The", "Revolver")
+    for rid in ("r1", "r2", "r3"):
+        db.upsert_library_item(admin_conn, alice["id"], rid, in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_library_releases(conn, alice["id"], artist="Beatles, The")
+    assert result["total"] == 3
+    assert {r["artist"] for r in result["releases"]} == {"Beatles, The"}

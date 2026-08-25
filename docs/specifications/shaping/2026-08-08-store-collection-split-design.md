@@ -221,6 +221,13 @@ export interface StockItem {
   dropdown) is rendered only when `scope === 'store'`; its options drop
   `'overlapping'`, leaving `All`/`Recommended`. When `scope === 'collection'`,
   no dropdown renders at all.
+
+  **Amendment (2026-08-16, branch `store-saved-items`):** the Store
+  dropdown gained a third option, `Saved`, for a per-user "save for
+  later" bookmark — see
+  [`2026-08-16-store-saved-items-design.md`](2026-08-16-store-saved-items-design.md).
+  "Leaving `All`/`Recommended`" described the set at the time; it is now
+  `All`/`Recommended`/`Saved`.
 - Tile view's `items.map(...)` filters to `item.is_own` before mapping —
   unaffected otherwise; still one tile per item, same cover/artist/title
   rendering as today.

@@ -12,6 +12,17 @@ anticipated is now called **Track**, and this tab went back to
 values changed with the labels (`'discogs'` → `'collection'`), though the
 backend `scope="discogs"` value this spec introduced is unchanged.
 
+**Amendment (2026-08-11):** the "wishlist sync stops enqueueing release-crawler
+price crawls" decision below (and its `get_missing_releases`/
+`get_crawl_status_for_user` follow-on in PR #69) was itself reversed —
+wishlist items are auto-enqueued to every enabled release crawler again,
+the same as collection items, and both functions treat wishlist-only rows
+as candidates. The "nothing displays that data" half of the original
+rationale no longer holds either: `2026-08-11-release-crawler-stock-items-design.md`
+and its implementation plan `2026-08-12-release-crawler-stock-items.md` made
+release-crawler matches write into `stock_items`, so this data now shows up
+live in the Store and Track tabs.
+
 This is the first slice of a v3.0 redesign that eventually splits the app's
 tabs along two use cases: tracking the value of a Discogs collection, and
 comparing prices for in-stock inventory across ecommerce sites (including a
@@ -207,7 +218,13 @@ entirely from this branch. The collection loop's equivalent
     `_RELEASE_ALLOWED_SORT`, because the price moved to
     `library_items.price_paid` and its sort expression is therefore
     `li.price_paid`, which likewise cannot go through a `f"c.{sort_col}"`
-    lookup. The set now holds only genuine `catalog` columns: `artist`,
+    lookup. (As of 2026-08-24 that branch reads
+    `_price_sort_sql("li.price_paid")`, a shared helper that resolves the
+    column's free-text separators into a numeric sort key; sorting the raw
+    column compared it as text, so `"$100"` ordered ahead of `"$9"`. The
+    point this bullet makes is unaffected — it is still an `li.`-prefixed
+    special case ahead of the lookup, for the same reason. See
+    [`2026-08-24-numeric-price-sort-design.md`](2026-08-24-numeric-price-sort-design.md).) The set now holds only genuine `catalog` columns: `artist`,
     `title`, `year`, `label`, `format`.
 - The ORDER BY ends with a deterministic `c.discogs_id` term (catalog's
   primary key; `library_items` is filtered to one user, so it is unique

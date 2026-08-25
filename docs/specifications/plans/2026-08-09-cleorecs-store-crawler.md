@@ -4,7 +4,7 @@
 
 **Goal:** Add a `crawler_type="catalog"` plugin that ingests Cleopatra Records' vinyl stock from `https://cleorecs.com/collections/vinyl-1` into `stock_items`.
 
-**Architecture:** A single new file, `backend/crawlers/cleorecs.py`, following the shape of the 33 existing Shopify plugins (`twentybuckspin.py` is the closest sibling). It delegates all HTTP, pacing, retry and progress reporting to the existing `shopify_catalog.iter_products()` helper and adds only this store's parsing and filtering rules. Registration is automatic via `main.py`'s startup scan of `backend/crawlers/`; no other file changes except the version bump.
+**Architecture:** A single new file, `backend/crawlers/cleorecs.py`, following the shape of the existing Shopify plugins (`twentybuckspin.py` is the closest sibling). It delegates all HTTP, pacing, retry and progress reporting to the existing `shopify_catalog.iter_products()` helper and adds only this store's parsing and filtering rules. Registration is automatic via `main.py`'s startup scan of `backend/crawlers/`; no other file changes except the version bump.
 
 **Tech Stack:** Python 3.9+, `httpx` (indirectly, via `shopify_catalog`), `pytest` with `asyncio_mode = "auto"`, `respx` for HTTP mocking.
 
