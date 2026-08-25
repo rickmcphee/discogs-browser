@@ -278,7 +278,6 @@ export default function QueueView() {
   const [next, setNext] = useState<QueueNextItem[]>([])
   const [nextLoading, setNextLoading] = useState(false)
   const [nextError, setNextError] = useState<string | null>(null)
-  const timer = useRef<ReturnType<typeof setInterval> | null>(null)
   const generation = useRef(0)
 
   // setInterval will happily start a second request while the first is still
@@ -303,14 +302,37 @@ export default function QueueView() {
   // adding one would mean touching a fan-out whose per-user filtering rules are
   // load-bearing. Paused while the tab isn't the active view or the document is
   // hidden, so a backgrounded tab isn't querying the queue every 10 seconds.
+  //
+  // Self-scheduling rather than setInterval, so at most one summary is ever in
+  // flight. The generation counter above only stops a stale response being
+  // rendered; it does nothing about a slow one still holding a connection. A
+  // summary is a REPEATABLE READ transaction on the same app pool the crawl
+  // workers claim through, so an interval firing faster than the query settles
+  // would stack transactions on that pool and compete with the workers --
+  // exactly the harm this tab exists to detect, caused by the tab itself.
   useEffect(() => {
-    function stop() {
-      if (timer.current) { clearInterval(timer.current); timer.current = null }
+    let disposed = false
+    let handle: ReturnType<typeof setTimeout> | null = null
+    let active = false
+    // Bumped on every stop, so an in-flight request whose continuation lands
+    // after a hide/show cannot leave a second loop running alongside the new one.
+    let run = 0
+
+    async function tick(token: number) {
+      if (disposed || token !== run) return
+      await load()
+      if (disposed || token !== run) return
+      handle = setTimeout(() => tick(token), POLL_MS)
     }
     function start() {
-      if (timer.current) return
-      load()
-      timer.current = setInterval(load, POLL_MS)
+      if (active) return
+      active = true
+      tick(++run)
+    }
+    function stop() {
+      active = false
+      run++
+      if (handle) { clearTimeout(handle); handle = null }
     }
     function onVisibility() {
       if (document.visibilityState === 'visible') start(); else stop()
@@ -318,6 +340,7 @@ export default function QueueView() {
     onVisibility()
     document.addEventListener('visibilitychange', onVisibility)
     return () => {
+      disposed = true
       document.removeEventListener('visibilitychange', onVisibility)
       stop()
     }

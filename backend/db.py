@@ -422,10 +422,11 @@ ALTER TABLE listings ALTER COLUMN release_id DROP NOT NULL;
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS item_key TEXT REFERENCES stock_item_identities(item_key);
 CREATE UNIQUE INDEX IF NOT EXISTS listings_item_key_crawler_idx ON listings (item_key, crawler_id);
 
--- Serves queue_summary's per-crawler activity aggregate (MAX(last_checked)
--- and a count over a recent window, both grouped by crawler_id). Without it
--- that aggregate is a sequential scan of every listing on every poll of the
--- admin Queue tab, which is the one query in this file that runs on a timer.
+-- Serves queue_summary's per-crawler activity lookups, which run on a timer:
+-- for each enabled crawler, a count over a recent window (a range scan of just
+-- that slice) and an ORDER BY last_checked DESC LIMIT 1 probe for recency (one
+-- backward entry read). Both are correlated subqueries driven from crawlers,
+-- specifically so neither has to visit listings outside the window.
 CREATE INDEX IF NOT EXISTS listings_crawler_last_checked_idx ON listings (crawler_id, last_checked);
 
 -- stock_items.item_key is not unique (the same artist/title/url can be seen
@@ -1728,10 +1729,15 @@ def _queue_fanout(conn) -> tuple:
     return broad, narrowed
 
 
-# Activity, not throughput, and the distinction is load-bearing: a crawl that
-# runs and finds nothing writes no listings row at all (the "no listings
-# pre-population" invariant), so this counts results refreshed and is a floor on
-# what the crawler actually did. The caller labels it as such.
+# Distinct listing rows whose last_checked moved -- not searches performed, and
+# not "results", since the difference runs in both directions. A release crawl
+# that finds nothing still counts: _drain_one_batch calls clear_listing_price,
+# which bumps last_checked on the existing row. What touches nothing is a
+# first-ever release miss (no row yet for that UPDATE to match, and the "no
+# listings pre-population" invariant means none is created) and any stock-item
+# miss (the clear path is guarded on is_release). Repeat passes over one
+# (target, crawler) inside the window collapse to a single row, because
+# upsert_listing updates in place. The caller names it accordingly.
 #
 # Driven from crawlers rather than grouping over listings, so neither half
 # revisits rows outside the window. A bare GROUP BY over listings has no WHERE

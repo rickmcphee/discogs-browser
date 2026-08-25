@@ -251,10 +251,15 @@ is only wanted on click.
 on `showAdminNav` exactly as Logs and Settings are. Like `LogViewer`, the view
 is not mounted at all for a non-admin. It polls `/api/queue/summary` every 10
 seconds, only while the tab is the active view and the document is visible.
-Each poll carries a generation counter and a response from a superseded one is
-dropped: `setInterval` will start a second request while the first is in flight,
-and an older snapshot or error landing last would be exactly the wrong failure
-in a view whose job is to report live state.
+The next poll is scheduled only once the current one settles, so at most one
+summary is ever in flight, and each carries a generation counter so a superseded
+response is dropped rather than rendered. Both halves are needed and neither
+substitutes for the other: the counter stops an older snapshot or error landing
+last in a view whose job is to report live state, while the self-scheduling
+stops a slow query from stacking. A summary is a `REPEATABLE READ` transaction on
+the same app pool the crawl workers claim through, so an interval firing faster
+than the query settles would have this tab competing with the workers for
+connections — causing the very condition it exists to detect.
 
 **Top half.**
 
@@ -293,8 +298,8 @@ in a view whose job is to report live state.
 
 1. **Age & composition** — oldest wait, the age buckets, and a two-segment
    stacked bar splitting release units from stock units.
-2. **Throughput & ETA** — results written in the window (with its floor caveat
-   stated inline), time since this crawler last wrote any result at all, and
+2. **Throughput & ETA** — listing rows touched in the window (with the blind
+   spots above stated inline), time since this crawler last touched one, and
    the estimated drain time with the rate it was derived from.
 3. **Next up** — the `next` endpoint's table.
 

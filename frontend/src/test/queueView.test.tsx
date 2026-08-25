@@ -205,6 +205,23 @@ describe('QueueView', () => {
     expect(screen.queryByText('Stopped')).not.toBeInTheDocument()
   })
 
+  it('never runs two summary requests at once', async () => {
+    vi.useFakeTimers()
+    try {
+      getQueueSummary.mockReturnValue(new Promise(() => {}))
+      render(<QueueView />)
+      expect(getQueueSummary).toHaveBeenCalledTimes(1)
+
+      // Three polling intervals' worth of time with the first request still
+      // pending. setInterval would have stacked three more repeatable-read
+      // transactions onto the pool the crawl workers claim through.
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(getQueueSummary).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('says the worker pool tile is machine-local', async () => {
     render(<QueueView />)
     expect(await screen.findByText('this machine only')).toBeInTheDocument()
