@@ -183,6 +183,19 @@ jobs:
 
             author="$(gh api "repos/$REPO/pulls/$n" --jq '.user.login')"
             if [ "$author" = "dependabot[bot]" ]; then
+              # Don't ask twice in a day. Dependabot normally answers by moving
+              # the head (so the PR stops being "behind" and never reaches this
+              # branch again) or by leaving a conflict (which reads as "dirty",
+              # not "behind"), but a request it silently drops would otherwise
+              # collect one comment per day on that PR forever.
+              since="$(date -u -d '23 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
+              asked="$(gh api \
+                "repos/$REPO/issues/$n/comments?since=$since&per_page=100" \
+                --jq '[.[] | select(.body | startswith("@dependabot rebase"))] | length')"
+              if [ "$asked" -gt 0 ]; then
+                echo "PR #$n is behind but was already asked to rebase since $since; leaving it."
+                continue
+              fi
               # Dependabot owns its branches: asking it to rebase keeps the
               # single clean bump commit, where update-branch would graft a
               # merge commit on that it discards on its next run anyway.
