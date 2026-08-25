@@ -4,6 +4,7 @@ import StockBrowser from './views/StockBrowser'
 import Settings from './views/Settings'
 import Account from './views/Account'
 import LogViewer from './views/LogViewer'
+import QueueView from './views/QueueView'
 import LoginScreen from './views/LoginScreen'
 import InviteCodeScreen from './views/InviteCodeScreen'
 import BackendDownScreen from './views/BackendDownScreen'
@@ -12,7 +13,7 @@ import { navButtonClass, primaryButtonClass, secondaryButtonClass, dismissButton
 import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, clearJudgments, exportRecommendationsCsv, importRecommendationsCsv, getCrawlers, getUserSettings, getUserHiddenCrawlers, postUserHiddenCrawlers, getJudgmentStatus, getPriceStatus, checkHealth, getAuthStatus, setUnauthorizedHandler, hasAvatar } from './api/client'
 import type { CrawlEvent, CrawlStatus, CollectionStatus, Crawler, AuthStatus } from './api/types'
 
-type View = 'collection' | 'wantlist' | 'store' | 'track' | 'settings' | 'logs' | 'account'
+type View = 'collection' | 'wantlist' | 'store' | 'track' | 'settings' | 'logs' | 'queue' | 'account'
 
 // SSE reconnects (including on browser refresh) replay every buffered event from
 // crawl_manager._recent, so a banner's dismissal has to survive across that replay.
@@ -636,6 +637,14 @@ export default function App() {
         <nav className="flex items-center gap-2 ml-auto">
           {showAdminNav && (
             <button
+              onClick={() => setView('queue')}
+              className={`px-3 py-1.5 text-sm font-medium ${navButtonClass(view === 'queue')}`}
+            >
+              Queue
+            </button>
+          )}
+          {showAdminNav && (
+            <button
               onClick={() => setView('logs')}
               className={`px-3 py-1.5 text-sm font-medium ${navButtonClass(view === 'logs')}`}
             >
@@ -718,6 +727,11 @@ export default function App() {
             stream on mount regardless of visibility, so mounting it for every
             user would hand each one an open stream of the operator's log. */}
         {showAdminNav && <div className={view === 'logs' ? 'h-full' : 'hidden'}><LogViewer /></div>}
+        {/* Gated on showAdminNav for the same reason LogViewer is, and mounted
+            only while it is the active view: QueueView polls the queue on a
+            timer from mount, so a hidden-but-mounted copy would keep querying
+            in the background behind whatever tab the admin is actually on. */}
+        {showAdminNav && view === 'queue' && <div className="h-full"><QueueView /></div>}
       </main>
 
       {/* Collection refresh modal */}

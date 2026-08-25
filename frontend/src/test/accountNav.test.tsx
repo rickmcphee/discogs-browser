@@ -8,7 +8,16 @@ class MockEventSource {
   close = vi.fn()
 }
 
-const { getAuthStatus, getCrawlers, getUserHiddenCrawlers, postUserHiddenCrawlers, openLogsStream } = vi.hoisted(() => ({
+const { getAuthStatus, getCrawlers, getUserHiddenCrawlers, postUserHiddenCrawlers, openLogsStream, getQueueSummary } = vi.hoisted(() => ({
+  getQueueSummary: vi.fn().mockResolvedValue({
+    totals: {
+      claimable_rows: 0, claimable_release_rows: 0, claimable_stock_rows: 0, held_rows: 0,
+      unactionable_rows: 0, in_progress_rows: 0, stranded_rows: 0, rows_done_last_hour: 0,
+      eta_seconds: null, claimable_units: 0, held_units: 0, in_progress_units: 0,
+    },
+    crawlers: [], stranded_after_seconds: 1800, activity_window_seconds: 3600,
+    pool_running: true, generated_at: '2026-08-25T00:00:00Z',
+  }),
   getAuthStatus: vi.fn().mockResolvedValue({ state: 'authenticated', user: { discogs_username: 'test', is_admin: true } }),
   getCrawlers: vi.fn().mockResolvedValue([]),
   getUserHiddenCrawlers: vi.fn().mockResolvedValue([]),
@@ -55,6 +64,8 @@ vi.mock('../api/client', () => ({
   getPriceStatus: vi.fn().mockResolvedValue({ any_price_paid: false }),
   listInvites: vi.fn().mockResolvedValue([]),
   createInvite: vi.fn().mockResolvedValue({ code: '' }),
+  getQueueSummary,
+  getQueueNext: vi.fn().mockResolvedValue([]),
 }))
 
 beforeEach(() => {
@@ -88,6 +99,30 @@ describe('header profile navigation', () => {
     await screen.findByRole('button', { name: 'Store' })
     expect(screen.queryByRole('button', { name: 'Settings' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Logs' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Queue' })).not.toBeInTheDocument()
+  })
+
+  it('does not mount the queue view -- or poll the queue -- for a non-admin', async () => {
+    // Same reasoning as the log viewer below: QueueView polls the shared crawl
+    // queue from mount, so a hidden-but-mounted copy would have every invited
+    // user querying admin-only state on a timer.
+    getAuthStatus.mockResolvedValueOnce({ state: 'authenticated', user: { discogs_username: 'test', is_admin: false } })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Store' })
+    expect(getQueueSummary).not.toHaveBeenCalled()
+  })
+
+  it('mounts the queue view and loads the summary when an admin opens the Queue tab', async () => {
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Queue' }))
+    await waitFor(() => expect(getQueueSummary).toHaveBeenCalled())
+    expect(await screen.findByText('Worker pool')).toBeInTheDocument()
+  })
+
+  it('does not poll the queue until the Queue tab is opened', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'Queue' })
+    expect(getQueueSummary).not.toHaveBeenCalled()
   })
 
   it('shows the role switch to an admin, and toggling it hides Logs and Settings until toggled back', async () => {

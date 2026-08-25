@@ -1,0 +1,127 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import QueueView from '../views/QueueView'
+import type { QueueSummary, QueueCrawlerSummary } from '../api/types'
+
+const { getQueueSummary, getQueueNext } = vi.hoisted(() => ({
+  getQueueSummary: vi.fn(),
+  getQueueNext: vi.fn(),
+}))
+
+vi.mock('../api/client', () => ({ getQueueSummary, getQueueNext }))
+
+function crawler(over: Partial<QueueCrawlerSummary> = {}): QueueCrawlerSummary {
+  return {
+    crawler_id: 1,
+    site_name: 'Amazon',
+    requires_discogs_release: false,
+    claimable_units: 10,
+    held_units: 0,
+    release_units: 7,
+    stock_units: 3,
+    oldest_wait_seconds: 7200,
+    age_buckets: { under_1h: 2, under_24h: 5, over_24h: 3 },
+    results_last_hour: 4,
+    last_result_seconds_ago: 90,
+    eta_seconds: 3600,
+    ...over,
+  }
+}
+
+function summary(over: Partial<QueueSummary> = {}): QueueSummary {
+  return {
+    totals: {
+      claimable_rows: 10, claimable_release_rows: 7, claimable_stock_rows: 3,
+      held_rows: 1, unactionable_rows: 0, in_progress_rows: 2, stranded_rows: 0,
+      rows_done_last_hour: 20, eta_seconds: 1800,
+      claimable_units: 10, held_units: 1, in_progress_units: 2,
+    },
+    crawlers: [crawler()],
+    stranded_after_seconds: 1800,
+    activity_window_seconds: 3600,
+    pool_running: true,
+    generated_at: '2026-08-25T00:00:00Z',
+    ...over,
+  }
+}
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  getQueueSummary.mockResolvedValue(summary())
+  getQueueNext.mockResolvedValue([])
+})
+
+describe('QueueView', () => {
+  it('renders the stat tiles from the summary', async () => {
+    render(<QueueView />)
+    expect(await screen.findByText('Worker pool')).toBeInTheDocument()
+    expect(screen.getByText('Running')).toBeInTheDocument()
+    expect(screen.getByText('Stranded')).toBeInTheDocument()
+  })
+
+  it('labels the ring centre in rows and the segments in work units', async () => {
+    render(<QueueView />)
+    // 10 claimable + 1 held + 2 in progress rows, distinct from the unit counts
+    // the segments carry.
+    const donut = await screen.findByRole('img', { name: /work units by queue state/i })
+    expect(donut).toHaveTextContent('13')
+    expect(donut).toHaveTextContent('rows')
+    expect(screen.getByText('Work units by crawler')).toBeInTheDocument()
+  })
+
+  it('prompts for a selection before a crawler is chosen', async () => {
+    render(<QueueView />)
+    expect(await screen.findByText(/Select a crawler above/)).toBeInTheDocument()
+    expect(getQueueNext).not.toHaveBeenCalled()
+  })
+
+  it('loads the next-up list for the crawler that is clicked', async () => {
+    getQueueNext.mockResolvedValue([
+      { artist: 'Fugazi', title: 'Repeater', kind: 'release', waiting_seconds: 120, narrowed: false },
+    ])
+    render(<QueueView />)
+    fireEvent.click(await screen.findByRole('button', { name: /Amazon/ }))
+
+    await waitFor(() => expect(getQueueNext).toHaveBeenCalledWith(1))
+    expect(await screen.findByText(/Fugazi/)).toBeInTheDocument()
+    expect(screen.getByText('Age & composition')).toBeInTheDocument()
+    expect(screen.getByText('Throughput & ETA')).toBeInTheDocument()
+    expect(screen.getByText('Next up')).toBeInTheDocument()
+  })
+
+  it('says so when a selected crawler has nothing claimable', async () => {
+    render(<QueueView />)
+    fireEvent.click(await screen.findByRole('button', { name: /Amazon/ }))
+    expect(await screen.findByText(/Nothing claimable for this crawler/)).toBeInTheDocument()
+  })
+
+  it('notes when a crawler cannot take stock-item targets', async () => {
+    getQueueSummary.mockResolvedValue(summary({
+      crawlers: [crawler({ requires_discogs_release: true, stock_units: 0 })],
+    }))
+    render(<QueueView />)
+    fireEvent.click(await screen.findByRole('button', { name: /Amazon/ }))
+    expect(await screen.findByText(/Requires a Discogs release/)).toBeInTheDocument()
+  })
+
+  it('filters the crawler list to the clicked ring state', async () => {
+    getQueueSummary.mockResolvedValue(summary({
+      crawlers: [
+        crawler({ crawler_id: 1, site_name: 'Amazon', held_units: 0 }),
+        crawler({ crawler_id: 2, site_name: 'eBay', held_units: 4 }),
+      ],
+    }))
+    render(<QueueView />)
+    await screen.findByRole('button', { name: /Amazon/ })
+
+    fireEvent.click(screen.getByRole('button', { name: /^Held/ }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Amazon/ })).not.toBeInTheDocument())
+    expect(screen.getByRole('button', { name: /eBay/ })).toBeInTheDocument()
+  })
+
+  it('reports a failure to load rather than rendering an empty frame', async () => {
+    getQueueSummary.mockRejectedValue(new Error('nope'))
+    render(<QueueView />)
+    expect(await screen.findByText('nope')).toBeInTheDocument()
+  })
+})

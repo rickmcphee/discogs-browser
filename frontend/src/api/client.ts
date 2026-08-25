@@ -1,6 +1,7 @@
 import type {
   ReleasesResponse, Crawler, Settings, UserSettings, SortField, SortOrder, CrawlStatus, CollectionStatus, ScreenshotSession,
   AuthStatus, RecordScope, StockResponse, StockSortField, LibraryScope, RecommendationImportResult, Invite,
+  QueueSummary, QueueNextItem,
 } from './types'
 
 const BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/+$/, '')
@@ -368,4 +369,16 @@ export async function deleteAvatar(): Promise<void> {
 
 export function avatarUrl(version: number): string {
   return `${BASE}/auth/avatar?v=${version}`
+}
+
+export async function getQueueSummary(): Promise<QueueSummary> {
+  const r = await apiFetch('/queue/summary')
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
+}
+
+export async function getQueueNext(crawlerId: number, limit = 25): Promise<QueueNextItem[]> {
+  const r = await apiFetch(`/queue/crawlers/${crawlerId}/next?limit=${limit}`)
+  if (!r.ok) throw new Error(await r.text())
+  return (await r.json()).items
 }
