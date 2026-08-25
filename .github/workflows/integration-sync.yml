@@ -108,6 +108,8 @@ jobs:
         run: |
           set -euo pipefail
           git fetch --quiet --tags --force origin main integration
+          git fetch --quiet origin \
+            "+refs/heads/$SYNC_BRANCH:refs/remotes/origin/$SYNC_BRANCH" 2>/dev/null || true
 
           # The commit on `main` that `integration` provably already holds.
           # This is the correct merge base for bringing main forward, and git
@@ -118,23 +120,39 @@ jobs:
           # dependency pin `integration` has re-bumped look changed on both
           # sides, and conflicts on a file nobody actually disagrees about.
           marker="$(git rev-parse -q --verify "refs/tags/$MARKER_TAG^{commit}" || true)"
+
           if [ -z "$marker" ]; then
-            # A missing marker is expected exactly once: before this workflow
-            # has ever completed a sync. Later on it means the tag was deleted
-            # or record_marker has been failing, and quietly reaching for a
-            # BOOTSTRAP_BASE that is by then months stale would restore the very
-            # frozen-base conflicts the marker exists to prevent -- reintroduced
-            # silently, which is worse than never having had the marker.
+            # A sync that has already landed records its own base. The merge
+            # this job builds carries `main` as its second parent, so the sync
+            # branch tip names the commit that sync incorporated -- and if
+            # `integration` now holds that same tree, the PR merged and
+            # `integration` provably contains it, which is exactly what the
+            # marker asserts.
             #
-            # `integration` carrying this workflow file is the tell. It can only
-            # have arrived there through a sync that already ran, and that sync
-            # would have recorded a marker.
-            if git cat-file -e "origin/integration:.github/workflows/integration-sync.yml" 2>/dev/null; then
-              echo "::error::$MARKER_TAG is missing, but integration already carries this workflow -- so a sync has run before and the marker has been lost. Re-create it at the newest main commit integration provably holds (git push origin <sha>:refs/tags/$MARKER_TAG). Not falling back to BOOTSTRAP_BASE, which is only valid before the first sync."
-              exit 1
+            # This is the normal way the marker first appears. The path that
+            # opens a sync PR cannot record one at the time, because the merge
+            # has not landed yet and recording it early would make a later run
+            # skip a sync that was genuinely needed.
+            if git rev-parse -q --verify "origin/$SYNC_BRANCH^2" >/dev/null 2>&1 \
+               && git diff --quiet "origin/$SYNC_BRANCH" origin/integration; then
+              marker="$(git rev-parse "origin/$SYNC_BRANCH^2")"
+              echo "recovered the marker from the last landed sync: $marker"
             fi
-            if git cat-file -e "$BOOTSTRAP_BASE^{commit}" 2>/dev/null; then
-              marker="$BOOTSTRAP_BASE"
+          fi
+
+          if [ -z "$marker" ] && git cat-file -e "$BOOTSTRAP_BASE^{commit}" 2>/dev/null; then
+            marker="$BOOTSTRAP_BASE"
+            # Distinguish the two ways of getting here. Before the first sync
+            # this is simply expected. Afterwards it means neither the tag nor a
+            # landed sync branch survived, so BOOTSTRAP_BASE -- which only grows
+            # staler -- is standing in for something newer, and the frozen-base
+            # conflicts it exists to prevent can creep back. Warn rather than
+            # fail: a hard stop here cannot be recovered from by the workflow
+            # itself, since every path that records a marker lies past it.
+            if git cat-file -e \
+                 "origin/integration:.github/workflows/integration-sync.yml" 2>/dev/null; then
+              echo "::warning::no $MARKER_TAG, and no landed $SYNC_BRANCH to recover one from, yet integration already carries this workflow -- record_marker is probably failing. Falling back to BOOTSTRAP_BASE, which grows staler with time; if this repeats, re-create the tag at the newest main commit integration provably holds."
+            else
               echo "no $MARKER_TAG yet and integration has never been synced by this workflow; bootstrapping from $BOOTSTRAP_BASE"
             fi
           fi
@@ -308,10 +326,17 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
+          # Assign first, then iterate. A command substitution in a `for` word
+          # list is only a word expansion, so `set -e` never sees `gh pr list`
+          # fail -- an API or auth error would become an empty list, and the job
+          # would report success having refreshed nothing at all. An assignment
+          # does carry the substitution's exit status.
+          #
           # --limit, because `gh pr list` returns 30 by default and this step
           # promises to catch up *every* open PR, not the newest thirty.
-          for n in $(gh pr list --repo "$REPO" --base integration --state open \
-                       --limit 200 --json number --jq '.[].number'); do
+          open_prs="$(gh pr list --repo "$REPO" --base integration --state open \
+                        --limit 200 --json number --jq '.[].number')"
+          for n in $open_prs; do
             # mergeable_state is computed asynchronously; a PR polled too soon
             # after integration moved answers "unknown", which is neither state
             # below and would quietly skip the one PR that needed this most.
