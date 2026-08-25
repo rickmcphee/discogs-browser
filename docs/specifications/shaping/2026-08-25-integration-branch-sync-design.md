@@ -102,11 +102,19 @@ Two consequences worth stating plainly, because both are load-bearing:
   empty PR per promotion is the running cost of keeping the base current, and
   it is a good trade against the protocol it replaced.
 
-`main` keeps its squash-only history: only `integration` needs to accept merge
-commits, which is a per-branch setting in `allowed_merge_methods`. The
-repository-level "Allow merge commits" toggle must also be on — it gates the
-API outright, returning `405 Merge commits are not allowed on this repository`
-regardless of what any ruleset says.
+Two settings, at different scopes, and the difference matters:
+
+- The repository-level **"Allow merge commits"** toggle gates the API outright,
+  returning `405 Merge commits are not allowed on this repository` regardless
+  of what any ruleset says. It is repo-**wide**.
+- `allowed_merge_methods` on a branch ruleset narrows what that branch accepts.
+  `integration`'s must include `merge`.
+
+Because the first is repo-wide, `main` only stays squash-only if **its own
+ruleset pins `allowed_merge_methods` to squash**. Check that when enabling the
+toggle rather than assuming it: nothing in this design requires `main` to
+accept merge commits, and letting it silently start doing so would put merge
+commits into the history this whole arrangement keeps linear.
 
 ## Is there anything to sync?
 
