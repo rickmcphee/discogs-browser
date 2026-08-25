@@ -120,11 +120,20 @@ already emitted beside its own `report_page()` call. Left in place it produced
 two near-identical `app_logs` rows for every Shopify listing page -- the
 opposite of what centralising it was for, and it would have made the
 one-row-per-paced-request figure below wrong for every Shopify-backed store.
-The central line supersedes it outright: it covers every catalog crawler
-rather than only the Shopify-backed ones, and names the store by its
-`site_name` instead of by `base_url`. `iter_products()` is only ever reached
-through `_run_catalog_crawler`, which always installs the reporter, so
-nothing loses output.
+The central line supersedes it *inside a stock sync*: it covers every catalog
+crawler rather than only the Shopify-backed ones, and names the store by its
+`site_name` instead of by `base_url`. Every sync reaches `iter_products()`
+through `_run_catalog_crawler`, which always installs the reporter, so no
+sync loses output.
+
+What this deliberately gives up is the standalone case. `report_page()` is a
+no-op with no reporter installed, so a Shopify crawler driven directly --
+from `test_shopify_catalog.py`, or by hand during development, which
+`report_detail()`'s docstring explicitly keeps working -- no longer logs its
+pages at all. Accepted rather than kept behind a log-only-when-unreported
+fallback: that would put two different formats on one event depending on who
+called, and add a branch to a paging loop for a development-only
+convenience, when a standalone run already has the yielded products in hand.
 
 The reporting *rate* -- not the total -- is what pacing bounds. A line lands
 only as fast as the paced request it reports, so at the default delay a
@@ -145,10 +154,12 @@ reading of the log able to answer "was that normal?"
 
 `CrawlManager` tracks the sync's start time, the current source, and that
 source's start time; `stock_sync_state()` exposes them as
-`{running, source, elapsed_seconds, source_elapsed_seconds}`, all `None`
-when nothing is running or before the first crawler is reached (the task
-sets them, so a caller that reads immediately after `create_task` sees the
-not-yet-started shape). They are cleared in `_sync_stock`'s `finally`,
+`{running, source, elapsed_seconds, source_elapsed_seconds}`. `running` is a
+bool throughout -- `False` while idle, `True` once the task exists -- while
+`source` and both timings are `None` both when nothing is running and during
+the window between the sync starting and its first crawler being reached
+(the task sets them, so a caller reading immediately after `create_task`
+sees that not-yet-started shape). They are cleared in `_sync_stock`'s `finally`,
 alongside the advisory-lock release.
 
 `start_stock_sync`'s rejection log becomes
