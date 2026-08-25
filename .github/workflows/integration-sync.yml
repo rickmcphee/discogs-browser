@@ -109,7 +109,7 @@ jobs:
           git checkout -B "$SYNC_BRANCH" origin/integration
           if ! git merge --no-edit origin/main; then
             git merge --abort || true
-            echo "::error::main and integration changed the same lines; resolve $SYNC_BRANCH by hand, push it, and open a PR into integration."
+            echo "::error::main and integration changed the same lines; resolve $SYNC_BRANCH by hand, push it, and open a PR into integration. If this recurs, it is the frozen merge-base described at the merge step below -- allowing merge commits into integration retires it."
             exit 1
           fi
 
@@ -140,7 +140,27 @@ jobs:
           # review and carries no Copilot review rule, so there is no review to
           # race -- and the content merging in is main's own, already reviewed
           # on its way there.
-          gh pr merge "$opened" --repo "$REPO" --auto --squash
+          #
+          # Prefer a real merge commit, and mean it. Both branch rulesets
+          # currently allow only squash merges, which leaves
+          # `git merge-base main integration` frozen at the last commit the two
+          # genuinely shared -- b24e568e, 2026-08-10 -- because a squash gives
+          # neither branch an ancestor from the other. It never advances on its
+          # own, so every future sync three-way-merges against an ever-older
+          # base: a line edited once between two syncs and again after is
+          # "changed on both sides" against that ancient base, and conflicts,
+          # even though integration's side is only an older snapshot of main's.
+          # A merge commit makes `main` a real ancestor of `integration` and
+          # resets the base each time, which retires that whole class of
+          # conflict. Two settings gate it, and both are currently off: the
+          # repository's own "Allow merge commits", and "merge" in
+          # allowed_merge_methods on integration-branch-protection. Turning on
+          # both -- `main`'s ruleset does not need to change, so `main` keeps
+          # its squash-only history -- makes this line start using a merge
+          # commit with no edit here. Until then it falls back to squash and
+          # behaves exactly as before.
+          gh pr merge "$opened" --repo "$REPO" --auto --merge \
+            || gh pr merge "$opened" --repo "$REPO" --auto --squash
           echo "pending=true" >> "$GITHUB_OUTPUT"
           echo "Sync PR #$opened is queued to merge."
 
