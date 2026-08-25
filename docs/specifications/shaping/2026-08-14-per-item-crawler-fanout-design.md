@@ -210,6 +210,12 @@ and contiguous per row, and resolving at batch end meant a `CancelledError` esca
 `in_progress`. With no reclaim path and `enqueue_crawl_queue`'s revival gated on `status = 'done'`,
 such a row is unclaimable and unrevivable forever — its target never priced again.
 
+*Amended 2026-08-25: `db.reclaim_stranded_crawl_queue_rows` now ages such a row back to `pending`,
+so "forever" is now "until the stranded threshold elapses". Per-row resolution is still the fix —
+the reclaim is a crash backstop measured in tens of minutes, not a substitute for resolving a row
+when its last unit finishes. See
+[`2026-08-25-stranded-crawl-queue-row-reclaim-design.md`](2026-08-25-stranded-crawl-queue-row-reclaim-design.md).*
+
 The resolution itself:
 
 - Any deferred crawlers → `status = 'pending'`, `claimed_by = NULL`, `claimed_at = NULL`,
@@ -217,6 +223,12 @@ The resolution itself:
   cooldown>`, computed from the monotonic cooldown deadline. `requested_at` is left alone, so the
   row returns near its original queue position rather than at the back.
 - Otherwise `mark_crawl_queue_done`.
+
+*Amended 2026-08-25: both writes now also match `claimed_by = <this worker>`, and return their
+rowcount. The reclaim added a case this passage predates — two workers holding one row, because an
+age-based reclaim cannot tell a dead worker from a slow one — and without the match a stale `done`
+overwrites a fresh deferral, dropping that crawler for the target. Worker ids are namespaced by
+`config.MACHINE_ID` so the match identifies one worker across Machines rather than one per Machine.*
 
 A row whose eligible set resolves to empty — no enabled marketplace crawlers at all, or a narrowed
 `pending_crawler_ids` whose every member has since been disabled — is marked `done`. There is no
@@ -384,7 +396,10 @@ tests, the per-row commit isolation test, `_sync_stock`'s 429 abort and streak t
   change is reverted.
 - **Longer claim residency.** A row is `in_progress` for `N × pace` rather than one request,
   widening the existing hung-worker stranding window. Mitigated by `batch_size = 2`, not
-  eliminated — the reclaim gap remains a known, accepted gap.
+  eliminated — the reclaim gap remains a known, accepted gap. *(Amended 2026-08-25: closed —
+  `db.reclaim_stranded_crawl_queue_rows`. The longer residency this change introduced is also why
+  the reclaim threshold is derived from the enabled-crawler count and the pacing setting rather
+  than fixed.)*
 - **Repeated toggling re-enqueues not-found targets**, as described under Backfill on enable.
 - **A crawler enabled mid-pass misses the targets already in flight.** Both backfill statements
   filter on `status` — `done` for the revive, `pending` for the widen — so neither touches a row a
@@ -415,5 +430,7 @@ tests, the per-row commit isolation test, `_sync_stock`'s 429 abort and streak t
   (`requested_at = now() + row_index × spacing`) so a later, smaller sync interleaves near the
   front. That preserves the claim index, the tier ordering, and FIFO reasoning, and needs no owner
   column. It touches producers and queue ordering rather than dispatch, so it is shaped separately.
-- A reclaim/timeout path for rows stranded `in_progress` by a hung worker.
+- A reclaim/timeout path for rows stranded `in_progress` by a hung worker. *(Shipped separately,
+  2026-08-25 — see
+  [`2026-08-25-stranded-crawl-queue-row-reclaim-design.md`](2026-08-25-stranded-crawl-queue-row-reclaim-design.md).)*
 - Freshness-driven re-enqueue based on `listings.last_checked`.

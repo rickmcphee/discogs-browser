@@ -441,19 +441,24 @@ export default function QueueView() {
           hint="this machine only"
           accent={summary.pool_running ? undefined : STATUS_CRITICAL}
         />
+        {/* Every tile in this row is denominated in rows, and every one of
+            them says so. The donut below reports the same states in work
+            units, so an "In progress" tile and an "In progress" donut segment
+            legitimately show different numbers from one snapshot -- which
+            reads as a sync bug unless both carry their unit. */}
         <StatTile label="Claimable" value={t.claimable_rows.toLocaleString()} hint="rows" />
         <StatTile label="In progress" value={t.in_progress_rows.toLocaleString()} hint="rows" />
-        <StatTile label="Held" value={t.held_rows.toLocaleString()} hint="waiting on a cooldown" />
+        <StatTile label="Held" value={t.held_rows.toLocaleString()} hint="rows waiting on a cooldown" />
         <StatTile
           label="Stranded"
           value={t.stranded_rows.toLocaleString()}
-          hint={`claimed over ${formatDuration(summary.stranded_after_seconds)} ago`}
+          hint={`rows claimed over ${formatDuration(summary.stranded_after_seconds)} ago`}
           accent={t.stranded_rows > 0 ? STATUS_CRITICAL : undefined}
         />
         <StatTile
           label="Unactionable"
           value={t.unactionable_rows.toLocaleString()}
-          hint="no crawler, or no live source"
+          hint="rows with no crawler, or no live source"
           accent={t.unactionable_rows > 0 ? STATUS_WARNING : undefined}
         />
         <StatTile
@@ -497,7 +502,11 @@ export default function QueueView() {
                 >
                   <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: STATE_COLORS[key] }} />
                   {STATE_LABELS[key]}
-                  <span className="text-gray-400 tabular-nums">{value.toLocaleString()}</span>
+                  {/* "units", against the stat tiles' "rows" above. The two
+                      figures for one state differ by design -- see the
+                      paragraph below -- and the unit is what says so at the
+                      point someone reads the number. */}
+                  <span className="text-gray-400 tabular-nums">{value.toLocaleString()} units</span>
                 </button>
               )
             })}

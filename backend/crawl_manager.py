@@ -23,8 +23,9 @@ async def _shielded(coro):
     "write a crawl result, then resolve that row's terminal crawl_queue
     status," splitting them at a cancellation boundary is exactly the bug:
     the result can commit while the resolve that must follow it never runs,
-    leaving the row 'in_progress' forever with no reclaim path (db.py's
-    claim_crawl_queue_batch docstring). Catching the CancelledError and
+    leaving the row 'in_progress' until reclaim_stranded_crawl_queue_rows
+    ages it out a stranded-threshold later -- a crash backstop, not somewhere
+    to route an orderly shutdown. Catching the CancelledError and
     awaiting the shielded task anyway before re-raising makes sure `coro`
     -- run in full, not just its first blocking call -- finishes before
     this function's own cancellation is allowed to propagate."""
@@ -167,7 +168,7 @@ class CrawlManager:
         )
         self._pool_running = True
         for i in range(worker_count):
-            self._worker_tasks.append(asyncio.create_task(self._worker_loop(f"worker-{i}", plugins_by_crawler_id)))
+            self._worker_tasks.append(asyncio.create_task(self._worker_loop(self._worker_id(i), plugins_by_crawler_id)))
         # Loaded and enabled are separate counts now that the pool loads every
         # plugin regardless of enabled state -- without both, the boot log
         # cannot answer what this instance is actually going to crawl.
@@ -176,6 +177,18 @@ class CrawlManager:
             "Crawl worker pool started: %d workers, %d crawler plugins loaded (%d enabled)",
             worker_count, len(plugins), enabled_count,
         )
+
+    # Namespaced by Machine, because claimed_by is now load-bearing rather than
+    # just a debugging breadcrumb: mark_crawl_queue_done and
+    # defer_crawl_queue_row match on it to refuse a write from a worker whose
+    # claim was reclaimed out from under it. A bare "worker-0" collides across
+    # Machines -- every Machine names its pool the same way -- so on the
+    # two-Machine deployment that check would have passed for the wrong worker
+    # exactly half the time, which is worse than not checking at all.
+    @staticmethod
+    def _worker_id(index: int) -> str:
+        from config import MACHINE_ID
+        return f"{MACHINE_ID}-worker-{index}"
 
     async def stop_worker_pool(self):
         self._pool_running = False
@@ -353,25 +366,51 @@ class CrawlManager:
                 delay = float(site_config.get("crawl_delay_seconds", 30))
                 self._site_next_allowed_at[crawler_id] = time.monotonic() + random.uniform(0.5, 1.0) * delay
 
-    async def _drain_one_batch(self, worker_id: str, plugins_by_crawler_id: dict, pages: dict, batch_size: int = 2) -> int:
-        from db import get_app_pool, claim_crawl_queue_batch, revert_crawl_queue_claim
+    async def _drain_one_batch(self, worker_id: str, plugins_by_crawler_id: dict, pages: dict, batch_size: Optional[int] = None) -> int:
+        from config import load_config
+        from db import get_app_pool, claim_crawl_queue_batch, revert_crawl_queue_claim, reclaim_stranded_crawl_queue_rows, QUEUE_CLAIM_BATCH_SIZE
+
+        # Resolved from db rather than defaulted in the signature: the stranded
+        # threshold is derived from the same constant, and two copies of it
+        # drifting apart is precisely how the threshold ended up shorter than a
+        # healthy claim.
+        if batch_size is None:
+            batch_size = QUEUE_CLAIM_BATCH_SIZE
 
         def _claim_batch():
+            # Reclaim, then claim, in one transaction. A row handed back here
+            # is visible to the claim's own SELECT (same transaction reads its
+            # own writes) and its locks are this transaction's, so SKIP LOCKED
+            # does not skip it -- a worker with nothing else to do rescues a
+            # stranded row and starts crawling it in one round trip. Running it
+            # here rather than on a schedule is the point: the worker loop
+            # already calls this continuously, so the reclaim needs no
+            # scheduler of its own on any Machine.
+            #
+            # load_config() reads app_config through the *admin* pool, so it is
+            # deliberately outside this borrow -- holding the pool the workers
+            # claim through while doing unrelated I/O on another one is the
+            # shape routers/queue.py just had removed.
+            crawl_delay_seconds = float(load_config().get("crawl_delay_seconds", 30))
             with get_app_pool().connection() as conn:
+                reclaimed = reclaim_stranded_crawl_queue_rows(conn, crawl_delay_seconds)
                 rows = claim_crawl_queue_batch(conn, worker_id, limit=batch_size)
                 conn.commit()
-                return rows
+                return rows, reclaimed
         # Claiming and processing are two different cancellation boundaries.
         # Before the claim commits there is nothing yet to protect, so on
         # cancellation here it's cheap to just undo it and exit fast: the
         # claimed rows are read back from the awaited task and reverted via
         # revert_crawl_queue_claim before the cancellation is allowed to
         # propagate. Once a batch IS claimed, though, every row in it is
-        # 'in_progress' in Postgres with no reclaim path
-        # (claim_crawl_queue_batch's docstring) -- from that point on the
-        # whole batch has to run to completion regardless of cancellation,
-        # which is what _process_claimed_rows (wrapped in _shielded, below)
-        # guarantees. Earlier attempts at this shielded only the specific
+        # 'in_progress' in Postgres, and the only thing that would eventually
+        # hand it back is reclaim_stranded_crawl_queue_rows -- a whole
+        # stranded-threshold later, after an operator-visible stint on the
+        # Stranded tile. That is a backstop for a crash, not a substitute for
+        # finishing the batch: from this point on the whole batch has to run
+        # to completion regardless of cancellation, which is what
+        # _process_claimed_rows (wrapped in _shielded, below) guarantees.
+        # Earlier attempts at this shielded only the specific
         # write closest to each bug report (PR #146 review, four rounds) --
         # every round found the next unshielded await in the same claimed
         # row's path, because any of them can let a cancellation skip the
@@ -379,9 +418,9 @@ class CrawlManager:
         # that class of gap in one place instead of chasing instances of it.
         claim_task = asyncio.ensure_future(asyncio.to_thread(_claim_batch))
         try:
-            rows = await asyncio.shield(claim_task)
+            rows, reclaimed = await asyncio.shield(claim_task)
         except asyncio.CancelledError:
-            claimed = await claim_task
+            claimed, _ = await claim_task
             if claimed:
                 def _revert():
                     with get_app_pool().connection() as conn:
@@ -389,31 +428,40 @@ class CrawlManager:
                         conn.commit()
                 await asyncio.to_thread(_revert)
             raise
+        # Warning, not info: a non-zero count means either a Machine died or a
+        # pass outran the stranded threshold, and both want a line in the log.
+        # Zero is the steady state and happens every few seconds, so it says
+        # nothing.
+        if reclaimed:
+            log.warning("[%s] Reclaimed %d stranded crawl_queue row(s)", worker_id, reclaimed)
         if not rows:
             return 0
 
-        return await _shielded(self._process_claimed_rows(rows, plugins_by_crawler_id, pages))
+        return await _shielded(self._process_claimed_rows(worker_id, rows, plugins_by_crawler_id, pages))
 
-    async def _process_claimed_rows(self, rows: list, plugins_by_crawler_id: dict, pages: dict) -> int:
+    async def _process_claimed_rows(self, worker_id: str, rows: list, plugins_by_crawler_id: dict, pages: dict) -> int:
         """Processes a batch _drain_one_batch has already claimed, through
         to every row's terminal crawl_queue write (done or deferred).
 
-        Always run wrapped in _shielded() by its only caller -- a claimed
-        row has no reclaim path if cancellation interrupts it before that
-        terminal write (claim_crawl_queue_batch's docstring), so nothing in
-        here needs its own individual cancellation protection; the caller
-        guarantees this whole method runs to completion. That's why every
+        Always run wrapped in _shielded() by its only caller -- if
+        cancellation interrupts a claimed row before that terminal write,
+        nothing recovers it until reclaim_stranded_crawl_queue_rows ages it
+        out a stranded-threshold later, which is a crash backstop and not a
+        thing to route ordinary shutdown through. So nothing in here needs
+        its own individual cancellation protection; the caller guarantees
+        this whole method runs to completion. That's why every
         DB call below is a plain asyncio.to_thread rather than wrapped
         again -- protecting the same thing twice would be redundant."""
         from crawler import _new_context
-        from db import get_app_pool, mark_crawl_queue_done, defer_crawl_queue_row, upsert_listing, get_catalog_release, get_stock_item_identity, upsert_stock_item_listing, upsert_stock_item_from_release, delete_stock_item_for_release, clear_listing_price, get_eligible_crawlers
+        from db import get_app_pool, mark_crawl_queue_done, defer_crawl_queue_row, upsert_listing, get_catalog_release, get_stock_item_identity, upsert_stock_item_listing, upsert_stock_item_from_release, delete_stock_item_for_release, clear_listing_price, get_eligible_crawlers, crawl_queue_claim_held
 
         # Two passes: resolve every claimed row's target and eligible crawler
         # set first, then drain the resulting work units in target-major order.
         # batch_size is small (2) because a batch is now batch_size x eligible
         # crawlers of sequential page loads, and a claimed row stays
-        # 'in_progress' for all of it -- see the hung-worker gap noted on
-        # claim_crawl_queue_batch.
+        # 'in_progress' for all of it, which is also how long the stranded
+        # threshold has to stay clear of -- see claim_crawl_queue_batch and
+        # QUEUE_STRANDED_SLACK.
         targets: dict = {}
         units: list = []
         for row in rows:
@@ -432,9 +480,14 @@ class CrawlManager:
             if target is None:
                 def _mark_done():
                     with get_app_pool().connection() as conn:
-                        mark_crawl_queue_done(conn, row["id"])
+                        applied = mark_crawl_queue_done(conn, row["id"], worker_id)
                         conn.commit()
-                await asyncio.to_thread(_mark_done)
+                        return applied
+                if not await asyncio.to_thread(_mark_done):
+                    log.warning(
+                        "[%s] Queue row %s was reclaimed mid-pass; dropping this worker's result",
+                        worker_id, row["id"],
+                    )
                 continue
             targets[row["id"]] = (row, target, is_release)
             for crawler in eligible:
@@ -456,17 +509,34 @@ class CrawlManager:
             # status write is already committed before a later row's unit
             # runs, so an exception escaping a later unit can no longer
             # strand an already-finished row at 'in_progress'.
+            #
+            # Both writes are gated on this worker still holding the claim. If
+            # the reclaim handed the row to someone else while this pass was
+            # running, the write applies to nothing and is dropped rather than
+            # overwriting the new claimant's own resolution -- a stale 'done'
+            # landing on a fresh deferral would silently drop the deferred
+            # crawler for that target. A worker that lost its claim has usually
+            # already stopped at the result gate above and never reaches this;
+            # this one still matters for the paths that resolve a row without
+            # writing a result at all -- an unresolvable target, a plugin that
+            # failed to load, a search that raised.
             def _write():
                 with get_app_pool().connection() as conn:
                     if row_id in deferred:
-                        defer_crawl_queue_row(
+                        applied = defer_crawl_queue_row(
                             conn, row_id, deferred[row_id],
                             self._cooldown_remaining_seconds(deferred[row_id]),
+                            worker_id,
                         )
                     else:
-                        mark_crawl_queue_done(conn, row_id)
+                        applied = mark_crawl_queue_done(conn, row_id, worker_id)
                     conn.commit()
-            await asyncio.to_thread(_write)
+                    return applied
+            if not await asyncio.to_thread(_write):
+                log.warning(
+                    "[%s] Queue row %s was reclaimed mid-pass; dropping this worker's resolution",
+                    worker_id, row_id,
+                )
 
         # A row with zero eligible crawlers contributes no units, so it would
         # never reach the per-unit resolve_row calls below -- resolve it (as
@@ -522,8 +592,18 @@ class CrawlManager:
                 # as either outcome.
                 await self._record_site_result(crawler_id, succeeded=not bot_detected)
 
+            # Ownership is re-checked here, in the same transaction as the
+            # writes and holding the queue row's lock, not just at the terminal
+            # write below. These writes are last-write-wins, not idempotent for
+            # a changing result: a claim reclaimed during the search above would
+            # let this worker's older price overwrite the new claimant's fresher
+            # one, or clear a price the new claimant had just found. Dropping
+            # the terminal write afterwards does not undo either.
             def _write_result():
                 with get_app_pool().connection() as conn:
+                    if not crawl_queue_claim_held(conn, row_id, worker_id):
+                        conn.rollback()
+                        return False
                     if matches:
                         best = matches[0]
                         if is_release:
@@ -541,7 +621,18 @@ class CrawlManager:
                         delete_stock_item_for_release(conn, row["discogs_id"], crawler_id)
                         clear_listing_price(conn, row["discogs_id"], crawler_id)
                     conn.commit()
-            await asyncio.to_thread(_write_result)
+                    return True
+            if not await asyncio.to_thread(_write_result):
+                # The row belongs to another worker now, so it is that worker's
+                # to resolve and broadcast for -- skip both rather than
+                # reporting a change this pass did not make. Anything this row
+                # deferred on an earlier unit goes with it; the new claimant is
+                # redoing the row from its own pending_crawler_ids anyway.
+                log.warning(
+                    "[%s] Queue row %s was reclaimed mid-search; dropping this worker's result for crawler %s",
+                    worker_id, row_id, crawler_id,
+                )
+                continue
 
             # Before the broadcast, not after, so a broadcast failure can't
             # separate the listing write from the row's status write in the
