@@ -90,7 +90,7 @@ def test_mark_crawl_queue_done(admin_conn):
     db.enqueue_crawl_queue(admin_conn, "r1")
     admin_conn.commit()
     [row] = db.claim_crawl_queue_batch(admin_conn, "worker-1", limit=10)
-    db.mark_crawl_queue_done(admin_conn, row["id"])
+    db.mark_crawl_queue_done(admin_conn, row["id"], "worker-1")
     admin_conn.commit()
     status = admin_conn.execute(
         "SELECT status FROM crawl_queue WHERE id = %s", [row["id"]]
@@ -104,7 +104,7 @@ def test_enqueue_crawl_queue_resets_done_row_to_pending(admin_conn):
     db.enqueue_crawl_queue(admin_conn, "r1")
     admin_conn.commit()
     [row] = db.claim_crawl_queue_batch(admin_conn, "worker-1", limit=10)
-    db.mark_crawl_queue_done(admin_conn, row["id"])
+    db.mark_crawl_queue_done(admin_conn, row["id"], "worker-1")
     admin_conn.commit()
 
     db.enqueue_crawl_queue(admin_conn, "r1")
@@ -230,7 +230,7 @@ def test_enqueue_crawl_queue_for_stock_item_resets_done_row_to_pending(admin_con
     db.enqueue_crawl_queue_for_stock_item(admin_conn, "key1")
     admin_conn.commit()
     [row] = db.claim_crawl_queue_batch(admin_conn, "worker-1", limit=10)
-    db.mark_crawl_queue_done(admin_conn, row["id"])
+    db.mark_crawl_queue_done(admin_conn, row["id"], "worker-1")
     admin_conn.commit()
 
     db.enqueue_crawl_queue_for_stock_item(admin_conn, "key1")
@@ -287,8 +287,10 @@ def test_enqueue_crawl_queue_still_resurrects_a_done_row_for_an_enabled_crawler(
     admin_conn.commit()
     db.enqueue_crawl_queue(admin_conn, "r1")
     admin_conn.commit()
-    queue_id = admin_conn.execute("SELECT id FROM crawl_queue").fetchone()["id"]
-    db.mark_crawl_queue_done(admin_conn, queue_id)
+    # Claimed first, because mark_crawl_queue_done is gated on the claim -- in
+    # production a row only ever reaches 'done' through the worker holding it.
+    [claimed] = db.claim_crawl_queue_batch(admin_conn, "worker-1", limit=1)
+    db.mark_crawl_queue_done(admin_conn, claimed["id"], "worker-1")
     admin_conn.commit()
 
     db.enqueue_crawl_queue(admin_conn, "r1")
@@ -498,7 +500,7 @@ def test_defer_crawl_queue_row_reopens_the_row_with_a_narrowed_crawler_set(admin
         "SELECT requested_at FROM crawl_queue WHERE id = %s", [claimed[0]["id"]]
     ).fetchone()["requested_at"]
 
-    db.defer_crawl_queue_row(admin_conn, claimed[0]["id"], [crawler_id], 1800.0)
+    db.defer_crawl_queue_row(admin_conn, claimed[0]["id"], [crawler_id], 1800.0, "worker-1")
     admin_conn.commit()
 
     row = admin_conn.execute(
@@ -955,3 +957,116 @@ def test_reclaim_leaves_pending_and_done_rows_alone(admin_conn):
         for r in admin_conn.execute("SELECT discogs_id, status FROM crawl_queue").fetchall()
     }
     assert rows == {"r1": "pending", "r2": "done"}
+
+
+# --- terminal writes are gated on the claim ---------------------------------
+#
+# The reclaim introduced a case that could not happen before: two workers
+# holding the same row, the first because its claim was taken while it was
+# still crawling. Neither terminal write used to check who owned the claim, so
+# whichever worker finished last won -- and a stale 'done' landing on top of a
+# fresh deferral silently drops the deferred crawler for that target.
+
+
+def test_mark_done_ignores_a_row_another_worker_now_holds(admin_conn):
+    _make_catalog_and_crawler(admin_conn, "r1")
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1")
+    admin_conn.commit()
+    [row] = db.claim_crawl_queue_batch(admin_conn, "worker-a", limit=1)
+    admin_conn.commit()
+    # The reclaim hands the row back and another worker takes it.
+    db.revert_crawl_queue_claim(admin_conn, [row["id"]])
+    db.claim_crawl_queue_batch(admin_conn, "worker-b", limit=1)
+    admin_conn.commit()
+
+    assert db.mark_crawl_queue_done(admin_conn, row["id"], "worker-a") == 0
+    admin_conn.commit()
+
+    after = admin_conn.execute(
+        "SELECT status, claimed_by FROM crawl_queue WHERE id = %s", [row["id"]]
+    ).fetchone()
+    assert after["status"] == "in_progress"
+    assert after["claimed_by"] == "worker-b"
+
+
+def test_defer_ignores_a_row_another_worker_now_holds(admin_conn):
+    crawler_id = _make_catalog_and_crawler(admin_conn, "r1")
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1")
+    admin_conn.commit()
+    [row] = db.claim_crawl_queue_batch(admin_conn, "worker-a", limit=1)
+    admin_conn.commit()
+    db.revert_crawl_queue_claim(admin_conn, [row["id"]])
+    db.claim_crawl_queue_batch(admin_conn, "worker-b", limit=1)
+    admin_conn.commit()
+
+    # Ungated, this would resurrect a row worker-b is actively crawling.
+    assert db.defer_crawl_queue_row(admin_conn, row["id"], [crawler_id], 600.0, "worker-a") == 0
+    admin_conn.commit()
+
+    after = admin_conn.execute(
+        "SELECT status, claimed_by FROM crawl_queue WHERE id = %s", [row["id"]]
+    ).fetchone()
+    assert after["status"] == "in_progress"
+    assert after["claimed_by"] == "worker-b"
+
+
+def test_a_stale_workers_done_does_not_erase_a_new_claimants_deferral(admin_conn):
+    # The hazard the gate exists for, end to end at the db layer. worker-b
+    # finishes first and defers the row to a cooling-down crawler; worker-a,
+    # whose claim was taken, finishes afterwards with nothing deferred. A
+    # 'done' landing there would drop that crawler for this target until some
+    # unrelated later sync happened to revive the row.
+    crawler_id = _make_catalog_and_crawler(admin_conn, "r1")
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1")
+    admin_conn.commit()
+    [row] = db.claim_crawl_queue_batch(admin_conn, "worker-a", limit=1)
+    admin_conn.commit()
+    db.revert_crawl_queue_claim(admin_conn, [row["id"]])
+    db.claim_crawl_queue_batch(admin_conn, "worker-b", limit=1)
+    admin_conn.commit()
+    db.defer_crawl_queue_row(admin_conn, row["id"], [crawler_id], 600.0, "worker-b")
+    admin_conn.commit()
+
+    db.mark_crawl_queue_done(admin_conn, row["id"], "worker-a")
+    admin_conn.commit()
+
+    after = admin_conn.execute(
+        "SELECT status, pending_crawler_ids FROM crawl_queue WHERE id = %s", [row["id"]]
+    ).fetchone()
+    assert after["status"] == "pending"
+    assert after["pending_crawler_ids"] == [crawler_id]
+
+
+def test_mark_done_still_applies_for_the_worker_holding_the_claim(admin_conn):
+    _make_catalog_and_crawler(admin_conn, "r1")
+    admin_conn.commit()
+    db.enqueue_crawl_queue(admin_conn, "r1")
+    admin_conn.commit()
+    [row] = db.claim_crawl_queue_batch(admin_conn, "worker-a", limit=1)
+    admin_conn.commit()
+
+    assert db.mark_crawl_queue_done(admin_conn, row["id"], "worker-a") == 1
+    admin_conn.commit()
+
+    status = admin_conn.execute(
+        "SELECT status FROM crawl_queue WHERE id = %s", [row["id"]]
+    ).fetchone()["status"]
+    assert status == "done"
+
+
+def test_stranded_threshold_accounts_for_the_claim_batch_size(admin_conn):
+    # A claim covers a whole batch, not one row: QUEUE_CLAIM_BATCH_SIZE rows x
+    # eligible crawlers of sequential paced searches. Leaving batch size out
+    # made the derived threshold shorter than a healthy claim on a realistic
+    # crawler set -- tolerable while it only coloured a tile, not once the
+    # reclaim acts on it.
+    for i in range(30):
+        _make_catalog_and_crawler(admin_conn, f"r{i}", site_name=f"Site {i}")
+    admin_conn.commit()
+
+    threshold = db._queue_stranded_after_seconds(admin_conn, 60.0)
+
+    assert threshold == db.QUEUE_CLAIM_BATCH_SIZE * 30 * 60.0 * db.QUEUE_STRANDED_SLACK

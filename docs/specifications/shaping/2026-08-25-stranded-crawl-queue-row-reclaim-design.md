@@ -189,22 +189,57 @@ The reclaim infers death from a claim's age. It cannot distinguish a dead
 worker from a live one that is merely slow, so a sufficiently slow pass will
 have its row reclaimed out from under it and crawled twice, concurrently.
 
-That is survivable, and cheaply, because the crawl's terminal writes are
-idempotent: `upsert_listing` is an upsert keyed on the (target, crawler) pair,
-so a duplicate pass overwrites with an equal-or-fresher price rather than
-duplicating a row. `mark_crawl_queue_done` is likewise idempotent — the losing
-worker's `UPDATE … WHERE id = %s` just sets an already-`done` row `done` again.
-The observable cost of an over-eager reclaim is one redundant page load per
-crawler on that row, plus its pacing delay.
+**The two workers must not both be able to resolve the row.** The crawl results
+themselves are safe to duplicate — `upsert_listing` is an upsert keyed on the
+(target, crawler) pair, so a second pass overwrites with an equal-or-fresher
+price. The *terminal* writes are not. `defer_crawl_queue_row` is not idempotent
+against a second claimant: it sets `status = 'pending'` with one specific
+narrowed `pending_crawler_ids`. So whichever worker wrote last used to win, and
+the damaging order is a stale `done` landing on a fresh deferral — the deferred
+crawler is dropped for that target and nothing re-runs it until some unrelated
+later sync happens to revive the row. The reverse order is milder but still
+wrong: a stale deferral resurrects a row the new claimant already completed.
+
+Both terminal writes are therefore gated on the claim — `WHERE id = … AND
+claimed_by = …` — and return their `rowcount` so the caller can tell its write
+was ignored. A worker whose claim was reclaimed drops its resolution and logs
+it; its crawl results are already committed and idempotent, so nothing is lost
+but the redundant work.
+
+That gate only works if `claimed_by` identifies one worker globally. It did not:
+workers were named `worker-0`, `worker-1` per process, which is the same on
+every Machine, so on a two-Machine deployment the check would have passed for
+the wrong worker about half the time — worse than not checking, because it
+looks safe. Worker ids are now namespaced with `config.MACHINE_ID`, the
+identifier `logging_config` already stamps on log rows.
+
+With that in place the observable cost of an over-eager reclaim is one redundant
+page load per crawler on that row, plus its pacing delay.
 
 It is not free, though, and the honest statement of the trade is: this design
-buys "no infrastructure" with "the threshold has to stay generous." That is
-why the threshold is `_queue_stranded_after_seconds` and not something tighter
-— `QUEUE_STRANDED_SLACK = 4` already means a claim must outlast four times the
-honest worst case before anything touches it, and the ≥30-minute floor covers
-a small or unconfigured deployment. Recovery inside half an hour, from a
-condition whose current recovery time is *never*, is the win; shaving that to
-minutes is what heartbeats would be for.
+buys "no infrastructure" with "the threshold has to stay generous, and the
+terminal writes have to be claim-gated so that being wrong is merely wasteful."
+Recovery inside half an hour, from a condition whose current recovery time is
+*never*, is the win; shaving that to minutes is what heartbeats would be for.
+
+**The threshold as shipped in #179 was not in fact generous — it was short.**
+`_queue_stranded_after_seconds` bounded a claim at `enabled_release_crawlers ×
+crawl_delay_seconds × QUEUE_STRANDED_SLACK`, but a claim covers
+`QUEUE_CLAIM_BATCH_SIZE` *rows*, each fanning out to one sequential search per
+eligible crawler, each of those also paying page-load time on top of its pacing
+wait. Leaving the batch size out meant the nominal ×4 slack was really ×2 before
+page loads are counted at all, and on a slow-loading crawler set the threshold
+could sit below a perfectly healthy claim — every batch reclaimed mid-flight,
+permanent double-crawling, a warning every few seconds. While the value only
+coloured a tile that was a cosmetic error; once the reclaim acts on it, it takes
+work away from live workers.
+
+`QUEUE_CLAIM_BATCH_SIZE` is now a `db` constant that both
+`_queue_stranded_after_seconds` and `_drain_one_batch` read, rather than a
+default argument on the latter that the former had no way to see. Two copies of
+that number drifting apart is exactly how the threshold ended up short. This
+does move the Stranded tile — it reports later than it did on #179 — which is
+the correct direction: the tile was flagging healthy claims.
 
 One case is explicitly **not** this gap: cancellation during graceful shutdown.
 `_drain_one_batch` reverts an in-flight claim on cancellation and shields
@@ -260,7 +295,21 @@ Backend, in `backend/tests/test_crawl_queue.py`:
 - `requested_at` survives, so a reclaimed row keeps its place at the front.
 - Nothing `pending` or `done` is touched.
 
+On the claim gate, in `backend/tests/test_crawl_queue.py`:
+
+- `mark_crawl_queue_done` and `defer_crawl_queue_row` each apply to nothing when
+  another worker now holds the claim, and the row is left as that worker left it.
+- The hazard itself, end to end at the db layer: a stale worker's `done` does
+  not erase a new claimant's deferral, and the narrowed `pending_crawler_ids`
+  survives.
+- `mark_crawl_queue_done` still applies for the worker actually holding the
+  claim — the gate must not be so tight that the normal path stops working.
+- The threshold includes `QUEUE_CLAIM_BATCH_SIZE`.
+
 In `backend/tests/test_crawl_manager.py`:
+
+- Worker ids are namespaced by `MACHINE_ID`, so `claimed_by` identifies one
+  worker globally rather than one per Machine.
 
 - `_drain_one_batch` claims a row that was stranded before it ran. This is the
   end-to-end assertion and the load-bearing one: against unmodified

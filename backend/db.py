@@ -1430,6 +1430,16 @@ def enqueue_crawl_queue_for_stock_item(conn, item_key: str):
     )
 
 
+# How many rows one claim takes. Small because a batch is now batch_size x
+# eligible crawlers of sequential page loads and the whole batch stays
+# 'in_progress' for all of it. Named here rather than living only as
+# _drain_one_batch's default argument because _queue_stranded_after_seconds
+# needs it too: what a claim can legitimately take scales with the number of
+# rows in it, and a threshold that assumed one row was shorter than a healthy
+# claim.
+QUEUE_CLAIM_BATCH_SIZE = 2
+
+
 # The row lock taken by the inner SELECT ... FOR UPDATE SKIP LOCKED is held
 # until the caller commits or rolls back the current transaction -- callers
 # must mark_crawl_queue_done() on these rows before/without another worker's
@@ -1486,11 +1496,22 @@ def claim_crawl_queue_batch(conn, worker_id: str, limit: int) -> list[dict]:
     ).fetchall()
 
 
-def mark_crawl_queue_done(conn, queue_id: int):
-    conn.execute(
-        "UPDATE crawl_queue SET status = 'done', completed_at = CURRENT_TIMESTAMP WHERE id = %s",
-        [queue_id],
-    )
+# Gated on the claim, not just the id. The reclaim made "two workers holding
+# one row" reachable -- it cannot tell a dead worker from a slow one, so a pass
+# that outruns the stranded threshold has its row handed to someone else while
+# it is still crawling. Without this gate the slower worker's terminal write
+# lands on top of the new claimant's, and the damaging direction is a stale
+# 'done' overwriting a fresh deferral: the deferred crawler is dropped for that
+# target until some unrelated later sync revives the row. Returning rowcount
+# lets the caller see that its write was ignored and say so.
+def mark_crawl_queue_done(conn, queue_id: int, worker_id: str) -> int:
+    return conn.execute(
+        """
+        UPDATE crawl_queue SET status = 'done', completed_at = CURRENT_TIMESTAMP
+        WHERE id = %(queue_id)s AND claimed_by = %(worker_id)s
+        """,
+        {"queue_id": queue_id, "worker_id": worker_id},
+    ).rowcount
 
 
 # The inverse of mark_crawl_queue_done: hands a claimed row back as pending
@@ -1498,17 +1519,20 @@ def mark_crawl_queue_done(conn, queue_id: int):
 # them is workable again. requested_at is deliberately not touched -- bumping
 # it would send a row that merely waited on a cooling-down site to the back of
 # the queue behind everything enqueued while it waited.
-def defer_crawl_queue_row(conn, queue_id: int, crawler_ids: list, delay_seconds: float):
-    conn.execute(
+def defer_crawl_queue_row(conn, queue_id: int, crawler_ids: list, delay_seconds: float, worker_id: str) -> int:
+    return conn.execute(
         """
         UPDATE crawl_queue
         SET status = 'pending', claimed_by = NULL, claimed_at = NULL,
             pending_crawler_ids = %(crawler_ids)s,
             available_at = CURRENT_TIMESTAMP + (%(delay_seconds)s * INTERVAL '1 second')
-        WHERE id = %(queue_id)s
+        WHERE id = %(queue_id)s AND claimed_by = %(worker_id)s
         """,
-        {"queue_id": queue_id, "crawler_ids": list(crawler_ids), "delay_seconds": delay_seconds},
-    )
+        {
+            "queue_id": queue_id, "crawler_ids": list(crawler_ids),
+            "delay_seconds": delay_seconds, "worker_id": worker_id,
+        },
+    ).rowcount
 
 
 # Undoes claim_crawl_queue_batch for rows the caller never got a chance to
@@ -1643,11 +1667,13 @@ def count_pending_crawl_queue_for_user(conn, user_id: int) -> int:
 
 QUEUE_ACTIVITY_WINDOW_SECONDS = 3600
 
-# A claim is evidence of a strand only once it has outlasted what the row could
-# legitimately take. A claimed row runs one sequential search per eligible
-# crawler, each preceded by a wait of 50-100% of crawl_delay_seconds and capped
-# by a page-load timeout, so its honest upper bound scales with both the pacing
-# setting and how many crawlers are enabled. A fixed half hour contradicted the
+# A claim is evidence of a strand only once it has outlasted what the claim
+# could legitimately take. A claim covers QUEUE_CLAIM_BATCH_SIZE rows, and each
+# row runs one sequential search per eligible crawler, each preceded by a wait
+# of 50-100% of crawl_delay_seconds and capped by a page-load timeout -- so its
+# honest upper bound scales with the batch size, the pacing setting and how many
+# crawlers are enabled. Leaving the batch size out put the threshold below a
+# healthy claim on a realistic crawler set. A fixed half hour contradicted the
 # rest of this module -- the same fan-out that makes claimed_at useless as a
 # completion proxy also means healthy rows routinely stay claimed well past it,
 # and they would have lit the Stranded tile, which is coloured critical. The
@@ -1668,7 +1694,10 @@ def _queue_stranded_after_seconds(conn, crawl_delay_seconds: float) -> float:
     enabled = conn.execute(
         "SELECT COUNT(*) FROM crawlers WHERE enabled AND crawler_type = 'release'"
     ).fetchone()["count"]
-    return max(QUEUE_STRANDED_FLOOR_SECONDS, enabled * crawl_delay_seconds * QUEUE_STRANDED_SLACK)
+    return max(
+        QUEUE_STRANDED_FLOOR_SECONDS,
+        QUEUE_CLAIM_BATCH_SIZE * enabled * crawl_delay_seconds * QUEUE_STRANDED_SLACK,
+    )
 
 
 def _queue_eligible_crawler_exists(alias: str) -> str:

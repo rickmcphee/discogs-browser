@@ -4697,3 +4697,18 @@ async def test_drain_one_batch_leaves_a_recently_claimed_row_to_its_worker(pg_sc
         ).fetchone()
     assert row["status"] == "in_progress"
     assert row["claimed_by"] == "busy-worker"
+
+
+def test_worker_ids_are_namespaced_by_machine(monkeypatch):
+    # claimed_by is load-bearing now: mark_crawl_queue_done and
+    # defer_crawl_queue_row match on it to refuse a write from a worker whose
+    # claim was reclaimed. A bare "worker-0" is identical on every Machine, so
+    # that check would have passed for the wrong worker on a multi-Machine
+    # deployment -- worse than not checking, because it looks safe.
+    import config
+
+    monkeypatch.setattr(config, "MACHINE_ID", "3287561a1e4487")
+    assert CrawlManager._worker_id(0) == "3287561a1e4487-worker-0"
+
+    monkeypatch.setattr(config, "MACHINE_ID", "9080e24b73d187")
+    assert CrawlManager._worker_id(0) == "9080e24b73d187-worker-0"

@@ -135,7 +135,7 @@ class CrawlManager:
         )
         self._pool_running = True
         for i in range(worker_count):
-            self._worker_tasks.append(asyncio.create_task(self._worker_loop(f"worker-{i}", plugins_by_crawler_id)))
+            self._worker_tasks.append(asyncio.create_task(self._worker_loop(self._worker_id(i), plugins_by_crawler_id)))
         # Loaded and enabled are separate counts now that the pool loads every
         # plugin regardless of enabled state -- without both, the boot log
         # cannot answer what this instance is actually going to crawl.
@@ -144,6 +144,18 @@ class CrawlManager:
             "Crawl worker pool started: %d workers, %d crawler plugins loaded (%d enabled)",
             worker_count, len(plugins), enabled_count,
         )
+
+    # Namespaced by Machine, because claimed_by is now load-bearing rather than
+    # just a debugging breadcrumb: mark_crawl_queue_done and
+    # defer_crawl_queue_row match on it to refuse a write from a worker whose
+    # claim was reclaimed out from under it. A bare "worker-0" collides across
+    # Machines -- every Machine names its pool the same way -- so on the
+    # two-Machine deployment that check would have passed for the wrong worker
+    # exactly half the time, which is worse than not checking at all.
+    @staticmethod
+    def _worker_id(index: int) -> str:
+        from config import MACHINE_ID
+        return f"{MACHINE_ID}-worker-{index}"
 
     async def stop_worker_pool(self):
         self._pool_running = False
@@ -321,9 +333,16 @@ class CrawlManager:
                 delay = float(site_config.get("crawl_delay_seconds", 30))
                 self._site_next_allowed_at[crawler_id] = time.monotonic() + random.uniform(0.5, 1.0) * delay
 
-    async def _drain_one_batch(self, worker_id: str, plugins_by_crawler_id: dict, pages: dict, batch_size: int = 2) -> int:
+    async def _drain_one_batch(self, worker_id: str, plugins_by_crawler_id: dict, pages: dict, batch_size: Optional[int] = None) -> int:
         from config import load_config
-        from db import get_app_pool, claim_crawl_queue_batch, revert_crawl_queue_claim, reclaim_stranded_crawl_queue_rows
+        from db import get_app_pool, claim_crawl_queue_batch, revert_crawl_queue_claim, reclaim_stranded_crawl_queue_rows, QUEUE_CLAIM_BATCH_SIZE
+
+        # Resolved from db rather than defaulted in the signature: the stranded
+        # threshold is derived from the same constant, and two copies of it
+        # drifting apart is precisely how the threshold ended up shorter than a
+        # healthy claim.
+        if batch_size is None:
+            batch_size = QUEUE_CLAIM_BATCH_SIZE
 
         def _claim_batch():
             # Reclaim, then claim, in one transaction. A row handed back here
@@ -385,9 +404,9 @@ class CrawlManager:
         if not rows:
             return 0
 
-        return await _shielded(self._process_claimed_rows(rows, plugins_by_crawler_id, pages))
+        return await _shielded(self._process_claimed_rows(worker_id, rows, plugins_by_crawler_id, pages))
 
-    async def _process_claimed_rows(self, rows: list, plugins_by_crawler_id: dict, pages: dict) -> int:
+    async def _process_claimed_rows(self, worker_id: str, rows: list, plugins_by_crawler_id: dict, pages: dict) -> int:
         """Processes a batch _drain_one_batch has already claimed, through
         to every row's terminal crawl_queue write (done or deferred).
 
@@ -428,9 +447,14 @@ class CrawlManager:
             if target is None:
                 def _mark_done():
                     with get_app_pool().connection() as conn:
-                        mark_crawl_queue_done(conn, row["id"])
+                        applied = mark_crawl_queue_done(conn, row["id"], worker_id)
                         conn.commit()
-                await asyncio.to_thread(_mark_done)
+                        return applied
+                if not await asyncio.to_thread(_mark_done):
+                    log.warning(
+                        "[%s] Queue row %s was reclaimed mid-pass; dropping this worker's result",
+                        worker_id, row["id"],
+                    )
                 continue
             targets[row["id"]] = (row, target, is_release)
             for crawler in eligible:
@@ -452,17 +476,32 @@ class CrawlManager:
             # status write is already committed before a later row's unit
             # runs, so an exception escaping a later unit can no longer
             # strand an already-finished row at 'in_progress'.
+            #
+            # Both writes are gated on this worker still holding the claim. If
+            # the reclaim handed the row to someone else while this pass was
+            # running, the write applies to nothing and is dropped rather than
+            # overwriting the new claimant's own resolution -- a stale 'done'
+            # landing on a fresh deferral would silently drop the deferred
+            # crawler for that target. The crawl results themselves are already
+            # committed by then and are idempotent upserts, so nothing is lost
+            # but the redundant work.
             def _write():
                 with get_app_pool().connection() as conn:
                     if row_id in deferred:
-                        defer_crawl_queue_row(
+                        applied = defer_crawl_queue_row(
                             conn, row_id, deferred[row_id],
                             self._cooldown_remaining_seconds(deferred[row_id]),
+                            worker_id,
                         )
                     else:
-                        mark_crawl_queue_done(conn, row_id)
+                        applied = mark_crawl_queue_done(conn, row_id, worker_id)
                     conn.commit()
-            await asyncio.to_thread(_write)
+                    return applied
+            if not await asyncio.to_thread(_write):
+                log.warning(
+                    "[%s] Queue row %s was reclaimed mid-pass; dropping this worker's resolution",
+                    worker_id, row_id,
+                )
 
         # A row with zero eligible crawlers contributes no units, so it would
         # never reach the per-unit resolve_row calls below -- resolve it (as
