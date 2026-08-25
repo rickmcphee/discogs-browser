@@ -276,6 +276,21 @@ describe('In Stock tab', () => {
     )
   })
 
+  it('says "1 release", not "1 releases", on a page with a single new release', async () => {
+    // Reachable on this crawler: dedup is crawl-wide, so a listing page whose
+    // releases mostly appeared on the previous one can contribute just one.
+    render(<App />)
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    const source = getLastCrawlSource()
+    source.emit({
+      status: 'stock_sync_detail_progress', source: 'Dischord Records',
+      done: 1, total: 1, label: 'listing page 4/8', id: 1,
+    })
+    await waitFor(() =>
+      expect(screen.getByText(/listing page 4\/8 — 1\/1 release$/)).toBeInTheDocument()
+    )
+  })
+
   it('says what is holding the lock when a Refresh is rejected mid-sync', async () => {
     postStockSyncStart.mockResolvedValue({
       started: false, running: true, on_another_instance: false,

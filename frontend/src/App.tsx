@@ -285,8 +285,9 @@ export default function App() {
         return
       }
       if (event.status === 'stock_sync_detail_progress') {
+        const releases = event.total === 1 ? 'release' : 'releases'
         setSyncStatus(
-          `Syncing in-stock catalog… ${event.source} ${event.label} — ${event.done}/${event.total} releases`,
+          `Syncing in-stock catalog… ${event.source} ${event.label} — ${event.done}/${event.total} ${releases}`,
           event.id ?? null,
         )
         return

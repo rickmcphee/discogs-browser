@@ -96,7 +96,11 @@ carrying a `user_id` (see
 [`2026-08-23-per-user-sse-event-filtering-design.md`](2026-08-23-per-user-sse-event-filtering-design.md)).
 
 `App.tsx` renders it into the existing bottom status bar as
-`Syncing in-stock catalog… {source} {label} — {done}/{total} releases`.
+`Syncing in-stock catalog… {source} {label} — {done}/{total} releases`,
+singular `release` when `total` is 1, matching what the page-progress
+handler beside it already does for products. Reachable here rather than
+hypothetical: dedup is crawl-wide, so a listing page whose releases
+mostly appeared on the previous one can contribute a single new href.
 
 ### Both reporters now log as well as broadcast
 
