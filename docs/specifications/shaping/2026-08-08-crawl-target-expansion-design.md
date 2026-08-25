@@ -257,6 +257,12 @@ across every crawler `db.get_eligible_crawlers` resolves for it, one work
 unit per crawler, not one plugin lookup per row. See
 [`2026-08-14-per-item-crawler-fanout-design.md`](2026-08-14-per-item-crawler-fanout-design.md).
 
+**Amendment (2026-08-25):** the `mark_crawl_queue_done(conn, row["id"])` calls in that same stale
+code block take a third argument now — the claiming worker's id — and the write applies only while
+that worker still holds the claim. Nothing else in this document depends on it; noted because the
+call appears here verbatim. See
+[`2026-08-25-stranded-crawl-queue-row-reclaim-design.md`](2026-08-25-stranded-crawl-queue-row-reclaim-design.md).
+
 `upsert_stock_item_listing` (new, same shape as `upsert_listing`):
 
 ```python
