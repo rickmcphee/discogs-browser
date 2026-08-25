@@ -87,11 +87,12 @@ env:
 jobs:
   sync:
     name: Merge main into integration
-    # Every trigger, including a push to `integration`. That push is the moment
-    # a landed sync is still identifiable -- the sync branch's tree still equals
-    # integration's -- and the window shuts as soon as anything else lands. The
-    # job no-ops cheaply when there is nothing to bring over, so running it here
-    # costs a few seconds and keeps the marker current.
+    # Every trigger, including a push to `integration`. A sync landing is
+    # exactly when `integration` has just caught up with `main`, so the
+    # trees-identical and merge-no-op checks below can prove containment and
+    # record the marker -- and the marker only ever advances at those two
+    # points. Running here costs a few seconds when there is nothing to bring
+    # over, and keeps the marker from lagging further than it must.
     runs-on: ubuntu-latest
     outputs:
       pending: ${{ steps.sync.outputs.pending }}
@@ -182,19 +183,19 @@ jobs:
             # path that records a marker lies past it.
             if git cat-file -e \
                  "origin/integration:.github/workflows/integration-sync.yml" 2>/dev/null; then
-              echo "::warning::no $MARKER_TAG, and no landed $SYNC_BRANCH to recover one from, yet integration already carries this workflow -- record_marker is probably failing. Falling back to BOOTSTRAP_BASE, which grows staler with time; if this repeats, re-create the tag at the newest main commit integration provably holds."
+              echo "::warning::$MARKER_TAG is missing even though integration already carries this workflow, so record_marker has not succeeded since the first sync. Falling back to BOOTSTRAP_BASE, which only grows staler; if this repeats, re-create the tag at the newest main commit integration provably holds."
             else
               echo "no $MARKER_TAG yet and integration has never been synced by this workflow; bootstrapping from $BOOTSTRAP_BASE"
             fi
           fi
 
           record_marker() {  # $1 = a main commit integration provably holds
-            # Only ever called where that containment was just established:
-            # the two nothing-to-do exits, and marker recovery below. Recording
-            # it anywhere else would make a later run skip a real sync.
+            # Only ever called at the two nothing-to-do exits, which are the
+            # only places containment is proven. Recording it anywhere else
+            # would make a later run skip a sync that was genuinely needed.
             git push --force --quiet origin "$1:refs/tags/$MARKER_TAG" \
               && echo "marker: integration holds main $(git rev-parse --short "$1")" \
-              || echo "::warning::could not move $MARKER_TAG; the next run will try to recover it from $SYNC_BRANCH instead"
+              || echo "::warning::could not move $MARKER_TAG. Nothing recovers it automatically: the next run falls back to BOOTSTRAP_BASE, which only grows staler. If this persists, check the token's contents permission and re-create the tag at the newest main commit integration provably holds."
           }
 
           # Compare trees, not ancestry -- same squash-merge reason as above.
@@ -241,6 +242,12 @@ jobs:
               sleep 10
             done
             case "$sync_state" in
+              unknown)
+                # Never resolved. Re-arming auto-merge below is still right --
+                # it is idempotent and harmless -- but say so, because a PR
+                # silently left behind is the failure this poll exists to catch.
+                echo "::warning::could not resolve mergeable_state for sync PR #$existing; re-arming auto-merge without knowing whether it is behind."
+                ;;
               behind)
                 echo "Sync PR #$existing is behind; catching it up before re-arming auto-merge."
                 if ! gh api -X PUT "repos/$REPO/pulls/$existing/update-branch"; then
@@ -262,8 +269,15 @@ jobs:
                 # every unrelated stale PR hostage to a conflict that has
                 # nothing to do with them, until someone resolves it by hand.
                 # The failure below still makes the sync itself loud.
+                # Actually disable it. A conflict blocks auto-merge but does
+                # not clear it, so an armed request survives -- and the moment
+                # someone pushes a resolution it merges on the spot, unreviewed,
+                # into a branch that requires no approving review. Saying
+                # auto-merge is off while leaving it armed is the worst of both.
+                gh pr merge "$existing" --repo "$REPO" --disable-auto \
+                  || echo "::warning::could not disable auto-merge on #$existing; check it by hand before resolving."
                 echo "pending=false" >> "$GITHUB_OUTPUT"
-                echo "::error::Sync PR #$existing conflicts with integration. Resolve $SYNC_BRANCH by hand and push it; auto-merge is deliberately left off until then."
+                echo "::error::Sync PR #$existing conflicts with integration. Auto-merge has been disabled: resolve $SYNC_BRANCH by hand, push it, and merge it deliberately."
                 exit 1
                 ;;
             esac
@@ -361,11 +375,14 @@ jobs:
   refresh:
     name: Catch up PRs integration left behind
     needs: sync
-    # always(): on a push to `integration` the sync job is skipped, and a
-    # skipped dependency would otherwise skip this one too. The pending guard
-    # holds off while a sync PR is still queued -- `integration` is about to
-    # move again, and catching everything up to the tip it is leaving would
-    # just have to be redone.
+    # always(): `sync` runs on every trigger now, but it can fail -- a merge
+    # conflict, a push rejected for want of the workflow scope -- and a failed
+    # dependency would otherwise skip this job too. Those are the moments PRs
+    # most need catching up, not least.
+    #
+    # The pending guard holds off only while a sync PR is actually queued to
+    # merge: `integration` is about to move again, so catching everything up to
+    # the tip it is leaving would just have to be redone.
     if: >-
       always()
       && (github.event_name != 'push' || github.ref_name == 'integration')
@@ -457,6 +474,12 @@ jobs:
                   --body "$(printf '@dependabot recreate\n\n%s' "$RECREATE_MARKER")"
                 ;;
 
+              unknown)
+                # Exhausted the poll without GitHub settling on an answer.
+                # Falling into the catch-all below would report "nothing to do"
+                # and skip the PR silently -- precisely what the polling is for.
+                echo "::warning::could not resolve mergeable_state for PR #$n after polling; it may still be behind and was not refreshed."
+                ;;
               *)
                 echo "PR #$n is '$state'; nothing for this job to do."
                 ;;

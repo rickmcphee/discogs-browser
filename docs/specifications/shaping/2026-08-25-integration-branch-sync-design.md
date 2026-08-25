@@ -128,8 +128,8 @@ landed, so containment is not yet true.
 
 `BOOTSTRAP_BASE` covers the first run and is never consulted again once a real
 marker exists. It is not retired by deletion — it stays as a floor — but reaching
-for it *after* a sync has run means neither the tag nor a landed sync branch
-survived, which is warned about loudly. It is deliberately **not** a hard
+for it *after* a sync has run means the marker tag is missing or has never been
+written, which is warned about loudly. It is deliberately **not** a hard
 failure: every path that records a marker lies past that point, so a stop there
 cannot be recovered from by the workflow itself.
 
@@ -137,7 +137,10 @@ cannot be recovered from by the workflow itself.
 
 ### `sync`
 
-Triggers: push to `main`, a daily cron, and `workflow_dispatch`.
+Triggers: push to `main`, push to `integration`, a daily cron, and
+`workflow_dispatch`. The `integration` trigger is there because a sync landing
+is when `integration` has just caught up with `main`, so steps 2 and 3 can prove
+containment and record the marker — the only two points at which it advances.
 
 1. Resolve a marker (above).
 2. Trees identical? Record the marker; done.
