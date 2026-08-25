@@ -125,43 +125,60 @@ jobs:
           # 2026-08-10 -- for good. Merging against a base that old makes a
           # dependency pin `integration` has re-bumped look changed on both
           # sides, and conflicts on a file nobody actually disagrees about.
+          on_main() { git merge-base --is-ancestor "$1" origin/main 2>/dev/null; }
+
           marker="$(git rev-parse -q --verify "refs/tags/$MARKER_TAG^{commit}" || true)"
 
-          if [ -z "$marker" ]; then
-            # A sync that has already landed records its own base. The merge
-            # this job builds carries `main` as its second parent, so the sync
-            # branch tip names the commit that sync incorporated -- and if
-            # `integration` now holds that same tree, the PR merged and
-            # `integration` provably contains it, which is exactly what the
-            # marker asserts.
+          if [ -z "$marker" ] \
+             && git rev-parse -q --verify "origin/$SYNC_BRANCH" >/dev/null 2>&1 \
+             && git diff --quiet "origin/$SYNC_BRANCH" origin/integration; then
+            # A sync that has already landed records its own base: this job
+            # builds its merge with `main` as the second parent, and
+            # `integration` holding that same tree proves the PR merged. That is
+            # how the marker normally first appears -- the path that opens a
+            # sync PR cannot record one at the time, since the merge has not
+            # landed and recording it early would make a later run skip a sync
+            # that was genuinely needed.
             #
-            # This is the normal way the marker first appears. The path that
-            # opens a sync PR cannot record one at the time, because the merge
-            # has not landed yet and recording it early would make a later run
-            # skip a sync that was genuinely needed.
-            if git rev-parse -q --verify "origin/$SYNC_BRANCH^2" >/dev/null 2>&1 \
-               && git diff --quiet "origin/$SYNC_BRANCH" origin/integration; then
-              marker="$(git rev-parse "origin/$SYNC_BRANCH^2")"
-              echo "recovered the marker from the last landed sync: $marker"
-              # Persist it now. Recovery depends on the sync branch still
-              # matching integration's tree, which stops being true the moment
-              # any integration-only bump lands -- and the exits below can
-              # return without ever reaching a record_marker call, so relying
-              # on one of those would let the recovered value evaporate and
-              # drop the next run back onto the stale bootstrap base.
-              recover_persist=1
-            fi
+            # Walk first parents rather than reading the tip's second parent.
+            # When a sync PR falls behind, update-branch adds a merge whose
+            # second parent is `integration`, so the tip's ^2 can name an
+            # integration commit. Recording that as the base is not merely
+            # wrong: with a base that already carries a bump `main` never had,
+            # the three-way merge reads the bump as "removed on main" and drops
+            # it -- cleanly, with no conflict and no warning. The synthetic
+            # merge is still down the first-parent chain, and its ^2 is on main.
+            for c in $(git rev-list --first-parent -n 50 "origin/$SYNC_BRANCH"); do
+              p2="$(git rev-parse -q --verify "$c^2" 2>/dev/null)" || continue
+              if on_main "$p2"; then
+                marker="$p2"
+                recover_persist=1
+                echo "recovered the marker from the last landed sync: $marker"
+                break
+              fi
+            done
           fi
 
-          if [ -z "$marker" ] && git cat-file -e "$BOOTSTRAP_BASE^{commit}" 2>/dev/null; then
+          # Whatever the source, a marker has exactly one meaning: "integration
+          # already holds `main` up to here". A commit that is not on `main`
+          # cannot say that, and used as a merge base it invents changes neither
+          # side made. Cheap to check, and it catches the whole class rather
+          # than the one route that produced it.
+          if [ -n "$marker" ] && ! on_main "$marker"; then
+            echo "::warning::discarding marker $marker -- it is not a commit on main, so it cannot describe what integration holds"
+            marker=""
+            recover_persist=0
+          fi
+
+          if [ -z "$marker" ] && git cat-file -e "$BOOTSTRAP_BASE^{commit}" 2>/dev/null \
+             && on_main "$BOOTSTRAP_BASE"; then
             marker="$BOOTSTRAP_BASE"
-            # Distinguish the two ways of getting here. Before the first sync
-            # this is simply expected. Afterwards it means neither the tag nor a
-            # landed sync branch survived, so BOOTSTRAP_BASE -- which only grows
-            # staler -- is standing in for something newer, and the frozen-base
-            # conflicts it exists to prevent can creep back. Warn rather than
-            # fail: a hard stop here cannot be recovered from by the workflow
-            # itself, since every path that records a marker lies past it.
+            # Before the first sync this is simply expected. Afterwards it means
+            # neither the tag nor a landed sync branch survived, so a base that
+            # only grows staler is standing in for something newer and the
+            # frozen-base conflicts can creep back. Warn rather than fail: a hard
+            # stop cannot be recovered from by the workflow itself, since every
+            # path that records a marker lies past it.
             if git cat-file -e \
                  "origin/integration:.github/workflows/integration-sync.yml" 2>/dev/null; then
               echo "::warning::no $MARKER_TAG, and no landed $SYNC_BRANCH to recover one from, yet integration already carries this workflow -- record_marker is probably failing. Falling back to BOOTSTRAP_BASE, which grows staler with time; if this repeats, re-create the tag at the newest main commit integration provably holds."
