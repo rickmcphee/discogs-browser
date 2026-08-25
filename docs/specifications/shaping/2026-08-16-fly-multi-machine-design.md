@@ -186,7 +186,11 @@ write. `stop_worker_pool()`'s `task.cancel()` can therefore let one of
 these commits land after the worker has already exited, with nothing left
 to act on the result: the row reads `'in_progress'` forever with no reclaim
 path, the same accepted gap `claim_crawl_queue_batch`'s docstring documents
-for a Machine crash or a genuinely hung worker (that docstring previously
+for a Machine crash or a genuinely hung worker *(amended 2026-08-25: that gap
+is now closed by `db.reclaim_stranded_crawl_queue_rows`, which bounds the
+strand at the derived stranded threshold. The shielding described here is still
+required — a graceful stop must not route rows through a backstop measured in
+tens of minutes)* (that docstring previously
 claimed a crash "rolls back the open transaction and self-heals" — wrong
 for this codebase, since the claim's own `UPDATE` commits immediately as a
 short, separate transaction from whatever processes the row afterward;
