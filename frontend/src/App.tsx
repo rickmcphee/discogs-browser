@@ -40,6 +40,10 @@ function reportStockSyncRejection(
   setStatus: (message: string, id?: number | null) => void,
 ) {
   if (result.started) return
+  if (result.on_another_instance) {
+    setStatus('In-stock sync already running on another instance. Try again once it finishes.')
+    return
+  }
   const on = result.source
     ? `${result.source} (${formatElapsed(result.source_elapsed_seconds)} so far)`
     : 'starting up'

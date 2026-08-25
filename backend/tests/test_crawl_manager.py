@@ -3061,7 +3061,7 @@ async def test_start_stock_sync_returns_true_when_idle(pg_test_db, manager):
 
     manager._sync_stock = _fake_sync  # type: ignore
     started = await manager.start_stock_sync()
-    assert started is True
+    assert started["started"] is True
     await asyncio.sleep(0.01)
     assert conns and conns[0] is not None
 
@@ -3088,7 +3088,7 @@ async def test_start_stock_sync_takes_its_lock_on_the_unpooled_dsn(pg_test_db, m
         lock_conn.close()
 
     manager._sync_stock = _instant  # type: ignore
-    assert await manager.start_stock_sync() is True
+    assert (await manager.start_stock_sync())["started"] is True
     await asyncio.sleep(0.05)
 
     assert seen == [os.environ["TEST_DATABASE_URL"]]
@@ -3105,7 +3105,8 @@ async def test_start_stock_sync_returns_false_when_already_running(pg_test_db, m
     await manager.start_stock_sync()
     assert manager.stock_sync_running is True
     second = await manager.start_stock_sync()
-    assert second is False
+    assert second["started"] is False
+    assert second["on_another_instance"] is False
     event.set()
     await asyncio.sleep(0.01)
 
@@ -3135,9 +3136,17 @@ async def test_start_stock_sync_returns_false_when_another_instance_holds_the_lo
         assert holder.execute(
             "SELECT pg_try_advisory_lock(%s)", [STOCK_SYNC_LOCK_KEY]
         ).fetchone()[0] is True
-        assert await manager.start_stock_sync() is False
+        rejected = await manager.start_stock_sync()
         await asyncio.sleep(0.01)
         assert calls == []
+        # The holder is another Machine, so this process has no _stock_task
+        # and the local stock_sync_state() would deny a sync is running at
+        # all. Saying so would put "already running -- starting up, unknown in
+        # total" in the status bar for a sync this process cannot see.
+        assert rejected == {
+            "started": False, "on_another_instance": True, "running": True,
+            "source": None, "elapsed_seconds": None, "source_elapsed_seconds": None,
+        }
     finally:
         holder.close()
 
@@ -3548,7 +3557,7 @@ async def test_start_stock_sync_rejection_log_names_the_source_holding_the_lock(
     manager._stock_sync_source_started_at = time.monotonic() - 4500
 
     with caplog.at_level(logging.WARNING, logger="crawl_manager"):
-        assert await manager.start_stock_sync() is False
+        assert (await manager.start_stock_sync())["started"] is False
 
     rejected = [r.getMessage() for r in caplog.records if "already running" in r.getMessage()]
     assert len(rejected) == 1
@@ -3562,7 +3571,7 @@ async def test_start_stock_sync_rejection_log_copes_with_no_source_reached_yet(m
     manager._stock_sync_started_at = time.monotonic() - 2
 
     with caplog.at_level(logging.WARNING, logger="crawl_manager"):
-        assert await manager.start_stock_sync() is False
+        assert (await manager.start_stock_sync())["started"] is False
 
     rejected = [r.getMessage() for r in caplog.records if "already running" in r.getMessage()]
     assert len(rejected) == 1

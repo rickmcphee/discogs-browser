@@ -132,11 +132,32 @@ alongside the advisory-lock release.
 `Stock sync already running (on Dischord Records for 1h 15m, running 1h 30m
 in total), ignoring start request`.
 
-`POST /stock/sync/start` returns `{"started": ..., **stock_sync_state()}`.
-`running` keeps its existing meaning and position, so the added keys are
-additive. `App.tsx` renders a rejected start into the status bar as
+`start_stock_sync` returns `{"started", "on_another_instance", **state}`
+rather than a bare bool, and `POST /stock/sync/start` returns that verbatim.
+It is the only place that knows *which* of its two rejections happened, and
+they describe different worlds: the in-process one can read the local state,
+but on the cross-Machine advisory-lock rejection this process has no
+`_stock_task`, so `stock_sync_state()` would report the idle shape --
+`running: false`, no source, no timings -- for a sync that is genuinely
+running elsewhere. That path therefore states `running: True` and
+`on_another_instance: True` directly, leaving source and timings null
+because they live in the holder's memory and are not readable from here.
+Assembling the response in the router from a second `stock_sync_state()`
+read would also race a sync that finished in between and report a bare
+"nothing running."
+
+Surfacing the holder's source and elapsed time *across* Machines would need
+shared lock-holder metadata in Postgres, kept fresh as the holder walks its
+sources. That is a larger change than this one and is not attempted here;
+`on_another_instance` is what lets the UI say something true without it.
+
+`App.tsx` renders a rejected start into the status bar as
 `In-stock sync already running — {source} ({source elapsed} so far),
-{total elapsed} in total. Try again once it finishes.`
+{total elapsed} in total. Try again once it finishes.`, or, when
+`on_another_instance` is set, `In-stock sync already running on another
+instance. Try again once it finishes.` The flag is what separates that case
+from a sync running *here* that has not yet reached its first crawler --
+both carry a null source and null timings.
 
 Durations are formatted `45s` / `14m` / `1h 48m` by matching helpers on
 each side (`crawl_manager._format_duration`, `App.tsx`'s `formatElapsed`).
@@ -163,9 +184,11 @@ raise still aborts before reporting, since the crawl is over either way.
   release still advances the count; the crawl still runs with no reporter
   installed.
 - `backend/tests/test_stock_router.py`: the start endpoint's payload when
-  accepted and when rejected.
+  accepted, when rejected in-process, and when rejected because another
+  Machine holds the advisory lock.
 - `frontend/src/test/inStockTab.test.tsx`: `stock_sync_detail_progress`
-  in the status bar; a rejected Refresh names the holder; an accepted one
+  in the status bar; a rejected Refresh names the holder; a cross-Machine
+  rejection says so instead of claiming "unknown in total"; an accepted one
   stays quiet.
 
 ## Runtime/agent document impact

@@ -854,7 +854,15 @@ class CrawlManager:
             "source_elapsed_seconds": None if source_started is None else int(now - source_started),
         }
 
-    async def start_stock_sync(self, crawler_id: Optional[int] = None) -> bool:
+    async def start_stock_sync(self, crawler_id: Optional[int] = None) -> dict:
+        """Returns `{"started": bool, "on_another_instance": bool, **state}`.
+
+        Not a bare bool: this method is the only place that knows *which* of
+        the two rejections happened, and they describe different worlds.
+        stock_sync_state() reads this process's memory, so on the
+        cross-Machine rejection below it would report the idle shape --
+        `running: false`, no source, no timings -- for a sync that is
+        genuinely running, just not here."""
         import psycopg
         import config
 
@@ -864,7 +872,7 @@ class CrawlManager:
                 "Stock sync already running (%s), ignoring start request",
                 _describe_stock_sync(state),
             )
-            return False
+            return {"started": False, "on_another_instance": False, **state}
 
         # Deliberately not a pooled connection: the advisory lock is
         # session-scoped, and a pooled connection gets handed back out for
@@ -892,10 +900,22 @@ class CrawlManager:
         if not got_lock:
             lock_conn.close()
             log.info("Stock sync already running on another instance, ignoring start request")
-            return False
+            # `running: True` is stated here rather than read from
+            # stock_sync_state(): the holder is another Machine, so this
+            # process has no _stock_task and the local view would flatly deny
+            # that a sync is running. Source and timings live in the holder's
+            # memory and are not readable from here at all -- surfacing them
+            # cross-Machine would need shared lock-holder metadata in
+            # Postgres, which is a bigger change than this one. What this
+            # process can say truthfully is that a sync is running and that it
+            # isn't ours, which is what `on_another_instance` is for.
+            return {
+                "started": False, "on_another_instance": True, "running": True,
+                "source": None, "elapsed_seconds": None, "source_elapsed_seconds": None,
+            }
 
         self._stock_task = asyncio.create_task(self._sync_stock(crawler_id, lock_conn))
-        return True
+        return {"started": True, "on_another_instance": False, **self.stock_sync_state()}
 
     async def _run_catalog_crawler(self, crawler) -> list[dict]:
         """Runs crawler.crawl_catalog(), handling the catalog_browser kind's

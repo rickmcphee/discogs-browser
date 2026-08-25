@@ -85,7 +85,10 @@ beforeEach(() => {
   MockEventSource.instances = []
   vi.clearAllMocks()
   localStorage.clear()
-  postStockSyncStart.mockResolvedValue({ started: true, running: true })
+  postStockSyncStart.mockResolvedValue({
+    started: true, running: true, on_another_instance: false,
+    source: null, elapsed_seconds: null, source_elapsed_seconds: null,
+  })
   postJudgmentStart.mockResolvedValue({ started: true, running: true })
   clearJudgments.mockResolvedValue({ cleared: true, running: false, count: 7 })
   exportRecommendationsCsv.mockResolvedValue(new Blob(['artist,title\n'], { type: 'text/csv' }))
@@ -275,7 +278,8 @@ describe('In Stock tab', () => {
 
   it('says what is holding the lock when a Refresh is rejected mid-sync', async () => {
     postStockSyncStart.mockResolvedValue({
-      started: false, running: true, source: 'Dischord Records',
+      started: false, running: true, on_another_instance: false,
+      source: 'Dischord Records',
       elapsed_seconds: 5400, source_elapsed_seconds: 4500,
     })
     render(<App />)
@@ -292,10 +296,31 @@ describe('In Stock tab', () => {
     )
   })
 
+  it('says so when the sync holding the lock is on another instance', async () => {
+    // Its source and timings are unknowable from this Machine, so the
+    // per-source message would read "starting up, unknown in total" -- which
+    // is what a locally-running sync says before its first crawler.
+    postStockSyncStart.mockResolvedValue({
+      started: false, running: true, on_another_instance: true,
+      source: null, elapsed_seconds: null, source_elapsed_seconds: null,
+    })
+    render(<App />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    const description = await screen.findByText('Scan all enabled catalog crawlers immediately.')
+    fireEvent.click(within(description.closest('tr') as HTMLElement).getByText('Refresh'))
+    await waitFor(() =>
+      expect(
+        screen.getByText(/In-stock sync already running on another instance/)
+      ).toBeInTheDocument()
+    )
+    expect(screen.queryByText(/unknown in total/)).not.toBeInTheDocument()
+  })
+
   it('stays quiet when a Refresh is accepted', async () => {
     postStockSyncStart.mockResolvedValue({
-      started: true, running: true, source: null,
-      elapsed_seconds: null, source_elapsed_seconds: null,
+      started: true, running: true, on_another_instance: false,
+      source: null, elapsed_seconds: null, source_elapsed_seconds: null,
     })
     render(<App />)
     await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())

@@ -80,13 +80,18 @@ async def start_stock_sync(body: StockSyncStartRequest = StockSyncStartRequest()
     return {"started": started, "running": crawl_manager.stock_sync_running}
 ```
 
-**Amendment (2026-08-25):** the return is now
-`{"started": started, **crawl_manager.stock_sync_state()}`, which keeps
-`running` with its existing meaning and adds `source`, `elapsed_seconds`,
-and `source_elapsed_seconds`. The rejected case used to come back as a bare
-`started: false` that `handleRefreshStoreCrawler` discarded, so a Refresh
-clicked during a long crawl looked like it had done nothing -- on a source
-that takes over an hour, indistinguishable from a hang. See
+**Amendment (2026-08-25):** `start_stock_sync` now returns
+`{"started", "on_another_instance", "running", "source", "elapsed_seconds",
+"source_elapsed_seconds"}` instead of a bool, and the route returns it
+verbatim -- `running` keeps its existing meaning. The rejected case used to
+come back as a bare `started: false` that `handleRefreshStoreCrawler`
+discarded, so a Refresh clicked during a long crawl looked like it had done
+nothing -- on a source that takes over an hour, indistinguishable from a
+hang. The response is built by `start_stock_sync` rather than assembled here
+because only it knows which of its two rejections happened: the
+cross-Machine advisory-lock one described below leaves this process with no
+`_stock_task`, so a local state read would deny that a sync is running at
+all. See
 [`2026-08-25-catalog-crawl-progress-visibility-design.md`](2026-08-25-catalog-crawl-progress-visibility-design.md).
 
 One route for both bulk and single-store, matching the existing
@@ -105,8 +110,9 @@ a second endpoint.
   above (`psycopg.connect` + `pg_try_advisory_lock`, off the event loop via
   `run_in_threadpool`) — see
   [`2026-08-16-fly-multi-machine-design.md`](2026-08-16-fly-multi-machine-design.md).
-  Lock-already-held still returns `False`, matching this section's "same guard"
-  framing, but a `connect()` failure (Postgres unreachable) now propagates as
+  Lock-already-held still rejects, matching this section's "same guard"
+  framing (as of the 2026-08-25 amendment above it reports
+  `on_another_instance: True` rather than returning `False`), but a `connect()` failure (Postgres unreachable) now propagates as
   an unhandled exception through `start_stock_sync` and, since
   `POST /stock/sync/start` has no try/except around the call, out through the
   endpoint as a generic FastAPI 500 rather than a `{"started": false}` response.
