@@ -99,12 +99,15 @@ env:
 jobs:
   sync:
     name: Merge main into integration
-    # Every trigger, including a push to `integration`. A sync landing is
-    # exactly when `integration` has just caught up with `main`, so the
-    # trees-identical and merge-no-op checks below can prove containment and
-    # record the marker -- and the marker only ever advances at those two
-    # points. Running here costs a few seconds when there is nothing to bring
-    # over, and keeps the marker from lagging further than it must.
+    # Every trigger, including a push to `integration`. A sync PR merging *is*
+    # a push to `integration`, and that is the moment its pending tag becomes
+    # promotable -- so running here is what keeps the marker current, not an
+    # incidental extra pass.
+    #
+    # The marker advances at exactly two points: the trees-identical exit
+    # below, and that promotion. The merge-no-op exit deliberately records
+    # nothing; the comment there says why. Running when there is nothing to
+    # bring over costs a few seconds.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -149,10 +152,19 @@ jobs:
         run: |
           set -euo pipefail
           git fetch --quiet --tags --force origin main integration
-          git fetch --quiet origin \
-            "+refs/heads/$SYNC_BRANCH:refs/remotes/origin/$SYNC_BRANCH" 2>/dev/null || true
 
           on_main() { git merge-base --is-ancestor "$1" origin/main 2>/dev/null; }
+
+          advances() {  # $1 = candidate; true when it moves the marker forward
+            # `record_marker` force-pushes, so an unguarded call can drag the
+            # marker BACKWARDS onto a commit `integration` passed long ago --
+            # the lagging-marker state that silently drops main's reverts.
+            # Reached for real when a promoted pending tag then fails to
+            # delete: the next run finds it again, still "merged", and
+            # re-promotes it over a marker a later pass had already advanced.
+            if [ -z "$marker" ]; then return 0; fi
+            ! git merge-base --is-ancestor "$1" "$marker"
+          }
 
           record_marker() {  # $1 = the main commit integration provably holds
             # Returns non-zero on failure, and callers must respect that. It
@@ -184,6 +196,10 @@ jobs:
           # into `main`. Hence the pending tag below -- there is no way to
           # recover this after the fact, because the sync branch that named the
           # incorporated commit is deleted the moment its PR merges.
+          # `-q --verify` on a fully-qualified ref fails only when the ref is
+          # absent, which is the ordinary first-run state -- so `|| true` here
+          # swallows nothing a later step would want to know about. Both
+          # absences are handled explicitly below.
           marker="$(git rev-parse -q --verify "refs/tags/$MARKER_TAG^{commit}" || true)"
 
           pending="$(git rev-parse -q --verify "refs/tags/$PENDING_TAG^{commit}" || true)"
@@ -209,22 +225,36 @@ jobs:
                 --head "$SYNC_BRANCH" --state all --limit 5 \
                 --json state,isCrossRepository \
                 --jq 'map(select(.isCrossRepository == false)) | .[0].state // empty')"
-              if [ "$last_state" = "MERGED" ] && on_main "$pending"; then
+              if [ "$last_state" = "MERGED" ] && on_main "$pending" \
+                 && advances "$pending"; then
                 echo "last sync PR merged; promoting $PENDING_TAG to the marker."
                 if record_marker "$pending"; then
                   marker="$pending"
                   git push --force --quiet origin ":refs/tags/$PENDING_TAG" \
-                    || echo "::warning::could not delete $PENDING_TAG; a later run may promote it against the wrong sync."
+                    || echo "::warning::could not delete $PENDING_TAG; retrying on the next run."
                 else
-                  # Keep it. It is the only record of what that sync carried,
-                  # and deleting it after failing to write the marker loses the
-                  # information entirely. The next run retries the promotion.
-                  echo "::error::promotion failed; leaving $PENDING_TAG in place to retry."
+                  # Keep the tag -- it is the only record of what that sync
+                  # carried, and deleting it after failing to write the marker
+                  # loses the information entirely.
+                  #
+                  # And stop, rather than falling through. `::error::` annotates
+                  # but does not fail a step, so continuing would build this
+                  # run's merge on a marker known to lag what `integration`
+                  # holds, and report success doing it. The next run retries.
+                  echo "::error::promoting $PENDING_TAG failed; not continuing on a marker known to be stale. The tag is left in place for the next run."
+                  exit 1
                 fi
               else
+                # Not promotable: the sync never merged, the tag is off `main`,
+                # or the marker already covers it (a delete that failed once and
+                # left it behind). Discarding is right in every case.
                 echo "last sync PR ended '$last_state'; discarding $PENDING_TAG without promoting."
+                # A warning rather than a failure: this whole block runs
+                # again on every trigger, so the delete is retried, and a sync
+                # PR opening force-writes the tag regardless. Failing here
+                # would also fail a run that had just promoted correctly.
                 git push --force --quiet origin ":refs/tags/$PENDING_TAG" \
-                  || echo "::warning::could not delete $PENDING_TAG; a later run may promote it against the wrong sync."
+                  || echo "::warning::could not delete $PENDING_TAG; retrying on the next run."
               fi
             fi
           fi
@@ -328,6 +358,9 @@ jobs:
                 fi
                 # Label it, so the re-arm guard above keeps auto-merge off once
                 # the resolution makes this PR `clean` again.
+                # `|| true` only because --force already makes this a no-op
+                # when the label exists; the attach below is the call that has
+                # to work, and it reports its own failure loudly.
                 gh label create "$CONFLICT_LABEL" --repo "$REPO" --color B60205 \
                   --description "Sync PR whose conflict needs resolving and merging by hand" \
                   --force >/dev/null 2>&1 || true
@@ -397,7 +430,7 @@ jobs:
           if [ -n "$marker" ]; then
             if ! merged="$(git merge-tree --write-tree --merge-base="$marker" \
                              HEAD origin/main)"; then
-              echo "::error::main and integration have both changed the same lines since $marker. Resolve $SYNC_BRANCH by hand, push it, and open a PR into integration. Before resolving, check whether $marker is simply stale: the marker only advances at the containment exits, so it can lag a completed sync, and merging from a lagging base reproduces the frozen-base artefact on files nobody disagrees about. If integration already holds the newer side, move $MARKER_TAG forward and re-run rather than resolving by hand."
+              echo "::error::main and integration have both changed the same lines since $marker. Resolve $SYNC_BRANCH by hand, push it, and open a PR into integration. Before resolving, check whether $marker is simply stale: it should be current, because $PENDING_TAG is promoted as soon as each sync PR merges, but a failed promotion or a tag moved by hand leaves it lagging -- and merging from a lagging base reproduces the frozen-base artefact on files nobody disagrees about. If integration already holds the newer side, move $MARKER_TAG forward and re-run rather than resolving by hand."
               exit 1
             fi
             git reset --hard --quiet "$(git commit-tree "$merged" \
@@ -416,13 +449,38 @@ jobs:
           fi
 
           if git diff --quiet origin/integration HEAD; then
-            # Deliberately records nothing. A no-op merge only proves
-            # `integration` contains `main` *relative to the base used*, so with
-            # a lagging marker it proves nothing at all -- and stamping the
-            # current `main` here is exactly how a revert gets marked
-            # incorporated without ever being applied. Containment is proven by
-            # the trees-identical exit above, or by a sync PR actually merging.
-            echo "merge changed nothing on integration; nothing to sync."
+            # A no-op merge only proves `integration` contains `main` *relative
+            # to the base used*, so against a lagging marker it proves nothing
+            # -- and stamping main's tip here is exactly how a revert gets
+            # marked incorporated without ever being applied.
+            #
+            # There is one advance of `main` this exit can record safely: a
+            # promotion. `integration-promote.yml` squash-merges `integration`
+            # into `main`, so that merge commit is content `integration`
+            # already holds, and nothing else records it -- a promotion is not
+            # a sync, so no pending tag ever names it. Left unrecorded, the
+            # marker sits at the pre-promotion commit while `integration` has
+            # moved past it, and the next revert on `main` is dropped by the
+            # lagging-base path described above.
+            #
+            # Requiring main's tip to *be* that merge commit is what keeps this
+            # narrow, and is why it does not reopen the bug the blanket version
+            # caused: a no-op produced by a genuinely lagging marker has a
+            # revert at main's tip, not a promotion, so it still records
+            # nothing. Note the promoted commit is only safe to record
+            # *together with* the no-op -- a squash promotion merges main's own
+            # side in too, so on its own it is not proof `integration` holds it.
+            tip="$(git rev-parse origin/main)"
+            promoted="$(gh pr list --repo "$REPO" --base main --head integration \
+              --state merged --limit 5 --json mergeCommit,isCrossRepository \
+              --jq 'map(select(.isCrossRepository == false)) | .[0].mergeCommit.oid // empty')"
+            if [ -n "$promoted" ] && [ "$promoted" = "$tip" ] && advances "$tip"; then
+              echo "merge changed nothing, and main's tip is the promotion $(git rev-parse --short "$tip") -- content integration already holds."
+              record_marker "$tip"
+            else
+              echo "merge changed nothing on integration; recording nothing, as main's tip is not a promotion."
+            fi
+            echo "nothing to sync."
             exit 0
           fi
 
@@ -476,6 +534,9 @@ jobs:
             exit 1
           fi
 
+          # As above: no `|| true` on the fallback. If neither call can arm
+          # auto-merge the step fails, rather than reporting success over a PR
+          # with nothing driving it.
           gh pr merge "$opened" --repo "$REPO" --auto --merge \
             || gh pr merge "$opened" --repo "$REPO" --auto --squash
           echo "Sync PR #$opened is queued to merge."
@@ -515,26 +576,44 @@ jobs:
           # promises to catch up *every* open PR, not the newest thirty.
           open_prs="$(gh pr list --repo "$REPO" --base integration --state open \
                         --limit 200 --json number --jq '.[].number')"
+          # Every PR this job could not refresh, collected rather than merely
+          # warned about. Warning alone let the step exit 0 having refreshed
+          # nothing at all -- the same silent no-op the job exists to prevent,
+          # arriving from inside the job itself.
+          failed=""
+
           for n in $open_prs; do
             # mergeable_state is computed asynchronously; a PR polled too soon
             # after integration moved answers "unknown", which is neither state
             # below and would quietly skip the one PR that needed this most.
-            state="unknown"
+            #
+            # The read is guarded because `set -e` does see an assignment's
+            # command substitution: unguarded, a single transient 5xx would
+            # abort the whole job here, leaving every PR after this one
+            # unrefreshed while the run ended on its own terms.
+            state=""
             for _ in 1 2 3 4 5 6; do
-              state="$(gh api "repos/$REPO/pulls/$n" --jq '.mergeable_state')"
-              [ "$state" != "unknown" ] && break
+              if state="$(gh api "repos/$REPO/pulls/$n" --jq '.mergeable_state')"; then
+                [ "$state" != "unknown" ] && break
+              else
+                state=""
+              fi
               sleep 10
             done
 
-            case "$state" in
+            case "${state:-unknown}" in
               behind)
                 # Merge the base in. Deterministic, reports a status, and needs
                 # nothing of the PR's author -- including Dependabot, whose own
                 # branches take this happily: it leaves the bump commit in place
                 # and does not close or abandon the PR.
                 echo "PR #$n is behind; merging integration into it."
-                gh api -X PUT "repos/$REPO/pulls/$n/update-branch" \
-                  || echo "::warning::could not update PR #$n automatically"
+                if ! gh api -X PUT "repos/$REPO/pulls/$n/update-branch"; then
+                  # Per-PR, so one stuck PR cannot strand the rest -- but
+                  # recorded, so the step still ends red.
+                  echo "::warning::could not update PR #$n automatically"
+                  failed="$failed #$n"
+                fi
                 ;;
 
               dirty)
@@ -585,13 +664,20 @@ jobs:
                 ;;
 
               unknown)
-                # Exhausted the poll without GitHub settling on an answer.
-                # Falling into the catch-all below would report "nothing to do"
-                # and skip the PR silently -- precisely what the polling is for.
+                # Exhausted the poll without GitHub settling on an answer, or
+                # every read of it failed. Falling into the catch-all below
+                # would report "nothing to do" and skip the PR silently --
+                # precisely what the polling is for.
                 echo "::warning::could not resolve mergeable_state for PR #$n after polling; it may still be behind and was not refreshed."
+                failed="$failed #$n"
                 ;;
               *)
                 echo "PR #$n is '$state'; nothing for this job to do."
                 ;;
             esac
           done
+
+          if [ -n "$failed" ]; then
+            echo "::error::could not refresh:$failed. Those PRs may still be behind integration -- re-run this workflow, or update them by hand."
+            exit 1
+          fi

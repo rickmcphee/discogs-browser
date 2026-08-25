@@ -237,11 +237,12 @@ day `INTEGRATION_PROMOTE_TOKEN` is configured and the author changes.
 
 ## Conflict handling
 
-Valid does not mean current. The marker only advances at the two containment
-exits, so it can lag a completed sync — and merging from a lagging base
-reproduces the frozen-base artefact in miniature, on files nobody actually
-disagrees about. So a conflict has two possible readings, and the diagnostic
-says so rather than asserting the first:
+Valid does not mean current. The marker advances at the trees-identical exit
+and when the pending tag is promoted, which between them should keep it
+current — but a promotion that failed, or a tag moved by hand, leaves it
+lagging, and merging from a lagging base reproduces the frozen-base artefact in
+miniature, on files nobody actually disagrees about. So a conflict has two
+possible readings, and the diagnostic says so rather than asserting the first:
 
 - **A real disagreement.** Both sides changed the same lines since a base they
   genuinely share. Resolve by hand, push, open a PR into `integration`.
