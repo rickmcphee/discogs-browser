@@ -9,7 +9,7 @@ This repository is **specification-driven**. The design spec and implementation 
 The spec and plan are the authoritative source of truth. If you want to understand how the system works, start with:
 
 - [`docs/superpowers/specs/2026-06-27-discogs-browser-design.md`](docs/superpowers/specs/2026-06-27-discogs-browser-design.md) — design spec
-- [`docs/superpowers/plans/2026-06-27-discogs-browser.md`](docs/superpowers/plans/2026-06-27-discogs-browser.md) — implementation plan (tasks 1–12 initial build; 13–18 subsequent improvements)
+- [`docs/superpowers/plans/2026-06-27-discogs-browser.md`](docs/superpowers/plans/2026-06-27-discogs-browser.md) — implementation plan
 
 See [`CLAUDE.md`](CLAUDE.md) for instructions aimed at Claude Code running in this repo.
 
@@ -219,6 +219,16 @@ IDENTITY_DB_PASSWORD=test \
 APP_DB_PASSWORD=test \
 pytest
 ```
+
+In a Claude Code cloud session none of that setup exists yet, so
+`scripts/cloud-setup.sh` does it: starts Postgres, gives the `postgres` role a
+password, creates the test database, writes those three variables to
+`backend/.env` (picked up by the `pytest-dotenv` dev dependency, so plain
+`pytest` works), and installs the backend, Playwright Chromium, and frontend
+dependencies. It runs automatically via the `SessionStart` hook in
+`.claude/settings.json` and no-ops outside a cloud session; pass `--force` to
+run it anyway. It mirrors `.github/workflows/fly-deploy.yml`, which stays the
+authoritative statement of what a green run needs.
 
 The passwords are arbitrary local test values, not real secrets. The database
 named in `TEST_DATABASE_URL` is never itself read from or written to —

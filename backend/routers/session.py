@@ -1,8 +1,9 @@
 import secrets
 from datetime import datetime, timedelta
+from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 import avatar as avatar_storage
@@ -25,6 +26,10 @@ discogs_oauth_limiter = RateLimiter(config.LOGIN_MAX_FAILURES, config.LOGIN_LOCK
 class RedeemInviteRequest(BaseModel):
     signup_token: str
     invite_code: str
+
+
+class CreateInviteRequest(BaseModel):
+    note: Optional[str] = None
 
 
 def _client_key(request: Request) -> str:
@@ -207,12 +212,18 @@ def redeem_invite(body: RedeemInviteRequest, request: Request, response: Respons
 
 
 @router.post("/auth/invites", dependencies=[Depends(require_admin)])
-def create_invite(request: Request):
+def create_invite(request: Request, body: Optional[CreateInviteRequest] = None):
     code = secrets.token_urlsafe(12)
-    with db.get_app_pool().connection() as conn:
-        db.create_invite(conn, request.state.user_id, code)
+    with db.get_identity_pool().connection() as conn:
+        db.create_invite(conn, request.state.user_id, code, note=body.note if body else None)
         conn.commit()
     return {"code": code}
+
+
+@router.get("/auth/invites", dependencies=[Depends(require_admin)])
+def list_invites():
+    with db.get_identity_pool().connection() as conn:
+        return db.list_invites(conn)
 
 
 @router.post("/auth/logout")
@@ -227,23 +238,28 @@ def logout(request: Request, response: Response):
 
 
 @router.post("/auth/avatar")
-async def upload_avatar(file: UploadFile = File(...)):
+async def upload_avatar(request: Request, file: UploadFile = File(...)):
     data = await file.read(avatar_storage.MAX_UPLOAD_BYTES + 1)
     try:
-        avatar_storage.save_avatar(data)
+        avatar_storage.save_avatar(request.state.user_id, data)
     except avatar_storage.InvalidAvatarError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"ok": True}
 
 
 @router.get("/auth/avatar")
-def get_avatar():
-    if not avatar_storage.AVATAR_FILE.exists():
+def get_avatar(request: Request):
+    data = avatar_storage.get_avatar(request.state.user_id)
+    if data is None:
         raise HTTPException(status_code=404)
-    return FileResponse(str(avatar_storage.AVATAR_FILE))
+    # Per-user bytes on a single URL behind a shared CDN -- without this,
+    # Cloudflare is free to serve one user's avatar to the next caller.
+    return Response(
+        content=data, media_type="image/png", headers={"Cache-Control": "private"}
+    )
 
 
 @router.delete("/auth/avatar")
-def remove_avatar():
-    avatar_storage.delete_avatar()
+def remove_avatar(request: Request):
+    avatar_storage.delete_avatar(request.state.user_id)
     return {"ok": True}

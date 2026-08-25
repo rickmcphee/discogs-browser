@@ -24,6 +24,8 @@ _NON_VINYL_VARIANT_RE = re.compile(r'^(cd|digital( download)?)$', re.IGNORECASE)
 class Crawler:
     site_name: str = "Triple B Records"
     base_url: str = "https://triplebrecords.net"
+    genre_summary: str = "Hardcore label."
+    genre: str = "punk"
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:

@@ -16,6 +16,8 @@ _NON_VINYL_VARIANT_RE = re.compile(r'^(cd|cassette|digital( download)?)$', re.IG
 class Crawler:
     site_name: str = "Closed Casket Activities"
     base_url: str = "https://closedcasketactivities.com"
+    genre_summary: str = "Hardcore and metalcore label."
+    genre: str = "punk"
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:

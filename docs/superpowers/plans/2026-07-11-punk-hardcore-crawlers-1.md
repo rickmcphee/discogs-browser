@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add four punk/hardcore-genre catalog crawlers — Fearless Records, Flatspot Records, Rise Records, and Triple B Records — the second of four planned batches covering the 18 new US-only, USD-billed Shopify record stores researched for the Store tab. Brings the Store tab's total catalog sources to twenty-two.
+**Goal:** Add four punk/hardcore-genre catalog crawlers — Fearless Records, Flatspot Records, Rise Records, and Triple B Records — the second of four planned batches covering the new US-only, USD-billed Shopify record stores researched for the Store tab.
 
 **Architecture:** All four are Shopify storefronts and reuse `backend/shopify_catalog.py`'s `iter_products`/`has_tag`/`strip_vendor_prefix`/`resolve_cover_image` helpers and the `crawl_catalog()` contract. Fearless Records is the simplest shape in this batch (`vendor` = artist, single-variant, already vinyl-scoped — the Century Media/Epitaph/Peaceville/Prosthetic Records shape). Flatspot Records is nearly identical, with a two-tag-spelling pre-order signal and a small set of label-vendor various-artist compilations (accepted as correct, not a bug, per the Fat Wreck Chords precedent).
 
-Rise Records and Triple B Records both needed a real live-data pass before writing fixtures (the repo's established convention — no invented data), and both surfaced genuinely new filter shapes not seen in any of the 18 crawlers built so far:
+Rise Records and Triple B Records both needed a real live-data pass before writing fixtures (the repo's established convention — no invented data), and both surfaced genuinely new filter shapes not seen in any crawler built so far:
 
 - **Rise Records**: its `/collections/vinyl` is empty; `/collections/all` works but is dominated by apparel, and — unlike every prior site — `product_type` itself is unreliable (a confirmed-live vinyl LP is mislabeled `product_type: "Album"`). The reliable signal is tags: every real vinyl product carries `"Music"` plus `"Vinyl LP"` or `"Vinyl 7"`; apparel never carries `"Music"` at all. This is a new *tag-based product-level filter* — similar in spirit to Equal Vision's `product_type` filter, but using tags because `product_type` can't be trusted here.
 - **Triple B Records**: its `/collections/vinyl` is empty too; `/collections/all` works. Real vinyl variants are named by **color only** ("Baby Blue / Black Swirl (out of 200)") with no format keyword anywhere in the variant title, so every existing positive vinyl-regex filter in this codebase would match nothing here. The working filter is the reverse: a product-level exclusion by `product_type` (apparel, cassette-only, CD-only, digital-only, and one confirmed non-release "Shipping Protection" product), plus a narrow variant-level negative filter excluding exact `"CD"`/`"Digital"` siblings on otherwise-vinyl products. `vendor` is also confirmed unreliable here (mostly `"TRIPLE B RECORDS"`, with real casing variance and at least one genuinely different label, `"Combust"`) — artist comes from the title's `"Artist - Album"` dash split instead, reusing the same regex as Season of Mist/Run For Cover/20 Buck Spin.
@@ -884,7 +884,7 @@ Expected: `6 passed`
 - [ ] **Step 1: Run the full backend test suite**
 
 Run (from `backend/`): `pytest -q`
-Expected: all tests pass, including all four new files. Total catalog crawlers registered: twenty-two.
+Expected: all tests pass, including all four new files.
 
 - [ ] **Step 2: Rebase onto latest `origin/main` before checking for drift**
 
@@ -898,13 +898,13 @@ cd backend && pytest -q
 
 - [ ] **Step 3: Run the mandatory pre-PR spec-drift check**
 
-Per `CLAUDE.md`'s "Pre-PR spec-drift check" rule: `grep -rl` across `docs/superpowers/specs/` for files/symbols/section names/UI strings touched by this diff (crawler count references, "Store Management" section naming, any list of catalog-source names), confirm each match still describes what actually shipped, and amend any spec found to have drifted as its own commit — even drift this branch didn't cause. Update the crawler-count references in `2026-07-05-in-stock-crawler-design.md` from eighteen to twenty-two, and check the same "13/18-crawler-count" pattern this repo has already needed fixing twice for in any spec referencing the total.
+Per `CLAUDE.md`'s "Pre-PR spec-drift check" rule: `grep -rl` across `docs/superpowers/specs/` for files/symbols/section names/UI strings touched by this diff ("Store Management" section naming, any list of catalog-source names), confirm each match still describes what actually shipped, and amend any spec found to have drifted as its own commit — even drift this branch didn't cause. Do **not** record a crawler/source count in any spec — per `CLAUDE.md`'s "No counts of things that change" rule, counts like these were a recurring source of drift and are deliberately absent.
 
 - [ ] **Step 4: Update the design spec**
 
 Add a "Technical grounding" subsection for each of the four sites to `docs/superpowers/specs/2026-07-05-in-stock-crawler-design.md`, following the existing per-site format. Two things need explicit callouts:
 
 1. Rise Records' and Triple B Records' `/collections/vinyl` both return `{"products": []}` — the second and third confirmed cases of this in the spec (after Rise's "all" precedent doesn't yet exist in the doc, this is actually the *first* — note it clearly since a future crawler author might otherwise assume `/collections/vinyl` always works).
-2. Two new filter shapes: Rise Records' tag-based product filter (`Music` + `Vinyl LP`/`Vinyl 7`, because `product_type` is confirmed unreliable there) and Triple B Records' negative-variant-plus-product-type-exclusion filter (because real vinyl variant titles carry no format keyword at all, the opposite problem from every positive-regex site). Update the "Format filter comes in N shapes" Decisions bullet to add these two, bringing the total to six shapes.
+2. Two new filter shapes: Rise Records' tag-based product filter (`Music` + `Vinyl LP`/`Vinyl 7`, because `product_type` is confirmed unreliable there) and Triple B Records' negative-variant-plus-product-type-exclusion filter (because real vinyl variant titles carry no format keyword at all, the opposite problem from every positive-regex site). Update the "Format filter comes in N shapes" Decisions bullet to add these two (describe the shapes; do not count them).
 
 - [ ] **Step 5: Commit the spec update and any drift fixes** (same trailer/helper process as Task 1)

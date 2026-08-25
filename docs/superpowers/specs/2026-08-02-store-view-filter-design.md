@@ -2,6 +2,8 @@
 
 _2026-08-02_
 
+**Amendment (2026-08-17, branch `claude/store-crawler-filter-design-d16b80`):** This entire document is **superseded**. The mechanism it describes — the `discogs-browser.hiddenCrawlerIds` localStorage key, the Settings "View" column, and Settings being reachable by every authenticated user — has been replaced wholesale: the personal display filter now lives in a "Source" button on the Store/Track tab headers, backed by a per-user server-persisted hidden set, and the Settings nav button is admin-only again. See [`2026-08-16-store-track-source-filter-design.md`](2026-08-16-store-track-source-filter-design.md).
+
 ## Overview
 
 There is currently no user-facing Settings page at all — the Settings nav
@@ -92,6 +94,10 @@ read less like admin controls: "Collection & Wishlist Price Sources" (was
 "Crawler Management") and "Store Catalog Sources" (was "Store Management").
 Same underlying crawler list and toggle component as the admin table —
 just fewer columns and rows.
+
+> As of later, separately-documented renames, the non-admin headings are
+> "Marketplaces" and "Stores" (admin: "Marketplace Management" and "Store
+> Management"); see `frontend/src/views/Settings.tsx` for current text.
 
 ## Backend changes
 
