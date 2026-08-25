@@ -505,7 +505,7 @@ def test_summary_bounds_its_own_runtime_server_side(pg_test_db, authed_client_fa
     finally:
         db.queue_summary = real_summary
 
-    assert captured == ["15s"]
+    assert captured == [f"{queue_router.QUERY_TIMEOUT_MS}ms"]
 
 
 def test_statement_timeout_does_not_leak_to_the_next_pooled_borrower(pg_test_db, authed_client_factory):
@@ -520,3 +520,60 @@ def test_statement_timeout_does_not_leak_to_the_next_pooled_borrower(pg_test_db,
 
     with db.get_app_pool().connection() as conn:
         assert conn.execute("SHOW statement_timeout").fetchone()["statement_timeout"] == "0"
+
+
+def test_summary_issues_no_more_statements_than_its_budget_assumes(admin_conn):
+    """The per-statement cap is only a bound on the whole report because the
+    report issues a known number of statements -- Postgres 16 has no
+    transaction_timeout to bound it directly. Adding a query without revisiting
+    QUEUE_REPORT_BUDGET_MS silently lets the report outlive the client deadline,
+    so the count is asserted rather than assumed."""
+    _crawler(admin_conn, "Amazon")
+    db.enqueue_crawl_queue(admin_conn, _release(admin_conn, "r1"))
+    admin_conn.commit()
+
+    real_execute = admin_conn.execute
+    count = 0
+
+    def _counting(*args, **kwargs):
+        nonlocal count
+        count += 1
+        return real_execute(*args, **kwargs)
+
+    admin_conn.execute = _counting
+    try:
+        db.queue_summary(admin_conn)
+    finally:
+        admin_conn.execute = real_execute
+
+    assert count <= queue_router.QUEUE_REPORT_MAX_STATEMENTS, (
+        f"queue_summary issued {count} statements; QUEUE_REPORT_MAX_STATEMENTS is "
+        f"{queue_router.QUEUE_REPORT_MAX_STATEMENTS}. Raise the budget or the cap "
+        f"deliberately -- do not just bump the constant."
+    )
+
+
+def test_next_bounds_its_own_runtime_server_side(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=7, discogs_username="root6")
+        conn.execute("UPDATE users SET is_admin = TRUE WHERE id = %s", [user["id"]])
+        db.register_crawler(conn, "Amazon", "/x.py")
+        amazon = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        conn.commit()
+    client = authed_client_factory(user["id"])
+
+    captured = []
+    real_next = db.queue_next_for_crawler
+
+    def _capture(conn, *args, **kwargs):
+        captured.append(conn.execute("SHOW statement_timeout").fetchone()["statement_timeout"])
+        return real_next(conn, *args, **kwargs)
+
+    db.queue_next_for_crawler = _capture
+    try:
+        r = client.get(f"/api/queue/crawlers/{amazon}/next", headers={"X-Requested-With": "fetch"})
+    finally:
+        db.queue_next_for_crawler = real_next
+
+    assert r.status_code == 200
+    assert captured == [f"{queue_router.QUERY_TIMEOUT_MS}ms"]

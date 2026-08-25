@@ -408,10 +408,30 @@ export function getQueueSummary(): Promise<QueueSummary> {
   return summaryInFlight
 }
 
-export async function getQueueNext(crawlerId: number, limit = 25): Promise<QueueNextItem[]> {
-  const r = await apiFetch(`/queue/crawlers/${crawlerId}/next?limit=${limit}`, {
-    signal: AbortSignal.timeout(QUEUE_TIMEOUT_MS),
-  })
-  if (!r.ok) throw new Error(await r.text())
-  return (await r.json()).items
+// Coalesced per (crawler, limit) for the same reason as the summary. The view
+// re-runs this on every poll -- the effect depends on the summary's timestamp --
+// so a next-up query slower than the poll interval would otherwise start
+// another alongside it, and a tab unmount/remount is the same escape again.
+const nextInFlight = new Map<string, Promise<QueueNextItem[]>>()
+
+export function getQueueNext(crawlerId: number, limit = 25): Promise<QueueNextItem[]> {
+  const key = `${crawlerId}:${limit}`
+  const existing = nextInFlight.get(key)
+  if (existing) return existing
+  const request = (async () => {
+    try {
+      const r = await apiFetch(`/queue/crawlers/${crawlerId}/next?limit=${limit}`, {
+        signal: AbortSignal.timeout(QUEUE_TIMEOUT_MS),
+      })
+      if (!r.ok) throw new Error(await r.text())
+      return (await r.json()).items
+    } finally {
+      // Cleared inside, not by chaining onto the promise -- a trailing
+      // .finally() settles a microtask after an awaiter resumes and would hand
+      // the next caller a spent entry. Same reason as the summary above.
+      nextInFlight.delete(key)
+    }
+  })()
+  nextInFlight.set(key, request)
+  return request
 }

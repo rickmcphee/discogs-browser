@@ -320,13 +320,27 @@ first two has an escape hatch the next one closes:
    by chaining a `.finally()` onto its promise: that chain settles a microtask
    after an awaiter resumes, handing a caller that awaited and immediately
    called again the spent slot.
-3. **In the database** — `SET LOCAL statement_timeout`. A client-side deadline
-   frees the browser but not the handler: the request runs in FastAPI's
-   threadpool and a disconnect does not interrupt it, so a timed-out poll could
-   keep holding a pool connection while the client scheduled its replacement.
-   Postgres enforces the bound the client cannot. `LOCAL`, so the cap lasts
-   exactly that transaction and is never inherited by the crawl workers, who
-   borrow the same pooled connections next.
+3. **In the database** — `SET LOCAL statement_timeout`, on both endpoints. A
+   client-side deadline frees the browser but not the handler: the request runs
+   in FastAPI's threadpool and a disconnect does not interrupt it, so a
+   timed-out poll could keep holding a pool connection while the client
+   scheduled its replacement. Postgres enforces the bound the client cannot.
+   `LOCAL`, so the cap lasts exactly that transaction and is never inherited by
+   the crawl workers, who borrow the same pooled connections next.
+
+   `statement_timeout` bounds each statement, not the transaction, and
+   Postgres 16 has no `transaction_timeout` (it arrives in 17) — so a report
+   issuing N statements could run for N × the cap and outlive the client
+   deadline anyway. The cap is therefore derived as a whole-report budget
+   divided by the number of statements the report may issue. That arithmetic is
+   only as sound as the statement count, so the count is asserted by a test
+   rather than assumed: adding a query to `queue_summary` without revisiting the
+   budget fails the suite instead of silently loosening the bound.
+
+Both requests are coalesced, not just the summary. The next-up effect re-runs on
+every poll (it depends on the summary's timestamp), so a next-up query slower
+than the poll interval would start another alongside it — the same escape, one
+endpoint over.
 
 **Top half.**
 

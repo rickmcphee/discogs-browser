@@ -347,6 +347,46 @@ describe('queue client functions', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
+  it('coalesces concurrent next-up requests for the same crawler', async () => {
+    let release: (v: unknown) => void = () => {}
+    fetchMock.mockReturnValue(new Promise((r) => {
+      release = () => r({ ok: true, status: 200, json: async () => ({ items: [] }) })
+    }))
+
+    const a = getQueueNext(1)
+    const b = getQueueNext(1)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(a).toBe(b)
+
+    release(null)
+    await a
+  })
+
+  it('does not coalesce next-up requests for different crawlers', async () => {
+    let release: (v: unknown) => void = () => {}
+    const pending = new Promise((r) => {
+      release = () => r({ ok: true, status: 200, json: async () => ({ items: [] }) })
+    })
+    fetchMock.mockReturnValue(pending)
+
+    const a = getQueueNext(1)
+    const b = getQueueNext(2)
+    // Different crawlers are different reports; sharing one would be wrong.
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    // Settled before the test ends: the coalescing map is module state, so
+    // leaving an unresolved entry behind hands it to the next test.
+    release(null)
+    await Promise.all([a, b])
+  })
+
+  it('releases the next-up slot when a request fails', async () => {
+    fetchMock.mockRejectedValueOnce(new Error('boom'))
+    await expect(getQueueNext(1)).rejects.toThrow('boom')
+    fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({ items: [] }) })
+    await expect(getQueueNext(1)).resolves.toEqual([])
+  })
+
   it('releases the coalescing slot when a summary fails', async () => {
     fetchMock.mockRejectedValueOnce(new Error('boom'))
     await expect(getQueueSummary()).rejects.toThrow('boom')

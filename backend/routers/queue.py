@@ -10,9 +10,21 @@ from crawl_manager import crawl_manager
 router = APIRouter()
 
 NEXT_LIMIT_MAX = 100
-# Under the client's own deadline, so the database gives up first and the
-# failure arrives as an error rather than as a silently abandoned transaction.
-QUERY_TIMEOUT_MS = 15_000
+
+# Postgres 16 has no transaction_timeout (it arrives in 17), and
+# statement_timeout bounds each statement rather than the transaction -- so a
+# report issuing N statements could run for N x the cap and outlive the client
+# deadline, at which point the client frees its coalescing slot and starts a
+# replacement while this transaction still holds a pool connection.
+#
+# The bound is therefore on the sum: a budget divided by the number of
+# statements the report is allowed to issue. That arithmetic is only as good as
+# the statement count, so it is asserted rather than assumed --
+# test_summary_issues_no_more_statements_than_its_budget_assumes fails if a
+# query is added without revisiting this.
+QUEUE_REPORT_BUDGET_MS = 16_000
+QUEUE_REPORT_MAX_STATEMENTS = 10
+QUERY_TIMEOUT_MS = QUEUE_REPORT_BUDGET_MS // QUEUE_REPORT_MAX_STATEMENTS
 
 
 # Read-only, by design. Nothing in this router writes -- in particular it does
@@ -42,8 +54,8 @@ def queue_summary():
         # interrupt it, so without this a timed-out poll could keep holding a
         # pool connection -- the one the crawl workers claim through -- while
         # the client already scheduled its replacement. Postgres enforces the
-        # bound the client cannot: the statement is cancelled, the connection
-        # goes back, and the view renders the failure as a stale snapshot.
+        # bound the client cannot. See QUEUE_REPORT_BUDGET_MS for why the cap is
+        # per-statement arithmetic rather than a transaction timeout.
         # LOCAL, so it lasts exactly this transaction and never leaks to the
         # next borrower of a pooled connection.
         # SET LOCAL takes no bind parameters, so the value is interpolated --
@@ -68,4 +80,8 @@ def queue_summary():
 def queue_next(crawler_id: int, limit: int = 25):
     limit = max(1, min(limit, NEXT_LIMIT_MAX))
     with db.get_app_pool().connection() as conn:
+        # One statement, so the cap is exact here rather than arithmetic. Same
+        # reason as the summary: this runs on the same pool the crawl workers
+        # claim through, and the client abandoning the request does not stop it.
+        conn.execute(f"SET LOCAL statement_timeout = {int(QUERY_TIMEOUT_MS)}")
         return {"items": db.queue_next_for_crawler(conn, crawler_id, limit)}
