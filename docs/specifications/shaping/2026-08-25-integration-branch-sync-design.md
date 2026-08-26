@@ -189,16 +189,38 @@ GitHub computes it asynchronously and answers `unknown` right after a push:
 
 - `behind` → `update-branch`. Deterministic, returns a status, needs nothing of
   the PR's author.
-- `dirty` → `@dependabot recreate`, on Dependabot's own PRs only. A bump that
-  conflicts is usually a lockfile, and a lockfile resolved by merge is a file no
-  package manager would have written. A conflict on anyone else's PR is
-  reported for a human.
+- `dirty` → reported for a human, whoever opened it. A warning rather than a
+  job failure: a conflicted PR can sit for days, and failing here would turn
+  every later run red over a condition this job cannot act on.
 - anything else → untouched.
 
-The recreate request carries `RECREATE_MARKER`, and the don't-ask-twice guard
-counts only comments bearing it. Matching on the command text would let anyone
-who can comment suppress the real request; matching on author would break the
-day the sync app is configured and the author changes.
+### Why `dirty` is not delegated to Dependabot
+
+This route used to post `@dependabot recreate` on Dependabot's own PRs, on the
+reasoning that a conflicted bump is usually a lockfile and a lockfile resolved
+by merge is a file no package manager would have written. That reasoning holds.
+The mechanism never worked.
+
+**Dependabot refuses commands from bots**, answering "Sorry, only users with
+push access can use that command" — whether the comment comes from
+`github-actions[bot]` or from a GitHub App, and regardless of the write
+permissions either one holds ([dependabot/dependabot-core#9147][dbc9147]). The
+path sat unexercised from the day it was written until 2026-08-26, when a
+conflict on PR #175 fired it for the first time and Dependabot refused it.
+
+It was removed rather than reworked because every remaining way to issue the
+command needs a real user's token — precisely what the app migration had just
+finished removing, and for reasons that have not changed. The supporting
+machinery went with it: the `RECREATE_MARKER` stamp, the don't-ask-twice guard
+that counted comments bearing it, and the paginated seven-day comment read that
+guard required.
+
+In practice the loss is small. For a conflicted Dependabot bump the cheapest
+resolution is closing the PR and letting the next scheduled run open a clean one
+against the current base — no command, no token, no special access. That is what
+was done with #175.
+
+[dbc9147]: https://github.com/dependabot/dependabot-core/issues/9147
 
 ## Conflict handling
 
