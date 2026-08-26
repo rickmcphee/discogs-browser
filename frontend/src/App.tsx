@@ -24,6 +24,26 @@ const DISMISSED_SYNC_KEY = 'discogs-browser.dismissedSyncEventId'
 const DISMISSED_CRAWL_KEY = 'discogs-browser.dismissedCrawlEventId'
 const VIEW_AS_USER_KEY = 'discogs-browser.viewAsUser'
 
+// How long a click may hold its Refresh button disabled and spinning before
+// the app admits it does not know and lets go. Both claims need it, for the
+// same reason from opposite ends:
+//
+//   - A stock claim normally hands over to stock_sync_started within a second,
+//     but nothing guarantees that event arrives. The SSE stream can break and
+//     reconnect across an entire short sync, and routers/crawl.py's
+//     _events_to_replay returns nothing once no job is active -- so a sync
+//     that both started and finished inside the gap replays neither event.
+//   - A price claim covers its own request, and apiFetch wraps a plain fetch
+//     with no timeout or abort signal, so a stalled POST never settles.
+//
+// Unbounded, either leaves a button the user cannot retry from -- the stuck
+// state this whole change exists to remove, reached from the inside. Releasing
+// is self-correcting: a late stock_sync_started takes the button straight
+// back, a late response is dropped by the sequence guard, and a click during
+// work the UI has lost track of is rejected by the server rather than starting
+// anything twice.
+const START_CLAIM_TIMEOUT_MS = 20_000
+
 function formatElapsed(seconds: number | null): string {
   if (seconds === null) return 'unknown'
   if (seconds < 60) return `${seconds}s`
@@ -74,6 +94,23 @@ export default function App() {
   const [hasJudgedItems, setHasJudgedItems] = useState(false)
   const [hasPriceData, setHasPriceData] = useState(false)
   const latestPriceStatusSeq = useRef(0)
+  // Same race, same fix, for the two start requests. Neither has a bounded
+  // response time -- POST /stock/sync/start opens a fresh psycopg connection
+  // before it answers -- and the claim timeout below can re-enable the button
+  // while one is still in flight. Without these, a first request rejecting
+  // after a second click would clear the *newer* claim and overwrite its
+  // status with the older request's result.
+  const latestStockSyncStartSeq = useRef(0)
+  const latestPriceRefreshSeq = useRef(0)
+  // Those two are per-operation: each decides whether a response may still
+  // touch its own claim. Neither can decide whether it may touch the *status
+  // bar*, which both write and which Settings lets them contend for -- a stock
+  // start and a price refresh can be in flight at once. Without a shared
+  // token, an older stock rejection lands on top of a newer price refresh's
+  // "Starting…" and clears its busy state while its request is still running.
+  // Cleanup of a claim's own state stays on the per-operation guard, since a
+  // request that lost the banner must still release the button it took.
+  const latestStatusOwnerSeq = useRef(0)
   const latestHasJudgedItemsSeq = useRef(0)
   const [serverReady, setServerReady] = useState(false)
   const [backendUp, setBackendUp] = useState<boolean | null>(null)
@@ -85,6 +122,27 @@ export default function App() {
   const [syncGeneration, setSyncGeneration] = useState(0)
   const [stockSyncGeneration, setStockSyncGeneration] = useState(0)
   const [stockSyncTarget, setStockSyncTarget] = useState<number | 'all' | null>(null)
+  // Optimistic twin of stockSyncTarget, set the instant a Refresh is clicked.
+  // stockSyncTarget can't do this job on its own: it's only set once the
+  // stock_sync_started event arrives, and POST /stock/sync/start has to open a
+  // fresh Postgres connection and take an advisory lock before it even
+  // returns. That gap left every Refresh button inert for a beat after the
+  // click -- the same "did that do anything?" the rejected-start message was
+  // added to fix, in the accepted-start case it never covered.
+  const [stockSyncStarting, setStockSyncStarting] = useState<number | 'all' | null>(null)
+  // Prices have no equivalent of stockSyncTarget to hand over to, and never
+  // will: POST /crawl/start only enqueues, and the worker pool that later
+  // picks the work up broadcasts no lifecycle event at all (started/complete/
+  // stopped went with the crawl-queue refactor). Nothing is coming, so this
+  // covers the request itself and the count in its reply is the confirmation.
+  const [priceRefreshStarting, setPriceRefreshStarting] = useState(false)
+  // The message whose presence on screen means "still waiting on this". The
+  // banner's spinner is derived from it rather than from "is anything pending
+  // anywhere", because the two drift apart: a stock sync finishing while a
+  // price request was still in flight left its *completion* message spinning
+  // with no Dismiss button. Comparing text means a message that has since been
+  // replaced simply stops matching, with nothing to keep in sync by hand.
+  const [busyStatusMessage, setBusyStatusMessage] = useState<string | null>(null)
   const [authState, setAuthState] = useState<AuthStatus | null>(null)
   const [viewAsUser, setViewAsUser] = useState(() => localStorage.getItem(VIEW_AS_USER_KEY) === 'true')
   const [signupToken, setSignupToken] = useState<string | null>(() => {
@@ -98,6 +156,48 @@ export default function App() {
     setSyncMessage(message)
     setSyncMessageId(eventId)
   }, [])
+
+  // Releasing the button is only half of it: the "Starting…" message it was
+  // clicked with has to go too, or the banner ends up showing a Dismiss button
+  // beside "Starting…", which reads as finished -- exactly the state syncBusy
+  // exists to prevent. Replaced rather than blanked, because the user is owed
+  // an account of a refresh the app has lost track of. It points at the Logs
+  // tab rather than at a reload: stock_sync_running is this process's
+  // _stock_task, so a reconnect landing on the Machine that does not hold the
+  // advisory lock reports idle for a sync that is running. The log store is
+  // merged across Machines and durable, so it is the one signal that always
+  // answers. Guarded on the message still being the one this claim set, so a
+  // real progress message that arrived in the meantime is never clobbered.
+  // Bumping the sequence first drops the request this claim was waiting on:
+  // having told the user it is lost, contradicting that later with a different
+  // answer is worse than staying quiet.
+  const stockSyncClaimNotice = useRef<{ shown: string; lost: string } | null>(null)
+
+  useEffect(() => {
+    if (stockSyncStarting === null) return
+    const timer = setTimeout(() => {
+      latestStockSyncStartSeq.current++
+      setStockSyncStarting(null)
+      const notice = stockSyncClaimNotice.current
+      if (notice) setSyncMessage((m) => (m === notice.shown ? notice.lost : m))
+    }, START_CLAIM_TIMEOUT_MS)
+    return () => clearTimeout(timer)
+  }, [stockSyncStarting])
+
+  // The price claim's own bound. Bumping the sequence first makes the stalled
+  // response a no-op if it ever does land.
+  const priceClaimNotice = useRef<{ shown: string; lost: string } | null>(null)
+
+  useEffect(() => {
+    if (!priceRefreshStarting) return
+    const timer = setTimeout(() => {
+      latestPriceRefreshSeq.current++
+      setPriceRefreshStarting(false)
+      const notice = priceClaimNotice.current
+      if (notice) setSyncMessage((m) => (m === notice.shown ? notice.lost : m))
+    }, START_CLAIM_TIMEOUT_MS)
+    return () => clearTimeout(timer)
+  }, [priceRefreshStarting])
 
   const updateHiddenCrawlerIds = useCallback((ids: number[]) => {
     setHiddenCrawlerIds(ids)
@@ -270,6 +370,7 @@ export default function App() {
       if (event.status === 'stock_sync_started') {
         setSyncing(true)
         setStockSyncTarget(event.crawler_id ?? 'all')
+        setStockSyncStarting(null)
         setSyncStatus('Syncing in-stock catalog…', event.id ?? null)
         return
       }
@@ -304,6 +405,7 @@ export default function App() {
       if (event.status === 'stock_sync_complete') {
         setSyncing(false)
         setStockSyncTarget(null)
+        setStockSyncStarting(null)
         setSyncStatus(`In-stock sync complete: ${event.synced} items`, event.id ?? null)
         setStockSyncGeneration(g => g + 1)
         return
@@ -312,6 +414,7 @@ export default function App() {
         if (!event.source) {
           setSyncing(false)
           setStockSyncTarget(null)
+          setStockSyncStarting(null)
         }
         setSyncStatus(`In-stock sync failed: ${event.error}`, event.id ?? null)
         return
@@ -319,6 +422,7 @@ export default function App() {
       if (event.status === 'stock_sync_aborted') {
         setSyncing(false)
         setStockSyncTarget(null)
+        setStockSyncStarting(null)
         const sources = event.sources?.length ? ` (${event.sources.join(', ')})` : ''
         setSyncStatus(`In-stock sync stopped: ${event.error}${sources}`, event.id ?? null)
         return
@@ -455,12 +559,49 @@ export default function App() {
     }
   }, [setSyncStatus])
 
-  const startCrawl = useCallback((releaseId?: string, mode?: 'all' | 'missing') => {
+  // POST /crawl/start only enqueues, and the shared worker pool broadcasts no
+  // lifecycle event when it later picks the work up (the `started` event went
+  // with the crawl-queue refactor). So the reply's own count is the only
+  // confirmation that exists at click time. It is deliberately reported as
+  // records *requested*, not queued: routers/crawl.py counts targets, while
+  // db.enqueue_crawl_queue no-ops on a row that is already pending or
+  // in_progress -- and "requested" is the more useful of the two anyway, since
+  // an affected-row count would say "0" for a re-click mid-crawl whose records
+  // are all queued and about to be crawled. This also replaces the alert()
+  // this used to raise on failure, the one error path in the app that blocked
+  // the page.
+  const startCrawl = useCallback(async (releaseId?: string, mode?: 'all' | 'missing') => {
+    const seq = ++latestPriceRefreshSeq.current
+    const statusSeq = ++latestStatusOwnerSeq.current
+    const ownsStatus = () => statusSeq === latestStatusOwnerSeq.current
     setCheckpointStatus(null)
-    postCrawlStart(mode ?? 'all', releaseId).catch((e: any) => {
-      alert(`Failed to start crawl: ${e.message}`)
-    })
-  }, [])
+    setPriceRefreshStarting(true)
+    const starting = releaseId
+      ? 'Starting price refresh for this record…'
+      : mode === 'missing'
+        ? 'Starting price refresh for records with no price yet…'
+        : 'Starting price refresh for every record…'
+    priceClaimNotice.current = {
+      shown: starting,
+      lost: 'Lost track of the price refresh — check the Logs tab to see whether it started.',
+    }
+    setBusyStatusMessage(starting)
+    setSyncStatus(starting)
+    try {
+      const { enqueued } = await postCrawlStart(mode ?? 'all', releaseId)
+      if (seq !== latestPriceRefreshSeq.current || !ownsStatus()) return
+      setSyncStatus(enqueued === 0
+        ? (mode === 'missing'
+          ? 'Nothing to refresh — every record already has a price.'
+          : 'Nothing to refresh — no records matched.')
+        : `Price refresh requested for ${enqueued} ${enqueued === 1 ? 'record' : 'records'}.`)
+    } catch (e: any) {
+      if (seq !== latestPriceRefreshSeq.current || !ownsStatus()) return
+      setSyncStatus(`Price refresh failed to start: ${e.message}`)
+    } finally {
+      if (seq === latestPriceRefreshSeq.current) setPriceRefreshStarting(false)
+    }
+  }, [setSyncStatus])
 
   const handleFindPrices = useCallback(async (releaseId?: string, mode?: 'all' | 'missing') => {
     if (releaseId) {
@@ -487,21 +628,49 @@ export default function App() {
     handleFindPrices(undefined, mode)
   }, [handleFindPrices])
 
-  const handleRefreshStock = useCallback(async () => {
-    try {
-      reportStockSyncRejection(await postStockSyncStart(), setSyncStatus)
-    } catch (e: any) {
-      setSyncStatus(`In-stock sync failed to start: ${e.message}`)
+  // One handler for both the bulk Refresh and a single store's, because the
+  // feedback is the same either way: claim the button now, name what was
+  // clicked in the status bar now, and only hand back to the real
+  // stock_sync_* state once the server has answered.
+  const startStockSync = useCallback(async (crawlerId?: number) => {
+    const seq = ++latestStockSyncStartSeq.current
+    const statusSeq = ++latestStatusOwnerSeq.current
+    const ownsStatus = () => statusSeq === latestStatusOwnerSeq.current
+    setStockSyncStarting(crawlerId ?? 'all')
+    const site = crawlerId != null ? crawlers.find((c) => c.id === crawlerId)?.site_name : null
+    const what = site ? `${site} catalog refresh` : 'in-stock catalog refresh'
+    stockSyncClaimNotice.current = {
+      shown: `Starting ${what}…`,
+      lost: `Lost track of the ${what} — check the Logs tab to see whether it is still running.`,
     }
-  }, [setSyncStatus])
+    setBusyStatusMessage(stockSyncClaimNotice.current.shown)
+    setSyncStatus(stockSyncClaimNotice.current.shown)
+    try {
+      const result = await postStockSyncStart(crawlerId)
+      if (seq !== latestStockSyncStartSeq.current) return
+      // On an accepted start the optimistic state stays until
+      // stock_sync_started replaces it; a rejection ends here.
+      if (!result.started) setStockSyncStarting(null)
+      if (ownsStatus()) {
+        reportStockSyncRejection(result, setSyncStatus)
+        if (!result.started) setBusyStatusMessage(null)
+      }
+    } catch (e: any) {
+      if (seq !== latestStockSyncStartSeq.current) return
+      setStockSyncStarting(null)
+      if (ownsStatus()) {
+        setBusyStatusMessage(null)
+        setSyncStatus(`In-stock sync failed to start: ${e.message}`)
+      }
+    }
+  }, [crawlers, setSyncStatus])
 
-  const handleRefreshStoreCrawler = useCallback(async (crawlerId: number) => {
-    try {
-      reportStockSyncRejection(await postStockSyncStart(crawlerId), setSyncStatus)
-    } catch (e: any) {
-      setSyncStatus(`In-stock sync failed to start: ${e.message}`)
-    }
-  }, [setSyncStatus])
+  const handleRefreshStock = useCallback(() => startStockSync(), [startStockSync])
+
+  const handleRefreshStoreCrawler = useCallback(
+    (crawlerId: number) => startStockSync(crawlerId),
+    [startStockSync],
+  )
 
   const handleRefreshRecommendations = useCallback(async () => {
     try {
@@ -622,6 +791,17 @@ export default function App() {
   const showAdminNav = isRealAdmin && !viewAsUser
 
   const recommendedAvailable = hasAnthropicKey && hasJudgedItems
+  // The optimistic target only stands in while there is no real one: a
+  // per-crawler Refresh rejected by an already-running bulk sync must keep
+  // showing the bulk sync, not the row that was just clicked.
+  const stockSyncActive = stockSyncTarget ?? stockSyncStarting
+  // A message the user is still waiting on keeps the banner's spinner up and
+  // its Dismiss button away -- a Dismiss button next to "Starting…" reads as
+  // finished. `syncing` is the same shape one level up and has the same drift
+  // (a locally-generated message shown mid-sync still spins); it predates this
+  // and fixing it means giving the shared status bar a full ownership model,
+  // which is a bigger change than this one.
+  const syncBusy = syncing || (busyStatusMessage !== null && syncMessage === busyStatusMessage)
   const syncBannerVisible = syncMessage !== null && (syncMessageId === null || syncMessageId > dismissedSyncId)
   const crawlBannerVisible = crawlBannerId > dismissedCrawlId
 
@@ -745,8 +925,9 @@ export default function App() {
             onRefreshPrices={handleRefreshPricesFromSettings}
             onRefreshStock={handleRefreshStock}
             isAdmin={showAdminNav}
-            stockSyncBusy={stockSyncTarget !== null}
-            stockSyncCrawlerId={typeof stockSyncTarget === 'number' ? stockSyncTarget : null}
+            stockSyncBusy={stockSyncActive !== null}
+            stockSyncCrawlerId={typeof stockSyncActive === 'number' ? stockSyncActive : null}
+            priceRefreshBusy={priceRefreshStarting}
             onRefreshStoreCrawler={handleRefreshStoreCrawler}
           />
         </div>
@@ -861,16 +1042,20 @@ export default function App() {
         </div>
       )}
 
-      {/* Collection sync status bar */}
+      {/* Collection sync status bar. The live region stays mounted even when
+          the banner is not: assistive technology does not reliably announce a
+          role="status" element inserted together with its text, so the first
+          confirmation after a click would be the one that went unheard. */}
+      <div role="status">
       {syncBannerVisible && (
         <div className="fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-700 px-4 py-2 flex items-center gap-3">
           <span className="text-sm font-medium text-gray-300 shrink-0">
             {syncMessage}
           </span>
-          {syncing && (
+          {syncBusy && (
             <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin shrink-0" />
           )}
-          {!syncing && (
+          {!syncBusy && (
             <button
               onClick={dismissSyncMessage}
               className={`ml-auto px-3 py-1 text-sm shrink-0 ${dismissButtonClass()}`}
@@ -880,6 +1065,7 @@ export default function App() {
           )}
         </div>
       )}
+      </div>
 
       {/* Crawl status bar */}
       {crawlBannerVisible && !syncBannerVisible && (
