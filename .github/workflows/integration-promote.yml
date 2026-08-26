@@ -1,5 +1,19 @@
 name: Promote integration to main
 
+# One half of a pair: this carries `integration`'s batched Dependabot updates
+# into `main`, and .github/workflows/integration-sync.yml carries `main` back
+# into `integration` afterwards. The second half is not optional. The squash
+# merge below advances `main` and leaves `integration` exactly where it stood,
+# so on its own this workflow only ever widens the gap -- which leaves Dependabot
+# bumps vetted against an ever-staler base, then promoted into a `main` they were
+# never tested against.
+#
+# What strands those PRs as un-mergeable is a separate mechanism, worth not
+# confusing with this one: integration-branch-protection's
+# strict_required_status_checks_policy compares a PR's head with its own base,
+# so a Dependabot PR goes "behind" whenever `integration` itself moves -- never
+# because `main` did. integration-sync.yml's `refresh` job covers that half.
+
 on:
   schedule:
     # Tuesday 06:00 UTC -- a full day after Dependabot's Monday 06:00 UTC
