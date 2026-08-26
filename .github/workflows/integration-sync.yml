@@ -1,0 +1,602 @@
+name: Sync integration with main
+
+# Two jobs, for two different failures. Keeping them apart matters, because
+# they have different causes and only one of them is about drift.
+#
+#   `refresh` -- integration-branch-protection sets
+#   strict_required_status_checks_policy, which compares a PR's head with *its
+#   own base*. So every open PR based on `integration` turns un-mergeable
+#   ("behind") the moment anything at all lands on `integration` -- a Dependabot
+#   bump merging, or the sync job below -- and stays that way until something
+#   moves its head forward. Nothing used to. Note this has nothing to do with
+#   `main`: `main` is not an input to that comparison, and `integration`
+#   trailing `main` does not by itself make a single PR "behind".
+#
+#   `sync` -- integration-promote.yml squash-merges `integration` into `main`,
+#   which advances `main` and leaves `integration` exactly where it stood. With
+#   nothing carrying `main` back, Dependabot bumps are vetted against an
+#   ever-staler base and then promoted into a `main` they were never tested
+#   against.
+#
+# Both bit at once on 2026-08-25: six Dependabot PRs sat unmergeable, the oldest
+# for a fortnight, against an `integration` that had by then fallen 64 commits
+# behind `main`. Fixing either alone would have left the other.
+#
+# Note both jobs go through a PR rather than pushing to `integration` directly:
+# that ruleset requires a pull request and lists no bypass actors, so a direct
+# push is rejected however the workflow authenticates.
+#
+# SETUP: INTEGRATION_PROMOTE_TOKEN is a prerequisite for the first sync, not
+# just a convenience. That sync carries this very file plus a change to
+# integration-promote.yml, and GITHUB_TOKEN may not create or update anything
+# under .github/workflows/, so the push is rejected outright without a token
+# holding the `workflow` scope. Later syncs only need it when `main` has
+# touched a workflow file. It separately removes the weekly "Approve and run"
+# click described on the sync step below; the two are unrelated, and the second
+# reason is the weaker one.
+
+on:
+  push:
+    branches:
+      - main
+      - integration
+  schedule:
+    # 05:00 UTC daily -- an hour ahead of Dependabot's Monday 06:00 UTC run
+    # (.github/dependabot.yml), so Monday's PRs are cut from an `integration`
+    # that already matches `main`. The daily cadence is the safety net for the
+    # push triggers above, and which of them is the safety net depends on how
+    # this workflow is authenticated.
+    #
+    # A push made with GITHUB_TOKEN starts no further workflow run (GitHub's
+    # recursion guard). Where this falls back to it, the auto-merges below are
+    # invisible to exactly the triggers that need them: the promotion PR
+    # advances `main` with no `push: main` event to drive `sync`, and the sync
+    # PR advances `integration` with no `push: integration` event to drive
+    # `refresh`. Each trigger is blind to the one merge it most needs to see,
+    # and the cron is the only thing covering either.
+    #
+    # With INTEGRATION_PROMOTE_TOKEN configured -- a prerequisite anyway, see
+    # SETUP above -- the recursion guard does not apply: those merges are
+    # PAT-authenticated and do emit their push events, so the triggers work and
+    # the cron is a backstop rather than the mechanism. It stays because the
+    # fallback is reachable without anyone intending it, by the secret being
+    # removed or its token expiring.
+    #
+    # Both jobs no-op cheaply when there is nothing to do.
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  # Labels are issues-scoped, even on a PR. Without this the `dirty` path cannot
+  # attach CONFLICT_LABEL, and that label is the only thing stopping a later run
+  # re-arming auto-merge under someone's hand-written conflict resolution.
+  issues: write
+
+concurrency:
+  group: integration-sync
+  cancel-in-progress: false
+
+env:
+  SYNC_BRANCH: chore/integration-sync
+  # The last commit `main` and `integration` genuinely shared before either
+  # branch existed in its current form. While git still derives this as their
+  # merge base, no merge commit has ever linked them -- see the guard in `sync`.
+  FROZEN_BASE: b24e568e76bc927888e62c658e210104aa1be0d6
+  # Stamped into every recreate request this workflow posts, and the only thing
+  # the don't-ask-twice guard counts. Identity-independent on purpose: the
+  # comment author is github-actions[bot] or the PAT's owner depending on which
+  # token is configured, so matching on author would silently stop working the
+  # day INTEGRATION_PROMOTE_TOKEN is added.
+  RECREATE_MARKER: "<!-- integration-sync: recreate requested -->"
+  # Applied to a sync PR whose conflict someone has to resolve by hand. It is
+  # what stops the next run re-arming auto-merge underneath them; see the
+  # `dirty` branch and the re-arm guard.
+  CONFLICT_LABEL: sync-conflict-needs-hand-merge
+
+jobs:
+  sync:
+    name: Merge main into integration
+    # Every trigger, including a push to `integration`, which is cheap: the
+    # containment test below answers from refs alone and exits.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          # actions/checkout persists whichever token it used as the git
+          # credential for every later push in this job. GH_TOKEN below only
+          # authenticates the `gh` CLI, so without this line `git push` would
+          # authenticate as GITHUB_TOKEN even where INTEGRATION_PROMOTE_TOKEN
+          # is configured -- and GITHUB_TOKEN may not create or update files
+          # under .github/workflows/. The first sync necessarily carries
+          # exactly that: this workflow file, and the promote workflow's
+          # comment. Distinct from the parked-CI caveat below, and not fixed
+          # by it.
+          token: ${{ secrets.INTEGRATION_PROMOTE_TOKEN || github.token }}
+
+      - name: Open/update the sync PR if integration has fallen behind
+        id: sync
+        env:
+          # Same caveat as integration-promote.yml: a PR opened with the default
+          # GITHUB_TOKEN gets its fly-deploy.yml checks parked in an
+          # approval-required state, and `integration` cannot merge without
+          # "Backend tests" and "Frontend tests" reporting, so auto-merge below
+          # waits on someone clicking "Approve and run". Adding
+          # INTEGRATION_PROMOTE_TOKEN removes the click for both workflows.
+          # A fine-grained PAT needs Contents: read/write, Pull requests:
+          # read/write, Issues: read/write (the conflict label) and Workflows:
+          # write; a classic PAT needs `repo` + `workflow`. Workflows is not
+          # optional and not covered by Contents -- without it the first sync's
+          # push is rejected for carrying this very file, which is the failure
+          # diagnosed at the push below.
+          #
+          # Parked, not absent -- worth stating plainly because the opposite is
+          # a natural reading of GitHub's recursion guard, and a reviewer has
+          # already raised it once. On PR #182, opened by github-actions[bot]
+          # with this same fallback, the "CI / Fly Deploy" run was created at
+          # 06:26:44, three seconds after the PR at 06:26:41; it then sat until
+          # run_attempt 2 started at 11:56:18 with triggering_actor=rickmcphee,
+          # and the PR merged at 11:59:50. The run exists and is approvable, so
+          # a missing PAT costs a weekly click rather than making the PR
+          # permanently unmergeable -- which is why the fallback stays rather
+          # than being turned into a hard failure.
+          GH_TOKEN: ${{ secrets.INTEGRATION_PROMOTE_TOKEN || github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Every branch ref, pruned, and no `|| true`. Fetching $SYNC_BRANCH
+          # by name needed one for the case where it does not exist -- which
+          # swallowed transport and auth failures too, and an empty $remote_tip
+          # from a failed fetch reads as "no branch to preserve", disarming the
+          # very guard it feeds. Fetching the whole namespace makes an absent
+          # branch simply an absent ref, so a genuine failure can stay fatal.
+          # --prune, so a branch deleted on merge does not leave a stale tip
+          # behind that the guard would refuse to push past forever.
+          #
+          # No --tags: the marker and pending tags this used to maintain are
+          # gone, and nothing here reads a tag any more.
+          git fetch --quiet --prune origin "+refs/heads/*:refs/remotes/origin/*"
+
+          arm_auto_merge() {  # $1 = PR number
+            # --merge, with no squash fallback, and this is load-bearing rather
+            # than a preference. A squash would land the sync as a single commit
+            # carrying no parent link to `main`, re-freezing git's merge base at
+            # that point for good and bringing back the recorded-marker protocol
+            # this replaced. Failing loudly is the correct response to merge
+            # commits being unavailable.
+            if ! gh pr merge "$1" --repo "$REPO" --auto --merge; then
+              echo "::error::could not arm auto-merge on sync PR #$1 with a merge commit. A squash is not an acceptable fallback here -- it would re-freeze git's merge base between main and integration. Check that the repository allows merge commits and that allowed_merge_methods on integration-branch-protection includes merge."
+              exit 1
+            fi
+          }
+
+
+          # git's own merge base is authoritative, and that is a recent
+          # property of this repository rather than a given. Both directions
+          # used to squash-merge, and a squash records no parent link back to
+          # the branch it came from, so neither branch ever became an ancestor
+          # of the other and `git merge-base main integration` sat frozen at
+          # b24e568e (2026-08-10) no matter how far either branch moved --
+          # which is the source of conflicts on files nobody had changed on
+          # both sides. This workflow used to carry a recorded marker and two
+          # tags to work around it.
+          #
+          # #186 is the one-time merge commit that unfreezes it, and the
+          # guard below refuses to run until it has landed. Every sync after it
+          # lands as a merge commit too (never a squash -- see the
+          # auto-merge calls below, which fail rather than fall back), so
+          # `main`'s tip becomes a genuine ancestor of `integration` each time
+          # one merges and the base stays current with nothing to maintain.
+          #
+          # Which makes this the whole "is there anything to bring over"
+          # question: real ancestry, not a tree comparison standing in for it.
+          # Until a merge commit has ever linked the branches, git's derived
+          # base IS the frozen one, and merging from it reproduces exactly the
+          # conflicts this rewrite exists to stop producing. That is reachable
+          # by merge order alone -- this workflow landing before the bootstrap
+          # sync does it -- so check rather than assume. Self-retiring: once the
+          # bootstrap lands the base moves and this never fires again.
+          if [ "$(git merge-base origin/main origin/integration)" = "$FROZEN_BASE" ]; then
+            echo "::error::the merge base for main/integration is still $FROZEN_BASE, so no merge commit has ever linked them and the bootstrap sync has not landed. Merging from this base reproduces the frozen-base conflicts. Land the bootstrap sync PR as a MERGE COMMIT first, then re-run."
+            exit 1
+          fi
+
+          if git merge-base --is-ancestor origin/main origin/integration; then
+            echo "integration already contains main; nothing to sync."
+            exit 0
+          fi
+
+          # Leave an open sync PR alone. Its branch may carry a conflict
+          # someone resolved by hand (see the error path below), and rebuilding
+          # it from scratch here would throw that away.
+          #
+          # isCrossRepository, because --head matches on branch *name* alone.
+          # Anyone can fork this repo and open a PR from a branch called
+          # chore/integration-sync, and without this filter that PR would be
+          # taken for the workflow's own and handed auto-merge into a branch
+          # that requires no approving review.
+          existing="$(gh pr list --repo "$REPO" --base integration \
+            --head "$SYNC_BRANCH" --state open \
+            --json number,isCrossRepository \
+            --jq 'map(select(.isCrossRepository == false)) | .[0].number // empty')"
+          if [ -n "$existing" ]; then
+            # An open sync PR goes "behind" if `integration` moves while its
+            # checks run, and strict branch protection then refuses to merge it.
+            # Re-arming auto-merge alone would spin here for good: setting
+            # nothing else would catch it up.
+            # Guarded for the same reason as the poll in `refresh`: `set -e`
+            # sees an assignment's command substitution, so an unguarded read
+            # would abort the job on one transient 5xx -- defeating the retry
+            # this loop exists to provide, and doing it with no diagnostic. A
+            # read that never succeeds falls through to `unknown`, which fails
+            # closed below and says why.
+            sync_state=""
+            for _ in 1 2 3; do
+              if sync_state="$(gh api "repos/$REPO/pulls/$existing" --jq '.mergeable_state')"; then
+                [ "$sync_state" != "unknown" ] && break
+              else
+                sync_state=""
+              fi
+              sleep 10
+            done
+            case "${sync_state:-unknown}" in
+              unknown)
+                # Fail closed. Falling through to the re-arm used to look
+                # harmless on the grounds that arming is idempotent, but that
+                # reasoning only holds if the PR is not `dirty` -- and this is
+                # precisely the branch where that is unknown. A conflict blocks
+                # auto-merge without clearing it, so arming a PR that turns out
+                # to be conflicted means whoever resolves it by hand has their
+                # resolution merged on the spot, with no label and no review.
+                # That is the exact failure the `dirty` branch exists to
+                # prevent, reached by not knowing rather than by deciding.
+                echo "::error::could not resolve mergeable_state for sync PR #$existing after polling. Not arming auto-merge: if it is actually conflicted, arming would merge a hand-written resolution unreviewed. Re-run once GitHub settles."
+                exit 1
+                ;;
+              behind)
+                echo "Sync PR #$existing is behind; catching it up before re-arming auto-merge."
+                if ! gh api -X PUT "repos/$REPO/pulls/$existing/update-branch"; then
+                  # Not a warning: swallowing it re-arms auto-merge on a PR
+                  # that is still behind and cannot merge under the strict
+                  # policy, and reports a green run for it.
+                  echo "::error::could not catch up sync PR #$existing, which is behind and cannot merge until it is."
+                  exit 1
+                fi
+                ;;
+              dirty)
+                # Two independent defences, and both are attempted before
+                # anything is reported: the label is durable (it survives to
+                # the next run and is what blocks the re-arm), disabling is
+                # immediate (it clears the request that would otherwise take a
+                # resolution straight in). Neither substitutes for the other,
+                # so a failure in one must not skip the other -- which is what
+                # ordering them as a fail-fast chain used to do.
+                label_ok=yes
+                # `|| true` only because --force already makes this a no-op
+                # when the label exists; the attach below is what has to work.
+                gh label create "$CONFLICT_LABEL" --repo "$REPO" --color B60205 \
+                  --description "Sync PR whose conflict needs resolving and merging by hand -- with a merge commit, never a squash" \
+                  --force >/dev/null 2>&1 || true
+                gh pr edit "$existing" --repo "$REPO" --add-label "$CONFLICT_LABEL" \
+                  || label_ok=no
+
+                # `--disable-auto` fails when there is no auto-merge request,
+                # so read first and only call it when something is armed --
+                # treating "nothing to disable" as a failure aborted the job
+                # with auto-merge already safely off. If the read itself fails
+                # we cannot tell, so try anyway and let the result decide.
+                disable_ok=yes
+                if dirty_automerge="$(gh pr view "$existing" --repo "$REPO" \
+                     --json autoMergeRequest --jq '.autoMergeRequest.mergeMethod // empty')"; then
+                  if [ -n "$dirty_automerge" ]; then
+                    gh pr merge "$existing" --repo "$REPO" --disable-auto || disable_ok=no
+                  fi
+                else
+                  gh pr merge "$existing" --repo "$REPO" --disable-auto || disable_ok=no
+                fi
+
+                if [ "$label_ok" = no ] || [ "$disable_ok" = no ]; then
+                  # Stop *before* printing the resolve-and-push instructions
+                  # below. Those invite exactly the push that an un-labelled,
+                  # still-armed PR would merge unreviewed.
+                  echo "::error::Sync PR #$existing conflicts with integration and this job could not secure it (label applied: $label_ok, auto-merge cleared: $disable_ok). Do NOT resolve the conflict yet -- a resolution could merge itself, unreviewed, into a branch that requires no approving review. Apply $CONFLICT_LABEL and turn auto-merge off by hand first; if labelling failed, check the token has Issues: write."
+                  exit 1
+                fi
+
+                echo "::error::Sync PR #$existing conflicts with integration. Auto-merge is off and $CONFLICT_LABEL is applied: resolve $SYNC_BRANCH by hand, push it, and merge it deliberately -- WITH A MERGE COMMIT, not a squash. This is the one path where nothing here can enforce that, and a squash re-freezes git's merge base between main and integration for good. Setting allowed_merge_methods to merge only on integration-branch-protection removes the choice."
+                exit 1
+                ;;
+            esac
+            echo "Sync PR #$existing is already open; leaving its branch as-is."
+
+            # Re-arming has to be conditional, or it undoes the `dirty` branch
+            # one cron later: that path disables auto-merge so a hand-resolved
+            # conflict gets merged by whoever resolved it, but the resolution
+            # makes the PR `clean`, and an unconditional re-arm would then sweep
+            # their work into an approval-free branch before they looked at it.
+            # The label is what survives between runs to say so.
+            #
+            # Still re-arm when auto-merge is simply absent and unlabelled --
+            # arming can fail after `gh pr create` succeeds, and without this the
+            # PR would sit with nothing driving it.
+            # Fetched into variables first, deliberately. Called inside the
+            # `if` tests below, a failing `gh pr view` is invisible to `set -e`
+            # -- the test simply reads false, so an API or auth error would
+            # present as "no label, no auto-merge" and re-arm a PR reserved for
+            # hand merging. A guard that fails open is not a guard. As
+            # assignments they abort the step instead.
+            pr_labels="$(gh pr view "$existing" --repo "$REPO" \
+              --json labels --jq '.labels[].name')"
+            # .mergeMethod, not just presence. An auto-merge request armed
+            # with SQUASH lands a squash, which re-freezes git's merge base
+            # permanently -- and that is not hypothetical: the previous
+            # revision of this workflow armed `--auto --squash` as a fallback,
+            # so any sync PR it touched still carries exactly that. Treating
+            # "armed" as "safe" would let one through.
+            pr_automerge="$(gh pr view "$existing" --repo "$REPO" \
+              --json autoMergeRequest --jq '.autoMergeRequest.mergeMethod // empty')"
+
+            if printf '%s\n' "$pr_labels" | grep -qx "$CONFLICT_LABEL"; then
+              echo "Sync PR #$existing is labelled $CONFLICT_LABEL; leaving auto-merge off for whoever resolves it."
+              exit 0
+            elif [ "$pr_automerge" = "MERGE" ]; then
+              echo "Sync PR #$existing already has auto-merge armed with a merge commit."
+            elif [ -n "$pr_automerge" ]; then
+              echo "Sync PR #$existing has auto-merge armed with $pr_automerge, which would re-freeze the merge base; re-arming with a merge commit."
+              if ! gh pr merge "$existing" --repo "$REPO" --disable-auto; then
+                echo "::error::sync PR #$existing has auto-merge armed with $pr_automerge and it could not be disabled. Left as-is it will land a $pr_automerge and re-freeze git's merge base. Disable auto-merge on it by hand."
+                exit 1
+              fi
+              arm_auto_merge "$existing"
+            else
+              arm_auto_merge "$existing"
+            fi
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Branch off `integration` and bring `main` in -- not the reverse --
+          # so the head contains integration's tip and satisfies that same
+          # strict up-to-date policy on the way back in.
+          git checkout -B "$SYNC_BRANCH" origin/integration
+
+          if ! git merge --no-edit origin/main; then
+            git merge --abort || true
+            # Do NOT tell anyone to push $SYNC_BRANCH and open its PR. This
+            # exit happens before any PR exists, so the `dirty` path that
+            # applies CONFLICT_LABEL never runs -- and a PR opened from this
+            # branch is indistinguishable from one this job opened. The next
+            # run adopts it, finds it clean and unlabelled, and arms
+            # auto-merge, merging a hand-written resolution unreviewed. A
+            # branch of their own is never adopted, and the force-push guard
+            # below covers them if they use this one anyway.
+            echo "::error::main and integration have both changed the same lines since they diverged. Resolve this by hand on a branch of your OWN -- not $SYNC_BRANCH, which this job rebuilds and would adopt as its own sync PR, arming auto-merge on your resolution. Branch from integration, merge main into it, resolve, and open a PR into integration, merging it deliberately with a merge commit. Unlike the frozen-base era this is a real disagreement: git derives the base from actual ancestry now, so a conflict here means both sides genuinely touched the same lines."
+            exit 1
+          fi
+
+          if git diff --quiet origin/integration HEAD; then
+            # Expected after a promotion: `main` advanced with content that came
+            # from `integration` in the first place, so there is nothing to
+            # apply. The merge commit is still the point -- it is what moves
+            # `main`'s tip into `integration`'s ancestry and keeps the base
+            # current -- so the PR is opened anyway, with no files changed.
+            echo "no file changes (main's tip is content integration already holds); opening the PR for the merge commit alone."
+          fi
+
+          # "No open PR" does NOT make this branch disposable. The conflict
+          # path above tells a person to resolve $SYNC_BRANCH by hand, push it,
+          # and *then* open a PR -- and a scheduled run landing between those
+          # two steps sees no open PR. Force-pushing there destroys the one
+          # piece of work in this whole workflow a machine cannot reproduce.
+          #
+          # Overwrite only a tip this job could have produced: one already
+          # contained in the merge just built, or one with an identical tree --
+          # our own earlier generated merge, whose sha differs only by commit
+          # timestamp, left behind when a `gh pr create` failed.
+          remote_tip="$(git rev-parse -q --verify "refs/remotes/origin/$SYNC_BRANCH" || true)"
+          if [ -n "$remote_tip" ] \
+             && ! git merge-base --is-ancestor "$remote_tip" HEAD \
+             && [ "$(git rev-parse "$remote_tip^{tree}")" != "$(git rev-parse "HEAD^{tree}")" ]; then
+            echo "::error::$SYNC_BRANCH on the remote is at $(git rev-parse --short "$remote_tip"), which this job did not create and which the merge it just built does not contain -- most likely a hand-resolved conflict pushed but not yet opened as a PR. Refusing to force-push over it. Open a PR from that branch into integration, or delete the branch if it is stale, then re-run."
+            exit 1
+          fi
+
+          # --force-with-lease, not --force. The check above reads the tip as
+          # of the fetch, and a person can push between that fetch and this
+          # line -- exactly the window the instructions create. The lease makes
+          # git re-verify at push time and reject anything that moved since.
+          # An empty $remote_tip means "expect this ref not to exist", which is
+          # the correct lease for the branch-absent case.
+          if ! git push --force-with-lease="$SYNC_BRANCH:$remote_tip" \
+                 origin "$SYNC_BRANCH"; then
+            if ! git diff --quiet origin/integration HEAD -- .github/workflows/; then
+              echo "::error::pushing $SYNC_BRANCH failed, and this sync carries changes under .github/workflows/ ($(git diff --name-only origin/integration HEAD -- .github/workflows/ | tr '\n' ' ')). GITHUB_TOKEN cannot create or update workflow files: set INTEGRATION_PROMOTE_TOKEN to a token holding the workflow scope. The checkout step above passes it to git as well as gh, so it covers this once configured."
+            else
+              echo "::error::pushing $SYNC_BRANCH failed."
+            fi
+            exit 1
+          fi
+
+          gh pr create \
+            --repo "$REPO" \
+            --base integration \
+            --head "$SYNC_BRANCH" \
+            --title "chore: sync integration with main" \
+            --body "$(printf '%s\n\n%s\n\n%s' \
+              'Brings `main` into `integration` so Dependabot branches from an up-to-date base, keeping any bumps `integration` is still holding. Opened automatically by .github/workflows/integration-sync.yml; auto-merges once CI is green. Nothing is authored here -- every change comes from one side or the other.' \
+              '**Merge this with a merge commit, not a squash.** That is what makes `main`'"'"'s tip an ancestor of `integration` and keeps `git merge-base` current; a squash re-freezes it. See docs/specifications/shaping/2026-08-25-integration-branch-sync-design.md.' \
+              'No files changed is expected right after a promotion: `main` advanced with content that came from `integration`, so there is nothing to apply and the merge commit itself is the point.')" \
+            --label dependencies
+
+          opened="$(gh pr list --repo "$REPO" --base integration \
+            --head "$SYNC_BRANCH" --state open \
+            --json number,isCrossRepository \
+            --jq 'map(select(.isCrossRepository == false)) | .[0].number // empty')"
+
+          # Auto-merge is the right primitive here, and safe in a way it is not
+          # on `main`: integration-branch-protection requires no approving
+          # review and carries no Copilot review rule, so there is no review to
+          # race -- and the content merging in is main's own, already reviewed
+          # on its way there.
+          arm_auto_merge "$opened"
+          echo "Sync PR #$opened is queued to merge."
+
+  refresh:
+    name: Catch up PRs integration left behind
+    needs: sync
+    # always(): `sync` runs on every trigger, but it can fail -- a merge
+    # conflict, a push rejected for want of the workflow scope -- and a failed
+    # dependency would otherwise skip this job too. Those are the moments PRs
+    # most need catching up, not least.
+    #
+    # This job deliberately does not ask whether a sync is queued. It used to,
+    # on the reasoning that `integration` was about to move and any catch-up
+    # would be redone -- but a queued sync can sit for days when its checks are
+    # parked awaiting approval, and every PR that falls behind meanwhile stays
+    # stranded. That is the failure this workflow exists to prevent, traded
+    # against nothing worse than a redundant update-branch, which is harmless.
+    if: >-
+      always()
+      && (github.event_name != 'push' || github.ref_name == 'integration')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Catch up every open PR that integration outran
+        env:
+          GH_TOKEN: ${{ secrets.INTEGRATION_PROMOTE_TOKEN || github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Assign first, then iterate. A command substitution in a `for` word
+          # list is only a word expansion, so `set -e` never sees `gh pr list`
+          # fail -- an API or auth error would become an empty list, and the job
+          # would report success having refreshed nothing at all. An assignment
+          # does carry the substitution's exit status.
+          #
+          # --limit, because `gh pr list` returns 30 by default and this step
+          # promises to catch up *every* open PR, not the newest thirty.
+          open_prs="$(gh pr list --repo "$REPO" --base integration --state open \
+                        --limit 200 --json number --jq '.[].number')"
+          # Every PR this job could not refresh, collected rather than merely
+          # warned about. Warning alone let the step exit 0 having refreshed
+          # nothing at all -- the same silent no-op the job exists to prevent,
+          # arriving from inside the job itself.
+          failed=""
+
+          for n in $open_prs; do
+            # mergeable_state is computed asynchronously; a PR polled too soon
+            # after integration moved answers "unknown", which is neither state
+            # below and would quietly skip the one PR that needed this most.
+            #
+            # The read is guarded because `set -e` does see an assignment's
+            # command substitution: unguarded, a single transient 5xx would
+            # abort the whole job here, leaving every PR after this one
+            # unrefreshed while the run ended on its own terms.
+            state=""
+            for _ in 1 2 3 4 5 6; do
+              if state="$(gh api "repos/$REPO/pulls/$n" --jq '.mergeable_state')"; then
+                [ "$state" != "unknown" ] && break
+              else
+                state=""
+              fi
+              sleep 10
+            done
+
+            case "${state:-unknown}" in
+              behind)
+                # Merge the base in. Deterministic, reports a status, and needs
+                # nothing of the PR's author -- including Dependabot, whose own
+                # branches take this happily: it leaves the bump commit in place
+                # and does not close or abandon the PR.
+                echo "PR #$n is behind; merging integration into it."
+                if ! gh api -X PUT "repos/$REPO/pulls/$n/update-branch"; then
+                  # Per-PR, so one stuck PR cannot strand the rest -- but
+                  # recorded, so the step still ends red.
+                  echo "::warning::could not update PR #$n automatically"
+                  failed="$failed #$n"
+                fi
+                ;;
+
+              dirty)
+                # A conflict, which update-branch cannot fix. For a Dependabot
+                # PR only Dependabot can: a bump that conflicts is usually a
+                # lockfile, and regenerating one by merge resolution produces a
+                # file no package manager would have written. `recreate` throws
+                # the branch away and re-derives it from the current base.
+                if ! author="$(gh api "repos/$REPO/pulls/$n" --jq '.user.login')"; then
+                  echo "::warning::could not read the author of PR #$n; leaving it alone."
+                  failed="$failed #$n"
+                  continue
+                fi
+                if [ "$author" != "dependabot[bot]" ]; then
+                  echo "::warning::PR #$n conflicts with integration and only its author can rebuild it; it needs a human."
+                  continue
+                fi
+                # Don't keep asking: a request Dependabot silently drops would
+                # otherwise collect a fresh comment on that PR for as long as it
+                # stayed open. The window has to be longer than the schedule
+                # above or it cannot do that job at all -- against a daily cron,
+                # yesterday's request already falls outside a 24-hour lookback,
+                # so the guard never fires and the comment lands anyway. A week
+                # means at most one ask per stuck PR per week, which also
+                # matches Dependabot's own cadence. Paginated, since `since`
+                # bounds how old the comments are but not how many.
+                since="$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)"
+                # Match this workflow's own marker, not the command text.
+                # Anyone who can comment on the PR could otherwise post -- or
+                # merely quote -- "@dependabot recreate" and suppress the real
+                # request for the whole window, without Dependabot having acted
+                # on theirs at all.
+                # Interpolated rather than passed with --arg: gh's --jq takes
+                # one filter string and forwards no jq options, so --arg would
+                # be swallowed as the filter itself. Safe here because the
+                # marker contains no double quotes.
+                if ! asked="$(gh api --paginate \
+                  "repos/$REPO/issues/$n/comments?since=$since&per_page=100" \
+                  --jq ".[] | select(.body | contains(\"$RECREATE_MARKER\")) | .id" \
+                  | wc -l)"; then
+                  # Fail closed on the read, not the ask: without knowing what
+                  # has already been posted, commenting again is how a stuck PR
+                  # collects a duplicate request every run.
+                  echo "::warning::could not read PR #$n's comments, so cannot tell whether Dependabot was already asked; not asking again."
+                  failed="$failed #$n"
+                  continue
+                fi
+                if [ "$asked" -gt 0 ]; then
+                  echo "PR #$n conflicts but was already asked to recreate since $since; leaving it."
+                  continue
+                fi
+                echo "PR #$n conflicts with integration; asking Dependabot to recreate it."
+                # printf, not a multi-line string: the marker would otherwise
+                # inherit this block's indentation, and four leading spaces make
+                # markdown render it as a code block -- an HTML comment meant to
+                # be invisible, shown verbatim on the PR.
+                if ! gh pr comment "$n" --repo "$REPO" \
+                     --body "$(printf '@dependabot recreate\n\n%s' "$RECREATE_MARKER")"; then
+                  echo "::warning::could not post the recreate request on PR #$n."
+                  failed="$failed #$n"
+                  continue
+                fi
+                ;;
+
+              unknown)
+                # Exhausted the poll without GitHub settling on an answer, or
+                # every read of it failed. Falling into the catch-all below
+                # would report "nothing to do" and skip the PR silently --
+                # precisely what the polling is for.
+                echo "::warning::could not resolve mergeable_state for PR #$n after polling; it may still be behind and was not refreshed."
+                failed="$failed #$n"
+                ;;
+              *)
+                echo "PR #$n is '$state'; nothing for this job to do."
+                ;;
+            esac
+          done
+
+          if [ -n "$failed" ]; then
+            echo "::error::could not refresh:$failed. Those PRs may still be behind integration -- re-run this workflow, or update them by hand."
+            exit 1
+          fi
