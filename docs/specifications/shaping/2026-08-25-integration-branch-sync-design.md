@@ -192,9 +192,10 @@ GitHub computes it asynchronously and answers `unknown` right after a push:
 - `dirty` → reported for a human, with the advice branched on who opened it.
   This job routes *every* open PR based on `integration`, not only Dependabot's,
   and the two need different instructions: a Dependabot bump can be rebuilt by a
-  maintainer's `@dependabot recreate`, while a hand-written PR can only be
-  rebuilt by its own author. A failed author read falls back to wording true
-  either way rather than asserting an authorship it never established. A warning
+  maintainer's `@dependabot recreate`, while a hand-written PR has to be repaired
+  by hand by someone who can push to its head branch. A failed author read falls
+  back to wording true either way rather than asserting an authorship it never
+  established. A warning
   rather than a job failure: a conflicted PR can sit for days, and failing here
   would turn every later run red over a condition this job cannot act on.
 - anything else → untouched.
@@ -225,7 +226,13 @@ bots: "only users with push access can use that command" grants it to exactly
 the human this route now asks for. So the recovery for a *Dependabot* PR is a
 maintainer commenting `@dependabot recreate` — no workflow, no token, no special
 access beyond what they already have. For any other conflicted PR the command is
-meaningless and the warning says so instead; only its author can rebuild it.
+meaningless and the warning says so instead, pointing at the *capability* rather
+than an identity: the branch has to be repaired by hand by whoever can push to
+it. That is not only the opener — a branch in this repository is writable by any
+collaborator with push access, and a fork branch by maintainers when the PR
+allows maintainer edits. Naming the author instead, as this route's wording did
+from the start, risks talking someone out of a repair they were entitled to
+make.
 
 **Do not close a conflicted Dependabot PR instead.** This is the trap, and it
 was walked into on #175 while writing this change. Closing does not queue a

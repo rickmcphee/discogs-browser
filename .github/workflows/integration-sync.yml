@@ -637,9 +637,16 @@ jobs:
                 if [ "$author" = "dependabot[bot]" ]; then
                   echo "::warning::PR #$n conflicts with integration and cannot be caught up automatically. A person with push access can comment '@dependabot recreate' on it -- that command works for people, only bots are refused. Do NOT just close it: Dependabot treats a close as 'skip this release' and will not raise it again until a newer version ships, and it deletes the branch, so the PR cannot be reopened."
                 elif [ -n "$author" ]; then
-                  echo "::warning::PR #$n conflicts with integration and cannot be caught up automatically. It was opened by $author, not Dependabot, so no @dependabot command applies: only its author can rebuild the branch. It needs a human."
+                  # "whoever can push to the head branch", not "$author". The
+                  # wording this replaces said only the opener could rebuild it,
+                  # which is not true and could talk someone out of a repair
+                  # they were entitled to make: a same-repo branch is writable
+                  # by any collaborator with push access, and a fork branch by
+                  # maintainers when the PR allows maintainer edits. The
+                  # capability is what matters, not the identity.
+                  echo "::warning::PR #$n conflicts with integration and cannot be caught up automatically. It was opened by $author, not Dependabot, so no @dependabot command applies: the branch has to be repaired by hand by someone who can push to it -- its author, any collaborator with write access if it lives in this repository, or a maintainer if it is a fork PR allowing maintainer edits."
                 else
-                  echo "::warning::PR #$n conflicts with integration and cannot be caught up automatically, and its author could not be read. It needs a human: if Dependabot opened it, a person with push access can comment '@dependabot recreate' (and should not close it); otherwise only its author can rebuild the branch."
+                  echo "::warning::PR #$n conflicts with integration and cannot be caught up automatically, and its author could not be read. It needs a human either way: if Dependabot opened it, someone with push access can comment '@dependabot recreate' (and should not close it); otherwise the branch has to be repaired by hand by someone who can push to it."
                 fi
                 ;;
 
