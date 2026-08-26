@@ -103,7 +103,7 @@ describe('crawl/user-settings client functions', () => {
 
   it('getStockArtists includes hidden_crawler_ids when provided', async () => {
     fetchMock.mockResolvedValue({ ok: true, json: async () => ({ artists: [] }) })
-    await getStockArtists(undefined, false, [3, 7])
+    await getStockArtists({ hiddenCrawlerIds: [3, 7] })
     expect(fetchMock.mock.calls[0][0]).toContain('hidden_crawler_ids=3%2C7')
   })
 
@@ -124,7 +124,7 @@ describe('crawl/user-settings client functions', () => {
 
   it('getStockArtists maps libraryScope to the backend value', async () => {
     fetchMock.mockResolvedValue({ ok: true, json: async () => ({ artists: [] }) })
-    await getStockArtists('wantlist')
+    await getStockArtists({ libraryScope: 'wantlist' })
     expect(fetchMock.mock.calls[0][0]).toContain('library_scope=wishlist')
   })
 
@@ -281,8 +281,26 @@ describe('crawl/user-settings client functions', () => {
 
   it('getStockArtists forwards saved=true', async () => {
     fetchMock.mockResolvedValue({ ok: true, json: async () => ({ artists: [] }) })
-    await getStockArtists(undefined, false, undefined, true)
+    await getStockArtists({ saved: true })
     expect(fetchMock.mock.calls[0][0]).toContain('saved=true')
+  })
+
+  it('getStock forwards overlapped=true when overlapped is set', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ total: 0, page: 1, per_page: 250, items: [] }) })
+    await getStock({ overlapped: true })
+    expect(fetchMock.mock.calls[0][0]).toContain('overlapped=true')
+  })
+
+  it('getStock omits overlapped when unset', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ total: 0, page: 1, per_page: 250, items: [] }) })
+    await getStock({})
+    expect(fetchMock.mock.calls[0][0]).not.toContain('overlapped=')
+  })
+
+  it('getStockArtists forwards overlapped=true', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ artists: [] }) })
+    await getStockArtists({ overlapped: true })
+    expect(fetchMock.mock.calls[0][0]).toContain('overlapped=true')
   })
 
   it('saveStockItem PUTs to /stock/saved/:item_key', async () => {
