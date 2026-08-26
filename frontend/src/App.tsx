@@ -85,6 +85,25 @@ export default function App() {
   const [syncGeneration, setSyncGeneration] = useState(0)
   const [stockSyncGeneration, setStockSyncGeneration] = useState(0)
   const [stockSyncTarget, setStockSyncTarget] = useState<number | 'all' | null>(null)
+  // Optimistic twin of stockSyncTarget, set the instant a Refresh is clicked.
+  // stockSyncTarget can't do this job on its own: it's only set once the
+  // stock_sync_started event arrives, and POST /stock/sync/start has to open a
+  // fresh Postgres connection and take an advisory lock before it even
+  // returns. That gap left every Refresh button inert for a beat after the
+  // click -- the same "did that do anything?" the rejected-start message was
+  // added to fix, in the accepted-start case it never covered.
+  const [stockSyncStarting, setStockSyncStarting] = useState<number | 'all' | null>(null)
+  // Prices have no equivalent of stockSyncTarget to fall back on: POST
+  // /crawl/start only enqueues, and the `started` event comes from whenever
+  // the shared worker pool next drains the queue, which can be much later.
+  // So this covers the request itself and the enqueued count reported when it
+  // lands is the confirmation.
+  const [priceRefreshStarting, setPriceRefreshStarting] = useState(false)
+  // The text of the queued-count notice below, kept so the render can tell it
+  // apart from every other sync message. It is a confirmation, not a running
+  // job, and must not sit on top of the crawl banner once the worker pool
+  // actually starts crawling what it queued.
+  const [priceQueueNotice, setPriceQueueNotice] = useState<string | null>(null)
   const [authState, setAuthState] = useState<AuthStatus | null>(null)
   const [viewAsUser, setViewAsUser] = useState(() => localStorage.getItem(VIEW_AS_USER_KEY) === 'true')
   const [signupToken, setSignupToken] = useState<string | null>(() => {
@@ -270,6 +289,7 @@ export default function App() {
       if (event.status === 'stock_sync_started') {
         setSyncing(true)
         setStockSyncTarget(event.crawler_id ?? 'all')
+        setStockSyncStarting(null)
         setSyncStatus('Syncing in-stock catalog…', event.id ?? null)
         return
       }
@@ -304,6 +324,7 @@ export default function App() {
       if (event.status === 'stock_sync_complete') {
         setSyncing(false)
         setStockSyncTarget(null)
+        setStockSyncStarting(null)
         setSyncStatus(`In-stock sync complete: ${event.synced} items`, event.id ?? null)
         setStockSyncGeneration(g => g + 1)
         return
@@ -312,6 +333,7 @@ export default function App() {
         if (!event.source) {
           setSyncing(false)
           setStockSyncTarget(null)
+          setStockSyncStarting(null)
         }
         setSyncStatus(`In-stock sync failed: ${event.error}`, event.id ?? null)
         return
@@ -319,6 +341,7 @@ export default function App() {
       if (event.status === 'stock_sync_aborted') {
         setSyncing(false)
         setStockSyncTarget(null)
+        setStockSyncStarting(null)
         const sources = event.sources?.length ? ` (${event.sources.join(', ')})` : ''
         setSyncStatus(`In-stock sync stopped: ${event.error}${sources}`, event.id ?? null)
         return
@@ -455,12 +478,37 @@ export default function App() {
     }
   }, [setSyncStatus])
 
-  const startCrawl = useCallback((releaseId?: string, mode?: 'all' | 'missing') => {
+  // POST /crawl/start only enqueues; the `started` event that raises the crawl
+  // banner comes from whenever the shared worker pool next drains the queue,
+  // which can be long enough after the click to read as nothing happening. So
+  // the reply's enqueued count is reported directly -- it is the only
+  // confirmation available at click time, and it says more than "started"
+  // would anyway. It also replaces the alert() this used to raise on failure,
+  // which was the one error path in the app that blocked the page.
+  const startCrawl = useCallback(async (releaseId?: string, mode?: 'all' | 'missing') => {
     setCheckpointStatus(null)
-    postCrawlStart(mode ?? 'all', releaseId).catch((e: any) => {
-      alert(`Failed to start crawl: ${e.message}`)
-    })
-  }, [])
+    setPriceRefreshStarting(true)
+    setSyncStatus(releaseId
+      ? 'Queueing this record for a price refresh…'
+      : mode === 'missing'
+        ? 'Queueing records with no price yet…'
+        : 'Queueing every record for a price refresh…')
+    try {
+      const { enqueued } = await postCrawlStart(mode ?? 'all', releaseId)
+      const notice = enqueued === 0
+        ? (mode === 'missing'
+          ? 'Nothing to refresh — every record already has a price.'
+          : 'Nothing to refresh — no records matched.')
+        : `Queued ${enqueued} ${enqueued === 1 ? 'record' : 'records'} for a price refresh.`
+      setPriceQueueNotice(notice)
+      setSyncStatus(notice)
+    } catch (e: any) {
+      setPriceQueueNotice(null)
+      setSyncStatus(`Price refresh failed to start: ${e.message}`)
+    } finally {
+      setPriceRefreshStarting(false)
+    }
+  }, [setSyncStatus])
 
   const handleFindPrices = useCallback(async (releaseId?: string, mode?: 'all' | 'missing') => {
     if (releaseId) {
@@ -487,21 +535,34 @@ export default function App() {
     handleFindPrices(undefined, mode)
   }, [handleFindPrices])
 
-  const handleRefreshStock = useCallback(async () => {
+  // One handler for both the bulk Refresh and a single store's, because the
+  // feedback is the same either way: claim the button now, name what was
+  // clicked in the status bar now, and only hand back to the real
+  // stock_sync_* state once the server has answered.
+  const startStockSync = useCallback(async (crawlerId?: number) => {
+    setStockSyncStarting(crawlerId ?? 'all')
+    const site = crawlerId != null ? crawlers.find((c) => c.id === crawlerId)?.site_name : null
+    setSyncStatus(site
+      ? `Starting ${site} catalog refresh…`
+      : 'Starting in-stock catalog refresh…')
     try {
-      reportStockSyncRejection(await postStockSyncStart(), setSyncStatus)
+      const result = await postStockSyncStart(crawlerId)
+      reportStockSyncRejection(result, setSyncStatus)
+      // On an accepted start the optimistic state stays until
+      // stock_sync_started replaces it; a rejection ends here.
+      if (!result.started) setStockSyncStarting(null)
     } catch (e: any) {
+      setStockSyncStarting(null)
       setSyncStatus(`In-stock sync failed to start: ${e.message}`)
     }
-  }, [setSyncStatus])
+  }, [crawlers, setSyncStatus])
 
-  const handleRefreshStoreCrawler = useCallback(async (crawlerId: number) => {
-    try {
-      reportStockSyncRejection(await postStockSyncStart(crawlerId), setSyncStatus)
-    } catch (e: any) {
-      setSyncStatus(`In-stock sync failed to start: ${e.message}`)
-    }
-  }, [setSyncStatus])
+  const handleRefreshStock = useCallback(() => startStockSync(), [startStockSync])
+
+  const handleRefreshStoreCrawler = useCallback(
+    (crawlerId: number) => startStockSync(crawlerId),
+    [startStockSync],
+  )
 
   const handleRefreshRecommendations = useCallback(async () => {
     try {
@@ -622,7 +683,22 @@ export default function App() {
   const showAdminNav = isRealAdmin && !viewAsUser
 
   const recommendedAvailable = hasAnthropicKey && hasJudgedItems
-  const syncBannerVisible = syncMessage !== null && (syncMessageId === null || syncMessageId > dismissedSyncId)
+  // The optimistic target only stands in while there is no real one: a
+  // per-crawler Refresh rejected by an already-running bulk sync must keep
+  // showing the bulk sync, not the row that was just clicked.
+  const stockSyncActive = stockSyncTarget ?? stockSyncStarting
+  // Anything the user is waiting on keeps the banner's spinner up and its
+  // Dismiss button away -- a Dismiss button next to "Starting…" reads as
+  // finished.
+  const syncBusy = syncing || stockSyncStarting !== null || priceRefreshStarting
+  // Comparing the text, not a flag: anything that has since replaced the
+  // notice -- a collection sync, a stock sync, a save failure -- fails the
+  // comparison and gets the banner's normal precedence back. It also makes the
+  // two events' order irrelevant, since a `started` that beat the POST's reply
+  // yields the same render as one that followed it.
+  const priceNoticeSupersededByCrawl = crawling && syncMessage !== null && syncMessage === priceQueueNotice
+  const syncBannerVisible = syncMessage !== null && !priceNoticeSupersededByCrawl
+    && (syncMessageId === null || syncMessageId > dismissedSyncId)
   const crawlBannerVisible = crawlBannerId > dismissedCrawlId
 
   function dismissSyncMessage() {
@@ -745,8 +821,9 @@ export default function App() {
             onRefreshPrices={handleRefreshPricesFromSettings}
             onRefreshStock={handleRefreshStock}
             isAdmin={showAdminNav}
-            stockSyncBusy={stockSyncTarget !== null}
-            stockSyncCrawlerId={typeof stockSyncTarget === 'number' ? stockSyncTarget : null}
+            stockSyncBusy={stockSyncActive !== null}
+            stockSyncCrawlerId={typeof stockSyncActive === 'number' ? stockSyncActive : null}
+            priceRefreshBusy={priceRefreshStarting}
             onRefreshStoreCrawler={handleRefreshStoreCrawler}
           />
         </div>
@@ -867,10 +944,10 @@ export default function App() {
           <span className="text-sm font-medium text-gray-300 shrink-0">
             {syncMessage}
           </span>
-          {syncing && (
+          {syncBusy && (
             <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin shrink-0" />
           )}
-          {!syncing && (
+          {!syncBusy && (
             <button
               onClick={dismissSyncMessage}
               className={`ml-auto px-3 py-1 text-sm shrink-0 ${dismissButtonClass()}`}

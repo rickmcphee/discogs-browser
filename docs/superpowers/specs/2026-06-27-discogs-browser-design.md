@@ -375,6 +375,20 @@ The Settings tab wrapper has `overflow-y-auto` so the panel scrolls independentl
 - **Site Sessions**: login / done / clear per crawler.
 - **Crawlers**: enable/disable toggle per crawler.
 
+**Amendment (2026-08-26):** the crawler-facing bullets above have drifted
+and are corrected here rather than rewritten. "Crawler Management" is now
+"Marketplace Management" (see
+[`2026-08-08-discogs-tab-rename-design.md`](../../specifications/shaping/2026-08-08-discogs-tab-rename-design.md)),
+its "Refresh Now" button is labelled "Refresh", and a "Store Management"
+section with its own bulk Refresh and a per-store Refresh in its crawler table
+now sits alongside it (see
+[`2026-08-07-store-crawler-refresh-button-design.md`](../../specifications/shaping/2026-08-07-store-crawler-refresh-button-design.md)).
+"Refresh Now passes the current mode selection directly" still holds for the
+Marketplace one. What each of these buttons shows once clicked -- spinners, the
+inverted running row, and the status-bar messages naming what was started or
+queued -- is
+[`2026-08-26-refresh-click-feedback-design.md`](../../specifications/shaping/2026-08-26-refresh-click-feedback-design.md).
+
 ### Log Viewer
 
 Scrollable monospace log tail over SSE. Automatically scrolls to bottom on new lines. Level toggle buttons (DEBUG/INFO/WARNING/ERROR; DEBUG off by default) drive the `levels` query param — changing a toggle reconnects the stream so the server re-seeds and tails only the selected levels (see [Logging](#logging)). A regex message field additionally filters the view client-side.

@@ -15,7 +15,8 @@ class MockEventSource {
   }
 }
 
-const { release } = vi.hoisted(() => ({
+const { release, postCrawlStart } = vi.hoisted(() => ({
+  postCrawlStart: vi.fn(),
   release: {
     discogs_id: 'r1',
     artist: 'Pink Floyd',
@@ -42,7 +43,7 @@ vi.mock('../api/client', () => ({
   refreshCollection: vi.fn().mockResolvedValue({ synced: 0, username: 'test' }),
   getCollectionStatus: vi.fn().mockResolvedValue({ total: 0, last_synced: null }),
   getCrawlStatus: vi.fn().mockResolvedValue({ total: 0, missing: 0, oldest_checked: null }),
-  postCrawlStart: vi.fn().mockResolvedValue({ started: true, running: true }),
+  postCrawlStart: (...args: unknown[]) => postCrawlStart(...args),
   getCrawlers: vi.fn().mockResolvedValue([]),
   openCrawlStream: vi.fn(() => new MockEventSource()),
   getReleases: vi.fn().mockResolvedValue({ total: 1, page: 1, per_page: 50, releases: [release] }),
@@ -83,7 +84,18 @@ beforeEach(() => {
   MockEventSource.instances = []
   vi.clearAllMocks()
   localStorage.clear()
+  postCrawlStart.mockResolvedValue({ enqueued: 0 })
 })
+
+async function clickMarketplaceRefresh() {
+  render(<App />)
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
+  fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+  const description = await screen.findByText('Run price crawlers immediately.')
+  const button = (description.closest('tr') as HTMLElement).querySelector('button') as HTMLButtonElement
+  fireEvent.click(button)
+  return button
+}
 
 async function getCrawlSourceOnMount() {
   await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
@@ -204,6 +216,101 @@ describe('crawl status bar', () => {
 
     await waitFor(() => expect(screen.getByRole('button', { name: 'Collection' })).toBeInTheDocument())
     expect(screen.queryByText('Done')).not.toBeInTheDocument()
+  })
+})
+
+// POST /crawl/start only enqueues; the `started` event that raises the crawl
+// banner comes from the shared worker pool whenever it next drains the queue.
+// Between the two there was nothing at all on screen, so the queued count the
+// POST already returns is reported directly.
+describe('price refresh feedback', () => {
+  it('reports how many records were queued', async () => {
+    postCrawlStart.mockResolvedValue({ enqueued: 412 })
+    await clickMarketplaceRefresh()
+    await waitFor(() =>
+      expect(screen.getByText('Queued 412 records for a price refresh.')).toBeInTheDocument()
+    )
+  })
+
+  it('says "1 record", not "1 records"', async () => {
+    postCrawlStart.mockResolvedValue({ enqueued: 1 })
+    await clickMarketplaceRefresh()
+    await waitFor(() =>
+      expect(screen.getByText('Queued 1 record for a price refresh.')).toBeInTheDocument()
+    )
+  })
+
+  // Zero queued is a successful click with nothing to do, which reads exactly
+  // like a dead button unless it says so.
+  it('says so when a missing-only refresh finds nothing to queue', async () => {
+    postCrawlStart.mockResolvedValue({ enqueued: 0 })
+    await clickMarketplaceRefresh()
+    await waitFor(() =>
+      expect(screen.getByText('Nothing to refresh — every record already has a price.')).toBeInTheDocument()
+    )
+  })
+
+  it('spins the button and says what it is doing while the request is in flight', async () => {
+    let resolve: (value: { enqueued: number }) => void = () => {}
+    postCrawlStart.mockReturnValue(new Promise((r) => { resolve = r }))
+    const button = await clickMarketplaceRefresh()
+
+    await waitFor(() =>
+      expect(screen.getByText('Queueing records with no price yet…')).toBeInTheDocument()
+    )
+    expect(button).toBeDisabled()
+    expect(button.querySelector('.animate-spin')).toBeInTheDocument()
+
+    resolve({ enqueued: 3 })
+    await waitFor(() => expect(button).not.toBeDisabled())
+    expect(button).toHaveTextContent('Refresh')
+  })
+
+  // The queued count confirms the click; the crawl banner reports the work.
+  // Only one of the two bars renders at a time, so the confirmation has to get
+  // out of the way rather than have to be dismissed off the live progress.
+  it('yields the queued notice to the crawl banner once the crawl actually starts', async () => {
+    postCrawlStart.mockResolvedValue({ enqueued: 412 })
+    await clickMarketplaceRefresh()
+    await waitFor(() =>
+      expect(screen.getByText('Queued 412 records for a price refresh.')).toBeInTheDocument()
+    )
+
+    getLastCrawlSource().emit({ status: 'started', total: 412, id: 1 })
+    await waitFor(() => expect(screen.getByText(/Refreshing prices/i)).toBeInTheDocument())
+    expect(screen.queryByText('Queued 412 records for a price refresh.')).not.toBeInTheDocument()
+  })
+
+  it('yields the notice even when the crawl starts before the request replies', async () => {
+    let resolve: (value: { enqueued: number }) => void = () => {}
+    postCrawlStart.mockReturnValue(new Promise((r) => { resolve = r }))
+    await clickMarketplaceRefresh()
+
+    getLastCrawlSource().emit({ status: 'started', total: 412, id: 1 })
+    resolve({ enqueued: 412 })
+    await waitFor(() => expect(screen.getByText(/Refreshing prices/i)).toBeInTheDocument())
+    expect(screen.queryByText('Queued 412 records for a price refresh.')).not.toBeInTheDocument()
+  })
+
+  // Nothing was queued, so no crawl is coming to supersede it.
+  it('keeps a nothing-to-refresh notice up, since no crawl will follow it', async () => {
+    postCrawlStart.mockResolvedValue({ enqueued: 0 })
+    await clickMarketplaceRefresh()
+    await waitFor(() =>
+      expect(screen.getByText('Nothing to refresh — every record already has a price.')).toBeInTheDocument()
+    )
+    expect(screen.getByRole('button', { name: /Dismiss/i })).toBeInTheDocument()
+  })
+
+  it('reports a failed start in the status bar instead of a blocking alert', async () => {
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {})
+    postCrawlStart.mockRejectedValue(new Error('network down'))
+    await clickMarketplaceRefresh()
+    await waitFor(() =>
+      expect(screen.getByText('Price refresh failed to start: network down')).toBeInTheDocument()
+    )
+    expect(alertSpy).not.toHaveBeenCalled()
+    alertSpy.mockRestore()
   })
 })
 
