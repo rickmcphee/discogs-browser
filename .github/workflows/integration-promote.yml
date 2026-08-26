@@ -30,7 +30,33 @@ jobs:
   promote:
     name: Open/update the promotion PR
     runs-on: ubuntu-latest
+    env:
+      # `secrets` is available in jobs.<job_id>.env but NOT in a step-level
+      # `if`; `env` is available in both. Reducing the key to a boolean here is
+      # what lets the guard below test it at all, and it must: with the
+      # variable set and the secret absent, create-github-app-token rejects the
+      # empty private-key and FAILS the step, so the job dies before any
+      # `|| github.token` is evaluated. Guarding on the variable alone made a
+      # half-removed configuration an outage rather than the documented
+      # fallback.
+      APP_PRIVATE_KEY_SET: ${{ secrets.INTEGRATION_PROMOTE_APP_PRIVATE_KEY != '' }}
     steps:
+      # See integration-sync.yml's SETUP block for what this app is and why it
+      # is an app rather than a PAT. Guarded on both halves of the config: the
+      # Client ID from `vars` directly, the key via the job-level env above
+      # because the secrets context is not available in a step-level `if`.
+      # A skipped step yields empty outputs, so the `|| github.token` fallback
+      # below is preserved -- which guarding on only one half would not do,
+      # since an empty private-key fails the step before the fallback runs.
+      - name: Mint an installation token for the sync app
+        id: app-token
+        if: ${{ vars.INTEGRATION_PROMOTE_APP_CLIENT_ID != ''
+          && env.APP_PRIVATE_KEY_SET == 'true' }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.INTEGRATION_PROMOTE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.INTEGRATION_PROMOTE_APP_PRIVATE_KEY }}
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
@@ -41,13 +67,18 @@ jobs:
           # fly-deploy.yml's `pull_request` checks, but GitHub puts that run in
           # an approval-required state (recursion guard on GITHUB_TOKEN-authored
           # events) -- see https://docs.github.com/en/actions/concepts/security/github_token.
-          # So until INTEGRATION_PROMOTE_TOKEN (a fine-grained PAT or GitHub App
-          # token with this repo's Contents: read/write + Pull requests:
-          # read/write) is added as a secret, someone has to click "Approve and
-          # run" on the pending workflow run in the Actions tab once a week
-          # before auto-merge can complete. Adding that secret removes the
-          # click with no other change needed here.
-          GH_TOKEN: ${{ secrets.INTEGRATION_PROMOTE_TOKEN || github.token }}
+          # So until the sync app is configured (Contents: read/write +
+          # Pull requests: read/write on its installation), someone has to
+          # click "Approve and run" on the pending workflow run in the Actions
+          # tab once a week before auto-merge can complete. Configuring it
+          # removes the click with no other change needed here.
+          #
+          # Note the app is deliberately not a bypass actor on
+          # main-branch-protection, so this PR's required approving review --
+          # added after PR #134 merged unreviewed -- keeps binding. A personal
+          # access token owned by a bypass actor would have quietly undone
+          # that, on the one PR in this repo that deploys to production.
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
         run: |
           set -euo pipefail
           git fetch origin main integration
