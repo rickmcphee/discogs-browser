@@ -347,7 +347,7 @@ function Settings({
                       className={`px-3 py-1 text-xs inline-flex items-center gap-2 ${secondaryButtonClass()}`}
                     >
                       {priceRefreshBusy && <Spinner className="w-3 h-3 border-white" />}
-                      {priceRefreshBusy ? 'Queueing…' : 'Refresh'}
+                      {priceRefreshBusy ? 'Starting…' : 'Refresh'}
                     </button>
                   </td>
                   <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">

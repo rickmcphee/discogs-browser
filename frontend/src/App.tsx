@@ -99,11 +99,6 @@ export default function App() {
   // So this covers the request itself and the enqueued count reported when it
   // lands is the confirmation.
   const [priceRefreshStarting, setPriceRefreshStarting] = useState(false)
-  // The text of the queued-count notice below, kept so the render can tell it
-  // apart from every other sync message. It is a confirmation, not a running
-  // job, and must not sit on top of the crawl banner once the worker pool
-  // actually starts crawling what it queued.
-  const [priceQueueNotice, setPriceQueueNotice] = useState<string | null>(null)
   const [authState, setAuthState] = useState<AuthStatus | null>(null)
   const [viewAsUser, setViewAsUser] = useState(() => localStorage.getItem(VIEW_AS_USER_KEY) === 'true')
   const [signupToken, setSignupToken] = useState<string | null>(() => {
@@ -478,32 +473,33 @@ export default function App() {
     }
   }, [setSyncStatus])
 
-  // POST /crawl/start only enqueues; the `started` event that raises the crawl
-  // banner comes from whenever the shared worker pool next drains the queue,
-  // which can be long enough after the click to read as nothing happening. So
-  // the reply's enqueued count is reported directly -- it is the only
-  // confirmation available at click time, and it says more than "started"
-  // would anyway. It also replaces the alert() this used to raise on failure,
-  // which was the one error path in the app that blocked the page.
+  // POST /crawl/start only enqueues, and the shared worker pool broadcasts no
+  // lifecycle event when it later picks the work up (the `started` event went
+  // with the crawl-queue refactor). So the reply's own count is the only
+  // confirmation that exists at click time. It is deliberately reported as
+  // records *requested*, not queued: routers/crawl.py counts targets, while
+  // db.enqueue_crawl_queue no-ops on a row that is already pending or
+  // in_progress -- and "requested" is the more useful of the two anyway, since
+  // an affected-row count would say "0" for a re-click mid-crawl whose records
+  // are all queued and about to be crawled. This also replaces the alert()
+  // this used to raise on failure, the one error path in the app that blocked
+  // the page.
   const startCrawl = useCallback(async (releaseId?: string, mode?: 'all' | 'missing') => {
     setCheckpointStatus(null)
     setPriceRefreshStarting(true)
     setSyncStatus(releaseId
-      ? 'Queueing this record for a price refresh…'
+      ? 'Starting price refresh for this record…'
       : mode === 'missing'
-        ? 'Queueing records with no price yet…'
-        : 'Queueing every record for a price refresh…')
+        ? 'Starting price refresh for records with no price yet…'
+        : 'Starting price refresh for every record…')
     try {
       const { enqueued } = await postCrawlStart(mode ?? 'all', releaseId)
-      const notice = enqueued === 0
+      setSyncStatus(enqueued === 0
         ? (mode === 'missing'
           ? 'Nothing to refresh — every record already has a price.'
           : 'Nothing to refresh — no records matched.')
-        : `Queued ${enqueued} ${enqueued === 1 ? 'record' : 'records'} for a price refresh.`
-      setPriceQueueNotice(notice)
-      setSyncStatus(notice)
+        : `Price refresh requested for ${enqueued} ${enqueued === 1 ? 'record' : 'records'}.`)
     } catch (e: any) {
-      setPriceQueueNotice(null)
       setSyncStatus(`Price refresh failed to start: ${e.message}`)
     } finally {
       setPriceRefreshStarting(false)
@@ -691,14 +687,7 @@ export default function App() {
   // Dismiss button away -- a Dismiss button next to "Starting…" reads as
   // finished.
   const syncBusy = syncing || stockSyncStarting !== null || priceRefreshStarting
-  // Comparing the text, not a flag: anything that has since replaced the
-  // notice -- a collection sync, a stock sync, a save failure -- fails the
-  // comparison and gets the banner's normal precedence back. It also makes the
-  // two events' order irrelevant, since a `started` that beat the POST's reply
-  // yields the same render as one that followed it.
-  const priceNoticeSupersededByCrawl = crawling && syncMessage !== null && syncMessage === priceQueueNotice
-  const syncBannerVisible = syncMessage !== null && !priceNoticeSupersededByCrawl
-    && (syncMessageId === null || syncMessageId > dismissedSyncId)
+  const syncBannerVisible = syncMessage !== null && (syncMessageId === null || syncMessageId > dismissedSyncId)
   const crawlBannerVisible = crawlBannerId > dismissedCrawlId
 
   function dismissSyncMessage() {

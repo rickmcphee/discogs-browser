@@ -18,11 +18,14 @@ arrives well after the click:
   event that sets `stockSyncTarget` comes later still. Until it landed, the
   button was unchanged and the status bar was empty.
 - **The bulk Store Management Refresh.** Same request, same gap.
-- **The Marketplace Management Refresh.** `POST /crawl/start` only *enqueues*;
-  the `started` event that raises the crawl banner comes from whenever the
-  shared worker pool next drains the queue, which can be much later than the
-  click — and if nothing was enqueued (a "missing only" run with no missing
-  prices), no event is coming at all and the click is silent forever.
+- **The Marketplace Management Refresh.** `POST /crawl/start` only *enqueues*,
+  and the worker pool broadcasts no lifecycle event when it later picks the
+  work up — `started`/`complete`/`stopped` went with the crawl-queue refactor
+  (see the CrawlManager amendment in
+  [`2026-06-27-discogs-browser-design.md`](../../superpowers/specs/2026-06-27-discogs-browser-design.md)),
+  leaving only per-write `listing_changed`. So nothing at all reached the
+  screen between the click and the first row changing price, and on a run that
+  enqueued nothing, nothing ever would.
 
 What feedback existed once the event finally arrived was also close to
 invisible: the per-row button swapped its glyph from `↻` to `⟳` — two
@@ -77,20 +80,26 @@ that a click landed.
   `crawler_id` is the bulk one, so the bulk button spins and the rows are only
   disabled; a single-store run inverts that. Labelling the bulk button
   "Refreshing…" during a single store's refresh would point at the wrong work.
-- **Prices report their enqueued count rather than waiting for an event.**
-  `POST /crawl/start`'s reply is the only confirmation available at click time,
-  and it says more than a "started" would: how many records were queued, or
-  that there was nothing to queue.
-- **The queued count yields to live progress.** Only one status bar renders at
-  a time and the sync bar wins, so a "Queued 412 records" notice left standing
-  would hide the crawl banner's live progress behind a Dismiss button. The
-  notice is a confirmation, not a running job: while a crawl is running and the
-  sync message is still that notice, the crawl banner takes the bar. Deciding
-  it at render time by comparing the message *text* — rather than clearing the
-  message when `started` arrives — makes the two events' order irrelevant, and
-  lets anything that has since replaced the notice (a collection sync, a stock
-  sync, a save failure) take the banner's normal precedence back. A
-  nothing-to-queue notice is never superseded, because no crawl is coming.
+- **Prices report their own request's count, since no event is coming.**
+  `POST /crawl/start`'s reply is the only confirmation that exists at click
+  time.
+- **That count is records *requested*, not queued.** `routers/crawl.py` counts
+  targets, while `db.enqueue_crawl_queue` no-ops on a row that is already
+  `pending` or `in_progress` — so a re-click can be told "412" having inserted
+  nothing. "Requested" is true in both cases, and is the more useful of the two
+  anyway: an affected-row count would report "0" for a re-click mid-crawl whose
+  records are all queued and about to be crawled, which reads as a dead button.
+  Reported by wording rather than by changing the endpoint for that reason, and
+  because `{"enqueued": N}` is already documented as a target count.
+- **Nothing guards the notice against the crawl status bar.** An earlier draft
+  had the notice stand down while `crawling`, so it could not sit on top of
+  live progress. It cannot: `crawling` is set only by the `started` event,
+  which no longer exists, so the crawl status bar in `App.tsx` has been
+  unreachable in production since the crawl-queue refactor and
+  `crawlStatusBar.test.tsx` keeps it green by synthesizing events the backend
+  does not send. The guard was removed rather than kept as insurance — dead
+  code with tests asserting unsupported behaviour. Deleting the status bar
+  itself is a separate cleanup, out of scope here.
 
 ## Frontend design
 
@@ -114,8 +123,6 @@ that a click landed.
   to "Starting…" would read as finished) is driven by
   `syncing || stockSyncStarting !== null || priceRefreshStarting` rather than
   `syncing` alone.
-- New state `priceQueueNotice: string | null` holds the queued-count message's
-  text so `syncBannerVisible` can recognise it and stand down while `crawling`.
 - `Settings` receives the merged target — `stockSyncTarget ?? stockSyncStarting`
   — through the existing `stockSyncBusy`/`stockSyncCrawlerId` props, so both
   keep their current meanings and only widen to cover the pre-confirmation
@@ -128,8 +135,8 @@ dismissed-event-id replay guard):
 | --- | --- |
 | A store's Refresh | `Starting {site} catalog refresh…` |
 | Bulk Store Refresh | `Starting in-stock catalog refresh…` |
-| Marketplace Refresh, in flight | `Queueing records with no price yet…` / `Queueing every record for a price refresh…` |
-| Marketplace Refresh, done | `Queued {n} record(s) for a price refresh.` |
+| Marketplace Refresh, in flight | `Starting price refresh for records with no price yet…` / `…for every record…` |
+| Marketplace Refresh, done | `Price refresh requested for {n} record(s).` |
 | Marketplace Refresh, nothing queued | `Nothing to refresh — every record already has a price.` |
 
 `frontend/src/views/Settings.tsx`:
@@ -146,7 +153,7 @@ dismissed-event-id replay guard):
 - The bulk Store Refresh shows the spinner and reads "Refreshing…" while the
   *bulk* run holds the lock, and is undimmed then; during a single store's run
   it stays disabled and reads "Refresh".
-- The Marketplace Refresh shows the spinner and reads "Queueing…" while its
+- The Marketplace Refresh shows the spinner and reads "Starting…" while its
   request is in flight. It is not disabled for the crawl's duration — the
   queue is shared and re-enqueueing mid-crawl is legitimate — only for the
   request.
@@ -162,12 +169,10 @@ dismissed-event-id replay guard):
   the bulk run and no row claims it; the button is released on a rejected start
   and on a thrown one; the claim survives the hand-over to `stock_sync_started`
   and is released by `stock_sync_complete`.
-- `frontend/src/test/crawlStatusBar.test.tsx` — the queued count is reported,
-  singular and plural; a zero-queue run says so; the in-flight state spins and
-  says what it is doing; a failed start lands in the status bar and raises no
-  `alert`; the notice yields to the crawl banner with the `started` event
-  arriving both after and before the POST's reply, and a nothing-to-queue
-  notice stays up.
+- `frontend/src/test/crawlStatusBar.test.tsx` — the requested count is
+  reported, singular and plural; a zero-target run says so and stays
+  dismissible; the in-flight state spins and says what it is doing; a failed
+  start lands in the status bar and raises no `alert`.
 
 Verified visually as well as in tests: the Settings view was rendered in each
 state in a browser and screenshotted, since "more obvious" is not something a

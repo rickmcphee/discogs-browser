@@ -253,7 +253,7 @@ describe('Settings', () => {
     await waitFor(() => expect(getSettings).toHaveBeenCalled())
     const description = await screen.findByText('Run price crawlers immediately.')
     const button = within(description.closest('tr') as HTMLElement).getByRole('button')
-    expect(button).toHaveTextContent('Queueing…')
+    expect(button).toHaveTextContent('Starting…')
     expect(button).toBeDisabled()
     expect(button.querySelector('.animate-spin')).toBeInTheDocument()
   })

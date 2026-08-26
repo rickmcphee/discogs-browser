@@ -219,16 +219,17 @@ describe('crawl status bar', () => {
   })
 })
 
-// POST /crawl/start only enqueues; the `started` event that raises the crawl
-// banner comes from the shared worker pool whenever it next drains the queue.
-// Between the two there was nothing at all on screen, so the queued count the
-// POST already returns is reported directly.
+// POST /crawl/start only enqueues, and the worker pool broadcasts no lifecycle
+// event when it later picks the work up, so between the click and the first
+// listing_changed there was nothing at all on screen. The reply's own count is
+// the only confirmation that exists at click time -- and it counts targets
+// requested, not rows inserted, which is what the wording has to say.
 describe('price refresh feedback', () => {
-  it('reports how many records were queued', async () => {
+  it('reports how many records the refresh was requested for', async () => {
     postCrawlStart.mockResolvedValue({ enqueued: 412 })
     await clickMarketplaceRefresh()
     await waitFor(() =>
-      expect(screen.getByText('Queued 412 records for a price refresh.')).toBeInTheDocument()
+      expect(screen.getByText('Price refresh requested for 412 records.')).toBeInTheDocument()
     )
   })
 
@@ -236,11 +237,11 @@ describe('price refresh feedback', () => {
     postCrawlStart.mockResolvedValue({ enqueued: 1 })
     await clickMarketplaceRefresh()
     await waitFor(() =>
-      expect(screen.getByText('Queued 1 record for a price refresh.')).toBeInTheDocument()
+      expect(screen.getByText('Price refresh requested for 1 record.')).toBeInTheDocument()
     )
   })
 
-  // Zero queued is a successful click with nothing to do, which reads exactly
+  // Zero targets is a successful click with nothing to do, which reads exactly
   // like a dead button unless it says so.
   it('says so when a missing-only refresh finds nothing to queue', async () => {
     postCrawlStart.mockResolvedValue({ enqueued: 0 })
@@ -248,6 +249,7 @@ describe('price refresh feedback', () => {
     await waitFor(() =>
       expect(screen.getByText('Nothing to refresh — every record already has a price.')).toBeInTheDocument()
     )
+    expect(screen.getByRole('button', { name: /Dismiss/i })).toBeInTheDocument()
   })
 
   it('spins the button and says what it is doing while the request is in flight', async () => {
@@ -256,7 +258,7 @@ describe('price refresh feedback', () => {
     const button = await clickMarketplaceRefresh()
 
     await waitFor(() =>
-      expect(screen.getByText('Queueing records with no price yet…')).toBeInTheDocument()
+      expect(screen.getByText('Starting price refresh for records with no price yet…')).toBeInTheDocument()
     )
     expect(button).toBeDisabled()
     expect(button.querySelector('.animate-spin')).toBeInTheDocument()
@@ -264,42 +266,6 @@ describe('price refresh feedback', () => {
     resolve({ enqueued: 3 })
     await waitFor(() => expect(button).not.toBeDisabled())
     expect(button).toHaveTextContent('Refresh')
-  })
-
-  // The queued count confirms the click; the crawl banner reports the work.
-  // Only one of the two bars renders at a time, so the confirmation has to get
-  // out of the way rather than have to be dismissed off the live progress.
-  it('yields the queued notice to the crawl banner once the crawl actually starts', async () => {
-    postCrawlStart.mockResolvedValue({ enqueued: 412 })
-    await clickMarketplaceRefresh()
-    await waitFor(() =>
-      expect(screen.getByText('Queued 412 records for a price refresh.')).toBeInTheDocument()
-    )
-
-    getLastCrawlSource().emit({ status: 'started', total: 412, id: 1 })
-    await waitFor(() => expect(screen.getByText(/Refreshing prices/i)).toBeInTheDocument())
-    expect(screen.queryByText('Queued 412 records for a price refresh.')).not.toBeInTheDocument()
-  })
-
-  it('yields the notice even when the crawl starts before the request replies', async () => {
-    let resolve: (value: { enqueued: number }) => void = () => {}
-    postCrawlStart.mockReturnValue(new Promise((r) => { resolve = r }))
-    await clickMarketplaceRefresh()
-
-    getLastCrawlSource().emit({ status: 'started', total: 412, id: 1 })
-    resolve({ enqueued: 412 })
-    await waitFor(() => expect(screen.getByText(/Refreshing prices/i)).toBeInTheDocument())
-    expect(screen.queryByText('Queued 412 records for a price refresh.')).not.toBeInTheDocument()
-  })
-
-  // Nothing was queued, so no crawl is coming to supersede it.
-  it('keeps a nothing-to-refresh notice up, since no crawl will follow it', async () => {
-    postCrawlStart.mockResolvedValue({ enqueued: 0 })
-    await clickMarketplaceRefresh()
-    await waitFor(() =>
-      expect(screen.getByText('Nothing to refresh — every record already has a price.')).toBeInTheDocument()
-    )
-    expect(screen.getByRole('button', { name: /Dismiss/i })).toBeInTheDocument()
   })
 
   it('reports a failed start in the status bar instead of a blocking alert', async () => {
