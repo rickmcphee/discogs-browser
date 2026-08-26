@@ -268,6 +268,26 @@ describe('price refresh feedback', () => {
     expect(button).toHaveTextContent('Refresh')
   })
 
+  // The spinner has to describe the message on screen, not "is anything
+  // pending anywhere": a stock sync completing behind a still-in-flight price
+  // request used to leave its completion message spinning with no Dismiss.
+  it('does not spin a finished message just because another request is in flight', async () => {
+    let resolve: (value: { enqueued: number }) => void = () => {}
+    postCrawlStart.mockReturnValue(new Promise((r) => { resolve = r }))
+    await clickMarketplaceRefresh()
+    await waitFor(() =>
+      expect(screen.getByText('Starting price refresh for records with no price yet…')).toBeInTheDocument()
+    )
+    expect(screen.queryByRole('button', { name: /Dismiss/i })).not.toBeInTheDocument()
+
+    // A stock sync finishes while the price request is still unanswered.
+    getLastCrawlSource().emit({ status: 'stock_sync_complete', synced: 12, id: 1 })
+    await waitFor(() => expect(screen.getByText(/In-stock sync complete: 12 items/)).toBeInTheDocument())
+    expect(screen.getByRole('button', { name: /Dismiss/i })).toBeInTheDocument()
+
+    resolve({ enqueued: 3 })
+  })
+
   it('reports a failed start in the status bar instead of a blocking alert', async () => {
     const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {})
     postCrawlStart.mockRejectedValue(new Error('network down'))

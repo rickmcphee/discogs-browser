@@ -87,6 +87,14 @@ export default function App() {
   const [hasJudgedItems, setHasJudgedItems] = useState(false)
   const [hasPriceData, setHasPriceData] = useState(false)
   const latestPriceStatusSeq = useRef(0)
+  // Same race, same fix, for the two start requests. Neither has a bounded
+  // response time -- POST /stock/sync/start opens a fresh psycopg connection
+  // before it answers -- and the claim timeout below can re-enable the button
+  // while one is still in flight. Without these, a first request rejecting
+  // after a second click would clear the *newer* claim and overwrite its
+  // status with the older request's result.
+  const latestStockSyncStartSeq = useRef(0)
+  const latestPriceRefreshSeq = useRef(0)
   const latestHasJudgedItemsSeq = useRef(0)
   const [serverReady, setServerReady] = useState(false)
   const [backendUp, setBackendUp] = useState<boolean | null>(null)
@@ -112,6 +120,13 @@ export default function App() {
   // stopped went with the crawl-queue refactor). Nothing is coming, so this
   // covers the request itself and the count in its reply is the confirmation.
   const [priceRefreshStarting, setPriceRefreshStarting] = useState(false)
+  // The message whose presence on screen means "still waiting on this". The
+  // banner's spinner is derived from it rather than from "is anything pending
+  // anywhere", because the two drift apart: a stock sync finishing while a
+  // price request was still in flight left its *completion* message spinning
+  // with no Dismiss button. Comparing text means a message that has since been
+  // replaced simply stops matching, with nothing to keep in sync by hand.
+  const [busyStatusMessage, setBusyStatusMessage] = useState<string | null>(null)
   const [authState, setAuthState] = useState<AuthStatus | null>(null)
   const [viewAsUser, setViewAsUser] = useState(() => localStorage.getItem(VIEW_AS_USER_KEY) === 'true')
   const [signupToken, setSignupToken] = useState<string | null>(() => {
@@ -518,24 +533,29 @@ export default function App() {
   // this used to raise on failure, the one error path in the app that blocked
   // the page.
   const startCrawl = useCallback(async (releaseId?: string, mode?: 'all' | 'missing') => {
+    const seq = ++latestPriceRefreshSeq.current
     setCheckpointStatus(null)
     setPriceRefreshStarting(true)
-    setSyncStatus(releaseId
+    const starting = releaseId
       ? 'Starting price refresh for this record…'
       : mode === 'missing'
         ? 'Starting price refresh for records with no price yet…'
-        : 'Starting price refresh for every record…')
+        : 'Starting price refresh for every record…'
+    setBusyStatusMessage(starting)
+    setSyncStatus(starting)
     try {
       const { enqueued } = await postCrawlStart(mode ?? 'all', releaseId)
+      if (seq !== latestPriceRefreshSeq.current) return
       setSyncStatus(enqueued === 0
         ? (mode === 'missing'
           ? 'Nothing to refresh — every record already has a price.'
           : 'Nothing to refresh — no records matched.')
         : `Price refresh requested for ${enqueued} ${enqueued === 1 ? 'record' : 'records'}.`)
     } catch (e: any) {
+      if (seq !== latestPriceRefreshSeq.current) return
       setSyncStatus(`Price refresh failed to start: ${e.message}`)
     } finally {
-      setPriceRefreshStarting(false)
+      if (seq === latestPriceRefreshSeq.current) setPriceRefreshStarting(false)
     }
   }, [setSyncStatus])
 
@@ -569,6 +589,7 @@ export default function App() {
   // clicked in the status bar now, and only hand back to the real
   // stock_sync_* state once the server has answered.
   const startStockSync = useCallback(async (crawlerId?: number) => {
+    const seq = ++latestStockSyncStartSeq.current
     setStockSyncStarting(crawlerId ?? 'all')
     const site = crawlerId != null ? crawlers.find((c) => c.id === crawlerId)?.site_name : null
     const what = site ? `${site} catalog refresh` : 'in-stock catalog refresh'
@@ -576,15 +597,22 @@ export default function App() {
       shown: `Starting ${what}…`,
       lost: `Lost track of the ${what} — reload to check whether it is still running.`,
     }
+    setBusyStatusMessage(stockSyncClaimNotice.current.shown)
     setSyncStatus(stockSyncClaimNotice.current.shown)
     try {
       const result = await postStockSyncStart(crawlerId)
+      if (seq !== latestStockSyncStartSeq.current) return
       reportStockSyncRejection(result, setSyncStatus)
       // On an accepted start the optimistic state stays until
       // stock_sync_started replaces it; a rejection ends here.
-      if (!result.started) setStockSyncStarting(null)
+      if (!result.started) {
+        setStockSyncStarting(null)
+        setBusyStatusMessage(null)
+      }
     } catch (e: any) {
+      if (seq !== latestStockSyncStartSeq.current) return
       setStockSyncStarting(null)
+      setBusyStatusMessage(null)
       setSyncStatus(`In-stock sync failed to start: ${e.message}`)
     }
   }, [crawlers, setSyncStatus])
@@ -719,10 +747,13 @@ export default function App() {
   // per-crawler Refresh rejected by an already-running bulk sync must keep
   // showing the bulk sync, not the row that was just clicked.
   const stockSyncActive = stockSyncTarget ?? stockSyncStarting
-  // Anything the user is waiting on keeps the banner's spinner up and its
-  // Dismiss button away -- a Dismiss button next to "Starting…" reads as
-  // finished.
-  const syncBusy = syncing || stockSyncStarting !== null || priceRefreshStarting
+  // A message the user is still waiting on keeps the banner's spinner up and
+  // its Dismiss button away -- a Dismiss button next to "Starting…" reads as
+  // finished. `syncing` is the same shape one level up and has the same drift
+  // (a locally-generated message shown mid-sync still spins); it predates this
+  // and fixing it means giving the shared status bar a full ownership model,
+  // which is a bigger change than this one.
+  const syncBusy = syncing || (busyStatusMessage !== null && syncMessage === busyStatusMessage)
   const syncBannerVisible = syncMessage !== null && (syncMessageId === null || syncMessageId > dismissedSyncId)
   const crawlBannerVisible = crawlBannerId > dismissedCrawlId
 
@@ -965,7 +996,10 @@ export default function App() {
 
       {/* Collection sync status bar */}
       {syncBannerVisible && (
-        <div className="fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-700 px-4 py-2 flex items-center gap-3">
+        <div
+          role="status"
+          className="fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-700 px-4 py-2 flex items-center gap-3"
+        >
           <span className="text-sm font-medium text-gray-300 shrink-0">
             {syncMessage}
           </span>

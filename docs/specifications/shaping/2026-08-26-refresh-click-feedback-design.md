@@ -116,6 +116,31 @@ that a click landed.
   code with tests asserting unsupported behaviour. Deleting the status bar
   itself is a separate cleanup, out of scope here.
 
+- **Busy-ness belongs to the message, not to the app.** The banner's spinner
+  (and the absence of its Dismiss button) is derived from whether the message
+  currently on screen is one the user is still waiting on — compared by text —
+  rather than from "is anything pending anywhere". The two drift: a stock sync
+  completing while a price request was still in flight left its *completion*
+  message spinning with no Dismiss. Comparing text needs nothing kept in sync
+  by hand, since a message that has been replaced simply stops matching.
+  `syncing` is the same shape one level up and has the same drift — a
+  locally-generated message shown mid-sync still spins — but it predates this
+  and fixing it means giving the shared status bar a full ownership model,
+  which is a bigger change than this one.
+- **Neither start request may answer for a click that is no longer current.**
+  Both use the sequence-guard idiom already in this file (`latestPriceStatusSeq`
+  and friends): a response whose sequence has been superseded returns without
+  touching state. Not theoretical here — the claim timeout can re-enable the
+  button while the first request is still in flight, and `POST
+  /stock/sync/start` has no bounded response time, so a first request rejecting
+  after a second click would otherwise clear the newer claim and overwrite its
+  status with the older result.
+- **The banner is a live region.** It carries `role="status"`, so the click
+  confirmations this design exists to add reach screen-reader users too; none
+  of them moves focus, so without it they were silent. Spinners are
+  `aria-hidden` and the buttons carry their state in `title`, which is their
+  accessible name.
+
 ## Frontend design
 
 `frontend/src/App.tsx`:
@@ -188,11 +213,14 @@ dismissed-event-id replay guard):
   and is released by `stock_sync_complete`; a claim that never receives any
   event at all is released by the timeout and swaps its "Starting…" message for
   the lost-track one, is not released before the timeout, and does not overwrite
-  a real progress message that arrived while it was held.
+  a real progress message that arrived while it was held; a start response that
+  arrives after a newer click is ignored rather than clobbering the newer
+  claim; the banner is reachable by its `status` role.
 - `frontend/src/test/crawlStatusBar.test.tsx` — the requested count is
   reported, singular and plural; a zero-target run says so and stays
   dismissible; the in-flight state spins and says what it is doing; a failed
-  start lands in the status bar and raises no `alert`.
+  start lands in the status bar and raises no `alert`; a message that has
+  finished is not left spinning by an unrelated request still in flight.
 
 Verified visually as well as in tests: the Settings view was rendered in each
 state in a browser and screenshotted, since "more obvious" is not something a

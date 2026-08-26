@@ -328,6 +328,60 @@ describe('In Stock tab', () => {
     expect(screen.getByTitle('Refreshing Epitaph catalog…')).toBeDisabled()
   })
 
+  // The claim timeout can re-enable the button while the first request is
+  // still in flight, so a second click's state must not be clobbered when the
+  // first finally answers.
+  it('ignores a stale start response that resolves after a newer click', async () => {
+    vi.useFakeTimers()
+    getCrawlers.mockResolvedValue([
+      CATALOG_CRAWLER,
+      { ...CATALOG_CRAWLER, id: 10, site_name: 'Relapse' },
+    ])
+    let answerFirst: (value: unknown) => void = () => {}
+    postStockSyncStart
+      .mockReturnValueOnce(new Promise((r) => { answerFirst = r }))
+      .mockResolvedValue({
+        started: true, running: true, on_another_instance: false,
+        source: null, elapsed_seconds: null, source_elapsed_seconds: null,
+      })
+    render(<App />)
+    const settle = () => act(async () => {})
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await settle()
+    fireEvent.click(screen.getByTitle('Refresh Epitaph catalog now'))
+    await settle()
+    expect(screen.getByTitle('Refreshing Epitaph catalog…')).toBeDisabled()
+
+    // Epitaph's claim expires with its request still unanswered, freeing the
+    // buttons, and Relapse is clicked and takes them over.
+    await act(async () => { await vi.advanceTimersByTimeAsync(20_000) })
+    fireEvent.click(screen.getByTitle('Refresh Relapse catalog now'))
+    await settle()
+    expect(screen.getByTitle('Refreshing Relapse catalog…')).toBeDisabled()
+
+    // Only now does Epitaph's request answer, and rejected at that.
+    answerFirst({
+      started: false, running: true, on_another_instance: false,
+      source: 'Somewhere Else', elapsed_seconds: 60, source_elapsed_seconds: 30,
+    })
+    await settle()
+    expect(screen.getByTitle('Refreshing Relapse catalog…')).toBeDisabled()
+    expect(screen.getByText('Starting Relapse catalog refresh…')).toBeInTheDocument()
+    expect(screen.queryByText(/already running/)).not.toBeInTheDocument()
+  })
+
+  it('announces the status bar to assistive technology', async () => {
+    getCrawlers.mockResolvedValue([CATALOG_CRAWLER])
+    render(<App />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByTitle('Refresh Epitaph catalog now'))
+
+    const banner = await screen.findByRole('status')
+    expect(banner).toHaveTextContent('Starting Epitaph catalog refresh…')
+  })
+
   it('hands the claimed button over to stock_sync_started without letting it flicker back', async () => {
     getCrawlers.mockResolvedValue([CATALOG_CRAWLER])
     render(<App />)
