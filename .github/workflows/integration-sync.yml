@@ -619,7 +619,28 @@ jobs:
                 # A person commenting the command does work. The refusal above
                 # is specifically about bots; "only users with push access can
                 # use that command" grants it to exactly the human being asked.
-                echo "::warning::PR #$n conflicts with integration and cannot be caught up automatically. A person with push access can comment '@dependabot recreate' on it -- that command works for people, only bots are refused. Do NOT just close it: Dependabot treats a close as 'skip this release' and will not raise it again until a newer version ships, and it deletes the branch, so the PR cannot be reopened."
+                #
+                # Branched on author, because this job routes EVERY open PR
+                # based on `integration`, not only Dependabot's. Telling the
+                # author of a hand-written PR to run a Dependabot command is
+                # advice they cannot act on. The old recreate path read the
+                # author too, but for two jobs at once -- gating the command
+                # and choosing the wording -- so deleting the command deleted
+                # the wording with it.
+                #
+                # Unlike that path, this read only picks which sentence to
+                # print, so a failure falls back to wording that is true either
+                # way rather than failing the PR. Guessing "not Dependabot" on
+                # a failed read would print a claim about authorship that was
+                # never established.
+                author="$(gh api "repos/$REPO/pulls/$n" --jq '.user.login' 2>/dev/null || true)"
+                if [ "$author" = "dependabot[bot]" ]; then
+                  echo "::warning::PR #$n conflicts with integration and cannot be caught up automatically. A person with push access can comment '@dependabot recreate' on it -- that command works for people, only bots are refused. Do NOT just close it: Dependabot treats a close as 'skip this release' and will not raise it again until a newer version ships, and it deletes the branch, so the PR cannot be reopened."
+                elif [ -n "$author" ]; then
+                  echo "::warning::PR #$n conflicts with integration and cannot be caught up automatically. It was opened by $author, not Dependabot, so no @dependabot command applies: only its author can rebuild the branch. It needs a human."
+                else
+                  echo "::warning::PR #$n conflicts with integration and cannot be caught up automatically, and its author could not be read. It needs a human: if Dependabot opened it, a person with push access can comment '@dependabot recreate' (and should not close it); otherwise only its author can rebuild the branch."
+                fi
                 ;;
 
               unknown)

@@ -189,9 +189,14 @@ GitHub computes it asynchronously and answers `unknown` right after a push:
 
 - `behind` → `update-branch`. Deterministic, returns a status, needs nothing of
   the PR's author.
-- `dirty` → reported for a human, whoever opened it. A warning rather than a
-  job failure: a conflicted PR can sit for days, and failing here would turn
-  every later run red over a condition this job cannot act on.
+- `dirty` → reported for a human, with the advice branched on who opened it.
+  This job routes *every* open PR based on `integration`, not only Dependabot's,
+  and the two need different instructions: a Dependabot bump can be rebuilt by a
+  maintainer's `@dependabot recreate`, while a hand-written PR can only be
+  rebuilt by its own author. A failed author read falls back to wording true
+  either way rather than asserting an authorship it never established. A warning
+  rather than a job failure: a conflicted PR can sit for days, and failing here
+  would turn every later run red over a condition this job cannot act on.
 - anything else → untouched.
 
 ### Why `dirty` is not delegated to Dependabot
@@ -217,9 +222,10 @@ guard required.
 
 **The command still works for a person.** The refusal is specifically about
 bots: "only users with push access can use that command" grants it to exactly
-the human this route now asks for. So the recovery is a maintainer commenting
-`@dependabot recreate` — no workflow, no token, no special access beyond what
-they already have.
+the human this route now asks for. So the recovery for a *Dependabot* PR is a
+maintainer commenting `@dependabot recreate` — no workflow, no token, no special
+access beyond what they already have. For any other conflicted PR the command is
+meaningless and the warning says so instead; only its author can rebuild it.
 
 **Do not close a conflicted Dependabot PR instead.** This is the trap, and it
 was walked into on #175 while writing this change. Closing does not queue a
