@@ -606,7 +606,20 @@ jobs:
                 # can sit for days, and failing here would turn every
                 # subsequent run red over a condition this job cannot act on.
                 # Non-Dependabot conflicts were always treated exactly this way.
-                echo "::warning::PR #$n conflicts with integration and cannot be caught up automatically; it needs a human. For a Dependabot bump, closing it is usually cheaper than resolving the conflict by hand -- the next scheduled run reopens it against the current base."
+                #
+                # The advice below is deliberate, and the opposite of the
+                # obvious move. Closing a conflicted Dependabot PR does NOT
+                # queue a clean replacement: Dependabot reads a close as "skip
+                # this release" and stays silent until a NEWER version ships.
+                # It offers re-opening as the recovery -- and that is not
+                # reliable here either, because it deletes its branch on close,
+                # which makes the PR unreopenable. Both were learned on #175 on
+                # 2026-08-26, by doing it.
+                #
+                # A person commenting the command does work. The refusal above
+                # is specifically about bots; "only users with push access can
+                # use that command" grants it to exactly the human being asked.
+                echo "::warning::PR #$n conflicts with integration and cannot be caught up automatically. A person with push access can comment '@dependabot recreate' on it -- that command works for people, only bots are refused. Do NOT just close it: Dependabot treats a close as 'skip this release' and will not raise it again until a newer version ships, and it deletes the branch, so the PR cannot be reopened."
                 ;;
 
               unknown)

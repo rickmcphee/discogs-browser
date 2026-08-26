@@ -215,10 +215,22 @@ machinery went with it: the `RECREATE_MARKER` stamp, the don't-ask-twice guard
 that counted comments bearing it, and the paginated seven-day comment read that
 guard required.
 
-In practice the loss is small. For a conflicted Dependabot bump the cheapest
-resolution is closing the PR and letting the next scheduled run open a clean one
-against the current base — no command, no token, no special access. That is what
-was done with #175.
+**The command still works for a person.** The refusal is specifically about
+bots: "only users with push access can use that command" grants it to exactly
+the human this route now asks for. So the recovery is a maintainer commenting
+`@dependabot recreate` — no workflow, no token, no special access beyond what
+they already have.
+
+**Do not close a conflicted Dependabot PR instead.** This is the trap, and it
+was walked into on #175 while writing this change. Closing does not queue a
+clean replacement: Dependabot reads a close as *"skip this release"* and answers
+*"I won't notify you again about this release, but will get in touch when a new
+version is available"* — so the bump is suppressed until something **newer**
+ships, not re-raised against the current base. Its own suggested recovery,
+*"just re-open this PR and I'll resolve any conflicts on it"*, then fails on a
+second mechanism: Dependabot deletes its branch on close, and a PR whose head
+branch is gone cannot be reopened. `respx>=0.23.1` was lost that way and had to
+be re-applied by hand.
 
 [dbc9147]: https://github.com/dependabot/dependabot-core/issues/9147
 
