@@ -24,6 +24,19 @@ const DISMISSED_SYNC_KEY = 'discogs-browser.dismissedSyncEventId'
 const DISMISSED_CRAWL_KEY = 'discogs-browser.dismissedCrawlEventId'
 const VIEW_AS_USER_KEY = 'discogs-browser.viewAsUser'
 
+// How long an optimistic stock-sync claim may hold a Refresh button before it
+// releases on its own. An accepted start normally hands over to
+// stock_sync_started within a second, but nothing guarantees that event ever
+// arrives: the SSE stream can break and reconnect across an entire short sync,
+// and routers/crawl.py's _events_to_replay returns nothing once no job is
+// active -- so a sync that both started and finished inside the gap replays
+// neither event. Unbounded, the claim would leave every Store Refresh button
+// disabled and spinning until a page reload. Releasing is self-correcting
+// either way: a late stock_sync_started takes the button straight back, and a
+// click during a sync the UI has lost track of is rejected by the server with
+// the "already running" message rather than starting anything twice.
+const STOCK_SYNC_CLAIM_TIMEOUT_MS = 20_000
+
 function formatElapsed(seconds: number | null): string {
   if (seconds === null) return 'unknown'
   if (seconds < 60) return `${seconds}s`
@@ -93,11 +106,11 @@ export default function App() {
   // click -- the same "did that do anything?" the rejected-start message was
   // added to fix, in the accepted-start case it never covered.
   const [stockSyncStarting, setStockSyncStarting] = useState<number | 'all' | null>(null)
-  // Prices have no equivalent of stockSyncTarget to fall back on: POST
-  // /crawl/start only enqueues, and the `started` event comes from whenever
-  // the shared worker pool next drains the queue, which can be much later.
-  // So this covers the request itself and the enqueued count reported when it
-  // lands is the confirmation.
+  // Prices have no equivalent of stockSyncTarget to hand over to, and never
+  // will: POST /crawl/start only enqueues, and the worker pool that later
+  // picks the work up broadcasts no lifecycle event at all (started/complete/
+  // stopped went with the crawl-queue refactor). Nothing is coming, so this
+  // covers the request itself and the count in its reply is the confirmation.
   const [priceRefreshStarting, setPriceRefreshStarting] = useState(false)
   const [authState, setAuthState] = useState<AuthStatus | null>(null)
   const [viewAsUser, setViewAsUser] = useState(() => localStorage.getItem(VIEW_AS_USER_KEY) === 'true')
@@ -108,6 +121,12 @@ export default function App() {
 
   // eventId is null for locally-generated messages (button-click failures) that never
   // survive a refresh and so never need replay suppression; those always show.
+  useEffect(() => {
+    if (stockSyncStarting === null) return
+    const timer = setTimeout(() => setStockSyncStarting(null), STOCK_SYNC_CLAIM_TIMEOUT_MS)
+    return () => clearTimeout(timer)
+  }, [stockSyncStarting])
+
   const setSyncStatus = useCallback((message: string, eventId: number | null = null) => {
     setSyncMessage(message)
     setSyncMessageId(eventId)

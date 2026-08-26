@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import App from '../App'
 
 // jsdom doesn't implement object URLs
@@ -100,6 +100,10 @@ beforeEach(() => {
   getStock.mockResolvedValue({ total: 0, page: 1, per_page: 250, items: [] })
   postUserHiddenCrawlers.mockResolvedValue(undefined)
   getUserHiddenCrawlers.mockResolvedValue([])
+})
+
+afterEach(() => {
+  vi.useRealTimers()
 })
 
 describe('In Stock tab', () => {
@@ -262,6 +266,41 @@ describe('In Stock tab', () => {
       expect(screen.getByText('In-stock sync failed to start: network down')).toBeInTheDocument()
     )
     expect(screen.getByTitle('Refresh Epitaph catalog now')).not.toBeDisabled()
+  })
+
+  // _events_to_replay returns nothing once no job is active, so a sync that
+  // both starts and finishes while the SSE stream is reconnecting replays
+  // neither of its events. Nothing else would ever release the claim.
+  it('releases a claim that never gets its stock_sync_started, rather than stranding the button', async () => {
+    vi.useFakeTimers()
+    getCrawlers.mockResolvedValue([CATALOG_CRAWLER])
+    render(<App />)
+    const settle = () => act(async () => {})
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await settle()
+    fireEvent.click(screen.getByTitle('Refresh Epitaph catalog now'))
+    await settle()
+    expect(screen.getByTitle('Refreshing Epitaph catalog…')).toBeDisabled()
+
+    // No stock_sync_started, no terminal event -- the stream missed the lot.
+    await act(async () => { await vi.advanceTimersByTimeAsync(20_000) })
+    expect(screen.getByTitle('Refresh Epitaph catalog now')).not.toBeDisabled()
+  })
+
+  it('does not release the claim while it is still within the timeout', async () => {
+    vi.useFakeTimers()
+    getCrawlers.mockResolvedValue([CATALOG_CRAWLER])
+    render(<App />)
+    const settle = () => act(async () => {})
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await settle()
+    fireEvent.click(screen.getByTitle('Refresh Epitaph catalog now'))
+    await settle()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(19_000) })
+    expect(screen.getByTitle('Refreshing Epitaph catalog…')).toBeDisabled()
   })
 
   it('hands the claimed button over to stock_sync_started without letting it flicker back', async () => {

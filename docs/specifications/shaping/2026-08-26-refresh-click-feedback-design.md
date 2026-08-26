@@ -67,12 +67,21 @@ that a click landed.
   The optimistic value never overrides a real one — a per-store Refresh
   rejected by an already-running bulk sync must keep showing the bulk sync, not
   the row that was just clicked.
-- **Every path releases the button.** An optimistic claim that outlives its
-  request is worse than no feedback at all: a button stuck mid-spin. It is
-  released on the accepted path (by `stock_sync_started`), on the rejected path
-  (`started: false`), on the thrown path, and again on every terminal
-  `stock_sync_*` event as a backstop for a claim whose confirming event was
-  missed across an SSE reconnect.
+- **Every path releases the button, including the one with no path.** An
+  optimistic claim that outlives its request is worse than no feedback at all:
+  a button stuck mid-spin. It is released on the accepted path (by
+  `stock_sync_started`), on the rejected path (`started: false`), on the thrown
+  path, and on every terminal `stock_sync_*` event as a backstop for a missed
+  `stock_sync_started`. None of those covers a stream that misses the *whole*
+  sync, which is reachable: `_events_to_replay` (`routers/crawl.py`) returns
+  nothing once no job is active, so a sync that both starts and finishes while
+  the SSE stream is reconnecting replays neither event, and the claim would
+  hold every Store Refresh disabled until a page reload. A timeout
+  (`STOCK_SYNC_CLAIM_TIMEOUT_MS`) bounds it. Releasing early is self-correcting
+  in both directions: a late `stock_sync_started` takes the button straight
+  back, and a click during a sync the UI has lost track of is rejected by the
+  server with the "already running" message rather than starting anything
+  twice.
 - **The thing that is running is the thing that stands out.** The running row's
   button inverts to the lit nav pill (`navButtonClass(true)`) instead of being
   dimmed by the disabled styling that the rows merely waiting on it carry.
@@ -106,9 +115,10 @@ that a click landed.
 `frontend/src/App.tsx`:
 
 - New state `stockSyncStarting: number | 'all' | null`, set on click and
-  cleared on every release path above. `stockSyncTarget` cannot do this job
-  itself — it is the *server's* answer, and its absence is what the gap is
-  made of.
+  cleared on every release path above, with an effect arming a
+  `STOCK_SYNC_CLAIM_TIMEOUT_MS` timer for as long as it is non-null.
+  `stockSyncTarget` cannot do this job itself — it is the *server's* answer,
+  and its absence is what the gap is made of.
 - New state `priceRefreshStarting: boolean`, covering the `POST /crawl/start`
   request itself.
 - `handleRefreshStock` and `handleRefreshStoreCrawler` collapse into one
@@ -168,7 +178,8 @@ dismissed-event-id replay guard):
   claimed *before* any `stock_sync_started` is emitted; the bulk click names
   the bulk run and no row claims it; the button is released on a rejected start
   and on a thrown one; the claim survives the hand-over to `stock_sync_started`
-  and is released by `stock_sync_complete`.
+  and is released by `stock_sync_complete`; a claim that never receives any
+  event at all is released by the timeout, and is not released before it.
 - `frontend/src/test/crawlStatusBar.test.tsx` — the requested count is
   reported, singular and plural; a zero-target run says so and stays
   dismissible; the in-flight state spins and says what it is doing; a failed
