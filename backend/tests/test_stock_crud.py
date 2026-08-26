@@ -940,6 +940,120 @@ def test_get_stock_items_library_scope_none_and_unrecognized_do_not_filter(admin
         )["total"] == 2
 
 
+def _catalog_release(admin_conn, discogs_id, artist, title):
+    db.upsert_catalog_release(admin_conn, {
+        "discogs_id": discogs_id, "artist": artist, "title": title, "year": None,
+        "label": None, "format": None, "barcode": None, "cover_image_url": None,
+        "discogs_url": None,
+    })
+
+
+def _seed_overlapped_artists(admin_conn, stock, collected):
+    """One crawler, `stock` in stock, and `collected` (artist, title) pairs in
+    Alice's Discogs collection. Both take raw artist spellings so the tests can
+    make the two sides disagree on how they write an artist's name."""
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": artist, "title": title, "url": f"https://x/{i}", "price": 10.0, "currency": "USD"}
+        for i, (artist, title) in enumerate(stock)
+    ])
+    for i, (artist, title) in enumerate(collected):
+        _catalog_release(admin_conn, f"r{i}", artist, title)
+        db.upsert_library_item(admin_conn, alice["id"], f"r{i}", in_collection=True)
+    admin_conn.commit()
+    return alice
+
+
+def test_get_stock_items_overlapped_artists_returns_every_record_by_a_collected_artist(admin_conn):
+    alice = _seed_overlapped_artists(
+        admin_conn,
+        stock=[("Artist A", "Album A"), ("Artist A", "Album A2"), ("Artist B", "Album B")],
+        collected=[("Artist A", "Album A")],
+    )
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.get_stock_items(conn, alice["id"])["total"] == 3  # plain browse shows all
+
+        result = db.get_stock_items(conn, alice["id"], overlapped_artists=True)
+        assert result["total"] == 2
+        # Album A2 is the whole point of the filter: Alice collects the artist,
+        # not this record, so the release-level library_scope filter below --
+        # which is what the Track tab's Collection option sends -- drops it.
+        assert sorted(i["title"] for i in result["items"]) == ["Album A", "Album A2"]
+        assert db.get_stock_items(conn, alice["id"], library_scope="collection")["total"] == 1
+
+
+def test_get_stock_items_overlapped_artists_ignores_an_artist_only_on_the_wantlist(admin_conn):
+    alice = _seed_overlapped_artists(
+        admin_conn, stock=[("Artist A", "Album A"), ("Artist B", "Album B")], collected=[],
+    )
+    _catalog_release(admin_conn, "w1", "Artist B", "Album B")
+    db.upsert_library_item(admin_conn, alice["id"], "w1", in_wishlist=True)
+    _catalog_release(admin_conn, "c1", "Artist A", "Something Else")
+    db.upsert_library_item(admin_conn, alice["id"], "c1", in_collection=True)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], overlapped_artists=True)
+        assert [i["title"] for i in result["items"]] == ["Album A"]
+
+
+def test_get_stock_items_overlapped_artists_folds_the_article_spellings(admin_conn):
+    # The store and Discogs routinely disagree over "The X" / "X, The" / bare
+    # "X". At artist granularity that disagreement decides whether the artist
+    # shows up at all, so the match is on _artist_sort_sql's bare key.
+    alice = _seed_overlapped_artists(
+        admin_conn,
+        stock=[("The Beatles", "A"), ("Beatles, The", "B"), ("Beatles", "C"), ("Beatlemania", "D")],
+        collected=[("Beatles, The", "Revolver")],
+    )
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], overlapped_artists=True)
+        assert sorted(i["title"] for i in result["items"]) == ["A", "B", "C"]
+
+
+def test_get_stock_items_overlapped_artists_does_not_exclude_records_already_owned(admin_conn):
+    # Unlike `recommended`, this filter has no not-owned gate: it answers
+    # "whose shelf is this artist on," and a record already owned is still by
+    # an artist the user collects.
+    alice = _seed_overlapped_artists(
+        admin_conn, stock=[("Artist A", "Album A")], collected=[("Artist A", "Album A")],
+    )
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], overlapped_artists=True)
+        assert [i["title"] for i in result["items"]] == ["Album A"]
+
+
+def test_get_stock_items_overlapped_artists_uses_the_calling_users_collection(admin_conn):
+    alice = _seed_overlapped_artists(
+        admin_conn, stock=[("Artist A", "Album A")], collected=[("Artist A", "Album A")],
+    )
+    bob = db.create_user(admin_conn, discogs_user_id=2, discogs_username="bob")
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.get_stock_items(conn, alice["id"], overlapped_artists=True)["total"] == 1
+    with db.user_scope(bob["id"]) as conn:
+        assert db.get_stock_items(conn, bob["id"], overlapped_artists=True)["total"] == 0
+
+
+def test_get_distinct_stock_artists_overlapped_artists_filters_the_sidebar(admin_conn):
+    alice = _seed_overlapped_artists(
+        admin_conn,
+        stock=[("Artist A", "Album A"), ("Artist A", "Album A2"), ("Artist B", "Album B")],
+        collected=[("Artist A", "Album A")],
+    )
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.get_distinct_stock_artists(conn, alice["id"]) == ["Artist A", "Artist B"]
+        assert db.get_distinct_stock_artists(conn, alice["id"], overlapped_artists=True) == ["Artist A"]
+
+
 def _judge_recommended(conn, user_id: int, items: list[tuple]):
     db.upsert_stock_judgments(conn, user_id, [
         {"item_key": db.compute_item_key(artist, title, url), "recommended": True, "reason": "y"}
