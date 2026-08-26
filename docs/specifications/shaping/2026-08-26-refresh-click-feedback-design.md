@@ -145,6 +145,15 @@ that a click landed.
   /stock/sync/start` has no bounded response time, so a first request rejecting
   after a second click would otherwise clear the newer claim and overwrite its
   status with the older result.
+- **Two guards, because a claim and the status bar are owned separately.** The
+  per-operation counters decide whether a response may still touch *its own*
+  claim; a third, shared `latestStatusOwnerSeq` decides whether it may touch
+  the status bar, which both handlers write and which Settings lets them
+  contend for — a stock start and a price refresh can be in flight at once, and
+  without it an older stock rejection lands on top of a newer price refresh's
+  "Starting…" and clears its busy state mid-request. Cleanup of a claim's own
+  state stays on the per-operation guard: a request that lost the banner must
+  still release the button it took.
 - **The banner is a live region, and it stays mounted.** It carries
   `role="status"`, so the click confirmations this design exists to add reach
   screen-reader users too; none of them moves focus, so without it they were
@@ -162,7 +171,7 @@ that a click landed.
 
 - New state `stockSyncStarting: number | 'all' | null`, set on click and
   cleared on every release path above, with an effect arming a
-  `STOCK_SYNC_CLAIM_TIMEOUT_MS` timer for as long as it is non-null.
+  `START_CLAIM_TIMEOUT_MS` timer for as long as it is non-null.
   `stockSyncTarget` cannot do this job itself — it is the *server's* answer,
   and its absence is what the gap is made of.
 - New state `priceRefreshStarting: boolean`, covering the `POST /crawl/start`
@@ -239,8 +248,10 @@ dismissed-event-id replay guard):
   dismissible; the in-flight state spins and says what it is doing; a failed
   start lands in the status bar and raises no `alert`; a message that has
   finished is not left spinning by an unrelated request still in flight; a
-  request that never settles releases the button by the timeout; and the live
-  region is the same mounted node before and after its first message.
+  request that never settles releases the button by the timeout; an older stock
+  rejection does not overwrite a newer price refresh's notice, while still
+  releasing its own button; and the live region is the same mounted node before
+  and after its first message.
 
 Verified visually as well as in tests: the Settings view was rendered in each
 state in a browser and screenshotted, since "more obvious" is not something a

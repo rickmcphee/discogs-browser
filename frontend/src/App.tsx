@@ -102,6 +102,15 @@ export default function App() {
   // status with the older request's result.
   const latestStockSyncStartSeq = useRef(0)
   const latestPriceRefreshSeq = useRef(0)
+  // Those two are per-operation: each decides whether a response may still
+  // touch its own claim. Neither can decide whether it may touch the *status
+  // bar*, which both write and which Settings lets them contend for -- a stock
+  // start and a price refresh can be in flight at once. Without a shared
+  // token, an older stock rejection lands on top of a newer price refresh's
+  // "Starting…" and clears its busy state while its request is still running.
+  // Cleanup of a claim's own state stays on the per-operation guard, since a
+  // request that lost the banner must still release the button it took.
+  const latestStatusOwnerSeq = useRef(0)
   const latestHasJudgedItemsSeq = useRef(0)
   const [serverReady, setServerReady] = useState(false)
   const [backendUp, setBackendUp] = useState<boolean | null>(null)
@@ -159,11 +168,15 @@ export default function App() {
   // merged across Machines and durable, so it is the one signal that always
   // answers. Guarded on the message still being the one this claim set, so a
   // real progress message that arrived in the meantime is never clobbered.
+  // Bumping the sequence first drops the request this claim was waiting on:
+  // having told the user it is lost, contradicting that later with a different
+  // answer is worse than staying quiet.
   const stockSyncClaimNotice = useRef<{ shown: string; lost: string } | null>(null)
 
   useEffect(() => {
     if (stockSyncStarting === null) return
     const timer = setTimeout(() => {
+      latestStockSyncStartSeq.current++
       setStockSyncStarting(null)
       const notice = stockSyncClaimNotice.current
       if (notice) setSyncMessage((m) => (m === notice.shown ? notice.lost : m))
@@ -559,6 +572,8 @@ export default function App() {
   // the page.
   const startCrawl = useCallback(async (releaseId?: string, mode?: 'all' | 'missing') => {
     const seq = ++latestPriceRefreshSeq.current
+    const statusSeq = ++latestStatusOwnerSeq.current
+    const ownsStatus = () => statusSeq === latestStatusOwnerSeq.current
     setCheckpointStatus(null)
     setPriceRefreshStarting(true)
     const starting = releaseId
@@ -574,14 +589,14 @@ export default function App() {
     setSyncStatus(starting)
     try {
       const { enqueued } = await postCrawlStart(mode ?? 'all', releaseId)
-      if (seq !== latestPriceRefreshSeq.current) return
+      if (seq !== latestPriceRefreshSeq.current || !ownsStatus()) return
       setSyncStatus(enqueued === 0
         ? (mode === 'missing'
           ? 'Nothing to refresh — every record already has a price.'
           : 'Nothing to refresh — no records matched.')
         : `Price refresh requested for ${enqueued} ${enqueued === 1 ? 'record' : 'records'}.`)
     } catch (e: any) {
-      if (seq !== latestPriceRefreshSeq.current) return
+      if (seq !== latestPriceRefreshSeq.current || !ownsStatus()) return
       setSyncStatus(`Price refresh failed to start: ${e.message}`)
     } finally {
       if (seq === latestPriceRefreshSeq.current) setPriceRefreshStarting(false)
@@ -619,6 +634,8 @@ export default function App() {
   // stock_sync_* state once the server has answered.
   const startStockSync = useCallback(async (crawlerId?: number) => {
     const seq = ++latestStockSyncStartSeq.current
+    const statusSeq = ++latestStatusOwnerSeq.current
+    const ownsStatus = () => statusSeq === latestStatusOwnerSeq.current
     setStockSyncStarting(crawlerId ?? 'all')
     const site = crawlerId != null ? crawlers.find((c) => c.id === crawlerId)?.site_name : null
     const what = site ? `${site} catalog refresh` : 'in-stock catalog refresh'
@@ -631,18 +648,20 @@ export default function App() {
     try {
       const result = await postStockSyncStart(crawlerId)
       if (seq !== latestStockSyncStartSeq.current) return
-      reportStockSyncRejection(result, setSyncStatus)
       // On an accepted start the optimistic state stays until
       // stock_sync_started replaces it; a rejection ends here.
-      if (!result.started) {
-        setStockSyncStarting(null)
-        setBusyStatusMessage(null)
+      if (!result.started) setStockSyncStarting(null)
+      if (ownsStatus()) {
+        reportStockSyncRejection(result, setSyncStatus)
+        if (!result.started) setBusyStatusMessage(null)
       }
     } catch (e: any) {
       if (seq !== latestStockSyncStartSeq.current) return
       setStockSyncStarting(null)
-      setBusyStatusMessage(null)
-      setSyncStatus(`In-stock sync failed to start: ${e.message}`)
+      if (ownsStatus()) {
+        setBusyStatusMessage(null)
+        setSyncStatus(`In-stock sync failed to start: ${e.message}`)
+      }
     }
   }, [crawlers, setSyncStatus])
 

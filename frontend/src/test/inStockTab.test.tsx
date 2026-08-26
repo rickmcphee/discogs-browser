@@ -39,7 +39,7 @@ vi.mock('../api/client', () => ({
   refreshCollection: vi.fn().mockResolvedValue({ synced: 0, username: 'test' }),
   getCollectionStatus: vi.fn().mockResolvedValue({ total: 0, last_synced: null }),
   getCrawlStatus: vi.fn().mockResolvedValue({ total: 0, missing: 0, oldest_checked: null }),
-  postCrawlStart: vi.fn().mockResolvedValue({ started: true, running: true }),
+  postCrawlStart: vi.fn().mockResolvedValue({ enqueued: 3 }),
   getCrawlers: (...args: unknown[]) => getCrawlers(...args),
   openCrawlStream: vi.fn(() => new MockEventSource()),
   getReleases: vi.fn().mockResolvedValue({ total: 0, page: 1, per_page: 50, releases: [] }),
@@ -373,6 +373,41 @@ describe('In Stock tab', () => {
 
   // A role="status" inserted together with its text is not reliably announced,
   // so the region has to already be there when the first message lands.
+  // The two start requests have independent sequence counters but share one
+  // status bar, and Settings lets them overlap.
+  it('does not let an older stock rejection overwrite a newer price refresh notice', async () => {
+    getCrawlers.mockResolvedValue([CATALOG_CRAWLER])
+    let answerStock: (value: unknown) => void = () => {}
+    postStockSyncStart.mockReturnValue(new Promise((r) => { answerStock = r }))
+    render(<App />)
+    const settle = () => act(async () => {})
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await settle()
+
+    fireEvent.click(screen.getByTitle('Refresh Epitaph catalog now'))
+    await settle()
+    expect(screen.getByText('Starting Epitaph catalog refresh…')).toBeInTheDocument()
+
+    // A price refresh takes the banner over while the stock request is still
+    // unanswered.
+    const priceRow = screen.getByText('Run price crawlers immediately.').closest('tr') as HTMLElement
+    fireEvent.click(priceRow.querySelector('button') as HTMLButtonElement)
+    await settle()
+    expect(screen.getByText('Price refresh requested for 3 records.')).toBeInTheDocument()
+
+    // The stock request only now answers, and rejected at that.
+    answerStock({
+      started: false, running: true, on_another_instance: false,
+      source: 'Somewhere Else', elapsed_seconds: 60, source_elapsed_seconds: 30,
+    })
+    await settle()
+    expect(screen.getByText('Price refresh requested for 3 records.')).toBeInTheDocument()
+    expect(screen.queryByText(/already running/)).not.toBeInTheDocument()
+    // Its own claim is still released, though -- it took that button.
+    expect(screen.getByTitle('Refresh Epitaph catalog now')).not.toBeDisabled()
+  })
+
   it('keeps the status live region mounted before there is anything to say', async () => {
     getCrawlers.mockResolvedValue([CATALOG_CRAWLER])
     render(<App />)
