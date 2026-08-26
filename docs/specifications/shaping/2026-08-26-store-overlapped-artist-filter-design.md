@@ -281,7 +281,9 @@ amended in place on this branch:
   option returning.
 - [`docs/superpowers/specs/2026-07-06-store-recommended-filter-design.md`](../../superpowers/specs/2026-07-06-store-recommended-filter-design.md)
   — same pair of claims (Amendments 8 and 12), same correction, as
-  Amendment 13.
+  Amendment 15. (Numbered 15, not the next-in-sequence 13, because that file
+  already carried both an Amendment 13 and an Amendment 14 — flagged by
+  Copilot on PR #189, where the first draft of this branch did collide.)
 - [`2026-08-08-store-collection-split-design.md`](2026-08-08-store-collection-split-design.md)
   — its "Store's 'Overlapping' filter is removed, not duplicated" decision is
   the one this change comes closest to reversing, and doesn't: what was
