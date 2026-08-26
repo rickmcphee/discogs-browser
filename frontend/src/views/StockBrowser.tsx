@@ -22,7 +22,7 @@ interface Props {
 const NO_HIDDEN_CRAWLER_IDS: number[] = []
 const NO_CRAWLERS: Crawler[] = []
 const NOOP_HIDDEN_CRAWLER_IDS_CHANGE = () => {}
-const STORE_FILTERS = ['all', 'recommended', 'saved'] as const
+const STORE_FILTERS = ['all', 'recommended', 'saved', 'overlapped'] as const
 const TRACK_FILTERS = ['all', 'collection', 'wantlist'] as const satisfies readonly LibraryScope[]
 
 function trackLibraryScope(value: string): LibraryScope | undefined {
@@ -97,6 +97,7 @@ function StockBrowser({
       libraryScope: scope === 'track' ? trackLibraryScope(filter) : undefined,
       recommended: scope === 'store' && filter === 'recommended',
       saved: scope === 'store' && filter === 'saved',
+      overlapped: scope === 'store' && filter === 'overlapped',
       hiddenCrawlerIds,
     })
     if (!isLatest()) return
@@ -146,6 +147,7 @@ function StockBrowser({
       scope === 'store' && filter === 'recommended',
       hiddenCrawlerIds,
       scope === 'store' && filter === 'saved',
+      scope === 'store' && filter === 'overlapped',
     ).then((list) => { if (latest) setArtists(list) })
     return () => { latest = false }
   }, [scope, filter, hiddenCrawlerIds, syncGeneration, retryTick, hiddenCrawlerIdsLoaded])
@@ -252,6 +254,7 @@ function StockBrowser({
   const emptyMessage =
     scope === 'store' && filter === 'recommended' ? 'Nothing recommended is in stock right now.'
     : scope === 'store' && filter === 'saved' ? "You haven't saved anything yet."
+    : scope === 'store' && filter === 'overlapped' ? 'Nothing by an artist in your collection is in stock right now.'
     : scope === 'store' ? (isAdmin ? 'No in-stock items yet. Click Refresh under Store Management in Settings.' : 'No in-stock items yet. Check back after the next store sync.')
     : filter === 'collection' ? 'Nothing in your collection is in stock right now.'
     : filter === 'wantlist' ? 'Nothing on your wantlist is in stock right now.'
@@ -321,6 +324,7 @@ function StockBrowser({
                   <option value="all">All</option>
                   <option value="recommended" disabled={!recommendedAvailable}>Recommended</option>
                   <option value="saved">Saved</option>
+                  <option value="overlapped">Overlapped</option>
                 </>
               )}
             </select>

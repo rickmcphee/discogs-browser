@@ -285,6 +285,24 @@ describe('crawl/user-settings client functions', () => {
     expect(fetchMock.mock.calls[0][0]).toContain('saved=true')
   })
 
+  it('getStock forwards overlapped=true when overlapped is set', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ total: 0, page: 1, per_page: 250, items: [] }) })
+    await getStock({ overlapped: true })
+    expect(fetchMock.mock.calls[0][0]).toContain('overlapped=true')
+  })
+
+  it('getStock omits overlapped when unset', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ total: 0, page: 1, per_page: 250, items: [] }) })
+    await getStock({})
+    expect(fetchMock.mock.calls[0][0]).not.toContain('overlapped=')
+  })
+
+  it('getStockArtists forwards overlapped=true', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ artists: [] }) })
+    await getStockArtists(undefined, false, undefined, false, true)
+    expect(fetchMock.mock.calls[0][0]).toContain('overlapped=true')
+  })
+
   it('saveStockItem PUTs to /stock/saved/:item_key', async () => {
     fetchMock.mockResolvedValue({ ok: true, json: async () => ({ saved: true }) })
     await saveStockItem('abc123')

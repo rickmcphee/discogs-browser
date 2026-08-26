@@ -39,6 +39,7 @@ def list_stock(
     library_scope: Optional[str] = Query(None),
     recommended: bool = Query(False),
     saved: bool = Query(False),
+    overlapped: bool = Query(False),
     hidden_crawler_ids: Optional[str] = Query(None),
 ):
     user_id = request.state.user_id
@@ -47,7 +48,8 @@ def list_stock(
         return db.get_stock_items(
             conn, user_id, search=search, artist=artist, sort=sort, order=order,
             page=page, per_page=per_page, library_scope=library_scope, recommended=recommended,
-            saved_only=saved, exclude_crawler_ids=exclude_crawler_ids,
+            saved_only=saved, overlapped_artists=overlapped,
+            exclude_crawler_ids=exclude_crawler_ids,
         )
 
 
@@ -57,6 +59,7 @@ def list_stock_artists(
     library_scope: Optional[str] = Query(None),
     recommended: bool = Query(False),
     saved: bool = Query(False),
+    overlapped: bool = Query(False),
     hidden_crawler_ids: Optional[str] = Query(None),
 ):
     user_id = request.state.user_id
@@ -64,7 +67,8 @@ def list_stock_artists(
     with db.user_scope(user_id) as conn:
         artists = db.get_distinct_stock_artists(
             conn, user_id, library_scope=library_scope, recommended=recommended,
-            saved_only=saved, exclude_crawler_ids=exclude_crawler_ids,
+            saved_only=saved, overlapped_artists=overlapped,
+            exclude_crawler_ids=exclude_crawler_ids,
         )
         return {"artists": artists}
 
