@@ -258,6 +258,16 @@ export async function unsaveStockItem(itemKey: string): Promise<{ saved: boolean
 'recommended', 'saved'] as const`. The dropdown (lines 230-235) gains a
 third `<option>`:
 
+**Amendment (2026-08-26, branch `claude/store-overlapped-artist-filter-i3cp7i`):**
+`STORE_FILTERS` is now `['all', 'recommended', 'saved', 'overlapped']`, and
+the dropdown carries a fourth `<option>`, `Overlapped` — any in-stock record
+by an artist the user collects, owned or not. It follows this document's
+`Saved` shape exactly (a boolean derived from `filter` in both `load()` and
+the artist-sidebar effect, one more `emptyMessage` branch, no new state), but
+adds no per-row control, so the bookmark column and `colCount` discussed
+below are unaffected. See
+[`2026-08-26-store-overlapped-artist-filter-design.md`](2026-08-26-store-overlapped-artist-filter-design.md).
+
 ```tsx
 <option value="all">All</option>
 <option value="recommended" disabled={!recommendedAvailable}>Recommended</option>
