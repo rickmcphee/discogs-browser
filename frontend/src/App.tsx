@@ -145,9 +145,12 @@ export default function App() {
   // clicked with has to go too, or the banner ends up showing a Dismiss button
   // beside "Starting…", which reads as finished -- exactly the state syncBusy
   // exists to prevent. Replaced rather than blanked, because the user is owed
-  // an account of a refresh the app has lost track of, and only a reload can
-  // settle whether it is still running (an SSE reconnect replays a job that
-  // still is). Guarded on the message still being the one this claim set, so a
+  // an account of a refresh the app has lost track of. It points at the Logs
+  // tab rather than at a reload: stock_sync_running is this process's
+  // _stock_task, so a reconnect landing on the Machine that does not hold the
+  // advisory lock reports idle for a sync that is running. The log store is
+  // merged across Machines and durable, so it is the one signal that always
+  // answers. Guarded on the message still being the one this claim set, so a
   // real progress message that arrived in the meantime is never clobbered.
   const stockSyncClaimNotice = useRef<{ shown: string; lost: string } | null>(null)
 
@@ -595,7 +598,7 @@ export default function App() {
     const what = site ? `${site} catalog refresh` : 'in-stock catalog refresh'
     stockSyncClaimNotice.current = {
       shown: `Starting ${what}…`,
-      lost: `Lost track of the ${what} — reload to check whether it is still running.`,
+      lost: `Lost track of the ${what} — check the Logs tab to see whether it is still running.`,
     }
     setBusyStatusMessage(stockSyncClaimNotice.current.shown)
     setSyncStatus(stockSyncClaimNotice.current.shown)

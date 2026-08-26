@@ -84,10 +84,16 @@ that a click landed.
   twice. Expiring replaces the "Starting…" message as well as releasing the
   button — leaving it would put a Dismiss button beside "Starting…", the exact
   reading-as-finished this design rules out one bullet down — and the
-  replacement says the app has lost track and a reload will settle it, since
-  only a reconnect can learn whether the sync is still running. Guarded on the
-  message still being the one the claim set, so a real progress message that
-  arrived meanwhile is never clobbered.
+  replacement says the app has lost track and points at the Logs tab. Not at a
+  reload: `stock_sync_running` is this process's `_stock_task`, so on a
+  multi-Machine deployment a reconnect landing on the Machine that does not
+  hold the advisory lock reports idle for a sync that is genuinely running,
+  and `_events_to_replay` hands back nothing. The log store is merged across
+  Machines and durable
+  ([`2026-08-17-unified-log-store-design.md`](2026-08-17-unified-log-store-design.md)),
+  so it is the one signal that always answers. Guarded on the message still
+  being the one the claim set, so a real progress message that arrived
+  meanwhile is never clobbered.
 - **The thing that is running is the thing that stands out.** The running row's
   button inverts to the lit nav pill (`navButtonClass(true)`) instead of being
   dimmed by the disabled styling that the rows merely waiting on it carry.
@@ -161,9 +167,11 @@ that a click landed.
   the one error path in the app that blocked the page — so the checkpoint
   modal's Resume/Restart buttons get the same feedback as Settings' Refresh.
 - The status bar's spinner (and the absence of its Dismiss button, which next
-  to "Starting…" would read as finished) is driven by
-  `syncing || stockSyncStarting !== null || priceRefreshStarting` rather than
-  `syncing` alone.
+  to "Starting…" would read as finished) is driven by `syncing` *or* the
+  displayed message still being `busyStatusMessage` — see the message-ownership
+  decision above. Not by a flag per in-flight request, which is what let an
+  unrelated request leave a finished message spinning.
+- The banner element carries `role="status"`.
 - `Settings` receives the merged target — `stockSyncTarget ?? stockSyncStarting`
   — through the existing `stockSyncBusy`/`stockSyncCrawlerId` props, so both
   keep their current meanings and only widen to cover the pre-confirmation
@@ -176,7 +184,7 @@ dismissed-event-id replay guard):
 | --- | --- |
 | A store's Refresh | `Starting {site} catalog refresh…` |
 | Bulk Store Refresh | `Starting in-stock catalog refresh…` |
-| Either, claim expired unconfirmed | `Lost track of the {what} — reload to check whether it is still running.` |
+| Either, claim expired unconfirmed | `Lost track of the {what} — check the Logs tab to see whether it is still running.` |
 | Marketplace Refresh, in flight | `Starting price refresh for records with no price yet…` / `…for every record…` |
 | Marketplace Refresh, done | `Price refresh requested for {n} record(s).` |
 | Marketplace Refresh, nothing queued | `Nothing to refresh — every record already has a price.` |

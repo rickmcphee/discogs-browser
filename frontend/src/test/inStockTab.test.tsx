@@ -289,7 +289,7 @@ describe('In Stock tab', () => {
     // A Dismiss button beside "Starting…" would read as finished.
     expect(screen.queryByText('Starting Epitaph catalog refresh…')).not.toBeInTheDocument()
     expect(screen.getByText(
-      'Lost track of the Epitaph catalog refresh — reload to check whether it is still running.'
+      'Lost track of the Epitaph catalog refresh — check the Logs tab to see whether it is still running.'
     )).toBeInTheDocument()
   })
 
