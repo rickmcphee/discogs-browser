@@ -467,6 +467,13 @@ recommended: scope === 'store' && filter === 'recommended',
 `getStockArtists` receives the same `libraryScope`/`recommended` pair, as
 it does today.
 
+**Amendment (2026-08-26, branch `claude/store-overlapped-artist-filter-i3cp7i`):**
+"pair" no longer describes the call shape — `getStockArtists` takes a single
+named options object, `{ libraryScope?, recommended?, saved?, overlapped?,
+hiddenCrawlerIds? }`, matching `getStock`. The values it threads are
+unchanged; only how they are passed is. See
+[`2026-08-26-store-overlapped-artist-filter-design.md`](2026-08-26-store-overlapped-artist-filter-design.md).
+
 **Amendment (2026-08-10, as implemented):** the cast above became a
 validating helper, used at both call sites:
 
@@ -512,10 +519,24 @@ effect's `filter === 'recommended'` condition can never fire there and it
 cannot clobber a Track filter value.
 
 **Amendment (2026-08-16, branch `store-saved-items`):** "`All`/`Recommended`
-for Store (unchanged...)" is superseded — the Store dropdown gained a third
-option, `Saved`, for a per-user "save for later" bookmark unrelated to
+for Store (unchanged...)" is superseded — the Store dropdown gained
+`Saved`, for a per-user "save for later" bookmark unrelated to
 `Recommended`. See
 [`2026-08-16-store-saved-items-design.md`](2026-08-16-store-saved-items-design.md).
+
+**Amendment (2026-08-26, branch `claude/store-overlapped-artist-filter-i3cp7i`):**
+the Store dropdown gained `Overlapped` — any in-stock record by an
+artist the user collects, owned or not — so its options are now
+`all`/`recommended`/`saved`/`overlapped`. It supersedes two more statements in
+this document that the amendment above did not reach: the `allowed` snippet
+under "`StockBrowser` filter", whose Store arm reads `['all', 'recommended']`
+and is now `['all', 'recommended', 'saved', 'overlapped']`; and the Testing
+bullet reading "`scope="store"` renders All/Recommended", which now renders
+All/Recommended/Saved/Overlapped. Note that `Overlapped` matches at *artist*
+level and so is not the release-level `library_scope` filter this document is
+about, arriving on the Store tab — Track's Collection option remains the only
+place that release-level match is exposed. See
+[`2026-08-26-store-overlapped-artist-filter-design.md`](2026-08-26-store-overlapped-artist-filter-design.md).
 
 `colCount` stays 7 for Track and 6 for Store — the Price column renders
 under every filter value, so no filter-dependent column math.

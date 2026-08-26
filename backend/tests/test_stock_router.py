@@ -441,6 +441,53 @@ def test_list_stock_artists_library_scope_narrows_the_sidebar(pg_test_db, authed
     assert r.json()["artists"] == []
 
 
+def _seed_overlapped_artist_stock(conn):
+    """Rob Zombie and NAILS in stock; Alice's collection holds a Rob Zombie
+    record that is *not* one of the in-stock ones."""
+    crawler_id = _make_crawler()
+    db.replace_stock_items(conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "The Great Satan", "price": 1.0, "currency": "USD", "url": "https://x/1"},
+        {"artist": "NAILS", "title": "Unsilent Death", "price": 2.0, "currency": "USD", "url": "https://x/2"},
+    ])
+    db.upsert_catalog_release(conn, {
+        "discogs_id": "r1", "artist": "Rob Zombie", "title": "Hellbilly Deluxe", "year": None, "label": None,
+        "format": None, "barcode": None, "cover_image_url": None, "discogs_url": None,
+    })
+    user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+    db.upsert_library_item(conn, user["id"], "r1", in_collection=True)
+    conn.commit()
+    return user
+
+
+def test_list_stock_overlapped_narrows_to_collected_artists(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        user = _seed_overlapped_artist_stock(conn)
+
+    client = authed_client_factory(user["id"])
+    assert client.get("/api/stock").json()["total"] == 2
+
+    r = client.get("/api/stock", params={"overlapped": "true"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["total"] == 1
+    assert body["items"][0]["artist"] == "Rob Zombie"
+    # The record itself is not in her collection -- only the artist is -- so
+    # the release-level filter finds nothing.
+    assert client.get("/api/stock", params={"library_scope": "collection"}).json()["total"] == 0
+
+
+def test_list_stock_artists_overlapped_narrows_the_sidebar(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        user = _seed_overlapped_artist_stock(conn)
+
+    client = authed_client_factory(user["id"])
+    assert client.get("/api/stock/artists").json()["artists"] == ["Nails", "Rob Zombie"]
+
+    r = client.get("/api/stock/artists", params={"overlapped": "true"})
+    assert r.status_code == 200
+    assert r.json()["artists"] == ["Rob Zombie"]
+
+
 def test_put_stock_saved_marks_item_saved(pg_test_db, authed_client_factory):
     crawler_id = _make_crawler()
     with db.get_admin_pool().connection() as conn:
