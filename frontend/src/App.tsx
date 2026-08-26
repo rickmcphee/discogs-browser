@@ -24,18 +24,25 @@ const DISMISSED_SYNC_KEY = 'discogs-browser.dismissedSyncEventId'
 const DISMISSED_CRAWL_KEY = 'discogs-browser.dismissedCrawlEventId'
 const VIEW_AS_USER_KEY = 'discogs-browser.viewAsUser'
 
-// How long an optimistic stock-sync claim may hold a Refresh button before it
-// releases on its own. An accepted start normally hands over to
-// stock_sync_started within a second, but nothing guarantees that event ever
-// arrives: the SSE stream can break and reconnect across an entire short sync,
-// and routers/crawl.py's _events_to_replay returns nothing once no job is
-// active -- so a sync that both started and finished inside the gap replays
-// neither event. Unbounded, the claim would leave every Store Refresh button
-// disabled and spinning until a page reload. Releasing is self-correcting
-// either way: a late stock_sync_started takes the button straight back, and a
-// click during a sync the UI has lost track of is rejected by the server with
-// the "already running" message rather than starting anything twice.
-const STOCK_SYNC_CLAIM_TIMEOUT_MS = 20_000
+// How long a click may hold its Refresh button disabled and spinning before
+// the app admits it does not know and lets go. Both claims need it, for the
+// same reason from opposite ends:
+//
+//   - A stock claim normally hands over to stock_sync_started within a second,
+//     but nothing guarantees that event arrives. The SSE stream can break and
+//     reconnect across an entire short sync, and routers/crawl.py's
+//     _events_to_replay returns nothing once no job is active -- so a sync
+//     that both started and finished inside the gap replays neither event.
+//   - A price claim covers its own request, and apiFetch wraps a plain fetch
+//     with no timeout or abort signal, so a stalled POST never settles.
+//
+// Unbounded, either leaves a button the user cannot retry from -- the stuck
+// state this whole change exists to remove, reached from the inside. Releasing
+// is self-correcting: a late stock_sync_started takes the button straight
+// back, a late response is dropped by the sequence guard, and a click during
+// work the UI has lost track of is rejected by the server rather than starting
+// anything twice.
+const START_CLAIM_TIMEOUT_MS = 20_000
 
 function formatElapsed(seconds: number | null): string {
   if (seconds === null) return 'unknown'
@@ -160,9 +167,24 @@ export default function App() {
       setStockSyncStarting(null)
       const notice = stockSyncClaimNotice.current
       if (notice) setSyncMessage((m) => (m === notice.shown ? notice.lost : m))
-    }, STOCK_SYNC_CLAIM_TIMEOUT_MS)
+    }, START_CLAIM_TIMEOUT_MS)
     return () => clearTimeout(timer)
   }, [stockSyncStarting])
+
+  // The price claim's own bound. Bumping the sequence first makes the stalled
+  // response a no-op if it ever does land.
+  const priceClaimNotice = useRef<{ shown: string; lost: string } | null>(null)
+
+  useEffect(() => {
+    if (!priceRefreshStarting) return
+    const timer = setTimeout(() => {
+      latestPriceRefreshSeq.current++
+      setPriceRefreshStarting(false)
+      const notice = priceClaimNotice.current
+      if (notice) setSyncMessage((m) => (m === notice.shown ? notice.lost : m))
+    }, START_CLAIM_TIMEOUT_MS)
+    return () => clearTimeout(timer)
+  }, [priceRefreshStarting])
 
   const updateHiddenCrawlerIds = useCallback((ids: number[]) => {
     setHiddenCrawlerIds(ids)
@@ -544,6 +566,10 @@ export default function App() {
       : mode === 'missing'
         ? 'Starting price refresh for records with no price yet…'
         : 'Starting price refresh for every record…'
+    priceClaimNotice.current = {
+      shown: starting,
+      lost: 'Lost track of the price refresh — check the Logs tab to see whether it started.',
+    }
     setBusyStatusMessage(starting)
     setSyncStatus(starting)
     try {
@@ -997,12 +1023,13 @@ export default function App() {
         </div>
       )}
 
-      {/* Collection sync status bar */}
+      {/* Collection sync status bar. The live region stays mounted even when
+          the banner is not: assistive technology does not reliably announce a
+          role="status" element inserted together with its text, so the first
+          confirmation after a click would be the one that went unheard. */}
+      <div role="status">
       {syncBannerVisible && (
-        <div
-          role="status"
-          className="fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-700 px-4 py-2 flex items-center gap-3"
-        >
+        <div className="fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-700 px-4 py-2 flex items-center gap-3">
           <span className="text-sm font-medium text-gray-300 shrink-0">
             {syncMessage}
           </span>
@@ -1019,6 +1046,7 @@ export default function App() {
           )}
         </div>
       )}
+      </div>
 
       {/* Crawl status bar */}
       {crawlBannerVisible && !syncBannerVisible && (

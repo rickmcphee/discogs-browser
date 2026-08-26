@@ -77,7 +77,11 @@ that a click landed.
   nothing once no job is active, so a sync that both starts and finishes while
   the SSE stream is reconnecting replays neither event, and the claim would
   hold every Store Refresh disabled until a page reload. A timeout
-  (`STOCK_SYNC_CLAIM_TIMEOUT_MS`) bounds it. Releasing early is self-correcting
+  (`START_CLAIM_TIMEOUT_MS`) bounds it. The price claim needs the same bound
+  from the other end: `apiFetch` wraps a plain `fetch` with no timeout or abort
+  signal, so a stalled POST never settles and would leave the Marketplace
+  button disabled with no way to retry. Both expiries bump their sequence
+  first, so a response that lands afterwards is dropped rather than acted on. Releasing early is self-correcting
   in both directions: a late `stock_sync_started` takes the button straight
   back, and a click during a sync the UI has lost track of is rejected by the
   server with the "already running" message rather than starting anything
@@ -141,11 +145,16 @@ that a click landed.
   /stock/sync/start` has no bounded response time, so a first request rejecting
   after a second click would otherwise clear the newer claim and overwrite its
   status with the older result.
-- **The banner is a live region.** It carries `role="status"`, so the click
-  confirmations this design exists to add reach screen-reader users too; none
-  of them moves focus, so without it they were silent. Spinners are
+- **The banner is a live region, and it stays mounted.** It carries
+  `role="status"`, so the click confirmations this design exists to add reach
+  screen-reader users too; none of them moves focus, so without it they were
+  silent. The region is an always-present wrapper with the banner rendered
+  inside it, not the banner itself: assistive technology does not reliably
+  announce a `role="status"` element inserted together with its text, which
+  would have cost exactly the first confirmation after a click. Spinners are
   `aria-hidden` and the buttons carry their state in `title`, which is their
-  accessible name.
+  accessible name. `BackendDownScreen` is a second `role="status"`, so tests
+  reaching for the overlay query it by its message rather than by role.
 
 ## Frontend design
 
@@ -184,7 +193,8 @@ dismissed-event-id replay guard):
 | --- | --- |
 | A store's Refresh | `Starting {site} catalog refresh…` |
 | Bulk Store Refresh | `Starting in-stock catalog refresh…` |
-| Either, claim expired unconfirmed | `Lost track of the {what} — check the Logs tab to see whether it is still running.` |
+| Either stock claim expired unconfirmed | `Lost track of the {what} — check the Logs tab to see whether it is still running.` |
+| Price claim expired unconfirmed | `Lost track of the price refresh — check the Logs tab to see whether it started.` |
 | Marketplace Refresh, in flight | `Starting price refresh for records with no price yet…` / `…for every record…` |
 | Marketplace Refresh, done | `Price refresh requested for {n} record(s).` |
 | Marketplace Refresh, nothing queued | `Nothing to refresh — every record already has a price.` |
@@ -228,7 +238,9 @@ dismissed-event-id replay guard):
   reported, singular and plural; a zero-target run says so and stays
   dismissible; the in-flight state spins and says what it is doing; a failed
   start lands in the status bar and raises no `alert`; a message that has
-  finished is not left spinning by an unrelated request still in flight.
+  finished is not left spinning by an unrelated request still in flight; a
+  request that never settles releases the button by the timeout; and the live
+  region is the same mounted node before and after its first message.
 
 Verified visually as well as in tests: the Settings view was rendered in each
 state in a browser and screenshotted, since "more obvious" is not something a

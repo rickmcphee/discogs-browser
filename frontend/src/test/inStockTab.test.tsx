@@ -371,15 +371,20 @@ describe('In Stock tab', () => {
     expect(screen.queryByText(/already running/)).not.toBeInTheDocument()
   })
 
-  it('announces the status bar to assistive technology', async () => {
+  // A role="status" inserted together with its text is not reliably announced,
+  // so the region has to already be there when the first message lands.
+  it('keeps the status live region mounted before there is anything to say', async () => {
     getCrawlers.mockResolvedValue([CATALOG_CRAWLER])
     render(<App />)
     await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
+    const region = screen.getByRole('status')
+    expect(region).toBeEmptyDOMElement()
+
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     fireEvent.click(await screen.findByTitle('Refresh Epitaph catalog now'))
-
-    const banner = await screen.findByRole('status')
-    expect(banner).toHaveTextContent('Starting Epitaph catalog refresh…')
+    await waitFor(() => expect(region).toHaveTextContent('Starting Epitaph catalog refresh…'))
+    // The same node, not a replacement -- that is the whole point.
+    expect(screen.getByRole('status')).toBe(region)
   })
 
   it('hands the claimed button over to stock_sync_started without letting it flicker back', async () => {

@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import App from '../App'
 import { importRecommendationsCsv } from '../api/client'
 import type { Release } from '../api/types'
@@ -85,6 +85,12 @@ beforeEach(() => {
   vi.clearAllMocks()
   localStorage.clear()
   postCrawlStart.mockResolvedValue({ enqueued: 0 })
+})
+
+// waitFor and findBy* poll on the clock, so a test that fakes it cannot use
+// them -- and a leaked fake clock times out every test after it.
+afterEach(() => {
+  vi.useRealTimers()
 })
 
 async function clickMarketplaceRefresh() {
@@ -286,6 +292,29 @@ describe('price refresh feedback', () => {
     expect(screen.getByRole('button', { name: /Dismiss/i })).toBeInTheDocument()
 
     resolve({ enqueued: 3 })
+  })
+
+  // apiFetch wraps a plain fetch with no timeout, so a stalled POST would
+  // otherwise leave the button disabled with no way to retry.
+  it('releases the button when the request never settles', async () => {
+    vi.useFakeTimers()
+    postCrawlStart.mockReturnValue(new Promise(() => {}))
+    render(<App />)
+    const settle = () => act(async () => {})
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await settle()
+    const row = screen.getByText('Run price crawlers immediately.').closest('tr') as HTMLElement
+    const button = row.querySelector('button') as HTMLButtonElement
+    fireEvent.click(button)
+    await settle()
+    expect(button).toBeDisabled()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(20_000) })
+    expect(button).not.toBeDisabled()
+    expect(screen.getByText(
+      'Lost track of the price refresh — check the Logs tab to see whether it started.'
+    )).toBeInTheDocument()
   })
 
   it('reports a failed start in the status bar instead of a blocking alert', async () => {
