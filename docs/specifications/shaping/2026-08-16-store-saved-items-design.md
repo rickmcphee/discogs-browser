@@ -252,6 +252,16 @@ export async function unsaveStockItem(itemKey: string): Promise<{ saved: boolean
 }
 ```
 
+**Amendment (2026-08-26, branch `claude/store-overlapped-artist-filter-i3cp7i`):**
+the `getStockArtists` declaration above is stale. It no longer takes
+positional arguments at all — it takes a single named options object,
+`{ libraryScope?, recommended?, saved?, overlapped?, hiddenCrawlerIds? }`,
+matching `getStock` beside it. Every filter it accepts is a bare boolean, so
+the positional form had reached a call site of
+`(undefined, false, [], false, true)` with nothing to say which `true` was
+which, and each filter added to it shifted every existing caller. See
+[`2026-08-26-store-overlapped-artist-filter-design.md`](2026-08-26-store-overlapped-artist-filter-design.md).
+
 ### Filter
 
 `STORE_FILTERS` (`frontend/src/views/StockBrowser.tsx:17`) becomes `['all',

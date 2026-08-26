@@ -270,7 +270,9 @@ Grepped both spec trees (`docs/superpowers/specs/`,
 `docs/specifications/shaping/`) for the Store dropdown's option set,
 `STORE_FILTERS`, `get_stock_items`/`get_distinct_stock_artists` signatures,
 and `getStockArtists`'s argument list. These documents had drifted and were
-amended in place on this branch:
+amended in place on this branch (the last two entries were added after
+Copilot's review on PR #189 caught the `getStockArtists` declaration this
+grep was supposed to have found and didn't):
 
 - [`docs/superpowers/specs/2026-07-05-in-stock-crawler-design.md`](../../superpowers/specs/2026-07-05-in-stock-crawler-design.md)
   — its 2026-08-16 amendment describes the dropdown as offering
@@ -296,6 +298,14 @@ amended in place on this branch:
   — states `STORE_FILTERS`' contents outright, so the same correction applies;
   its bookmark column and `colCount` discussion is untouched, since this
   filter adds no per-row control.
+- [`2026-08-16-store-saved-items-design.md`](2026-08-16-store-saved-items-design.md),
+  again — its "Types and API client" section carries a literal
+  `export function getStockArtists(...)` declaration in positional form, which
+  the options-object change above supersedes.
+- [`2026-08-10-collection-wishlist-filter-design.md`](2026-08-10-collection-wishlist-filter-design.md),
+  again — "`getStockArtists` receives the same `libraryScope`/`recommended`
+  pair" describes a positional call shape that no longer exists. The values
+  threaded are unchanged; only how they are passed is.
 
 No spec carried a crawler/store/source/plugin/test count in the passages
 touched, so none needed removing.
@@ -303,8 +313,11 @@ touched, so none needed removing.
 ## Runtime/agent document impact
 
 No `.agents/` directory exists in this repo. This change adds no external
-trigger, no outbound call, and no new runtime input/output shape — it's one
-more boolean query param on two existing authenticated read endpoints.
+trigger and no outbound call. It does widen the runtime input surface, by one
+optional boolean query param on each of two existing authenticated read
+endpoints — but it adds no endpoint, no response field, and no new
+authentication or trust boundary, so there is no agent-facing document to
+update.
 `README.md` and `CLAUDE.md` need no change: neither documents per-feature UI
 behavior at this level, and none of `CLAUDE.md`'s stated invariants (crawl
 queueing, listings population, wishlist-removal semantics, SSE event

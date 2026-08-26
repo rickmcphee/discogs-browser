@@ -467,6 +467,13 @@ recommended: scope === 'store' && filter === 'recommended',
 `getStockArtists` receives the same `libraryScope`/`recommended` pair, as
 it does today.
 
+**Amendment (2026-08-26, branch `claude/store-overlapped-artist-filter-i3cp7i`):**
+"pair" no longer describes the call shape — `getStockArtists` takes a single
+named options object, `{ libraryScope?, recommended?, saved?, overlapped?,
+hiddenCrawlerIds? }`, matching `getStock`. The values it threads are
+unchanged; only how they are passed is. See
+[`2026-08-26-store-overlapped-artist-filter-design.md`](2026-08-26-store-overlapped-artist-filter-design.md).
+
 **Amendment (2026-08-10, as implemented):** the cast above became a
 validating helper, used at both call sites:
 
