@@ -142,13 +142,13 @@ function StockBrowser({
     // the reconciliation below -- re-casing the selection to an old label, or
     // clearing an artist the newest response still lists.
     let latest = true
-    getStockArtists(
-      scope === 'track' ? trackLibraryScope(filter) : undefined,
-      scope === 'store' && filter === 'recommended',
+    getStockArtists({
+      libraryScope: scope === 'track' ? trackLibraryScope(filter) : undefined,
+      recommended: scope === 'store' && filter === 'recommended',
+      saved: scope === 'store' && filter === 'saved',
+      overlapped: scope === 'store' && filter === 'overlapped',
       hiddenCrawlerIds,
-      scope === 'store' && filter === 'saved',
-      scope === 'store' && filter === 'overlapped',
-    ).then((list) => { if (latest) setArtists(list) })
+    }).then((list) => { if (latest) setArtists(list) })
     return () => { latest = false }
   }, [scope, filter, hiddenCrawlerIds, syncGeneration, retryTick, hiddenCrawlerIdsLoaded])
   // A refetched list can re-case the selected artist's label, or drop it

@@ -186,9 +186,9 @@ describe('StockBrowser', () => {
   it('refetches the artist sidebar scoped to recommended when Recommended is selected', async () => {
     render(<StockBrowser recommendedAvailable />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    expect(getStockArtists).toHaveBeenLastCalledWith(undefined, false, [], false, false)
+    expect(getStockArtists).toHaveBeenLastCalledWith({ libraryScope: undefined, recommended: false, saved: false, overlapped: false, hiddenCrawlerIds: [] })
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'recommended' } })
-    await waitFor(() => expect(getStockArtists).toHaveBeenLastCalledWith(undefined, true, [], false, false))
+    await waitFor(() => expect(getStockArtists).toHaveBeenLastCalledWith({ libraryScope: undefined, recommended: true, saved: false, overlapped: false, hiddenCrawlerIds: [] }))
   })
 
   it('restores a previously-selected Recommended filter from localStorage', async () => {
@@ -243,7 +243,7 @@ describe('StockBrowser', () => {
     render(<StockBrowser scope="store" />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'overlapped' } })
-    await waitFor(() => expect(getStockArtists).toHaveBeenLastCalledWith(undefined, false, [], false, true))
+    await waitFor(() => expect(getStockArtists).toHaveBeenLastCalledWith({ libraryScope: undefined, recommended: false, saved: false, overlapped: true, hiddenCrawlerIds: [] }))
   })
 
   it('shows overlapped-specific empty-state copy under the Overlapped filter with no results', async () => {
@@ -298,7 +298,7 @@ describe('StockBrowser', () => {
     await waitFor(() => expect(getStock).toHaveBeenCalledTimes(1))
     rerender(<StockBrowser hiddenCrawlerIds={[3]} />)
     await waitFor(() => expect(getStock).toHaveBeenCalledTimes(2))
-    expect(getStockArtists).toHaveBeenLastCalledWith(undefined, false, [3], false, false)
+    expect(getStockArtists).toHaveBeenLastCalledWith({ libraryScope: undefined, recommended: false, saved: false, overlapped: false, hiddenCrawlerIds: [3] })
   })
 
   it('resets to page 1 when hiddenCrawlerIds changes, with a single fetch (not stale-page-then-corrected)', async () => {
@@ -335,7 +335,7 @@ describe('StockBrowser', () => {
   it('scope="track" sends libraryScope on the artist sidebar fetch too', async () => {
     render(<StockBrowser scope="track" />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    expect(getStockArtists).toHaveBeenCalledWith('all', false, [], false, false)
+    expect(getStockArtists).toHaveBeenCalledWith({ libraryScope: 'all', recommended: false, saved: false, overlapped: false, hiddenCrawlerIds: [] })
   })
 
   it('changing the Track filter refetches both the items and the artist sidebar with the new libraryScope', async () => {
@@ -347,9 +347,9 @@ describe('StockBrowser', () => {
     )
     // The sidebar has to narrow with the table, or clicking a collection-only
     // artist under Wantlist lands on an empty table.
-    await waitFor(() => expect(getStockArtists).toHaveBeenLastCalledWith('wantlist', false, [], false, false))
+    await waitFor(() => expect(getStockArtists).toHaveBeenLastCalledWith({ libraryScope: 'wantlist', recommended: false, saved: false, overlapped: false, hiddenCrawlerIds: [] }))
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'collection' } })
-    await waitFor(() => expect(getStockArtists).toHaveBeenLastCalledWith('collection', false, [], false, false))
+    await waitFor(() => expect(getStockArtists).toHaveBeenLastCalledWith({ libraryScope: 'collection', recommended: false, saved: false, overlapped: false, hiddenCrawlerIds: [] }))
   })
 
   it('clears a selected artist when the Track filter changes, and re-highlights All', async () => {
@@ -412,7 +412,7 @@ describe('StockBrowser', () => {
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('all')
     expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ libraryScope: 'all' }))
-    expect(getStockArtists).toHaveBeenCalledWith('all', false, [], false, false)
+    expect(getStockArtists).toHaveBeenCalledWith({ libraryScope: 'all', recommended: false, saved: false, overlapped: false, hiddenCrawlerIds: [] })
     expect(localStorage.getItem('stockFilter_track')).toBe('all')
   })
 

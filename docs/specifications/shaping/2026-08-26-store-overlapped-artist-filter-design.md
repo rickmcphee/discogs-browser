@@ -34,7 +34,7 @@ Touches:
 - `backend/routers/stock.py` — `GET /stock` and `GET /stock/artists` gain an
   `overlapped` query param, passed through as `overlapped_artists`.
 - `frontend/src/api/client.ts` — `getStock` gains an `overlapped` param;
-  `getStockArtists` gains a fifth positional `overlapped`.
+  `getStockArtists` takes a named options object (see "Frontend design").
 - `frontend/src/views/StockBrowser.tsx` — `STORE_FILTERS` gains
   `'overlapped'`; the Store dropdown gains an `Overlapped` option; `load()`
   and the artist-sidebar effect each derive one more boolean from `filter`;
@@ -171,7 +171,7 @@ which is also what gates the `localStorage` restore, so a stored
 `'overlapped'` survives a remount and a stored value from the Track tab still
 doesn't.
 
-The Store branch of the dropdown gains a fourth option, last:
+The Store branch of the dropdown gains one more option, last:
 
 ```tsx
 <option value="overlapped">Overlapped</option>
@@ -183,6 +183,14 @@ same `filter` state — no new state, no new effect:
 ```ts
 overlapped: scope === 'store' && filter === 'overlapped',
 ```
+
+`getStockArtists` takes a named options object rather than the positional list
+it grew up as. Every filter it accepts is a bare boolean, so its call site had
+reached `(undefined, false, [], false, true)` — nothing at the call site says
+which `true` is which — and each filter added so far has shifted every
+existing caller. `getStock`, directly above it in the same file, already takes
+an options object; this makes the pair consistent. Raised by Copilot's review
+on PR #189.
 
 `emptyMessage` gains a branch beside the `Saved` one: *"Nothing by an artist
 in your collection is in stock right now."*
@@ -265,8 +273,9 @@ and `getStockArtists`'s argument list. These documents had drifted and were
 amended in place on this branch:
 
 - [`docs/superpowers/specs/2026-07-05-in-stock-crawler-design.md`](../../superpowers/specs/2026-07-05-in-stock-crawler-design.md)
-  — its 2026-08-16 amendment says the dropdown gained "a third option,
-  `Saved`"; there is now a fourth. Its earlier 2026-08-08 amendment, which
+  — its 2026-08-16 amendment describes the dropdown as offering
+  All/Recommended/Saved, which `Overlapped` supersedes. Its earlier
+  2026-08-08 amendment, which
   records the *release-level* "Overlapping" option being removed, needed the
   sharper correction: an `Overlapped` option exists again, but it is not that
   option returning.

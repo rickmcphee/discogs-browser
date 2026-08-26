@@ -512,14 +512,15 @@ effect's `filter === 'recommended'` condition can never fire there and it
 cannot clobber a Track filter value.
 
 **Amendment (2026-08-16, branch `store-saved-items`):** "`All`/`Recommended`
-for Store (unchanged...)" is superseded — the Store dropdown gained a third
-option, `Saved`, for a per-user "save for later" bookmark unrelated to
+for Store (unchanged...)" is superseded — the Store dropdown gained
+`Saved`, for a per-user "save for later" bookmark unrelated to
 `Recommended`. See
 [`2026-08-16-store-saved-items-design.md`](2026-08-16-store-saved-items-design.md).
 
 **Amendment (2026-08-26, branch `claude/store-overlapped-artist-filter-i3cp7i`):**
-a fourth Store option, `Overlapped`, was added — any in-stock record by an
-artist the user collects, owned or not. It supersedes two more statements in
+the Store dropdown gained `Overlapped` — any in-stock record by an
+artist the user collects, owned or not — so its options are now
+`all`/`recommended`/`saved`/`overlapped`. It supersedes two more statements in
 this document that the amendment above did not reach: the `allowed` snippet
 under "`StockBrowser` filter", whose Store arm reads `['all', 'recommended']`
 and is now `['all', 'recommended', 'saved', 'overlapped']`; and the Testing
