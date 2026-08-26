@@ -198,7 +198,7 @@ GitHub computes it asynchronously and answers `unknown` right after a push:
 The recreate request carries `RECREATE_MARKER`, and the don't-ask-twice guard
 counts only comments bearing it. Matching on the command text would let anyone
 who can comment suppress the real request; matching on author would break the
-day `INTEGRATION_PROMOTE_TOKEN` is configured and the author changes.
+day the sync app is configured and the author changes.
 
 ## Conflict handling
 
@@ -239,25 +239,64 @@ between that fetch and the push is rejected rather than overwritten.
 
 ## Tokens
 
-`INTEGRATION_PROMOTE_TOKEN` is a **prerequisite for the first sync**, not a
-convenience, and must hold the `workflow` scope. That sync carries
-`integration-sync.yml` itself plus a change to `integration-promote.yml`, and
-`GITHUB_TOKEN` may not create or update anything under `.github/workflows/`. It
-is passed to `actions/checkout`, not only exported as `GH_TOKEN`: checkout
-persists whichever token it used as the git credential for every later push,
-and `GH_TOKEN` authenticates only the `gh` CLI.
+A **GitHub App** installed on this repository is a **prerequisite for the first
+sync**, not a convenience, and its installation must hold Workflows write. That
+sync carries `integration-sync.yml` itself plus a change to
+`integration-promote.yml`, and `GITHUB_TOKEN` may not create or update anything
+under `.github/workflows/`. The token is passed to `actions/checkout`, not only
+exported as `GH_TOKEN`: checkout persists whichever token it used as the git
+credential for every later push, and `GH_TOKEN` authenticates only the `gh` CLI.
 
-It needs Contents, Pull requests, Issues **and Workflows** write — as a classic
-PAT, `repo` + `workflow`. Issues because labels are issues-scoped even on a PR,
-and `sync-conflict-needs-hand-merge` is the only thing keeping auto-merge off a
+The installation needs Contents, Pull requests, Issues **and Workflows** write.
+Issues because labels are issues-scoped even on a PR, and
+`sync-conflict-needs-hand-merge` is the only thing keeping auto-merge off a
 hand-resolved conflict. Workflows because Contents does not cover
 `.github/workflows/`: a token without it hits exactly the push rejection
 described above, so a setup that lists only the first three produces the very
 failure this section diagnoses. The workflow's own `permissions:` block grants
 the three that apply to it (`GITHUB_TOKEN` cannot be given Workflows at all,
-which is why the PAT is the prerequisite).
+which is why the app is the prerequisite).
 
-Separately, and more weakly, the token removes a weekly "Approve and run" click:
+### Why an app rather than a PAT
+
+This started as `INTEGRATION_PROMOTE_TOKEN`, a personal access token. The
+replacement is not cosmetic: a PAT owned by a repository admin quietly disarms
+the protection on the one PR here that reaches production.
+
+`main-branch-protection` requires one approving review — raised from zero after
+PR #134 merged unreviewed — and lists a single bypass actor, the repository
+owner, with `bypass_mode: pull_request`. Today the weekly promotion PR is
+opened and armed by `github-actions[bot]`, which is not a bypass actor, so that
+review genuinely binds. Authenticate the same workflow with the owner's PAT and
+the PR becomes theirs, armed and merged as them, and the bypass applies. The
+review requirement stops binding on precisely the PR that deploys. An app is a
+distinct identity and no ruleset's bypass actor, so the requirement survives.
+
+Two secondary benefits fall out. An installation token cannot lapse the way a
+PAT expires — and because the workflows fall back to `github.token` rather than
+failing, an expiry would have degraded *silently* back to the weekly click and
+the blind push triggers. And the app's bot is not `github-actions[bot]`, so the
+runs its pushes start are not `GITHUB_TOKEN`-authored and are not parked.
+
+The cost is that installation tokens expire after an hour and so cannot be
+stored as a secret at all. Each job mints its own via
+`actions/create-github-app-token`, `sync` and `refresh` included — step outputs
+do not cross job boundaries, and `refresh` runs on `always()` even when `sync`
+failed. Configuration is split: the Client ID is not secret and lives in the
+repository variable `INTEGRATION_PROMOTE_APP_CLIENT_ID`, the private key in the
+secret `INTEGRATION_PROMOTE_APP_PRIVATE_KEY`.
+
+That split is load-bearing, not tidiness. Each mint step is guarded by `if:` so
+an unconfigured repository still falls back to `github.token` as documented
+below — and the `secrets` context **is not available in a step-level `if`** at
+all (GitHub allows only `github`, `needs`, `strategy`, `matrix`, `job`,
+`runner`, `env`, `vars`, `steps` and `inputs` there). A guard testing the
+private key would never match, so the step would never run however well
+configured the app was, and the failure would be silent. `vars` is available,
+which is what makes the guard expressible. A skipped step yields empty outputs,
+so `steps.app-token.outputs.token || github.token` degrades exactly as before.
+
+Separately, and more weakly, the app removes a weekly "Approve and run" click:
 a PR opened with `GITHUB_TOKEN` has its `pull_request` checks parked in an
 approval-required state. Parked, not absent — on #182 the run was created three
 seconds after the PR and started as attempt 2 five hours later with a human as

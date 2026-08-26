@@ -26,14 +26,30 @@ name: Sync integration with main
 # that ruleset requires a pull request and lists no bypass actors, so a direct
 # push is rejected however the workflow authenticates.
 #
-# SETUP: INTEGRATION_PROMOTE_TOKEN is a prerequisite for the first sync, not
-# just a convenience. That sync carries this very file plus a change to
+# SETUP: the sync app is a prerequisite for the first sync, not just a
+# convenience. That sync carries this very file plus a change to
 # integration-promote.yml, and GITHUB_TOKEN may not create or update anything
 # under .github/workflows/, so the push is rejected outright without a token
-# holding the `workflow` scope. Later syncs only need it when `main` has
-# touched a workflow file. It separately removes the weekly "Approve and run"
-# click described on the sync step below; the two are unrelated, and the second
+# holding Workflows: write. Later syncs only need it when `main` has touched a
+# workflow file. It separately removes the weekly "Approve and run" click
+# described on the sync step below; the two are unrelated, and the second
 # reason is the weaker one.
+#
+# Configure it as a GitHub App installed on this repository, with Contents,
+# Pull requests, Issues and Workflows all read/write. Its Client ID goes in the
+# repository variable INTEGRATION_PROMOTE_APP_CLIENT_ID, its private key in the
+# secret INTEGRATION_PROMOTE_APP_PRIVATE_KEY. Every job below mints its own
+# installation token: those expire after an hour, so unlike the PAT this
+# replaces there is nothing durable to store, and step outputs do not cross
+# job boundaries.
+#
+# An App rather than a personal access token, deliberately. A PAT would make
+# every promotion PR the token owner's own, and main-branch-protection lists
+# that user as a bypass actor -- so the approving review it started requiring
+# after PR #134 merged unreviewed would stop binding on precisely the PR that
+# deploys. The App is a separate identity and no ruleset's bypass actor, so
+# that review keeps binding. It has no expiry to lapse silently past the
+# `|| github.token` fallbacks either.
 
 on:
   push:
@@ -55,12 +71,12 @@ on:
     # `refresh`. Each trigger is blind to the one merge it most needs to see,
     # and the cron is the only thing covering either.
     #
-    # With INTEGRATION_PROMOTE_TOKEN configured -- a prerequisite anyway, see
-    # SETUP above -- the recursion guard does not apply: those merges are
-    # PAT-authenticated and do emit their push events, so the triggers work and
-    # the cron is a backstop rather than the mechanism. It stays because the
-    # fallback is reachable without anyone intending it, by the secret being
-    # removed or its token expiring.
+    # With the sync app configured -- a prerequisite anyway, see SETUP above
+    # -- the recursion guard does not apply: those merges are authenticated by
+    # an installation token, a distinct identity, and do emit their push
+    # events, so the triggers work and the cron is a backstop rather than the
+    # mechanism. It stays because the fallback is reachable without anyone
+    # intending it, by the variable or secret being removed.
     #
     # Both jobs no-op cheaply when there is nothing to do.
     - cron: "0 5 * * *"
@@ -86,9 +102,9 @@ env:
   FROZEN_BASE: b24e568e76bc927888e62c658e210104aa1be0d6
   # Stamped into every recreate request this workflow posts, and the only thing
   # the don't-ask-twice guard counts. Identity-independent on purpose: the
-  # comment author is github-actions[bot] or the PAT's owner depending on which
+  # comment author is github-actions[bot] or the app's bot depending on which
   # token is configured, so matching on author would silently stop working the
-  # day INTEGRATION_PROMOTE_TOKEN is added.
+  # day the sync app is added.
   RECREATE_MARKER: "<!-- integration-sync: recreate requested -->"
   # Applied to a sync PR whose conflict someone has to resolve by hand. It is
   # what stops the next run re-arming auto-merge underneath them; see the
@@ -102,19 +118,35 @@ jobs:
     # containment test below answers from refs alone and exits.
     runs-on: ubuntu-latest
     steps:
+      - name: Mint an installation token for the sync app
+        id: app-token
+        # Guarded on `vars`, not `secrets`. The secrets context is not
+        # available in a step-level `if` at all -- GitHub's context table
+        # allows only github/needs/strategy/matrix/job/runner/env/vars/steps/
+        # inputs there -- so a guard testing the private key would never match
+        # and this step would never run, silently, however well configured the
+        # app was. The Client ID is not secret, which is what makes the guard
+        # expressible. A skipped step yields empty outputs, so each
+        # `|| github.token` below still degrades exactly as documented.
+        if: ${{ vars.INTEGRATION_PROMOTE_APP_CLIENT_ID != '' }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.INTEGRATION_PROMOTE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.INTEGRATION_PROMOTE_APP_PRIVATE_KEY }}
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
           # actions/checkout persists whichever token it used as the git
           # credential for every later push in this job. GH_TOKEN below only
           # authenticates the `gh` CLI, so without this line `git push` would
-          # authenticate as GITHUB_TOKEN even where INTEGRATION_PROMOTE_TOKEN
-          # is configured -- and GITHUB_TOKEN may not create or update files
+          # authenticate as GITHUB_TOKEN even where the sync app is
+          # configured -- and GITHUB_TOKEN may not create or update files
           # under .github/workflows/. The first sync necessarily carries
           # exactly that: this workflow file, and the promote workflow's
           # comment. Distinct from the parked-CI caveat below, and not fixed
           # by it.
-          token: ${{ secrets.INTEGRATION_PROMOTE_TOKEN || github.token }}
+          token: ${{ steps.app-token.outputs.token || github.token }}
 
       - name: Open/update the sync PR if integration has fallen behind
         id: sync
@@ -123,14 +155,15 @@ jobs:
           # GITHUB_TOKEN gets its fly-deploy.yml checks parked in an
           # approval-required state, and `integration` cannot merge without
           # "Backend tests" and "Frontend tests" reporting, so auto-merge below
-          # waits on someone clicking "Approve and run". Adding
-          # INTEGRATION_PROMOTE_TOKEN removes the click for both workflows.
-          # A fine-grained PAT needs Contents: read/write, Pull requests:
+          # waits on someone clicking "Approve and run". Configuring the sync
+          # app removes the click for both workflows: its installation token is
+          # a distinct identity from github-actions[bot], so the runs it starts
+          # are not GITHUB_TOKEN-authored and are not held for approval.
+          # The installation needs Contents: read/write, Pull requests:
           # read/write, Issues: read/write (the conflict label) and Workflows:
-          # write; a classic PAT needs `repo` + `workflow`. Workflows is not
-          # optional and not covered by Contents -- without it the first sync's
-          # push is rejected for carrying this very file, which is the failure
-          # diagnosed at the push below.
+          # read/write. Workflows is not optional and not covered by Contents
+          # -- without it the first sync's push is rejected for carrying this
+          # very file, which is the failure diagnosed at the push below.
           #
           # Parked, not absent -- worth stating plainly because the opposite is
           # a natural reading of GitHub's recursion guard, and a reviewer has
@@ -138,11 +171,11 @@ jobs:
           # with this same fallback, the "CI / Fly Deploy" run was created at
           # 06:26:44, three seconds after the PR at 06:26:41; it then sat until
           # run_attempt 2 started at 11:56:18 with triggering_actor=rickmcphee,
-          # and the PR merged at 11:59:50. The run exists and is approvable, so
-          # a missing PAT costs a weekly click rather than making the PR
-          # permanently unmergeable -- which is why the fallback stays rather
-          # than being turned into a hard failure.
-          GH_TOKEN: ${{ secrets.INTEGRATION_PROMOTE_TOKEN || github.token }}
+          # and the PR merged at 11:59:50. The run exists and is approvable,
+          # so an unconfigured app costs a weekly click rather than making the
+          # PR permanently unmergeable -- which is why the fallback stays
+          # rather than being turned into a hard failure.
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -414,7 +447,7 @@ jobs:
           if ! git push --force-with-lease="$SYNC_BRANCH:$remote_tip" \
                  origin "$SYNC_BRANCH"; then
             if ! git diff --quiet origin/integration HEAD -- .github/workflows/; then
-              echo "::error::pushing $SYNC_BRANCH failed, and this sync carries changes under .github/workflows/ ($(git diff --name-only origin/integration HEAD -- .github/workflows/ | tr '\n' ' ')). GITHUB_TOKEN cannot create or update workflow files: set INTEGRATION_PROMOTE_TOKEN to a token holding the workflow scope. The checkout step above passes it to git as well as gh, so it covers this once configured."
+              echo "::error::pushing $SYNC_BRANCH failed, and this sync carries changes under .github/workflows/ ($(git diff --name-only origin/integration HEAD -- .github/workflows/ | tr '\n' ' ')). GITHUB_TOKEN cannot create or update workflow files: configure the sync app (repository variable INTEGRATION_PROMOTE_APP_CLIENT_ID and secret INTEGRATION_PROMOTE_APP_PRIVATE_KEY) with Workflows: read/write on its installation. The checkout step above passes it to git as well as gh, so it covers this once configured."
             else
               echo "::error::pushing $SYNC_BRANCH failed."
             fi
@@ -464,9 +497,19 @@ jobs:
       && (github.event_name != 'push' || github.ref_name == 'integration')
     runs-on: ubuntu-latest
     steps:
+      # Minted again rather than carried over from `sync`: step outputs are
+      # job-scoped, and this job runs on always() even when that one failed.
+      - name: Mint an installation token for the sync app
+        id: app-token
+        if: ${{ vars.INTEGRATION_PROMOTE_APP_CLIENT_ID != '' }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.INTEGRATION_PROMOTE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.INTEGRATION_PROMOTE_APP_PRIVATE_KEY }}
+
       - name: Catch up every open PR that integration outran
         env:
-          GH_TOKEN: ${{ secrets.INTEGRATION_PROMOTE_TOKEN || github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
