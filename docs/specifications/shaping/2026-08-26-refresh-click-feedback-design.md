@@ -81,7 +81,13 @@ that a click landed.
   in both directions: a late `stock_sync_started` takes the button straight
   back, and a click during a sync the UI has lost track of is rejected by the
   server with the "already running" message rather than starting anything
-  twice.
+  twice. Expiring replaces the "Starting…" message as well as releasing the
+  button — leaving it would put a Dismiss button beside "Starting…", the exact
+  reading-as-finished this design rules out one bullet down — and the
+  replacement says the app has lost track and a reload will settle it, since
+  only a reconnect can learn whether the sync is still running. Guarded on the
+  message still being the one the claim set, so a real progress message that
+  arrived meanwhile is never clobbered.
 - **The thing that is running is the thing that stands out.** The running row's
   button inverts to the lit nav pill (`navButtonClass(true)`) instead of being
   dimmed by the disabled styling that the rows merely waiting on it carry.
@@ -145,6 +151,7 @@ dismissed-event-id replay guard):
 | --- | --- |
 | A store's Refresh | `Starting {site} catalog refresh…` |
 | Bulk Store Refresh | `Starting in-stock catalog refresh…` |
+| Either, claim expired unconfirmed | `Lost track of the {what} — reload to check whether it is still running.` |
 | Marketplace Refresh, in flight | `Starting price refresh for records with no price yet…` / `…for every record…` |
 | Marketplace Refresh, done | `Price refresh requested for {n} record(s).` |
 | Marketplace Refresh, nothing queued | `Nothing to refresh — every record already has a price.` |
@@ -179,7 +186,9 @@ dismissed-event-id replay guard):
   the bulk run and no row claims it; the button is released on a rejected start
   and on a thrown one; the claim survives the hand-over to `stock_sync_started`
   and is released by `stock_sync_complete`; a claim that never receives any
-  event at all is released by the timeout, and is not released before it.
+  event at all is released by the timeout and swaps its "Starting…" message for
+  the lost-track one, is not released before the timeout, and does not overwrite
+  a real progress message that arrived while it was held.
 - `frontend/src/test/crawlStatusBar.test.tsx` — the requested count is
   reported, singular and plural; a zero-target run says so and stays
   dismissible; the in-flight state spins and says what it is doing; a failed

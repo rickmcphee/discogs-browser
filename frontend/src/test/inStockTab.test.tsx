@@ -286,6 +286,31 @@ describe('In Stock tab', () => {
     // No stock_sync_started, no terminal event -- the stream missed the lot.
     await act(async () => { await vi.advanceTimersByTimeAsync(20_000) })
     expect(screen.getByTitle('Refresh Epitaph catalog now')).not.toBeDisabled()
+    // A Dismiss button beside "Starting…" would read as finished.
+    expect(screen.queryByText('Starting Epitaph catalog refresh…')).not.toBeInTheDocument()
+    expect(screen.getByText(
+      'Lost track of the Epitaph catalog refresh — reload to check whether it is still running.'
+    )).toBeInTheDocument()
+  })
+
+  // The expiry must not talk over whatever did arrive in the meantime.
+  it('leaves a real progress message alone when the claim expires behind it', async () => {
+    vi.useFakeTimers()
+    getCrawlers.mockResolvedValue([CATALOG_CRAWLER])
+    render(<App />)
+    const settle = () => act(async () => {})
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await settle()
+    fireEvent.click(screen.getByTitle('Refresh Epitaph catalog now'))
+    await settle()
+
+    // A collection sync takes the banner over while the claim is still held.
+    getLastCrawlSource().emit({ status: 'sync_started', scope: 'all', id: 1 })
+    await settle()
+    await act(async () => { await vi.advanceTimersByTimeAsync(20_000) })
+    expect(screen.getByText('Syncing collection…')).toBeInTheDocument()
+    expect(screen.queryByText(/Lost track of/)).not.toBeInTheDocument()
   })
 
   it('does not release the claim while it is still within the timeout', async () => {

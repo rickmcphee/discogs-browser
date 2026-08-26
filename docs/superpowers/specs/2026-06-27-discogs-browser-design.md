@@ -386,7 +386,7 @@ now sits alongside it (see
 "Refresh Now passes the current mode selection directly" still holds for the
 Marketplace one. What each of these buttons shows once clicked -- spinners, the
 inverted running row, and the status-bar messages naming what was started or
-queued -- is
+requested -- is
 [`2026-08-26-refresh-click-feedback-design.md`](../../specifications/shaping/2026-08-26-refresh-click-feedback-design.md).
 
 ### Log Viewer

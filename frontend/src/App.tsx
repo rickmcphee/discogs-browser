@@ -121,16 +121,30 @@ export default function App() {
 
   // eventId is null for locally-generated messages (button-click failures) that never
   // survive a refresh and so never need replay suppression; those always show.
-  useEffect(() => {
-    if (stockSyncStarting === null) return
-    const timer = setTimeout(() => setStockSyncStarting(null), STOCK_SYNC_CLAIM_TIMEOUT_MS)
-    return () => clearTimeout(timer)
-  }, [stockSyncStarting])
-
   const setSyncStatus = useCallback((message: string, eventId: number | null = null) => {
     setSyncMessage(message)
     setSyncMessageId(eventId)
   }, [])
+
+  // Releasing the button is only half of it: the "Starting…" message it was
+  // clicked with has to go too, or the banner ends up showing a Dismiss button
+  // beside "Starting…", which reads as finished -- exactly the state syncBusy
+  // exists to prevent. Replaced rather than blanked, because the user is owed
+  // an account of a refresh the app has lost track of, and only a reload can
+  // settle whether it is still running (an SSE reconnect replays a job that
+  // still is). Guarded on the message still being the one this claim set, so a
+  // real progress message that arrived in the meantime is never clobbered.
+  const stockSyncClaimNotice = useRef<{ shown: string; lost: string } | null>(null)
+
+  useEffect(() => {
+    if (stockSyncStarting === null) return
+    const timer = setTimeout(() => {
+      setStockSyncStarting(null)
+      const notice = stockSyncClaimNotice.current
+      if (notice) setSyncMessage((m) => (m === notice.shown ? notice.lost : m))
+    }, STOCK_SYNC_CLAIM_TIMEOUT_MS)
+    return () => clearTimeout(timer)
+  }, [stockSyncStarting])
 
   const updateHiddenCrawlerIds = useCallback((ids: number[]) => {
     setHiddenCrawlerIds(ids)
@@ -557,9 +571,12 @@ export default function App() {
   const startStockSync = useCallback(async (crawlerId?: number) => {
     setStockSyncStarting(crawlerId ?? 'all')
     const site = crawlerId != null ? crawlers.find((c) => c.id === crawlerId)?.site_name : null
-    setSyncStatus(site
-      ? `Starting ${site} catalog refresh…`
-      : 'Starting in-stock catalog refresh…')
+    const what = site ? `${site} catalog refresh` : 'in-stock catalog refresh'
+    stockSyncClaimNotice.current = {
+      shown: `Starting ${what}…`,
+      lost: `Lost track of the ${what} — reload to check whether it is still running.`,
+    }
+    setSyncStatus(stockSyncClaimNotice.current.shown)
     try {
       const result = await postStockSyncStart(crawlerId)
       reportStockSyncRejection(result, setSyncStatus)
