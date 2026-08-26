@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import App from '../App'
 
 // jsdom doesn't implement object URLs
@@ -39,7 +39,7 @@ vi.mock('../api/client', () => ({
   refreshCollection: vi.fn().mockResolvedValue({ synced: 0, username: 'test' }),
   getCollectionStatus: vi.fn().mockResolvedValue({ total: 0, last_synced: null }),
   getCrawlStatus: vi.fn().mockResolvedValue({ total: 0, missing: 0, oldest_checked: null }),
-  postCrawlStart: vi.fn().mockResolvedValue({ started: true, running: true }),
+  postCrawlStart: vi.fn().mockResolvedValue({ enqueued: 3 }),
   getCrawlers: (...args: unknown[]) => getCrawlers(...args),
   openCrawlStream: vi.fn(() => new MockEventSource()),
   getReleases: vi.fn().mockResolvedValue({ total: 0, page: 1, per_page: 50, releases: [] }),
@@ -100,6 +100,10 @@ beforeEach(() => {
   getStock.mockResolvedValue({ total: 0, page: 1, per_page: 250, items: [] })
   postUserHiddenCrawlers.mockResolvedValue(undefined)
   getUserHiddenCrawlers.mockResolvedValue([])
+})
+
+afterEach(() => {
+  vi.useRealTimers()
 })
 
 describe('In Stock tab', () => {
@@ -196,6 +200,242 @@ describe('In Stock tab', () => {
     const button = await screen.findByTitle('Refresh Epitaph catalog now')
     fireEvent.click(button)
     await waitFor(() => expect(postStockSyncStart).toHaveBeenCalledWith(9))
+  })
+
+  // stock_sync_started is the event that used to be the *only* thing that
+  // moved this button, and it can't arrive until the server has taken a
+  // Postgres advisory lock. Everything below the click and above that event is
+  // the window this optimistic state exists to cover.
+  it('claims the clicked store\'s Refresh button before any stock_sync_started event arrives', async () => {
+    getCrawlers.mockResolvedValue([CATALOG_CRAWLER])
+    render(<App />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByTitle('Refresh Epitaph catalog now'))
+
+    const button = await screen.findByTitle('Refreshing Epitaph catalog…')
+    expect(button).toBeDisabled()
+    expect(button.querySelector('.animate-spin')).toBeInTheDocument()
+    expect(screen.getByText('Starting Epitaph catalog refresh…')).toBeInTheDocument()
+  })
+
+  it('names the bulk refresh rather than a store when the bulk button is clicked', async () => {
+    getCrawlers.mockResolvedValue([CATALOG_CRAWLER])
+    render(<App />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    const description = await screen.findByText('Scan all enabled catalog crawlers immediately.')
+    fireEvent.click(within(description.closest('tr') as HTMLElement).getByText('Refresh'))
+
+    await waitFor(() => expect(screen.getByText('Starting in-stock catalog refresh…')).toBeInTheDocument())
+    const bulkButton = within(description.closest('tr') as HTMLElement).getByRole('button')
+    expect(bulkButton).toHaveTextContent('Refreshing…')
+    // The bulk run has no single row to point at, so no row may claim it.
+    expect(screen.getByTitle('Refresh Epitaph catalog now')).toBeDisabled()
+  })
+
+  // Whatever claimed the button on click has to let go again on every path
+  // that ends without a sync, or the button stays stuck mid-spin forever.
+  it('releases the button when the start is rejected because a sync is already running', async () => {
+    getCrawlers.mockResolvedValue([CATALOG_CRAWLER])
+    postStockSyncStart.mockResolvedValue({
+      started: false, running: true, on_another_instance: false,
+      source: 'Relapse', elapsed_seconds: 3600, source_elapsed_seconds: 120,
+    })
+    render(<App />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    const button = await screen.findByTitle('Refresh Epitaph catalog now')
+    fireEvent.click(button)
+
+    await waitFor(() =>
+      expect(screen.getByText(/In-stock sync already running — Relapse \(2m so far\), 1h 0m in total/)).toBeInTheDocument()
+    )
+    expect(screen.getByTitle('Refresh Epitaph catalog now')).not.toBeDisabled()
+  })
+
+  it('releases the button when the start request itself fails', async () => {
+    getCrawlers.mockResolvedValue([CATALOG_CRAWLER])
+    postStockSyncStart.mockRejectedValue(new Error('network down'))
+    render(<App />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByTitle('Refresh Epitaph catalog now'))
+
+    await waitFor(() =>
+      expect(screen.getByText('In-stock sync failed to start: network down')).toBeInTheDocument()
+    )
+    expect(screen.getByTitle('Refresh Epitaph catalog now')).not.toBeDisabled()
+  })
+
+  // _events_to_replay returns nothing once no job is active, so a sync that
+  // both starts and finishes while the SSE stream is reconnecting replays
+  // neither of its events. Nothing else would ever release the claim.
+  it('releases a claim that never gets its stock_sync_started, rather than stranding the button', async () => {
+    vi.useFakeTimers()
+    getCrawlers.mockResolvedValue([CATALOG_CRAWLER])
+    render(<App />)
+    const settle = () => act(async () => {})
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await settle()
+    fireEvent.click(screen.getByTitle('Refresh Epitaph catalog now'))
+    await settle()
+    expect(screen.getByTitle('Refreshing Epitaph catalog…')).toBeDisabled()
+
+    // No stock_sync_started, no terminal event -- the stream missed the lot.
+    await act(async () => { await vi.advanceTimersByTimeAsync(20_000) })
+    expect(screen.getByTitle('Refresh Epitaph catalog now')).not.toBeDisabled()
+    // A Dismiss button beside "Starting…" would read as finished.
+    expect(screen.queryByText('Starting Epitaph catalog refresh…')).not.toBeInTheDocument()
+    expect(screen.getByText(
+      'Lost track of the Epitaph catalog refresh — check the Logs tab to see whether it is still running.'
+    )).toBeInTheDocument()
+  })
+
+  // The expiry must not talk over whatever did arrive in the meantime.
+  it('leaves a real progress message alone when the claim expires behind it', async () => {
+    vi.useFakeTimers()
+    getCrawlers.mockResolvedValue([CATALOG_CRAWLER])
+    render(<App />)
+    const settle = () => act(async () => {})
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await settle()
+    fireEvent.click(screen.getByTitle('Refresh Epitaph catalog now'))
+    await settle()
+
+    // A collection sync takes the banner over while the claim is still held.
+    getLastCrawlSource().emit({ status: 'sync_started', scope: 'all', id: 1 })
+    await settle()
+    await act(async () => { await vi.advanceTimersByTimeAsync(20_000) })
+    expect(screen.getByText('Syncing collection…')).toBeInTheDocument()
+    expect(screen.queryByText(/Lost track of/)).not.toBeInTheDocument()
+  })
+
+  it('does not release the claim while it is still within the timeout', async () => {
+    vi.useFakeTimers()
+    getCrawlers.mockResolvedValue([CATALOG_CRAWLER])
+    render(<App />)
+    const settle = () => act(async () => {})
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await settle()
+    fireEvent.click(screen.getByTitle('Refresh Epitaph catalog now'))
+    await settle()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(19_000) })
+    expect(screen.getByTitle('Refreshing Epitaph catalog…')).toBeDisabled()
+  })
+
+  // The claim timeout can re-enable the button while the first request is
+  // still in flight, so a second click's state must not be clobbered when the
+  // first finally answers.
+  it('ignores a stale start response that resolves after a newer click', async () => {
+    vi.useFakeTimers()
+    getCrawlers.mockResolvedValue([
+      CATALOG_CRAWLER,
+      { ...CATALOG_CRAWLER, id: 10, site_name: 'Relapse' },
+    ])
+    let answerFirst: (value: unknown) => void = () => {}
+    postStockSyncStart
+      .mockReturnValueOnce(new Promise((r) => { answerFirst = r }))
+      .mockResolvedValue({
+        started: true, running: true, on_another_instance: false,
+        source: null, elapsed_seconds: null, source_elapsed_seconds: null,
+      })
+    render(<App />)
+    const settle = () => act(async () => {})
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await settle()
+    fireEvent.click(screen.getByTitle('Refresh Epitaph catalog now'))
+    await settle()
+    expect(screen.getByTitle('Refreshing Epitaph catalog…')).toBeDisabled()
+
+    // Epitaph's claim expires with its request still unanswered, freeing the
+    // buttons, and Relapse is clicked and takes them over.
+    await act(async () => { await vi.advanceTimersByTimeAsync(20_000) })
+    fireEvent.click(screen.getByTitle('Refresh Relapse catalog now'))
+    await settle()
+    expect(screen.getByTitle('Refreshing Relapse catalog…')).toBeDisabled()
+
+    // Only now does Epitaph's request answer, and rejected at that.
+    answerFirst({
+      started: false, running: true, on_another_instance: false,
+      source: 'Somewhere Else', elapsed_seconds: 60, source_elapsed_seconds: 30,
+    })
+    await settle()
+    expect(screen.getByTitle('Refreshing Relapse catalog…')).toBeDisabled()
+    expect(screen.getByText('Starting Relapse catalog refresh…')).toBeInTheDocument()
+    expect(screen.queryByText(/already running/)).not.toBeInTheDocument()
+  })
+
+  // A role="status" inserted together with its text is not reliably announced,
+  // so the region has to already be there when the first message lands.
+  // The two start requests have independent sequence counters but share one
+  // status bar, and Settings lets them overlap.
+  it('does not let an older stock rejection overwrite a newer price refresh notice', async () => {
+    getCrawlers.mockResolvedValue([CATALOG_CRAWLER])
+    let answerStock: (value: unknown) => void = () => {}
+    postStockSyncStart.mockReturnValue(new Promise((r) => { answerStock = r }))
+    render(<App />)
+    const settle = () => act(async () => {})
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await settle()
+
+    fireEvent.click(screen.getByTitle('Refresh Epitaph catalog now'))
+    await settle()
+    expect(screen.getByText('Starting Epitaph catalog refresh…')).toBeInTheDocument()
+
+    // A price refresh takes the banner over while the stock request is still
+    // unanswered.
+    const priceRow = screen.getByText('Run price crawlers immediately.').closest('tr') as HTMLElement
+    fireEvent.click(priceRow.querySelector('button') as HTMLButtonElement)
+    await settle()
+    expect(screen.getByText('Price refresh requested for 3 records.')).toBeInTheDocument()
+
+    // The stock request only now answers, and rejected at that.
+    answerStock({
+      started: false, running: true, on_another_instance: false,
+      source: 'Somewhere Else', elapsed_seconds: 60, source_elapsed_seconds: 30,
+    })
+    await settle()
+    expect(screen.getByText('Price refresh requested for 3 records.')).toBeInTheDocument()
+    expect(screen.queryByText(/already running/)).not.toBeInTheDocument()
+    // Its own claim is still released, though -- it took that button.
+    expect(screen.getByTitle('Refresh Epitaph catalog now')).not.toBeDisabled()
+  })
+
+  it('keeps the status live region mounted before there is anything to say', async () => {
+    getCrawlers.mockResolvedValue([CATALOG_CRAWLER])
+    render(<App />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
+    const region = screen.getByRole('status')
+    expect(region).toBeEmptyDOMElement()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByTitle('Refresh Epitaph catalog now'))
+    await waitFor(() => expect(region).toHaveTextContent('Starting Epitaph catalog refresh…'))
+    // The same node, not a replacement -- that is the whole point.
+    expect(screen.getByRole('status')).toBe(region)
+  })
+
+  it('hands the claimed button over to stock_sync_started without letting it flicker back', async () => {
+    getCrawlers.mockResolvedValue([CATALOG_CRAWLER])
+    render(<App />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByTitle('Refresh Epitaph catalog now'))
+    await screen.findByTitle('Refreshing Epitaph catalog…')
+
+    getLastCrawlSource().emit({ status: 'stock_sync_started', crawler_id: 9, id: 1 })
+    await waitFor(() => expect(screen.getByText(/Syncing in-stock catalog…/)).toBeInTheDocument())
+    expect(screen.getByTitle('Refreshing Epitaph catalog…')).toBeDisabled()
+
+    getLastCrawlSource().emit({ status: 'stock_sync_complete', synced: 5, crawler_id: 9, id: 2 })
+    await waitFor(() => expect(screen.getByTitle('Refresh Epitaph catalog now')).not.toBeDisabled())
   })
 
   it('disables the bulk Refresh and every per-row Refresh button once a stock sync starts', async () => {

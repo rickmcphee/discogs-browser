@@ -50,6 +50,7 @@ interface Props {
   stockSyncBusy: boolean
   stockSyncCrawlerId: number | null
   onRefreshStoreCrawler: (crawlerId: number) => void
+  priceRefreshBusy: boolean
 }
 
 // apiFetch throws Error(await r.text()), so err.message is FastAPI's raw JSON
@@ -71,6 +72,18 @@ function errorMessage(err: unknown, fallback: string): string {
   return raw || fallback
 }
 
+// Same ring the sync banner spins, sized per call site: a button that has
+// swapped its glyph for a spinner has to keep the glyph's box, or the row
+// twitches on every state change.
+function Spinner({ className }: { className: string }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={`block border-2 ${className} border-t-transparent rounded-full animate-spin`}
+    />
+  )
+}
+
 function toggleButtonClass(on: boolean): string {
   return `px-3 py-1 rounded-full text-xs font-medium transition-colors ${
     on ? 'bg-green-700 hover:bg-green-600 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-400'
@@ -79,8 +92,13 @@ function toggleButtonClass(on: boolean): string {
 
 function Settings({
   crawlers, onCrawlersChange, onRefreshPrices, onRefreshStock, isAdmin,
-  stockSyncBusy, stockSyncCrawlerId, onRefreshStoreCrawler,
+  stockSyncBusy, stockSyncCrawlerId, onRefreshStoreCrawler, priceRefreshBusy,
 }: Props) {
+  // A stock sync with no crawler named is the bulk one, so the bulk button
+  // owns the spinner then and the rows stay merely disabled. Inverted for a
+  // single-store refresh: the row that was clicked spins, the bulk button is
+  // only disabled.
+  const bulkStockRefreshing = stockSyncBusy && stockSyncCrawlerId === null
   const [settings, setSettings] = useState<SettingsType>({
     crawl_delay_seconds: 30,
     consecutive_failure_limit: 10,
@@ -158,51 +176,62 @@ function Settings({
           </tr>
         </thead>
         <tbody>
-          {crawlerList.map((c) => (
-            <tr key={c.id} className="border-b border-gray-800/50">
-              <td className="py-3 pr-4 text-left text-gray-200 font-medium">
-                {c.base_url
-                  ? <a href={c.base_url} target="_blank" rel="noreferrer"
-                       title={c.genre_summary ?? undefined}
-                       className="text-gray-400 hover:text-white underline">{c.site_name}</a>
-                  : <span title={c.genre_summary ?? undefined}>{c.site_name}</span>}
-              </td>
-              {isAdmin && (
-                <td className="py-3 pr-4 text-left text-gray-500 text-xs">
-                  {c.last_run ? new Date(c.last_run).toLocaleString() : '—'}
+          {crawlerList.map((c) => {
+            // The row actually being scanned must not be dimmed by the same
+            // disabled styling as the rows merely waiting on it. It inverts to
+            // the lit nav pill instead, so the one store that is running is the
+            // one thing in the table that stands out.
+            const refreshing = showRefresh && stockSyncCrawlerId === c.id
+            return (
+              <tr key={c.id} className={`border-b border-gray-800/50${refreshing ? ' bg-gray-800/60' : ''}`}>
+                <td className="py-3 pr-4 text-left text-gray-200 font-medium">
+                  {c.base_url
+                    ? <a href={c.base_url} target="_blank" rel="noreferrer"
+                         title={c.genre_summary ?? undefined}
+                         className="text-gray-400 hover:text-white underline">{c.site_name}</a>
+                    : <span title={c.genre_summary ?? undefined}>{c.site_name}</span>}
                 </td>
-              )}
-              {isAdmin && (
-                <td className="py-3 pr-4 text-left">
-                  <button
-                    onClick={() => handleToggleCrawler(c)}
-                    className={toggleButtonClass(c.enabled)}
-                  >
-                    {c.enabled ? 'Enabled' : 'Disabled'}
-                  </button>
-                  {discardedNotice?.crawlerId === c.id && (
-                    <span className="ml-2 text-xs text-gray-500">
-                      {discardedNotice.count} queued {discardedNotice.count === 1 ? 'job' : 'jobs'} discarded
-                    </span>
-                  )}
-                </td>
-              )}
-              {isAdmin && showRefresh && (
-                <td className="py-3 text-left">
-                  <button
-                    onClick={() => onRefreshStoreCrawler(c.id)}
-                    disabled={!c.enabled || stockSyncBusy}
-                    title={`Refresh ${c.site_name} catalog now`}
-                    className={`p-1.5 disabled:opacity-30 disabled:cursor-not-allowed ${navButtonClass(false)}`}
-                  >
-                    <span className="block text-base leading-none">
-                      {stockSyncCrawlerId === c.id ? '⟳' : '↻'}
-                    </span>
-                  </button>
-                </td>
-              )}
-            </tr>
-          ))}
+                {isAdmin && (
+                  <td className="py-3 pr-4 text-left text-gray-500 text-xs">
+                    {c.last_run ? new Date(c.last_run).toLocaleString() : '—'}
+                  </td>
+                )}
+                {isAdmin && (
+                  <td className="py-3 pr-4 text-left">
+                    <button
+                      onClick={() => handleToggleCrawler(c)}
+                      className={toggleButtonClass(c.enabled)}
+                    >
+                      {c.enabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                    {discardedNotice?.crawlerId === c.id && (
+                      <span className="ml-2 text-xs text-gray-500">
+                        {discardedNotice.count} queued {discardedNotice.count === 1 ? 'job' : 'jobs'} discarded
+                      </span>
+                    )}
+                  </td>
+                )}
+                {isAdmin && showRefresh && (
+                  <td className="py-3 text-left">
+                    <button
+                      onClick={() => onRefreshStoreCrawler(c.id)}
+                      disabled={!c.enabled || stockSyncBusy}
+                      title={refreshing
+                        ? `Refreshing ${c.site_name} catalog…`
+                        : `Refresh ${c.site_name} catalog now`}
+                      className={`p-1.5 ${refreshing
+                        ? navButtonClass(true)
+                        : `disabled:opacity-30 disabled:cursor-not-allowed ${navButtonClass(false)}`}`}
+                    >
+                      {refreshing
+                        ? <Spinner className="w-4 h-4 border-gray-950" />
+                        : <span className="block text-base leading-none">↻</span>}
+                    </button>
+                  </td>
+                )}
+              </tr>
+            )
+          })}
         </tbody>
       </table>
     )
@@ -314,9 +343,11 @@ function Settings({
                   <td className="py-3 pr-4 text-left align-top">
                     <button
                       onClick={() => onRefreshPrices(settings.crawl_schedule_mode as 'missing' | 'all' ?? 'missing')}
-                      className={`px-3 py-1 text-xs ${secondaryButtonClass()}`}
+                      disabled={priceRefreshBusy}
+                      className={`px-3 py-1 text-xs inline-flex items-center gap-2 ${secondaryButtonClass()}`}
                     >
-                      Refresh
+                      {priceRefreshBusy && <Spinner className="w-3 h-3 border-white" />}
+                      {priceRefreshBusy ? 'Starting…' : 'Refresh'}
                     </button>
                   </td>
                   <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
@@ -364,9 +395,12 @@ function Settings({
                   <button
                     onClick={onRefreshStock}
                     disabled={stockSyncBusy}
-                    className={`px-3 py-1 text-xs disabled:opacity-50 ${secondaryButtonClass()}`}
+                    className={`px-3 py-1 text-xs inline-flex items-center gap-2 ${
+                      bulkStockRefreshing ? '' : 'disabled:opacity-50 '
+                    }${secondaryButtonClass()}`}
                   >
-                    Refresh
+                    {bulkStockRefreshing && <Spinner className="w-3 h-3 border-white" />}
+                    {bulkStockRefreshing ? 'Refreshing…' : 'Refresh'}
                   </button>
                 </td>
                 <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">

@@ -161,7 +161,10 @@ describe('backend-down handling', () => {
     expect(collectionButton).toBeInTheDocument()
     expect(collectionButton.closest('[inert]')).not.toBeNull()
     // The overlay itself must NOT be inert, or it'd be unreachable too.
-    expect(screen.getByRole('status').closest('[inert]')).toBeNull()
+    // Found by its message rather than by role: the status bar's live region
+    // is a second role="status", and it is deliberately inside the inert
+    // subtree, so a bare role query would be ambiguous.
+    expect(screen.getByText(DOWN_MESSAGE).closest('[inert]')).toBeNull()
   })
 
   it('auto-recovers once the health check starts succeeding again, revalidating the session', async () => {
