@@ -2371,6 +2371,38 @@ def _not_owned_clause(user_id_param: str) -> str:
     return f"NOT EXISTS (SELECT 1 {_library_match_fragment(user_id_param, 'collection')})"
 
 
+def _collection_artist_clause(user_id_param: str) -> str:
+    """EXISTS clause for "this stock row's artist is one the user collects" --
+    some release by that artist sits in their Discogs collection, whether or
+    not this particular record does.
+
+    Deliberately artist-level, and deliberately not `_library_match_fragment`
+    with the title half made optional: that fragment answers the release-level
+    question the Track tab's Collection filter already asks, and a flag on it
+    would read as two spellings of one idea rather than the two different
+    questions they are. This one is the complement -- the rest of the shelf by
+    artists already on it, most of which the user does not own.
+
+    Matching is on `_artist_sort_sql`'s bare, article-stripped key rather than
+    `_library_match_fragment`'s plain `LOWER(artist)`: a store's spelling and
+    Discogs' spelling of one artist routinely disagree over "The X" vs
+    "X, The" vs bare "X", and at artist granularity that disagreement decides
+    whether the artist appears at all rather than merely which of their
+    records match. It also keeps this filter agreeing with the artist sidebar
+    beside it, whose own equality filter compares the same key. Both sides
+    have an expression index on exactly that key (`catalog_artist_bare_lower_idx`,
+    `stock_items_artist_bare_lower_idx`).
+    """
+    return f"""EXISTS (
+            SELECT 1
+            FROM library_items li
+            JOIN catalog c ON c.discogs_id = li.discogs_id
+            WHERE li.user_id = {user_id_param}
+              AND li.in_collection = TRUE
+              AND {_artist_sort_sql('c.artist')} = {_artist_sort_sql('s.artist')}
+        )"""
+
+
 _STOCK_ALLOWED_SORT = {"artist", "title", "format", "price"}
 
 
@@ -2386,6 +2418,7 @@ def get_stock_items(
     library_scope: Optional[str] = None,
     recommended: bool = False,
     saved_only: bool = False,
+    overlapped_artists: bool = False,
     exclude_crawler_ids: Optional[list[int]] = None,
 ) -> dict:
     order_sql = "DESC" if order.lower() == "desc" else "ASC"
@@ -2426,6 +2459,8 @@ def get_stock_items(
     in_library = _in_library_clause("%(user_id)s", library_scope)
     if in_library:
         conditions.append(in_library)
+    if overlapped_artists:
+        conditions.append(_collection_artist_clause("%(user_id)s"))
     if recommended:
         conditions.append(
             "s.item_key IN (SELECT item_key FROM stock_item_judgments "
@@ -2511,6 +2546,7 @@ def get_stock_items(
 
 def get_distinct_stock_artists(conn, user_id: int, library_scope: Optional[str] = None, recommended: bool = False,
     saved_only: bool = False,
+    overlapped_artists: bool = False,
     exclude_crawler_ids: Optional[list[int]] = None,
 ) -> list[str]:
     conditions = []
@@ -2518,6 +2554,8 @@ def get_distinct_stock_artists(conn, user_id: int, library_scope: Optional[str] 
     in_library = _in_library_clause("%(user_id)s", library_scope)
     if in_library:
         conditions.append(in_library)
+    if overlapped_artists:
+        conditions.append(_collection_artist_clause("%(user_id)s"))
     if recommended:
         conditions.append(
             "s.item_key IN (SELECT item_key FROM stock_item_judgments "

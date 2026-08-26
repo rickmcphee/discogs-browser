@@ -88,6 +88,20 @@ excluded via `requires_discogs_release`).
   spec documents throughout was also replaced by `library_scope`
   (`'collection'`/`'wishlist'`/`'all'`/`None`), and the `View` union values
   were renamed with the tabs.
+
+  **Amendment (2026-08-26, branch
+  `claude/store-overlapped-artist-filter-i3cp7i`):** the Store dropdown now
+  carries an option spelled `Overlapped`, which is *not* this decision being
+  reversed. What was removed here matched at release level — artist **and**
+  title, via `_library_match_fragment` — and it is still gone; it is the
+  Track tab's Collection option. `Overlapped` matches at *artist* level: any
+  in-stock record by an artist with something in the user's collection,
+  whether or not they own that record. So the "removed, not duplicated"
+  reasoning above still holds for what it was about, and the new filter is
+  the thing neither tab offered. The dropdown itself is now
+  All/Recommended/Saved/Overlapped (see also the 2026-08-16 amendment
+  further down this document for `Saved`). See
+  [`2026-08-26-store-overlapped-artist-filter-design.md`](2026-08-26-store-overlapped-artist-filter-design.md).
 - **Collection reuses `StockBrowser`'s full shell** (artist sidebar, search,
   pagination, tile/list toggle) rather than being a new plain sortable
   table like `RecordBrowser`. It's the same `stock_items` data source, just
