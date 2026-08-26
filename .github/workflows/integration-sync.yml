@@ -117,18 +117,30 @@ jobs:
     # Every trigger, including a push to `integration`, which is cheap: the
     # containment test below answers from refs alone and exits.
     runs-on: ubuntu-latest
+    env:
+      # `secrets` is available in jobs.<job_id>.env but NOT in a step-level
+      # `if`; `env` is available in both. Reducing the key to a boolean here is
+      # what lets the guard below test it at all, and it must: with the
+      # variable set and the secret absent, create-github-app-token rejects the
+      # empty private-key and FAILS the step, so the job dies before any
+      # `|| github.token` is evaluated. Guarding on the variable alone made a
+      # half-removed configuration an outage rather than the documented
+      # fallback.
+      APP_PRIVATE_KEY_SET: ${{ secrets.INTEGRATION_PROMOTE_APP_PRIVATE_KEY != '' }}
     steps:
       - name: Mint an installation token for the sync app
         id: app-token
-        # Guarded on `vars`, not `secrets`. The secrets context is not
-        # available in a step-level `if` at all -- GitHub's context table
-        # allows only github/needs/strategy/matrix/job/runner/env/vars/steps/
-        # inputs there -- so a guard testing the private key would never match
-        # and this step would never run, silently, however well configured the
-        # app was. The Client ID is not secret, which is what makes the guard
-        # expressible. A skipped step yields empty outputs, so each
+        # Both halves of the configuration are tested, and each is reached
+        # differently. The secrets context is not available in a step-level
+        # `if` at all -- GitHub's context table allows only github/needs/
+        # strategy/matrix/job/runner/env/vars/steps/inputs there -- so the key
+        # is tested via the job-level env above, where secrets IS available.
+        # The Client ID is not secret and is read directly from `vars`.
+        # Testing only one leaves the other half able to fail the step outright
+        # instead of falling back. A skipped step yields empty outputs, so each
         # `|| github.token` below still degrades exactly as documented.
-        if: ${{ vars.INTEGRATION_PROMOTE_APP_CLIENT_ID != '' }}
+        if: ${{ vars.INTEGRATION_PROMOTE_APP_CLIENT_ID != ''
+          && env.APP_PRIVATE_KEY_SET == 'true' }}
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ vars.INTEGRATION_PROMOTE_APP_CLIENT_ID }}
@@ -496,12 +508,23 @@ jobs:
       always()
       && (github.event_name != 'push' || github.ref_name == 'integration')
     runs-on: ubuntu-latest
+    env:
+      # `secrets` is available in jobs.<job_id>.env but NOT in a step-level
+      # `if`; `env` is available in both. Reducing the key to a boolean here is
+      # what lets the guard below test it at all, and it must: with the
+      # variable set and the secret absent, create-github-app-token rejects the
+      # empty private-key and FAILS the step, so the job dies before any
+      # `|| github.token` is evaluated. Guarding on the variable alone made a
+      # half-removed configuration an outage rather than the documented
+      # fallback.
+      APP_PRIVATE_KEY_SET: ${{ secrets.INTEGRATION_PROMOTE_APP_PRIVATE_KEY != '' }}
     steps:
       # Minted again rather than carried over from `sync`: step outputs are
       # job-scoped, and this job runs on always() even when that one failed.
       - name: Mint an installation token for the sync app
         id: app-token
-        if: ${{ vars.INTEGRATION_PROMOTE_APP_CLIENT_ID != '' }}
+        if: ${{ vars.INTEGRATION_PROMOTE_APP_CLIENT_ID != ''
+          && env.APP_PRIVATE_KEY_SET == 'true' }}
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ vars.INTEGRATION_PROMOTE_APP_CLIENT_ID }}

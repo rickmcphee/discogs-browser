@@ -290,11 +290,22 @@ That split is load-bearing, not tidiness. Each mint step is guarded by `if:` so
 an unconfigured repository still falls back to `github.token` as documented
 below — and the `secrets` context **is not available in a step-level `if`** at
 all (GitHub allows only `github`, `needs`, `strategy`, `matrix`, `job`,
-`runner`, `env`, `vars`, `steps` and `inputs` there). A guard testing the
-private key would never match, so the step would never run however well
-configured the app was, and the failure would be silent. `vars` is available,
-which is what makes the guard expressible. A skipped step yields empty outputs,
-so `steps.app-token.outputs.token || github.token` degrades exactly as before.
+`runner`, `env`, `vars`, `steps` and `inputs` there). `vars` is available, which
+is what makes the Client ID half of the guard expressible directly.
+
+The key half has to be reached indirectly, and it must be reached. The guard
+tests **both** values, because a half-configured repository is not a
+hypothetical: with the variable set and the secret removed,
+`create-github-app-token` rejects the empty `private-key` and **fails the
+step**, which fails the job before any `|| github.token` is ever evaluated.
+Guarding on the variable alone turns a half-removed configuration into an
+outage rather than the documented fallback — the precise opposite of the intent.
+`secrets` *is* available in `jobs.<job_id>.env`, so each job reduces the key to
+a boolean there (`APP_PRIVATE_KEY_SET`) and the step tests that; `env` is
+available in a step-level `if` even though `secrets` is not.
+
+A skipped step yields empty outputs, so
+`steps.app-token.outputs.token || github.token` degrades exactly as before.
 
 Separately, and more weakly, the app removes a weekly "Approve and run" click:
 a PR opened with `GITHUB_TOKEN` has its `pull_request` checks parked in an
