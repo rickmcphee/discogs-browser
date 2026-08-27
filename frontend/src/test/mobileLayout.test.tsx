@@ -4,6 +4,7 @@ import App from '../App'
 import RecordBrowser from '../views/RecordBrowser'
 import StockBrowser from '../views/StockBrowser'
 import Settings from '../views/Settings'
+import LogViewer from '../views/LogViewer'
 import { useIsMobile } from '../hooks/useMediaQuery'
 import type { Crawler } from '../api/types'
 
@@ -396,12 +397,19 @@ describe('mobile touch targets', () => {
     expect(refresh).toHaveClass('h-11', 'w-11')
   })
 
-  it('sizes the tile bookmark and the log filter clear for touch', async () => {
+  it('sizes the tile bookmark for touch', async () => {
     localStorage.setItem('collectionViewMode_store', 'tiles')
     getStock.mockResolvedValue({ total: 1, page: 1, per_page: 250, items: [stockItem] })
     render(<StockBrowser />)
     const bookmark = await screen.findByRole('button', { name: 'Save for later' })
     expect(bookmark).toHaveClass('h-11', 'w-11')
+  })
+
+  it("names and sizes LogViewer's filter-clear control", async () => {
+    render(<LogViewer />)
+    const clear = await screen.findByRole('button', { name: 'Clear message filter' })
+    expect(clear).toHaveClass('h-11', 'w-11')
+    expect(screen.getByPlaceholderText('Filter message (regexp)…')).toHaveClass('pr-11')
   })
 
   it("sizes a sheet's close button like every other mobile icon control", async () => {
