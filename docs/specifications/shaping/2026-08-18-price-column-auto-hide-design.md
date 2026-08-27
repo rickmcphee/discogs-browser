@@ -82,6 +82,14 @@ existing `scope === 'track'` gates on the header (`:412`) and cell (`:456`) →
 `scope === 'track' && hasPriceField`. `colCount` (`:239`, currently
 `scope === 'track' ? 7 : 7`) becomes `scope === 'track' ? (hasPriceField ? 7 : 6) : 7`.
 `priceSortable` (`:240`) is untouched — it only decides sortable-vs-plain header
+
+**Amendment (2026-08-27, branch `claude/mobile-optimized-web-qmv4u4`):** below
+768px there is no header to gate — the table becomes a card list — so the same
+two conditions gate two more things instead: `scope === 'track' && hasPriceField`
+decides whether the discogs price appears in a card's meta line, and
+`priceSortable` decides whether `Price` is offered at all in the toolbar's sort
+select. The `hasPriceField` effect that resets a `discogs_price` sort is shared
+by both layouts and needed no change. See [`2026-08-27-mobile-web-experience-design.md`](2026-08-27-mobile-web-experience-design.md).
 *within* an already-rendered column, so it's irrelevant once the column itself is
 gated off.
 

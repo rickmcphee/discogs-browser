@@ -344,7 +344,7 @@ Uses the persistent Chrome profile with `playwright_stealth`. Raises `BotDetecte
 
 ### Collection Browser
 
-Artist sidebar (independent scroll, `shrink-0` buttons) + main area with search bar, sortable table, and pagination (250/page). Table columns: thumbnail, Artist, Title, Year, Label, Format, Price (discogs_price), one column per enabled crawler. Crawler cells show `$X.XX` (green) if priced, a "View" link if URL exists but no price, or `—` if no listing. Live SSE events update cells in place. Per-row refresh button triggers a single-release crawl.
+Artist sidebar (independent scroll, `shrink-0` buttons) + main area with search bar, sortable table, and pagination (250/page). **(2026-08-27, branch `claude/mobile-optimized-web-qmv4u4`: this describes the layout at 768px and up. Below that the sidebar becomes a sheet behind an `Artist: …` toolbar button, the table becomes a card list, and the column headers' sort moves into a toolbar select. See [`2026-08-27-mobile-web-experience-design.md`](../../specifications/shaping/2026-08-27-mobile-web-experience-design.md).)** Table columns: thumbnail, Artist, Title, Year, Label, Format, Price (discogs_price), one column per enabled crawler. Crawler cells show `$X.XX` (green) if priced, a "View" link if URL exists but no price, or `—` if no listing. Live SSE events update cells in place. Per-row refresh button triggers a single-release crawl.
 
 **Amendment (2026-08-18, branch `discogs-price-column-detection`):** the
 Price column in that list is no longer unconditional — it renders only

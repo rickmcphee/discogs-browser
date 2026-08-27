@@ -124,7 +124,14 @@ full set to `POST /api/user-hidden-crawlers`.
 **Source button.** Added to `StockBrowser`'s header
 (`frontend/src/views/StockBrowser.tsx`), in the same `ml-auto flex
 items-center gap-2` group as the existing list/tiles toggle buttons, to
-their left. Since both Store and Track render `StockBrowser` with the same
+their left.
+
+**Amendment (2026-08-27, branch `claude/mobile-optimized-web-qmv4u4`):** that
+group is now `contents md:ml-auto md:flex md:items-center md:gap-2` — identical
+above 768px, and `display: contents` below it so its buttons wrap as part of the
+toolbar's own row rather than as a block that overflows a phone. The Source
+button's position relative to the toggles is unchanged, and its dropdown is
+width-clamped to the viewport. See [`2026-08-27-mobile-web-experience-design.md`](../../specifications/shaping/2026-08-27-mobile-web-experience-design.md). Since both Store and Track render `StockBrowser` with the same
 `hiddenCrawlerIds`/`onToggleCrawlerView` props already, the button and its
 dropdown are just one more prop pair — no per-scope logic needed.
 
