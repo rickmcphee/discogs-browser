@@ -41,7 +41,7 @@ Touches:
 - `frontend/index.html` — `viewport-fit=cover`, `theme-color`, iOS web-app
   meta.
 - `frontend/src/index.css` — safe-area padding utilities, the 16 px
-  form-control floor under the breakpoint, `#root`'s desktop-only side
+  form-control floor on coarse pointers, `#root`'s desktop-only side
   borders and width clamp, tap-highlight and overscroll behaviour.
 - `frontend/src/hooks/useMediaQuery.ts` — **new.** `useMediaQuery(query)` and
   the `useIsMobile()` wrapper.
@@ -268,6 +268,11 @@ Out of scope:
 | Settings/Account rows | Three table columns | Stacked label → control → description |
 | Status bars | `fixed bottom-0` | In the flow, above the tab bar |
 | Modals | `w-96` | Full width less a gutter, buttons stacked |
+
+Two rules are deliberately absent from this table because they are not keyed
+on width at all: the 16 px form-control floor (`pointer: coarse`) and the
+safe-area insets (`env()`, plus `md:pb-safe` where no tab bar carries the
+bottom one). See the capability-versus-width decision above.
 
 ## Testing
 

@@ -130,7 +130,7 @@ function CrawlerBars({ crawlers, selectedState, selectedId, onSelect }: {
             key={c.crawler_id}
             onClick={() => onSelect(c.crawler_id)}
             aria-pressed={isSelected}
-            className={`grid grid-cols-[6rem_1fr_3.5rem] items-center gap-2 px-2 py-1 rounded text-left transition-colors md:grid-cols-[11rem_1fr_5rem] md:gap-3 ${
+            className={`grid grid-cols-[6rem_1fr_auto] items-center gap-2 px-2 py-1 rounded text-left transition-colors md:grid-cols-[11rem_1fr_5rem] md:gap-3 ${
               isSelected ? 'bg-gray-800' : 'hover:bg-gray-900'
             }`}
           >

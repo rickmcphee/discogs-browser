@@ -209,10 +209,11 @@ function LogViewer() {
                   href={screenshotUrl(e.screenshotPath)}
                   target="_blank"
                   rel="noreferrer"
-                  className="ml-2 text-gray-400 hover:text-white transition-colors"
+                  aria-label="View screenshot"
+                  className="ml-2 inline-flex h-11 w-11 items-center justify-center align-middle text-gray-400 hover:text-white transition-colors md:inline md:h-auto md:w-auto md:align-baseline"
                   title="View screenshot"
                 >
-                  📷
+                  <span aria-hidden="true">📷</span>
                 </a>
               )}
             </span>

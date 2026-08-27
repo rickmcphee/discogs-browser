@@ -405,6 +405,23 @@ describe('mobile touch targets', () => {
     expect(bookmark).toHaveClass('h-11', 'w-11')
   })
 
+  it("names and sizes LogViewer's per-row screenshot link", async () => {
+    let emit: ((e: { data: string }) => void) | null = null
+    openLogsStream.mockImplementation(() => {
+      const src = { onmessage: null as null | ((e: { data: string }) => void), onerror: null, close: () => {} }
+      queueMicrotask(() => { emit = src.onmessage })
+      return src
+    })
+    render(<LogViewer />)
+    await waitFor(() => expect(emit).not.toBeNull())
+    act(() => emit!({ data: JSON.stringify({
+      id: 1, time: '04:00:00', level: 'ERROR', logger: 'crawler', machine: 'm1',
+      message: 'Bot interstitial SCREENSHOT:20260827/shot.png',
+    }) }))
+    const link = await screen.findByRole('link', { name: 'View screenshot' })
+    expect(link).toHaveClass('h-11', 'w-11')
+  })
+
   it("names and sizes LogViewer's filter-clear control", async () => {
     render(<LogViewer />)
     const clear = await screen.findByRole('button', { name: 'Clear message filter' })
