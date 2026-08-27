@@ -175,7 +175,19 @@ export async function postStockSyncStart(crawlerId?: number): Promise<StockSyncS
 - In the SSE handler: `stock_sync_started` sets `setStockSyncTarget(event.crawler_id ?? 'all')` (in addition to the existing `setSyncing(true)`/`setSyncStatus(...)`); `stock_sync_complete` and `stock_sync_aborted` each add `setStockSyncTarget(null)`.
 
 **Amendment (found during final review, corrected before merge):** `stock_sync_error` is *not* always terminal — the per-crawler failure inside `_sync_stock`'s loop (the one carrying `"source"`, described above) lets the sync continue to the next crawler, eventually reaching `stock_sync_complete`. The first implementation cleared `stockSyncTarget` unconditionally on every `stock_sync_error`, which re-enabled every refresh button mid-bulk-sync on a single crawler's failure — exactly the silent-no-op the shared lock was meant to prevent. The fix: on `stock_sync_error`, only clear `stockSyncTarget` when `!event.source` — the two terminal emission sites ("no enabled catalog crawlers" and the outer catch-all) never carry `source`; only the non-terminal per-crawler one does.
-- `handleRefreshStock` (existing bulk handler) is unchanged apart from now implicitly passing no `crawler_id`.
+- `handleRefreshStock` (existing bulk handler) is unchanged apart from now implicitly passing no `crawler_id`. **(2026-08-26: both handlers now delegate to one `startStockSync(crawlerId?)` -- the feedback is identical either way.)**
+**Amendment (2026-08-26):** `stockSyncTarget` is no longer the only thing that
+moves these buttons. It is the *server's* answer, and it cannot arrive until
+`POST /stock/sync/start` has taken its advisory lock and `stock_sync_started`
+has been broadcast -- so between the click and that event the button sat
+unchanged and the status bar was empty, and the accepted start looked as much
+like a no-op as the rejected one did before the 2026-08-25 amendment above. An
+optimistic `stockSyncStarting` now claims the button on click and hands over to
+`stockSyncTarget` when the event lands; `Settings` receives
+`stockSyncTarget ?? stockSyncStarting` through the same two props, which keep
+their meanings. The glyph swap and the JSX quoted below are superseded -- see
+[`2026-08-26-refresh-click-feedback-design.md`](2026-08-26-refresh-click-feedback-design.md).
+
 - New `handleRefreshStoreCrawler`:
 
 ```typescript
@@ -230,6 +242,14 @@ widened response.
   </button>
 </td>
 ```
+
+**Amendment (2026-08-26):** superseded. `⟳` and `↻` differed too little to
+read as a state change, and `disabled:opacity-30` dimmed the running row and
+the idle ones alike. The running row now spins the status bar's ring and
+inverts to `navButtonClass(true)` rather than being dimmed, its `title` becomes
+`Refreshing {site} catalog…`, and its `<tr>` is highlighted. Both bulk Refresh
+buttons gained the same treatment. See
+[`2026-08-26-refresh-click-feedback-design.md`](2026-08-26-refresh-click-feedback-design.md).
 
 - The existing bulk "Refresh" button in the Store Management section gets
   `disabled={stockSyncBusy}` added — today it has no disabled state at all,
