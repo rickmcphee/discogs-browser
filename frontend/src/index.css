@@ -61,11 +61,63 @@
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
+
+  /* On a phone the clamp resolves to the full width anyway, so the side
+     borders are two hairlines pinned to the screen edges -- decoration on
+     desktop, visual noise here. */
+  @media (max-width: 767px) {
+    width: 100%;
+    border-inline: none;
+  }
+}
+
+/* Safe-area helpers. Tailwind ships no utility for env(), and the alternative
+   -- an arbitrary value repeated at each call site -- puts the same expression
+   in a handful of places for a reader to keep in sync. Registered with
+   @utility rather than as plain classes so they accept variants: the content
+   pane needs `md:pb-safe`, because a notched phone in landscape is wider than
+   the breakpoint and so gets the desktop layout, with no tab bar underneath to
+   carry the bottom inset. */
+@utility pt-safe {
+  padding-top: env(safe-area-inset-top);
+}
+@utility pb-safe {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+@utility px-safe {
+  padding-inline: env(safe-area-inset-left) env(safe-area-inset-right);
+}
+
+/* iOS Safari zooms into any focused form control under 16px and does not zoom
+   back out, leaving the layout shifted for the rest of the session. Every
+   input in this app is text-sm (14px), so the floor goes here once rather than
+   as `text-base md:text-sm` on each of them -- and on each one added later.
+
+   Gated on pointer capability, not on width. Zoom-on-focus is a property of
+   the *device*, and a phone rotated to landscape is 844px wide -- above the
+   breakpoint -- so a width gate stops applying in the one orientation where
+   the keyboard covers most of the screen and the zoom hurts most. `hover:
+   none` below is gated the same way for the same reason. */
+@media (pointer: coarse) {
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+}
+
+@media (hover: none) {
+  * {
+    -webkit-tap-highlight-color: transparent;
+  }
 }
 
 @layer base {
   body {
     margin: 0;
+    /* Keeps a scroll that reaches the end of an inner pane from turning into
+       the browser's pull-to-refresh or rubber-band on the page behind it. */
+    overscroll-behavior-y: contain;
   }
 
   h1,

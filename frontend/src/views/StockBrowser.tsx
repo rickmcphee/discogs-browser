@@ -6,6 +6,9 @@ import { textInputClass, selectClass } from '../styles/inputs'
 import { reconcileSelectedArtist } from './artistSelection'
 import SourceFilter from '../components/SourceFilter'
 import { formatPrice } from './formatPrice'
+import { useIsMobile } from '../hooks/useMediaQuery'
+import { ArtistSidebar, ArtistSheetButton } from '../components/ArtistFilter'
+import MobileSort, { type SortOption } from '../components/MobileSort'
 
 interface Props {
   scope?: StockScope
@@ -42,6 +45,7 @@ function StockBrowser({
   crawlers = NO_CRAWLERS, onHiddenCrawlerIdsChange = NOOP_HIDDEN_CRAWLER_IDS_CHANGE,
   hiddenCrawlerIdsLoaded = true, syncGeneration, isAdmin = false, hasPriceField = true,
 }: Props) {
+  const isMobile = useIsMobile()
   const [items, setItems] = useState<StockItem[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -260,97 +264,111 @@ function StockBrowser({
     : filter === 'wantlist' ? 'Nothing on your wantlist is in stock right now.'
     : "Nothing you're tracking is in stock right now."
 
+  // Mirrors the column headers below, gated the same way: the discogs price is
+  // only a column, and only sortable, where the table shows one.
+  const sortOptions: SortOption<StockSortField>[] = [
+    { field: 'artist', label: 'Artist' },
+    { field: 'title', label: 'Title' },
+    { field: 'format', label: 'Format' },
+    ...(scope === 'track' && hasPriceField && priceSortable
+      ? [{ field: 'discogs_price', label: 'Price' } as SortOption<StockSortField>]
+      : []),
+    { field: 'price', label: 'Cost' },
+    { field: 'source', label: 'Source' },
+  ]
+
   const sortButtonClass = 'w-full px-3 py-2 cursor-pointer hover:text-white select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/80'
 
   return (
     <div className="flex h-full overflow-hidden">
-      {/* Sidebar */}
-      <aside className="w-48 bg-gray-900 border-r border-gray-800 flex flex-col shrink-0 min-h-0">
-        <div className="px-3 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider border-b border-gray-800 shrink-0">Artist</div>
-        <div className="flex flex-col gap-2 overflow-y-auto p-3">
-          <button
-            onClick={() => selectArtist('')}
-            className={`shrink-0 text-left text-sm px-2 py-1 ${navButtonClass(!selectedArtist)}`}
-          >
-            All
-          </button>
-          {artists.map((a) => (
-            <button
-              key={a}
-              onClick={() => selectArtist(a)}
-              className={`shrink-0 text-left text-sm px-2 py-1 truncate ${navButtonClass(selectedArtist === a)}`}
-            >
-              {a}
-            </button>
-          ))}
-        </div>
-      </aside>
+      {/* Sidebar. Same trade as RecordBrowser's: on a phone it becomes a sheet
+          behind a toolbar button, rendered instead of the sidebar. */}
+      {!isMobile && (
+        <ArtistSidebar artists={artists} selected={selectedArtist} onSelect={selectArtist} />
+      )}
 
       {/* Main */}
-      <div className="flex-1 flex flex-col overflow-hidden">
-        {/* Search bar */}
-        <div className="px-4 py-3 border-b border-gray-800 bg-gray-950 flex items-center">
-          <div className="relative w-full max-w-md">
-            <input
-              type="text"
-              placeholder="Search artist or title…"
-              value={search}
-              onChange={(e) => { setSearch(e.target.value); setPage(1) }}
-              className={`w-full px-3 py-1.5 pr-8 text-sm ${textInputClass()}`}
-            />
-            <button
-              onClick={() => { setSearch(''); setPage(1) }}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
-            >
-              ✕
-            </button>
+      <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+        {/* Toolbar. Same shape as RecordBrowser's: one row on desktop, search
+            on its own row with everything else wrapping beneath it on mobile,
+            and `md:contents` dissolving the mobile grouping wrapper above the
+            breakpoint. */}
+        <div className="px-3 py-2 border-b border-gray-800 bg-gray-950 flex flex-col gap-2 md:flex-row md:items-center md:gap-0 md:px-4 md:py-3">
+          {/* The count rides on the search line rather than the control line:
+              it is the one thing here that is not a control, and giving it a
+              row of its own cost the list a row of chrome. */}
+          <div className="flex w-full items-center gap-3 md:contents">
+            <div className="relative flex-1 md:w-full md:max-w-md md:flex-initial">
+              <input
+                type="text"
+                placeholder="Search artist or title…"
+                value={search}
+                onChange={(e) => { setSearch(e.target.value); setPage(1) }}
+                className={`w-full px-3 py-2 pr-11 text-sm md:py-1.5 md:pr-8 ${textInputClass()}`}
+              />
+              <button
+                onClick={() => { setSearch(''); setPage(1) }}
+                aria-label="Clear search"
+                className="absolute right-0 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center text-gray-500 hover:text-gray-300 md:right-3 md:h-auto md:w-auto"
+              >
+                <span aria-hidden="true">✕</span>
+              </button>
+            </div>
+            <span className="shrink-0 text-xs text-gray-500 md:ml-3 md:shrink">{total} items</span>
           </div>
-          <span className="ml-3 text-xs text-gray-500">{total} items</span>
-          <div className="ml-auto flex items-center gap-2">
-            <SourceFilter crawlers={crawlers} hiddenCrawlerIds={hiddenCrawlerIds} onChange={onHiddenCrawlerIdsChange} disabled={!hiddenCrawlerIdsLoaded} />
-            <select
-              value={filter}
-              onChange={(e) => changeFilter(e.target.value)}
-              className={`px-3 py-1 text-sm ${selectClass()}`}
-            >
-              {scope === 'track' ? (
-                <>
-                  <option value="all">All</option>
-                  <option value="collection">Collection</option>
-                  <option value="wantlist">Wantlist</option>
-                </>
-              ) : (
-                <>
-                  <option value="all">All</option>
-                  <option value="recommended" disabled={!recommendedAvailable}>Recommended</option>
-                  <option value="saved">Saved</option>
-                  <option value="overlapped">Overlapped</option>
-                </>
+          <div className="flex flex-wrap items-center gap-1.5 md:contents">
+            {isMobile && (
+              <ArtistSheetButton artists={artists} selected={selectedArtist} onSelect={selectArtist} />
+            )}
+            <div className="contents md:ml-auto md:flex md:items-center md:gap-2">
+              {isMobile && viewMode === 'list' && (
+                <MobileSort options={sortOptions} sort={sort} order={order} onSort={toggleSort} />
               )}
-            </select>
-            <button
-              onClick={() => setViewMode('list')}
-              title="List view"
-              className={`p-1.5 ${navButtonClass(viewMode === 'list')}`}
-            >
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-                <line x1="2" y1="4" x2="14" y2="4" />
-                <line x1="2" y1="8" x2="14" y2="8" />
-                <line x1="2" y1="12" x2="14" y2="12" />
-              </svg>
-            </button>
-            <button
-              onClick={() => setViewMode('tiles')}
-              title="Tile view"
-              className={`p-1.5 ${navButtonClass(viewMode === 'tiles')}`}
-            >
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-                <rect x="2" y="2" width="5" height="5" />
-                <rect x="9" y="2" width="5" height="5" />
-                <rect x="2" y="9" width="5" height="5" />
-                <rect x="9" y="9" width="5" height="5" />
-              </svg>
-            </button>
+              <SourceFilter crawlers={crawlers} hiddenCrawlerIds={hiddenCrawlerIds} onChange={onHiddenCrawlerIdsChange} disabled={!hiddenCrawlerIdsLoaded} />
+              <select
+                value={filter}
+                onChange={(e) => changeFilter(e.target.value)}
+                className={`px-3 py-2 text-sm md:py-1 ${selectClass()}`}
+              >
+                {scope === 'track' ? (
+                  <>
+                    <option value="all">All</option>
+                    <option value="collection">Collection</option>
+                    <option value="wantlist">Wantlist</option>
+                  </>
+                ) : (
+                  <>
+                    <option value="all">All</option>
+                    <option value="recommended" disabled={!recommendedAvailable}>Recommended</option>
+                    <option value="saved">Saved</option>
+                    <option value="overlapped">Overlapped</option>
+                  </>
+                )}
+              </select>
+              <button
+                onClick={() => setViewMode('list')}
+                title="List view"
+                className={`w-11 h-11 flex items-center justify-center md:w-auto md:h-auto md:p-1.5 ${navButtonClass(viewMode === 'list')}`}
+              >
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <line x1="2" y1="4" x2="14" y2="4" />
+                  <line x1="2" y1="8" x2="14" y2="8" />
+                  <line x1="2" y1="12" x2="14" y2="12" />
+                </svg>
+              </button>
+              <button
+                onClick={() => setViewMode('tiles')}
+                title="Tile view"
+                className={`w-11 h-11 flex items-center justify-center md:w-auto md:h-auto md:p-1.5 ${navButtonClass(viewMode === 'tiles')}`}
+              >
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <rect x="2" y="2" width="5" height="5" />
+                  <rect x="9" y="2" width="5" height="5" />
+                  <rect x="2" y="9" width="5" height="5" />
+                  <rect x="9" y="9" width="5" height="5" />
+                </svg>
+              </button>
+            </div>
           </div>
         </div>
 
@@ -358,12 +376,12 @@ function StockBrowser({
         {viewMode === 'tiles' && (
           <div className="flex-1 overflow-auto" ref={tableScrollRef}>
             {hasLoaded && items.length === 0 && (
-              <div className="text-center py-8 text-gray-500">
+              <div className="text-center py-8 px-4 text-gray-500 md:px-0">
                 {emptyMessage}
               </div>
             )}
             {items.length > 0 && (
-              <div className="grid gap-4 p-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))' }}>
+              <div className="grid gap-3 p-3 md:gap-4 md:p-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))' }}>
                 {items.filter((item) => item.is_own).map((item) => (
                   <a
                     key={item.id}
@@ -387,7 +405,7 @@ function StockBrowser({
                           onClick={(e) => { e.preventDefault(); toggleSaved(item) }}
                           title={item.saved ? 'Remove from saved' : 'Save for later'}
                           disabled={pendingSaves.has(item.item_key)}
-                          className="absolute top-1 right-1 p-1 rounded-full bg-gray-950/70 text-white hover:bg-gray-950 disabled:opacity-40"
+                          className="absolute top-1 right-1 flex h-11 w-11 items-center justify-center rounded-full bg-gray-950/70 text-white hover:bg-gray-950 disabled:opacity-40 md:h-auto md:w-auto md:p-1"
                         >
                           <BookmarkIcon filled={item.saved} />
                         </button>
@@ -402,8 +420,62 @@ function StockBrowser({
           </div>
         )}
 
+        {/* Card list -- see RecordBrowser for why cards rather than a
+            side-scrolling table. The cost link and the save button stay on the
+            right, where they are the row's two actions. */}
+        {viewMode === 'list' && isMobile && (
+          <div className="flex-1 overflow-auto" ref={tableScrollRef}>
+            {hasLoaded && items.length === 0 && (
+              <div className="text-center py-8 px-4 text-gray-500">{emptyMessage}</div>
+            )}
+            <ul className="divide-y divide-gray-800">
+              {items.map((item) => {
+                const meta = [
+                  item.format || null,
+                  item.source || null,
+                  // "Price" is the discogs price, as in the table header; the
+                  // link on the right is "Cost", what this store wants for it.
+                  scope === 'track' && hasPriceField && item.discogs_price ? `Price ${item.discogs_price}` : null,
+                ].filter(Boolean).join(' · ')
+                return (
+                  <li key={item.id} className="flex items-center gap-3 px-3 py-2 text-left">
+                    {item.cover_image_url ? (
+                      <img src={item.cover_image_url} alt="" className="w-14 h-14 shrink-0 object-cover rounded" />
+                    ) : (
+                      <div className="w-14 h-14 shrink-0 bg-gray-800 rounded" />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm text-gray-200" title={item.reason ?? undefined}>{item.artist}</div>
+                      <div className="truncate text-sm text-gray-300" title={item.reason ?? undefined}>{item.title}</div>
+                      {meta && <div className="truncate text-xs text-gray-500">{meta}</div>}
+                      {item.reason && (
+                        <div className="text-xs italic text-gray-500">{item.reason}</div>
+                      )}
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <a href={item.url} target="_blank" rel="noreferrer" className="px-2 py-3 text-sm font-medium text-green-400 hover:text-green-300">
+                        {item.price != null ? formatPrice(item.price, item.currency) : 'View'}
+                      </a>
+                      {scope === 'store' && (
+                        <button
+                          onClick={() => toggleSaved(item)}
+                          title={item.saved ? 'Remove from saved' : 'Save for later'}
+                          disabled={pendingSaves.has(item.item_key)}
+                          className={`w-11 h-11 flex items-center justify-center disabled:opacity-40 ${dismissButtonClass()}`}
+                        >
+                          <BookmarkIcon filled={item.saved} />
+                        </button>
+                      )}
+                    </div>
+                  </li>
+                )
+              })}
+            </ul>
+          </div>
+        )}
+
         {/* Table */}
-        {viewMode === 'list' && (
+        {viewMode === 'list' && !isMobile && (
         <div className="flex-1 overflow-auto" ref={tableScrollRef}>
           <table className="w-full text-sm border-collapse">
             <thead className="sticky top-0 bg-gray-900 text-xs text-gray-400 uppercase">
@@ -498,10 +570,10 @@ function StockBrowser({
 
         {/* Pagination */}
         {totalPages > 1 && (
-          <div className="border-t border-gray-800 px-4 py-2 flex items-center gap-2 text-sm text-gray-400">
-            <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1} className={`px-2 py-1 disabled:opacity-40 ${dismissButtonClass()}`}>← Prev</button>
+          <div className="border-t border-gray-800 px-4 py-2 flex items-center justify-center gap-2 text-sm text-gray-400 md:justify-start">
+            <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1} className={`px-4 py-3 disabled:opacity-40 md:px-2 md:py-1 ${dismissButtonClass()}`}>← Prev</button>
             <span>Page {page} of {totalPages}</span>
-            <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages} className={`px-2 py-1 disabled:opacity-40 ${dismissButtonClass()}`}>Next →</button>
+            <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages} className={`px-4 py-3 disabled:opacity-40 md:px-2 md:py-1 ${dismissButtonClass()}`}>Next →</button>
           </div>
         )}
       </div>
