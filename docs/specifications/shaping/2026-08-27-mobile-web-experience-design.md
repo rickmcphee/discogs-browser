@@ -68,10 +68,17 @@ Touches:
 
 Out of scope:
 
-- **Any change to the desktop layout.** Every rule added here is either
-  gated behind `md:`/`useIsMobile()` or is a no-op above the breakpoint. The
-  desktop rendering that ships today is the desktop rendering that ships
-  after.
+- **Any change to the desktop layout**, where *desktop* means the environment
+  that was regression-tested: a pointer-fine browser reporting zero safe-area
+  insets. There, every rule added here is gated behind `md:`/`useIsMobile()`
+  or is a no-op, and the rendering that ships today is the rendering that
+  ships after. Two rules deliberately reach past 768 px, and the word
+  *desktop* rather than *≥ 768 px* is doing that work: a touch device at any
+  width gets the 16 px form-control floor, and a device reporting a bottom
+  inset gets it honoured (`md:pb-safe`) — neither failure is about layout
+  width, so neither is gated on it. See the capability-versus-width decision
+  below. `h-dvh` likewise replaces `h-screen` unconditionally, and resolves
+  to the same height wherever no browser chrome retracts.
 - **A PWA.** No manifest, no service worker, no offline mode, no install
   prompt, no push. `apple-mobile-web-app-*` meta tags are included because
   they cost two lines and fix the status-bar colour when someone adds the

@@ -780,13 +780,13 @@ export default function App() {
     }
   }, [setSyncStatus])
 
-  // useCallback keeps this referentially stable across renders so it doesn't
-  // defeat Account's memo() — see viewRenderChurn.test.tsx, which asserts
-  // Account isn't re-invoked on every crawl SSE event.
   useEffect(() => {
     if (!isMobile) setAdminMenuOpen(false)
   }, [isMobile])
 
+  // useCallback keeps this referentially stable across renders so it doesn't
+  // defeat Account's memo() — see viewRenderChurn.test.tsx, which asserts
+  // Account isn't re-invoked on every crawl SSE event.
   const toggleViewAsUser = useCallback(() => {
     setViewAsUser((current) => {
       const next = !current
