@@ -29,8 +29,8 @@ export default function InviteCodeScreen({
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-950">
-      <form onSubmit={submit} className="bg-gray-900 border border-gray-700 rounded-xl shadow-xl p-8 w-80 space-y-4">
+    <div className="min-h-dvh flex items-center justify-center bg-gray-950 p-4">
+      <form onSubmit={submit} className="bg-gray-900 border border-gray-700 rounded-xl shadow-xl p-8 w-full max-w-xs space-y-4">
         <h1 className="text-base font-semibold text-white">Enter your invite code</h1>
         <input
           type="text" placeholder="Invite code" value={code}

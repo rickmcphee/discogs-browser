@@ -4,6 +4,7 @@ import { createInvite, deleteAvatar, getUserSettings, listInvites, logout, postP
 import type { Invite } from '../api/types'
 import { secondaryButtonClass } from '../styles/buttons'
 import { textInputClass } from '../styles/inputs'
+import { stackedTableClass, stackedBodyClass, stackedRowClass, stackedCellClass } from '../styles/tables'
 
 // apiFetch throws Error(await r.text()), so err.message is FastAPI's raw JSON
 // body for a handled error and a plain string for anything else. Every branch
@@ -245,10 +246,10 @@ function Account({
   }
 
   return (
-    <div className="max-w-3xl mx-auto p-6 space-y-10">
+    <div className="max-w-3xl mx-auto p-4 space-y-8 md:p-6 md:space-y-10">
       {/* Avatar */}
       <section>
-        <div className="flex items-center justify-between gap-4">
+        <div className="flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-4">
             <button onClick={() => fileInputRef.current?.click()} disabled={avatarBusy} aria-label="Change photo" className="group relative rounded-full">
               <Avatar version={avatarVersion} size="lg" />
@@ -287,7 +288,7 @@ function Account({
               {avatarError && <p className="text-xs text-red-400 mt-1">{avatarError}</p>}
             </div>
           </div>
-          <div className="flex items-center gap-4">
+          <div className="flex w-full items-center gap-4 sm:w-auto">
             {isAdmin && (
               <div className="flex items-center gap-2">
                 <span className="text-sm text-gray-400">{viewingAsUser ? 'User' : 'Admin'}</span>
@@ -315,7 +316,7 @@ function Account({
                   window.location.reload()
                 }).catch(() => {})
               }}
-              className={`px-3 py-1 text-xs ${secondaryButtonClass()}`}
+              className={`ml-auto px-3 py-1 text-xs sm:ml-0 ${secondaryButtonClass()}`}
             >
               Log out
             </button>
@@ -329,13 +330,13 @@ function Account({
         <p className="text-sm text-gray-500 mb-4 text-left">
           Used to judge Store items against your collection for the Recommended filter.
         </p>
-        <table className="w-full text-sm border-collapse">
-          <tbody>
-            <tr className="border-b border-gray-800/50">
-              <td className="py-3 pr-4 text-left text-gray-300 font-medium align-top whitespace-nowrap w-40">
+        <table className={stackedTableClass}>
+          <tbody className={stackedBodyClass}>
+            <tr className={`border-b border-gray-800/50 ${stackedRowClass}`}>
+              <td className={`pt-3 pb-1 text-left text-gray-300 font-medium align-top whitespace-nowrap md:py-3 md:pr-4 md:w-40 ${stackedCellClass}`}>
                 Anthropic API key
               </td>
-              <td className="py-3 pr-4 text-left align-top w-64">
+              <td className={`pb-2 text-left align-top md:py-3 md:pr-4 md:w-64 ${stackedCellClass}`}>
                 <input
                   type="password"
                   aria-label="Anthropic API key"
@@ -345,15 +346,15 @@ function Account({
                   className={`w-full px-3 py-1 ${textInputClass()}`}
                 />
               </td>
-              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+              <td className={`pb-3 text-left text-gray-500 text-xs align-top leading-relaxed md:py-3 ${stackedCellClass}`}>
                 Get one at platform.claude.com.
               </td>
             </tr>
-            <tr className="border-b border-gray-800/50">
-              <td className="py-3 pr-4 text-left text-gray-300 font-medium align-top whitespace-nowrap">
+            <tr className={`border-b border-gray-800/50 ${stackedRowClass}`}>
+              <td className={`pt-3 pb-1 text-left text-gray-300 font-medium align-top whitespace-nowrap md:py-3 md:pr-4 ${stackedCellClass}`}>
                 Recommendation item limit
               </td>
-              <td className="py-3 pr-4 text-left align-top">
+              <td className={`pb-2 text-left align-top md:py-3 md:pr-4 ${stackedCellClass}`}>
                 <input
                   type="number"
                   min={0}
@@ -363,13 +364,13 @@ function Account({
                   className={`w-24 px-3 py-1 ${textInputClass()}`}
                 />
               </td>
-              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+              <td className={`pb-3 text-left text-gray-500 text-xs align-top leading-relaxed md:py-3 ${stackedCellClass}`}>
                 Maximum number of unprocessed Store items evaluated by Claude for recommendation each time. Extra items are evaluated on a later run. 0 = no limit.
               </td>
             </tr>
-            <tr className="border-b border-gray-800/50">
-              <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
-              <td className="py-3 pr-4 text-left align-top">
+            <tr className={`border-b border-gray-800/50 ${stackedRowClass}`}>
+              <td className="hidden md:table-cell md:py-3 md:pr-4 md:align-top md:w-40"></td>
+              <td className={`pb-2 text-left align-top md:py-3 md:pr-4 ${stackedCellClass}`}>
                 <button
                   onClick={onRefreshRecommendations}
                   className={`w-20 text-center px-3 py-1 text-xs disabled:opacity-50 ${secondaryButtonClass()}`}
@@ -377,13 +378,13 @@ function Account({
                   Refresh
                 </button>
               </td>
-              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+              <td className={`pb-3 text-left text-gray-500 text-xs align-top leading-relaxed md:py-3 ${stackedCellClass}`}>
                 Evaluate unprocessed Store items for recommendation, without a full catalog re-crawl.
               </td>
             </tr>
-            <tr className="border-b border-gray-800/50">
-              <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
-              <td className="py-3 pr-4 text-left align-top">
+            <tr className={`border-b border-gray-800/50 ${stackedRowClass}`}>
+              <td className="hidden md:table-cell md:py-3 md:pr-4 md:align-top md:w-40"></td>
+              <td className={`pb-2 text-left align-top md:py-3 md:pr-4 ${stackedCellClass}`}>
                 <button
                   onClick={onExportRecommendations}
                   disabled={!hasJudgedItems}
@@ -392,16 +393,16 @@ function Account({
                   Export
                 </button>
               </td>
-              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+              <td className={`pb-3 text-left text-gray-500 text-xs align-top leading-relaxed md:py-3 ${stackedCellClass}`}>
                 Download every judgment — recommended and not — as CSV (artist, title, format,
                 price, source, link, reason, item_key, recommended, judged_at). Keep it as a
                 backup: it can be imported here or into another instance without paying to
                 re-evaluate.
               </td>
             </tr>
-            <tr className="border-b border-gray-800/50">
-              <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
-              <td className="py-3 pr-4 text-left align-top">
+            <tr className={`border-b border-gray-800/50 ${stackedRowClass}`}>
+              <td className="hidden md:table-cell md:py-3 md:pr-4 md:align-top md:w-40"></td>
+              <td className={`pb-2 text-left align-top md:py-3 md:pr-4 ${stackedCellClass}`}>
                 <input
                   ref={importInputRef}
                   data-testid="recommendations-import-input"
@@ -417,7 +418,7 @@ function Account({
                   Import
                 </button>
               </td>
-              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+              <td className={`pb-3 text-left text-gray-500 text-xs align-top leading-relaxed md:py-3 ${stackedCellClass}`}>
                 Load a recommendations CSV exported from this or another instance, so judgments
                 you already paid for aren't re-evaluated. Each item keeps whichever verdict was
                 judged most recently. Imported items that aren't in stock right now take effect
@@ -426,9 +427,9 @@ function Account({
                 preferences, not yours.
               </td>
             </tr>
-            <tr>
-              <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
-              <td className="py-3 pr-4 text-left align-top">
+            <tr className={stackedRowClass}>
+              <td className="hidden md:table-cell md:py-3 md:pr-4 md:align-top md:w-40"></td>
+              <td className={`pb-2 text-left align-top md:py-3 md:pr-4 ${stackedCellClass}`}>
                 <button
                   onClick={onClearRecommendations}
                   disabled={!hasJudgedItems}
@@ -437,7 +438,7 @@ function Account({
                   Clear
                 </button>
               </td>
-              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+              <td className={`pb-3 text-left text-gray-500 text-xs align-top leading-relaxed md:py-3 ${stackedCellClass}`}>
                 Remove all recommendation judgments, recommended and not-recommended, so every Store item is re-evaluated from scratch on the next run.
               </td>
             </tr>
@@ -452,13 +453,13 @@ function Account({
           Link collection releases to matching albums in your Plex music library.
         </p>
         {plexSaveError && <p className="text-xs text-red-400 mb-3 text-left">{plexSaveError}</p>}
-        <table className="w-full text-sm border-collapse">
-          <tbody>
-            <tr className="border-b border-gray-800/50">
-              <td className="py-3 pr-4 text-left text-gray-300 font-medium align-top whitespace-nowrap w-40">
+        <table className={stackedTableClass}>
+          <tbody className={stackedBodyClass}>
+            <tr className={`border-b border-gray-800/50 ${stackedRowClass}`}>
+              <td className={`pt-3 pb-1 text-left text-gray-300 font-medium align-top whitespace-nowrap md:py-3 md:pr-4 md:w-40 ${stackedCellClass}`}>
                 Plex server address
               </td>
-              <td className="py-3 pr-4 text-left align-top w-64">
+              <td className={`pb-2 text-left align-top md:py-3 md:pr-4 md:w-64 ${stackedCellClass}`}>
                 <input
                   type="text"
                   aria-label="Plex server address"
@@ -468,7 +469,7 @@ function Account({
                   className={`w-full px-3 py-1 ${textInputClass()}`}
                 />
               </td>
-              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+              <td className={`pb-3 text-left text-gray-500 text-xs align-top leading-relaxed md:py-3 ${stackedCellClass}`}>
                 Must be reachable from this server over the public internet —
                 enable Plex Remote Access on your server and use the
                 plex.direct address it gives you. A LAN address, or a private
@@ -477,11 +478,11 @@ function Account({
                 Plex token would otherwise cross the internet unencrypted.
               </td>
             </tr>
-            <tr className="border-b border-gray-800/50">
-              <td className="py-3 pr-4 text-left text-gray-300 font-medium align-top whitespace-nowrap">
+            <tr className={`border-b border-gray-800/50 ${stackedRowClass}`}>
+              <td className={`pt-3 pb-1 text-left text-gray-300 font-medium align-top whitespace-nowrap md:py-3 md:pr-4 ${stackedCellClass}`}>
                 Plex token
               </td>
-              <td className="py-3 pr-4 text-left align-top">
+              <td className={`pb-2 text-left align-top md:py-3 md:pr-4 ${stackedCellClass}`}>
                 <input
                   type="password"
                   aria-label="Plex token"
@@ -491,15 +492,15 @@ function Account({
                   className={`w-full px-3 py-1 ${textInputClass()}`}
                 />
               </td>
-              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+              <td className={`pb-3 text-left text-gray-500 text-xs align-top leading-relaxed md:py-3 ${stackedCellClass}`}>
                 Find it via a browser request while logged into Plex Web (see Plex support docs).
               </td>
             </tr>
-            <tr className="border-b border-gray-800/50">
-              <td className="py-3 pr-4 text-left text-gray-300 font-medium align-top whitespace-nowrap">
+            <tr className={`border-b border-gray-800/50 ${stackedRowClass}`}>
+              <td className={`pt-3 pb-1 text-left text-gray-300 font-medium align-top whitespace-nowrap md:py-3 md:pr-4 ${stackedCellClass}`}>
                 Match threshold
               </td>
-              <td className="py-3 pr-4 text-left align-top">
+              <td className={`pb-2 text-left align-top md:py-3 md:pr-4 ${stackedCellClass}`}>
                 <input
                   type="number"
                   min={0}
@@ -510,13 +511,13 @@ function Account({
                   className={`w-24 px-3 py-1 ${textInputClass()}`}
                 />
               </td>
-              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+              <td className={`pb-3 text-left text-gray-500 text-xs align-top leading-relaxed md:py-3 ${stackedCellClass}`}>
                 Minimum fuzzy-match score (0–100) for a release to be linked to a Plex album. Default 90.
               </td>
             </tr>
-            <tr>
-              <td className="py-3 pr-4 text-left align-top whitespace-nowrap"></td>
-              <td className="py-3 pr-4 text-left align-top">
+            <tr className={stackedRowClass}>
+              <td className="hidden md:table-cell md:py-3 md:pr-4 md:align-top"></td>
+              <td className={`pb-2 text-left align-top md:py-3 md:pr-4 ${stackedCellClass}`}>
                 <button
                   onClick={handleLinkPlexNow}
                   disabled={!plexBaseUrl || !plexToken || plexMatchStarting}
@@ -525,7 +526,7 @@ function Account({
                   {plexMatchStarting ? 'Starting…' : 'Link Now'}
                 </button>
               </td>
-              <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+              <td className={`pb-3 text-left text-gray-500 text-xs align-top leading-relaxed md:py-3 ${stackedCellClass}`}>
                 Re-run Plex matching against your current collection now, without waiting for the next sync.
               </td>
             </tr>
@@ -569,7 +570,8 @@ function Account({
               <p className="text-gray-500 text-sm text-left">No invites minted yet.</p>
             )
           ) : (
-            <table className="w-full text-sm border-collapse">
+            <div className="-mx-4 overflow-x-auto px-4 md:mx-0 md:px-0">
+            <table className="w-full min-w-[36rem] text-sm border-collapse">
               <thead>
                 <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-800">
                   <th className="text-left py-2 pr-4">Code</th>
@@ -595,6 +597,7 @@ function Account({
                 ))}
               </tbody>
             </table>
+            </div>
           )}
         </section>
       )}

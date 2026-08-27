@@ -48,7 +48,7 @@ function StatTile({ label, value, hint, accent }: {
   accent?: string
 }) {
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-lg px-4 py-3 min-w-36">
+    <div className="bg-gray-900 border border-gray-800 rounded-lg px-4 py-3 min-w-32 md:min-w-36">
       <div className="flex items-center gap-1.5 text-xs text-gray-400">
         {accent && <span className="w-2 h-2 rounded-full shrink-0" style={{ background: accent }} />}
         {label}
@@ -130,7 +130,7 @@ function CrawlerBars({ crawlers, selectedState, selectedId, onSelect }: {
             key={c.crawler_id}
             onClick={() => onSelect(c.crawler_id)}
             aria-pressed={isSelected}
-            className={`grid grid-cols-[11rem_1fr_5rem] items-center gap-3 px-2 py-1 rounded text-left transition-colors ${
+            className={`grid grid-cols-[6rem_1fr_3.5rem] items-center gap-2 px-2 py-1 rounded text-left transition-colors md:grid-cols-[11rem_1fr_5rem] md:gap-3 ${
               isSelected ? 'bg-gray-800' : 'hover:bg-gray-900'
             }`}
           >
@@ -420,7 +420,7 @@ export default function QueueView() {
   const rows = t.claimable_rows + t.held_rows + t.in_progress_rows + t.unactionable_rows
 
   return (
-    <div className="h-full overflow-y-auto p-6 flex flex-col gap-6 text-left">
+    <div className="h-full overflow-y-auto p-4 flex flex-col gap-6 text-left md:p-6">
       {/* A poll that fails after the first success would otherwise leave the
           last good snapshot on screen looking live, which in an operational
           view is worse than showing nothing. */}
@@ -475,7 +475,7 @@ export default function QueueView() {
       </div>
 
       <div className="flex flex-col lg:flex-row gap-6 items-start">
-        <div className="flex items-center gap-4">
+        <div className="flex flex-wrap items-center gap-4">
           <StateDonut
             segments={[
               { key: 'in_progress', value: t.in_progress_units },
@@ -510,7 +510,7 @@ export default function QueueView() {
                 </button>
               )
             })}
-            <div className="text-xs text-gray-400 max-w-52 leading-relaxed mt-1">
+            <div className="text-xs text-gray-400 leading-relaxed mt-1 md:max-w-52">
               Work units — one search per (target, crawler) pair. A queue row
               names a target, not a crawler, so units far outnumber rows. In
               progress counts every unit of a claimed row, including ones that

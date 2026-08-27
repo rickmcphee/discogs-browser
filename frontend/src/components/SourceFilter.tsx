@@ -44,13 +44,17 @@ function SourceFilter({ crawlers, hiddenCrawlerIds, onChange, disabled = false }
 
   useEffect(() => {
     if (!open) return
-    function onMouseDown(e: MouseEvent) {
+    function onMouseDown(e: MouseEvent | TouchEvent) {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
         setOpen(false)
       }
     }
     document.addEventListener('mousedown', onMouseDown)
-    return () => document.removeEventListener('mousedown', onMouseDown)
+    document.addEventListener('touchstart', onMouseDown)
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown)
+      document.removeEventListener('touchstart', onMouseDown)
+    }
   }, [open])
 
   const byGenre = new Map<CrawlerGenre, Crawler[]>()
@@ -94,12 +98,12 @@ function SourceFilter({ crawlers, hiddenCrawlerIds, onChange, disabled = false }
         disabled={disabled}
         aria-expanded={open}
         title={disabled ? 'Loading your source filter…' : undefined}
-        className={`px-3 py-1.5 text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed ${navButtonClass(open || hiddenCrawlerIds.length > 0)}`}
+        className={`h-11 px-3 text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed md:h-auto md:py-1.5 ${navButtonClass(open || hiddenCrawlerIds.length > 0)}`}
       >
         Source
       </button>
       {open && !disabled && (
-        <div className="absolute right-0 mt-2 w-72 max-h-[28rem] overflow-y-auto rounded-xl border border-gray-700 bg-gray-900 shadow-xl z-50 p-3 text-sm">
+        <div className="absolute right-0 mt-2 w-[min(18rem,calc(100vw-2rem))] max-h-[28rem] overflow-y-auto rounded-xl border border-gray-700 bg-gray-900 shadow-xl z-50 p-3 text-sm">
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs uppercase tracking-wider text-gray-500">By genre</span>
             <button type="button" onClick={() => onChange([])} className="text-xs text-gray-400 hover:text-white">

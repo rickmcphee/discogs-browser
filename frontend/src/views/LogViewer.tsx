@@ -172,6 +172,12 @@ function LogViewer() {
         </div>
       </div>
 
+      {/* Header strip and rows share one horizontal scroller with one
+          min-width, so the columns stay in step as it scrolls. Above the
+          breakpoint the min-width resolves to 100% and nothing scrolls
+          sideways at all. */}
+      <div className="flex-1 min-h-0 overflow-x-auto overflow-y-hidden">
+      <div className="flex h-full min-w-[52rem] flex-col md:min-w-full">
       {/* Column headers */}
       <div className="flex gap-0 px-4 py-1 border-b border-gray-800 text-gray-600 select-none">
         <span className="w-36 shrink-0">Time</span>
@@ -182,7 +188,7 @@ function LogViewer() {
       </div>
 
       {/* Log rows */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 min-h-0 overflow-y-auto">
         {filtered.length === 0 && (
           <div className="px-4 py-4 text-gray-600 italic">No log entries.</div>
         )}
@@ -211,6 +217,8 @@ function LogViewer() {
             </span>
           </div>
         ))}
+      </div>
+      </div>
       </div>
 
     </div>
