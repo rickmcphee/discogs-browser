@@ -143,13 +143,14 @@ function LogViewer() {
             value={msgFilter}
             onChange={(e) => setMsgFilter(e.target.value)}
             placeholder="Filter message (regexp)…"
-            className={`w-full px-3 py-0.5 pr-7 ${textInputClass(regexError)}`}
+            className={`w-full px-3 py-0.5 pr-11 md:pr-7 ${textInputClass(regexError)}`}
           />
           <button
             onClick={() => setMsgFilter('')}
-            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
+            aria-label="Clear message filter"
+            className="absolute right-0 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center text-gray-500 hover:text-gray-300 md:right-2.5 md:h-auto md:w-auto"
           >
-            ✕
+            <span aria-hidden="true">✕</span>
           </button>
         </div>
 

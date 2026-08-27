@@ -396,6 +396,14 @@ describe('mobile touch targets', () => {
     expect(refresh).toHaveClass('h-11', 'w-11')
   })
 
+  it('sizes the tile bookmark and the log filter clear for touch', async () => {
+    localStorage.setItem('collectionViewMode_store', 'tiles')
+    getStock.mockResolvedValue({ total: 1, page: 1, per_page: 250, items: [stockItem] })
+    render(<StockBrowser />)
+    const bookmark = await screen.findByRole('button', { name: 'Save for later' })
+    expect(bookmark).toHaveClass('h-11', 'w-11')
+  })
+
   it("sizes a sheet's close button like every other mobile icon control", async () => {
     getArtists.mockResolvedValue(['Pink Floyd'])
     render(<RecordBrowser scope="collection" />)
@@ -408,6 +416,16 @@ describe('mobile touch targets', () => {
 })
 
 describe('mobile StockBrowser', () => {
+  it('renders the recommendation reason, which on touch has no hover to reveal it', async () => {
+    getStock.mockResolvedValue({
+      total: 1, page: 1, per_page: 250,
+      items: [{ ...stockItem, reason: 'Shares a label and era with three records you own.' }],
+    })
+    render(<StockBrowser />)
+    await screen.findByText('The Great Satan')
+    expect(screen.getByText('Shares a label and era with three records you own.')).toBeInTheDocument()
+  })
+
   it('renders cards keeping the cost link and the save button as the row actions', async () => {
     getStock.mockResolvedValue({ total: 1, page: 1, per_page: 250, items: [stockItem] })
     render(<StockBrowser />)

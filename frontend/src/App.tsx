@@ -923,7 +923,7 @@ export default function App() {
       </header>
 
       {/* Main */}
-      <main className="flex-1 overflow-hidden">
+      <main className="flex-1 overflow-hidden px-safe">
         <div className={view === 'collection' ? 'h-full' : 'hidden'}>
           <RecordBrowser
             scope="collection"

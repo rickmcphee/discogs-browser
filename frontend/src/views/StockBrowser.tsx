@@ -405,7 +405,7 @@ function StockBrowser({
                           onClick={(e) => { e.preventDefault(); toggleSaved(item) }}
                           title={item.saved ? 'Remove from saved' : 'Save for later'}
                           disabled={pendingSaves.has(item.item_key)}
-                          className="absolute top-1 right-1 p-1 rounded-full bg-gray-950/70 text-white hover:bg-gray-950 disabled:opacity-40"
+                          className="absolute top-1 right-1 flex h-11 w-11 items-center justify-center rounded-full bg-gray-950/70 text-white hover:bg-gray-950 disabled:opacity-40 md:h-auto md:w-auto md:p-1"
                         >
                           <BookmarkIcon filled={item.saved} />
                         </button>
@@ -448,6 +448,9 @@ function StockBrowser({
                       <div className="truncate text-sm text-gray-200" title={item.reason ?? undefined}>{item.artist}</div>
                       <div className="truncate text-sm text-gray-300" title={item.reason ?? undefined}>{item.title}</div>
                       {meta && <div className="truncate text-xs text-gray-500">{meta}</div>}
+                      {item.reason && (
+                        <div className="line-clamp-2 text-xs italic text-gray-500">{item.reason}</div>
+                      )}
                     </div>
                     <div className="flex shrink-0 items-center gap-1">
                       <a href={item.url} target="_blank" rel="noreferrer" className="px-2 py-3 text-sm font-medium text-green-400 hover:text-green-300">
