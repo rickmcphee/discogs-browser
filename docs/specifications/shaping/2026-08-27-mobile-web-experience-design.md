@@ -138,10 +138,18 @@ Out of scope:
   padding would then have to include `env(safe-area-inset-bottom)` in every
   one of those places.
 
-- **The fixed status bars still need an offset**, because they *are* fixed
-  and the bar is not. The shell sets `--app-bottom-inset` — the bar's height
-  plus the safe-area inset on mobile, `0px` otherwise — and both banners
-  anchor to it. One variable, set once, read twice.
+- **The status bars join the flow too, on mobile.** They were fixed, anchored
+  above the tab bar by a `--app-bottom-inset` variable — and a fixed banner
+  covers whatever is beneath it, which here is `<main>`'s last rows and its
+  pagination. While a sync runs the banner has no Dismiss button, and the
+  scroll container's bottom is already `main`'s bottom, so the covered rows
+  could be neither dismissed nor scrolled clear. As flow children between the
+  content and the tab bar they shorten `main` by exactly their own height.
+  Reserving that height as a constant instead would not have worked: the
+  banner wraps on a narrow screen, so its height is a property of the message,
+  not of the layout. Desktop keeps the fixed overlay it has always had, at
+  `bottom-0`, and the inset variable is gone — with nothing left outside the
+  flow, there is nothing to offset.
 
 - **Admin tabs go behind an overflow menu; the avatar stays in the header.**
   Queue, Logs and Settings are admin-only and rarely visited, which is
@@ -231,7 +239,7 @@ Out of scope:
 | Toolbar | One row | Search on its own row, controls below |
 | Source filter | Dropdown anchored to its trigger | Sheet |
 | Settings/Account rows | Three table columns | Stacked label → control → description |
-| Status bars | `fixed bottom-0` | `fixed`, offset by `--app-bottom-inset` |
+| Status bars | `fixed bottom-0` | In the flow, above the tab bar |
 | Modals | `w-96` | Full width less a gutter, buttons stacked |
 
 ## Testing

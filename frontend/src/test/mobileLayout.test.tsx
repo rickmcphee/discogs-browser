@@ -446,6 +446,20 @@ describe('mobile StockBrowser', () => {
     await waitFor(() => expect(saveStockItem).toHaveBeenCalledWith('k1'))
   })
 
+  it('does not repeat the title as the card thumbnail\'s alt text', async () => {
+    getStock.mockResolvedValue({
+      total: 1, page: 1, per_page: 250,
+      items: [{ ...stockItem, cover_image_url: 'https://cdn.example/cover.png' }],
+    })
+    const { container } = render(<StockBrowser />)
+    await screen.findByText('The Great Satan')
+    // The title sits right beside the thumbnail, so an alt repeating it makes
+    // a screen reader announce the row twice. The image is not a link and
+    // carries nothing the text does not.
+    expect(screen.queryByAltText('The Great Satan')).toBeNull()
+    expect(container.querySelector('img')).toHaveAttribute('alt', '')
+  })
+
   it('labels the discogs price in the meta line, where the Cost link would otherwise be ambiguous', async () => {
     getStock.mockResolvedValue({
       total: 1, page: 1, per_page: 250,

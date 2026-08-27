@@ -440,7 +440,7 @@ function StockBrowser({
                 return (
                   <li key={item.id} className="flex items-center gap-3 px-3 py-2 text-left">
                     {item.cover_image_url ? (
-                      <img src={item.cover_image_url} alt={item.title} className="w-14 h-14 shrink-0 object-cover rounded" />
+                      <img src={item.cover_image_url} alt="" className="w-14 h-14 shrink-0 object-cover rounded" />
                     ) : (
                       <div className="w-14 h-14 shrink-0 bg-gray-800 rounded" />
                     )}
