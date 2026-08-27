@@ -837,7 +837,7 @@ export default function App() {
 
   const bannerShellClass = isMobile
     ? 'shrink-0 bg-gray-900 border-t border-gray-700 px-safe'
-    : 'fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-700 px-safe'
+    : 'fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-700 px-safe pb-safe'
 
   function dismissSyncMessage() {
     if (syncMessageId !== null) {
@@ -918,7 +918,7 @@ export default function App() {
       </header>
 
       {/* Main */}
-      <main className="flex-1 overflow-hidden px-safe">
+      <main className="flex-1 overflow-hidden px-safe md:pb-safe">
         <div className={view === 'collection' ? 'h-full' : 'hidden'}>
           <RecordBrowser
             scope="collection"

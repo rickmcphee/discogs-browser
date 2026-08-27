@@ -73,14 +73,18 @@
 
 /* Safe-area helpers. Tailwind ships no utility for env(), and the alternative
    -- an arbitrary value repeated at each call site -- puts the same expression
-   in a handful of places for a reader to keep in sync. */
-.pt-safe {
+   in a handful of places for a reader to keep in sync. Registered with
+   @utility rather than as plain classes so they accept variants: the content
+   pane needs `md:pb-safe`, because a notched phone in landscape is wider than
+   the breakpoint and so gets the desktop layout, with no tab bar underneath to
+   carry the bottom inset. */
+@utility pt-safe {
   padding-top: env(safe-area-inset-top);
 }
-.pb-safe {
+@utility pb-safe {
   padding-bottom: env(safe-area-inset-bottom);
 }
-.px-safe {
+@utility px-safe {
   padding-inline: env(safe-area-inset-left) env(safe-area-inset-right);
 }
 

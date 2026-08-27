@@ -219,6 +219,18 @@ Out of scope:
   times and forgotten on the next one added. This is exactly the case a
   global element rule is for.
 
+- **The safe-area insets are not a mobile-layout concern.** A notched phone in
+  landscape is 844 px wide — above the breakpoint — so it renders the *desktop*
+  layout while the home indicator is still there. Everything that reaches a
+  screen edge therefore carries its own inset regardless of layout: the header
+  and the content pane, the sheets, the tab bar, and both status bars. Only the
+  content pane's *bottom* inset is variant-gated (`md:pb-safe`), because below
+  the breakpoint the tab bar sits under it and already carries one. The helpers
+  are registered with Tailwind's `@utility` rather than written as plain
+  classes precisely so they can take that variant — and, as a side effect, so
+  they land in the utilities layer instead of silently outranking Tailwind's
+  own padding the way an unlayered rule does.
+
 - **`dvh`, not `vh` or `svh`.** `dvh` tracks the viewport as the URL bar
   retracts and expands, which is what "fill the screen" means on a phone.
   `svh` would leave a permanent gap once the bar retracts. `#root` keeps
