@@ -62,9 +62,15 @@ function renderSettings(overrides: Partial<ComponentProps<typeof Settings>> = {}
       stockSyncBusy={false}
       stockSyncCrawlerId={null}
       onRefreshStoreCrawler={() => {}}
+      priceRefreshBusy={false}
       {...overrides}
     />
   )
+}
+
+async function bulkStockRow(): Promise<HTMLElement> {
+  const description = await screen.findByText('Scan all enabled catalog crawlers immediately.')
+  return description.closest('tr') as HTMLElement
 }
 
 describe('Settings', () => {
@@ -200,11 +206,56 @@ describe('Settings', () => {
   })
 
   it('disables the bulk Store Management Refresh button while a stock sync is running', async () => {
-    renderSettings({ crawlers: CRAWLERS, stockSyncBusy: true })
+    renderSettings({ crawlers: CRAWLERS, stockSyncBusy: true, stockSyncCrawlerId: 3 })
     await waitFor(() => expect(getSettings).toHaveBeenCalled())
-    const description = await screen.findByText('Scan all enabled catalog crawlers immediately.')
-    const row = description.closest('tr') as HTMLElement
-    expect(within(row).getByText('Refresh')).toBeDisabled()
+    expect(within(await bulkStockRow()).getByText('Refresh')).toBeDisabled()
+  })
+
+  it('spins the bulk Store Management Refresh button while the bulk sync itself is running', async () => {
+    renderSettings({ crawlers: CRAWLERS, stockSyncBusy: true, stockSyncCrawlerId: null })
+    await waitFor(() => expect(getSettings).toHaveBeenCalled())
+    const button = within(await bulkStockRow()).getByRole('button')
+    expect(button).toHaveTextContent('Refreshing…')
+    expect(button.querySelector('.animate-spin')).toBeInTheDocument()
+  })
+
+  // A single store's refresh holds the same lock, so the bulk button is
+  // disabled -- but it is not what is running, and labelling it "Refreshing…"
+  // would point at the wrong row.
+  it('leaves the bulk Refresh button unspun while a single store is refreshing', async () => {
+    renderSettings({ crawlers: CRAWLERS, stockSyncBusy: true, stockSyncCrawlerId: 3 })
+    await waitFor(() => expect(getSettings).toHaveBeenCalled())
+    const button = within(await bulkStockRow()).getByRole('button')
+    expect(button).toHaveTextContent('Refresh')
+    expect(button.querySelector('.animate-spin')).not.toBeInTheDocument()
+  })
+
+  it('spins the crawled store\'s own Refresh button and leaves it undimmed', async () => {
+    renderSettings({ crawlers: CATALOG_CRAWLERS_WITH_DISABLED, stockSyncBusy: true, stockSyncCrawlerId: 3 })
+    await waitFor(() => expect(getSettings).toHaveBeenCalled())
+    const button = screen.getByTitle('Refreshing Epitaph catalog…')
+    expect(button.querySelector('.animate-spin')).toBeInTheDocument()
+    expect(button.className).not.toContain('disabled:opacity-30')
+    expect(screen.queryByTitle('Refresh Epitaph catalog now')).not.toBeInTheDocument()
+  })
+
+  it('highlights the row of the store being crawled', async () => {
+    renderSettings({ crawlers: CRAWLERS, stockSyncBusy: true, stockSyncCrawlerId: 3 })
+    await waitFor(() => expect(getSettings).toHaveBeenCalled())
+    const epitaphRow = screen.getByText('Epitaph').closest('tr') as HTMLElement
+    const amazonRow = screen.getByText('Amazon').closest('tr') as HTMLElement
+    expect(epitaphRow.className).toContain('bg-gray-800/60')
+    expect(amazonRow.className).not.toContain('bg-gray-800/60')
+  })
+
+  it('spins the Marketplace Refresh button while its request is in flight', async () => {
+    renderSettings({ crawlers: CRAWLERS, priceRefreshBusy: true })
+    await waitFor(() => expect(getSettings).toHaveBeenCalled())
+    const description = await screen.findByText('Run price crawlers immediately.')
+    const button = within(description.closest('tr') as HTMLElement).getByRole('button')
+    expect(button).toHaveTextContent('Starting…')
+    expect(button).toBeDisabled()
+    expect(button.querySelector('.animate-spin')).toBeInTheDocument()
   })
 
   it('buckets a catalog_browser crawler into the Stores table, not the Marketplaces table', () => {

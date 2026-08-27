@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import App from '../App'
 import { importRecommendationsCsv } from '../api/client'
 import type { Release } from '../api/types'
@@ -15,7 +15,8 @@ class MockEventSource {
   }
 }
 
-const { release } = vi.hoisted(() => ({
+const { release, postCrawlStart } = vi.hoisted(() => ({
+  postCrawlStart: vi.fn(),
   release: {
     discogs_id: 'r1',
     artist: 'Pink Floyd',
@@ -42,7 +43,7 @@ vi.mock('../api/client', () => ({
   refreshCollection: vi.fn().mockResolvedValue({ synced: 0, username: 'test' }),
   getCollectionStatus: vi.fn().mockResolvedValue({ total: 0, last_synced: null }),
   getCrawlStatus: vi.fn().mockResolvedValue({ total: 0, missing: 0, oldest_checked: null }),
-  postCrawlStart: vi.fn().mockResolvedValue({ started: true, running: true }),
+  postCrawlStart: (...args: unknown[]) => postCrawlStart(...args),
   getCrawlers: vi.fn().mockResolvedValue([]),
   openCrawlStream: vi.fn(() => new MockEventSource()),
   getReleases: vi.fn().mockResolvedValue({ total: 1, page: 1, per_page: 50, releases: [release] }),
@@ -83,7 +84,24 @@ beforeEach(() => {
   MockEventSource.instances = []
   vi.clearAllMocks()
   localStorage.clear()
+  postCrawlStart.mockResolvedValue({ enqueued: 0 })
 })
+
+// waitFor and findBy* poll on the clock, so a test that fakes it cannot use
+// them -- and a leaked fake clock times out every test after it.
+afterEach(() => {
+  vi.useRealTimers()
+})
+
+async function clickMarketplaceRefresh() {
+  render(<App />)
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
+  fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+  const description = await screen.findByText('Run price crawlers immediately.')
+  const button = (description.closest('tr') as HTMLElement).querySelector('button') as HTMLButtonElement
+  fireEvent.click(button)
+  return button
+}
 
 async function getCrawlSourceOnMount() {
   await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
@@ -204,6 +222,110 @@ describe('crawl status bar', () => {
 
     await waitFor(() => expect(screen.getByRole('button', { name: 'Collection' })).toBeInTheDocument())
     expect(screen.queryByText('Done')).not.toBeInTheDocument()
+  })
+})
+
+// POST /crawl/start only enqueues, and the worker pool broadcasts no lifecycle
+// event when it later picks the work up, so between the click and the first
+// listing_changed there was nothing at all on screen. The reply's own count is
+// the only confirmation that exists at click time -- and it counts targets
+// requested, not rows inserted, which is what the wording has to say.
+describe('price refresh feedback', () => {
+  it('reports how many records the refresh was requested for', async () => {
+    postCrawlStart.mockResolvedValue({ enqueued: 412 })
+    await clickMarketplaceRefresh()
+    await waitFor(() =>
+      expect(screen.getByText('Price refresh requested for 412 records.')).toBeInTheDocument()
+    )
+  })
+
+  it('says "1 record", not "1 records"', async () => {
+    postCrawlStart.mockResolvedValue({ enqueued: 1 })
+    await clickMarketplaceRefresh()
+    await waitFor(() =>
+      expect(screen.getByText('Price refresh requested for 1 record.')).toBeInTheDocument()
+    )
+  })
+
+  // Zero targets is a successful click with nothing to do, which reads exactly
+  // like a dead button unless it says so.
+  it('says so when a missing-only refresh finds nothing to queue', async () => {
+    postCrawlStart.mockResolvedValue({ enqueued: 0 })
+    await clickMarketplaceRefresh()
+    await waitFor(() =>
+      expect(screen.getByText('Nothing to refresh — every record already has a price.')).toBeInTheDocument()
+    )
+    expect(screen.getByRole('button', { name: /Dismiss/i })).toBeInTheDocument()
+  })
+
+  it('spins the button and says what it is doing while the request is in flight', async () => {
+    let resolve: (value: { enqueued: number }) => void = () => {}
+    postCrawlStart.mockReturnValue(new Promise((r) => { resolve = r }))
+    const button = await clickMarketplaceRefresh()
+
+    await waitFor(() =>
+      expect(screen.getByText('Starting price refresh for records with no price yet…')).toBeInTheDocument()
+    )
+    expect(button).toBeDisabled()
+    expect(button.querySelector('.animate-spin')).toBeInTheDocument()
+
+    resolve({ enqueued: 3 })
+    await waitFor(() => expect(button).not.toBeDisabled())
+    expect(button).toHaveTextContent('Refresh')
+  })
+
+  // The spinner has to describe the message on screen, not "is anything
+  // pending anywhere": a stock sync completing behind a still-in-flight price
+  // request used to leave its completion message spinning with no Dismiss.
+  it('does not spin a finished message just because another request is in flight', async () => {
+    let resolve: (value: { enqueued: number }) => void = () => {}
+    postCrawlStart.mockReturnValue(new Promise((r) => { resolve = r }))
+    await clickMarketplaceRefresh()
+    await waitFor(() =>
+      expect(screen.getByText('Starting price refresh for records with no price yet…')).toBeInTheDocument()
+    )
+    expect(screen.queryByRole('button', { name: /Dismiss/i })).not.toBeInTheDocument()
+
+    // A stock sync finishes while the price request is still unanswered.
+    getLastCrawlSource().emit({ status: 'stock_sync_complete', synced: 12, id: 1 })
+    await waitFor(() => expect(screen.getByText(/In-stock sync complete: 12 items/)).toBeInTheDocument())
+    expect(screen.getByRole('button', { name: /Dismiss/i })).toBeInTheDocument()
+
+    resolve({ enqueued: 3 })
+  })
+
+  // apiFetch wraps a plain fetch with no timeout, so a stalled POST would
+  // otherwise leave the button disabled with no way to retry.
+  it('releases the button when the request never settles', async () => {
+    vi.useFakeTimers()
+    postCrawlStart.mockReturnValue(new Promise(() => {}))
+    render(<App />)
+    const settle = () => act(async () => {})
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await settle()
+    const row = screen.getByText('Run price crawlers immediately.').closest('tr') as HTMLElement
+    const button = row.querySelector('button') as HTMLButtonElement
+    fireEvent.click(button)
+    await settle()
+    expect(button).toBeDisabled()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(20_000) })
+    expect(button).not.toBeDisabled()
+    expect(screen.getByText(
+      'Lost track of the price refresh — check the Logs tab to see whether it started.'
+    )).toBeInTheDocument()
+  })
+
+  it('reports a failed start in the status bar instead of a blocking alert', async () => {
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {})
+    postCrawlStart.mockRejectedValue(new Error('network down'))
+    await clickMarketplaceRefresh()
+    await waitFor(() =>
+      expect(screen.getByText('Price refresh failed to start: network down')).toBeInTheDocument()
+    )
+    expect(alertSpy).not.toHaveBeenCalled()
+    alertSpy.mockRestore()
   })
 })
 
