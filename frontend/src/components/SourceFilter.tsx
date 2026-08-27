@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Crawler, CrawlerGenre } from '../api/types'
 import { navButtonClass } from '../styles/buttons'
+import { useIsMobile } from '../hooks/useMediaQuery'
+import Sheet from './Sheet'
 
 interface Props {
   crawlers: Crawler[]
@@ -39,19 +41,26 @@ function FilterCheckbox({ label, checked, indeterminate, onToggle }: {
 }
 
 function SourceFilter({ crawlers, hiddenCrawlerIds, onChange, disabled = false }: Props) {
+  const isMobile = useIsMobile()
   const [open, setOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    if (!open) return
-    function onMouseDown(e: MouseEvent) {
+    // The mobile sheet has its own backdrop; only the desktop dropdown needs
+    // an outside-click to dismiss it.
+    if (!open || isMobile) return
+    function onMouseDown(e: MouseEvent | TouchEvent) {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
         setOpen(false)
       }
     }
     document.addEventListener('mousedown', onMouseDown)
-    return () => document.removeEventListener('mousedown', onMouseDown)
-  }, [open])
+    document.addEventListener('touchstart', onMouseDown)
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown)
+      document.removeEventListener('touchstart', onMouseDown)
+    }
+  }, [open, isMobile])
 
   const byGenre = new Map<CrawlerGenre, Crawler[]>()
   for (const c of crawlers) {
@@ -86,6 +95,52 @@ function SourceFilter({ crawlers, hiddenCrawlerIds, onChange, disabled = false }
     )
   }
 
+  // One panel, two containers: an anchored dropdown on desktop, a sheet on
+  // mobile. `absolute right-0` aligns to the *trigger*, and in the mobile
+  // toolbar that trigger wraps wherever there is room -- from a left-edge
+  // position it put most of a 288px panel at a negative x, unreachable. A
+  // sheet is anchored to the viewport and is what the artist filter, a list
+  // of exactly the same shape, already uses here.
+  const panel = (
+    <>
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs uppercase tracking-wider text-gray-500">By genre</span>
+        <button type="button" onClick={() => onChange([])} className="text-xs text-gray-400 hover:text-white">
+          Show all
+        </button>
+      </div>
+      {GENRES.map(({ key, label }) => (
+        <FilterCheckbox
+          key={key}
+          label={label}
+          checked={genreState(key) === 'all'}
+          indeterminate={genreState(key) === 'mixed'}
+          onToggle={() => toggleGenre(key)}
+        />
+      ))}
+      <div className="border-t border-gray-800 my-3" />
+      <span className="block text-left text-xs uppercase tracking-wider text-gray-500">By store</span>
+      {GENRES.map(({ key, label }) => {
+        const stores = byGenre.get(key) ?? []
+        if (stores.length === 0) return null
+        return (
+          <div key={key} className="mt-2 text-left">
+            <div className="text-xs text-gray-500 mb-1">{label}</div>
+            {stores.map((c) => (
+              <FilterCheckbox
+                key={c.id}
+                label={c.site_name}
+                checked={!hiddenCrawlerIds.includes(c.id)}
+                indeterminate={false}
+                onToggle={() => toggleStore(c.id)}
+              />
+            ))}
+          </div>
+        )
+      })}
+    </>
+  )
+
   return (
     <div className="relative" ref={containerRef}>
       <button
@@ -94,48 +149,19 @@ function SourceFilter({ crawlers, hiddenCrawlerIds, onChange, disabled = false }
         disabled={disabled}
         aria-expanded={open}
         title={disabled ? 'Loading your source filter…' : undefined}
-        className={`px-3 py-1.5 text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed ${navButtonClass(open || hiddenCrawlerIds.length > 0)}`}
+        className={`h-11 px-3 text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed md:h-auto md:py-1.5 ${navButtonClass(open || hiddenCrawlerIds.length > 0)}`}
       >
         Source
       </button>
-      {open && !disabled && (
+      {open && !disabled && !isMobile && (
         <div className="absolute right-0 mt-2 w-72 max-h-[28rem] overflow-y-auto rounded-xl border border-gray-700 bg-gray-900 shadow-xl z-50 p-3 text-sm">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs uppercase tracking-wider text-gray-500">By genre</span>
-            <button type="button" onClick={() => onChange([])} className="text-xs text-gray-400 hover:text-white">
-              Show all
-            </button>
-          </div>
-          {GENRES.map(({ key, label }) => (
-            <FilterCheckbox
-              key={key}
-              label={label}
-              checked={genreState(key) === 'all'}
-              indeterminate={genreState(key) === 'mixed'}
-              onToggle={() => toggleGenre(key)}
-            />
-          ))}
-          <div className="border-t border-gray-800 my-3" />
-          <span className="block text-left text-xs uppercase tracking-wider text-gray-500">By store</span>
-          {GENRES.map(({ key, label }) => {
-            const stores = byGenre.get(key) ?? []
-            if (stores.length === 0) return null
-            return (
-              <div key={key} className="mt-2 text-left">
-                <div className="text-xs text-gray-500 mb-1">{label}</div>
-                {stores.map((c) => (
-                  <FilterCheckbox
-                    key={c.id}
-                    label={c.site_name}
-                    checked={!hiddenCrawlerIds.includes(c.id)}
-                    indeterminate={false}
-                    onToggle={() => toggleStore(c.id)}
-                  />
-                ))}
-              </div>
-            )
-          })}
+          {panel}
         </div>
+      )}
+      {isMobile && (
+        <Sheet open={open && !disabled} onClose={() => setOpen(false)} label="Filter by source">
+          <div className="p-3 pb-4 text-sm">{panel}</div>
+        </Sheet>
       )}
     </div>
   )
