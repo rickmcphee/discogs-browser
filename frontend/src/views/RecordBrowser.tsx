@@ -1,9 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { getReleases, getArtists } from '../api/client'
 import type { Release, SortField, SortOrder, RecordScope } from '../api/types'
-import { navButtonClass, dismissButtonClass } from '../styles/buttons'
+import { dismissButtonClass, navButtonClass } from '../styles/buttons'
 import { textInputClass, selectClass } from '../styles/inputs'
 import { reconcileSelectedArtist } from './artistSelection'
+import { useIsMobile } from '../hooks/useMediaQuery'
+import { ArtistSidebar, ArtistSheetButton } from '../components/ArtistFilter'
+import MobileSort, { type SortOption } from '../components/MobileSort'
 
 interface Props {
   scope: RecordScope
@@ -13,12 +16,13 @@ interface Props {
   hasPriceField?: boolean
 }
 
-// Rendered from both the tile and table branches below, which would otherwise
+// Rendered from the tile, card and table branches below, which would otherwise
 // hold identical copies that drift apart.
 const WANTLIST_EMPTY = 'No wantlist items yet. Add records to your wantlist on Discogs, then sync.'
 const COLLECTION_EMPTY = 'No records found. Click the sync icon above to load your collection from Discogs.'
 
 export default function RecordBrowser({ scope, syncing, onRefreshCollection, syncGeneration, hasPriceField = true }: Props) {
+  const isMobile = useIsMobile()
   const [releases, setReleases] = useState<Release[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -129,96 +133,112 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
 
   const totalPages = Math.ceil(total / PER_PAGE)
 
+  // The card list has no column headers to click, so the same fields the
+  // headers expose reach the same toggleSort through a select instead.
+  const sortOptions: SortOption<SortField>[] = [
+    { field: 'artist', label: 'Artist' },
+    { field: 'title', label: 'Title' },
+    { field: 'year', label: 'Year' },
+    { field: 'label', label: 'Label' },
+    { field: 'format', label: 'Format' },
+    ...(hasPriceField ? [{ field: 'discogs_price', label: 'Price' } as SortOption<SortField>] : []),
+    { field: 'date_added', label: 'Date Added' },
+  ]
+  const emptyMessage = scope === 'wantlist' ? WANTLIST_EMPTY : COLLECTION_EMPTY
+
   const sortButtonClass = 'w-full px-3 py-2 cursor-pointer hover:text-white select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/80'
 
   return (
     <div className="flex h-full overflow-hidden">
-      {/* Sidebar */}
-      <aside className="w-48 bg-gray-900 border-r border-gray-800 flex flex-col shrink-0 min-h-0">
-        <div className="px-3 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider border-b border-gray-800 shrink-0">Artist</div>
-        <div className="flex flex-col gap-2 overflow-y-auto p-3">
-          <button
-            onClick={() => selectArtist('')}
-            className={`shrink-0 text-left text-sm px-2 py-1 ${navButtonClass(!selectedArtist)}`}
-          >
-            All
-          </button>
-          {artists.map((a) => (
-            <button
-              key={a}
-              onClick={() => selectArtist(a)}
-              className={`shrink-0 text-left text-sm px-2 py-1 truncate ${navButtonClass(selectedArtist === a)}`}
-            >
-              {a}
-            </button>
-          ))}
-        </div>
-      </aside>
+      {/* Sidebar. On a phone 192px is half the viewport spent permanently on a
+          filter that is set once, so it moves into a sheet behind a toolbar
+          button -- rendered instead of the sidebar, never alongside it. */}
+      {!isMobile && (
+        <ArtistSidebar artists={artists} selected={selectedArtist} onSelect={selectArtist} />
+      )}
 
       {/* Main */}
-      <div className="flex-1 flex flex-col overflow-hidden">
-        {/* Search bar */}
-        <div className="px-4 py-3 border-b border-gray-800 bg-gray-950 flex items-center">
-          <div className="relative w-full max-w-md">
-            <input
-              type="text"
-              placeholder="Search artist or title…"
-              value={search}
-              onChange={(e) => { setSearch(e.target.value); setPage(1) }}
-              className={`w-full px-3 py-1.5 pr-8 text-sm ${textInputClass()}`}
-            />
-            <button
-              onClick={() => { setSearch(''); setPage(1) }}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
-            >
-              ✕
-            </button>
-          </div>
-          <span className="ml-3 text-xs text-gray-500">{total} records</span>
-          <div className="ml-auto flex items-center gap-1">
-            {scope === 'collection' && (
-              <select
-                value={unmatched ? 'unmatched' : 'all'}
-                onChange={(e) => { setUnmatched(e.target.value === 'unmatched'); setPage(1) }}
-                className={`px-3 py-1 text-sm ${selectClass()}`}
-              >
-                <option value="all">All</option>
-                <option value="unmatched">Unmatched</option>
-              </select>
-            )}
-            <button
-              onClick={() => setViewMode('list')}
-              title="List view"
-              className={`p-1.5 ${navButtonClass(viewMode === 'list')}`}
-            >
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-                <line x1="2" y1="4" x2="14" y2="4" />
-                <line x1="2" y1="8" x2="14" y2="8" />
-                <line x1="2" y1="12" x2="14" y2="12" />
-              </svg>
-            </button>
-            <button
-              onClick={() => setViewMode('tiles')}
-              title="Tile view"
-              className={`p-1.5 ${navButtonClass(viewMode === 'tiles')}`}
-            >
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-                <rect x="2" y="2" width="5" height="5" />
-                <rect x="9" y="2" width="5" height="5" />
-                <rect x="2" y="9" width="5" height="5" />
-                <rect x="9" y="9" width="5" height="5" />
-              </svg>
-            </button>
-            {onRefreshCollection && (
+      <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+        {/* Toolbar. One row on desktop; on mobile the search takes a row of its
+            own and everything else wraps beneath it. `md:contents` dissolves
+            the mobile grouping wrapper above the breakpoint, so the count and
+            the control cluster stay direct children of the same flex row they
+            are today. */}
+        <div className="px-3 py-2 border-b border-gray-800 bg-gray-950 flex flex-col gap-2 md:flex-row md:items-center md:gap-0 md:px-4 md:py-3">
+          {/* The count rides on the search line rather than the control line:
+              it is the one thing here that is not a control, and giving it a
+              row of its own cost the list a row of chrome. */}
+          <div className="flex w-full items-center gap-3 md:contents">
+            <div className="relative flex-1 md:w-full md:max-w-md md:flex-initial">
+              <input
+                type="text"
+                placeholder="Search artist or title…"
+                value={search}
+                onChange={(e) => { setSearch(e.target.value); setPage(1) }}
+                className={`w-full px-3 py-2 pr-11 text-sm md:py-1.5 md:pr-8 ${textInputClass()}`}
+              />
               <button
-                onClick={onRefreshCollection}
-                disabled={syncing}
-                title={scope === 'wantlist' ? 'Sync wantlist from Discogs' : 'Sync collection from Discogs'}
-                className={`p-1.5 disabled:opacity-30 disabled:cursor-not-allowed ${navButtonClass(false)}`}
+                onClick={() => { setSearch(''); setPage(1) }}
+                aria-label="Clear search"
+                className="absolute right-0 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center text-gray-500 hover:text-gray-300 md:right-3 md:h-auto md:w-auto"
               >
-                <span className="block text-base leading-none">{syncing ? '⟳' : '↻'}</span>
+                <span aria-hidden="true">✕</span>
               </button>
+            </div>
+            <span className="shrink-0 text-xs text-gray-500 md:ml-3 md:shrink">{total} records</span>
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5 md:contents">
+            {isMobile && (
+              <ArtistSheetButton artists={artists} selected={selectedArtist} onSelect={selectArtist} />
             )}
+            <div className="contents md:ml-auto md:flex md:items-center md:gap-1">
+              {isMobile && viewMode === 'list' && (
+                <MobileSort options={sortOptions} sort={sort} order={order} onSort={toggleSort} />
+              )}
+              {scope === 'collection' && (
+                <select
+                  value={unmatched ? 'unmatched' : 'all'}
+                  onChange={(e) => { setUnmatched(e.target.value === 'unmatched'); setPage(1) }}
+                  className={`px-3 py-2 text-sm md:py-1 ${selectClass()}`}
+                >
+                  <option value="all">All</option>
+                  <option value="unmatched">Unmatched</option>
+                </select>
+              )}
+              <button
+                onClick={() => setViewMode('list')}
+                title="List view"
+                className={`w-11 h-11 flex items-center justify-center md:w-auto md:h-auto md:p-1.5 ${navButtonClass(viewMode === 'list')}`}
+              >
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <line x1="2" y1="4" x2="14" y2="4" />
+                  <line x1="2" y1="8" x2="14" y2="8" />
+                  <line x1="2" y1="12" x2="14" y2="12" />
+                </svg>
+              </button>
+              <button
+                onClick={() => setViewMode('tiles')}
+                title="Tile view"
+                className={`w-11 h-11 flex items-center justify-center md:w-auto md:h-auto md:p-1.5 ${navButtonClass(viewMode === 'tiles')}`}
+              >
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <rect x="2" y="2" width="5" height="5" />
+                  <rect x="9" y="2" width="5" height="5" />
+                  <rect x="2" y="9" width="5" height="5" />
+                  <rect x="9" y="9" width="5" height="5" />
+                </svg>
+              </button>
+              {onRefreshCollection && (
+                <button
+                  onClick={onRefreshCollection}
+                  disabled={syncing}
+                  title={scope === 'wantlist' ? 'Sync wantlist from Discogs' : 'Sync collection from Discogs'}
+                  className={`w-11 h-11 flex items-center justify-center disabled:opacity-30 disabled:cursor-not-allowed md:w-auto md:h-auto md:p-1.5 ${navButtonClass(false)}`}
+                >
+                  <span className="block text-base leading-none">{syncing ? '⟳' : '↻'}</span>
+                </button>
+              )}
+            </div>
           </div>
         </div>
 
@@ -226,12 +246,12 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
         {viewMode === 'tiles' && (
           <div className="flex-1 overflow-auto" ref={tableScrollRef}>
             {hasLoaded && releases.length === 0 && (
-              <div className="text-center py-8 text-gray-500">
-                {scope === 'wantlist' ? WANTLIST_EMPTY : COLLECTION_EMPTY}
+              <div className="text-center py-8 px-4 text-gray-500 md:px-0">
+                {emptyMessage}
               </div>
             )}
             {releases.length > 0 && (
-              <div className="grid gap-4 p-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))' }}>
+              <div className="grid gap-3 p-3 md:gap-4 md:p-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))' }}>
                 {releases.map((r) => (
                   <div key={r.discogs_id}>
                     <a href={r.discogs_url} target="_blank" rel="noreferrer" aria-label={`View ${r.artist} – ${r.title} on Discogs`}>
@@ -265,8 +285,58 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
           </div>
         )}
 
+        {/* Card list. Replaces the table below the breakpoint rather than
+            side-scrolling it: artist and title are what a row *is*, and the
+            other columns are annotations on that, which a card can say with
+            hierarchy and a seven-column table two swipes wide cannot. */}
+        {viewMode === 'list' && isMobile && (
+          <div className="flex-1 overflow-auto" ref={tableScrollRef}>
+            {hasLoaded && releases.length === 0 && (
+              <div className="text-center py-8 px-4 text-gray-500">{emptyMessage}</div>
+            )}
+            <ul className="divide-y divide-gray-800">
+              {releases.map((r) => {
+                const meta = [
+                  r.year ?? null,
+                  r.label || null,
+                  r.format || null,
+                  hasPriceField ? r.discogs_price ?? null : null,
+                ].filter(Boolean).join(' · ')
+                return (
+                  <li key={r.discogs_id} className="flex items-center gap-3 px-3 py-2 text-left">
+                    <a
+                      href={r.discogs_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      aria-label={`View ${r.artist} – ${r.title} on Discogs`}
+                      className="shrink-0"
+                    >
+                      {r.cover_image_url ? (
+                        <img src={r.cover_image_url} alt={r.title} className="w-14 h-14 object-cover rounded" />
+                      ) : (
+                        <div className="w-14 h-14 bg-gray-800 rounded" />
+                      )}
+                    </a>
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm text-gray-200">{r.artist}</div>
+                      {r.plex_url ? (
+                        <a href={r.plex_url} target="_blank" rel="noreferrer" className="block truncate text-sm text-gray-300 hover:text-white">
+                          {r.title}
+                        </a>
+                      ) : (
+                        <div className="truncate text-sm text-gray-300">{r.title}</div>
+                      )}
+                      {meta && <div className="truncate text-xs text-gray-500">{meta}</div>}
+                    </div>
+                  </li>
+                )
+              })}
+            </ul>
+          </div>
+        )}
+
         {/* Table */}
-        {viewMode === 'list' && (
+        {viewMode === 'list' && !isMobile && (
         <div className="flex-1 overflow-auto" ref={tableScrollRef}>
           <table className="w-full text-sm border-collapse">
             <thead className="sticky top-0 bg-gray-900 text-xs text-gray-400 uppercase">
@@ -336,7 +406,7 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
               {hasLoaded && releases.length === 0 && (
                 <tr>
                   <td colSpan={hasPriceField ? 8 : 7} className="text-center py-8 text-gray-500">
-                    {scope === 'wantlist' ? WANTLIST_EMPTY : COLLECTION_EMPTY}
+                    {emptyMessage}
                   </td>
                 </tr>
               )}
@@ -383,11 +453,11 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
 
         {/* Pagination */}
         {totalPages > 1 && (
-          <div className="border-t border-gray-800 px-4 py-2 flex items-center gap-2 text-sm text-gray-400">
+          <div className="border-t border-gray-800 px-4 py-2 flex items-center justify-center gap-2 text-sm text-gray-400 md:justify-start">
             <button
               onClick={() => setPage((p) => Math.max(1, p - 1))}
               disabled={page === 1}
-              className={`px-2 py-1 disabled:opacity-40 ${dismissButtonClass()}`}
+              className={`px-4 py-3 disabled:opacity-40 md:px-2 md:py-1 ${dismissButtonClass()}`}
             >
               ← Prev
             </button>
@@ -395,7 +465,7 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
             <button
               onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
               disabled={page === totalPages}
-              className={`px-2 py-1 disabled:opacity-40 ${dismissButtonClass()}`}
+              className={`px-4 py-3 disabled:opacity-40 md:px-2 md:py-1 ${dismissButtonClass()}`}
             >
               Next →
             </button>

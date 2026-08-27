@@ -53,7 +53,7 @@ Out of scope:
 ## Decisions carried from brainstorming
 
 - **Store scope only**, not Track. Asked and confirmed with the user.
-- **Both list and tile views** get the bookmark icon, not list-only.
+- **Both list and tile views** get the bookmark icon, not list-only. (2026-08-27, branch `claude/mobile-optimized-web-qmv4u4`: and the mobile card list, which replaces the table below 768px, carries it too — as one of the card's two right-hand actions beside the cost link. See [`2026-08-27-mobile-web-experience-design.md`](2026-08-27-mobile-web-experience-design.md).)
   Asked and confirmed with the user.
 - **Unsaving under the Saved filter removes the row immediately** (no lag
   until next reload). Asked and confirmed with the user — standard

@@ -128,6 +128,20 @@ their left. Since both Store and Track render `StockBrowser` with the same
 `hiddenCrawlerIds`/`onToggleCrawlerView` props already, the button and its
 dropdown are just one more prop pair — no per-scope logic needed.
 
+**Amendment (2026-08-27, branch `claude/mobile-optimized-web-qmv4u4`):** that
+group is now `contents md:ml-auto md:flex md:items-center md:gap-2` — identical
+above 768px, and `display: contents` below it so its buttons wrap as part of the
+toolbar's own row rather than as a block that overflows a phone. The Source
+button's position relative to the toggles is unchanged.
+
+The panel below the breakpoint is **not** the dropdown described here: it is a
+viewport-anchored sheet. `absolute right-0` aligns to the trigger, and once
+that trigger wraps to the left edge of a phone's toolbar the panel starts at a
+negative x — measured at −203px of its 288px on a 390px viewport, most of the
+store list unreachable. Clamping the width does not help, because the overflow
+is on the left. Desktop keeps this dropdown, at its original `w-72`. See
+[`2026-08-27-mobile-web-experience-design.md`](../../specifications/shaping/2026-08-27-mobile-web-experience-design.md).
+
 **Dropdown panel**, opened by the Source button:
 - *By genre* — 5 rows (Marketplace, Punk, Metal, Rock, Pop), each a
   tri-state checkbox computed from the crawler list + hidden set (checked =

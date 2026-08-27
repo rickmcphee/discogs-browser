@@ -20,3 +20,25 @@ if (typeof window.localStorage === 'undefined') {
   Object.defineProperty(window, 'localStorage', { value: new MemoryStorage() })
   Object.defineProperty(globalThis, 'localStorage', { value: window.localStorage })
 }
+
+// jsdom implements no media queries at all, so useMediaQuery's own fallback
+// would already report "not mobile" for the whole suite. Defining the stub
+// anyway pins that default down where it can be read, and gives the mobile
+// tests one thing to point at a width instead of inventing the API each time.
+// Every existing file keeps rendering the desktop tree, unedited.
+if (typeof window.matchMedia === 'undefined') {
+  Object.defineProperty(window, 'matchMedia', {
+    writable: true,
+    configurable: true,
+    value: (query: string): MediaQueryList => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    }),
+  })
+}

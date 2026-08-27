@@ -3,6 +3,7 @@ import { getSettings, saveSettings, setCrawlerEnabled } from '../api/client'
 import type { Settings as SettingsType, Crawler } from '../api/types'
 import { navButtonClass, secondaryButtonClass } from '../styles/buttons'
 import { textInputClass, selectClass } from '../styles/inputs'
+import { stackedTableClass, stackedBodyClass, stackedRowClass, stackedCellClass } from '../styles/tables'
 
 interface SettingRow {
   key: keyof SettingsType
@@ -125,11 +126,11 @@ function Settings({
 
   function renderSettingRow(row: SettingRow, first: boolean) {
     return (
-      <tr key={row.key} className="border-b border-gray-800/50">
-        <td className={`py-3 pr-4 text-left text-gray-300 font-medium align-top whitespace-nowrap${first ? ' w-40' : ''}`}>
+      <tr key={row.key} className={`border-b border-gray-800/50 ${stackedRowClass}`}>
+        <td className={`pt-3 pb-1 text-left text-gray-300 font-medium align-top whitespace-nowrap md:py-3 md:pr-4 ${stackedCellClass}${first ? ' md:w-40' : ''}`}>
           {row.label}
         </td>
-        <td className={`py-3 pr-4 text-left align-top${first ? ' w-64' : ''}`}>
+        <td className={`pb-2 text-left align-top md:py-3 md:pr-4 ${stackedCellClass}${first ? ' md:w-64' : ''}`}>
           {row.type === 'number' ? (
             <input
               type="number"
@@ -154,7 +155,7 @@ function Settings({
             />
           )}
         </td>
-        <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+        <td className={`pb-3 text-left text-gray-500 text-xs align-top leading-relaxed md:py-3 ${stackedCellClass}`}>
           {row.description}
         </td>
       </tr>
@@ -166,8 +167,10 @@ function Settings({
       return <p className="text-gray-500 text-sm text-left mt-4">{emptyMessage}</p>
     }
     return (
-      <table className="w-full text-sm border-collapse mt-4">
-        <thead>
+      <table className="w-full text-sm border-collapse mt-4 block md:table">
+        {/* The stacked mobile row labels its own "Last run" inline; the toggle
+            and the refresh icon say what they are. */}
+        <thead className="hidden md:table-header-group">
           <tr className="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-800">
             <th className="text-left py-2 pr-4 w-40">Site</th>
             {isAdmin && <th className="text-left py-2 pr-4 w-48">Last run</th>}
@@ -175,7 +178,7 @@ function Settings({
             {isAdmin && showRefresh && <th className="text-left py-2 w-24">Refresh</th>}
           </tr>
         </thead>
-        <tbody>
+        <tbody className={stackedBodyClass}>
           {crawlerList.map((c) => {
             // The row actually being scanned must not be dimmed by the same
             // disabled styling as the rows merely waiting on it. It inverts to
@@ -183,8 +186,11 @@ function Settings({
             // one thing in the table that stands out.
             const refreshing = showRefresh && stockSyncCrawlerId === c.id
             return (
-              <tr key={c.id} className={`border-b border-gray-800/50${refreshing ? ' bg-gray-800/60' : ''}`}>
-                <td className="py-3 pr-4 text-left text-gray-200 font-medium">
+              // Below the breakpoint the row is a flex line -- site name and its
+              // two controls together, the last-run timestamp wrapped onto its
+              // own line under them by `order-last basis-full`.
+              <tr key={c.id} className={`flex flex-wrap items-center gap-x-3 border-b border-gray-800/50 py-2 md:table-row md:py-0${refreshing ? ' bg-gray-800/60' : ''}`}>
+                <td className="min-w-0 flex-1 text-left text-gray-200 font-medium md:table-cell md:py-3 md:pr-4">
                   {c.base_url
                     ? <a href={c.base_url} target="_blank" rel="noreferrer"
                          title={c.genre_summary ?? undefined}
@@ -192,12 +198,13 @@ function Settings({
                     : <span title={c.genre_summary ?? undefined}>{c.site_name}</span>}
                 </td>
                 {isAdmin && (
-                  <td className="py-3 pr-4 text-left text-gray-500 text-xs">
+                  <td className="order-last basis-full text-left text-gray-500 text-xs md:table-cell md:order-none md:basis-auto md:py-3 md:pr-4">
+                    <span className="md:hidden">Last run: </span>
                     {c.last_run ? new Date(c.last_run).toLocaleString() : '—'}
                   </td>
                 )}
                 {isAdmin && (
-                  <td className="py-3 pr-4 text-left">
+                  <td className="text-left md:table-cell md:py-3 md:pr-4">
                     <button
                       onClick={() => handleToggleCrawler(c)}
                       className={toggleButtonClass(c.enabled)}
@@ -212,14 +219,14 @@ function Settings({
                   </td>
                 )}
                 {isAdmin && showRefresh && (
-                  <td className="py-3 text-left">
+                  <td className="text-left md:table-cell md:py-3">
                     <button
                       onClick={() => onRefreshStoreCrawler(c.id)}
                       disabled={!c.enabled || stockSyncBusy}
                       title={refreshing
                         ? `Refreshing ${c.site_name} catalog…`
                         : `Refresh ${c.site_name} catalog now`}
-                      className={`p-1.5 ${refreshing
+                      className={`flex h-11 w-11 items-center justify-center md:h-auto md:w-auto md:p-1.5 ${refreshing
                         ? navButtonClass(true)
                         : `disabled:opacity-30 disabled:cursor-not-allowed ${navButtonClass(false)}`}`}
                     >
@@ -285,7 +292,7 @@ function Settings({
   }
 
   return (
-    <div className="max-w-3xl mx-auto p-6 space-y-10">
+    <div className="max-w-3xl mx-auto p-4 space-y-8 md:p-6 md:space-y-10">
 
       {/* Crawler Management */}
       <section>
@@ -300,16 +307,16 @@ function Settings({
         {isAdmin && settingsSaveError && <p className="text-xs text-red-400 mb-3 text-left">{settingsSaveError}</p>}
         {isAdmin && (
           <>
-            <table className="w-full text-sm border-collapse mb-4">
-              <tbody>
+            <table className={`mb-4 ${stackedTableClass}`}>
+              <tbody className={stackedBodyClass}>
                 {CRAWLER_SETTING_ROWS.map((row, i) => renderSettingRow(row, i === 0))}
               </tbody>
             </table>
-            <table className="w-full text-sm border-collapse">
-              <tbody>
-                <tr className="border-b border-gray-800/50">
-                  <td className="py-3 pr-4 text-left text-gray-300 font-medium align-top whitespace-nowrap w-40">Schedule</td>
-                  <td className="py-3 pr-4 text-left align-top w-64">
+            <table className={stackedTableClass}>
+              <tbody className={stackedBodyClass}>
+                <tr className={`border-b border-gray-800/50 ${stackedRowClass}`}>
+                  <td className={`pt-3 pb-1 text-left text-gray-300 font-medium align-top whitespace-nowrap md:py-3 md:pr-4 md:w-40 ${stackedCellClass}`}>Schedule</td>
+                  <td className={`pb-2 text-left align-top md:py-3 md:pr-4 md:w-64 ${stackedCellClass}`}>
                     <input
                       type="text"
                       value={settings.crawl_schedule ?? ''}
@@ -318,13 +325,13 @@ function Settings({
                       className={`w-full px-3 py-1 font-mono text-xs ${textInputClass()}`}
                     />
                   </td>
-                  <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                  <td className={`pb-3 text-left text-gray-500 text-xs align-top leading-relaxed md:py-3 ${stackedCellClass}`}>
                     Cron expression (5 fields: min hour day month weekday). Empty = disabled.
                   </td>
                 </tr>
-                <tr className="border-b border-gray-800/50">
-                  <td className="py-3 pr-4 text-left text-gray-300 font-medium align-top whitespace-nowrap">Mode</td>
-                  <td className="py-3 pr-4 text-left align-top">
+                <tr className={`border-b border-gray-800/50 ${stackedRowClass}`}>
+                  <td className={`pt-3 pb-1 text-left text-gray-300 font-medium align-top whitespace-nowrap md:py-3 md:pr-4 ${stackedCellClass}`}>Mode</td>
+                  <td className={`pb-2 text-left align-top md:py-3 md:pr-4 ${stackedCellClass}`}>
                     <select
                       value={settings.crawl_schedule_mode ?? 'missing'}
                       onChange={(e) => setSettings({ ...settings, crawl_schedule_mode: e.target.value as 'missing' | 'all' })}
@@ -334,13 +341,13 @@ function Settings({
                       <option value="all">All records</option>
                     </select>
                   </td>
-                  <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                  <td className={`pb-3 text-left text-gray-500 text-xs align-top leading-relaxed md:py-3 ${stackedCellClass}`}>
                     What to crawl on each scheduled run.
                   </td>
                 </tr>
-                <tr className="border-b border-gray-800/50">
-                  <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
-                  <td className="py-3 pr-4 text-left align-top">
+                <tr className={`border-b border-gray-800/50 ${stackedRowClass}`}>
+                  <td className={`hidden md:table-cell md:py-3 md:pr-4 md:align-top md:w-40`}></td>
+                  <td className={`pb-2 text-left align-top md:py-3 md:pr-4 ${stackedCellClass}`}>
                     <button
                       onClick={() => onRefreshPrices(settings.crawl_schedule_mode as 'missing' | 'all' ?? 'missing')}
                       disabled={priceRefreshBusy}
@@ -350,7 +357,7 @@ function Settings({
                       {priceRefreshBusy ? 'Starting…' : 'Refresh'}
                     </button>
                   </td>
-                  <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                  <td className={`pb-3 text-left text-gray-500 text-xs align-top leading-relaxed md:py-3 ${stackedCellClass}`}>
                     Run price crawlers immediately.
                   </td>
                 </tr>
@@ -372,11 +379,11 @@ function Settings({
             : 'Choose which stores\' items you want to see in the Store tab.'}
         </p>
         {isAdmin && (
-          <table className="w-full text-sm border-collapse">
-            <tbody>
-              <tr className="border-b border-gray-800/50">
-                <td className="py-3 pr-4 text-left text-gray-300 font-medium align-top whitespace-nowrap w-40">Schedule</td>
-                <td className="py-3 pr-4 text-left align-top w-64">
+          <table className={stackedTableClass}>
+            <tbody className={stackedBodyClass}>
+              <tr className={`border-b border-gray-800/50 ${stackedRowClass}`}>
+                <td className={`pt-3 pb-1 text-left text-gray-300 font-medium align-top whitespace-nowrap md:py-3 md:pr-4 md:w-40 ${stackedCellClass}`}>Schedule</td>
+                <td className={`pb-2 text-left align-top md:py-3 md:pr-4 md:w-64 ${stackedCellClass}`}>
                   <input
                     type="text"
                     value={settings.stock_schedule ?? ''}
@@ -385,13 +392,13 @@ function Settings({
                     className={`w-full px-3 py-1 font-mono text-xs ${textInputClass()}`}
                   />
                 </td>
-                <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                <td className={`pb-3 text-left text-gray-500 text-xs align-top leading-relaxed md:py-3 ${stackedCellClass}`}>
                   Cron expression (5 fields: min hour day month weekday). Empty = disabled.
                 </td>
               </tr>
-              <tr className="border-b border-gray-800/50">
-                <td className="py-3 pr-4 text-left align-top whitespace-nowrap w-40"></td>
-                <td className="py-3 pr-4 text-left align-top">
+              <tr className={`border-b border-gray-800/50 ${stackedRowClass}`}>
+                <td className={`hidden md:table-cell md:py-3 md:pr-4 md:align-top md:w-40`}></td>
+                <td className={`pb-2 text-left align-top md:py-3 md:pr-4 ${stackedCellClass}`}>
                   <button
                     onClick={onRefreshStock}
                     disabled={stockSyncBusy}
@@ -403,7 +410,7 @@ function Settings({
                     {bulkStockRefreshing ? 'Refreshing…' : 'Refresh'}
                   </button>
                 </td>
-                <td className="py-3 text-left text-gray-500 text-xs align-top leading-relaxed">
+                <td className={`pb-3 text-left text-gray-500 text-xs align-top leading-relaxed md:py-3 ${stackedCellClass}`}>
                   Scan all enabled catalog crawlers immediately.
                 </td>
               </tr>

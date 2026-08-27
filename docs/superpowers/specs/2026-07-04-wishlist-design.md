@@ -136,6 +136,12 @@ the reuse the original ask was after.
 - `App.tsx`: `View` union gains `'wishlist'`. Header renders `Collection` and
   `Wishlist` buttons in a left-aligned `<nav>`, `Settings` and `Logs` in a second,
   right-aligned `<nav>` (`ml-auto`), per the approved header mockup.
+
+  **Amendment (2026-08-27, branch `claude/mobile-optimized-web-qmv4u4`):** that
+  header holds at 768px and up. Below it the library tabs move to a bottom tab
+  bar, the admin tabs move behind a header overflow menu, and the sidebar and
+  sortable columns named below become a sheet and a sort select — so "everything
+  else … unchanged" is a claim about the desktop layout only. See [`2026-08-27-mobile-web-experience-design.md`](../../specifications/shaping/2026-08-27-mobile-web-experience-design.md).
 - `CollectionBrowser.tsx` is renamed to `RecordBrowser.tsx` and takes a new
   `scope: 'collection' | 'wishlist'` prop, threaded into its `getReleases`/
   `getArtists` calls. Everything else — search bar, sidebar, list/tile toggle,

@@ -143,13 +143,14 @@ function LogViewer() {
             value={msgFilter}
             onChange={(e) => setMsgFilter(e.target.value)}
             placeholder="Filter message (regexp)…"
-            className={`w-full px-3 py-0.5 pr-7 ${textInputClass(regexError)}`}
+            className={`w-full px-3 py-0.5 pr-11 md:pr-7 ${textInputClass(regexError)}`}
           />
           <button
             onClick={() => setMsgFilter('')}
-            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
+            aria-label="Clear message filter"
+            className="absolute right-0 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center text-gray-500 hover:text-gray-300 md:right-2.5 md:h-auto md:w-auto"
           >
-            ✕
+            <span aria-hidden="true">✕</span>
           </button>
         </div>
 
@@ -172,6 +173,12 @@ function LogViewer() {
         </div>
       </div>
 
+      {/* Header strip and rows share one horizontal scroller with one
+          min-width, so the columns stay in step as it scrolls. Above the
+          breakpoint the min-width resolves to 100% and nothing scrolls
+          sideways at all. */}
+      <div className="flex-1 min-h-0 overflow-x-auto overflow-y-hidden">
+      <div className="flex h-full min-w-[52rem] flex-col md:min-w-full">
       {/* Column headers */}
       <div className="flex gap-0 px-4 py-1 border-b border-gray-800 text-gray-600 select-none">
         <span className="w-36 shrink-0">Time</span>
@@ -182,7 +189,7 @@ function LogViewer() {
       </div>
 
       {/* Log rows */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 min-h-0 overflow-y-auto">
         {filtered.length === 0 && (
           <div className="px-4 py-4 text-gray-600 italic">No log entries.</div>
         )}
@@ -202,15 +209,18 @@ function LogViewer() {
                   href={screenshotUrl(e.screenshotPath)}
                   target="_blank"
                   rel="noreferrer"
-                  className="ml-2 text-gray-400 hover:text-white transition-colors"
+                  aria-label="View screenshot"
+                  className="ml-2 inline-flex h-11 w-11 items-center justify-center align-middle text-gray-400 hover:text-white transition-colors md:inline md:h-auto md:w-auto md:align-baseline"
                   title="View screenshot"
                 >
-                  📷
+                  <span aria-hidden="true">📷</span>
                 </a>
               )}
             </span>
           </div>
         ))}
+      </div>
+      </div>
       </div>
 
     </div>

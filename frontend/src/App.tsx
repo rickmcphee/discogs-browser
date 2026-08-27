@@ -9,12 +9,33 @@ import LoginScreen from './views/LoginScreen'
 import InviteCodeScreen from './views/InviteCodeScreen'
 import BackendDownScreen from './views/BackendDownScreen'
 import Avatar from './components/Avatar'
+import BottomNav from './components/BottomNav'
+import Sheet from './components/Sheet'
+import { useIsMobile } from './hooks/useMediaQuery'
 import { navButtonClass, primaryButtonClass, secondaryButtonClass, dismissButtonClass } from './styles/buttons'
 import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, clearJudgments, exportRecommendationsCsv, importRecommendationsCsv, getCrawlers, getUserSettings, getUserHiddenCrawlers, postUserHiddenCrawlers, getJudgmentStatus, getPriceStatus, checkHealth, getAuthStatus, setUnauthorizedHandler, hasAvatar } from './api/client'
 import type { StockSyncStartResult } from './api/client'
 import type { CrawlEvent, CrawlStatus, CollectionStatus, Crawler, AuthStatus } from './api/types'
 
 type View = 'collection' | 'wantlist' | 'store' | 'track' | 'settings' | 'logs' | 'queue' | 'account'
+type LibraryView = Extract<View, 'collection' | 'wantlist' | 'store' | 'track'>
+
+// One table drives the desktop header pills and the mobile tab bar, so the two
+// cannot end up offering different sets of tabs.
+const LIBRARY_TABS: { view: LibraryView; label: string; icon: 'collection' | 'wantlist' | 'store' | 'track' }[] = [
+  { view: 'collection', label: 'Collection', icon: 'collection' },
+  { view: 'wantlist', label: 'Wantlist', icon: 'wantlist' },
+  { view: 'store', label: 'Store', icon: 'store' },
+  { view: 'track', label: 'Track', icon: 'track' },
+]
+
+// Admin-only, and rarely visited -- header pills on desktop, an overflow sheet
+// on mobile, where the header has room for a title and two controls.
+const ADMIN_TABS: { view: View; label: string }[] = [
+  { view: 'queue', label: 'Queue' },
+  { view: 'logs', label: 'Logs' },
+  { view: 'settings', label: 'Settings' },
+]
 
 // SSE reconnects (including on browser refresh) replay every buffered event from
 // crawl_manager._recent, so a banner's dismissal has to survive across that replay.
@@ -75,6 +96,11 @@ function reportStockSyncRejection(
 
 export default function App() {
   const [view, setView] = useState<View>('collection')
+  const isMobile = useIsMobile()
+  // Mobile-only state, and the sheet holding it unmounts at the breakpoint --
+  // so without this a menu left open in portrait quietly reopens itself on the
+  // way back from landscape.
+  const [adminMenuOpen, setAdminMenuOpen] = useState(false)
   const [crawling, setCrawling] = useState(false)
   const [crawlBannerId, setCrawlBannerId] = useState(0)
   const [dismissedCrawlId, setDismissedCrawlId] = useState(() => Number(localStorage.getItem(DISMISSED_CRAWL_KEY) ?? 0))
@@ -754,6 +780,10 @@ export default function App() {
     }
   }, [setSyncStatus])
 
+  useEffect(() => {
+    if (!isMobile) setAdminMenuOpen(false)
+  }, [isMobile])
+
   // useCallback keeps this referentially stable across renders so it doesn't
   // defeat Account's memo() — see viewRenderChurn.test.tsx, which asserts
   // Account isn't re-invoked on every crawl SSE event.
@@ -769,7 +799,7 @@ export default function App() {
     return <BackendDownScreen />
   }
   if (authState === null) {
-    return <div className="min-h-screen flex items-center justify-center text-gray-500">Loading…</div>
+    return <div className="min-h-dvh flex items-center justify-center text-gray-500">Loading…</div>
   }
   if (authState.state !== 'authenticated' && signupToken) {
     return (
@@ -805,6 +835,10 @@ export default function App() {
   const syncBannerVisible = syncMessage !== null && (syncMessageId === null || syncMessageId > dismissedSyncId)
   const crawlBannerVisible = crawlBannerId > dismissedCrawlId
 
+  const bannerShellClass = isMobile
+    ? 'shrink-0 bg-gray-900 border-t border-gray-700 px-safe'
+    : 'fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-700 px-safe pb-safe'
+
   function dismissSyncMessage() {
     if (syncMessageId !== null) {
       localStorage.setItem(DISMISSED_SYNC_KEY, String(syncMessageId))
@@ -819,81 +853,72 @@ export default function App() {
   }
 
   return (
-    <div className="h-screen bg-gray-950 text-gray-100 flex flex-col overflow-hidden">
+    <div className="h-dvh bg-gray-950 text-gray-100 flex flex-col overflow-hidden">
       {/* Wrapper is `inert` while the backend is confirmed down, or while a
           post-recovery session revalidation is still in flight, so a
           keyboard or screen-reader user can't tab into the frozen app
           underneath the BackendDownScreen overlay. `display: contents` keeps
           it invisible to layout -- header/main/etc. stay direct flex
-          children of the h-screen container above. */}
+          children of the h-dvh container above. */}
       <div inert={backendUp === false || authRevalidating} className="contents">
-      {/* Header */}
-      <header className="bg-gray-900 border-b border-gray-800 px-6 py-3 flex items-center gap-4">
-        <nav className="flex gap-2">
-          <button
-            onClick={() => setView('collection')}
-            className={`px-3 py-1.5 text-sm font-medium ${navButtonClass(view === 'collection')}`}
-          >
-            Collection
-          </button>
-          <button
-            onClick={() => setView('wantlist')}
-            className={`px-3 py-1.5 text-sm font-medium ${navButtonClass(view === 'wantlist')}`}
-          >
-            Wantlist
-          </button>
-          <button
-            onClick={() => setView('store')}
-            className={`px-3 py-1.5 text-sm font-medium ${navButtonClass(view === 'store')}`}
-          >
-            Store
-          </button>
-          <button
-            onClick={() => setView('track')}
-            className={`px-3 py-1.5 text-sm font-medium ${navButtonClass(view === 'track')}`}
-          >
-            Track
-          </button>
-        </nav>
-        <nav className="flex items-center gap-2 ml-auto">
-          {showAdminNav && (
-            <button
-              onClick={() => setView('queue')}
-              className={`px-3 py-1.5 text-sm font-medium ${navButtonClass(view === 'queue')}`}
-            >
-              Queue
-            </button>
+      {/* Header. The safe-area insets sit on the <header> and the padding on the
+          row inside it, so the two compose instead of one overriding the other
+          -- the bar's background still paints under the notch. */}
+      <header className="bg-gray-900 border-b border-gray-800 pt-safe px-safe">
+        <div className="flex items-center gap-3 px-4 py-3 md:gap-4 md:px-6">
+          {isMobile ? (
+            <span className="text-sm font-semibold text-gray-200">Track Tempest</span>
+          ) : (
+            <nav className="flex gap-2">
+              {LIBRARY_TABS.map((tab) => (
+                <button
+                  key={tab.view}
+                  onClick={() => setView(tab.view)}
+                  className={`px-3 py-1.5 text-sm font-medium ${navButtonClass(view === tab.view)}`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </nav>
           )}
-          {showAdminNav && (
+          <nav className="flex items-center gap-1 ml-auto md:gap-2">
+            {showAdminNav && (isMobile ? (
+              <button
+                onClick={() => setAdminMenuOpen(true)}
+                aria-label="More"
+                aria-expanded={adminMenuOpen}
+                className={`w-11 h-11 flex items-center justify-center ${
+                  navButtonClass(adminMenuOpen || ADMIN_TABS.some((tab) => tab.view === view))
+                }`}
+              >
+                <span aria-hidden="true" className="text-lg leading-none">⋯</span>
+              </button>
+            ) : (
+              ADMIN_TABS.map((tab) => (
+                <button
+                  key={tab.view}
+                  onClick={() => setView(tab.view)}
+                  className={`px-3 py-1.5 text-sm font-medium ${navButtonClass(view === tab.view)}`}
+                >
+                  {tab.label}
+                </button>
+              ))
+            ))}
             <button
-              onClick={() => setView('logs')}
-              className={`px-3 py-1.5 text-sm font-medium ${navButtonClass(view === 'logs')}`}
+              onClick={() => setView('account')}
+              aria-label="Profile"
+              className={`w-11 h-11 md:w-8 md:h-8 rounded-full overflow-hidden flex items-center justify-center transition-colors ${
+                view === 'account' ? 'ring-2 ring-white' : 'hover:ring-2 hover:ring-gray-600'
+              }`}
             >
-              Logs
+              <Avatar version={avatarVersion} size="sm" />
             </button>
-          )}
-          {showAdminNav && (
-            <button
-              onClick={() => setView('settings')}
-              className={`px-3 py-1.5 text-sm font-medium ${navButtonClass(view === 'settings')}`}
-            >
-              Settings
-            </button>
-          )}
-          <button
-            onClick={() => setView('account')}
-            aria-label="Profile"
-            className={`w-8 h-8 rounded-full overflow-hidden flex items-center justify-center transition-colors ${
-              view === 'account' ? 'ring-2 ring-white' : 'hover:ring-2 hover:ring-gray-600'
-            }`}
-          >
-            <Avatar version={avatarVersion} size="sm" />
-          </button>
-        </nav>
+          </nav>
+        </div>
       </header>
 
       {/* Main */}
-      <main className="flex-1 overflow-hidden">
+      <main className="flex-1 overflow-hidden px-safe md:pb-safe">
         <div className={view === 'collection' ? 'h-full' : 'hidden'}>
           <RecordBrowser
             scope="collection"
@@ -956,10 +981,92 @@ export default function App() {
         {showAdminNav && view === 'queue' && <div className="h-full"><QueueView /></div>}
       </main>
 
+      {/* Collection sync status bar. The live region stays mounted even when
+          the banner is not: assistive technology does not reliably announce a
+          role="status" element inserted together with its text, so the first
+          confirmation after a click would be the one that went unheard. */}
+      <div role="status" className="shrink-0">
+      {syncBannerVisible && (
+        <div className={bannerShellClass}>
+          <div className="px-4 py-2 flex flex-wrap items-center gap-x-3 gap-y-1 md:flex-nowrap">
+            <span className="text-sm font-medium text-gray-300 md:shrink-0">
+              {syncMessage}
+            </span>
+            {syncBusy && (
+              <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin shrink-0" />
+            )}
+            {!syncBusy && (
+              <button
+                onClick={dismissSyncMessage}
+                className={`ml-auto px-3 py-1 text-sm shrink-0 ${dismissButtonClass()}`}
+              >
+                Dismiss
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+      </div>
+
+      {/* Crawl status bar */}
+      {crawlBannerVisible && !syncBannerVisible && (
+        <div className={bannerShellClass}>
+          <div className="px-4 py-2 flex flex-wrap items-center gap-x-3 gap-y-1 md:flex-nowrap">
+            <span className="text-sm font-medium text-gray-300 md:shrink-0">
+              {crawling ? 'Refreshing prices…' : 'Done'}
+            </span>
+            {crawling && crawlCurrent && (
+              <span className="text-sm text-gray-400 truncate">
+                {crawlTotal > 0 ? `${crawlCount}/${crawlTotal}: ` : ''}
+                <span className="text-gray-200">{crawlCurrent.artist} — {crawlCurrent.release}</span>
+                {' '}on{' '}
+                <span className="text-gray-300">{crawlCurrent.site}</span>
+              </span>
+            )}
+            {!crawling && (
+              <button
+                onClick={dismissCrawlBanner}
+                className={`ml-auto px-3 py-1 text-sm shrink-0 ${dismissButtonClass()}`}
+              >
+                Dismiss
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Mobile tab bar. Rendered instead of the header's library nav, never
+          alongside it: a second set of buttons named Collection/Wantlist/...
+          would land in the accessibility tree twice. */}
+      {isMobile && (
+        <BottomNav
+          tabs={LIBRARY_TABS}
+          active={view as LibraryView}
+          onSelect={(next) => setView(next)}
+        />
+      )}
+
+      {/* Admin overflow menu */}
+      {isMobile && showAdminNav && (
+        <Sheet open={adminMenuOpen} onClose={() => setAdminMenuOpen(false)} label="Admin sections">
+          <div className="flex flex-col p-2 pb-4">
+            {ADMIN_TABS.map((tab) => (
+              <button
+                key={tab.view}
+                onClick={() => { setView(tab.view); setAdminMenuOpen(false) }}
+                className={`px-4 py-3 text-left text-base font-medium ${navButtonClass(view === tab.view)}`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        </Sheet>
+      )}
+
       {/* Collection refresh modal */}
       {collectionStatus && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-          <div className="bg-gray-900 border border-gray-700 rounded-xl shadow-xl p-6 w-96 max-w-full mx-4">
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-900 border border-gray-700 rounded-xl shadow-xl p-6 w-full max-w-sm">
             <h2 className="text-white font-semibold text-lg mb-2">Collection already loaded</h2>
             <p className="text-gray-400 text-sm mb-1">
               <span className="text-white font-medium">{collectionStatus.total}</span> records in your collection.
@@ -969,7 +1076,7 @@ export default function App() {
                 Last synced: {new Date(collectionStatus.last_synced).toLocaleString()}
               </p>
             )}
-            <div className="flex gap-3">
+            <div className="flex flex-col gap-3 md:flex-row">
               <button
                 onClick={() => startRefresh('new')}
                 className={`flex-1 px-4 py-2 text-sm ${primaryButtonClass()}`}
@@ -997,8 +1104,8 @@ export default function App() {
 
       {/* Checkpoint modal */}
       {checkpointStatus && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-          <div className="bg-gray-900 border border-gray-700 rounded-xl shadow-xl p-6 w-96 max-w-full mx-4">
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-900 border border-gray-700 rounded-xl shadow-xl p-6 w-full max-w-sm">
             <h2 className="text-white font-semibold text-lg mb-2">Resume previous run?</h2>
             <p className="text-gray-400 text-sm mb-1">
               <span className="text-white font-medium">{checkpointStatus.missing}</span> of{' '}
@@ -1009,7 +1116,7 @@ export default function App() {
                 Last updated: {new Date(checkpointStatus.oldest_checked).toLocaleString()}
               </p>
             )}
-            <div className="flex gap-3">
+            <div className="flex flex-col gap-3 md:flex-row">
               <button
                 onClick={() => startCrawl(undefined, 'missing')}
                 className={`flex-1 px-4 py-2 text-sm ${primaryButtonClass()}`}
@@ -1042,55 +1149,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Collection sync status bar. The live region stays mounted even when
-          the banner is not: assistive technology does not reliably announce a
-          role="status" element inserted together with its text, so the first
-          confirmation after a click would be the one that went unheard. */}
-      <div role="status">
-      {syncBannerVisible && (
-        <div className="fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-700 px-4 py-2 flex items-center gap-3">
-          <span className="text-sm font-medium text-gray-300 shrink-0">
-            {syncMessage}
-          </span>
-          {syncBusy && (
-            <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin shrink-0" />
-          )}
-          {!syncBusy && (
-            <button
-              onClick={dismissSyncMessage}
-              className={`ml-auto px-3 py-1 text-sm shrink-0 ${dismissButtonClass()}`}
-            >
-              Dismiss
-            </button>
-          )}
-        </div>
-      )}
-      </div>
-
-      {/* Crawl status bar */}
-      {crawlBannerVisible && !syncBannerVisible && (
-        <div className="fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-700 px-4 py-2 flex items-center gap-3">
-          <span className="text-sm font-medium text-gray-300 shrink-0">
-            {crawling ? 'Refreshing prices…' : 'Done'}
-          </span>
-          {crawling && crawlCurrent && (
-            <span className="text-sm text-gray-400 truncate">
-              {crawlTotal > 0 ? `${crawlCount}/${crawlTotal}: ` : ''}
-              <span className="text-gray-200">{crawlCurrent.artist} — {crawlCurrent.release}</span>
-              {' '}on{' '}
-              <span className="text-gray-300">{crawlCurrent.site}</span>
-            </span>
-          )}
-          {!crawling && (
-            <button
-              onClick={dismissCrawlBanner}
-              className={`ml-auto px-3 py-1 text-sm shrink-0 ${dismissButtonClass()}`}
-            >
-              Dismiss
-            </button>
-          )}
-        </div>
-      )}
       </div>
 
       {/* Backend down overlay -- shown on top of the still-mounted (but now

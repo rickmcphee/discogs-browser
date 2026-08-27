@@ -1,0 +1,489 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { act, render, renderHook, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import App from '../App'
+import RecordBrowser from '../views/RecordBrowser'
+import StockBrowser from '../views/StockBrowser'
+import Settings from '../views/Settings'
+import LogViewer from '../views/LogViewer'
+import { useIsMobile } from '../hooks/useMediaQuery'
+import type { Crawler } from '../api/types'
+
+class MockEventSource {
+  onmessage: ((e: MessageEvent) => void) | null = null
+  onerror: (() => void) | null = null
+  close = vi.fn()
+}
+
+const { getAuthStatus, getReleases, getArtists, getStock, getStockArtists, saveStockItem, openLogsStream } = vi.hoisted(() => ({
+  getAuthStatus: vi.fn(),
+  getReleases: vi.fn(),
+  getArtists: vi.fn(),
+  getStock: vi.fn(),
+  getStockArtists: vi.fn(),
+  saveStockItem: vi.fn(),
+  openLogsStream: vi.fn(),
+}))
+
+vi.mock('../api/client', () => ({
+  checkHealth: vi.fn().mockResolvedValue(true),
+  getAuthStatus,
+  setUnauthorizedHandler: vi.fn(),
+  getUserHiddenCrawlers: vi.fn().mockResolvedValue([]),
+  postUserHiddenCrawlers: vi.fn().mockResolvedValue(undefined),
+  refreshCollection: vi.fn().mockResolvedValue({ synced: 0, username: 'test' }),
+  getCollectionStatus: vi.fn().mockResolvedValue({ total: 0, last_synced: null }),
+  getCrawlStatus: vi.fn().mockResolvedValue({ total: 0, missing: 0, oldest_checked: null }),
+  postCrawlStart: vi.fn().mockResolvedValue({ started: true, running: true }),
+  getCrawlers: vi.fn().mockResolvedValue([]),
+  openCrawlStream: vi.fn(() => new MockEventSource()),
+  getReleases,
+  getArtists,
+  getSettings: vi.fn().mockResolvedValue({
+    crawl_delay_seconds: 30, consecutive_failure_limit: 10, crawl_schedule: '',
+    crawl_schedule_mode: 'missing', ebay_app_id: '', ebay_cert_id: '', stock_schedule: '',
+  }),
+  getUserSettings: vi.fn().mockResolvedValue({ anthropic_api_key: '', recommendation_item_limit: 300, plex_base_url: '', plex_token: '', plex_match_threshold: 90 }),
+  saveUserSettings: vi.fn(),
+  saveSettings: vi.fn(),
+  setCrawlerEnabled: vi.fn(),
+  logout: vi.fn(),
+  hasAvatar: vi.fn().mockResolvedValue(false),
+  uploadAvatar: vi.fn(),
+  deleteAvatar: vi.fn(),
+  avatarUrl: vi.fn((v: number) => `/api/auth/avatar?v=${v}`),
+  openLogsStream,
+  screenshotUrl: vi.fn((path: string) => `/api/screenshots/${path}`),
+  clearLogs: vi.fn(),
+  getStock,
+  getStockArtists,
+  saveStockItem,
+  unsaveStockItem: vi.fn().mockResolvedValue(undefined),
+  postStockSyncStart: vi.fn().mockResolvedValue({ started: true, running: true }),
+  postJudgmentStart: vi.fn().mockResolvedValue({ started: true, running: true }),
+  clearJudgments: vi.fn(),
+  exportRecommendationsCsv: vi.fn(),
+  importRecommendationsCsv: vi.fn(),
+  getJudgmentStatus: vi.fn().mockResolvedValue({ any_judged: false }),
+  getPriceStatus: vi.fn().mockResolvedValue({ any_price_paid: false }),
+  listInvites: vi.fn().mockResolvedValue([]),
+  createInvite: vi.fn().mockResolvedValue({ code: '' }),
+  getQueueSummary: vi.fn().mockResolvedValue(null),
+  getQueueNext: vi.fn().mockResolvedValue([]),
+}))
+
+const PHONE_WIDTH = 390
+const DESKTOP_WIDTH = 1280
+const defaultMatchMedia = window.matchMedia
+
+// The hook only ever asks a max-width question, so honouring that one form is
+// enough to put a render on either side of the breakpoint. Listeners are kept
+// so `resizeTo` can drive a real crossing -- a stub that only answers
+// `matches` can place a render on one side or the other but never move it.
+type MediaListener = (event: MediaQueryListEvent) => void
+const mediaListeners = new Set<{ query: string; fn: MediaListener }>()
+let viewportWidth = PHONE_WIDTH
+
+function queryMatches(query: string, width: number): boolean {
+  const max = /max-width:\s*(\d+)px/.exec(query)
+  return max ? width <= Number(max[1]) : false
+}
+
+function setViewportWidth(width: number) {
+  viewportWidth = width
+  mediaListeners.clear()
+  window.matchMedia = ((query: string) => ({
+    get matches() { return queryMatches(query, viewportWidth) },
+    media: query,
+    onchange: null,
+    addEventListener: (_: string, fn: MediaListener) => { mediaListeners.add({ query, fn }) },
+    removeEventListener: (_: string, fn: MediaListener) => {
+      for (const entry of mediaListeners) if (entry.fn === fn) mediaListeners.delete(entry)
+    },
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => false,
+  }) as unknown as MediaQueryList) as typeof window.matchMedia
+}
+
+function resizeTo(width: number) {
+  viewportWidth = width
+  act(() => {
+    for (const { query, fn } of mediaListeners) {
+      fn({ matches: queryMatches(query, width), media: query } as MediaQueryListEvent)
+    }
+  })
+}
+
+const release = {
+  discogs_id: 'r1', artist: 'Pink Floyd', title: 'The Wall', year: 1979, label: 'Harvest',
+  format: 'Vinyl', discogs_price: null, cover_image_url: 'https://x/cover.jpg',
+  discogs_url: 'https://discogs.com/r1', plex_url: null, plex_matched_at: null,
+  last_synced: '', date_added: null,
+}
+
+const crawlers = [
+  { id: 1, site_name: 'Nuclear Blast', base_url: 'https://shop.nuclearblast.com', enabled: true, crawler_type: 'catalog', genre: 'metal', last_run: null, genre_summary: null },
+  { id: 2, site_name: 'Amazon', base_url: 'https://amazon.com', enabled: true, crawler_type: 'release', genre: 'marketplace', last_run: null, genre_summary: null },
+] as unknown as Crawler[]
+
+const stockItem = {
+  id: 1, item_key: 'k1', is_own: true, artist: 'Rob Zombie', title: 'The Great Satan',
+  format: 'Vinyl', price: 31.99, currency: 'USD', url: 'https://shop.example/rz',
+  cover_image_url: null, source: 'Nuclear Blast', last_seen: '2026-07-05T00:00:00Z',
+  discogs_price: null, saved: false,
+}
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  localStorage.clear()
+  openLogsStream.mockImplementation(() => new MockEventSource())
+  getAuthStatus.mockResolvedValue({ state: 'authenticated', user: { discogs_username: 'test', is_admin: true } })
+  getReleases.mockResolvedValue({ total: 0, page: 1, per_page: 250, releases: [] })
+  getArtists.mockResolvedValue([])
+  getStock.mockResolvedValue({ total: 0, page: 1, per_page: 250, items: [] })
+  getStockArtists.mockResolvedValue([])
+  saveStockItem.mockResolvedValue(undefined)
+  setViewportWidth(PHONE_WIDTH)
+})
+
+afterEach(() => {
+  window.matchMedia = defaultMatchMedia
+})
+
+describe('useIsMobile', () => {
+  it('falls back to the desktop layout when the browser has no matchMedia', () => {
+    // Restored by afterEach; the fallback is what keeps every other test file
+    // rendering the desktop tree it was written against.
+    ;(window as unknown as { matchMedia: undefined }).matchMedia = undefined
+    const { result } = renderHook(() => useIsMobile())
+    expect(result.current).toBe(false)
+  })
+
+  it('reports mobile below the breakpoint and desktop at it', () => {
+    setViewportWidth(767)
+    expect(renderHook(() => useIsMobile()).result.current).toBe(true)
+    setViewportWidth(768)
+    expect(renderHook(() => useIsMobile()).result.current).toBe(false)
+  })
+})
+
+describe('mobile app shell', () => {
+  it('moves the library tabs into a bottom bar rather than duplicating them', async () => {
+    render(<App />)
+    const bar = await screen.findByRole('navigation', { name: 'Sections' })
+    for (const label of ['Collection', 'Wantlist', 'Store', 'Track']) {
+      expect(within(bar).getByRole('button', { name: label })).toBeInTheDocument()
+      // One button per tab in the whole document -- a second, hidden copy in
+      // the header would be announced by a screen reader and matched by find.
+      expect(screen.getAllByRole('button', { name: label })).toHaveLength(1)
+    }
+  })
+
+  it('marks the tab the app is actually on, and follows a tap to another', async () => {
+    render(<App />)
+    const bar = await screen.findByRole('navigation', { name: 'Sections' })
+    expect(within(bar).getByRole('button', { name: 'Collection' })).toHaveAttribute('aria-current', 'page')
+
+    fireEvent.click(within(bar).getByRole('button', { name: 'Store' }))
+    await waitFor(() =>
+      expect(within(bar).getByRole('button', { name: 'Store' })).toHaveAttribute('aria-current', 'page')
+    )
+    expect(within(bar).getByRole('button', { name: 'Collection' })).not.toHaveAttribute('aria-current')
+  })
+
+  it('keeps the desktop header nav at desktop widths', async () => {
+    setViewportWidth(DESKTOP_WIDTH)
+    render(<App />)
+    await screen.findByRole('button', { name: 'Collection' })
+    expect(screen.queryByRole('navigation', { name: 'Sections' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument()
+  })
+
+  it('reaches the admin tabs through the header overflow menu', async () => {
+    render(<App />)
+    const more = await screen.findByRole('button', { name: 'More' })
+    // The admin tabs are behind the menu, not merely restyled, so nothing
+    // named Settings exists until it is opened.
+    expect(screen.queryByRole('button', { name: 'Settings' })).not.toBeInTheDocument()
+
+    fireEvent.click(more)
+    const menu = screen.getByRole('dialog', { name: 'Admin sections' })
+    fireEvent.click(within(menu).getByRole('button', { name: 'Settings' }))
+
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Admin sections' })).not.toBeInTheDocument())
+    const heading = screen.getByRole('heading', { name: 'Marketplace Management' })
+    expect(heading.closest('div.hidden')).toBeNull()
+  })
+
+  it('drops a menu left open in portrait rather than reopening it on the way back', async () => {
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'More' }))
+    expect(screen.getByRole('dialog', { name: 'Admin sections' })).toBeInTheDocument()
+
+    // Rotating past the breakpoint unmounts the sheet and its trigger; the
+    // state behind them has to go with it, or the menu reappears unasked on
+    // the way back to portrait.
+    resizeTo(DESKTOP_WIDTH)
+    await screen.findByRole('button', { name: 'Settings' })
+    expect(screen.queryByRole('dialog', { name: 'Admin sections' })).not.toBeInTheDocument()
+
+    resizeTo(PHONE_WIDTH)
+    await screen.findByRole('button', { name: 'More' })
+    expect(screen.queryByRole('dialog', { name: 'Admin sections' })).not.toBeInTheDocument()
+  })
+
+  it('gives a non-admin no overflow menu to open', async () => {
+    getAuthStatus.mockResolvedValue({ state: 'authenticated', user: { discogs_username: 'test', is_admin: false } })
+    render(<App />)
+    await screen.findByRole('navigation', { name: 'Sections' })
+    expect(screen.queryByRole('button', { name: 'More' })).not.toBeInTheDocument()
+  })
+})
+
+describe('mobile RecordBrowser', () => {
+  it('renders rows as cards instead of a table, with the columns folded into a meta line', async () => {
+    getReleases.mockResolvedValue({ total: 1, page: 1, per_page: 250, releases: [release] })
+    render(<RecordBrowser scope="collection" />)
+    await screen.findByText('The Wall')
+    expect(screen.queryByRole('table')).not.toBeInTheDocument()
+    expect(screen.getByText('Pink Floyd')).toBeInTheDocument()
+    expect(screen.getByText('1979 · Harvest · Vinyl')).toBeInTheDocument()
+    expect(screen.getByAltText('The Wall').closest('a')).toHaveAttribute('href', 'https://discogs.com/r1')
+  })
+
+  it('replaces the artist sidebar with a sheet that applies its selection', async () => {
+    getReleases.mockResolvedValue({ total: 1, page: 1, per_page: 250, releases: [release] })
+    getArtists.mockResolvedValue(['Pink Floyd'])
+    const { container } = render(<RecordBrowser scope="collection" />)
+    await screen.findByText('The Wall')
+    expect(container.querySelector('aside')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Artist: All' }))
+    const sheet = screen.getByRole('dialog', { name: 'Filter by artist' })
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Pink Floyd' }))
+
+    await waitFor(() =>
+      expect(getReleases).toHaveBeenCalledWith(expect.objectContaining({ artist: 'Pink Floyd' }))
+    )
+    expect(screen.queryByRole('dialog', { name: 'Filter by artist' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Artist: Pink Floyd' })).toBeInTheDocument()
+  })
+
+  it('keeps the sidebar and the table at desktop widths', async () => {
+    setViewportWidth(DESKTOP_WIDTH)
+    getReleases.mockResolvedValue({ total: 1, page: 1, per_page: 250, releases: [release] })
+    const { container } = render(<RecordBrowser scope="collection" />)
+    await screen.findByText('The Wall')
+    expect(container.querySelector('aside')).not.toBeNull()
+    expect(screen.getByRole('table')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Sort by')).not.toBeInTheDocument()
+  })
+
+  it('sorts from the toolbar control the cards leave in place of column headers', async () => {
+    getReleases.mockResolvedValue({ total: 1, page: 1, per_page: 250, releases: [release] })
+    render(<RecordBrowser scope="collection" />)
+    await screen.findByText('The Wall')
+
+    fireEvent.change(screen.getByLabelText('Sort by'), { target: { value: 'year' } })
+    await waitFor(() =>
+      expect(getReleases).toHaveBeenCalledWith(expect.objectContaining({ sort: 'year', order: 'asc' }))
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sort descending by Year' }))
+    await waitFor(() =>
+      expect(getReleases).toHaveBeenCalledWith(expect.objectContaining({ sort: 'year', order: 'desc' }))
+    )
+  })
+
+  it('drops the price sort option when there is no price column to sort by', async () => {
+    render(<RecordBrowser scope="collection" hasPriceField={false} />)
+    await waitFor(() => expect(getReleases).toHaveBeenCalled())
+    const options = within(screen.getByLabelText('Sort by')).getAllByRole('option').map((o) => o.textContent)
+    expect(options).toContain('By artist')
+    expect(options).not.toContain('By price')
+  })
+})
+
+describe('mobile sheets', () => {
+  it('moves focus into the sheet, keeps Tab inside it, and hands focus back on close', async () => {
+    getReleases.mockResolvedValue({ total: 1, page: 1, per_page: 250, releases: [release] })
+    getArtists.mockResolvedValue(['Pink Floyd', 'Converge'])
+    render(<RecordBrowser scope="collection" />)
+    await screen.findByText('The Wall')
+
+    const trigger = screen.getByRole('button', { name: 'Artist: All' })
+    trigger.focus()
+    fireEvent.click(trigger)
+
+    const sheet = screen.getByRole('dialog', { name: 'Filter by artist' })
+    expect(sheet).toHaveFocus()
+
+    // Tab from the panel wraps to the last control inside it rather than
+    // walking into the app behind the overlay `aria-modal` claims to seal.
+    const options = within(sheet).getAllByRole('button')
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true })
+    expect(options[options.length - 1]).toHaveFocus()
+    options[options.length - 1].focus()
+    fireEvent.keyDown(document, { key: 'Tab' })
+    expect(options[0]).toHaveFocus()
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Filter by artist' })).not.toBeInTheDocument())
+    expect(trigger).toHaveFocus()
+  })
+
+  it('opens the source filter as a sheet, not a dropdown anchored to a wrapped trigger', async () => {
+    render(<StockBrowser crawlers={crawlers} hiddenCrawlerIds={[]} onHiddenCrawlerIdsChange={() => {}} />)
+    await waitFor(() => expect(getStock).toHaveBeenCalled())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Source' }))
+    const sheet = screen.getByRole('dialog', { name: 'Filter by source' })
+    expect(within(sheet).getByRole('checkbox', { name: 'Nuclear Blast' })).toBeInTheDocument()
+    // `absolute right-0` aligns to the trigger, which on a phone wraps to
+    // wherever there is room -- from the left edge that put most of the panel
+    // off screen. The sheet is anchored to the viewport instead.
+    expect(within(sheet).getByRole('checkbox', { name: 'Nuclear Blast' }).closest('.absolute')).toBeNull()
+  })
+
+  it('keeps the source dropdown anchored to its trigger at desktop widths', async () => {
+    setViewportWidth(DESKTOP_WIDTH)
+    render(<StockBrowser crawlers={crawlers} hiddenCrawlerIds={[]} onHiddenCrawlerIdsChange={() => {}} />)
+    await waitFor(() => expect(getStock).toHaveBeenCalled())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Source' }))
+    expect(screen.queryByRole('dialog', { name: 'Filter by source' })).not.toBeInTheDocument()
+    expect(screen.getByRole('checkbox', { name: 'Nuclear Blast' }).closest('.absolute.right-0')).not.toBeNull()
+  })
+  it('offers a named close control, since the backdrop is pointer-only and Escape may not be available', async () => {
+    render(<StockBrowser crawlers={crawlers} hiddenCrawlerIds={[]} onHiddenCrawlerIdsChange={() => {}} />)
+    await waitFor(() => expect(getStock).toHaveBeenCalled())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Source' }))
+    const sheet = screen.getByRole('dialog', { name: 'Filter by source' })
+    // The source sheet is a multi-select and stays open when an option is
+    // toggled, so it is the one with no incidental way out.
+    fireEvent.click(within(sheet).getByRole('checkbox', { name: 'Nuclear Blast' }))
+    expect(screen.getByRole('dialog', { name: 'Filter by source' })).toBeInTheDocument()
+
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Close' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Filter by source' })).not.toBeInTheDocument())
+  })
+})
+
+describe('mobile touch targets', () => {
+  it('gives the clear-search button a name and a 44px hit area', async () => {
+    render(<RecordBrowser scope="collection" />)
+    await waitFor(() => expect(getReleases).toHaveBeenCalled())
+    const clear = screen.getByRole('button', { name: 'Clear search' })
+    expect(clear).toHaveClass('h-11', 'w-11')
+    expect(screen.getByPlaceholderText('Search artist or title…')).toHaveClass('pr-11')
+  })
+
+  it("gives Settings' per-store refresh icon a 44px box in the stacked mobile row", async () => {
+    render(
+      <Settings
+        crawlers={crawlers}
+        onCrawlersChange={() => {}}
+        onRefreshPrices={() => {}}
+        onRefreshStock={() => {}}
+        isAdmin
+        stockSyncBusy={false}
+        stockSyncCrawlerId={null}
+        onRefreshStoreCrawler={() => {}}
+        priceRefreshBusy={false}
+      />
+    )
+    const refresh = await screen.findByTitle('Refresh Nuclear Blast catalog now')
+    expect(refresh).toHaveClass('h-11', 'w-11')
+  })
+
+  it('sizes the tile bookmark for touch', async () => {
+    localStorage.setItem('collectionViewMode_store', 'tiles')
+    getStock.mockResolvedValue({ total: 1, page: 1, per_page: 250, items: [stockItem] })
+    render(<StockBrowser />)
+    const bookmark = await screen.findByRole('button', { name: 'Save for later' })
+    expect(bookmark).toHaveClass('h-11', 'w-11')
+  })
+
+  it("names and sizes LogViewer's per-row screenshot link", async () => {
+    let emit: ((e: { data: string }) => void) | null = null
+    openLogsStream.mockImplementation(() => {
+      const src = { onmessage: null as null | ((e: { data: string }) => void), onerror: null, close: () => {} }
+      queueMicrotask(() => { emit = src.onmessage })
+      return src
+    })
+    render(<LogViewer />)
+    await waitFor(() => expect(emit).not.toBeNull())
+    act(() => emit!({ data: JSON.stringify({
+      id: 1, time: '04:00:00', level: 'ERROR', logger: 'crawler', machine: 'm1',
+      message: 'Bot interstitial SCREENSHOT:20260827/shot.png',
+    }) }))
+    const link = await screen.findByRole('link', { name: 'View screenshot' })
+    expect(link).toHaveClass('h-11', 'w-11')
+  })
+
+  it("names and sizes LogViewer's filter-clear control", async () => {
+    render(<LogViewer />)
+    const clear = await screen.findByRole('button', { name: 'Clear message filter' })
+    expect(clear).toHaveClass('h-11', 'w-11')
+    expect(screen.getByPlaceholderText('Filter message (regexp)…')).toHaveClass('pr-11')
+  })
+
+  it("sizes a sheet's close button like every other mobile icon control", async () => {
+    getArtists.mockResolvedValue(['Pink Floyd'])
+    render(<RecordBrowser scope="collection" />)
+    await waitFor(() => expect(getArtists).toHaveBeenCalled())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Artist: All' }))
+    const sheet = screen.getByRole('dialog', { name: 'Filter by artist' })
+    expect(within(sheet).getByRole('button', { name: 'Close' })).toHaveClass('h-11', 'w-11')
+  })
+})
+
+describe('mobile StockBrowser', () => {
+  it('renders the recommendation reason, which on touch has no hover to reveal it', async () => {
+    getStock.mockResolvedValue({
+      total: 1, page: 1, per_page: 250,
+      items: [{ ...stockItem, reason: 'Shares a label and era with three records you own.' }],
+    })
+    render(<StockBrowser />)
+    await screen.findByText('The Great Satan')
+    expect(screen.getByText('Shares a label and era with three records you own.')).toBeInTheDocument()
+  })
+
+  it('renders cards keeping the cost link and the save button as the row actions', async () => {
+    getStock.mockResolvedValue({ total: 1, page: 1, per_page: 250, items: [stockItem] })
+    render(<StockBrowser />)
+    await screen.findByText('The Great Satan')
+    expect(screen.queryByRole('table')).not.toBeInTheDocument()
+    expect(screen.getByText('Vinyl · Nuclear Blast')).toBeInTheDocument()
+    expect(screen.getByText('$31.99').closest('a')).toHaveAttribute('href', 'https://shop.example/rz')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save for later' }))
+    await waitFor(() => expect(saveStockItem).toHaveBeenCalledWith('k1'))
+  })
+
+  it('does not repeat the title as the card thumbnail\'s alt text', async () => {
+    getStock.mockResolvedValue({
+      total: 1, page: 1, per_page: 250,
+      items: [{ ...stockItem, cover_image_url: 'https://cdn.example/cover.png' }],
+    })
+    const { container } = render(<StockBrowser />)
+    await screen.findByText('The Great Satan')
+    // The title sits right beside the thumbnail, so an alt repeating it makes
+    // a screen reader announce the row twice. The image is not a link and
+    // carries nothing the text does not.
+    expect(screen.queryByAltText('The Great Satan')).toBeNull()
+    expect(container.querySelector('img')).toHaveAttribute('alt', '')
+  })
+
+  it('labels the discogs price in the meta line, where the Cost link would otherwise be ambiguous', async () => {
+    getStock.mockResolvedValue({
+      total: 1, page: 1, per_page: 250,
+      items: [{ ...stockItem, discogs_price: '42.50' }],
+    })
+    render(<StockBrowser scope="track" />)
+    await screen.findByText('The Great Satan')
+    expect(screen.getByText('Vinyl · Nuclear Blast · Price 42.50')).toBeInTheDocument()
+  })
+})
