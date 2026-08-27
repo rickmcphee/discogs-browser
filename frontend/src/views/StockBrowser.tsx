@@ -449,7 +449,7 @@ function StockBrowser({
                       <div className="truncate text-sm text-gray-300" title={item.reason ?? undefined}>{item.title}</div>
                       {meta && <div className="truncate text-xs text-gray-500">{meta}</div>}
                       {item.reason && (
-                        <div className="line-clamp-2 text-xs italic text-gray-500">{item.reason}</div>
+                        <div className="text-xs italic text-gray-500">{item.reason}</div>
                       )}
                     </div>
                     <div className="flex shrink-0 items-center gap-1">

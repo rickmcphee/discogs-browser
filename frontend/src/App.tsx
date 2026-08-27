@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, type CSSProperties } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import RecordBrowser from './views/RecordBrowser'
 import StockBrowser from './views/StockBrowser'
 import Settings from './views/Settings'
@@ -36,12 +36,6 @@ const ADMIN_TABS: { view: View; label: string }[] = [
   { view: 'logs', label: 'Logs' },
   { view: 'settings', label: 'Settings' },
 ]
-
-// The mobile tab bar's height, which the fixed status bars have to clear. The
-// bar itself is a flow child and needs no such arithmetic; only something
-// positioned outside the flow does, so the shell publishes it once as
-// --app-bottom-inset and the two banners read it.
-const BOTTOM_NAV_INSET = 'calc(3.5rem + env(safe-area-inset-bottom))'
 
 // SSE reconnects (including on browser refresh) replay every buffered event from
 // crawl_manager._recent, so a banner's dismissal has to survive across that replay.
@@ -841,6 +835,10 @@ export default function App() {
   const syncBannerVisible = syncMessage !== null && (syncMessageId === null || syncMessageId > dismissedSyncId)
   const crawlBannerVisible = crawlBannerId > dismissedCrawlId
 
+  const bannerShellClass = isMobile
+    ? 'shrink-0 bg-gray-900 border-t border-gray-700 px-safe'
+    : 'fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-700 px-safe'
+
   function dismissSyncMessage() {
     if (syncMessageId !== null) {
       localStorage.setItem(DISMISSED_SYNC_KEY, String(syncMessageId))
@@ -855,10 +853,7 @@ export default function App() {
   }
 
   return (
-    <div
-      className="h-dvh bg-gray-950 text-gray-100 flex flex-col overflow-hidden"
-      style={{ '--app-bottom-inset': isMobile ? BOTTOM_NAV_INSET : '0px' } as CSSProperties}
-    >
+    <div className="h-dvh bg-gray-950 text-gray-100 flex flex-col overflow-hidden">
       {/* Wrapper is `inert` while the backend is confirmed down, or while a
           post-recovery session revalidation is still in flight, so a
           keyboard or screen-reader user can't tab into the frozen app
@@ -986,6 +981,60 @@ export default function App() {
         {showAdminNav && view === 'queue' && <div className="h-full"><QueueView /></div>}
       </main>
 
+      {/* Collection sync status bar. The live region stays mounted even when
+          the banner is not: assistive technology does not reliably announce a
+          role="status" element inserted together with its text, so the first
+          confirmation after a click would be the one that went unheard. */}
+      <div role="status" className="shrink-0">
+      {syncBannerVisible && (
+        <div className={bannerShellClass}>
+          <div className="px-4 py-2 flex flex-wrap items-center gap-x-3 gap-y-1 md:flex-nowrap">
+            <span className="text-sm font-medium text-gray-300 md:shrink-0">
+              {syncMessage}
+            </span>
+            {syncBusy && (
+              <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin shrink-0" />
+            )}
+            {!syncBusy && (
+              <button
+                onClick={dismissSyncMessage}
+                className={`ml-auto px-3 py-1 text-sm shrink-0 ${dismissButtonClass()}`}
+              >
+                Dismiss
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+      </div>
+
+      {/* Crawl status bar */}
+      {crawlBannerVisible && !syncBannerVisible && (
+        <div className={bannerShellClass}>
+          <div className="px-4 py-2 flex flex-wrap items-center gap-x-3 gap-y-1 md:flex-nowrap">
+            <span className="text-sm font-medium text-gray-300 md:shrink-0">
+              {crawling ? 'Refreshing prices…' : 'Done'}
+            </span>
+            {crawling && crawlCurrent && (
+              <span className="text-sm text-gray-400 truncate">
+                {crawlTotal > 0 ? `${crawlCount}/${crawlTotal}: ` : ''}
+                <span className="text-gray-200">{crawlCurrent.artist} — {crawlCurrent.release}</span>
+                {' '}on{' '}
+                <span className="text-gray-300">{crawlCurrent.site}</span>
+              </span>
+            )}
+            {!crawling && (
+              <button
+                onClick={dismissCrawlBanner}
+                className={`ml-auto px-3 py-1 text-sm shrink-0 ${dismissButtonClass()}`}
+              >
+                Dismiss
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Mobile tab bar. Rendered instead of the header's library nav, never
           alongside it: a second set of buttons named Collection/Wantlist/...
           would land in the accessibility tree twice. */}
@@ -1100,65 +1149,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Collection sync status bar. The live region stays mounted even when
-          the banner is not: assistive technology does not reliably announce a
-          role="status" element inserted together with its text, so the first
-          confirmation after a click would be the one that went unheard. */}
-      <div role="status">
-      {syncBannerVisible && (
-        <div
-          className="fixed left-0 right-0 bg-gray-900 border-t border-gray-700 px-safe"
-          style={{ bottom: 'var(--app-bottom-inset)' }}
-        >
-          <div className="px-4 py-2 flex flex-wrap items-center gap-x-3 gap-y-1 md:flex-nowrap">
-            <span className="text-sm font-medium text-gray-300 md:shrink-0">
-              {syncMessage}
-            </span>
-            {syncBusy && (
-              <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin shrink-0" />
-            )}
-            {!syncBusy && (
-              <button
-                onClick={dismissSyncMessage}
-                className={`ml-auto px-3 py-1 text-sm shrink-0 ${dismissButtonClass()}`}
-              >
-                Dismiss
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-      </div>
-
-      {/* Crawl status bar */}
-      {crawlBannerVisible && !syncBannerVisible && (
-        <div
-          className="fixed left-0 right-0 bg-gray-900 border-t border-gray-700 px-safe"
-          style={{ bottom: 'var(--app-bottom-inset)' }}
-        >
-          <div className="px-4 py-2 flex flex-wrap items-center gap-x-3 gap-y-1 md:flex-nowrap">
-            <span className="text-sm font-medium text-gray-300 md:shrink-0">
-              {crawling ? 'Refreshing prices…' : 'Done'}
-            </span>
-            {crawling && crawlCurrent && (
-              <span className="text-sm text-gray-400 truncate">
-                {crawlTotal > 0 ? `${crawlCount}/${crawlTotal}: ` : ''}
-                <span className="text-gray-200">{crawlCurrent.artist} — {crawlCurrent.release}</span>
-                {' '}on{' '}
-                <span className="text-gray-300">{crawlCurrent.site}</span>
-              </span>
-            )}
-            {!crawling && (
-              <button
-                onClick={dismissCrawlBanner}
-                className={`ml-auto px-3 py-1 text-sm shrink-0 ${dismissButtonClass()}`}
-              >
-                Dismiss
-              </button>
-            )}
-          </div>
-        </div>
-      )}
       </div>
 
       {/* Backend down overlay -- shown on top of the still-mounted (but now
