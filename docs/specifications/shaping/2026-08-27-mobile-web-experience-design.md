@@ -59,8 +59,8 @@ Touches:
   horizontally as one unit instead of crushing the message column.
 - `frontend/src/views/QueueView.tsx` — donut/legend/table row stacks, stat
   tiles stop forcing a `min-w-36` grid wider than the screen.
-- `frontend/src/components/SourceFilter.tsx` — the dropdown is width-clamped
-  to the viewport rather than a fixed `w-72` hanging off the right edge.
+- `frontend/src/components/SourceFilter.tsx` — the panel becomes a sheet
+  below the breakpoint; the desktop dropdown is untouched.
 - `frontend/src/views/LoginScreen.tsx`, `InviteCodeScreen.tsx` — card width
   becomes fluid.
 - Tests: `frontend/src/test/mobileLayout.test.tsx` (new),
@@ -99,8 +99,9 @@ Out of scope:
   Padding, font size, wrapping, column stacking, modal width — all of it is
   `md:` prefixes, which need no JavaScript, survive a resize for free, and
   cannot desynchronise from the rendered tree. `useIsMobile()` is reserved
-  for the three places where mobile needs *different elements*, not
-  differently-styled ones: the nav, the artist sidebar, and the row list.
+  for the places where mobile needs *different elements*, not
+  differently-styled ones: the nav, the artist sidebar, the row list, and the
+  source filter's panel.
 
 - **Where the DOM must differ, render one or the other — never both with one
   `hidden`.** The tempting version of a bottom tab bar is a second `<nav>`
@@ -147,6 +148,35 @@ Out of scope:
   exactly what an overflow menu is for. The avatar stays top-right where a
   profile control belongs on every platform, and it is the only header
   control a non-admin has, so the header does not collapse to nothing.
+
+- **An anchored dropdown cannot be made safe on a wrapping toolbar, so the
+  source filter becomes a sheet too.** `absolute right-0` aligns to the
+  *trigger*, and below the breakpoint that trigger wraps to wherever the
+  toolbar has room. From a left-edge position a 288 px panel starts at a
+  negative x — measured at −203 px on a 390 px viewport, with most of the
+  store list unreachable. Clamping the width does not help, because the
+  overflow is on the *left*. Alignment chosen from the trigger's bounds would
+  work, but it is bespoke positioning logic to reproduce what a sheet gets
+  from being anchored to the viewport instead — and the panel is a long
+  scrollable list of things to pick, which is the artist filter's shape
+  exactly. Desktop keeps the anchored dropdown at its original `w-72`.
+
+- **Every sheet carries a named close button.** The backdrop is pointer-only
+  (`aria-hidden`, untabbable) so the focus trap has nothing to reach around,
+  and the grab handle is decoration that implements no dragging — which
+  leaves Escape as the only way out, and a switch or voice-control user may
+  not have Escape. The artist and admin sheets close on selection anyway; the
+  source sheet is a multi-select that deliberately stays open when an option
+  is toggled, so there it is a trap rather than an inconvenience.
+
+- **`aria-modal` obliges a real focus trap.** Focus moves into the panel on
+  open, cycles within it on Tab and Shift+Tab, and returns to the invoking
+  element on close. The alternative — leaving focus outside while claiming
+  modality — is worse than not claiming it, because a screen reader acts on
+  the claim and stops announcing the app the keyboard can still reach. The
+  app behind is *not* additionally marked `inert`: the sheet renders inside
+  the app root, so marking that root inert would freeze the sheet with it,
+  and doing it properly means portalling the sheet out first.
 
 - **The artist filter becomes a sheet, and its trigger shows the current
   selection.** A filter that is invisible until you open something is a
@@ -199,6 +229,7 @@ Out of scope:
 | Rows | Table, 7–8 columns | Card list: cover, artist, title, meta |
 | Sort | Column headers | `<select>` + direction toggle in the toolbar |
 | Toolbar | One row | Search on its own row, controls below |
+| Source filter | Dropdown anchored to its trigger | Sheet |
 | Settings/Account rows | Three table columns | Stacked label → control → description |
 | Status bars | `fixed bottom-0` | `fixed`, offset by `--app-bottom-inset` |
 | Modals | `w-96` | Full width less a gutter, buttons stacked |

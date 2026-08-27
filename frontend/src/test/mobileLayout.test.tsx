@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, renderHook, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { act, render, renderHook, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import App from '../App'
 import RecordBrowser from '../views/RecordBrowser'
 import StockBrowser from '../views/StockBrowser'
@@ -74,21 +74,42 @@ const DESKTOP_WIDTH = 1280
 const defaultMatchMedia = window.matchMedia
 
 // The hook only ever asks a max-width question, so honouring that one form is
-// enough to put a render on either side of the breakpoint.
+// enough to put a render on either side of the breakpoint. Listeners are kept
+// so `resizeTo` can drive a real crossing -- a stub that only answers
+// `matches` can place a render on one side or the other but never move it.
+type MediaListener = (event: MediaQueryListEvent) => void
+const mediaListeners = new Set<{ query: string; fn: MediaListener }>()
+let viewportWidth = PHONE_WIDTH
+
+function queryMatches(query: string, width: number): boolean {
+  const max = /max-width:\s*(\d+)px/.exec(query)
+  return max ? width <= Number(max[1]) : false
+}
+
 function setViewportWidth(width: number) {
-  window.matchMedia = ((query: string) => {
-    const max = /max-width:\s*(\d+)px/.exec(query)
-    return {
-      matches: max ? width <= Number(max[1]) : false,
-      media: query,
-      onchange: null,
-      addEventListener: () => {},
-      removeEventListener: () => {},
-      addListener: () => {},
-      removeListener: () => {},
-      dispatchEvent: () => false,
-    } as MediaQueryList
-  }) as typeof window.matchMedia
+  viewportWidth = width
+  mediaListeners.clear()
+  window.matchMedia = ((query: string) => ({
+    get matches() { return queryMatches(query, viewportWidth) },
+    media: query,
+    onchange: null,
+    addEventListener: (_: string, fn: MediaListener) => { mediaListeners.add({ query, fn }) },
+    removeEventListener: (_: string, fn: MediaListener) => {
+      for (const entry of mediaListeners) if (entry.fn === fn) mediaListeners.delete(entry)
+    },
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => false,
+  }) as unknown as MediaQueryList) as typeof window.matchMedia
+}
+
+function resizeTo(width: number) {
+  viewportWidth = width
+  act(() => {
+    for (const { query, fn } of mediaListeners) {
+      fn({ matches: queryMatches(query, width), media: query } as MediaQueryListEvent)
+    }
+  })
 }
 
 const release = {
@@ -190,6 +211,23 @@ describe('mobile app shell', () => {
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Admin sections' })).not.toBeInTheDocument())
     const heading = screen.getByRole('heading', { name: 'Marketplace Management' })
     expect(heading.closest('div.hidden')).toBeNull()
+  })
+
+  it('drops a menu left open in portrait rather than reopening it on the way back', async () => {
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'More' }))
+    expect(screen.getByRole('dialog', { name: 'Admin sections' })).toBeInTheDocument()
+
+    // Rotating past the breakpoint unmounts the sheet and its trigger; the
+    // state behind them has to go with it, or the menu reappears unasked on
+    // the way back to portrait.
+    resizeTo(DESKTOP_WIDTH)
+    await screen.findByRole('button', { name: 'Settings' })
+    expect(screen.queryByRole('dialog', { name: 'Admin sections' })).not.toBeInTheDocument()
+
+    resizeTo(PHONE_WIDTH)
+    await screen.findByRole('button', { name: 'More' })
+    expect(screen.queryByRole('dialog', { name: 'Admin sections' })).not.toBeInTheDocument()
   })
 
   it('gives a non-admin no overflow menu to open', async () => {
@@ -313,6 +351,20 @@ describe('mobile sheets', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Source' }))
     expect(screen.queryByRole('dialog', { name: 'Filter by source' })).not.toBeInTheDocument()
     expect(screen.getByRole('checkbox', { name: 'Nuclear Blast' }).closest('.absolute.right-0')).not.toBeNull()
+  })
+  it('offers a named close control, since the backdrop is pointer-only and Escape may not be available', async () => {
+    render(<StockBrowser crawlers={crawlers} hiddenCrawlerIds={[]} onHiddenCrawlerIdsChange={() => {}} />)
+    await waitFor(() => expect(getStock).toHaveBeenCalled())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Source' }))
+    const sheet = screen.getByRole('dialog', { name: 'Filter by source' })
+    // The source sheet is a multi-select and stays open when an option is
+    // toggled, so it is the one with no incidental way out.
+    fireEvent.click(within(sheet).getByRole('checkbox', { name: 'Nuclear Blast' }))
+    expect(screen.getByRole('dialog', { name: 'Filter by source' })).toBeInTheDocument()
+
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Close' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Filter by source' })).not.toBeInTheDocument())
   })
 })
 

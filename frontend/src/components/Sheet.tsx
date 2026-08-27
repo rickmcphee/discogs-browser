@@ -73,11 +73,22 @@ export default function Sheet({ open, onClose, label, children }: Props) {
         aria-label={label}
         className="relative z-10 max-h-[75dvh] overflow-y-auto rounded-t-2xl border-t border-gray-700 bg-gray-900 pb-safe px-safe focus:outline-none"
       >
-        {/* Grab handle. Purely a signal that the panel is dismissable by
-            dragging it away on platforms whose users expect that; the sheet
-            itself closes on the backdrop or Escape. */}
-        <div aria-hidden="true" className="sticky top-0 flex justify-center bg-gray-900 pt-2 pb-1">
-          <span className="h-1 w-10 rounded-full bg-gray-700" />
+        {/* The backdrop is pointer-only and the grab handle is decoration --
+            it implements no dragging -- so without this button the only way
+            out is Escape, which a switch or voice-control user may not have.
+            The source sheet makes that a trap rather than an inconvenience:
+            it is a multi-select, so toggling an option deliberately leaves it
+            open. */}
+        <div className="sticky top-0 flex items-center bg-gray-900 pt-2 pb-1">
+          <span aria-hidden="true" className="mx-auto h-1 w-10 translate-x-5 rounded-full bg-gray-700" />
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="flex h-10 w-10 shrink-0 items-center justify-center text-gray-400 hover:text-white"
+          >
+            <span aria-hidden="true">✕</span>
+          </button>
         </div>
         {children}
       </div>

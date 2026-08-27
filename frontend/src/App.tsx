@@ -103,6 +103,9 @@ function reportStockSyncRejection(
 export default function App() {
   const [view, setView] = useState<View>('collection')
   const isMobile = useIsMobile()
+  // Mobile-only state, and the sheet holding it unmounts at the breakpoint --
+  // so without this a menu left open in portrait quietly reopens itself on the
+  // way back from landscape.
   const [adminMenuOpen, setAdminMenuOpen] = useState(false)
   const [crawling, setCrawling] = useState(false)
   const [crawlBannerId, setCrawlBannerId] = useState(0)
@@ -786,6 +789,10 @@ export default function App() {
   // useCallback keeps this referentially stable across renders so it doesn't
   // defeat Account's memo() — see viewRenderChurn.test.tsx, which asserts
   // Account isn't re-invoked on every crawl SSE event.
+  useEffect(() => {
+    if (!isMobile) setAdminMenuOpen(false)
+  }, [isMobile])
+
   const toggleViewAsUser = useCallback(() => {
     setViewAsUser((current) => {
       const next = !current
