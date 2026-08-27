@@ -3,6 +3,7 @@ import { act, render, renderHook, screen, fireEvent, waitFor, within } from '@te
 import App from '../App'
 import RecordBrowser from '../views/RecordBrowser'
 import StockBrowser from '../views/StockBrowser'
+import Settings from '../views/Settings'
 import { useIsMobile } from '../hooks/useMediaQuery'
 import type { Crawler } from '../api/types'
 
@@ -375,6 +376,24 @@ describe('mobile touch targets', () => {
     const clear = screen.getByRole('button', { name: 'Clear search' })
     expect(clear).toHaveClass('h-11', 'w-11')
     expect(screen.getByPlaceholderText('Search artist or title…')).toHaveClass('pr-11')
+  })
+
+  it("gives Settings' per-store refresh icon a 44px box in the stacked mobile row", async () => {
+    render(
+      <Settings
+        crawlers={crawlers}
+        onCrawlersChange={() => {}}
+        onRefreshPrices={() => {}}
+        onRefreshStock={() => {}}
+        isAdmin
+        stockSyncBusy={false}
+        stockSyncCrawlerId={null}
+        onRefreshStoreCrawler={() => {}}
+        priceRefreshBusy={false}
+      />
+    )
+    const refresh = await screen.findByTitle('Refresh Nuclear Blast catalog now')
+    expect(refresh).toHaveClass('h-11', 'w-11')
   })
 
   it("sizes a sheet's close button like every other mobile icon control", async () => {

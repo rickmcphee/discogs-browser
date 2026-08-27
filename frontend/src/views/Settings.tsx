@@ -226,7 +226,7 @@ function Settings({
                       title={refreshing
                         ? `Refreshing ${c.site_name} catalog…`
                         : `Refresh ${c.site_name} catalog now`}
-                      className={`p-1.5 ${refreshing
+                      className={`flex h-11 w-11 items-center justify-center md:h-auto md:w-auto md:p-1.5 ${refreshing
                         ? navButtonClass(true)
                         : `disabled:opacity-30 disabled:cursor-not-allowed ${navButtonClass(false)}`}`}
                     >
