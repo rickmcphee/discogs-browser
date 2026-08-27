@@ -213,11 +213,26 @@ Out of scope:
   rewriting every `.closest('tr')` in the suite, on tables whose semantics
   were never the point.
 
-- **A 16 px floor on form controls under the breakpoint, applied globally in
-  `index.css`.** The alternative is `text-base md:text-sm` on every input,
-  select and textarea in the app, which is the same rule written a few dozen
-  times and forgotten on the next one added. This is exactly the case a
-  global element rule is for.
+- **A 16 px floor on form controls, applied globally in `index.css` and gated
+  on pointer capability.** The alternative is `text-base md:text-sm` on every
+  input, select and textarea in the app, which is the same rule written a few
+  dozen times and forgotten on the next one added — exactly the case a global
+  element rule is for. The gate is `(pointer: coarse)`, *not* a width, because
+  zoom-on-focus is a property of the device rather than of the layout: a touch
+  device wider than the breakpoint — a tablet, or a phone in landscape — still
+  zooms, and a width gate stops applying to it. Measured: with a width gate a
+  touch device at 1024 px receives 14 px controls; with the capability gate it
+  receives 16 px, while a mouse-driven desktop is untouched at either.
+
+- **Capability gates for hard failures, width gates for affordances.** The two
+  are not interchangeable and the line is worth stating, because a phone above
+  the breakpoint runs the desktop layout. Zoom-on-focus and content sliding
+  under the home indicator are *breakage* — the page ends up zoomed or the
+  content unreadable — so they follow the device: `(pointer: coarse)` and
+  `env()` respectively. Touch-target sizing is an *affordance* of the mobile
+  layout, so it follows the breakpoint: a phone in landscape is showing the
+  desktop layout, with the sidebar and the table, and its controls are that
+  layout's controls.
 
 - **The safe-area insets are not a mobile-layout concern.** A notched phone in
   landscape is 844 px wide — above the breakpoint — so it renders the *desktop*

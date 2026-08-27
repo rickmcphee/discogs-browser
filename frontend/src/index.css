@@ -91,8 +91,14 @@
 /* iOS Safari zooms into any focused form control under 16px and does not zoom
    back out, leaving the layout shifted for the rest of the session. Every
    input in this app is text-sm (14px), so the floor goes here once rather than
-   as `text-base md:text-sm` on each of them -- and on each one added later. */
-@media (max-width: 767px) {
+   as `text-base md:text-sm` on each of them -- and on each one added later.
+
+   Gated on pointer capability, not on width. Zoom-on-focus is a property of
+   the *device*, and a phone rotated to landscape is 844px wide -- above the
+   breakpoint -- so a width gate stops applying in the one orientation where
+   the keyboard covers most of the screen and the zoom hurts most. `hover:
+   none` below is gated the same way for the same reason. */
+@media (pointer: coarse) {
   input,
   select,
   textarea {
