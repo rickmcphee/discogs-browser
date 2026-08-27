@@ -246,7 +246,7 @@ export default function RecordBrowser({ scope, syncing, onRefreshCollection, syn
         {viewMode === 'tiles' && (
           <div className="flex-1 overflow-auto" ref={tableScrollRef}>
             {hasLoaded && releases.length === 0 && (
-              <div className="text-center py-8 px-4 text-gray-500">
+              <div className="text-center py-8 px-4 text-gray-500 md:px-0">
                 {emptyMessage}
               </div>
             )}
