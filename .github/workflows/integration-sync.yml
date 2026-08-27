@@ -85,9 +85,11 @@ on:
 permissions:
   contents: write
   pull-requests: write
-  # Labels are issues-scoped, even on a PR. Without this the `dirty` path cannot
-  # attach CONFLICT_LABEL, and that label is the only thing stopping a later run
-  # re-arming auto-merge under someone's hand-written conflict resolution.
+  # Labels are issues-scoped, even on a PR. Without this the sync PR's `dirty`
+  # path cannot attach CONFLICT_LABEL, and that label is the only thing stopping
+  # a later run re-arming auto-merge under someone's hand-written conflict
+  # resolution. (`refresh` no longer needs this scope -- it stopped commenting
+  # on PRs when the recreate path was removed -- but `sync` still does.)
   issues: write
 
 concurrency:
@@ -100,12 +102,6 @@ env:
   # branch existed in its current form. While git still derives this as their
   # merge base, no merge commit has ever linked them -- see the guard in `sync`.
   FROZEN_BASE: b24e568e76bc927888e62c658e210104aa1be0d6
-  # Stamped into every recreate request this workflow posts, and the only thing
-  # the don't-ask-twice guard counts. Identity-independent on purpose: the
-  # comment author is github-actions[bot] or the app's bot depending on which
-  # token is configured, so matching on author would silently stop working the
-  # day the sync app is added.
-  RECREATE_MARKER: "<!-- integration-sync: recreate requested -->"
   # Applied to a sync PR whose conflict someone has to resolve by hand. It is
   # what stops the next run re-arming auto-merge underneath them; see the
   # `dirty` branch and the re-arm guard.
@@ -587,64 +583,70 @@ jobs:
                 ;;
 
               dirty)
-                # A conflict, which update-branch cannot fix. For a Dependabot
-                # PR only Dependabot can: a bump that conflicts is usually a
-                # lockfile, and regenerating one by merge resolution produces a
-                # file no package manager would have written. `recreate` throws
-                # the branch away and re-derives it from the current base.
-                if ! author="$(gh api "repos/$REPO/pulls/$n" --jq '.user.login')"; then
-                  echo "::warning::could not read the author of PR #$n; leaving it alone."
-                  failed="$failed #$n"
-                  continue
-                fi
-                if [ "$author" != "dependabot[bot]" ]; then
-                  echo "::warning::PR #$n conflicts with integration and only its author can rebuild it; it needs a human."
-                  continue
-                fi
-                # Don't keep asking: a request Dependabot silently drops would
-                # otherwise collect a fresh comment on that PR for as long as it
-                # stayed open. The window has to be longer than the schedule
-                # above or it cannot do that job at all -- against a daily cron,
-                # yesterday's request already falls outside a 24-hour lookback,
-                # so the guard never fires and the comment lands anyway. A week
-                # means at most one ask per stuck PR per week, which also
-                # matches Dependabot's own cadence. Paginated, since `since`
-                # bounds how old the comments are but not how many.
-                since="$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)"
-                # Match this workflow's own marker, not the command text.
-                # Anyone who can comment on the PR could otherwise post -- or
-                # merely quote -- "@dependabot recreate" and suppress the real
-                # request for the whole window, without Dependabot having acted
-                # on theirs at all.
-                # Interpolated rather than passed with --arg: gh's --jq takes
-                # one filter string and forwards no jq options, so --arg would
-                # be swallowed as the filter itself. Safe here because the
-                # marker contains no double quotes.
-                if ! asked="$(gh api --paginate \
-                  "repos/$REPO/issues/$n/comments?since=$since&per_page=100" \
-                  --jq ".[] | select(.body | contains(\"$RECREATE_MARKER\")) | .id" \
-                  | wc -l)"; then
-                  # Fail closed on the read, not the ask: without knowing what
-                  # has already been posted, commenting again is how a stuck PR
-                  # collects a duplicate request every run.
-                  echo "::warning::could not read PR #$n's comments, so cannot tell whether Dependabot was already asked; not asking again."
-                  failed="$failed #$n"
-                  continue
-                fi
-                if [ "$asked" -gt 0 ]; then
-                  echo "PR #$n conflicts but was already asked to recreate since $since; leaving it."
-                  continue
-                fi
-                echo "PR #$n conflicts with integration; asking Dependabot to recreate it."
-                # printf, not a multi-line string: the marker would otherwise
-                # inherit this block's indentation, and four leading spaces make
-                # markdown render it as a code block -- an HTML comment meant to
-                # be invisible, shown verbatim on the PR.
-                if ! gh pr comment "$n" --repo "$REPO" \
-                     --body "$(printf '@dependabot recreate\n\n%s' "$RECREATE_MARKER")"; then
-                  echo "::warning::could not post the recreate request on PR #$n."
-                  failed="$failed #$n"
-                  continue
+                # A conflict, which update-branch cannot fix and this job
+                # cannot delegate either.
+                #
+                # It used to post `@dependabot recreate` on a Dependabot PR,
+                # reasoning that a conflicted bump is usually a lockfile and
+                # only Dependabot can regenerate one properly. That reasoning
+                # still holds. The mechanism never did: Dependabot refuses
+                # commands from bots outright -- "Sorry, only users with push
+                # access can use that command" -- whether the comment comes
+                # from github-actions[bot] or a GitHub App, and regardless of
+                # the write permissions either one holds. See
+                # dependabot/dependabot-core#9147.
+                #
+                # The path sat unexercised from the day it was written until
+                # 2026-08-26, when it fired once, on PR #175, and was refused.
+                # It was removed rather than reworked because every remaining
+                # way to issue the command needs a real user's token, which is
+                # what the app migration had just finished getting rid of.
+                #
+                # A warning, deliberately not a job failure: a conflicted PR
+                # can sit for days, and failing here would turn every
+                # subsequent run red over a condition this job cannot act on.
+                # Non-Dependabot conflicts were always treated exactly this way.
+                #
+                # The advice below is deliberate, and the opposite of the
+                # obvious move. Closing a conflicted Dependabot PR does NOT
+                # queue a clean replacement: Dependabot reads a close as "skip
+                # this release" and stays silent until a NEWER version ships.
+                # It offers re-opening as the recovery -- and that is not
+                # reliable here either, because it deletes its branch on close,
+                # which makes the PR unreopenable. Both were learned on #175 on
+                # 2026-08-26, by doing it.
+                #
+                # A person commenting the command does work. The refusal above
+                # is specifically about bots; "only users with push access can
+                # use that command" grants it to exactly the human being asked.
+                #
+                # Branched on author, because this job routes EVERY open PR
+                # based on `integration`, not only Dependabot's. Telling the
+                # author of a hand-written PR to run a Dependabot command is
+                # advice they cannot act on. The old recreate path read the
+                # author too, but for two jobs at once -- gating the command
+                # and choosing the wording -- so deleting the command deleted
+                # the wording with it.
+                #
+                # Unlike that path, this read only picks which sentence to
+                # print, so a failure falls back to wording that is true either
+                # way rather than failing the PR. Guessing "not Dependabot" on
+                # a failed read would print a claim about authorship that was
+                # never established.
+                author="$(gh api "repos/$REPO/pulls/$n" --jq '.user.login' 2>/dev/null || true)"
+                if [ "$author" = "dependabot[bot]" ]; then
+                  echo "::warning::PR #$n conflicts with integration and cannot be caught up automatically. A person with push access can comment '@dependabot recreate' on it -- that command works for people, only bots are refused. Do NOT just close it: Dependabot treats a close as 'skip this release' and will not raise it again until a newer version ships, and it deletes the branch, so the PR cannot be reopened."
+                elif [ -n "$author" ]; then
+                  # "whoever can push to the head branch", not "$author". The
+                  # wording this replaces said only the opener could rebuild it,
+                  # which is not true and could talk someone out of a repair
+                  # they were entitled to make: a same-repo branch is writable
+                  # by any collaborator with push access, and a fork branch by
+                  # maintainers when the PR allows maintainer edits. The
+                  # capability is what matters, not the identity.
+                  echo "::warning::PR #$n conflicts with integration and cannot be caught up automatically. It was opened by $author, not Dependabot, so no @dependabot command applies: the branch has to be repaired by hand by someone who can push to it -- its author, any collaborator with write access if it lives in this repository, or a maintainer if it is a fork PR allowing maintainer edits."
+                else
+                  echo "::warning::PR #$n conflicts with integration and cannot be caught up automatically, and its author could not be read. It needs a human either way: if Dependabot opened it, someone with push access can comment '@dependabot recreate' (and should not close it); otherwise the branch has to be repaired by hand by someone who can push to it."
                 fi
                 ;;
 

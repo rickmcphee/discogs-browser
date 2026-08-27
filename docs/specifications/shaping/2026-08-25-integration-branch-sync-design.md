@@ -189,16 +189,63 @@ GitHub computes it asynchronously and answers `unknown` right after a push:
 
 - `behind` → `update-branch`. Deterministic, returns a status, needs nothing of
   the PR's author.
-- `dirty` → `@dependabot recreate`, on Dependabot's own PRs only. A bump that
-  conflicts is usually a lockfile, and a lockfile resolved by merge is a file no
-  package manager would have written. A conflict on anyone else's PR is
-  reported for a human.
+- `dirty` → reported for a human, with the advice branched on who opened it.
+  This job routes *every* open PR based on `integration`, not only Dependabot's,
+  and the two need different instructions: a Dependabot bump can be rebuilt by a
+  maintainer's `@dependabot recreate`, while a hand-written PR has to be repaired
+  by hand by someone who can push to its head branch. A failed author read falls
+  back to wording true either way rather than asserting an authorship it never
+  established. A warning
+  rather than a job failure: a conflicted PR can sit for days, and failing here
+  would turn every later run red over a condition this job cannot act on.
 - anything else → untouched.
 
-The recreate request carries `RECREATE_MARKER`, and the don't-ask-twice guard
-counts only comments bearing it. Matching on the command text would let anyone
-who can comment suppress the real request; matching on author would break the
-day the sync app is configured and the author changes.
+### Why `dirty` is not delegated to Dependabot
+
+This route used to post `@dependabot recreate` on Dependabot's own PRs, on the
+reasoning that a conflicted bump is usually a lockfile and a lockfile resolved
+by merge is a file no package manager would have written. That reasoning holds.
+The mechanism never worked.
+
+**Dependabot refuses commands from bots**, answering "Sorry, only users with
+push access can use that command" — whether the comment comes from
+`github-actions[bot]` or from a GitHub App, and regardless of the write
+permissions either one holds ([dependabot/dependabot-core#9147][dbc9147]). The
+path sat unexercised from the day it was written until 2026-08-26, when a
+conflict on PR #175 fired it for the first time and Dependabot refused it.
+
+It was removed rather than reworked because every remaining way to issue the
+command needs a real user's token — precisely what the app migration had just
+finished removing, and for reasons that have not changed. The supporting
+machinery went with it: the `RECREATE_MARKER` stamp, the don't-ask-twice guard
+that counted comments bearing it, and the paginated seven-day comment read that
+guard required.
+
+**The command still works for a person.** The refusal is specifically about
+bots: "only users with push access can use that command" grants it to exactly
+the human this route now asks for. So the recovery for a *Dependabot* PR is a
+maintainer commenting `@dependabot recreate` — no workflow, no token, no special
+access beyond what they already have. For any other conflicted PR the command is
+meaningless and the warning says so instead, pointing at the *capability* rather
+than an identity: the branch has to be repaired by hand by whoever can push to
+it. That is not only the opener — a branch in this repository is writable by any
+collaborator with push access, and a fork branch by maintainers when the PR
+allows maintainer edits. Naming the author instead, as this route's wording did
+from the start, risks talking someone out of a repair they were entitled to
+make.
+
+**Do not close a conflicted Dependabot PR instead.** This is the trap, and it
+was walked into on #175 while writing this change. Closing does not queue a
+clean replacement: Dependabot reads a close as *"skip this release"* and answers
+*"I won't notify you again about this release, but will get in touch when a new
+version is available"* — so the bump is suppressed until something **newer**
+ships, not re-raised against the current base. Its own suggested recovery,
+*"just re-open this PR and I'll resolve any conflicts on it"*, then fails on a
+second mechanism: Dependabot deletes its branch on close, and a PR whose head
+branch is gone cannot be reopened. `respx>=0.23.1` was lost that way and had to
+be re-applied by hand.
+
+[dbc9147]: https://github.com/dependabot/dependabot-core/issues/9147
 
 ## Conflict handling
 
