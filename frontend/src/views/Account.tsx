@@ -249,7 +249,7 @@ function Account({
     <div className="max-w-3xl mx-auto p-4 space-y-8 md:p-6 md:space-y-10">
       {/* Avatar */}
       <section>
-        <div className="flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col items-start gap-4 md:flex-row md:items-center md:justify-between">
           <div className="flex items-center gap-4">
             <button onClick={() => fileInputRef.current?.click()} disabled={avatarBusy} aria-label="Change photo" className="group relative rounded-full">
               <Avatar version={avatarVersion} size="lg" />
@@ -288,7 +288,7 @@ function Account({
               {avatarError && <p className="text-xs text-red-400 mt-1">{avatarError}</p>}
             </div>
           </div>
-          <div className="flex w-full items-center gap-4 sm:w-auto">
+          <div className="flex w-full items-center gap-4 md:w-auto">
             {isAdmin && (
               <div className="flex items-center gap-2">
                 <span className="text-sm text-gray-400">{viewingAsUser ? 'User' : 'Admin'}</span>
@@ -316,7 +316,7 @@ function Account({
                   window.location.reload()
                 }).catch(() => {})
               }}
-              className={`ml-auto px-3 py-1 text-xs sm:ml-0 ${secondaryButtonClass()}`}
+              className={`ml-auto px-3 py-1 text-xs md:ml-0 ${secondaryButtonClass()}`}
             >
               Log out
             </button>

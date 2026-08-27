@@ -376,6 +376,16 @@ describe('mobile touch targets', () => {
     expect(clear).toHaveClass('h-11', 'w-11')
     expect(screen.getByPlaceholderText('Search artist or title…')).toHaveClass('pr-11')
   })
+
+  it("sizes a sheet's close button like every other mobile icon control", async () => {
+    getArtists.mockResolvedValue(['Pink Floyd'])
+    render(<RecordBrowser scope="collection" />)
+    await waitFor(() => expect(getArtists).toHaveBeenCalled())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Artist: All' }))
+    const sheet = screen.getByRole('dialog', { name: 'Filter by artist' })
+    expect(within(sheet).getByRole('button', { name: 'Close' })).toHaveClass('h-11', 'w-11')
+  })
 })
 
 describe('mobile StockBrowser', () => {

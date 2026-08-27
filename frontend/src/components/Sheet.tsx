@@ -85,7 +85,7 @@ export default function Sheet({ open, onClose, label, children }: Props) {
             type="button"
             onClick={onClose}
             aria-label="Close"
-            className="flex h-10 w-10 shrink-0 items-center justify-center text-gray-400 hover:text-white"
+            className="flex h-11 w-11 shrink-0 items-center justify-center text-gray-400 hover:text-white"
           >
             <span aria-hidden="true">✕</span>
           </button>

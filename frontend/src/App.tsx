@@ -1027,7 +1027,7 @@ export default function App() {
                 Last synced: {new Date(collectionStatus.last_synced).toLocaleString()}
               </p>
             )}
-            <div className="flex flex-col gap-3 sm:flex-row">
+            <div className="flex flex-col gap-3 md:flex-row">
               <button
                 onClick={() => startRefresh('new')}
                 className={`flex-1 px-4 py-2 text-sm ${primaryButtonClass()}`}
@@ -1067,7 +1067,7 @@ export default function App() {
                 Last updated: {new Date(checkpointStatus.oldest_checked).toLocaleString()}
               </p>
             )}
-            <div className="flex flex-col gap-3 sm:flex-row">
+            <div className="flex flex-col gap-3 md:flex-row">
               <button
                 onClick={() => startCrawl(undefined, 'missing')}
                 className={`flex-1 px-4 py-2 text-sm ${primaryButtonClass()}`}
