@@ -304,13 +304,14 @@ function StockBrowser({
                 placeholder="Search artist or title…"
                 value={search}
                 onChange={(e) => { setSearch(e.target.value); setPage(1) }}
-                className={`w-full px-3 py-2 pr-8 text-sm md:py-1.5 ${textInputClass()}`}
+                className={`w-full px-3 py-2 pr-11 text-sm md:py-1.5 md:pr-8 ${textInputClass()}`}
               />
               <button
                 onClick={() => { setSearch(''); setPage(1) }}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
+                aria-label="Clear search"
+                className="absolute right-0 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center text-gray-500 hover:text-gray-300 md:right-3 md:h-auto md:w-auto"
               >
-                ✕
+                <span aria-hidden="true">✕</span>
               </button>
             </div>
             <span className="shrink-0 text-xs text-gray-500 md:ml-3 md:shrink">{total} items</span>

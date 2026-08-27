@@ -4,6 +4,7 @@ import App from '../App'
 import RecordBrowser from '../views/RecordBrowser'
 import StockBrowser from '../views/StockBrowser'
 import { useIsMobile } from '../hooks/useMediaQuery'
+import type { Crawler } from '../api/types'
 
 class MockEventSource {
   onmessage: ((e: MessageEvent) => void) | null = null
@@ -96,6 +97,11 @@ const release = {
   discogs_url: 'https://discogs.com/r1', plex_url: null, plex_matched_at: null,
   last_synced: '', date_added: null,
 }
+
+const crawlers = [
+  { id: 1, site_name: 'Nuclear Blast', base_url: 'https://shop.nuclearblast.com', enabled: true, crawler_type: 'catalog', genre: 'metal', last_run: null, genre_summary: null },
+  { id: 2, site_name: 'Amazon', base_url: 'https://amazon.com', enabled: true, crawler_type: 'release', genre: 'marketplace', last_run: null, genre_summary: null },
+] as unknown as Crawler[]
 
 const stockItem = {
   id: 1, item_key: 'k1', is_own: true, artist: 'Rob Zombie', title: 'The Great Satan',
@@ -255,6 +261,68 @@ describe('mobile RecordBrowser', () => {
     const options = within(screen.getByLabelText('Sort by')).getAllByRole('option').map((o) => o.textContent)
     expect(options).toContain('By artist')
     expect(options).not.toContain('By price')
+  })
+})
+
+describe('mobile sheets', () => {
+  it('moves focus into the sheet, keeps Tab inside it, and hands focus back on close', async () => {
+    getReleases.mockResolvedValue({ total: 1, page: 1, per_page: 250, releases: [release] })
+    getArtists.mockResolvedValue(['Pink Floyd', 'Converge'])
+    render(<RecordBrowser scope="collection" />)
+    await screen.findByText('The Wall')
+
+    const trigger = screen.getByRole('button', { name: 'Artist: All' })
+    trigger.focus()
+    fireEvent.click(trigger)
+
+    const sheet = screen.getByRole('dialog', { name: 'Filter by artist' })
+    expect(sheet).toHaveFocus()
+
+    // Tab from the panel wraps to the last control inside it rather than
+    // walking into the app behind the overlay `aria-modal` claims to seal.
+    const options = within(sheet).getAllByRole('button')
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true })
+    expect(options[options.length - 1]).toHaveFocus()
+    options[options.length - 1].focus()
+    fireEvent.keyDown(document, { key: 'Tab' })
+    expect(options[0]).toHaveFocus()
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Filter by artist' })).not.toBeInTheDocument())
+    expect(trigger).toHaveFocus()
+  })
+
+  it('opens the source filter as a sheet, not a dropdown anchored to a wrapped trigger', async () => {
+    render(<StockBrowser crawlers={crawlers} hiddenCrawlerIds={[]} onHiddenCrawlerIdsChange={() => {}} />)
+    await waitFor(() => expect(getStock).toHaveBeenCalled())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Source' }))
+    const sheet = screen.getByRole('dialog', { name: 'Filter by source' })
+    expect(within(sheet).getByRole('checkbox', { name: 'Nuclear Blast' })).toBeInTheDocument()
+    // `absolute right-0` aligns to the trigger, which on a phone wraps to
+    // wherever there is room -- from the left edge that put most of the panel
+    // off screen. The sheet is anchored to the viewport instead.
+    expect(within(sheet).getByRole('checkbox', { name: 'Nuclear Blast' }).closest('.absolute')).toBeNull()
+  })
+
+  it('keeps the source dropdown anchored to its trigger at desktop widths', async () => {
+    setViewportWidth(DESKTOP_WIDTH)
+    render(<StockBrowser crawlers={crawlers} hiddenCrawlerIds={[]} onHiddenCrawlerIdsChange={() => {}} />)
+    await waitFor(() => expect(getStock).toHaveBeenCalled())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Source' }))
+    expect(screen.queryByRole('dialog', { name: 'Filter by source' })).not.toBeInTheDocument()
+    expect(screen.getByRole('checkbox', { name: 'Nuclear Blast' }).closest('.absolute.right-0')).not.toBeNull()
+  })
+})
+
+describe('mobile touch targets', () => {
+  it('gives the clear-search button a name and a 44px hit area', async () => {
+    render(<RecordBrowser scope="collection" />)
+    await waitFor(() => expect(getReleases).toHaveBeenCalled())
+    const clear = screen.getByRole('button', { name: 'Clear search' })
+    expect(clear).toHaveClass('h-11', 'w-11')
+    expect(screen.getByPlaceholderText('Search artist or title…')).toHaveClass('pr-11')
   })
 })
 
