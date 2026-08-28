@@ -5,12 +5,16 @@ interface Props {
 }
 
 // The dot is decorative and marked aria-hidden; the count goes into the
-// button's label instead, so the state is never carried by colour alone.
+// button's label instead, so the state is never carried by colour alone. This
+// button also navigates between views, so aria-current carries the selected
+// state the same way BottomNav's tabs do -- being the active view must not be
+// something only the paint says.
 export default function NotificationBell({ unread, active, onClick }: Props) {
   return (
     <button
       onClick={onClick}
       aria-label={unread > 0 ? `Notifications, ${unread} unread` : 'Notifications'}
+      aria-current={active ? 'page' : undefined}
       className={`relative w-11 h-11 md:w-8 md:h-8 flex items-center justify-center rounded-full transition-colors ${
         active ? 'bg-white text-gray-950' : 'text-gray-400 hover:text-white hover:bg-gray-800'
       }`}

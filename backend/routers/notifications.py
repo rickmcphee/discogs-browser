@@ -62,6 +62,13 @@ class MarkReadRequest(BaseModel):
 def mark_notifications_read(body: MarkReadRequest, request: Request):
     user_id = request.state.user_id
     with db.user_scope(user_id) as conn:
-        db.mark_price_drops_read(conn, user_id, body.up_to_id)
-        conn.commit()
+        # Clamped to a drop this user can actually see, and skipped entirely
+        # when they have none. The watermark only ever moves forward, so an
+        # unbounded value here is a one-way door: a client posting an id above
+        # the sequence would mark every future notification read before it
+        # existed, with nothing in the UI able to undo it.
+        latest = db.latest_price_drop_id(conn, user_id)
+        if latest is not None:
+            db.mark_price_drops_read(conn, user_id, min(body.up_to_id, latest))
+            conn.commit()
         return {"unread": db.count_unread_price_drops(conn, user_id)}

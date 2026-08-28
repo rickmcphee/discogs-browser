@@ -142,6 +142,37 @@ def test_latest_id_is_null_when_there_is_nothing_to_mark_read(
     assert client.get("/api/notifications").json()["latest_id"] is None
 
 
+def test_read_watermark_is_clamped_to_a_drop_the_user_can_see(pg_test_db, authed_client_factory):
+    # The watermark only moves forward, so an unbounded up_to_id is a one-way
+    # door: a value above the sequence marks every future notification read
+    # before it exists, and nothing in the UI can undo it.
+    user = _seed_drop()
+    client = authed_client_factory(user["id"])
+    latest = client.get("/api/notifications").json()["latest_id"]
+
+    r = client.post("/api/notifications/read", json={"up_to_id": 999_999_999},
+                    headers={"X-Requested-With": "fetch"})
+    assert r.status_code == 200
+    assert r.json() == {"unread": 0}
+
+    with db.user_scope(user["id"]) as conn:
+        assert db.get_notification_watermark(conn, user["id"]) == latest
+
+
+def test_read_watermark_is_not_written_before_any_drop_exists(pg_test_db, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=4, discogs_username="dave")
+        conn.commit()
+    client = authed_client_factory(user["id"])
+
+    r = client.post("/api/notifications/read", json={"up_to_id": 999_999_999},
+                    headers={"X-Requested-With": "fetch"})
+    assert r.json() == {"unread": 0}
+
+    with db.user_scope(user["id"]) as conn:
+        assert db.get_notification_watermark(conn, user["id"]) == 0
+
+
 def test_limit_is_bounded(pg_test_db, authed_client_factory):
     user = _seed_drop()
     client = authed_client_factory(user["id"])

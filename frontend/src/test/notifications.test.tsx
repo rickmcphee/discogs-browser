@@ -128,6 +128,66 @@ describe('notification bell', () => {
     expect(await screen.findByRole('button', { name: 'Notifications, 1 unread' })).toBeInTheDocument()
   })
 
+  it('does not refetch on a judgment event, which cannot have moved a price', async () => {
+    // stock_judgment_* bumps the counter the Store and Track tabs ride, but
+    // judgment writes stock_item_judgments and never touches a price. Riding
+    // that counter cost an unread request per judgment batch.
+    render(<App />)
+    await waitFor(() => expect(getNotificationsUnread).toHaveBeenCalledTimes(1))
+
+    lastCrawlSource!.onmessage!({
+      data: JSON.stringify({ id: 1, status: 'stock_judgment_progress', judged: 5, total: 10 }),
+    } as MessageEvent)
+    lastCrawlSource!.onmessage!({
+      data: JSON.stringify({ id: 2, status: 'stock_judgment_complete', judged: 10 }),
+    } as MessageEvent)
+    // A price event still does, so this is asserting selectivity rather than
+    // a dead wire.
+    lastCrawlSource!.onmessage!({
+      data: JSON.stringify({ id: 3, type: 'listing_changed', status: 'found', item_key: 'k', crawler_id: 3 }),
+    } as MessageEvent)
+
+    await waitFor(() => expect(getNotificationsUnread).toHaveBeenCalledTimes(2))
+  })
+
+  it('does not let a read that overlapped the write relight the dot', async () => {
+    // A generation tick can start an unread GET after the read POST began,
+    // giving it the newer token, and the server can still answer it from
+    // before the watermark commits. The write's own count is then unusable, so
+    // the dot has to be settled by a read issued strictly after the write.
+    // The tab is closed before the tick lands so the view's own reload cannot
+    // paper over it with a second POST -- that reload is what made an earlier
+    // version of this test pass against the bug.
+    getNotificationsUnread.mockResolvedValue({ unread: 1, latest_id: 7 })
+    getNotifications.mockResolvedValue({ items: [drop()], unread: 1, latest_id: 7, last_read_id: 0 })
+
+    let releaseRead: (v: { unread: number }) => void = () => {}
+    markNotificationsRead.mockImplementation(
+      () => new Promise((resolve) => { releaseRead = resolve }),
+    )
+
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Notifications, 1 unread' }))
+    await waitFor(() => expect(markNotificationsRead).toHaveBeenCalledWith(7))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Collection' }))
+
+    // The tick's GET still reports the old count: the watermark has not
+    // committed yet. It claims the newer token, so the write cannot apply its
+    // own count when it lands.
+    lastCrawlSource!.onmessage!({
+      data: JSON.stringify({ id: 9, type: 'listing_changed', status: 'found', item_key: 'k', crawler_id: 3 }),
+    } as MessageEvent)
+    await waitFor(() => expect(getNotificationsUnread).toHaveBeenCalledTimes(2))
+    expect(screen.getByTestId('notification-dot')).toBeInTheDocument()
+
+    getNotificationsUnread.mockResolvedValue({ unread: 0, latest_id: 7 })
+    releaseRead({ unread: 0 })
+
+    await waitFor(() => expect(screen.queryByTestId('notification-dot')).not.toBeInTheDocument())
+    expect(getNotificationsUnread).toHaveBeenCalledTimes(3)
+  })
+
   it('does not load or mark notifications read until the tab is opened', async () => {
     getNotificationsUnread.mockResolvedValue({ unread: 2, latest_id: 7 })
     render(<App />)

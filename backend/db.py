@@ -818,8 +818,8 @@ def init_tenant_schema():
         conn.execute("GRANT SELECT, INSERT, UPDATE ON catalog, listings, stock_item_identities TO app_user")
         # DELETE, but no UPDATE: a price drop is an append-only observation the
         # crawl worker records and the retention sweep (delete_expired_price_drops,
-        # run from _sync_stock on this same role) eventually removes. Nothing
-        # ever edits one in place.
+        # run hourly from main._price_drop_sweep_loop on this same role)
+        # eventually removes. Nothing ever edits one in place.
         conn.execute("GRANT SELECT, INSERT, DELETE ON stock_item_price_drops TO app_user")
         conn.execute("GRANT USAGE, SELECT ON SEQUENCE listings_id_seq, stock_items_id_seq, stock_item_price_drops_id_seq TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON library_items TO app_user")
@@ -868,7 +868,10 @@ def get_stock_item_identity(conn, item_key: str) -> Optional[dict]:
 # tab never pages back that far, and the table takes a row for every drop the
 # crawl worker sees -- including ones no user has saved, which it cannot tell
 # apart (stock_item_saves is RLS-scoped and invisible to an unscoped app_user
-# connection). Swept by delete_expired_price_drops at the end of each stock sync.
+# connection). Swept by delete_expired_price_drops, which main.py runs hourly
+# from its own task -- deliberately not from _sync_stock, since stock_schedule
+# is optional while the worker pool records drops through the release path
+# regardless.
 PRICE_DROP_RETENTION_DAYS = 90
 
 

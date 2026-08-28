@@ -42,9 +42,8 @@ Tailwind 4 on the frontend, pytest and Vitest. No new dependency.
 | File | Task(s) | Responsibility after this plan |
 |---|---|---|
 | `backend/db.py` | 1, 2, 3 | Both tables, grants, RLS policy; `_price_floors`, `_record_price_drops`, `delete_expired_price_drops`; the read/watermark helpers |
-| `backend/crawl_manager.py` | 3 | Retention sweep at the end of `_sync_stock` |
+| `backend/main.py` | 3, 4 | `_price_drop_sweep_loop`, the hourly retention task; router registration |
 | `backend/routers/notifications.py` | 4 | The three endpoints |
-| `backend/main.py` | 4 | Router registration |
 | `frontend/src/api/types.ts`, `client.ts` | 5 | `PriceDropNotification` and the three client functions |
 | `frontend/src/views/formatTimestamp.ts` | 5 | `formatServerTimestamp` (lifted from `Account.tsx`) + `formatRelativeTime` |
 | `frontend/src/components/NotificationBell.tsx` | 6 | Bell button, unread dot, accessible label |
@@ -79,8 +78,12 @@ Tailwind 4 on the frontend, pytest and Vitest. No new dependency.
       `_record_price_drops` (strict `<`, deduped per `(item_key, currency)`).
 - [x] Call both from `replace_stock_items`, `upsert_stock_item_listing` and
       `upsert_stock_item_from_release`, floor read first in each.
-- [x] `delete_expired_price_drops` + `PRICE_DROP_RETENTION_DAYS`, swept at the
-      end of `_sync_stock`.
+- [x] `delete_expired_price_drops` + `PRICE_DROP_RETENTION_DAYS`, swept hourly
+      by `main._price_drop_sweep_loop`, which sweeps before its first sleep.
+      Not a step in `_sync_stock`: `stock_schedule` is optional and defaults to
+      empty, while the worker pool records drops through the release path
+      regardless, so that version never pruned on a deployment that ran no
+      catalog sync.
 
 ### Task 4: Router
 

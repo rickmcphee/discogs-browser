@@ -34,13 +34,13 @@ Touches:
   `upsert_stock_item_listing` and `upsert_stock_item_from_release`;
   `get_price_drop_notifications`, `count_unread_price_drops`,
   `mark_price_drops_read`, `delete_expired_price_drops`.
-- `backend/crawl_manager.py` — the retention sweep at the end of `_sync_stock`,
-  beside the existing `delete_dead_stock_crawl_queue_rows` call.
+- `backend/main.py` — `_price_drop_sweep_loop`, the hourly retention task, plus
+  the router registration below. Retention is deliberately *not* a step in
+  `crawl_manager._sync_stock`; see "Retention".
 - `backend/routers/notifications.py` — new router: `GET /notifications`,
   `GET /notifications/unread`, `POST /notifications/read`.
-- `backend/main.py` — register the router.
 - `frontend/src/api/types.ts` — `PriceDropNotification`,
-  `NotificationsResponse`, `NotificationUnread`.
+  `NotificationsResponse`, `NotificationsUnread`.
 - `frontend/src/api/client.ts` — `getNotifications`,
   `getNotificationsUnread`, `markNotificationsRead`.
 - `frontend/src/components/NotificationBell.tsx` — new bell button.

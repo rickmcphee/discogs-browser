@@ -152,6 +152,13 @@ export default function App() {
   const [syncing, setSyncing] = useState(false)
   const [syncGeneration, setSyncGeneration] = useState(0)
   const [stockSyncGeneration, setStockSyncGeneration] = useState(0)
+  // A strict subset of stockSyncGeneration: bumped only by the events that can
+  // actually have written a price, so the notification badge and view are not
+  // woken by work that cannot produce a price drop. stockSyncGeneration is also
+  // bumped by the judgment events, which write stock_item_judgments and never
+  // touch a price -- riding it would fire an unread request per judgment batch,
+  // and, with the Notifications tab open, a list reload and a read POST too.
+  const [priceGeneration, setPriceGeneration] = useState(0)
   const [stockSyncTarget, setStockSyncTarget] = useState<number | 'all' | null>(null)
   // Optimistic twin of stockSyncTarget, set the instant a Refresh is clicked.
   // stockSyncTarget can't do this job on its own: it's only set once the
@@ -276,15 +283,26 @@ export default function App() {
   // list they came for is already on screen by then.
   const handleNotificationsLoaded = useCallback((latestId: number | null) => {
     if (latestId === null) {
+      latestNotificationsSeq.current++
       setUnreadNotifications(0)
       return
     }
     const seq = ++latestNotificationsSeq.current
     markNotificationsRead(latestId).then((s) => {
-      if (seq !== latestNotificationsSeq.current) return
-      setUnreadNotifications(s.unread)
+      if (seq === latestNotificationsSeq.current) {
+        setUnreadNotifications(s.unread)
+        return
+      }
+      // A read overlapped this write and already claimed the token, so the
+      // count above cannot be applied. That read may also be stale: a
+      // generation tick can start a GET after this POST began and the server
+      // can still answer it from before the watermark commits, which would
+      // relight a dot the user had just cleared. Re-reading is what settles
+      // it -- this request is issued strictly after the write committed, and
+      // takes a newer token than the read that overtook us.
+      fetchUnreadNotifications()
     }).catch(() => {})
-  }, [])
+  }, [fetchUnreadNotifications])
 
   // Same race, same fix, for hasJudgedItems: the bootstrap fetch below and
   // handleImportRecommendations's post-import refresh can both have a
@@ -462,6 +480,7 @@ export default function App() {
       if (event.status === 'stock_sync_progress') {
         setSyncStatus(`Syncing in-stock catalog… ${event.synced} items (${event.source})`, event.id ?? null)
         setStockSyncGeneration(g => g + 1)
+        setPriceGeneration(g => g + 1)
         return
       }
       if (event.status === 'stock_sync_complete') {
@@ -470,6 +489,7 @@ export default function App() {
         setStockSyncStarting(null)
         setSyncStatus(`In-stock sync complete: ${event.synced} items`, event.id ?? null)
         setStockSyncGeneration(g => g + 1)
+        setPriceGeneration(g => g + 1)
         return
       }
       if (event.status === 'stock_sync_error') {
@@ -520,6 +540,7 @@ export default function App() {
       }
       if (event.type === 'listing_changed') {
         setStockSyncGeneration(g => g + 1)
+        setPriceGeneration(g => g + 1)
         return
       }
       if (event.status === 'started') {
@@ -557,17 +578,16 @@ export default function App() {
     }
   }, [authState, setSyncStatus, fetchPriceStatus])
 
-  // Every event that bumps stockSyncGeneration -- listing_changed and the
-  // whole stock_sync_* family -- is precisely an event that could have just
-  // recorded a price drop, so the bell rides the counter the Store and Track
-  // tabs already refetch on. A notification-specific SSE event would have to
-  // be tagged with an owner, and the crawl worker cannot determine one: saves
-  // are RLS-scoped and invisible to it (see the price-drop design doc). Also
-  // covers the first fetch, since serverReady only flips once bootstrap runs.
+  // Rides priceGeneration rather than a notification-specific SSE event: a
+  // per-user event would have to be tagged with an owner, and the crawl worker
+  // cannot determine one -- saves are RLS-scoped and invisible to it (see the
+  // price-drop design doc). Every event that bumps priceGeneration is one that
+  // could have just recorded a drop. Also covers the first fetch, since
+  // serverReady only flips once bootstrap runs.
   useEffect(() => {
     if (authState?.state !== 'authenticated' || !serverReady) return
     fetchUnreadNotifications()
-  }, [stockSyncGeneration, authState, serverReady, fetchUnreadNotifications])
+  }, [priceGeneration, authState, serverReady, fetchUnreadNotifications])
 
   useEffect(() => {
     setUnauthorizedHandler(() => setAuthState({ state: 'unauthenticated' }))
@@ -1029,7 +1049,7 @@ export default function App() {
             before the user had seen anything. */}
         {view === 'notifications' && (
           <div className="h-full overflow-y-auto">
-            <Notifications generation={stockSyncGeneration} onLoaded={handleNotificationsLoaded} />
+            <Notifications generation={priceGeneration} onLoaded={handleNotificationsLoaded} />
           </div>
         )}
         {/* Gated on showAdminNav, not just hidden: LogViewer opens its SSE
