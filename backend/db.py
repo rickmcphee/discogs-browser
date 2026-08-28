@@ -2920,7 +2920,14 @@ def get_price_drop_feed(conn, user_id: int, limit: int = 50) -> dict:
                    d.previous_best, d.created_at,
                    w.last_read_id,
                    (d.id > w.last_read_id) AS unread,
-                   ROW_NUMBER() OVER (ORDER BY d.id DESC) AS rn
+                   -- Partitioned on the same unread predicate, so the two
+                   -- states are numbered separately and an unread row never
+                   -- eats into the read-history allowance. Unnumbered together,
+                   -- one unread row and limit=50 returned 49 read rows, which
+                   -- is not what "caps read history only" says.
+                   ROW_NUMBER() OVER (
+                       PARTITION BY (d.id > w.last_read_id) ORDER BY d.id DESC
+                   ) AS rn
             {_SAVED_PRICE_DROPS_SQL}
             CROSS JOIN watermark w
         )

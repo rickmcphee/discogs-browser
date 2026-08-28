@@ -263,6 +263,42 @@ def test_the_list_payload_comes_from_one_snapshot(pg_test_db, authed_client_fact
     assert len(body["items"]) == 1
 
 
+def test_the_limit_caps_read_history_without_unread_rows_eating_into_it(
+    pg_test_db, authed_client_factory,
+):
+    # "Caps read history only" is the contract, so an unread row must not
+    # consume the allowance. Numbered across both states, one unread row and
+    # limit=2 returned one unread plus one read row rather than one plus two.
+    user = _seed_drop(previous=50.0, price=40.0)
+    with db.get_admin_pool().connection() as conn:
+        crawler_id = conn.execute(
+            "SELECT id FROM crawlers WHERE site_name = 'Store A'"
+        ).fetchone()["id"]
+        for price in (30.0, 20.0):
+            db.replace_stock_items(conn, crawler_id, [
+                {"artist": "Artist A", "title": "Album A", "url": "https://store/1",
+                 "price": price, "currency": "USD"},
+            ])
+        conn.commit()
+    client = authed_client_factory(user["id"])
+
+    # Read everything, then add one more drop so exactly one row is unread.
+    latest = client.get("/api/notifications").json()["latest_id"]
+    client.post("/api/notifications/read", json={"up_to_id": latest},
+                headers={"X-Requested-With": "fetch"})
+    with db.get_admin_pool().connection() as conn:
+        db.replace_stock_items(conn, crawler_id, [
+            {"artist": "Artist A", "title": "Album A", "url": "https://store/1",
+             "price": 10.0, "currency": "USD"},
+        ])
+        conn.commit()
+
+    body = client.get("/api/notifications?limit=2").json()
+    assert body["unread"] == 1
+    # One unread plus two read rows -- not two rows in total.
+    assert len(body["items"]) == 3
+
+
 def test_limit_is_bounded(pg_test_db, authed_client_factory):
     user = _seed_drop()
     client = authed_client_factory(user["id"])

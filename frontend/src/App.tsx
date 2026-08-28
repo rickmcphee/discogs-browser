@@ -297,12 +297,12 @@ export default function App() {
   // list they came for is already on screen by then.
   const handleNotificationsLoaded = useCallback((latestId: number | null) => {
     if (latestId === null) {
-      // Re-read rather than assume zero. An empty list does not prove the count
-      // is zero: the payload's items and its unread count are separate READ
-      // COMMITTED statements, so a drop committing between them yields
-      // {items: [], unread: 1, latest_id: null}. Forcing zero here would throw
-      // that away and hide a dot the server had just raised. The fetch also
-      // takes a newer token, which is what the bump was there for.
+      // Re-read rather than assume zero. The payload is one snapshot, so an
+      // empty list really did mean nothing was unread -- at the moment the
+      // server took it. A drop committing immediately after leaves this branch
+      // holding a count that is already stale, and forcing zero would then hide
+      // a dot the server had raised, with no guaranteed later tick to correct
+      // it. The fetch also takes a newer token, which is what the bump was for.
       fetchUnreadNotifications()
       return
     }

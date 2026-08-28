@@ -309,12 +309,16 @@ shrink the unread set, never resurrect it.
   the watermark past everything below. A limit that cut into them would mark
   rows read that were never delivered, with no cursor in this API to reach them
   again — so the query returns every unread row plus at most `limit` rows of
-  read history. It self-bounds: opening the tab clears unread. `last_read_id` is the watermark itself,
+  read history. The two states are ranked in separate `ROW_NUMBER` partitions,
+  so an unread row never eats into that allowance; ranked together, one unread
+  row and `limit=50` returned 49 read rows, which is not what "caps read
+  history only" says. It self-bounds: opening the tab clears unread. `last_read_id` is the watermark itself,
   not just the count: the view needs it to know *which* of the rows it just
   fetched are the new ones. `latest_id` is read off `items[0]`, **not** from a
-  second `MAX(id)` query — these statements do not share a snapshot under READ
-  COMMITTED, and a drop committing between the two would hand the client an id
-  for a row it never received. Since the client marks read through whatever it
+  second `MAX(id)` query — that was a separate statement and so a separate
+  snapshot, and a drop committing between the two would hand the client an id
+  for a row it never received. (The whole payload is one statement now, so this
+  is belt and braces rather than the load-bearing guard it once was.) Since the client marks read through whatever it
   is given and the watermark only moves forward, that would permanently hide a
   notification nobody ever saw. Taking it off the returned list makes the state
   unrepresentable. (`GET /notifications/unread` may still report a bare
@@ -407,9 +411,10 @@ response, and the badge follows that write rather than running ahead of it —
 clearing optimistically would make a dropped POST look like success, with no
 guaranteed later tick to correct it. When a concurrent read has overtaken the
 write, its count is unusable and a fresh read is issued instead, strictly after
-the write committed. An empty response re-reads rather than assuming zero, for
-the same reason: `items` and `unread` are separate statements, so an empty list
-does not prove the count is zero. The view captures `last_read_id` from the first
+the write committed. An empty response re-reads rather than assuming zero: the
+payload is one snapshot, so an empty list did mean nothing was unread *at the
+moment the server took it*, and a drop committing straight after leaves that
+count stale — forcing zero would hide a dot the server had raised. The view captures `last_read_id` from the first
 response of the visit and leaves it alone afterwards, so rows above it keep
 their accent for the rest of the visit even though they have already been
 marked read — the user can still see what was new when they arrived.

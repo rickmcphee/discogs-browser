@@ -333,9 +333,9 @@ describe('notifications view', () => {
   })
 
   it('re-reads rather than assuming zero when the list comes back empty', async () => {
-    // items and unread are separate READ COMMITTED statements on the server, so
-    // a drop committing between them yields {items: [], unread: 1}. Forcing the
-    // badge to zero on an empty list would throw that away.
+    // An empty list only means nothing was unread when the server took its
+    // snapshot; a drop committing straight after leaves the count stale.
+    // Forcing the badge to zero would hide a dot the server had raised.
     getNotificationsUnread.mockResolvedValue({ unread: 1, latest_id: 5 })
     getNotifications.mockResolvedValue({ items: [], unread: 1, latest_id: null, last_read_id: 0 })
 
