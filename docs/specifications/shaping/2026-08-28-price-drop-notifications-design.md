@@ -157,7 +157,8 @@ WHERE d.created_at >= sv.saved_at
 
 RLS does the isolation on `stock_item_saves`, as it already does everywhere
 else, and a user can only ever see drops for items they personally saved. The
-`created_at >= saved_at` clause is what makes "notification" the right word:
+`created_at >= saved_at` clause is what makes "notification" the right word,
+and is why the drop's timestamp has to be wall-clock (see `created_at` above):
 you are told about changes since you started watching, not handed the item's
 back catalogue of price history the moment you bookmark it.
 
@@ -197,6 +198,18 @@ was $22.00" without re-deriving a number the world has since moved past.
 
 `previous_best` is `NOT NULL` because a row only exists when a floor was beaten;
 "no floor" is not a drop, it is the absence of one.
+
+`created_at` is written with `clock_timestamp()`, **not** `CURRENT_TIMESTAMP`,
+and that is a correctness requirement rather than a precision preference.
+`CURRENT_TIMESTAMP` is fixed at transaction start, and `_record_price_drops`
+runs inside `replace_stock_items`' transaction — which also carries the bulk
+delete, every insert, and `_sync_stock`'s per-item enqueue loop. A drop stamped
+at transaction start is therefore backdated across all of it, and an item saved
+during that window is filtered out of its own notification *forever* by the
+`created_at >= saved_at` rule below. The column's `DEFAULT` is set the same way
+by `ALTER`, since `CREATE TABLE IF NOT EXISTS` does not revisit an existing
+table's default and a `CURRENT_TIMESTAMP` default left behind is the same trap
+for the next writer who omits the column.
 
 Grants, alongside the existing `catalog, listings, stock_item_identities` line:
 

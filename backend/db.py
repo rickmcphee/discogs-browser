@@ -476,6 +476,17 @@ CREATE TABLE IF NOT EXISTS stock_item_price_drops (
 CREATE INDEX IF NOT EXISTS stock_item_price_drops_item_key_idx
     ON stock_item_price_drops (item_key, id DESC);
 
+-- clock_timestamp(), not the CURRENT_TIMESTAMP this column was created with:
+-- that one is fixed at transaction start, and _record_price_drops runs inside
+-- replace_stock_items' transaction, which also carries the bulk delete, every
+-- insert and the per-item enqueue loop. A drop stamped at transaction start is
+-- backdated across all of it -- and an item saved during that window is then
+-- filtered out of its own notification forever by get_price_drop_notifications'
+-- created_at >= saved_at. Set by ALTER as well as in the CREATE above, since
+-- CREATE TABLE IF NOT EXISTS does not revisit an existing table's default.
+ALTER TABLE stock_item_price_drops
+    ALTER COLUMN created_at SET DEFAULT clock_timestamp();
+
 ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS release_id TEXT REFERENCES catalog(discogs_id);
 CREATE UNIQUE INDEX IF NOT EXISTS stock_items_crawler_release_idx ON stock_items (crawler_id, release_id) WHERE release_id IS NOT NULL;
 
@@ -976,7 +987,7 @@ def _record_price_drops(conn, crawler_id: int, floors: dict, candidates: list) -
             """
             INSERT INTO stock_item_price_drops
                 (item_key, crawler_id, url, price, currency, previous_best, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+            VALUES (%s, %s, %s, %s, %s, %s, clock_timestamp())
             """,
             rows,
         )

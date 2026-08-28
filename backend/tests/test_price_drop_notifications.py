@@ -172,6 +172,64 @@ def test_an_unpriced_row_records_nothing(pg_test_db):
         assert _drops(conn) == []
 
 
+def test_a_drop_is_stamped_when_it_is_written_not_when_its_transaction_began(pg_test_db):
+    # CURRENT_TIMESTAMP is fixed at transaction start, and replace_stock_items
+    # runs inside a transaction that also carries the bulk delete, every insert
+    # and the per-item enqueue loop. Stamping a drop that way backdates it
+    # across all of that -- and an item saved during the window is then filtered
+    # out of its own notification forever by created_at >= saved_at.
+    with db.get_admin_pool().connection() as conn:
+        crawler_id = _crawler(conn, "Store A")
+        db.replace_stock_items(conn, crawler_id, [_stock(price=20.0)])
+        conn.commit()
+
+        # This read opens the next transaction, so it is that transaction's
+        # start time -- exactly what CURRENT_TIMESTAMP would have written.
+        # LOCALTIMESTAMP rather than CURRENT_TIMESTAMP only so the comparison
+        # below is naive-to-naive, matching the column's type.
+        began = conn.execute("SELECT LOCALTIMESTAMP AS t").fetchone()["t"]
+        conn.execute("SELECT pg_sleep(0.05)")
+        db.replace_stock_items(conn, crawler_id, [_stock(price=18.0)])
+        conn.commit()
+
+        created_at = conn.execute(
+            "SELECT created_at FROM stock_item_price_drops"
+        ).fetchone()["created_at"]
+    assert created_at > began
+
+
+def test_an_item_saved_while_a_sync_is_mid_transaction_still_gets_its_drop(pg_test_db):
+    """The bug this guards, end to end: the save commits on its own connection
+    after the sync's transaction has already opened, but before the sync writes
+    the drop. A transaction-start stamp backdates the drop behind the save and
+    created_at >= saved_at hides it forever.
+
+    The sync connection must stay inside its transaction across the save -- an
+    earlier version of this test let the `with` block close it first, which put
+    the drop in a transaction that began after the save and quietly stopped
+    reproducing anything."""
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        crawler_id = _crawler(conn, "Store A")
+        db.replace_stock_items(conn, crawler_id, [_stock(price=20.0)])
+        conn.commit()
+
+        # Opens the sync's transaction, and nothing below commits it until the
+        # drop has been written.
+        conn.execute("SELECT LOCALTIMESTAMP")
+        conn.execute("SELECT pg_sleep(0.05)")
+
+        with db.user_scope(alice["id"]) as save_conn:
+            db.save_stock_item(save_conn, alice["id"], _key())
+            save_conn.commit()
+
+        db.replace_stock_items(conn, crawler_id, [_stock(price=18.0)])
+        conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert len(db.get_price_drop_notifications(conn, alice["id"])) == 1
+
+
 def test_notifications_cover_only_the_calling_users_saved_items(pg_test_db):
     with db.get_admin_pool().connection() as conn:
         alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
