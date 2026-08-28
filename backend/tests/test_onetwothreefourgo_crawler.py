@@ -738,6 +738,27 @@ async def test_crawl_catalog_keeps_a_record_plus_cassette_bundle(crawler):
     ]
 
 
+@respx.mock
+async def test_crawl_catalog_puts_the_variant_descriptor_after_the_status_marker(crawler):
+    # No live product is both marked and multi-variant, so this composition
+    # order exists only here. Both back positions match the catalog the same
+    # way -- db._library_match_fragment is exact-or-prefix-with-space, and only
+    # the front position breaks it -- so this pins a readability decision, not
+    # a correctness one: "— {variant}" is terminal across the fleet, and the
+    # marker describes the product while the variant names the pressing.
+    marked_multi_variant = {
+        **_MULTI_VARIANT_PRODUCT,
+        "title": 'Used Vinyl: Shannon and The Clams "Sleep Talk" LP',
+    }
+    _mock_single_page([marked_multi_variant])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["title"] for i in items] == [
+        "Sleep Talk LP (Used) — Yellow & Blue Split with Gold Splatter",
+        "Sleep Talk LP (Used) — Metallic Gold",
+        "Sleep Talk LP (Used) — Metallic Silver",
+    ]
+
+
 def test_site_metadata(crawler):
     assert crawler.site_name == "1-2-3-4 Go! Records"
     assert crawler.base_url == "https://1234gorecords.shop"

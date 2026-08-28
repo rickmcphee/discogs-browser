@@ -155,6 +155,13 @@ class Crawler:
                 continue
             title = album
             if is_multi_variant:
+                # After the status marker `album` already carries, not before
+                # it: only the front position breaks
+                # db._library_match_fragment's exact-or-prefix-with-space
+                # match, so both back positions match the catalog identically
+                # and this is a readability call. `— {variant}` is terminal
+                # across the fleet, and the marker describes the product while
+                # the variant names the pressing.
                 title = f"{title} — {(variant.get('title') or '').strip()}"
             items.append({
                 "artist": artist,
