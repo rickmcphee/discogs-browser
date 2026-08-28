@@ -295,13 +295,21 @@ shrink the unread set, never resurrect it.
 `db.user_scope(request.state.user_id)`:
 
 - `GET /notifications?limit=` → `{items, unread, latest_id, last_read_id}`. The
-  list the tab renders, newest first. **The limit caps read history only, never
-  the unread rows**: unread is `id > watermark` and the list is id-descending,
-  so the unread rows are exactly the top `unread` of it, and the client marks
-  read through `items[0].id`, which advances the watermark past everything
-  below. A limit that cut into them would mark rows read that were never
-  delivered, with no cursor in this API to reach them again — so the effective
-  limit is `max(limit, unread)`. It self-bounds: opening the tab clears unread. `last_read_id` is the watermark itself,
+  list the tab renders, newest first, and **all of it from a single statement**
+  (`db.get_price_drop_feed`). That is correctness, not economy: under READ
+  COMMITTED each statement takes its own snapshot, so counting the unread rows
+  and then fetching them left a window where a sync committing a burst of drops
+  between the two returned only the newest slice — while the client marked read
+  through the newest id it was handed, losing everything the slice omitted.
+  Deriving the count from the very rows returned makes that unrepresentable.
+
+  **The limit caps read history only, never the unread rows.** Unread is
+  `id > watermark` and the list is id-descending, so the unread rows are exactly
+  the top of it, and the client marks read through `items[0].id`, which advances
+  the watermark past everything below. A limit that cut into them would mark
+  rows read that were never delivered, with no cursor in this API to reach them
+  again — so the query returns every unread row plus at most `limit` rows of
+  read history. It self-bounds: opening the tab clears unread. `last_read_id` is the watermark itself,
   not just the count: the view needs it to know *which* of the rows it just
   fetched are the new ones. `latest_id` is read off `items[0]`, **not** from a
   second `MAX(id)` query — these statements do not share a snapshot under READ

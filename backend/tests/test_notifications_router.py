@@ -243,6 +243,26 @@ def test_the_limit_never_cuts_into_unread_rows(pg_test_db, authed_client_factory
     assert len(after["items"]) == 1
 
 
+def test_the_list_payload_comes_from_one_snapshot(pg_test_db, authed_client_factory, monkeypatch):
+    """items, unread and last_read_id are one statement, so they cannot
+    disagree. They used to be three: under READ COMMITTED each took its own
+    snapshot, so a sync committing a burst of drops between the count and the
+    list returned only the newest slice while the client marked read through
+    the newest id -- losing everything the slice omitted.
+
+    Stubbing the standalone count to a value no reading of the rows could
+    produce is the direct check that the list endpoint no longer consults it."""
+    user = _seed_drop()
+    monkeypatch.setattr(db, "count_unread_price_drops", lambda *a, **k: 99)
+    monkeypatch.setattr(db, "get_notification_watermark", lambda *a, **k: 12_345)
+    client = authed_client_factory(user["id"])
+
+    body = client.get("/api/notifications").json()
+    assert body["unread"] == 1
+    assert body["last_read_id"] == 0
+    assert len(body["items"]) == 1
+
+
 def test_limit_is_bounded(pg_test_db, authed_client_factory):
     user = _seed_drop()
     client = authed_client_factory(user["id"])

@@ -2889,22 +2889,72 @@ _SAVED_PRICE_DROPS_SQL = """
 """
 
 
-def get_price_drop_notifications(conn, user_id: int, limit: int = 50) -> list:
-    return conn.execute(
+def get_price_drop_feed(conn, user_id: int, limit: int = 50) -> dict:
+    """The Notifications tab's whole payload, from a single statement.
+
+    One statement rather than three, and that is correctness rather than
+    economy. Under READ COMMITTED each statement takes its own snapshot, so
+    counting the unread rows and then fetching them left a window: a sync
+    committing a burst of drops between the two returns only the newest slice,
+    the client marks read through the newest id it was handed, and everything
+    the slice omitted is read without ever having been delivered. Taking the
+    rows, the unread count and the watermark together makes that
+    unrepresentable -- the count is derived from the very rows returned.
+
+    The limit caps *read history* only. Every unread row is returned whatever
+    it says: unread is `id > watermark`, the list is id-descending, so the
+    unread rows are exactly the top of it -- and since the client advances the
+    watermark past everything below `items[0]`, a limit that cut into them
+    would mark undelivered rows read with no cursor here to reach them again.
+    It self-bounds: opening the tab is what clears unread.
+    """
+    rows = conn.execute(
         f"""
-        SELECT d.id, d.item_key, d.url, d.price, d.currency, d.previous_best, d.created_at,
+        WITH watermark AS (
+            SELECT COALESCE(
+                (SELECT last_read_drop_id FROM user_notification_reads
+                  WHERE user_id = %(user_id)s), 0) AS last_read_id
+        ),
+        visible AS (
+            SELECT d.id, d.item_key, d.crawler_id, d.url, d.price, d.currency,
+                   d.previous_best, d.created_at,
+                   w.last_read_id,
+                   (d.id > w.last_read_id) AS unread,
+                   ROW_NUMBER() OVER (ORDER BY d.id DESC) AS rn
+            {_SAVED_PRICE_DROPS_SQL}
+            CROSS JOIN watermark w
+        )
+        SELECT v.id, v.item_key, v.url, v.price, v.currency, v.previous_best,
+               v.created_at, v.last_read_id, v.unread,
                i.artist, i.title, i.format, cr.site_name AS source,
                (SELECT s.cover_image_url FROM stock_items s
-                 WHERE s.item_key = d.item_key AND s.cover_image_url IS NOT NULL
+                 WHERE s.item_key = v.item_key AND s.cover_image_url IS NOT NULL
                  LIMIT 1) AS cover_image_url
-        {_SAVED_PRICE_DROPS_SQL}
-        JOIN stock_item_identities i ON i.item_key = d.item_key
-        JOIN crawlers cr ON cr.id = d.crawler_id
-        ORDER BY d.id DESC
-        LIMIT %(limit)s
+        FROM visible v
+        JOIN stock_item_identities i ON i.item_key = v.item_key
+        JOIN crawlers cr ON cr.id = v.crawler_id
+        WHERE v.unread OR v.rn <= %(limit)s
+        ORDER BY v.id DESC
         """,
         {"user_id": user_id, "limit": limit},
     ).fetchall()
+
+    items = []
+    unread = 0
+    for row in rows:
+        row = dict(row)
+        if row.pop("unread"):
+            unread += 1
+        row.pop("last_read_id")
+        items.append(row)
+    return {
+        "items": items,
+        "unread": unread,
+        # Off the same rows where there are any; only a caller with no
+        # notifications at all falls back to a second read, and for them there
+        # is nothing a stale watermark could mis-mark.
+        "last_read_id": rows[0]["last_read_id"] if rows else get_notification_watermark(conn, user_id),
+    }
 
 
 def count_unread_price_drops(conn, user_id: int) -> int:

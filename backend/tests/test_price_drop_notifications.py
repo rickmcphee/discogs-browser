@@ -227,7 +227,7 @@ def test_an_item_saved_while_a_sync_is_mid_transaction_still_gets_its_drop(pg_te
         conn.commit()
 
     with db.user_scope(alice["id"]) as conn:
-        assert len(db.get_price_drop_notifications(conn, alice["id"])) == 1
+        assert len(db.get_price_drop_feed(conn, alice["id"])["items"]) == 1
 
 
 def test_notifications_cover_only_the_calling_users_saved_items(pg_test_db):
@@ -253,13 +253,13 @@ def test_notifications_cover_only_the_calling_users_saved_items(pg_test_db):
         conn.commit()
 
     with db.user_scope(alice["id"]) as conn:
-        rows = db.get_price_drop_notifications(conn, alice["id"])
+        rows = db.get_price_drop_feed(conn, alice["id"])["items"]
     assert [(r["title"], r["price"], r["previous_best"], r["source"]) for r in rows] == [
         ("Album A", 18.0, 20.0, "Store A"),
     ]
 
     with db.user_scope(bob["id"]) as conn:
-        assert db.get_price_drop_notifications(conn, bob["id"]) == []
+        assert db.get_price_drop_feed(conn, bob["id"])["items"] == []
 
 
 def test_two_users_saving_one_item_both_see_its_drop(pg_test_db):
@@ -281,7 +281,7 @@ def test_two_users_saving_one_item_both_see_its_drop(pg_test_db):
 
     for user in (alice, bob):
         with db.user_scope(user["id"]) as conn:
-            assert len(db.get_price_drop_notifications(conn, user["id"])) == 1
+            assert len(db.get_price_drop_feed(conn, user["id"])["items"]) == 1
             assert db.count_unread_price_drops(conn, user["id"]) == 1
 
 
@@ -303,7 +303,7 @@ def test_a_drop_from_before_the_save_is_not_a_notification(pg_test_db):
         db.save_stock_item(conn, alice["id"], _key())
         conn.commit()
     with db.user_scope(alice["id"]) as conn:
-        assert db.get_price_drop_notifications(conn, alice["id"]) == []
+        assert db.get_price_drop_feed(conn, alice["id"])["items"] == []
         assert db.count_unread_price_drops(conn, alice["id"]) == 0
 
 
@@ -387,7 +387,7 @@ def test_notifications_carry_a_cover_image_when_the_item_is_still_stocked(pg_tes
         conn.commit()
 
     with db.user_scope(alice["id"]) as conn:
-        rows = db.get_price_drop_notifications(conn, alice["id"])
+        rows = db.get_price_drop_feed(conn, alice["id"])["items"]
     assert rows[0]["cover_image_url"] == "https://img/1.jpg"
     assert rows[0]["artist"] == "Artist A"
     assert rows[0]["url"] == "https://store/1"
@@ -414,7 +414,7 @@ def test_the_notification_link_survives_the_stock_row_it_came_from(pg_test_db):
         conn.commit()
 
     with db.user_scope(alice["id"]) as conn:
-        rows = db.get_price_drop_notifications(conn, alice["id"])
+        rows = db.get_price_drop_feed(conn, alice["id"])["items"]
     assert len(rows) == 1
     assert rows[0]["url"] == "https://store/1"
     assert rows[0]["price"] == 18.0

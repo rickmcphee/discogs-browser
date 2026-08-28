@@ -13,34 +13,24 @@ MAX_LIMIT = 200
 
 
 def _payload(conn, user_id: int, limit: int) -> dict:
-    unread = db.count_unread_price_drops(conn, user_id)
-    # The limit never cuts into the unread rows. Unread is defined as
-    # id > watermark and the list is id-descending, so the unread rows are
-    # always exactly the top `unread` of it -- and the client marks read
-    # through items[0].id, which advances the watermark past *everything*
-    # below. A limit smaller than the unread count would therefore mark rows
-    # read that were never delivered, with no cursor anywhere in this API to
-    # reach them again. Reading them is the whole point of the tab, so the cap
-    # applies to read history only.
-    items = [
-        dict(row)
-        for row in db.get_price_drop_notifications(conn, user_id, max(limit, unread))
-    ]
+    # One statement behind this, not three -- see db.get_price_drop_feed. The
+    # rows, the unread count and the watermark all come from a single snapshot,
+    # so a burst of drops committing mid-request cannot hand the client an
+    # unread count or a latest_id that disagrees with the rows it received.
+    feed = db.get_price_drop_feed(conn, user_id, limit)
+    items = feed["items"]
     return {
         "items": items,
-        "unread": unread,
-        # Taken from the rows actually returned, not from a second MAX(id)
-        # query. These statements run under READ COMMITTED and so do not share
-        # a snapshot: a drop committing between the two would put an id in this
-        # field for a row the client never received, and the client marks read
-        # through whatever it is handed -- permanently hiding a notification
-        # nobody ever saw, since the watermark only moves forward. Reading it
-        # off the list makes that unrepresentable. The list is id-descending,
-        # so items[0] is the newest the caller holds.
+        "unread": feed["unread"],
+        # Taken from the rows actually returned. The client marks read through
+        # this, and the watermark only moves forward, so an id for a row it
+        # never received would hide that notification permanently. Reading it
+        # off the list -- which the feed guarantees holds every unread row --
+        # makes that unrepresentable. items[0] is the newest, id-descending.
         "latest_id": items[0]["id"] if items else None,
         # The view needs the watermark itself, not just the count, to know
         # which of the rows it just fetched are the new ones.
-        "last_read_id": db.get_notification_watermark(conn, user_id),
+        "last_read_id": feed["last_read_id"],
     }
 
 
