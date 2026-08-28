@@ -32,7 +32,7 @@ Touches:
   policy and grant) in `TENANT_SCHEMA`; `_price_floors` /
   `_record_price_drops` helpers wired into `replace_stock_items`,
   `upsert_stock_item_listing` and `upsert_stock_item_from_release`;
-  `get_price_drop_notifications`, `count_unread_price_drops`,
+  `get_price_drop_feed`, `count_unread_price_drops`,
   `mark_price_drops_read`, `delete_expired_price_drops`.
 - `backend/main.py` — `_price_drop_sweep_loop`, the hourly retention task, plus
   the router registration below. Retention is deliberately *not* a step in
@@ -505,7 +505,7 @@ Backend (`test_price_drop_notifications.py`):
   carrying that crawler and URL.
 - A EUR price below a USD floor records nothing (currency bucketing).
 - Duplicate `item_key`s in one `replace_stock_items` batch record one drop.
-- `get_price_drop_notifications` returns only the calling user's saved items,
+- `get_price_drop_feed` returns only the calling user's saved items,
   and only drops at/after `saved_at`.
 - Two users saving the same item both see the drop; a user who saved neither
   sees nothing (RLS isolation, via `user_scope`).

@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import db
 
@@ -57,7 +57,11 @@ def unread_notifications(request: Request):
 
 
 class MarkReadRequest(BaseModel):
-    up_to_id: int
+    # ge=1 so a malformed value is a 422 rather than reaching Postgres. Drop ids
+    # are a BIGSERIAL, so anything below 1 is meaningless as a watermark -- and
+    # a large enough negative overflows the BIGINT column outright, which the
+    # clamp below does not stop because min() keeps whichever is smaller.
+    up_to_id: int = Field(ge=1)
 
 
 @router.post("/notifications/read")

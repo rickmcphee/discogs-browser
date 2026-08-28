@@ -451,7 +451,7 @@ CREATE INDEX IF NOT EXISTS stock_items_item_key_idx ON stock_items (item_key);
 -- fan it out per user even if the table wanted it to -- stock_item_saves is
 -- RLS-scoped and its connections are unscoped app_user ones, so the worker
 -- cannot see anybody's saves. The per-user half is a read-time join through
--- the caller's own saves under user_scope; see get_price_drop_notifications.
+-- the caller's own saves under user_scope; see get_price_drop_feed.
 --
 -- url/price/previous_best are denormalized rather than resolved at read time:
 -- replace_stock_items deletes and reinserts a store's whole batch on every
@@ -481,7 +481,7 @@ CREATE INDEX IF NOT EXISTS stock_item_price_drops_item_key_idx
 -- replace_stock_items' transaction, which also carries the bulk delete, every
 -- insert and the per-item enqueue loop. A drop stamped at transaction start is
 -- backdated across all of it -- and an item saved during that window is then
--- filtered out of its own notification forever by get_price_drop_notifications'
+-- filtered out of its own notification forever by get_price_drop_feed's
 -- created_at >= saved_at. Set by ALTER as well as in the CREATE above, since
 -- CREATE TABLE IF NOT EXISTS does not revisit an existing table's default.
 ALTER TABLE stock_item_price_drops

@@ -299,6 +299,25 @@ def test_the_limit_caps_read_history_without_unread_rows_eating_into_it(
     assert len(body["items"]) == 3
 
 
+def test_a_negative_up_to_id_is_rejected_rather_than_reaching_postgres(
+    pg_test_db, authed_client_factory,
+):
+    # min(up_to_id, latest) keeps whichever is smaller, so a negative sails
+    # through the clamp. A large enough one overflows the BIGINT column and
+    # 500s; a small one stores a meaningless watermark. Drop ids are a
+    # BIGSERIAL, so anything below 1 is invalid input, not a value to store.
+    user = _seed_drop()
+    client = authed_client_factory(user["id"])
+
+    for bad in (0, -1, -(2 ** 70)):
+        r = client.post("/api/notifications/read", json={"up_to_id": bad},
+                        headers={"X-Requested-With": "fetch"})
+        assert r.status_code == 422, bad
+
+    with db.user_scope(user["id"]) as conn:
+        assert db.get_notification_watermark(conn, user["id"]) == 0
+
+
 def test_limit_is_bounded(pg_test_db, authed_client_factory):
     user = _seed_drop()
     client = authed_client_factory(user["id"])
