@@ -478,7 +478,10 @@ export async function getNotificationsUnread(): Promise<NotificationsUnread> {
   return r.json()
 }
 
-export async function markNotificationsRead(upToId: number): Promise<NotificationsUnread> {
+// Returns only the recomputed unread count -- deliberately not
+// NotificationsUnread, which also promises latest_id the server never sends
+// back from this route.
+export async function markNotificationsRead(upToId: number): Promise<{ unread: number }> {
   const r = await apiFetch('/notifications/read', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

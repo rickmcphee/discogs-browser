@@ -23,7 +23,17 @@ BUNDLED_CRAWLERS_DIR = Path(__file__).parent / "crawlers"
 
 SCHEDULE_RESYNC_INTERVAL_SECONDS = 300
 
+# How often stock_item_price_drops is swept back to its retention window. Its
+# own task rather than a step in the stock sync, which is where this started:
+# stock_schedule is optional and defaults to empty, while the always-running
+# worker pool keeps recording drops through the release path regardless -- so a
+# deployment that never runs a stock sync would never have pruned, and the
+# global table would grow without bound. Hourly, matching logging_config's
+# app_logs prune.
+PRICE_DROP_SWEEP_INTERVAL_SECONDS = 3600
+
 _schedule_resync_task: Optional[asyncio.Task] = None
+_price_drop_sweep_task: Optional[asyncio.Task] = None
 
 
 def _crawler_metadata(path: Path, fallback_site_name: str) -> tuple[str, str, bool]:
@@ -114,6 +124,31 @@ async def _schedule_resync_loop() -> None:
             log.exception("Periodic schedule resync failed")
 
 
+async def _price_drop_sweep_loop() -> None:
+    # Sweeps before its first sleep, not after, for the reason logging_config's
+    # writer loop backdates its own timer: waiting an hour first means every
+    # restart resets the clock, and a process that never stays up that long
+    # never prunes at all.
+    while True:
+        try:
+            await asyncio.to_thread(_sweep_expired_price_drops)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Price drop retention sweep failed")
+        await asyncio.sleep(PRICE_DROP_SWEEP_INTERVAL_SECONDS)
+
+
+def _sweep_expired_price_drops() -> None:
+    from db import delete_expired_price_drops, get_app_pool
+
+    with get_app_pool().connection() as conn:
+        removed = delete_expired_price_drops(conn)
+        conn.commit()
+    if removed:
+        log.info("Discarded %d price drops past their retention window", removed)
+
+
 @app.on_event("startup")
 async def startup():
     log.info("=" * 60)
@@ -131,8 +166,9 @@ async def startup():
     await crawl_manager.start_worker_pool(worker_count=int(load_config().get("crawl_worker_count", 2)))
     scheduler.start()
     _configure_schedules(load_config())
-    global _schedule_resync_task
+    global _schedule_resync_task, _price_drop_sweep_task
     _schedule_resync_task = asyncio.create_task(_schedule_resync_loop())
+    _price_drop_sweep_task = asyncio.create_task(_price_drop_sweep_loop())
 
     log.info("=" * 60)
     log.info("Discogs Browser backend v%s ready", VERSION)
@@ -140,12 +176,17 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown():
-    global _schedule_resync_task
+    global _schedule_resync_task, _price_drop_sweep_task
     if _schedule_resync_task is not None:
         _schedule_resync_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await _schedule_resync_task
         _schedule_resync_task = None
+    if _price_drop_sweep_task is not None:
+        _price_drop_sweep_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await _price_drop_sweep_task
+        _price_drop_sweep_task = None
     await crawl_manager.stop_worker_pool()
     scheduler.shutdown()
     stop_log_writer()

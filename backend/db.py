@@ -888,6 +888,26 @@ def _price_floors(conn, item_keys: list) -> dict:
     EUR 10 and USD 12 are not comparable and must never be allowed to undercut
     one another. Non-USD sources are real here (Jetglow Recordings, SPV), so
     that is a live case rather than a hypothetical.
+
+    Not serialized against a concurrent writer, deliberately. Under READ
+    COMMITTED a stock sync and a marketplace crawl can both read this floor for
+    one item_key before either commits, and both then see their own price beat
+    it. The outcome is bounded to one *superfluous* notification and never a
+    missing one: with both writes below the shared floor, serializing them
+    would have recorded the first and possibly the second, so concurrency can
+    only ever add a drop, never remove one. (A price that becomes cheapest
+    because some *other* source got dearer records nothing either way -- that
+    is the rule, not a race.)
+
+    The obvious fixes cost more than the defect. A per-item advisory lock is
+    taken per row, and replace_stock_items writes a whole store's catalog in
+    one transaction, so a batch would hold tens of thousands of entries in a
+    lock table sized by max_locks_per_transaction. SELECT ... FOR UPDATE on
+    stock_item_identities avoids that -- row locks are heap-resident and
+    unbounded in count -- but it would park every marketplace write for a
+    store's keys behind that same long transaction, trading a cosmetic
+    duplicate for a stalled crawl worker. See the design doc's known
+    limitations.
     """
     if not item_keys:
         return {}

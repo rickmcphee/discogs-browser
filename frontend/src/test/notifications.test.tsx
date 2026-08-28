@@ -165,6 +165,24 @@ describe('notifications view', () => {
     await waitFor(() => expect(screen.queryByTestId('notification-dot')).not.toBeInTheDocument())
   })
 
+  it('leaves the dot lit when the read request fails', async () => {
+    // Clearing optimistically made a dropped POST look like success. The price
+    // change that produced the unread rows has already happened, so nothing
+    // guarantees a later generation tick to correct the badge -- it would stay
+    // wrong until an unrelated change or a reload.
+    getNotificationsUnread.mockResolvedValue({ unread: 1, latest_id: 7 })
+    getNotifications.mockResolvedValue({ items: [drop()], unread: 1, latest_id: 7, last_read_id: 0 })
+    markNotificationsRead.mockRejectedValue(new Error('offline'))
+
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Notifications, 1 unread' }))
+
+    await waitFor(() => expect(markNotificationsRead).toHaveBeenCalledWith(7))
+    await screen.findByRole('link', { name: /Selected Ambient Works/ })
+    expect(screen.getByTestId('notification-dot')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Notifications, 1 unread' })).toBeInTheDocument()
+  })
+
   it('keeps the unread accent on rows that were new when the tab was opened', async () => {
     getNotificationsUnread.mockResolvedValue({ unread: 1, latest_id: 7 })
     getNotifications.mockResolvedValue({

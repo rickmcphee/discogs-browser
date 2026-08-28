@@ -267,17 +267,19 @@ export default function App() {
     }).catch(() => {})
   }, [])
 
-  // Opening the tab is what marks it read. Zeroed optimistically so the dot
-  // clears on the click rather than a round trip later; the response's own
-  // count then overwrites it, and a failed write simply leaves the next
-  // generation tick to put the dot back.
+  // Opening the tab is what marks it read -- but the badge only follows the
+  // write, never runs ahead of it. Clearing optimistically would make a
+  // dropped POST look like success, and the price change that produced those
+  // unread rows has already happened, so nothing guarantees a later generation
+  // tick to correct it: the dot would stay wrong until an unrelated change or
+  // a reload. Waiting costs one round trip the user does not see, since the
+  // list they came for is already on screen by then.
   const handleNotificationsLoaded = useCallback((latestId: number | null) => {
     if (latestId === null) {
       setUnreadNotifications(0)
       return
     }
     const seq = ++latestNotificationsSeq.current
-    setUnreadNotifications(0)
     markNotificationsRead(latestId).then((s) => {
       if (seq !== latestNotificationsSeq.current) return
       setUnreadNotifications(s.unread)

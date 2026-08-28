@@ -13,10 +13,19 @@ MAX_LIMIT = 200
 
 
 def _payload(conn, user_id: int, limit: int) -> dict:
+    items = [dict(row) for row in db.get_price_drop_notifications(conn, user_id, limit)]
     return {
-        "items": [dict(row) for row in db.get_price_drop_notifications(conn, user_id, limit)],
+        "items": items,
         "unread": db.count_unread_price_drops(conn, user_id),
-        "latest_id": db.latest_price_drop_id(conn, user_id),
+        # Taken from the rows actually returned, not from a second MAX(id)
+        # query. These statements run under READ COMMITTED and so do not share
+        # a snapshot: a drop committing between the two would put an id in this
+        # field for a row the client never received, and the client marks read
+        # through whatever it is handed -- permanently hiding a notification
+        # nobody ever saw, since the watermark only moves forward. Reading it
+        # off the list makes that unrepresentable. The list is id-descending,
+        # so items[0] is the newest the caller holds.
+        "latest_id": items[0]["id"] if items else None,
         # The view needs the watermark itself, not just the count, to know
         # which of the rows it just fetched are the new ones.
         "last_read_id": db.get_notification_watermark(conn, user_id),
@@ -36,6 +45,9 @@ def list_notifications(request: Request, limit: int = Query(DEFAULT_LIMIT, ge=1,
 def unread_notifications(request: Request):
     user_id = request.state.user_id
     with db.user_scope(user_id) as conn:
+        # latest_id here is informational only -- nothing marks read through
+        # it, which is why this endpoint may report it from a bare MAX(id)
+        # while the list endpoint above deliberately may not.
         return {
             "unread": db.count_unread_price_drops(conn, user_id),
             "latest_id": db.latest_price_drop_id(conn, user_id),

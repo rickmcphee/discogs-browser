@@ -255,11 +255,21 @@ that lists one record twice cannot record two drops for it.
 PRICE_DROP_RETENTION_DAYS = 90
 ```
 
-`delete_expired_price_drops` is called at the end of `_sync_stock`, beside the
-existing `delete_dead_stock_crawl_queue_rows` sweep. A price drop older than a
-quarter is history rather than news, the tab never pages back that far, and
-without a sweep the table is the one thing in this design that grows without
-bound (including, per the trade-off above, for items nobody saved).
+`delete_expired_price_drops` runs from its own hourly task started at boot
+(`_price_drop_sweep_loop`, `backend/main.py`), which sweeps before its first
+sleep rather than after. A price drop older than a quarter is history rather
+than news, the tab never pages back that far, and without a sweep the table is
+the one thing in this design that grows without bound (including, per the
+trade-off above, for items nobody saved).
+
+It is deliberately *not* a step at the end of `_sync_stock`, which is where it
+started and which Copilot's review on the PR correctly flagged: `stock_schedule`
+is optional and defaults to empty, while the always-running worker pool keeps
+recording drops through the release path regardless. A deployment that never
+runs a stock sync would therefore never have pruned. Sweeping before the first
+sleep is the same trick `logging_config`'s writer loop uses for `app_logs`:
+waiting an hour first means every restart resets the clock, and a process that
+never stays up that long never prunes at all.
 
 A user whose watermark points at a swept row is unaffected: unread is computed
 as `id > last_read_drop_id` over surviving rows, so pruning can only ever
@@ -273,7 +283,14 @@ shrink the unread set, never resurrect it.
 - `GET /notifications?limit=` → `{items, unread, latest_id, last_read_id}`. The
   list the tab renders, newest first. `last_read_id` is the watermark itself,
   not just the count: the view needs it to know *which* of the rows it just
-  fetched are the new ones.
+  fetched are the new ones. `latest_id` is read off `items[0]`, **not** from a
+  second `MAX(id)` query — these statements do not share a snapshot under READ
+  COMMITTED, and a drop committing between the two would hand the client an id
+  for a row it never received. Since the client marks read through whatever it
+  is given and the watermark only moves forward, that would permanently hide a
+  notification nobody ever saw. Taking it off the returned list makes the state
+  unrepresentable. (`GET /notifications/unread` may still report a bare
+  `MAX(id)`: nothing marks read through that one.)
 - `GET /notifications/unread` → `{unread, latest_id}`. The badge's own
   endpoint, kept separate so the header's poll does not pull rows it will not
   render.
@@ -337,6 +354,38 @@ The view is mounted only while it is the active tab, not rendered hidden like
 the four browse tabs. That is load-bearing rather than an optimization: loading
 it is what marks its notifications read, so a permanently-mounted copy would
 clear the dot on app start, before the user had seen anything.
+
+## Known limitations
+
+- **Detection is not serialized against a concurrent writer.** Under READ
+  COMMITTED a stock sync and a marketplace crawl can both read one item's floor
+  before either commits, and each then sees its own price beat it. The outcome
+  is bounded to a *superfluous* notification and never a missing one: with both
+  writes below the shared floor, serializing them would have recorded the first
+  and possibly the second too, so concurrency can only add a drop. Both
+  notifications still point at real listings at real prices; the loser's "was
+  $X" is merely staler than it looks.
+
+  Fixing it costs more than the defect is worth. A per-item advisory lock is
+  taken per row, and `replace_stock_items` writes a whole store's catalog in one
+  transaction, so a batch would hold tens of thousands of entries in a lock
+  table sized by `max_locks_per_transaction`. `SELECT ... FOR UPDATE` on
+  `stock_item_identities` avoids that — row locks are heap-resident and
+  unbounded in count — but it would park every marketplace write for that
+  store's keys behind the same long transaction, trading a cosmetic duplicate
+  for a stalled crawl worker. Revisit if duplicates are ever observed in
+  practice; the cheap half-measure (lock only on the single-key
+  `upsert_stock_item_listing` path, never on the batch path) narrows the window
+  without the throughput cost, and is where a fix should start.
+
+- **A drop is recorded whether or not anyone saved the item.** The crawl worker
+  cannot tell the difference — that is the whole reason the table is global —
+  so retention, not selectivity, is what bounds the table.
+
+- **A price that becomes cheapest because another source got *dearer* records
+  nothing.** That follows from the rule as written ("a price change that is
+  cheaper"), not from an implementation gap, and it self-corrects the next time
+  the cheaper source's own price moves.
 
 ## Testing
 

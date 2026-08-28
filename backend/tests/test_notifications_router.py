@@ -111,6 +111,37 @@ def test_notifications_require_authentication(pg_test_db, authed_client_factory)
     ).status_code == 401
 
 
+def test_latest_id_comes_from_the_returned_rows_not_a_separate_max_query(
+    pg_test_db, authed_client_factory, monkeypatch,
+):
+    # The list and the id were two statements that do not share a snapshot
+    # under READ COMMITTED, so a drop committing between them handed the client
+    # an id for a row it never received -- and since the client marks read
+    # through whatever it is given and the watermark only moves forward, that
+    # hid the notification for good. Stubbing the old source of the id to a
+    # value no returned row carries is the direct regression test: the response
+    # must ignore it entirely.
+    user = _seed_drop()
+    monkeypatch.setattr(db, "latest_price_drop_id", lambda *a, **k: 999_999)
+    client = authed_client_factory(user["id"])
+
+    body = client.get("/api/notifications").json()
+    assert body["latest_id"] == body["items"][0]["id"]
+    assert body["latest_id"] != 999_999
+
+
+def test_latest_id_is_null_when_there_is_nothing_to_mark_read(
+    pg_test_db, authed_client_factory, monkeypatch,
+):
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=3, discogs_username="carol")
+        conn.commit()
+    monkeypatch.setattr(db, "latest_price_drop_id", lambda *a, **k: 999_999)
+    client = authed_client_factory(user["id"])
+
+    assert client.get("/api/notifications").json()["latest_id"] is None
+
+
 def test_limit_is_bounded(pg_test_db, authed_client_factory):
     user = _seed_drop()
     client = authed_client_factory(user["id"])

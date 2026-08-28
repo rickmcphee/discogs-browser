@@ -1099,7 +1099,7 @@ class CrawlManager:
         # the life of the process.
         try:
             import httpx
-            from db import get_app_pool, get_enabled_crawlers, replace_stock_items, update_crawler_last_run, enqueue_crawl_queue_for_stock_item, delete_dead_stock_crawl_queue_rows, delete_expired_price_drops
+            from db import get_app_pool, get_enabled_crawlers, replace_stock_items, update_crawler_last_run, enqueue_crawl_queue_for_stock_item, delete_dead_stock_crawl_queue_rows
             from crawler import load_enabled_crawlers
 
             # Also held locally: the completion line below reads it after
@@ -1232,10 +1232,7 @@ class CrawlManager:
 
             with get_app_pool().connection() as conn:
                 swept = delete_dead_stock_crawl_queue_rows(conn)
-                expired_drops = delete_expired_price_drops(conn)
                 conn.commit()
-            if expired_drops:
-                log.info("Discarded %d price drops past their retention window", expired_drops)
             if swept:
                 # INFO, not WARNING: routers/logs.py filters in SQL by exact
                 # level membership (WHERE level = ANY(...)), not
