@@ -283,8 +283,13 @@ export default function App() {
   // list they came for is already on screen by then.
   const handleNotificationsLoaded = useCallback((latestId: number | null) => {
     if (latestId === null) {
-      latestNotificationsSeq.current++
-      setUnreadNotifications(0)
+      // Re-read rather than assume zero. An empty list does not prove the count
+      // is zero: the payload's items and its unread count are separate READ
+      // COMMITTED statements, so a drop committing between them yields
+      // {items: [], unread: 1, latest_id: null}. Forcing zero here would throw
+      // that away and hide a dot the server had just raised. The fetch also
+      // takes a newer token, which is what the bump was there for.
+      fetchUnreadNotifications()
       return
     }
     const seq = ++latestNotificationsSeq.current

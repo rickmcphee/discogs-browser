@@ -309,6 +309,23 @@ describe('notifications view', () => {
     expect(markNotificationsRead).not.toHaveBeenCalled()
   })
 
+  it('re-reads rather than assuming zero when the list comes back empty', async () => {
+    // items and unread are separate READ COMMITTED statements on the server, so
+    // a drop committing between them yields {items: [], unread: 1}. Forcing the
+    // badge to zero on an empty list would throw that away.
+    getNotificationsUnread.mockResolvedValue({ unread: 1, latest_id: 5 })
+    getNotifications.mockResolvedValue({ items: [], unread: 1, latest_id: null, last_read_id: 0 })
+
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Notifications, 1 unread' }))
+
+    await screen.findByText(/Save an item on the Store tab/)
+    expect(markNotificationsRead).not.toHaveBeenCalled()
+    // A second unread read was issued, and its count stands.
+    await waitFor(() => expect(getNotificationsUnread).toHaveBeenCalledTimes(2))
+    expect(screen.getByTestId('notification-dot')).toBeInTheDocument()
+  })
+
   it('reloads while open when an SSE tick says prices moved', async () => {
     getNotifications.mockResolvedValue({ items: [], unread: 0, latest_id: null, last_read_id: 0 })
     render(<App />)

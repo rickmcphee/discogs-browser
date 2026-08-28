@@ -329,32 +329,57 @@ colour alone.
 
 ### Unread polling
 
-No new SSE event type. The header refetches the unread count on mount and
-whenever `priceGeneration` ticks — a counter bumped only by `listing_changed`,
-`stock_sync_progress` and `stock_sync_complete`, which is precisely the set of
+No new SSE event type. The header refetches the unread count on mount, on every
+successful SSE connection, and whenever `priceGeneration` ticks — a counter
+bumped only by `stock_sync_progress`, `stock_sync_complete`, and
+`listing_changed` **with `status === 'found'`**, which is precisely the set of
 events that follow a real price write.
 
-It is a strict subset of the `stockSyncGeneration` the Store and Track tabs
-ride, and the difference is the point: that counter is also bumped by the
-judgment events, which write `stock_item_judgments` and never touch a price.
-Riding it cost an unread request per judgment batch — and, with this tab open,
-a list reload and a read POST too. The other `stock_sync_*` events
+Adding a per-user `notification` event instead would mean tagging it with a
+`user_id` the crawl worker cannot determine (see "Why the drop rows are
+global"), so the global events that already exist do the job without weakening
+anything.
+
+`priceGeneration` is a strict subset of the `stockSyncGeneration` the Store and
+Track tabs ride, and the difference is the point. That counter is also bumped by
+the judgment events, which write `stock_item_judgments` and never touch a price;
+riding it cost an unread request per judgment batch, and, with this tab open, a
+list reload and a read POST too. The remaining `stock_sync_*` events
 (`started`, `source_started`, `page_fetched`, `detail_progress`) report crawl
-progress before anything is written, so they are excluded as well. Adding a per-user `notification` event would
-mean tagging it with a `user_id` the crawl worker cannot determine (see "Why
-the drop rows are global"), so the global events that already exist do the job
-without weakening anything.
+progress before anything is written, so they are excluded for the same reason.
+
+The `found` qualifier on `listing_changed` is load-bearing rather than a
+micro-optimization: a `not_found` writes no price at all on the stock-item path
+and only clears or deletes one on the release path, so neither can have recorded
+a drop — and most stock-item searches legitimately find nothing, so counting
+them fanned a request out to every connected user for the majority of crawl
+results.
+
+The refetch on connect covers what the stream structurally cannot.
+`listing_changed` is never buffered in `_recent`, and the SSE error handler only
+reopens the stream — so a drop recorded while the connection was down produces
+no tick at all, and the bell would sit stale until an unrelated price event or a
+reload.
 
 ### The view
 
 One row per drop: cover thumbnail, artist — title, the new price with its
 currency (via the existing `formatPrice`), the beaten `previous_best` struck
 through, the source name, a relative timestamp, and the whole row linking out
-to `url` (`target="_blank" rel="noopener noreferrer"`, matching how Store rows
-already link). Unread rows carry a left accent border; read rows do not.
+to `url` (`target="_blank" rel="noreferrer"`, matching how Store rows already
+link). Unread rows carry a left accent border *and* open their link's
+accessible name with "New." — the border is the sighted cue, and by the time
+the list renders the bell's dot is already cleared, so without the second one
+the distinction would exist only in paint.
 
 Opening the tab issues `POST /notifications/read` with the newest `id` in the
-response, which clears the dot. The view captures `last_read_id` from the first
+response, and the badge follows that write rather than running ahead of it —
+clearing optimistically would make a dropped POST look like success, with no
+guaranteed later tick to correct it. When a concurrent read has overtaken the
+write, its count is unusable and a fresh read is issued instead, strictly after
+the write committed. An empty response re-reads rather than assuming zero, for
+the same reason: `items` and `unread` are separate statements, so an empty list
+does not prove the count is zero. The view captures `last_read_id` from the first
 response of the visit and leaves it alone afterwards, so rows above it keep
 their accent for the rest of the visit even though they have already been
 marked read — the user can still see what was new when they arrived.
