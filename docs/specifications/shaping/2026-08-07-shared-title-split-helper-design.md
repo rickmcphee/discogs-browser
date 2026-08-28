@@ -213,6 +213,58 @@ the converging contract, not a bug to fix into conformance — the same framing
 the earlier amendments use. Like `spv.py`, it is a near-copy of a prior
 exception rather than a new shape.
 
+**Eighth amendment (2026-08-28, branch `claude/1234gorecords-crawler-2de684`):**
+`backend/crawlers/onetwothreefourgo.py` is another exception, and the first
+that does not dash-split at all. `asianmanrecords.py` and `spv.py` each made
+a quoted-album parser the *primary* and demoted the dash split to a fallback;
+this crawler has no dash branch. 1-2-3-4 Go! Records writes
+`Artist "Album" FORMAT (pressing notes)` and nothing else — 99.7% of its
+vinyl-typed products match the quoted parser, and the remainder carry no
+usable separator of any kind (unbalanced quotes, or `Sophie S/T 2xLP`), so
+they are dropped rather than handed to a dash regex that would mis-split
+them. No vendor fallback either: `vendor` is a distributor (`Alliance`,
+`UMG`, `WEA`) or the literal `Used Product`.
+
+Three divergences are new to this doc.
+
+1. **The delimiter is not a character class.** Alongside straight and curly
+   quotes — `spv.py`'s widening — this store uses a **doubled apostrophe**
+   (`Superchunk ''I Hate Music'' LP`) on products that use no other form.
+   So the delimiter is an alternation of a two-character *string* and a
+   character class, `(?:\'\'|["“”])`, which no prior exception's parser can
+   express by parameterising a quote class.
+2. **The preprocessing pass has a return value.** `cleorecs.py`'s
+   paren-strip and `carparkrecords.py`'s catalog-code strip both discard what
+   they remove. This crawler strips a status marker (`Used Vinyl:`,
+   `PRE-ORDER:`, `DAMAGED COVER:`) off the front and re-emits it as a suffix
+   on the album, because `db._library_match_fragment` matches a stock title
+   exact-or-prefix-with-space — a prefix is the one position that match cannot
+   survive. The pass also loops rather than running once: two live products
+   are double-marked (`Used Vinyl: Used Vinyl: Aso-Naga / Restriction
+   "Split" 7"`).
+3. **A second preprocessing pass normalises invisible characters** before the
+   split. 195 live products carry a `U+200E LEFT-TO-RIGHT MARK` between the
+   artist and the opening quote; it is a format character, so `str.strip()`
+   leaves it on the artist, and `_library_match_fragment` compares artist with
+   exact `LOWER()` equality.
+
+It also returns a trailing-blurb group, like `spv.py`'s `extra` — but uses it
+differently: `spv.py` gates format on it, this crawler keeps it in the emitted
+title as the pressing note that tells two Store rows apart.
+
+What this says about the sixth amendment's suggestion — that a shared
+quoted-album parser, parameterised by quote class and a return-the-blurb
+flag, would be the helper worth extracting if the shape recurred: the shape
+has now recurred, and the suggestion is weaker rather than stronger for it.
+The quoted-album parsers in the tree disagree on the delimiter's *type*
+(character class vs. alternation with a string), on whether a dash fallback
+exists at all, and on what the blurb is for. A shared parser would need a
+flag for each, which is the relocate-the-divergence outcome this doc's own
+"Is this the diverges-enough-to-need-flags case" section rejects.
+
+Records `onetwothreefourgo.py` as a documented exception, not a bug to fix
+into conformance — the same framing the earlier amendments use.
+
 
 ## Problem
 
