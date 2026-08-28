@@ -118,22 +118,67 @@ class Crawler:
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:
+        """Yield one stock item per available variant, raising on format drift.
+
+        db.replace_stock_items() DELETEs this crawler's rows before inserting
+        and _sync_stock only skips it when the crawl *raised*, so a generator
+        that completes with nothing to show wipes the store's entire snapshot
+        and records the site as healthy. A total parse failure therefore has
+        to raise rather than return empty -- the same reasoning
+        dischordrecords.py and sideonedummyrecords.py record on their own
+        stores.
+
+        The two counters separate drift from the states that legitimately
+        yield nothing. Sold-out stock, a competing-format descriptor and an
+        unavailable variant all parse first and are dropped afterwards, so
+        they leave `title_parsed` non-zero and pass. Only a store that stopped
+        writing `Artist "Album"` titles, or one whose collection no longer
+        answers, reaches a raise.
+
+        One drift mode is knowingly not covered: if the store renamed its
+        vinyl `product_type` values, every product would fail `_is_vinyl`,
+        `vinyl_seen` would stay 0 and the wipe would go through. Guarding it
+        would mean raising whenever a catalog contains no vinyl at all, which
+        is indistinguishable from a legitimately vinyl-free page. The two
+        modes covered here are the likely ones; `product_type` is a stable
+        Shopify field this store has never restyled.
+        """
+        products_seen = vinyl_seen = title_parsed = 0
         async for product in iter_products(self.base_url, _COLLECTION_SLUG):
+            products_seen += 1
             if not self._is_vinyl(product):
                 continue
-            for item in self._items(product):
+            vinyl_seen += 1
+            parsed = self._parse_title(product.get("title", ""))
+            if parsed is None:
+                continue
+            title_parsed += 1
+            for item in self._items(product, parsed):
                 yield item
+
+        if products_seen == 0:
+            raise RuntimeError(
+                f"{_COLLECTION_SLUG} returned no products at all -- collection "
+                "renamed or removed, not an empty store"
+            )
+        if vinyl_seen and not title_parsed:
+            raise RuntimeError(
+                f"parsed 0 of {vinyl_seen} vinyl-typed products -- the store's "
+                'Artist "Album" title convention has drifted'
+            )
 
     @classmethod
     def _is_vinyl(cls, product: dict) -> bool:
         return (product.get("product_type") or "").strip() in _VINYL_TYPES
 
     @classmethod
-    def _items(cls, product: dict) -> list[dict]:
-        parsed = cls._parse_title(product.get("title", ""))
-        if parsed is None:
+    def _items(cls, product: dict, parsed: tuple) -> list[dict]:
+        artist, album, descriptor = parsed
+        # Applied here rather than in _parse_title so a format rejection stays
+        # distinguishable from a title that would not parse at all -- only the
+        # latter is drift, and crawl_catalog counts them apart.
+        if cls._competes_with_vinyl(descriptor):
             return []
-        artist, album = parsed
 
         variants = product.get("variants") or []
         # Only on a multi-variant product: a single variant is usually the
@@ -214,7 +259,7 @@ class Crawler:
 
     @classmethod
     def _parse_title(cls, raw_title: str):
-        """Split `[MARKER:] Artist "Album" DESCRIPTOR` into (artist, title).
+        """Split `[MARKER:] Artist "Album" DESCRIPTOR` into (artist, title, descriptor).
 
         Returns None for the 0.3% of live products the store wrote without a
         usable pair of quotes -- unbalanced ones ('Frank Turner "Tape Deck
@@ -248,8 +293,6 @@ class Crawler:
             return None
 
         descriptor = m.group("descriptor").strip()
-        if cls._competes_with_vinyl(descriptor):
-            return None
 
         # db._library_match_fragment matches a stock title against the catalog
         # exact-or-prefix-with-space, which decides both halves of this line.
@@ -260,7 +303,7 @@ class Crawler:
         # of 237. The marker moves to the back for the opposite reason -- a
         # prefix is the one position that match cannot survive.
         title = " ".join([f"{album} {descriptor}".strip()] + suffixes)
-        return artist, title
+        return artist, title, descriptor
 
     @staticmethod
     def _clean(text: str) -> str:

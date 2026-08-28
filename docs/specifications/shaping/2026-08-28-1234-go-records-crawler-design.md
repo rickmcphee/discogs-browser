@@ -337,6 +337,36 @@ all on the multi-variant products) and falls back to the product's first
 image; 68 vinyl products have no image at all and must yield `None` rather
 than an `IndexError`.
 
+### A total parse failure raises rather than returning empty
+
+`db.replace_stock_items()` DELETEs this crawler's rows before inserting
+anything, and `_sync_stock` only skips that call when the crawl *raised* — a
+generator that completes with nothing to show is treated as a healthy crawl of
+an empty store. So if this store stopped writing `Artist "Album"` titles,
+every product would fail to parse, the crawler would yield nothing, and the
+whole snapshot would be deleted with the site recorded as succeeding.
+
+`crawl_catalog` therefore counts three things and raises on two of them: no
+products returned by the collection at all (renamed or removed), and no vinyl
+title parsed out of a non-empty set of vinyl-typed products (title drift).
+`dischordrecords.py` and `sideonedummyrecords.py` reach for the same guard on
+their own stores, for the same reason.
+
+The counters are what keep the guard from firing on the states that
+legitimately yield nothing. A sold-out catalog, a competing-format descriptor
+and an unavailable variant all parse *first* and are dropped afterwards, so
+they leave `title_parsed` non-zero. This is also why the descriptor's
+format rejection lives in `_items` rather than `_parse_title`: `None` from
+`_parse_title` has to mean "this title did not parse" and nothing else, or a
+catalog of mistyped CDs would read as drift.
+
+One mode is knowingly uncovered: if the store renamed its vinyl
+`product_type` values, every product would fail `_is_vinyl`, `vinyl_seen`
+would stay zero and the wipe would go through. Guarding it would mean raising
+whenever a catalog contains no vinyl at all, which is indistinguishable from a
+legitimately vinyl-free page. The two covered modes are the likely ones;
+`product_type` is a stable Shopify field.
+
 ## Crawl citizenship
 
 One GET per page against a public JSON endpoint, paced by the shared

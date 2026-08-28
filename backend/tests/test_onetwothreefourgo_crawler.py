@@ -552,9 +552,13 @@ async def test_crawl_catalog_is_not_confused_by_a_trailing_inch_mark(crawler):
 
 @respx.mock
 async def test_crawl_catalog_drops_a_product_with_no_quoted_album(crawler):
-    _mock_single_page([_NO_QUOTE_PRODUCT])
+    # Paired with a parseable product deliberately: a catalog whose *only*
+    # vinyl product fails to parse is indistinguishable from total title-format
+    # drift, and the drift guard is right to raise on it (see
+    # test_crawl_catalog_raises_when_no_vinyl_title_parses).
+    _mock_single_page([_NO_QUOTE_PRODUCT, _PRODUCT])
     items = [item async for item in crawler.crawl_catalog()]
-    assert items == []
+    assert [i["artist"] for i in items] == ["Ben Pirani"]
 
 
 @respx.mock
@@ -811,6 +815,57 @@ async def test_crawl_catalog_raises_when_no_stable_variant_identity_exists(crawl
     _mock_single_page([no_identity])
     with pytest.raises(ValueError, match="cannot derive distinct item keys"):
         [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_crawl_catalog_raises_when_no_vinyl_title_parses(crawler):
+    # db.replace_stock_items() DELETEs this crawler's rows before inserting and
+    # _sync_stock only skips it when the crawl raised, so returning empty on a
+    # title-convention change would wipe the store's whole snapshot and record
+    # the site as healthy. dischordrecords.py and sideonedummyrecords.py raise
+    # on the same class of drift.
+    drifted = [
+        {**_PRODUCT, "title": "Ben Pirani / How Do I Talk To My Brother / LP"},
+        {**_NUMERIC_ALBUM_PRODUCT, "title": "Adele / 19 / LP"},
+    ]
+    _mock_single_page(drifted)
+    with pytest.raises(RuntimeError, match="title convention has drifted"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_crawl_catalog_raises_when_the_collection_returns_nothing(crawler):
+    # A renamed or removed collection, which would otherwise wipe the snapshot
+    # just as quietly as a parse failure.
+    _mock_single_page([])
+    with pytest.raises(RuntimeError, match="returned no products at all"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_crawl_catalog_does_not_raise_when_the_catalog_is_sold_out(crawler):
+    # The state the drift guard must not mistake for drift: everything parses,
+    # nothing is available. Yielding zero rows here is the truth, so the sync
+    # should replace the snapshot rather than abort.
+    _mock_single_page([_UNAVAILABLE_PRODUCT])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert items == []
+
+
+@respx.mock
+async def test_crawl_catalog_does_not_raise_when_every_product_is_a_mistyped_cd(crawler):
+    # Also not drift: these parse fine and are rejected by the format filter,
+    # which is the filter working rather than the title convention changing.
+    _mock_single_page([_MISTYPED_CD_PRODUCT])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert items == []
+
+
+@respx.mock
+async def test_crawl_catalog_does_not_raise_when_no_product_is_vinyl_typed(crawler):
+    _mock_single_page([_CASSETTE_TYPED_PRODUCT])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert items == []
 
 
 def test_site_metadata(crawler):
