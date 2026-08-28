@@ -444,6 +444,38 @@ CREATE INDEX IF NOT EXISTS listings_crawler_last_checked_idx ON listings (crawle
 -- existing get_stock_items / get_unjudged_stock_items joins on s.item_key.
 CREATE INDEX IF NOT EXISTS stock_items_item_key_idx ON stock_items (item_key);
 
+-- One row per observed price drop on a record, written by whichever path just
+-- wrote the price (see _record_price_drops). Global, with no user_id column,
+-- for the same reason listings and stock_items are: it records that a *record*
+-- got cheaper, which is a fact about the catalog. The crawl worker could not
+-- fan it out per user even if the table wanted it to -- stock_item_saves is
+-- RLS-scoped and its connections are unscoped app_user ones, so the worker
+-- cannot see anybody's saves. The per-user half is a read-time join through
+-- the caller's own saves under user_scope; see get_price_drop_notifications.
+--
+-- url/price/previous_best are denormalized rather than resolved at read time:
+-- replace_stock_items deletes and reinserts a store's whole batch on every
+-- sync, so a notification that resolved its link through the live table would
+-- silently start pointing somewhere else -- or nowhere -- the moment the store
+-- restocked. The drop is a fact about a listing that existed at that price at
+-- that moment.
+CREATE TABLE IF NOT EXISTS stock_item_price_drops (
+    id BIGSERIAL PRIMARY KEY,
+    item_key TEXT NOT NULL REFERENCES stock_item_identities(item_key),
+    crawler_id INTEGER NOT NULL REFERENCES crawlers(id),
+    url TEXT NOT NULL,
+    price DOUBLE PRECISION NOT NULL,
+    currency TEXT,
+    previous_best DOUBLE PRECISION NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Serves the notifications read path, which is always "this item_key's drops,
+-- newest first" driven from the caller's saved keys, and the retention sweep's
+-- created_at scan is a whole-table pass by design.
+CREATE INDEX IF NOT EXISTS stock_item_price_drops_item_key_idx
+    ON stock_item_price_drops (item_key, id DESC);
+
 ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS release_id TEXT REFERENCES catalog(discogs_id);
 CREATE UNIQUE INDEX IF NOT EXISTS stock_items_crawler_release_idx ON stock_items (crawler_id, release_id) WHERE release_id IS NOT NULL;
 
@@ -611,6 +643,12 @@ CREATE TABLE IF NOT EXISTS stock_item_saves (
     PRIMARY KEY (user_id, item_key)
 );
 
+CREATE TABLE IF NOT EXISTS user_notification_reads (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id),
+    last_read_drop_id BIGINT NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS invites (
     code TEXT PRIMARY KEY,
     created_by INTEGER REFERENCES users(id),
@@ -653,8 +691,10 @@ ALTER TABLE user_hidden_crawlers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_hidden_crawlers FORCE ROW LEVEL SECURITY;
 ALTER TABLE stock_item_saves ENABLE ROW LEVEL SECURITY;
 ALTER TABLE stock_item_saves FORCE ROW LEVEL SECURITY;
+ALTER TABLE user_notification_reads ENABLE ROW LEVEL SECURITY;
+ALTER TABLE user_notification_reads FORCE ROW LEVEL SECURITY;
 
--- WITH CHECK is given explicitly (identical to USING) on all four policies
+-- WITH CHECK is given explicitly (identical to USING) on every policy
 -- below rather than left implicit. Postgres already defaults an omitted
 -- WITH CHECK to the USING expression for a FOR-ALL policy like these --
 -- verified directly against this project's Postgres 16 (an unscoped INSERT
@@ -699,6 +739,11 @@ CREATE POLICY user_hidden_crawlers_isolation ON user_hidden_crawlers
 
 DROP POLICY IF EXISTS stock_item_saves_isolation ON stock_item_saves;
 CREATE POLICY stock_item_saves_isolation ON stock_item_saves
+    USING (user_id = current_setting('app.user_id', true)::int)
+    WITH CHECK (user_id = current_setting('app.user_id', true)::int);
+
+DROP POLICY IF EXISTS user_notification_reads_isolation ON user_notification_reads;
+CREATE POLICY user_notification_reads_isolation ON user_notification_reads
     USING (user_id = current_setting('app.user_id', true)::int)
     WITH CHECK (user_id = current_setting('app.user_id', true)::int);
 """
@@ -771,11 +816,17 @@ def init_tenant_schema():
         # reinserting the fresh one.
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON stock_items TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE ON catalog, listings, stock_item_identities TO app_user")
-        conn.execute("GRANT USAGE, SELECT ON SEQUENCE listings_id_seq, stock_items_id_seq TO app_user")
+        # DELETE, but no UPDATE: a price drop is an append-only observation the
+        # crawl worker records and the retention sweep (delete_expired_price_drops,
+        # run from _sync_stock on this same role) eventually removes. Nothing
+        # ever edits one in place.
+        conn.execute("GRANT SELECT, INSERT, DELETE ON stock_item_price_drops TO app_user")
+        conn.execute("GRANT USAGE, SELECT ON SEQUENCE listings_id_seq, stock_items_id_seq, stock_item_price_drops_id_seq TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON library_items TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON stock_item_judgments TO app_user")
         conn.execute("GRANT SELECT, INSERT, DELETE ON user_hidden_crawlers TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON stock_item_saves TO app_user")
+        conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON user_notification_reads TO app_user")
         # crawl_queue needs DELETE for the same reason stock_items does:
         # delete_dead_stock_crawl_queue_rows(), run through get_app_pool() from
         # PATCH /api/crawlers/{id} and at the end of each stock sync.
@@ -813,6 +864,111 @@ def get_stock_item_identity(conn, item_key: str) -> Optional[dict]:
     ).fetchone()
 
 
+# A price drop older than this is history rather than news: the Notifications
+# tab never pages back that far, and the table takes a row for every drop the
+# crawl worker sees -- including ones no user has saved, which it cannot tell
+# apart (stock_item_saves is RLS-scoped and invisible to an unscoped app_user
+# connection). Swept by delete_expired_price_drops at the end of each stock sync.
+PRICE_DROP_RETENTION_DAYS = 90
+
+
+def _normalized_currency(currency: Optional[str]) -> str:
+    """The currency bucket a price competes in. Folds NULL to USD exactly as
+    the frontend's formatPrice does -- most sources hardcode USD and the column
+    postdates them -- so a legacy NULL row and a USD row are one bucket."""
+    return (currency or "USD").upper()
+
+
+def _price_floors(conn, item_keys: list) -> dict:
+    """Lowest price currently recorded for each (item_key, currency), across
+    both the stores that list a record and the marketplace listings crawled for
+    it. Keys with no priced row anywhere are simply absent.
+
+    Bucketed by currency, not pooled: this app carries no exchange rates, so
+    EUR 10 and USD 12 are not comparable and must never be allowed to undercut
+    one another. Non-USD sources are real here (Jetglow Recordings, SPV), so
+    that is a live case rather than a hypothetical.
+    """
+    if not item_keys:
+        return {}
+    rows = conn.execute(
+        """
+        SELECT item_key, currency, MIN(price) AS floor
+        FROM (
+            SELECT s.item_key AS item_key,
+                   COALESCE(UPPER(s.currency), 'USD') AS currency,
+                   s.price AS price
+            FROM stock_items s
+            WHERE s.item_key = ANY(%(item_keys)s) AND s.price IS NOT NULL
+            UNION ALL
+            SELECT l.item_key,
+                   COALESCE(UPPER(l.currency), 'USD'),
+                   l.price
+            FROM listings l
+            WHERE l.item_key = ANY(%(item_keys)s) AND l.price IS NOT NULL
+        ) priced
+        GROUP BY item_key, currency
+        """,
+        {"item_keys": list(item_keys)},
+    ).fetchall()
+    return {(r["item_key"], r["currency"]): r["floor"] for r in rows}
+
+
+def _record_price_drops(conn, crawler_id: int, floors: dict, candidates: list) -> int:
+    """Record every candidate price that undercuts its item's floor.
+
+    `floors` must have been read *before* the write these candidates describe
+    (see _price_floors), because the floor deliberately includes the price
+    being replaced: with no prior price anywhere there is no baseline to beat,
+    and a record's first-ever price is not a drop. The comparison is strict, so
+    a price that merely holds steady across syncs never re-fires.
+
+    Candidates are `{item_key, url, price, currency}` dicts; duplicates within
+    one call are collapsed to the cheapest per (item_key, currency) so a batch
+    listing one record twice cannot record two drops for it.
+    """
+    best: dict = {}
+    for candidate in candidates:
+        price = candidate.get("price")
+        item_key = candidate.get("item_key")
+        if price is None or not item_key:
+            continue
+        key = (item_key, _normalized_currency(candidate.get("currency")))
+        if key not in best or price < best[key]["price"]:
+            best[key] = candidate
+
+    rows = []
+    for (item_key, currency), candidate in best.items():
+        floor = floors.get((item_key, currency))
+        if floor is None or candidate["price"] >= floor:
+            continue
+        rows.append((
+            item_key, crawler_id, candidate["url"],
+            candidate["price"], candidate.get("currency"), floor,
+        ))
+    if not rows:
+        return 0
+    with conn.cursor() as cur:
+        cur.executemany(
+            """
+            INSERT INTO stock_item_price_drops
+                (item_key, crawler_id, url, price, currency, previous_best, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+            """,
+            rows,
+        )
+    return len(rows)
+
+
+def delete_expired_price_drops(conn, days: int = PRICE_DROP_RETENTION_DAYS) -> int:
+    cur = conn.execute(
+        "DELETE FROM stock_item_price_drops "
+        "WHERE created_at < CURRENT_TIMESTAMP - make_interval(days => %s)",
+        [days],
+    )
+    return cur.rowcount
+
+
 def upsert_listing(
     conn,
     release_id: str,
@@ -845,6 +1001,9 @@ def upsert_stock_item_listing(
     currency: Optional[str],
     condition: Optional[str],
 ):
+    # Read before the upsert, not after: the floor a drop has to beat includes
+    # the price this call is about to overwrite. See _record_price_drops.
+    floors = _price_floors(conn, [item_key])
     conn.execute(
         """
         INSERT INTO listings (item_key, crawler_id, url, price, shipping, currency, condition, last_checked)
@@ -855,6 +1014,9 @@ def upsert_stock_item_listing(
         """,
         [item_key, crawler_id, url, price, shipping, currency, condition],
     )
+    _record_price_drops(conn, crawler_id, floors, [
+        {"item_key": item_key, "url": url, "price": price, "currency": currency},
+    ])
 
 
 def upsert_stock_item_from_release(conn, release_id: str, crawler_id: int, catalog_release: dict, listing: dict):
@@ -866,6 +1028,9 @@ def upsert_stock_item_from_release(conn, release_id: str, crawler_id: int, catal
     # legacy convention below, matching replace_stock_items, regardless of what
     # gets stored for display.
     item_key = compute_item_key(catalog_release["artist"].title(), catalog_release["title"], listing["url"])
+    # Read before either write below, not after: the floor a drop has to beat
+    # includes the price this call is about to overwrite. See _record_price_drops.
+    floors = _price_floors(conn, [item_key])
     conn.execute(
         """
         INSERT INTO stock_item_identities (item_key, artist, title, format, last_seen)
@@ -893,6 +1058,10 @@ def upsert_stock_item_from_release(conn, release_id: str, crawler_id: int, catal
             "url": listing["url"], "cover_image_url": catalog_release["cover_image_url"], "item_key": item_key,
         },
     )
+    _record_price_drops(conn, crawler_id, floors, [{
+        "item_key": item_key, "url": listing["url"],
+        "price": listing.get("price"), "currency": listing.get("currency"),
+    }])
 
 
 def delete_stock_item_for_release(conn, release_id: str, crawler_id: int):
@@ -2284,12 +2453,10 @@ def _apply_canonical_artists(conn, rows: list[dict]) -> None:
 
 
 def replace_stock_items(conn, crawler_id: int, items: list[dict]) -> list[str]:
-    conn.execute("DELETE FROM stock_items WHERE crawler_id = %s", [crawler_id])
-    if not items:
-        return []
     rows = []
     identity_rows = []
     item_keys = []
+    candidates = []
     for item in items:
         artist = normalize_artist_casing(item["artist"])
         title = normalize_title_casing(item["title"])
@@ -2304,6 +2471,19 @@ def replace_stock_items(conn, crawler_id: int, items: list[dict]) -> list[str]:
             crawler_id, artist, title, item.get("format"), item.get("price"),
             item.get("currency"), item["url"], item.get("cover_image_url"), item_key,
         ))
+        candidates.append({
+            "item_key": item_key, "url": item["url"],
+            "price": item.get("price"), "currency": item.get("currency"),
+        })
+    # Read before the DELETE below, not after -- which is why the loop above
+    # moved ahead of it. The floor a drop has to beat includes the price this
+    # call is about to replace, and this path replaces a store's whole batch:
+    # reading it afterwards would find no prior price for anything and report
+    # the entire catalog as having just got cheaper. See _record_price_drops.
+    floors = _price_floors(conn, item_keys)
+    conn.execute("DELETE FROM stock_items WHERE crawler_id = %s", [crawler_id])
+    if not rows:
+        return []
     with conn.cursor() as cur:
         cur.executemany(
             """
@@ -2323,6 +2503,7 @@ def replace_stock_items(conn, crawler_id: int, items: list[dict]) -> list[str]:
             """,
             rows,
         )
+    _record_price_drops(conn, crawler_id, floors, candidates)
     return item_keys
 
 
@@ -2647,6 +2828,93 @@ def unsave_stock_item(conn, user_id: int, item_key: str) -> None:
     conn.execute(
         "DELETE FROM stock_item_saves WHERE user_id = %s AND item_key = %s",
         [user_id, item_key],
+    )
+
+
+# The whole of "which price drops is this user notified about", in one place so
+# the list, the unread count and the read watermark cannot drift apart.
+#
+# stock_item_price_drops is a global table -- see its schema comment -- and this
+# join through the caller's own stock_item_saves rows is what makes it per-user.
+# RLS on stock_item_saves does the isolating, exactly as it does on every other
+# read path, so a user can only ever be shown drops for items they saved
+# themselves. Always run under db.user_scope().
+#
+# created_at >= saved_at is what makes "notification" the right word: you are
+# told about changes since you started watching, not handed a record's back
+# catalogue of price history the moment you bookmark it.
+# Ends on a join condition rather than a WHERE clause so callers can append
+# joins of their own (the list query needs the item's identity and its source's
+# name) without having to restate the visibility rule.
+_SAVED_PRICE_DROPS_SQL = """
+    FROM stock_item_price_drops d
+    JOIN stock_item_saves sv
+      ON sv.item_key = d.item_key
+     AND sv.user_id = %(user_id)s
+     AND d.created_at >= sv.saved_at
+"""
+
+
+def get_price_drop_notifications(conn, user_id: int, limit: int = 50) -> list:
+    return conn.execute(
+        f"""
+        SELECT d.id, d.item_key, d.url, d.price, d.currency, d.previous_best, d.created_at,
+               i.artist, i.title, i.format, cr.site_name AS source,
+               (SELECT s.cover_image_url FROM stock_items s
+                 WHERE s.item_key = d.item_key AND s.cover_image_url IS NOT NULL
+                 LIMIT 1) AS cover_image_url
+        {_SAVED_PRICE_DROPS_SQL}
+        JOIN stock_item_identities i ON i.item_key = d.item_key
+        JOIN crawlers cr ON cr.id = d.crawler_id
+        ORDER BY d.id DESC
+        LIMIT %(limit)s
+        """,
+        {"user_id": user_id, "limit": limit},
+    ).fetchall()
+
+
+def count_unread_price_drops(conn, user_id: int) -> int:
+    return conn.execute(
+        f"""
+        SELECT COUNT(*) {_SAVED_PRICE_DROPS_SQL}
+        WHERE d.id > COALESCE(
+              (SELECT last_read_drop_id FROM user_notification_reads WHERE user_id = %(user_id)s), 0)
+        """,
+        {"user_id": user_id},
+    ).fetchone()["count"]
+
+
+def get_notification_watermark(conn, user_id: int) -> int:
+    """The highest drop id this user has already seen. Zero when they have
+    never opened the tab, which is what makes every existing drop unread."""
+    row = conn.execute(
+        "SELECT last_read_drop_id FROM user_notification_reads WHERE user_id = %s",
+        [user_id],
+    ).fetchone()
+    return row["last_read_drop_id"] if row else 0
+
+
+def latest_price_drop_id(conn, user_id: int) -> Optional[int]:
+    return conn.execute(
+        f"SELECT MAX(d.id) AS latest {_SAVED_PRICE_DROPS_SQL}",
+        {"user_id": user_id},
+    ).fetchone()["latest"]
+
+
+def mark_price_drops_read(conn, user_id: int, up_to_id: int) -> None:
+    """GREATEST, not a plain assignment: two tabs open on the Notifications
+    view will each POST their own watermark, and the one that started earlier
+    can land last. Taking the maximum means a stale request can never un-read
+    something newer."""
+    conn.execute(
+        """
+        INSERT INTO user_notification_reads (user_id, last_read_drop_id, updated_at)
+        VALUES (%s, %s, CURRENT_TIMESTAMP)
+        ON CONFLICT (user_id) DO UPDATE SET
+            last_read_drop_id = GREATEST(user_notification_reads.last_read_drop_id, EXCLUDED.last_read_drop_id),
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        [user_id, up_to_id],
     )
 
 

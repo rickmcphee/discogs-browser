@@ -5,19 +5,21 @@ import Settings from './views/Settings'
 import Account from './views/Account'
 import LogViewer from './views/LogViewer'
 import QueueView from './views/QueueView'
+import Notifications from './views/Notifications'
 import LoginScreen from './views/LoginScreen'
 import InviteCodeScreen from './views/InviteCodeScreen'
 import BackendDownScreen from './views/BackendDownScreen'
 import Avatar from './components/Avatar'
 import BottomNav from './components/BottomNav'
+import NotificationBell from './components/NotificationBell'
 import Sheet from './components/Sheet'
 import { useIsMobile } from './hooks/useMediaQuery'
 import { navButtonClass, primaryButtonClass, secondaryButtonClass, dismissButtonClass } from './styles/buttons'
-import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, clearJudgments, exportRecommendationsCsv, importRecommendationsCsv, getCrawlers, getUserSettings, getUserHiddenCrawlers, postUserHiddenCrawlers, getJudgmentStatus, getPriceStatus, checkHealth, getAuthStatus, setUnauthorizedHandler, hasAvatar } from './api/client'
+import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, clearJudgments, exportRecommendationsCsv, importRecommendationsCsv, getCrawlers, getUserSettings, getUserHiddenCrawlers, postUserHiddenCrawlers, getJudgmentStatus, getPriceStatus, getNotificationsUnread, markNotificationsRead, checkHealth, getAuthStatus, setUnauthorizedHandler, hasAvatar } from './api/client'
 import type { StockSyncStartResult } from './api/client'
 import type { CrawlEvent, CrawlStatus, CollectionStatus, Crawler, AuthStatus } from './api/types'
 
-type View = 'collection' | 'wantlist' | 'store' | 'track' | 'settings' | 'logs' | 'queue' | 'account'
+type View = 'collection' | 'wantlist' | 'store' | 'track' | 'settings' | 'logs' | 'queue' | 'account' | 'notifications'
 type LibraryView = Extract<View, 'collection' | 'wantlist' | 'store' | 'track'>
 
 // One table drives the desktop header pills and the mobile tab bar, so the two
@@ -30,7 +32,8 @@ const LIBRARY_TABS: { view: LibraryView; label: string; icon: 'collection' | 'wa
 ]
 
 // Admin-only, and rarely visited -- header pills on desktop, an overflow sheet
-// on mobile, where the header has room for a title and two controls.
+// on mobile, where the header has room for a title and a short row of controls
+// (the notification bell and the avatar, plus this menu's own button).
 const ADMIN_TABS: { view: View; label: string }[] = [
   { view: 'queue', label: 'Queue' },
   { view: 'logs', label: 'Logs' },
@@ -120,6 +123,8 @@ export default function App() {
   const [hasJudgedItems, setHasJudgedItems] = useState(false)
   const [hasPriceData, setHasPriceData] = useState(false)
   const latestPriceStatusSeq = useRef(0)
+  const [unreadNotifications, setUnreadNotifications] = useState(0)
+  const latestNotificationsSeq = useRef(0)
   // Same race, same fix, for the two start requests. Neither has a bounded
   // response time -- POST /stock/sync/start opens a fresh psycopg connection
   // before it answers -- and the claim timeout below can re-enable the button
@@ -247,6 +252,35 @@ export default function App() {
     getPriceStatus().then((s) => {
       if (seq !== latestPriceStatusSeq.current) return
       setHasPriceData(s.any_price_paid)
+    }).catch(() => {})
+  }, [])
+
+  // Same counter, same reason: the bootstrap fetch, every SSE generation tick,
+  // and the write that follows opening the Notifications tab can all be in
+  // flight at once, and a slow bootstrap response landing last would relight a
+  // dot the user has just cleared.
+  const fetchUnreadNotifications = useCallback(() => {
+    const seq = ++latestNotificationsSeq.current
+    getNotificationsUnread().then((s) => {
+      if (seq !== latestNotificationsSeq.current) return
+      setUnreadNotifications(s.unread)
+    }).catch(() => {})
+  }, [])
+
+  // Opening the tab is what marks it read. Zeroed optimistically so the dot
+  // clears on the click rather than a round trip later; the response's own
+  // count then overwrites it, and a failed write simply leaves the next
+  // generation tick to put the dot back.
+  const handleNotificationsLoaded = useCallback((latestId: number | null) => {
+    if (latestId === null) {
+      setUnreadNotifications(0)
+      return
+    }
+    const seq = ++latestNotificationsSeq.current
+    setUnreadNotifications(0)
+    markNotificationsRead(latestId).then((s) => {
+      if (seq !== latestNotificationsSeq.current) return
+      setUnreadNotifications(s.unread)
     }).catch(() => {})
   }, [])
 
@@ -520,6 +554,18 @@ export default function App() {
       clearTimeout(reconnectTimer)
     }
   }, [authState, setSyncStatus, fetchPriceStatus])
+
+  // Every event that bumps stockSyncGeneration -- listing_changed and the
+  // whole stock_sync_* family -- is precisely an event that could have just
+  // recorded a price drop, so the bell rides the counter the Store and Track
+  // tabs already refetch on. A notification-specific SSE event would have to
+  // be tagged with an owner, and the crawl worker cannot determine one: saves
+  // are RLS-scoped and invisible to it (see the price-drop design doc). Also
+  // covers the first fetch, since serverReady only flips once bootstrap runs.
+  useEffect(() => {
+    if (authState?.state !== 'authenticated' || !serverReady) return
+    fetchUnreadNotifications()
+  }, [stockSyncGeneration, authState, serverReady, fetchUnreadNotifications])
 
   useEffect(() => {
     setUnauthorizedHandler(() => setAuthState({ state: 'unauthenticated' }))
@@ -904,6 +950,11 @@ export default function App() {
                 </button>
               ))
             ))}
+            <NotificationBell
+              unread={unreadNotifications}
+              active={view === 'notifications'}
+              onClick={() => setView('notifications')}
+            />
             <button
               onClick={() => setView('account')}
               aria-label="Profile"
@@ -970,6 +1021,15 @@ export default function App() {
             hasJudgedItems={hasJudgedItems}
           />
         </div>
+        {/* Mounted only while it is the active view, not hidden like the tabs
+            above: loading this view is what marks its notifications read, so a
+            permanently-mounted copy would clear the bell's dot on app start,
+            before the user had seen anything. */}
+        {view === 'notifications' && (
+          <div className="h-full overflow-y-auto">
+            <Notifications generation={stockSyncGeneration} onLoaded={handleNotificationsLoaded} />
+          </div>
+        )}
         {/* Gated on showAdminNav, not just hidden: LogViewer opens its SSE
             stream on mount regardless of visibility, so mounting it for every
             user would hand each one an open stream of the operator's log. */}

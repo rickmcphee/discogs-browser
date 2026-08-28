@@ -5,6 +5,7 @@ import type { Invite } from '../api/types'
 import { secondaryButtonClass } from '../styles/buttons'
 import { textInputClass } from '../styles/inputs'
 import { stackedTableClass, stackedBodyClass, stackedRowClass, stackedCellClass } from '../styles/tables'
+import { formatServerTimestamp } from './formatTimestamp'
 
 // apiFetch throws Error(await r.text()), so err.message is FastAPI's raw JSON
 // body for a handled error and a plain string for anything else. Every branch
@@ -23,13 +24,6 @@ function errorMessage(err: unknown, fallback: string): string {
     // not JSON, use raw message
   }
   return raw || fallback
-}
-
-// Postgres TIMESTAMP (not TIMESTAMPTZ) columns serialize as offsetless ISO
-// strings -- `new Date()` on those parses as browser-local time, not UTC.
-function formatServerTimestamp(iso: string): string {
-  const hasOffset = /[zZ]|[+-]\d\d:\d\d$/.test(iso)
-  return new Date(hasOffset ? iso : `${iso}Z`).toLocaleString()
 }
 
 interface Props {
