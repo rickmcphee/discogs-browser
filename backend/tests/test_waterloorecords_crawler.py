@@ -4,314 +4,203 @@ import respx
 
 from crawlers.waterloorecords import Crawler
 
-_PRODUCTS_URL = "https://waterloorecords.com/collections/vinyl-lps/products.json"
+_SUGGEST_URL = "https://waterloorecords.com/search/suggest.json"
 
 
-# Real confirmed-live product. The plain shape: one in-stock "New" variant,
-# a bracketed format suffix, and an artist whose own name is punctuation.
-_LOUDEN_UP_NOW = {
-    "title": "!!!/CHK CHK CHK - Louden Up Now [LP]",
-    "handle": "chk-chk-chk-louden-up-now-lp-03617209341",
-    "vendor": "598",
-    "product_type": "Vinyl",
-    "tags": ["!!!/CHK CHK CHK", "inventory_link_bt", "T&G"],
-    "images": [{"src": "https://cdn.shopify.com/s/files/1/0933/3833/7576/files/645748.jpg?v=1763982840"}],
-    "variants": [{"title": "New", "price": "29.99", "available": True, "featured_image": None}],
-}
+def _product(title, type_="Vinyl", price="24.99", available=True, handle=None, extra=None):
+    """One product in the shape /search/suggest.json actually returns.
 
-# Real confirmed-live product, and the anchor for the first-hyphen split:
-# the album half carries its own " - " run, so a greedy or last-hyphen split
-# would report the artist as "10CC - Deceptive Bends".
-_DECEPTIVE_BENDS = {
-    "title": "10CC - Deceptive Bends - 180gm Vinyl [LP]",
-    "handle": "10cc-deceptive-bends-import-lp-0552024016",
-    "vendor": "206",
-    "product_type": "Vinyl",
-    "tags": ["10CC", "AEC", "inventory_link_bt"],
-    "images": [{"src": "https://cdn.shopify.com/s/files/1/0933/3833/7576/files/4170687-2929143.jpg?v=1763989835"}],
-    "variants": [{"title": "New", "price": "32.99", "available": True, "featured_image": None}],
-}
-
-# Real confirmed-live product: an in-stock variant beside a cheaper
-# out-of-stock one. Pins that the availability gate runs before the
-# cheapest-price pick, so the $24.99 sold-out variant never sets the price.
-_PETRICHOR = {
-    "title": "070 Shake - Petrichor [LP]",
-    "handle": "070-shake-petrichor-lp-60245876931",
-    "vendor": "101",
-    "product_type": "Vinyl",
-    "tags": ["070 SHAKE", "inventory_link_bt", "UQCL"],
-    "images": [{"src": "https://cdn.shopify.com/s/files/1/0933/3833/7576/files/4378523-3293186.jpg?v=1763989996"}],
-    "variants": [
-        {"title": "New / Default / Default", "price": "29.99", "available": True, "featured_image": None},
-        {"title": "New / Default / 24.99", "price": "24.99", "available": False, "featured_image": None},
-    ],
-}
-
-# Real confirmed-live product, and the reason the format gate reads
-# product_type and not the title: merch titles are ARTIST-REVERSED
-# ("<design> - <artist> - TS"), so parsing this one would file a Miles Davis
-# t-shirt under the artist "1970 Circle". It also has five in-stock variants
-# that all share one URL, so admitting it would emit five item_key
-# collisions on top of the wrong artist.
-_MILES_DAVIS_TSHIRT = {
-    "title": "1970 Circle - Miles Davis - TS",
-    "handle": "davis-miles-l-1970-circle-ts-09999801509",
-    "vendor": "American Classics",
-    "product_type": "T-SHIRT",
-    "tags": ["AMER", "DAVIS MILES"],
-    "images": [],
-    "variants": [
-        {"title": "S / New", "price": "21.99", "available": True, "featured_image": None},
-        {"title": "M / New", "price": "21.99", "available": True, "featured_image": None},
-        {"title": "L / New", "price": "21.99", "available": True, "featured_image": None},
-        {"title": "XL / New", "price": "21.99", "available": True, "featured_image": None},
-        {"title": "2XL / New", "price": "23.99", "available": True, "featured_image": None},
-    ],
-}
-
-# Real confirmed-live product. Same artist and same " - Album [Format]"
-# shape as the vinyl rows, so only product_type keeps it out.
-_CHK_CHK_CHK_CD = {
-    "title": "!!!/CHK CHK CHK - !!! [CD]",
-    "handle": "chk-chk-chk-cd-61350500392",
-    "vendor": "503",
-    "product_type": "CD",
-    "tags": ["!!!/CHK CHK CHK", "GSL", "inventory_link_bt"],
-    "images": [{"src": "https://cdn.shopify.com/s/files/1/0933/3833/7576/files/369980.jpg?v=1763982814"}],
-    "variants": [
-        {"title": "New / Default", "price": "13.99", "available": False, "featured_image": None},
-        {"title": "New / Alternate", "price": "13.99", "available": False, "featured_image": None},
-    ],
-}
-
-# Real confirmed-live product: an admitted non-"Vinyl" vinyl product_type
-# that happens to be sold out, and carries no images.
-_CHRISTMAS_7IN = {
-    "title": "!!! CHK CHK CHK - And Anyway It's Christmas [7-IN VINYL]",
-    "handle": "chk-chk-chk-and-anyway-its-christmas-45-0106193617",
-    "vendor": "503",
-    "product_type": "7-IN VINYL",
-    "tags": ["!!! CHK CHK CHK", "inventory_link_bt", "WRPR"],
-    "images": [],
-    "variants": [{"title": "New", "price": "6.99", "available": False, "featured_image": None}],
-}
-
-# Synthetic: no live product in the sampled page has two *in-stock* variants,
-# but the shape is structurally reachable (products do carry several
-# variants; availability is just sparse). Pins the one-row-per-product rule
-# that item_key collisions depend on, and the cheapest-of pick.
-_SYNTHETIC_TWO_IN_STOCK = {
-    "title": "Synthetic Artist - Two In Stock [LP]",
-    "handle": "synthetic-artist-two-in-stock-lp",
-    "vendor": "999",
-    "product_type": "Vinyl",
-    "tags": [],
-    "images": [{"src": "https://cdn.shopify.com/product.jpg"}],
-    "variants": [
-        {"title": "New", "price": "34.99", "available": True, "featured_image": None},
-        {"title": "Used", "price": "18.99", "available": True, "featured_image": None},
-    ],
-}
-
-# Synthetic: pins that a malformed price does not drop in-stock vinyl.
-_SYNTHETIC_BAD_PRICE = {
-    "title": "Synthetic Artist - Bad Price [LP]",
-    "handle": "synthetic-artist-bad-price-lp",
-    "vendor": "999",
-    "product_type": "Vinyl",
-    "tags": [],
-    "images": [],
-    "variants": [{"title": "New", "price": None, "available": True, "featured_image": None}],
-}
-
-# Synthetic: featured_image is null on every live variant, so only a made-up
-# product can prove resolve_cover_image's variant-first preference is wired up.
-_SYNTHETIC_VARIANT_IMAGE = {
-    "title": "Synthetic Artist - Variant Image [LP]",
-    "handle": "synthetic-artist-variant-image-lp",
-    "vendor": "999",
-    "product_type": "Vinyl",
-    "tags": [],
-    "images": [{"src": "https://cdn.shopify.com/product.jpg"}],
-    "variants": [{
-        "title": "New",
-        "price": "24.99",
-        "available": True,
-        "featured_image": {"src": "https://cdn.shopify.com/variant.jpg"},
-    }],
-}
-
-# Synthetic: a title with no spaced hyphen at all has no artist to report.
-_SYNTHETIC_NO_DELIMITER = {
-    "title": "Untitled Vinyl Oddity",
-    "handle": "untitled-vinyl-oddity",
-    "vendor": "999",
-    "product_type": "Vinyl",
-    "tags": [],
-    "images": [],
-    "variants": [{"title": "New", "price": "19.99", "available": True, "featured_image": None}],
-}
+    `variants` is deliberately absent rather than populated: the suggest
+    payload really does return an empty variants list for every product, which
+    is why the crawler reads the product-level `price` and `available` instead
+    of picking a variant the way the old catalog crawler did.
+    """
+    handle = handle or title.lower().replace(" ", "-")
+    product = {
+        "title": title,
+        "type": type_,
+        "price": price,
+        "price_min": price,
+        "available": available,
+        # The tracking parameters are part of the fixture on purpose -- every
+        # live url carries them and _clean_url has to remove them.
+        "url": f"/products/{handle}?_pos=1&_psq=test+query&_psid=56f361eda&_ss=e",
+        "variants": [],
+        "vendor": "598",
+    }
+    if extra:
+        product.update(extra)
+    return product
 
 
-def _page_response(products):
-    return httpx.Response(200, json={"products": products})
+def _payload(products):
+    return httpx.Response(200, json={"resources": {"results": {"products": products}}})
 
 
-def _mock_single_page(products):
-    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(return_value=_page_response(products))
-    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "2"}).mock(return_value=_page_response([]))
+def _mock(products):
+    return respx.get(_SUGGEST_URL).mock(return_value=_payload(products))
 
 
-@pytest.fixture
-def crawler():
-    return Crawler()
-
-
-def test_site_metadata():
-    assert Crawler.site_name == "Waterloo Records"
-    assert Crawler.base_url == "https://waterloorecords.com"
-    assert Crawler.genre == "marketplace"
-    assert Crawler.crawler_type == "catalog"
-    assert Crawler.genre_summary
+# Real confirmed-live results for "geese getting killed": the vinyl pressing
+# and the CD of the same album, which is what the product-type gate is for.
+_GEESE_LP = _product(
+    "Geese - Getting Killed [Clear Vinyl] [LP]",
+    price="24.99", handle="geese-getting-killed-clear-vinyl-lp-540086318802",
+)
+_GEESE_CD = _product(
+    "Geese - Getting Killed [CD]", type_="CD",
+    price="14.99", handle="geese-getting-killed-cd-540086318800",
+)
 
 
 @respx.mock
-async def test_parses_artist_album_and_keeps_the_format_bracket(crawler):
-    _mock_single_page([_LOUDEN_UP_NOW])
-    items = [item async for item in crawler.crawl_catalog()]
-    assert items == [{
-        "artist": "!!!/CHK CHK CHK",
-        # The bracket stays: it is the only thing distinguishing two
-        # pressings of one album. See the crawler's comment on `title`.
-        "title": "Louden Up Now [LP]",
-        "format": "Vinyl",
-        "price": 29.99,
+async def test_search_returns_matching_in_stock_vinyl():
+    _mock([_GEESE_LP, _GEESE_CD])
+    results = await Crawler().search({"artist": "Geese", "title": "Getting Killed"}, None)
+    assert results == [{
+        "url": "https://waterloorecords.com/products/geese-getting-killed-clear-vinyl-lp-540086318802",
+        "price": 24.99,
+        "shipping": None,
         "currency": "USD",
-        "url": "https://waterloorecords.com/products/chk-chk-chk-louden-up-now-lp-03617209341",
-        "cover_image_url": "https://cdn.shopify.com/s/files/1/0933/3833/7576/files/645748.jpg?v=1763982840",
+        "condition": None,
     }]
 
 
 @respx.mock
-async def test_splits_on_the_first_hyphen_not_the_last(crawler):
-    _mock_single_page([_DECEPTIVE_BENDS])
-    items = [item async for item in crawler.crawl_catalog()]
-    assert items[0]["artist"] == "10CC"
-    assert items[0]["title"] == "Deceptive Bends - 180gm Vinyl [LP]"
+async def test_search_strips_the_search_tracking_parameters_from_the_url():
+    # db.compute_item_key() hashes the url, and _pos/_psq/_psid all vary with
+    # the search that produced them -- left on, one product would take a fresh
+    # item_key on every crawl and orphan the saves and judgments on the old one.
+    _mock([_GEESE_LP])
+    results = await Crawler().search({"artist": "Geese", "title": "Getting Killed"}, None)
+    assert "?" not in results[0]["url"]
+    assert results[0]["url"].startswith("https://waterloorecords.com/products/")
 
 
 @respx.mock
-async def test_vendor_is_never_used_as_the_artist(crawler):
-    # vendor is a numeric supplier code ("598", "206"), not a label or an
-    # artist -- unlike every sibling Shopify crawler in this repo.
-    _mock_single_page([_LOUDEN_UP_NOW, _DECEPTIVE_BENDS])
-    items = [item async for item in crawler.crawl_catalog()]
-    assert {item["artist"] for item in items} == {"!!!/CHK CHK CHK", "10CC"}
+async def test_search_excludes_non_vinyl_product_types():
+    _mock([_GEESE_CD])
+    assert await Crawler().search({"artist": "Geese", "title": "Getting Killed"}, None) == []
 
 
 @respx.mock
-async def test_drops_cds_cassettes_and_merch_by_product_type(crawler):
-    _mock_single_page([_CHK_CHK_CHK_CD, _MILES_DAVIS_TSHIRT])
-    assert [item async for item in crawler.crawl_catalog()] == []
+async def test_search_excludes_sold_out_products():
+    _mock([_product("Geese - Getting Killed [LP]", available=False)])
+    assert await Crawler().search({"artist": "Geese", "title": "Getting Killed"}, None) == []
 
 
 @respx.mock
-async def test_merch_never_leaks_a_reversed_artist(crawler):
-    # Regression guard with teeth: this t-shirt has five in-stock variants
-    # and a reversed title, so a title-based format gate would emit five
-    # colliding rows attributed to "1970 Circle" instead of Miles Davis.
-    _mock_single_page([_MILES_DAVIS_TSHIRT, _LOUDEN_UP_NOW])
-    items = [item async for item in crawler.crawl_catalog()]
-    assert [item["artist"] for item in items] == ["!!!/CHK CHK CHK"]
+async def test_search_rejects_a_fuzzy_hit_by_another_artist():
+    # suggest.json is a search box, not a lookup: a query routinely comes back
+    # with records by other artists, and matches[0] is taken on trust.
+    _mock([_product("Beach House - Getting Killed [LP]")])
+    assert await Crawler().search({"artist": "Geese", "title": "Getting Killed"}, None) == []
 
 
 @respx.mock
-async def test_admits_non_lp_vinyl_product_types(crawler):
-    _mock_single_page([{**_CHRISTMAS_7IN, "variants": [
-        {"title": "New", "price": "6.99", "available": True, "featured_image": None},
-    ]}])
-    items = [item async for item in crawler.crawl_catalog()]
-    assert len(items) == 1
-    assert items[0]["artist"] == "!!! CHK CHK CHK"
-    # The specific cut lives in the title bracket; `format` stays "Vinyl".
-    assert items[0]["title"] == "And Anyway It's Christmas [7-IN VINYL]"
-    assert items[0]["format"] == "Vinyl"
+async def test_search_ranks_the_base_pressing_above_a_longer_titled_release():
+    # Both are live for "radiohead kid a", and both pass the prefix rule the
+    # app's own library matcher uses -- "Kid A Mnesia" starts with "Kid A ".
+    # The Mnesia price is lowered from its real $54.99 so that price alone
+    # would pick the wrong record, pinning that rank beats price.
+    mnesia = _product("Radiohead - Kid A Mnesia [3LP]", price="19.99",
+                      handle="radiohead-kid-a-mnesia-blk-vinyl-lp-19140411661")
+    kid_a = _product("Radiohead - Kid A [2LP]", price="32.99",
+                     handle="radiohead-kid-a-2x12in-lp-63490407820")
+    _mock([mnesia, kid_a])
+    results = await Crawler().search({"artist": "Radiohead", "title": "Kid A"}, None)
+    assert [r["price"] for r in results] == [32.99, 19.99]
 
 
 @respx.mock
-async def test_sold_out_product_yields_nothing(crawler):
-    _mock_single_page([_CHRISTMAS_7IN])
-    assert [item async for item in crawler.crawl_catalog()] == []
+async def test_search_keeps_an_unbracketed_qualifier_when_no_base_pressing_exists():
+    # "Abbey Road: Anniversary Edition [LP]" is the only Abbey Road this store
+    # stocks, and its qualifier is not bracketed -- so the looser prefix rank
+    # has to still match, or the record would read as out of stock.
+    _mock([_product("The Beatles - Abbey Road: Anniversary Edition [LP]", price="29.99")])
+    results = await Crawler().search({"artist": "Beatles, The", "title": "Abbey Road"}, None)
+    assert len(results) == 1
+    assert results[0]["price"] == 29.99
 
 
 @respx.mock
-async def test_out_of_stock_variant_never_sets_the_price(crawler):
-    _mock_single_page([_PETRICHOR])
-    items = [item async for item in crawler.crawl_catalog()]
-    assert len(items) == 1
-    # The $24.99 variant is cheaper but sold out; availability gates first.
-    assert items[0]["price"] == 29.99
+async def test_search_folds_the_discogs_trailing_article_form():
+    # Discogs writes "Beatles, The"; this store writes "The Beatles". Neither
+    # spelling is wrong and an exact comparison would match neither.
+    _mock([_product("The Beatles - Revolver [LP]")])
+    assert await Crawler().search({"artist": "Beatles, The", "title": "Revolver"}, None)
 
 
 @respx.mock
-async def test_one_row_per_product_at_the_cheapest_in_stock_price(crawler):
-    # Two in-stock variants share (artist, title, url), so two rows would
-    # collide on item_key. Exactly one row, priced at the cheaper variant.
-    _mock_single_page([_SYNTHETIC_TWO_IN_STOCK])
-    items = [item async for item in crawler.crawl_catalog()]
-    assert len(items) == 1
-    assert items[0]["price"] == 18.99
+async def test_search_matches_a_various_artists_release_on_title_alone():
+    # Discogs' catch-all entity. The store files compilations under a real
+    # name ("Soundtrack", "VA"), so there is no artist to compare.
+    _mock([_product("Soundtrack - Guardians of the Galaxy [LP]")])
+    assert await Crawler().search({"artist": "Various", "title": "Guardians of the Galaxy"}, None)
 
 
 @respx.mock
-async def test_malformed_price_still_emits_the_row(crawler):
-    _mock_single_page([_SYNTHETIC_BAD_PRICE])
-    items = [item async for item in crawler.crawl_catalog()]
-    assert len(items) == 1
-    assert items[0]["price"] is None
-    assert items[0]["title"] == "Bad Price [LP]"
+async def test_search_orders_equally_ranked_matches_cheapest_first():
+    # The fleet reads matches[0], and this store has no condition column, so a
+    # row reports the least it costs to get the record.
+    _mock([
+        _product("Geese - Getting Killed [Clear Vinyl] [LP]", price="34.99"),
+        _product("Geese - Getting Killed [LP]", price="24.99"),
+    ])
+    results = await Crawler().search({"artist": "Geese", "title": "Getting Killed"}, None)
+    assert [r["price"] for r in results] == [24.99, 34.99]
 
 
 @respx.mock
-async def test_cover_image_falls_back_to_the_product_image(crawler):
-    _mock_single_page([_LOUDEN_UP_NOW])
-    items = [item async for item in crawler.crawl_catalog()]
-    assert items[0]["cover_image_url"] == (
-        "https://cdn.shopify.com/s/files/1/0933/3833/7576/files/645748.jpg?v=1763982840"
-    )
+async def test_search_sorts_unpriced_matches_last_without_comparing_none_to_none():
+    # Two unpriced listings tie on the is-None flag, so the sort key's second
+    # element is reached for both -- a bare price there would raise.
+    _mock([
+        _product("Geese - Getting Killed [LP]", price=None),
+        _product("Geese - Getting Killed [Clear Vinyl] [LP]", price=None),
+        _product("Geese - Getting Killed [Indie LP]", price="24.99"),
+    ])
+    results = await Crawler().search({"artist": "Geese", "title": "Getting Killed"}, None)
+    assert [r["price"] for r in results] == [24.99, None, None]
 
 
 @respx.mock
-async def test_cover_image_is_none_when_the_product_has_no_images(crawler):
-    _mock_single_page([_SYNTHETIC_BAD_PRICE])
-    items = [item async for item in crawler.crawl_catalog()]
-    assert items[0]["cover_image_url"] is None
+async def test_search_skips_a_product_whose_title_has_no_artist_separator():
+    _mock([_product("Getting Killed LP")])
+    assert await Crawler().search({"artist": "Geese", "title": "Getting Killed"}, None) == []
 
 
 @respx.mock
-async def test_cover_image_prefers_the_variant_image(crawler):
-    _mock_single_page([_SYNTHETIC_VARIANT_IMAGE])
-    items = [item async for item in crawler.crawl_catalog()]
-    assert items[0]["cover_image_url"] == "https://cdn.shopify.com/variant.jpg"
+async def test_search_returns_empty_when_the_store_has_nothing():
+    _mock([])
+    assert await Crawler().search({"artist": "Geese", "title": "Getting Killed"}, None) == []
 
 
 @respx.mock
-async def test_title_without_a_delimiter_is_skipped(crawler):
-    _mock_single_page([_SYNTHETIC_NO_DELIMITER])
-    assert [item async for item in crawler.crawl_catalog()] == []
+async def test_search_raises_on_an_http_error():
+    # Per CLAUDE.md's crawler contract: [] means the site answered and had
+    # nothing, so a failure must raise or the consecutive-failure breaker
+    # cannot tell a dead site from an empty shelf.
+    respx.get(_SUGGEST_URL).mock(return_value=httpx.Response(503))
+    with pytest.raises(httpx.HTTPStatusError):
+        await Crawler().search({"artist": "Geese", "title": "Getting Killed"}, None)
 
 
 @respx.mock
-async def test_paginates_until_an_empty_page(crawler):
-    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(
-        return_value=_page_response([_LOUDEN_UP_NOW])
-    )
-    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "2"}).mock(
-        return_value=_page_response([_DECEPTIVE_BENDS])
-    )
-    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "3"}).mock(
-        return_value=_page_response([])
-    )
-    items = [item async for item in crawler.crawl_catalog()]
-    assert [item["artist"] for item in items] == ["!!!/CHK CHK CHK", "10CC"]
+async def test_search_raises_on_an_unexpected_payload_shape():
+    respx.get(_SUGGEST_URL).mock(return_value=httpx.Response(200, json={"resources": {}}))
+    with pytest.raises(RuntimeError):
+        await Crawler().search({"artist": "Geese", "title": "Getting Killed"}, None)
+
+
+def test_search_url_points_at_the_stores_own_search_page():
+    url = Crawler.search_url({"artist": "Geese", "title": "Getting Killed"})
+    assert url == "https://waterloorecords.com/search?q=Geese+Getting+Killed"
+
+
+def test_crawler_is_registered_as_a_release_crawler():
+    # main.py reads crawler_type off the class, defaulting to "release". This
+    # store is searched per release rather than walked, so it must not declare
+    # a catalog type -- see the module docstring for why.
+    assert getattr(Crawler, "crawler_type", "release") == "release"
+    assert getattr(Crawler, "requires_discogs_release", False) is False

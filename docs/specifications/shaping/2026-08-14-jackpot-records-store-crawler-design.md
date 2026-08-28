@@ -205,10 +205,10 @@ startup loop — no wiring changes.
 ## Queue fan-out
 
 3,080 gated products → 123 skipped (no title split) → 2,957 remaining →
-1 skipped (unavailable, non-preorder) = **2,956 stock items**, × 3 eligible
-release crawlers (`amazon`, `ebay`, `ebay_general`; `discogs_marketplace`
-excluded by its `requires_discogs_release = True`) = **~8,868
-`crawl_queue` jobs per sync**, the same order of magnitude as
+1 skipped (unavailable, non-preorder) = **2,956 stock items**, × the eligible
+release crawlers registered when this was measured (`amazon`, `ebay`,
+`ebay_general`; `discogs_marketplace` excluded by its
+`requires_discogs_release = True`) = **~8,868 `crawl_queue` jobs per sync**, the same order of magnitude as
 `turntablelab.py`'s ~7,476. No window applied, consistent with every other
 unwindowed label-store plugin.
 

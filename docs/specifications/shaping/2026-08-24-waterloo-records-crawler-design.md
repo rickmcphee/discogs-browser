@@ -454,13 +454,55 @@ collection. That is a floor, not a resolution: roughly 11,000 products remain
 unreachable through this endpoint, and which ones fall outside the ceiling is
 decided by the collection's own ordering rather than by anything meaningful.
 
-The open question this raises is whether a catalog crawler is the right shape
-for this store at all. The Problem section above already records that Waterloo
-"is a general retailer, not a label store" — the trait that separates it from
-every sibling. A `release`-type crawler searching `/search/suggest.json`
-reaches the entire catalog with no ceiling, returns `available`, `price`,
-`url` and the same `type` field this crawler's vinyl gate already reads, and
-needs no Playwright (`crawlers/ebay.py` is the precedent for an API-backed
-release crawler). It would answer "can I buy this record here, and for how
-much" completely, at the cost of the Store tab's browse-what's-in-stock
-discovery. Not decided here.
+**Decided: this store is now a `release` crawler, not a `catalog` one.**
+
+The Problem section above already records that Waterloo "is a general
+retailer, not a label store" — the trait that separates it from every sibling
+— and that is what settles it. A catalog crawler answers "what is on the
+shelf", which only works if the shelf can be enumerated; this one cannot be.
+A release crawler answers "can I buy *this* record here, and for how much",
+which the endpoint below can answer completely.
+
+`crawl_catalog()` is therefore replaced by `search()` over
+`/search/suggest.json`, which has no page ceiling and reaches the whole
+catalog. It returns `available`, `price`, `url` and the same `type` field this
+crawler's vinyl gate already read, so the format and availability rules carry
+over unchanged; `crawlers/ebay.py` is the precedent for an API-backed release
+crawler that ignores the Playwright page it is handed.
+
+Three things the conversion had to get right:
+
+- **The url carries the search that produced it.** suggest.json returns
+  `/products/<handle>?_pos=…&_psq=…&_psid=…`, and every one of those varies per
+  search. `db.compute_item_key()` hashes the url, so they are stripped — left
+  on, one product would take a fresh `item_key` on every crawl and orphan the
+  saves and judgments hanging off the old one.
+- **The endpoint is a search box, not a lookup.** "geese getting killed"
+  returns 3D Country and a Third Man live record alongside the album asked
+  for, and the fleet reads `matches[0]`. Both halves of the store's
+  `Artist - Album` convention are checked, and matches are then *ranked*
+  rather than filtered further: rank 0 is an exact title once the bracketed
+  qualifiers come off, which only a base pressing achieves, and rank 1 is the
+  looser exact-or-prefix-with-space rule `db._library_match_fragment` itself
+  uses. That ordering is what keeps "Kid A" from reporting the price of
+  "Kid A Mnesia [3LP]", while leaving "Abbey Road: Anniversary Edition [LP]"
+  — whose qualifier is not bracketed, and which is the only Abbey Road this
+  store stocks — still matching.
+- **The old snapshot had to be cleared.** `db.replace_stock_items()` runs only
+  for the catalog kinds, so rows written while this was a catalog crawler
+  would never be refreshed and never deleted. `db.register_crawler()` now
+  clears them when a crawler changes kind to `release`, scoped to
+  `release_id IS NULL` — exactly the catalog-written set, since the release
+  path writes through `upsert_stock_item_from_release()`, which always carries
+  a release_id.
+
+**Consequences.** Waterloo keeps a Store tab presence, but a different one: a
+release crawler still writes `stock_items` through
+`upsert_stock_item_from_release()`, so what appears is the records from a
+user's own library that Waterloo stocks, not the store's shelf. Browsing
+Waterloo for records you do not already have is gone, and that is the price of
+completeness on a catalog this size. Waterloo also joins the eligible release
+crawlers expanded per `crawl_queue` row at dispatch, alongside `amazon`,
+`ebay` and `ebay_general`; the per-source dispatch estimates in the other
+crawler design docs were computed against the set registered at the time and
+were not re-derived for this change.
