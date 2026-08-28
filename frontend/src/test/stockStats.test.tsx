@@ -99,6 +99,36 @@ describe('StockStats', () => {
     expect(getStockStats).toHaveBeenLastCalledWith(expect.objectContaining({ search: 'rancid' }))
   })
 
+  it('drops the old breakdown the moment a filter changes, not when the new one lands', async () => {
+    const { rerender } = renderStats({ search: 'zombie' })
+    openPanel()
+    await screen.findByRole('img', { name: /items by source/i })
+
+    let resolve: (v: unknown) => void = () => {}
+    getStockStats.mockReturnValue(new Promise((r) => { resolve = r }))
+    rerender(<StockStats hiddenCrawlerIds={[]} search="rancid" />)
+    // The request for 'rancid' is still in flight; the 'zombie' numbers must
+    // already be gone rather than sitting next to a toolbar count that moved.
+    expect(screen.queryByRole('img', { name: /items by source/i })).toBeNull()
+    expect(screen.queryByText('Nuclear Blast')).toBeNull()
+
+    resolve({ total: 4, sources: [{ crawler_id: 8, site_name: 'Rancid Records', count: 4 }] })
+    expect(await screen.findByText('Rancid Records')).toBeInTheDocument()
+  })
+
+  it('keeps the breakdown on screen across a refreshKey tick, so a sync does not strobe it', async () => {
+    const { rerender } = renderStats({ refreshKey: 0 })
+    openPanel()
+    await screen.findByRole('img', { name: /items by source/i })
+
+    getStockStats.mockReturnValue(new Promise(() => {}))
+    rerender(<StockStats hiddenCrawlerIds={[]} refreshKey={1} />)
+    // Same view, only newer data pending: the numbers are seconds stale, not
+    // describing something else, so they stay put until the response lands.
+    expect(screen.getByRole('img', { name: /items by source/i })).toBeInTheDocument()
+    expect(screen.getByText('Nuclear Blast')).toBeInTheDocument()
+  })
+
   it('refetches when refreshKey ticks, so a sync or a save is reflected', async () => {
     const { rerender } = renderStats({ refreshKey: 0 })
     openPanel()

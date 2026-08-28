@@ -54,20 +54,36 @@ function StockStats({
     }
   }, [open, isMobile])
 
+  // Any change to *which* view the panel describes discards what it holds:
+  // those numbers belong to the old view, and a request takes a round trip to
+  // replace them -- long enough to read a total that disagrees with the one
+  // the toolbar has already updated. Done during render, not in an effect, so
+  // the stale breakdown never paints (the same shape StockBrowser uses to
+  // reset its page on a hidden-crawler change).
+  //
+  // `refreshKey` is deliberately not part of this key. It ticks on stock-sync
+  // progress, faster than a round trip, while the filters -- and so the view
+  // -- have not moved at all; resetting on it would strobe the panel through
+  // "Loading…" for the length of a sync. Those numbers go stale by seconds,
+  // not by describing something else, and the next response replaces them.
+  const viewKey = JSON.stringify([
+    open, search ?? '', artist ?? '', libraryScope ?? '',
+    recommended, saved, overlapped, hiddenCrawlerIds,
+  ])
+  const [prevViewKey, setPrevViewKey] = useState(viewKey)
+  if (viewKey !== prevViewKey) {
+    setPrevViewKey(viewKey)
+    setStats(null)
+    setError(false)
+    setHovered(null)
+  }
+
   // Fetched only while the panel is open -- this is a breakdown of what the
   // table beside it already shows, so nobody pays for it until they ask. The
   // filter props are in the dependency list, so a filter changed with the
   // panel open refetches rather than leaving a stale breakdown on screen.
   useEffect(() => {
-    // Closing discards what was fetched. Filters move while the panel is
-    // shut, and reopening onto the previous breakdown would show numbers for
-    // a view that no longer exists until the new request lands.
-    if (!open) {
-      setStats(null)
-      setError(false)
-      setHovered(null)
-      return
-    }
+    if (!open) return
     let latest = true
     getStockStats({ search, artist, libraryScope, recommended, saved, overlapped, hiddenCrawlerIds })
       .then((next) => {

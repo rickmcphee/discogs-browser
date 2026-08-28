@@ -77,6 +77,18 @@ table beside it already shows, so nobody pays a request for it until they
 ask. While open it refetches on any filter change or refresh tick, so an
 open panel is never showing a breakdown of a view that has moved on.
 
+**Changing the view discards what the panel holds; a refresh tick does not.**
+Those are different kinds of stale. A filter change (or a close, or a reopen)
+means the numbers on screen describe a *different* view, and a request takes a
+round trip to replace them — long enough to read a total that disagrees with
+the one the toolbar has already updated, which is the exact failure this
+feature's other decisions exist to prevent. So the panel resets on any change
+to its view key, during render rather than in an effect, and the stale
+breakdown never paints. A bare `refreshKey` tick is not in that key: it fires
+on stock-sync progress, faster than a round trip, while the filters have not
+moved at all, so resetting on it would strobe the panel through "Loading…"
+for the length of a sync to replace numbers that are stale only by seconds.
+
 ## Backend design
 
 ### `_stock_filter_sql`
