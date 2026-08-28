@@ -177,8 +177,10 @@ export default function App() {
   })
 
   // Counts every write to the banner. A claim that expires needs to know
-  // whether anything has spoken since it was taken, and it can no longer tell
-  // by recognising its own text on screen -- it puts none there.
+  // whether anything has spoken since it was taken, and the stock one cannot
+  // tell by recognising its own text on screen -- it puts none there. So this
+  // has to be the only way a message reaches the banner: a write that skips
+  // it is invisible to the guard, and the guard then talks over it.
   const statusWrites = useRef(0)
 
   // eventId is null for locally-generated messages (button-click failures) that never
@@ -217,9 +219,14 @@ export default function App() {
     return () => clearTimeout(timer)
   }, [stockSyncStarting, setSyncStatus])
 
-  // The price claim's own bound. Bumping the sequence first makes the stalled
-  // response a no-op if it ever does land.
-  const priceClaimNotice = useRef<{ shown: string; lost: string } | null>(null)
+  // The price claim's own bound, guarded exactly as the stock one is. It used
+  // to compare the displayed text against its own "Starting…" message instead,
+  // which read the same but wrote through setSyncMessage and so never reached
+  // the counter -- and a write the counter cannot see is one a later stock
+  // expiry mistakes for silence and talks over. One idiom, one write path.
+  // Bumping the sequence first makes the stalled response a no-op if it ever
+  // does land.
+  const priceClaimNotice = useRef<{ writes: number; lost: string } | null>(null)
 
   useEffect(() => {
     if (!priceRefreshStarting) return
@@ -227,10 +234,10 @@ export default function App() {
       latestPriceRefreshSeq.current++
       setPriceRefreshStarting(false)
       const notice = priceClaimNotice.current
-      if (notice) setSyncMessage((m) => (m === notice.shown ? notice.lost : m))
+      if (notice && statusWrites.current === notice.writes) setSyncStatus(notice.lost)
     }, START_CLAIM_TIMEOUT_MS)
     return () => clearTimeout(timer)
-  }, [priceRefreshStarting])
+  }, [priceRefreshStarting, setSyncStatus])
 
   const updateHiddenCrawlerIds = useCallback((ids: number[]) => {
     setHiddenCrawlerIds(ids)
@@ -614,12 +621,14 @@ export default function App() {
       : mode === 'missing'
         ? 'Starting price refresh for records with no price yet…'
         : 'Starting price refresh for every record…'
-    priceClaimNotice.current = {
-      shown: starting,
-      lost: 'Lost track of the price refresh — check the Logs tab to see whether it started.',
-    }
     setBusyStatusMessage(starting)
     setSyncStatus(starting)
+    // Recorded after its own write, so the claim is measuring silence from the
+    // point its message landed rather than counting that message as news.
+    priceClaimNotice.current = {
+      writes: statusWrites.current,
+      lost: 'Lost track of the price refresh — check the Logs tab to see whether it started.',
+    }
     try {
       const { enqueued } = await postCrawlStart(mode ?? 'all', releaseId)
       if (seq !== latestPriceRefreshSeq.current || !ownsStatus()) return

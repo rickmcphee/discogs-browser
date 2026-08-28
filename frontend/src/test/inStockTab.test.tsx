@@ -18,6 +18,7 @@ class MockEventSource {
 }
 
 const postStockSyncStart = vi.fn().mockResolvedValue({ started: true, running: true })
+const postCrawlStart = vi.fn().mockResolvedValue({ enqueued: 3 })
 const postJudgmentStart = vi.fn().mockResolvedValue({ started: true, running: true })
 const clearJudgments = vi.fn()
 const exportRecommendationsCsv = vi.fn()
@@ -39,7 +40,7 @@ vi.mock('../api/client', () => ({
   refreshCollection: vi.fn().mockResolvedValue({ synced: 0, username: 'test' }),
   getCollectionStatus: vi.fn().mockResolvedValue({ total: 0, last_synced: null }),
   getCrawlStatus: vi.fn().mockResolvedValue({ total: 0, missing: 0, oldest_checked: null }),
-  postCrawlStart: vi.fn().mockResolvedValue({ enqueued: 3 }),
+  postCrawlStart: (...args: unknown[]) => postCrawlStart(...args),
   getCrawlers: (...args: unknown[]) => getCrawlers(...args),
   openCrawlStream: vi.fn(() => new MockEventSource()),
   getReleases: vi.fn().mockResolvedValue({ total: 0, page: 1, per_page: 50, releases: [] }),
@@ -89,6 +90,7 @@ beforeEach(() => {
     started: true, running: true, on_another_instance: false,
     source: null, elapsed_seconds: null, source_elapsed_seconds: null,
   })
+  postCrawlStart.mockResolvedValue({ enqueued: 3 })
   postJudgmentStart.mockResolvedValue({ started: true, running: true })
   clearJudgments.mockResolvedValue({ cleared: true, running: false, count: 7 })
   exportRecommendationsCsv.mockResolvedValue(new Blob(['artist,title\n'], { type: 'text/csv' }))
@@ -307,6 +309,42 @@ describe('In Stock tab', () => {
     expect(screen.getByText(
       'Lost track of the Epitaph catalog refresh — check the Logs tab to see whether it is still running.'
     )).toBeInTheDocument()
+  })
+
+  // Both claims expire into the same banner, and the price one goes first
+  // here. Its notice is the newer of the two, so the stock expiry behind it
+  // has to stay quiet -- which it only does if the price expiry's own write
+  // was counted. It used to go through setSyncMessage and be invisible.
+  it('leaves a newer price lost-track notice alone when a stock claim expires behind it', async () => {
+    vi.useFakeTimers()
+    getCrawlers.mockResolvedValue([CATALOG_CRAWLER])
+    postCrawlStart.mockReturnValue(new Promise(() => {}))
+    postStockSyncStart.mockReturnValue(new Promise(() => {}))
+    render(<App />)
+    const settle = () => act(async () => {})
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await settle()
+
+    const priceRow = screen.getByText('Run price crawlers immediately.').closest('tr') as HTMLElement
+    fireEvent.click(priceRow.querySelector('button') as HTMLButtonElement)
+    await settle()
+
+    // The store's Refresh follows five seconds later, so its claim outlives
+    // the price one by five seconds.
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+    fireEvent.click(screen.getByTitle('Refresh Epitaph catalog now'))
+    await settle()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
+    const priceLost = 'Lost track of the price refresh — check the Logs tab to see whether it started.'
+    expect(screen.getByText(priceLost)).toBeInTheDocument()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+    expect(screen.getByText(priceLost)).toBeInTheDocument()
+    expect(screen.queryByText(/Lost track of the Epitaph catalog refresh/)).not.toBeInTheDocument()
+    // Quiet about it, but it still let its own button go.
+    expect(screen.getByTitle('Refresh Epitaph catalog now')).not.toBeDisabled()
   })
 
   // The expiry must not talk over whatever did arrive in the meantime.
