@@ -23,7 +23,7 @@ _VINYL_TYPES = {"LP", '7"', '10"', '12"', "7"}
 # on the artist -- and db._library_match_fragment compares artist with exact
 # LOWER() equality, where one invisible character is the difference between a
 # match and silence.
-_INVISIBLE_RE = re.compile(r'[​-‏‪-‮⁦-⁩﻿]')
+_INVISIBLE_RE = re.compile(r'[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]')
 
 # Status marker the store prefixes onto the title, ahead of the artist. Every
 # form here is live, typos included. It has to come off before the artist can
@@ -99,7 +99,7 @@ class Crawler:
         return (product.get("product_type") or "").strip() in _VINYL_TYPES
 
     @classmethod
-    def _items(cls, product: dict) -> list:
+    def _items(cls, product: dict) -> list[dict]:
         parsed = cls._parse_title(product.get("title", ""))
         if parsed is None:
             return []
@@ -110,9 +110,13 @@ class Crawler:
         # "Default Title" placeholder, which names no format at all, and two
         # live products (Roger Bekono, King Tuff) have their vinyl variants
         # sold out with only a cassette left in stock.
-        survivors = [
-            v for v in variants if not cls._competes_with_vinyl(v.get("title") or "")
-        ] if len(variants) > 1 else list(variants)
+        if len(variants) > 1:
+            survivors = [
+                v for v in variants
+                if not cls._competes_with_vinyl(v.get("title") or "")
+            ]
+        else:
+            survivors = list(variants)
         # Counted over survivors rather than available survivors so a row's
         # identity holds still: db.compute_item_key() hashes (artist, title,
         # url) and this url is per-product, so a title that gained or lost its

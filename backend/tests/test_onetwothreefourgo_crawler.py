@@ -149,7 +149,10 @@ _BAND_NAMED_DAMAGED = {
 # db._library_match_fragment compares artist with exact LOWER() equality.
 # This fixture also has no images.
 _INVISIBLE_CHAR_PRODUCT = {
-    "title": 'Used Vinyl: A.R.B ‎"Yellow Blood" LP (1984 Japanese Press)',
+    # \u200e is written as an escape, not pasted: the character it stands for is
+    # exactly the one this test is about, and an invisible literal in a fixture
+    # is one stray editor save away from vanishing without failing anything.
+    "title": 'Used Vinyl: A.R.B \u200e"Yellow Blood" LP (1984 Japanese Press)',
     "vendor": "Used Product",
     "handle": "used-vinyl-a-r-b-yellow-blood-lp-1984-japanese-press",
     "product_type": "LP",
@@ -435,7 +438,7 @@ async def test_crawl_catalog_removes_invisible_format_characters_from_the_artist
     _mock_single_page([_INVISIBLE_CHAR_PRODUCT])
     items = [item async for item in crawler.crawl_catalog()]
     assert items[0]["artist"] == "A.R.B"
-    assert "‎" not in items[0]["artist"]
+    assert "\u200e" not in items[0]["artist"]
     assert items[0]["cover_image_url"] is None
 
 
