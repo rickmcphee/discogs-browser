@@ -286,15 +286,21 @@ pushed to a repo, on the grounds that the serving model can differ from the
 configured one and a guessed name would be wrong. That reasoning does not reach
 this trailer: it records provenance rather than asserting an identity, and the
 value is knowable rather than guessed — a remote session reads it from its own
-session metadata (the claude-code-remote `get_session` tool, omitting
-`session_id`, reports `session_context.model`; cross-check
-`external_metadata.last_served_model`, which also reflects a turn-scoped
-fallback). Write that value. Dropping the line leaves the provenance record
-this whole section exists for missing the one field that says *which* model did
-the work — and it fails silently, exactly like the absent `ai-generated: true`
-that the rule started with. Decided 2026-08-28, after a remote session omitted
-it on four commits that had already merged. Those are left as they stand: they
-are on `main`, and a rewrite there costs a force-push to a protected branch —
+session metadata, via the claude-code-remote `get_session` tool with
+`session_id` omitted. Two fields there can disagree, and
+`external_metadata.last_served_model` is the one to write: it names the model
+that actually ran the turn, including a turn-scoped fallback (overload,
+model unavailable) that never reaches `session_context.model`, which is only
+what the session is *configured* to run. The trailer records what did the
+work, so the served model wins wherever the two differ; use
+`session_context.model` only when no served model is reported at all.
+
+Dropping the line leaves the provenance record this whole section exists for
+missing the one field that says *which* model did the work — and it fails
+silently, exactly like the absent `ai-generated: true` that the rule started
+with. Decided 2026-08-28, after a remote session omitted it on four commits
+that had already merged. Those are left as they stand: they are on `main`, and
+a rewrite there costs a force-push to a protected branch —
 the same `filter-branch` correction this section already records as the
 expensive way to fix trailers after the fact.
 
