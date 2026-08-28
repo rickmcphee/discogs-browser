@@ -72,11 +72,23 @@ _TITLE_RE = re.compile(
 # variant names, never on the album itself -- an album may legitimately be
 # called "Cassette", and Adele's "19" would trip any regex asked to decide
 # whether an album name looks like a format.
+# The disc-count prefix on cd/dvd is load-bearing, and both sides carry the
+# same allowance for the same reason: a count binds to its format word with no
+# word boundary between them, so a bare `\bcds?\b` cannot see the CD in "3xCD".
+# Three live products were being published as records by that gap --
+# `"The Seeds of Love (Deluxe Edition)" 3xCD`, `"ETERNAL (Live)" 14xCD + 2xDVD
+# Box Set`, and a 2xCD reissue the store filed under LP. `spv.py` records the
+# identical regression on its own store; the spellings here follow its
+# `\d*[x×]?` form. The multiplication sign is not live on this store and the
+# space is (`2X LP`), so both are allowed on both sides -- an override is only
+# safe while it recognises every spelling its counterpart does, and a negative
+# filter only safe while it recognises every spelling the store writes.
 _NON_VINYL_RE = re.compile(
-    r'\b(?:cds?|cassettes?|tapes?|dvds?|blu-?rays?|digital)\b', re.IGNORECASE
+    r'\b(?:\d*[x×]?\s?cds?|\d*[x×]?\s?dvds?|blu-?rays?|cassettes?|tapes?|digital)\b',
+    re.IGNORECASE,
 )
 _VINYL_WORD_RE = re.compile(
-    r'\bvinyl\b|\b\d*x?\s?lps?\b|\beps?\b|\bflexi\b|\d+\s*"', re.IGNORECASE
+    r'\bvinyl\b|\b\d*[x×]?\s?lps?\b|\beps?\b|\bflexi\b|\d+\s*"', re.IGNORECASE
 )
 
 

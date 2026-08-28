@@ -106,12 +106,23 @@ Notebook, Tote Bag …). The gate admits `{LP, 7", 10", 12", 7}` — 9,785
 products. The bare `7` is not a typo of `7"`; three used 7" singles carry it.
 
 `product_type` alone is not sufficient, because it is *occasionally wrong in
-the vinyl direction*: 10 LP-typed products are CDs or Blu-Rays by their own
+the vinyl direction*: 13 vinyl-typed products are CDs or Blu-Rays by their own
 titles (`Kehlani "S/T" CD`, `PRE-ORDER: King Crimson "2014: The Complete US
-Tour" 2-Disc Blu-Ray`). So a second, negative filter runs on the format
-descriptor the title carries after the closing quote: a product is dropped
-when its descriptor names a competing format and no vinyl format. The vinyl
-override is what keeps genuine hybrid releases (`2xLP + CD`, `LP + 7"`) in.
+Tour" 2-Disc Blu-Ray`, and a 2xCD reissue the store filed under `7"`). So a
+second, negative filter runs on the format descriptor the title carries after
+the closing quote: a product is dropped when its descriptor names a competing
+format and no vinyl format. The vinyl override is what keeps genuine hybrid
+releases (`2xLP + CD`, `LP + 7"`, `2xLP + 15xCD Box Set`) in.
+
+**Both sides of that filter must allow a disc-count prefix.** A count binds to
+its format word with no word boundary between it, so a bare `\bcds?\b` cannot
+see the CD in `3xCD` — and the store writes `2xCD`, `3xCD`, `6xCD`, `14xCD`,
+`15xCD` and `2xDVD`. Three live products were published as records by that gap
+before it was fixed. `spv.py` records the identical regression on its own
+store, and the `\d*[x×]?` spellings here follow it. The same allowance already
+existed on the vinyl side for `2xLP`; the rule is that neither side is safe
+while it recognises fewer spellings than the other, or fewer than the store
+writes.
 
 Two accepted gaps, both deliberate:
 
@@ -219,15 +230,30 @@ cannot be an artist name.
 
 ### Pre-orders are kept, and marked
 
-All 1,733 pre-order products report `available: true`, so the availability
-bypass the sibling crawlers apply (`relapse.py`, `centurymedia.py`,
-`fatwreck.py`, `nuclearblast.py`, `carparkrecords.py`, `asianmanrecords.py`)
-is inert here; it is written anyway to match them. The ` (Pre-Order)` suffix
-follows the same siblings. Unlike `darksiderecords.py`, whose pre-order tags
-were stale residue on already-released stock, this store's markers are
-current: they are backed by live monthly tags (`SEPTEMBER 2026 pre-order`,
+The ` (Pre-Order)` suffix follows the sibling label crawlers (`relapse.py`,
+`centurymedia.py`, `fatwreck.py`, `nuclearblast.py`, `carparkrecords.py`,
+`asianmanrecords.py`). Unlike `darksiderecords.py`, whose pre-order tags were
+stale residue on already-released stock, this store's markers are current:
+they are backed by live monthly tags (`SEPTEMBER 2026 pre-order`,
 `OCTOBER 2026 pre-order`, `NOVEMBER 2026 pre-order`) and by titles the store
 edits when the record lands.
+
+**The availability bypass those siblings pair with the suffix is deliberately
+not implemented**, and this is the one place the suffix and the bypass come
+apart. Those crawlers bypass `available` on a pre-order because their stores
+flag pre-order variants `available: false` while still selling them. This
+store does not: all 1,733 pre-order-marked products report `available: true`,
+so a bypass would emit exactly zero extra rows today.
+
+What it would do instead is decide the future case wrongly. On a store whose
+pre-orders are all currently available, a pre-order that later reads
+`available: false` most plausibly means the allocation is gone, not that the
+flag is unreliable — and publishing an unbuyable record at a price is a worse
+failure than omitting a buyable one. `darksiderecords.py`, the nearest
+retail-store sibling, made the same call and pins it with a test; so does
+this crawler. If the store ever does start flagging live pre-orders
+unavailable, the bypass becomes correct and the test is the place to record
+that it changed.
 
 ### Used stock is kept, and marked
 

@@ -316,6 +316,61 @@ _MALFORMED_PRICE_PRODUCT = {
     ],
 }
 
+# Count-prefixed non-vinyl formats. A disc count binds to its format word with
+# no word boundary between them, so a bare `\bcds?\b` cannot see the CD in
+# "3xCD" -- these two were published as records until both sides of the filter
+# learned the prefix. LP-typed by the store, CD/DVD by their own titles.
+_COUNT_PREFIXED_CD_PRODUCT = {
+    "title": 'PRE-ORDER: Tears for Fears "The Seeds of Love (Deluxe Edition)" 3xCD',
+    "vendor": "UMG",
+    "handle": "tears-for-fears-seeds-of-love-deluxe-3xcd",
+    "product_type": "LP",
+    "images": [{"src": "https://cdn.shopify.com/tff.png"}],
+    "variants": [
+        {"title": "Default Title", "price": "56.99", "available": True, "featured_image": None},
+    ],
+}
+
+_COUNT_PREFIXED_BOX_SET_PRODUCT = {
+    "title": 'PRE-ORDER: Joy Division "ETERNAL (Live)" 14xCD + 2xDVD Box Set',
+    "vendor": "WEA",
+    "handle": "5026854859309",
+    "product_type": "LP",
+    "images": [{"src": "https://cdn.shopify.com/93_fb5bddae.jpg"}],
+    "variants": [
+        {"title": "Default Title", "price": "129.99", "available": True, "featured_image": None},
+    ],
+}
+
+# A CD the store filed under 7", so neither the type gate nor a bare CD regex
+# catches it -- only the count-prefixed one does.
+_COUNT_PREFIXED_MISTYPED_CD_PRODUCT = {
+    "title": (
+        'Used CD: The Saints "Wild About You 1976-1978 (Complete Studio Recordings)" '
+        '2xCD (2000 Aussie Press)'
+    ),
+    "vendor": "Used Product",
+    "handle": "used-cd-the-saints",
+    "product_type": '7"',
+    "images": [{"src": "https://cdn.shopify.com/saints.jpg"}],
+    "variants": [
+        {"title": "Default Title", "price": "30.00", "available": True, "featured_image": None},
+    ],
+}
+
+# The other side of the same rule: a real vinyl box set whose descriptor names
+# fifteen CDs. The vinyl override has to survive the count prefix too.
+_VINYL_BOX_SET_WITH_BONUS_DISCS = {
+    "title": 'Metallica "ReLoad (Remastered Deluxe Box Set)" 2xLP + 15xCD Box Set (180g Vinyl)',
+    "vendor": "WEA",
+    "handle": "810083963525",
+    "product_type": "LP",
+    "images": [{"src": "https://cdn.shopify.com/95_91d3f877.jpg"}],
+    "variants": [
+        {"title": "Default Title", "price": "259.99", "available": True, "featured_image": None},
+    ],
+}
+
 
 def _page_response(products):
     return httpx.Response(200, json={"products": products})
@@ -605,6 +660,39 @@ async def test_crawl_catalog_paginates_until_a_page_comes_back_empty(crawler):
         return_value=_page_response([]))
     items = [item async for item in crawler.crawl_catalog()]
     assert [i["artist"] for i in items] == ["Ben Pirani", "Wire"]
+
+
+@respx.mock
+async def test_crawl_catalog_drops_a_count_prefixed_cd_descriptor(crawler):
+    _mock_single_page([_COUNT_PREFIXED_CD_PRODUCT, _COUNT_PREFIXED_BOX_SET_PRODUCT,
+                       _COUNT_PREFIXED_MISTYPED_CD_PRODUCT])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert items == []
+
+
+@respx.mock
+async def test_crawl_catalog_keeps_a_vinyl_box_set_with_count_prefixed_bonus_discs(crawler):
+    _mock_single_page([_VINYL_BOX_SET_WITH_BONUS_DISCS])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [(i["artist"], i["title"]) for i in items] == [
+        ("Metallica", "ReLoad (Remastered Deluxe Box Set) 2xLP + 15xCD Box Set (180g Vinyl)"),
+    ]
+
+
+@respx.mock
+async def test_crawl_catalog_does_not_bypass_availability_for_a_pre_order(crawler):
+    # The sibling label crawlers bypass `available` on a pre-order because
+    # their stores flag purchasable pre-orders unavailable. This store does
+    # not -- every pre-order-marked product reports available -- so an
+    # unavailable one most plausibly means the allocation is gone, and
+    # publishing it would put an unbuyable record in front of a user at a
+    # price. darksiderecords.py pins the same decision.
+    sold_out_preorder = {**_PREORDER_PRODUCT, "variants": [
+        {"title": "Default Title", "price": "32.99", "available": False, "featured_image": None},
+    ]}
+    _mock_single_page([sold_out_preorder])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert items == []
 
 
 def test_site_metadata(crawler):
