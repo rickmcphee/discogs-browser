@@ -62,6 +62,12 @@ _DAMAGED_SUFFIX = "(Damaged)"
 # pressing notes ("... 2xLP (... Edition \"Hyperspace\" Blue Splatter Vinyl)")
 # and the trailing inch mark on a 7" sit outside the split without disturbing
 # it.
+# Shopify's placeholders for a product with no real options. Shopify only
+# issues "Default Title" for a product with exactly one variant, so a
+# multi-variant product carrying one is malformed data -- the bare "Default"
+# spelling is carried because realgonemusic.py found both in the wild.
+_DEFAULT_VARIANT_TITLES = {"default", "default title"}
+
 _QUOTE = r'(?:\'\'|["“”])'
 _TITLE_RE = re.compile(
     r'^(?P<artist>.+?)\s*' + _QUOTE + r'(?P<album>.+?)' + _QUOTE + r'\s*(?P<descriptor>.*)$'
@@ -162,7 +168,7 @@ class Crawler:
                 # and this is a readability call. `— {variant}` is terminal
                 # across the fleet, and the marker describes the product while
                 # the variant names the pressing.
-                title = f"{title} — {(variant.get('title') or '').strip()}"
+                title = f"{title} — {cls._variant_descriptor(variant, url)}"
             items.append({
                 "artist": artist,
                 "title": title,
@@ -173,6 +179,38 @@ class Crawler:
                 "cover_image_url": resolve_cover_image(product, variant),
             })
         return items
+
+    @staticmethod
+    def _variant_descriptor(variant: dict, url: str) -> str:
+        """What tells one variant of a product apart from its siblings.
+
+        db.compute_item_key() hashes (artist, title, url) and this crawler's
+        url is per-product, so the descriptor is the only thing keeping two
+        variants of one product on separate item_keys. A blank or placeholder
+        title would give every row the same descriptor and collapse them onto
+        one key -- and db.replace_stock_items() INSERTs without an ON CONFLICT
+        guard, so a malformed snapshot would fail the whole sync rather than
+        merely reading oddly.
+
+        Falls back to the variant id, which is immutable and unique per
+        variant. A raw id reads poorly in Store, but identity correctness
+        beats cosmetics in a shape the store cannot currently produce -- no
+        live multi-variant product has a blank or placeholder variant title.
+        Raising when nothing stable is left leaves the previous snapshot
+        untouched: _sync_stock catches it, records the site as failed, and
+        `continue`s past replace_stock_items entirely. Ported from
+        darksiderecords.py, which reasons the same way about the same shape.
+        """
+        descriptor = (variant.get("title") or "").strip()
+        if descriptor and descriptor.lower() not in _DEFAULT_VARIANT_TITLES:
+            return descriptor
+        descriptor = str(variant.get("id") or "").strip()
+        if descriptor:
+            return descriptor
+        raise ValueError(
+            f"{url}: multi-variant product whose variants have neither a "
+            "title nor an id -- cannot derive distinct item keys"
+        )
 
     @classmethod
     def _parse_title(cls, raw_title: str):

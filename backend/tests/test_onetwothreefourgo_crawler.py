@@ -759,6 +759,60 @@ async def test_crawl_catalog_puts_the_variant_descriptor_after_the_status_marker
     ]
 
 
+@respx.mock
+async def test_crawl_catalog_falls_back_to_variant_id_for_blank_descriptors(crawler):
+    # Without the fallback both rows read "… — " and collapse onto one
+    # item_key: db.compute_item_key() hashes (artist, title, url) and the url
+    # is per-product, and db.replace_stock_items() INSERTs with no ON CONFLICT
+    # guard. Not a shape this store currently produces.
+    blank_descriptors = {**_MULTI_VARIANT_PRODUCT, "variants": [
+        {"id": 42432112230600, "title": "", "price": "7.99", "available": True,
+         "featured_image": None},
+        {"id": 42432112263368, "title": None, "price": "8.99", "available": True,
+         "featured_image": None},
+    ]}
+    _mock_single_page([blank_descriptors])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["title"] for i in items] == [
+        "Sleep Talk LP — 42432112230600",
+        "Sleep Talk LP — 42432112263368",
+    ]
+    assert len({(i["artist"], i["title"], i["url"]) for i in items}) == 2
+
+
+@respx.mock
+async def test_crawl_catalog_falls_back_to_variant_id_for_placeholder_descriptors(crawler):
+    # Shopify only issues "Default Title" for a single-variant product, so a
+    # multi-variant product carrying one is malformed and must not be trusted
+    # as a descriptor.
+    placeholder_descriptors = {**_MULTI_VARIANT_PRODUCT, "variants": [
+        {"id": 111, "title": "Default Title", "price": "7.99", "available": True,
+         "featured_image": None},
+        {"id": 222, "title": "Default", "price": "8.99", "available": True,
+         "featured_image": None},
+    ]}
+    _mock_single_page([placeholder_descriptors])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["title"] for i in items] == [
+        "Sleep Talk LP — 111",
+        "Sleep Talk LP — 222",
+    ]
+
+
+@respx.mock
+async def test_crawl_catalog_raises_when_no_stable_variant_identity_exists(crawler):
+    # Raising leaves the previous snapshot intact -- _sync_stock records the
+    # site as failed and skips replace_stock_items -- rather than replacing
+    # good stock with rows that collide on one item_key.
+    no_identity = {**_MULTI_VARIANT_PRODUCT, "variants": [
+        {"title": "", "price": "7.99", "available": True, "featured_image": None},
+        {"title": "", "price": "8.99", "available": True, "featured_image": None},
+    ]}
+    _mock_single_page([no_identity])
+    with pytest.raises(ValueError, match="cannot derive distinct item keys"):
+        [item async for item in crawler.crawl_catalog()]
+
+
 def test_site_metadata(crawler):
     assert crawler.site_name == "1-2-3-4 Go! Records"
     assert crawler.base_url == "https://1234gorecords.shop"
