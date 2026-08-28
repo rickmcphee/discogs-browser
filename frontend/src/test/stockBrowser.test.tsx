@@ -12,12 +12,14 @@ const getStock = vi.fn()
 const getStockArtists = vi.fn()
 const saveStockItem = vi.fn()
 const unsaveStockItem = vi.fn()
+const getStockStats = vi.fn()
 
 vi.mock('../api/client', () => ({
   getStock: (...args: unknown[]) => getStock(...args),
   getStockArtists: (...args: unknown[]) => getStockArtists(...args),
   saveStockItem: (...args: unknown[]) => saveStockItem(...args),
   unsaveStockItem: (...args: unknown[]) => unsaveStockItem(...args),
+  getStockStats: (...args: unknown[]) => getStockStats(...args),
 }))
 
 beforeEach(() => {
@@ -25,6 +27,8 @@ beforeEach(() => {
   getStockArtists.mockReset()
   saveStockItem.mockReset()
   unsaveStockItem.mockReset()
+  getStockStats.mockReset()
+  getStockStats.mockResolvedValue({ total: 2, sources: [{ crawler_id: 4, site_name: 'Nuclear Blast', count: 2 }] })
   getStock.mockResolvedValue({ total: 2, page: 1, per_page: 250, items })
   getStockArtists.mockResolvedValue(['NAILS', 'Rob Zombie'])
   localStorage.clear()
@@ -893,5 +897,33 @@ describe('StockBrowser Source filter', () => {
     rerender(<StockBrowser crawlers={CRAWLERS} hiddenCrawlerIdsLoaded={true} />)
     await waitFor(() => expect(getStock).toHaveBeenCalled())
     expect(getStockArtists).toHaveBeenCalled()
+  })
+
+  it('offers Stats beside Source on the store tab, and not on the track tab', async () => {
+    const { unmount } = render(<StockBrowser crawlers={CRAWLERS} />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    const source = screen.getByRole('button', { name: 'Source' })
+    const stats = screen.getByRole('button', { name: 'Stats' })
+    // Each sits in its own anchor wrapper; Stats' wrapper follows Source's.
+    expect(source.parentElement!.nextElementSibling).toBe(stats.parentElement)
+    unmount()
+
+    render(<StockBrowser scope="track" crawlers={CRAWLERS} />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Source' })).toBeInTheDocument())
+    expect(screen.queryByRole('button', { name: 'Stats' })).toBeNull()
+  })
+
+  it('breaks the store tab down by source under the filters the list is showing', async () => {
+    render(<StockBrowser crawlers={CRAWLERS} hiddenCrawlerIds={[5]} />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.change(screen.getByPlaceholderText('Search artist or title…'), { target: { value: 'zombie' } })
+    fireEvent.change(screen.getByDisplayValue('All'), { target: { value: 'saved' } })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Stats' }))
+    await waitFor(() => expect(getStockStats).toHaveBeenCalled())
+    expect(getStockStats).toHaveBeenLastCalledWith(expect.objectContaining({
+      search: 'zombie', saved: true, recommended: false, overlapped: false, hiddenCrawlerIds: [5],
+    }))
+    expect(await screen.findByRole('img', { name: /items by source/i })).toBeInTheDocument()
   })
 })

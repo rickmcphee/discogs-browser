@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getQueueSummary, getQueueNext } from '../api/client'
 import type { QueueSummary, QueueCrawlerSummary, QueueNextItem } from '../api/types'
+import Donut from '../components/Donut'
 
 const POLL_MS = 10_000
 
@@ -59,8 +60,6 @@ function StatTile({ label, value, hint, accent }: {
   )
 }
 
-// Hand-rolled because the frontend has no charting dependency and this needs
-// no more than stroke-dasharray on three concentric arcs of one circle.
 function StateDonut({ segments, centreValue, centreLabel, selected, onSelect }: {
   segments: { key: StateKey; value: number }[]
   centreValue: string
@@ -68,39 +67,20 @@ function StateDonut({ segments, centreValue, centreLabel, selected, onSelect }: 
   selected: StateKey | null
   onSelect: (key: StateKey | null) => void
 }) {
-  const total = segments.reduce((sum, s) => sum + s.value, 0)
-  const R = 60
-  const C = 2 * Math.PI * R
-  let offset = 0
   return (
-    <svg viewBox="0 0 160 160" className="w-40 h-40 shrink-0" role="img" aria-label="Outstanding work units by queue state">
-      <circle cx="80" cy="80" r={R} fill="none" stroke="#1f2937" strokeWidth="14" />
-      {total > 0 && segments.filter((s) => s.value > 0).map((s) => {
-        const length = (s.value / total) * C
-        // A 2px gap between fills, per the mark spec, so adjacent segments read
-        // as separate rather than as one continuous band.
-        const dash = `${Math.max(length - 2, 0.5)} ${C - Math.max(length - 2, 0.5)}`
-        const dashOffset = -offset
-        offset += length
-        return (
-          <circle
-            key={s.key}
-            cx="80" cy="80" r={R} fill="none"
-            stroke={STATE_COLORS[s.key]}
-            strokeWidth={selected === s.key ? 18 : 14}
-            strokeDasharray={dash}
-            strokeDashoffset={dashOffset}
-            transform="rotate(-90 80 80)"
-            className="cursor-pointer"
-            onClick={() => onSelect(selected === s.key ? null : s.key)}
-          >
-            <title>{`${STATE_LABELS[s.key]}: ${s.value.toLocaleString()} work units`}</title>
-          </circle>
-        )
-      })}
-      <text x="80" y="76" textAnchor="middle" className="fill-gray-100" style={{ fontSize: 22 }}>{centreValue}</text>
-      <text x="80" y="94" textAnchor="middle" className="fill-gray-400" style={{ fontSize: 10 }}>{centreLabel}</text>
-    </svg>
+    <Donut
+      segments={segments.map((s) => ({
+        key: s.key,
+        value: s.value,
+        color: STATE_COLORS[s.key],
+        title: `${STATE_LABELS[s.key]}: ${s.value.toLocaleString()} work units`,
+      }))}
+      centreValue={centreValue}
+      centreLabel={centreLabel}
+      ariaLabel="Outstanding work units by queue state"
+      emphasised={selected}
+      onSelect={(key) => onSelect(selected === key ? null : key)}
+    />
   )
 }
 

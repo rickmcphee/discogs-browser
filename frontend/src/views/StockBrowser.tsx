@@ -5,6 +5,7 @@ import { navButtonClass, dismissButtonClass } from '../styles/buttons'
 import { textInputClass, selectClass } from '../styles/inputs'
 import { reconcileSelectedArtist } from './artistSelection'
 import SourceFilter from '../components/SourceFilter'
+import StockStats from '../components/StockStats'
 import { formatPrice } from './formatPrice'
 import { useIsMobile } from '../hooks/useMediaQuery'
 import { ArtistSidebar, ArtistSheetButton } from '../components/ArtistFilter'
@@ -325,6 +326,21 @@ function StockBrowser({
                 <MobileSort options={sortOptions} sort={sort} order={order} onSort={toggleSort} />
               )}
               <SourceFilter crawlers={crawlers} hiddenCrawlerIds={hiddenCrawlerIds} onChange={onHiddenCrawlerIdsChange} disabled={!hiddenCrawlerIdsLoaded} />
+              {scope === 'store' && (
+                <StockStats
+                  search={search || undefined}
+                  artist={selectedArtist || undefined}
+                  recommended={filter === 'recommended'}
+                  saved={filter === 'saved'}
+                  overlapped={filter === 'overlapped'}
+                  hiddenCrawlerIds={hiddenCrawlerIds}
+                  // Both counters move the counts: a stock sync adds and drops
+                  // items, and a save/unsave changes what the Saved filter
+                  // holds. Summed because either one ticking has to refetch.
+                  refreshKey={(syncGeneration ?? 0) + retryTick}
+                  disabled={!hiddenCrawlerIdsLoaded}
+                />
+              )}
               <select
                 value={filter}
                 onChange={(e) => changeFilter(e.target.value)}
