@@ -6,7 +6,7 @@ The Store Management section (Settings tab) lists the catalog-crawler stores by 
 
 ## Scope
 
-Applies only to `catalog`/`catalog_browser` crawlers (the Store Management / Stores table — "Stores" was "Store Catalog Sources" as of a later, separately-documented rename). The four `release`-type crawlers (Amazon, eBay, eBay/CCmusic, Discogs Marketplace) are general marketplaces with no coherent genre focus and get no summary — their tooltip stays absent, same as today.
+Applies only to `catalog`/`catalog_browser` crawlers (the Store Management / Stores table — "Stores" was "Store Catalog Sources" as of a later, separately-documented rename). The `release`-type crawlers (Amazon, eBay, eBay/CCmusic, Discogs Marketplace) are general marketplaces with no coherent genre focus and get no summary — their tooltip stays absent, same as today.
 
 ## Design
 
