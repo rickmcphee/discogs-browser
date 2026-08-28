@@ -13,10 +13,22 @@ MAX_LIMIT = 200
 
 
 def _payload(conn, user_id: int, limit: int) -> dict:
-    items = [dict(row) for row in db.get_price_drop_notifications(conn, user_id, limit)]
+    unread = db.count_unread_price_drops(conn, user_id)
+    # The limit never cuts into the unread rows. Unread is defined as
+    # id > watermark and the list is id-descending, so the unread rows are
+    # always exactly the top `unread` of it -- and the client marks read
+    # through items[0].id, which advances the watermark past *everything*
+    # below. A limit smaller than the unread count would therefore mark rows
+    # read that were never delivered, with no cursor anywhere in this API to
+    # reach them again. Reading them is the whole point of the tab, so the cap
+    # applies to read history only.
+    items = [
+        dict(row)
+        for row in db.get_price_drop_notifications(conn, user_id, max(limit, unread))
+    ]
     return {
         "items": items,
-        "unread": db.count_unread_price_drops(conn, user_id),
+        "unread": unread,
         # Taken from the rows actually returned, not from a second MAX(id)
         # query. These statements run under READ COMMITTED and so do not share
         # a snapshot: a drop committing between the two would put an id in this

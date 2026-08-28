@@ -212,6 +212,37 @@ def test_mark_read_survives_rls_enforcement(pg_test_db, authed_client_factory, m
     assert client.get("/api/notifications/unread").json()["unread"] == 0
 
 
+def test_the_limit_never_cuts_into_unread_rows(pg_test_db, authed_client_factory):
+    # The client marks read through items[0].id, which advances the watermark
+    # past everything below it. If the limit dropped an unread row from the
+    # response, that row would be marked read without ever being delivered --
+    # and this API has no cursor to reach it again.
+    user = _seed_drop(previous=40.0, price=30.0)
+    with db.get_admin_pool().connection() as conn:
+        crawler_id = conn.execute(
+            "SELECT id FROM crawlers WHERE site_name = 'Store A'"
+        ).fetchone()["id"]
+        for price in (20.0, 10.0):
+            db.replace_stock_items(conn, crawler_id, [
+                {"artist": "Artist A", "title": "Album A", "url": "https://store/1",
+                 "price": price, "currency": "USD"},
+            ])
+        conn.commit()
+    client = authed_client_factory(user["id"])
+
+    body = client.get("/api/notifications?limit=1").json()
+    assert body["unread"] == 3
+    # All three come back despite limit=1, because all three are unread.
+    assert len(body["items"]) == 3
+
+    client.post("/api/notifications/read", json={"up_to_id": body["latest_id"]},
+                headers={"X-Requested-With": "fetch"})
+    # Now that nothing is unread, the cap applies to the read history again.
+    after = client.get("/api/notifications?limit=1").json()
+    assert after["unread"] == 0
+    assert len(after["items"]) == 1
+
+
 def test_limit_is_bounded(pg_test_db, authed_client_factory):
     user = _seed_drop()
     client = authed_client_factory(user["id"])

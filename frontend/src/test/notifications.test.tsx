@@ -301,6 +301,29 @@ describe('notifications view', () => {
     expect(older).not.toHaveAccessibleName(/New\./)
   })
 
+  it('ages its relative timestamps while the tab stays open', async () => {
+    // formatRelativeTime is computed at render and nothing else re-renders this
+    // view on a schedule, so without a ticker a row keeps saying "just now"
+    // hours later.
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const justNow = new Date(Date.now() - 30_000).toISOString().replace(/Z$/, '')
+      getNotificationsUnread.mockResolvedValue({ unread: 1, latest_id: 7 })
+      getNotifications.mockResolvedValue({
+        items: [drop({ created_at: justNow })], unread: 1, latest_id: 7, last_read_id: 0,
+      })
+
+      render(<App />)
+      fireEvent.click(await screen.findByRole('button', { name: 'Notifications, 1 unread' }))
+      expect(await screen.findByText('just now')).toBeInTheDocument()
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(10 * 60_000) })
+      expect(screen.getByText('10m ago')).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('explains itself when the user has no notifications yet', async () => {
     render(<App />)
     fireEvent.click(await screen.findByRole('button', { name: 'Notifications' }))

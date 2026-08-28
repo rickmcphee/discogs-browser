@@ -295,7 +295,13 @@ shrink the unread set, never resurrect it.
 `db.user_scope(request.state.user_id)`:
 
 - `GET /notifications?limit=` → `{items, unread, latest_id, last_read_id}`. The
-  list the tab renders, newest first. `last_read_id` is the watermark itself,
+  list the tab renders, newest first. **The limit caps read history only, never
+  the unread rows**: unread is `id > watermark` and the list is id-descending,
+  so the unread rows are exactly the top `unread` of it, and the client marks
+  read through `items[0].id`, which advances the watermark past everything
+  below. A limit that cut into them would mark rows read that were never
+  delivered, with no cursor in this API to reach them again — so the effective
+  limit is `max(limit, unread)`. It self-bounds: opening the tab clears unread. `last_read_id` is the watermark itself,
   not just the count: the view needs it to know *which* of the rows it just
   fetched are the new ones. `latest_id` is read off `items[0]`, **not** from a
   second `MAX(id)` query — these statements do not share a snapshot under READ
@@ -379,7 +385,9 @@ is up; see the known limitation below.
 
 One row per drop: cover thumbnail, artist — title, the new price with its
 currency (via the existing `formatPrice`), the beaten `previous_best` struck
-through, the source name, a relative timestamp, and the whole row linking out
+through, the source name, a relative timestamp (re-rendered on a one-minute
+interval — it is computed at render, and nothing else re-renders this view on a
+schedule, so a tab left open would go on saying "just now" for hours), and the whole row linking out
 to `url` (`target="_blank" rel="noreferrer"`, matching how Store rows already
 link). Unread rows carry a left accent border *and* open their link's
 accessible name with "New." — the border is the sighted cue, and by the time

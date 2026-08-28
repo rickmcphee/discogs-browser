@@ -23,6 +23,16 @@ export default function Notifications({ generation, onLoaded }: Props) {
   // the tab has already marked them read, so the user can still see what was
   // new when they arrived.
   const unreadFloor = useRef<number | null>(null)
+  // formatRelativeTime is computed at render, and nothing else re-renders this
+  // view on a schedule -- so a tab left open would keep saying "just now" hours
+  // later. A minute is the resolution the format itself has, so ticking faster
+  // would only cost renders.
+  const [, setElapsedTick] = useState(0)
+
+  useEffect(() => {
+    const timer = setInterval(() => setElapsedTick(t => t + 1), 60_000)
+    return () => clearInterval(timer)
+  }, [])
 
   const load = useCallback(async (isLatest: () => boolean) => {
     try {
