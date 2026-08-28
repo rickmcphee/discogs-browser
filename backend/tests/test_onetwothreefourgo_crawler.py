@@ -5,9 +5,16 @@ from crawlers.onetwothreefourgo import Crawler
 
 _PRODUCTS_URL = "https://1234gorecords.shop/collections/all/products.json"
 
-# Every fixture below is a live product captured from the store on 2026-08-28,
-# trimmed to the fields the crawler reads. Titles are verbatim, punctuation and
-# typos included -- the punctuation is what most of these tests are about.
+# Most fixtures below are live products captured from the store on 2026-08-28,
+# trimmed to the fields the crawler reads; their titles are verbatim,
+# punctuation and typos included, and the punctuation is what most of these
+# tests are about. Three kinds are not straight captures, and each says so at
+# its own definition rather than being silently mixed in: a live product with
+# one field altered to reach a branch the live data never takes (an
+# unavailable variant, a null price, a sold-out sibling), a wholly invented
+# product guarding a shape the store could produce but does not
+# (_BAND_NAMED_DAMAGED, _CD_EP_PRODUCT), and a live product whose title is
+# rewritten to simulate format drift.
 
 # The dominant title form: straight quotes around the album, format descriptor
 # after it, no status marker.
@@ -294,6 +301,8 @@ _HYBRID_VARIANT_PRODUCT = {
     ],
 }
 
+# Live product, marked unavailable here: only a handful of live vinyl products
+# have no available variant at all, and none of them is this one.
 _UNAVAILABLE_PRODUCT = {
     "title": 'Pavement "Terror Twilight" LP',
     "vendor": "Matador",
@@ -305,6 +314,8 @@ _UNAVAILABLE_PRODUCT = {
     ],
 }
 
+# Live title (the store lists it as a 2xLP), with a null price substituted --
+# no live variant has one.
 _MALFORMED_PRICE_PRODUCT = {
     "title": 'Pavement "Wowee Zowee" LP',
     "vendor": "Matador",

@@ -381,8 +381,13 @@ UCP/MCP integration.
 
 `backend/tests/test_onetwothreefourgo_crawler.py`, mocking the two
 `products.json` pages with `respx` exactly as the sibling crawler tests do.
-Fixtures are verbatim live products, one per behaviour the design above
-commits to: each quote form, each marker form, the marker-to-suffix move, the
+Most fixtures are verbatim live products, one per behaviour the design above
+commits to; where a behaviour has no live example the fixture is a live
+product with one field altered, or an invented product, and says which at its
+own definition. The invented ones exist precisely because the live data cannot
+reach them: a band actually named "Damaged Bug", a `CD EP` descriptor, blank
+and placeholder variant names, and a store that has stopped writing quoted
+titles. Behaviours covered: each quote form, each marker form, the marker-to-suffix move, the
 `DAMAGED Sultans` non-strip, the U+200E artist, the numeric album, the
 mistyped CD, the missing image, the cassette-only multi-variant product, and
 the item-key stability of a multi-variant title when a sibling sells out.
