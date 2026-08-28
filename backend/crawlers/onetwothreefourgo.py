@@ -77,7 +77,7 @@ _TITLE_RE = re.compile(
 # word boundary between them, so a bare `\bcds?\b` cannot see the CD in "3xCD".
 # Three live products were being published as records by that gap --
 # `"The Seeds of Love (Deluxe Edition)" 3xCD`, `"ETERNAL (Live)" 14xCD + 2xDVD
-# Box Set`, and a 2xCD reissue the store filed under LP. `spv.py` records the
+# Box Set`, and a 2xCD reissue the store filed under `7"`. `spv.py` records the
 # identical regression on its own store; the spellings here follow its
 # `\d*[x×]?` form. The multiplication sign is not live on this store and the
 # space is (`2X LP`), so both are allowed on both sides -- an override is only
@@ -87,8 +87,20 @@ _NON_VINYL_RE = re.compile(
     r'\b(?:\d*[x×]?\s?cds?|\d*[x×]?\s?dvds?|blu-?rays?|cassettes?|tapes?|digital)\b',
     re.IGNORECASE,
 )
+# "EP" is deliberately absent, on `spv.py`'s reasoning: an EP is a release
+# length, not a medium -- EP pressings exist on vinyl and CD alike -- so it is
+# no evidence that a product naming a competing format is still a record, and
+# `CD EP` would otherwise override its own CD. It costs nothing here: the
+# override only fires when a non-vinyl word is present, and no live descriptor
+# pairs "EP" with one, so removing it changes zero rows.
+#
+# The inch mark stays, and is not the same case. It is the only vinyl evidence
+# 1,208 live descriptors have (`7"`, `10"`, `12"` are this store's formats),
+# and the single live descriptor pairing it with a competing format --
+# `7" + Cassette (Diehard Edition 58/130)` -- is a genuine record-plus-tape
+# bundle the override is right to keep.
 _VINYL_WORD_RE = re.compile(
-    r'\bvinyl\b|\b\d*[x×]?\s?lps?\b|\beps?\b|\bflexi\b|\d+\s*"', re.IGNORECASE
+    r'\bvinyl\b|\b\d*[x×]?\s?lps?\b|\bflexi\b|\d+\s*"', re.IGNORECASE
 )
 
 

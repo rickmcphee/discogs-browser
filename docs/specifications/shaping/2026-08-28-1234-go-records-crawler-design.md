@@ -17,7 +17,9 @@ Two things make it unlike every sibling, and both drive the design:
 1. **Its titles quote the album.** The whole fleet splits `Artist - Album` on
    a dash. This store writes `Artist "Album" FORMAT (pressing notes)`, and
    prefixes the lot with a status marker (`Used Vinyl:`, `PRE-ORDER:`,
-   `DAMAGED COVER:`). Only `asianmanrecords.py` has seen this shape before.
+   `DAMAGED COVER:`). `asianmanrecords.py` and `spv.py` have seen the quoted
+   shape before, but both keep a dash split as a fallback behind it; this
+   store needs none, and has none.
 2. **Used stock is a first-class part of the catalog, not a sideline.** Of
    the vinyl-typed products live on 2026-08-28, 3,651 of 9,785 carry a used
    marker. Excluding it, as `darksiderecords.py` did, would discard 37% of
@@ -340,8 +342,10 @@ than an `IndexError`.
 One GET per page against a public JSON endpoint, paced by the shared
 `crawl_delay_seconds` setting through `iter_products()`, with the same
 `consecutive_failure_limit` retry budget and the same fail-fast-on-429
-behaviour every Shopify sibling gets. 44 requests per sync. No browser, no
-login, no UCP/MCP integration.
+behaviour every Shopify sibling gets. 45 requests per sync: 44 product pages
+plus the empty page `iter_products()` needs to learn the collection is
+exhausted, since it has no total to count down. No browser, no login, no
+UCP/MCP integration.
 
 ## Testing
 

@@ -371,6 +371,33 @@ _VINYL_BOX_SET_WITH_BONUS_DISCS = {
     ],
 }
 
+# "EP" names a release length, not a medium -- EP pressings exist on vinyl and
+# CD alike -- so it must not vouch for a descriptor that names a CD. Not live
+# on this store; pins the rule against a future one.
+_CD_EP_PRODUCT = {
+    "title": 'Some Band "Short Player" CD EP',
+    "vendor": "Alliance",
+    "handle": "some-band-short-player-cd-ep",
+    "product_type": "LP",
+    "images": [],
+    "variants": [
+        {"title": "Default Title", "price": "9.99", "available": True, "featured_image": None},
+    ],
+}
+
+# The inch mark is the opposite case and must keep its override: a real
+# record-plus-tape bundle, live on the store.
+_VINYL_PLUS_CASSETTE_PRODUCT = {
+    "title": 'Used Vinyl: Impiety “Ascension 1991” 7" + Cassette (Diehard Edition 58/130)',
+    "vendor": "Used Product",
+    "handle": "used-vinyl-impiety-ascension-1991",
+    "product_type": '7"',
+    "images": [{"src": "https://cdn.shopify.com/impiety.jpg"}],
+    "variants": [
+        {"title": "Default Title", "price": "45.00", "available": True, "featured_image": None},
+    ],
+}
+
 
 def _page_response(products):
     return httpx.Response(200, json={"products": products})
@@ -693,6 +720,22 @@ async def test_crawl_catalog_does_not_bypass_availability_for_a_pre_order(crawle
     _mock_single_page([sold_out_preorder])
     items = [item async for item in crawler.crawl_catalog()]
     assert items == []
+
+
+@respx.mock
+async def test_crawl_catalog_does_not_let_ep_vouch_for_a_cd(crawler):
+    _mock_single_page([_CD_EP_PRODUCT])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert items == []
+
+
+@respx.mock
+async def test_crawl_catalog_keeps_a_record_plus_cassette_bundle(crawler):
+    _mock_single_page([_VINYL_PLUS_CASSETTE_PRODUCT])
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [(i["artist"], i["title"]) for i in items] == [
+        ("Impiety", 'Ascension 1991 7" + Cassette (Diehard Edition 58/130) (Used)'),
+    ]
 
 
 def test_site_metadata(crawler):
