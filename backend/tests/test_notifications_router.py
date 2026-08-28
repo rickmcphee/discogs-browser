@@ -1,5 +1,8 @@
+import os
+
 import pytest
 
+import config
 import db
 from routers import notifications as notifications_router
 
@@ -171,6 +174,42 @@ def test_read_watermark_is_not_written_before_any_drop_exists(pg_test_db, authed
 
     with db.user_scope(user["id"]) as conn:
         assert db.get_notification_watermark(conn, user["id"]) == 0
+
+
+def test_mark_read_survives_rls_enforcement(pg_test_db, authed_client_factory, monkeypatch):
+    """Every other test in this file runs the app pool on the superuser DSN,
+    which bypasses RLS -- so no policy expression is ever evaluated and a whole
+    class of bug is invisible here. This one repoints it at the real app_user
+    role, the way test_tenant_schema.py does.
+
+    It exists because of a live one: the handler used to commit and then count,
+    and user_scope sets app.user_id with is_local=true. Committing ends the
+    transaction that owns it, and a custom GUC reverts to '' rather than to
+    unset, so the policies' current_setting(...)::int raised
+    InvalidTextRepresentation on the next read. Under the superuser DSN that
+    read simply succeeded."""
+    user = _seed_drop()
+    # Repointing the config is not enough on its own: get_app_pool caches the
+    # pool on first use, and _seed_drop above has already built one on the
+    # superuser DSN. The old pool has to be dropped so the next user_scope
+    # builds a fresh one as app_user.
+    monkeypatch.setattr(
+        config, "APP_DATABASE_URL",
+        config._with_userinfo(
+            os.environ["TEST_DATABASE_URL"], "app_user", os.environ["APP_DB_PASSWORD"]
+        ),
+    )
+    if db._app_pool is not None:
+        db._app_pool.close()
+    monkeypatch.setattr(db, "_app_pool", None)
+    client = authed_client_factory(user["id"])
+
+    latest = client.get("/api/notifications").json()["latest_id"]
+    r = client.post("/api/notifications/read", json={"up_to_id": latest},
+                    headers={"X-Requested-With": "fetch"})
+    assert r.status_code == 200
+    assert r.json() == {"unread": 0}
+    assert client.get("/api/notifications/unread").json()["unread"] == 0
 
 
 def test_limit_is_bounded(pg_test_db, authed_client_factory):

@@ -391,6 +391,26 @@ clear the dot on app start, before the user had seen anything.
   cannot tell the difference — that is the whole reason the table is global —
   so retention, not selectivity, is what bounds the table.
 
+- **The read watermark assumes drop ids become visible in id order, and a
+  sequence does not guarantee that.** `BIGSERIAL` allocates at INSERT, but a row
+  is visible at COMMIT. A long `replace_stock_items` transaction can allocate
+  drop 10 and hold it while a marketplace worker allocates and commits drop 11;
+  a user reading in that window marks through 11, and drop 10 — visible only
+  afterwards — is below the watermark and treated as read forever. Same
+  failure mode as the `latest_id` race fixed in `110a9d2`, from a different
+  cause, and raised by Copilot on the PR.
+
+  There is no small fix. Every cheap variant fails for the same reason: a
+  `created_at` watermark inherits the ordering problem (the timestamp is
+  assigned at insert too), and a gap-detection scheme cannot distinguish an
+  in-flight id from one a rolled-back transaction consumed. The correct fix is
+  to record which drop ids a user has actually been shown — per-user read rows
+  populated by the read endpoint — which is precisely the design decision
+  ("one watermark row per user, not a flag per notification") this document
+  makes above, so reversing it is a maintainer's call and not a review fix.
+  Scale note for whoever weighs it: read rows would be bounded by drops on
+  *saved* items per user, not by the global drop table.
+
 - **A price that becomes cheapest because another source got *dearer* records
   nothing.** That follows from the rule as written ("a price change that is
   cheaper"), not from an implementation gap, and it self-corrects the next time

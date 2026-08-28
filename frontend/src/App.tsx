@@ -540,7 +540,13 @@ export default function App() {
       }
       if (event.type === 'listing_changed') {
         setStockSyncGeneration(g => g + 1)
-        setPriceGeneration(g => g + 1)
+        // 'found' only. A 'not_found' writes no price at all on the stock-item
+        // path, and on the release path only clears or deletes one, so neither
+        // can have recorded a drop -- and most stock-item searches legitimately
+        // find nothing, so counting them would fan a request out to every
+        // connected user for the majority of crawl results. The Store and Track
+        // tabs still want both: a cleared price changes what they render.
+        if (event.status === 'found') setPriceGeneration(g => g + 1)
         return
       }
       if (event.status === 'started') {
@@ -563,6 +569,12 @@ export default function App() {
     function connect() {
       if (destroyed) return
       source = openCrawlStream()
+      // listing_changed is never buffered or replayed (see crawl_manager), and
+      // the error path below only reopens the stream -- so a drop recorded
+      // while the connection was down produces no tick at all, and the bell
+      // would sit stale until an unrelated price event or a reload. Re-reading
+      // on every successful open covers the gap the stream cannot.
+      source.onopen = () => fetchUnreadNotifications()
       source.onmessage = handleEvent
       source.onerror = () => {
         source?.close()
@@ -576,7 +588,7 @@ export default function App() {
       source?.close()
       clearTimeout(reconnectTimer)
     }
-  }, [authState, setSyncStatus, fetchPriceStatus])
+  }, [authState, setSyncStatus, fetchPriceStatus, fetchUnreadNotifications])
 
   // Rides priceGeneration rather than a notification-specific SSE event: a
   // per-user event would have to be tagged with an owner, and the crawl worker

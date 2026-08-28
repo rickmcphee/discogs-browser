@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import App from '../App'
 
 class MockEventSource {
   onmessage: ((e: MessageEvent) => void) | null = null
   onerror: (() => void) | null = null
+  onopen: (() => void) | null = null
   close = vi.fn()
 }
 
@@ -186,6 +187,43 @@ describe('notification bell', () => {
 
     await waitFor(() => expect(screen.queryByTestId('notification-dot')).not.toBeInTheDocument())
     expect(getNotificationsUnread).toHaveBeenCalledTimes(3)
+  })
+
+  it('ignores a not_found listing_changed, which writes no price', async () => {
+    // A not_found writes nothing on the stock-item path and only clears a
+    // price on the release path, so neither can record a drop -- and most
+    // stock-item searches legitimately find nothing.
+    render(<App />)
+    await waitFor(() => expect(getNotificationsUnread).toHaveBeenCalledTimes(1))
+
+    // Settled between the two, not waitFor'd across both: waitFor retries until
+    // an assertion holds, so `toHaveBeenCalledTimes(2)` would pass transiently
+    // on a counter climbing 1 -> 2 -> 3 and the test would survive the bug.
+    await act(async () => {
+      lastCrawlSource!.onmessage!({
+        data: JSON.stringify({ id: 1, type: 'listing_changed', status: 'not_found', item_key: 'k', crawler_id: 3 }),
+      } as MessageEvent)
+    })
+    expect(getNotificationsUnread).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      lastCrawlSource!.onmessage!({
+        data: JSON.stringify({ id: 2, type: 'listing_changed', status: 'found', item_key: 'k', crawler_id: 3 }),
+      } as MessageEvent)
+    })
+    expect(getNotificationsUnread).toHaveBeenCalledTimes(2)
+  })
+
+  it('re-reads the unread count whenever the stream (re)connects', async () => {
+    // listing_changed is never replayed, so a drop recorded while the stream
+    // was down produces no tick at all and the bell would sit stale.
+    render(<App />)
+    await waitFor(() => expect(getNotificationsUnread).toHaveBeenCalledTimes(1))
+
+    getNotificationsUnread.mockResolvedValue({ unread: 4, latest_id: 12 })
+    lastCrawlSource!.onopen!()
+
+    expect(await screen.findByRole('button', { name: 'Notifications, 4 unread' })).toBeInTheDocument()
   })
 
   it('does not load or mark notifications read until the tab is opened', async () => {

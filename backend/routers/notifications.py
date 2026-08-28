@@ -70,5 +70,14 @@ def mark_notifications_read(body: MarkReadRequest, request: Request):
         latest = db.latest_price_drop_id(conn, user_id)
         if latest is not None:
             db.mark_price_drops_read(conn, user_id, min(body.up_to_id, latest))
-            conn.commit()
-        return {"unread": db.count_unread_price_drops(conn, user_id)}
+        # Counted before the commit, not after. user_scope sets app.user_id
+        # with is_local=true, so committing ends the transaction that owns it --
+        # and a custom GUC does not revert to unset, it reverts to ''. Every
+        # RLS policy here casts it with ::int, so the next read on this
+        # connection would raise InvalidTextRepresentation rather than merely
+        # returning nothing. Invisible to the router tests, which run the app
+        # pool on the superuser DSN and never evaluate a policy at all; see
+        # test_mark_read_survives_rls_enforcement.
+        unread = db.count_unread_price_drops(conn, user_id)
+        conn.commit()
+        return {"unread": unread}
