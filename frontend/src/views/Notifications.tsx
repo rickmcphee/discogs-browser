@@ -108,6 +108,17 @@ export default function Notifications({ generation, onLoaded }: Props) {
                         {formatPrice(item.price, item.currency)}
                       </span>
                       {' '}
+                      {/* The strikethrough is the only thing marking this as
+                          the beaten price, and it is pure paint -- without
+                          this a screen reader hears two adjacent prices and
+                          cannot tell which one is current, which is the whole
+                          comparison the row exists to make. The separator is
+                          its own text node because the accessible name
+                          computation trims each element, so a trailing space
+                          inside the span above is dropped and the words run
+                          together. */}
+                      <span className="sr-only">previously</span>
+                      {' '}
                       <span className="text-gray-500 line-through">
                         {formatPrice(item.previous_best, item.currency)}
                       </span>

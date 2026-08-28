@@ -172,6 +172,77 @@ def test_an_unpriced_row_records_nothing(pg_test_db):
         assert _drops(conn) == []
 
 
+def _release_crawler_and_catalog(conn, site_name="Amazon", discogs_id="r1"):
+    crawler_id = _crawler(conn, site_name, crawler_type="release")
+    db.upsert_catalog_release(conn, {
+        "discogs_id": discogs_id, "artist": "Artist A", "title": "Album A",
+        "year": None, "label": None, "format": "LP", "discogs_price": None,
+        "barcode": None, "cover_image_url": None, "discogs_url": None,
+    })
+    catalog_release = conn.execute(
+        "SELECT * FROM catalog WHERE discogs_id = %s", [discogs_id]
+    ).fetchone()
+    return crawler_id, catalog_release
+
+
+def test_the_release_path_records_a_drop_when_a_rerun_undercuts_its_own_price(pg_test_db):
+    # The third write path, and the one that makes retention necessary at all:
+    # the worker pool records through it whether or not a catalog sync ever
+    # runs. It computes item_key from artist.title() and the listing URL, so a
+    # rerun only lands on the same item while the URL is stable -- which is
+    # what makes the key assertion below worth making rather than assumed.
+    with db.get_admin_pool().connection() as conn:
+        crawler_id, catalog_release = _release_crawler_and_catalog(conn)
+        url = "https://amazon/x"
+
+        db.upsert_stock_item_from_release(
+            conn, "r1", crawler_id, catalog_release,
+            {"url": url, "price": 24.0, "currency": "USD"},
+        )
+        assert _drops(conn) == []
+
+        db.upsert_stock_item_from_release(
+            conn, "r1", crawler_id, catalog_release,
+            {"url": url, "price": 19.5, "currency": "USD"},
+        )
+        conn.commit()
+
+        rows = _drops(conn)
+        assert len(rows) == 1
+        assert rows[0]["item_key"] == _key(url=url)
+        assert rows[0]["crawler_id"] == crawler_id
+        assert rows[0]["url"] == url
+        assert rows[0]["price"] == 19.5
+        assert rows[0]["previous_best"] == 24.0
+
+
+def test_the_release_path_respects_a_floor_set_by_a_store(pg_test_db):
+    # Cross-path: the floor is per item_key, not per writer, so a release-path
+    # write has to beat what a catalog sync already recorded for the same item.
+    with db.get_admin_pool().connection() as conn:
+        store_id = _crawler(conn, "Store A")
+        crawler_id, catalog_release = _release_crawler_and_catalog(conn)
+        url = "https://store/1"
+
+        db.replace_stock_items(conn, store_id, [_stock(url=url, price=15.0)])
+        db.upsert_stock_item_from_release(
+            conn, "r1", crawler_id, catalog_release,
+            {"url": url, "price": 18.0, "currency": "USD"},
+        )
+        assert _drops(conn) == []
+
+        db.upsert_stock_item_from_release(
+            conn, "r1", crawler_id, catalog_release,
+            {"url": url, "price": 14.0, "currency": "USD"},
+        )
+        conn.commit()
+
+        rows = _drops(conn)
+        assert len(rows) == 1
+        assert rows[0]["price"] == 14.0
+        assert rows[0]["previous_best"] == 15.0
+
+
 def test_a_drop_is_stamped_when_it_is_written_not_when_its_transaction_began(pg_test_db):
     # CURRENT_TIMESTAMP is fixed at transaction start, and replace_stock_items
     # runs inside a transaction that also carries the bulk delete, every insert

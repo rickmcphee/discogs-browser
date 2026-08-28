@@ -275,6 +275,25 @@ describe('notifications view', () => {
     expect(link).toHaveTextContent('at Amazon')
   })
 
+  it('tells a screen reader which of the two prices is the old one', async () => {
+    // The line-through is the whole cue for a sighted user and carries nothing
+    // to a screen reader, which hears two adjacent prices with no way to tell
+    // which is current -- the comparison the row exists to make.
+    getNotificationsUnread.mockResolvedValue({ unread: 1, latest_id: 7 })
+    getNotifications.mockResolvedValue({ items: [drop()], unread: 1, latest_id: 7, last_read_id: 0 })
+
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Notifications, 1 unread' }))
+
+    // Asserted on the accessible name rather than textContent: the name
+    // computation trims each element, so a trailing space inside the sr-only
+    // span is dropped and the words run together -- which is what the first
+    // version of this fix did.
+    expect(
+      await screen.findByRole('link', { name: /\$18\.50 previously \$24\.00 at Amazon/ }),
+    ).toBeInTheDocument()
+  })
+
   it('marks everything read on open, clearing the dot', async () => {
     getNotificationsUnread.mockResolvedValue({ unread: 1, latest_id: 7 })
     getNotifications.mockResolvedValue({ items: [drop()], unread: 1, latest_id: 7, last_read_id: 0 })

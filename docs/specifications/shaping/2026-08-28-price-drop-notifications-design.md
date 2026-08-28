@@ -412,7 +412,12 @@ to `url` (`target="_blank" rel="noreferrer"`, matching how Store rows already
 link). Unread rows carry a left accent border *and* open their link's
 accessible name with "New." — the border is the sighted cue, and by the time
 the list renders the bell's dot is already cleared, so without the second one
-the distinction would exist only in paint.
+the distinction would exist only in paint. The struck-through price is labelled
+the same way, with a screen-reader-only "previously": the strikethrough is also
+pure paint, and without it the row's whole comparison is two adjacent prices
+with nothing saying which is current. Its separating space is its own text node
+rather than a trailing space inside the span, because the accessible name
+computation trims each element and would otherwise run the words together.
 
 Opening the tab issues `POST /notifications/read` with the newest `id` in the
 response, and the badge follows that write rather than running ahead of it —
@@ -513,6 +518,10 @@ Backend (`test_price_drop_notifications.py`):
   carrying that crawler and URL.
 - A EUR price below a USD floor records nothing (currency bucketing).
 - Duplicate `item_key`s in one `replace_stock_items` batch record one drop.
+- The release path (`upsert_stock_item_from_release`) records a drop when a
+  rerun at a stable URL undercuts its own price, and respects a floor a store
+  already set — it is the third write path and the only one no test reached
+  until it was asked for.
 - `get_price_drop_feed` returns only the calling user's saved items,
   and only drops at/after `saved_at`.
 - Two users saving the same item both see the drop; a user who saved neither
@@ -526,7 +535,8 @@ payload shape; unread dropping to zero after `POST /notifications/read`.
 Frontend (`notifications.test.tsx`): the bell renders; the dot appears only
 when `unread > 0`; the view lists drops with their link, prices and source;
 opening the tab posts the read watermark and clears the dot; the empty state;
-a reconnect refreshes both the badge and an already-open list.
+a reconnect refreshes both the badge and an already-open list; the old price
+is named as such in the link's accessible name.
 `client.test.ts`: the three new client functions hit the right method/URL.
 
 Playwright-dependent code is untouched — nothing here changes crawling itself,
