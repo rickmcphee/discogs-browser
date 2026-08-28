@@ -104,7 +104,8 @@ that a click landed.
   meanwhile is never clobbered. **(2026-08-28 amendment: the stock claim's guard
   is now "nothing has been written to the banner since the claim was taken",
   counted rather than compared by text, because the claim no longer has a
-  message of its own to recognise. The price claim still compares text.)**
+  message of its own to recognise. The price claim was moved onto the same
+  counter shortly afterwards — see the second amendment.)**
 - **The thing that is running is the thing that stands out.** The running row's
   button inverts to the lit nav pill (`navButtonClass(true)`) instead of being
   dimmed by the disabled styling that the rows merely waiting on it carry.
@@ -302,7 +303,9 @@ longer has, and both moved rather than went:
   `setSyncStatus` increments `statusWrites`, the claim records the count it was
   taken at, and the expiry writes only if the count is unchanged. Same
   intent, and it now also covers the case the text comparison could not: a
-  banner the claim never recognised in the first place.
+  banner the claim never recognised in the first place. **(Corrected by the
+  second amendment: a counter is only as good as its coverage, and the price
+  claim's expiry was still writing around it.)**
 - **`busyStatusMessage`.** The stock path set it on click and cleared it on
   rejection. It does neither now, and the clearing had to go with the setting:
   the flag is whoever's message is on screen, so a stock rejection blanking a
@@ -322,3 +325,44 @@ lost-track message and still stays quiet behind a real one; the banner-
 contention tests read the claim off its button. The live-region test is driven
 by the Marketplace Refresh, which still writes on click and so still exercises
 "a message arriving into an already-mounted region".
+
+## Second amendment (2026-08-28, branch `claude/remove-records-refresh-status-fvr4x6`)
+
+**The price claim's expiry now writes through `setSyncStatus` too, and is
+guarded by the same write counter the stock claim uses.** Flagged by Copilot's
+review on the first amendment's PR, which landed moments after that PR merged.
+
+The first amendment introduced `statusWrites` as "every write to the banner"
+and built the stock claim's lost-track guard on it. The price claim's expiry
+was not converted: it kept its own `setSyncMessage((m) => m === notice.shown ?
+notice.lost : m)`, which reaches the banner without going through
+`setSyncStatus` and so never moved the counter. A write the counter cannot see
+is one a later expiry mistakes for silence.
+
+The reachable case is both claims expiring into the same banner, the price one
+first: a Marketplace Refresh whose `POST /crawl/start` stalls, a store's
+Refresh clicked while it is still in flight, and no `stock_sync_started` for
+that either. The price claim expires at its twenty seconds and posts `Lost
+track of the price refresh…`; the stock claim expires a few seconds later,
+sees an unmoved counter, and overwrites the newer notice with its own. The
+older of two true messages won.
+
+Converting the price claim rather than special-casing it in the stock guard
+keeps one idiom and, more to the point, leaves `setSyncStatus` as the only way
+a message reaches the banner — which is the property the counter actually
+depends on. Its `writes` count is recorded *after* its own `Starting…` write,
+so the claim measures silence from where its message landed instead of
+counting that message as news.
+
+One behavioural difference, and it is unreachable in practice: the text
+comparison also suppressed the notice when the banner had been dismissed
+(`m` was then `null`, matching nothing), where the counter does not. The price
+claim holds `busyStatusMessage`, which removes the banner's Dismiss button for
+as long as its message is the one on screen, so there is no dismissal to
+suppress; and anything that replaced the message moved the counter anyway.
+
+`frontend/src/test/inStockTab.test.tsx` gains that interleaving as a
+regression test — price refresh, store Refresh five seconds later, both left
+unanswered — asserting the price notice survives the stock expiry behind it
+and that the stock claim still releases its own button while staying quiet.
+It fails against the pre-fix code on exactly that assertion.
