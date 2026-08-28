@@ -355,11 +355,12 @@ a drop — and most stock-item searches legitimately find nothing, so counting
 them fanned a request out to every connected user for the majority of crawl
 results.
 
-The refetch on connect covers what the stream structurally cannot.
+The refetch on connect covers a *disconnect*, and only that.
 `listing_changed` is never buffered in `_recent`, and the SSE error handler only
 reopens the stream — so a drop recorded while the connection was down produces
 no tick at all, and the bell would sit stale until an unrelated price event or a
-reload.
+reload. It does not cover a drop recorded on the other Machine while the stream
+is up; see the known limitation below.
 
 ### The view
 
@@ -411,6 +412,23 @@ clear the dot on app start, before the user had seen anything.
   practice; the cheap half-measure (lock only on the single-key
   `upsert_stock_item_listing` path, never on the batch path) narrows the window
   without the throughput cost, and is where a fix should start.
+
+- **A price write on the other Machine produces no tick.** Production runs two
+  Fly Machines, and `CrawlManager`'s `_subscribers`/`_recent` are in-process, so
+  a client whose stream landed on Machine A is never told about a drop Machine
+  B's worker recorded. The bell — and an open Notifications list — stay stale
+  until a local price event, a reconnect, or a reload.
+
+  This is inherited, not introduced: every SSE-driven view in the app has it,
+  the Store and Track tabs included, and
+  [`2026-08-16-fly-multi-machine-design.md`](2026-08-16-fly-multi-machine-design.md)
+  already documents it as an accepted gap whose fix is a cross-Machine
+  broadcast bridge (Postgres `LISTEN`/`NOTIFY`), scoped there as separate,
+  larger work. Raised again by Copilot against this feature specifically, and
+  left alone deliberately: a notifications-only polling fallback would treat one
+  symptom of a shared cause, add a standing request per connected user, and
+  leave the bell self-healing while the tabs beside it still are not. The bridge
+  fixes all of them at once.
 
 - **A drop is recorded whether or not anyone saved the item.** The crawl worker
   cannot tell the difference — that is the whole reason the table is global —
