@@ -360,11 +360,11 @@ colour alone.
 
 ### Unread polling
 
-No new SSE event type. The header refetches the unread count on mount, on every
-successful SSE connection, and whenever `priceGeneration` ticks — a counter
-bumped only by `stock_sync_progress`, `stock_sync_complete`, and
-`listing_changed` **with `status === 'found'`**, which is precisely the set of
-events that follow a real price write.
+No new SSE event type. The header refetches the unread count on mount and
+whenever `priceGeneration` ticks — a counter bumped by `stock_sync_progress`,
+`stock_sync_complete`, `listing_changed` **with `status === 'found'`** (which is
+precisely the set of events that follow a real price write), and every
+successful SSE connection.
 
 Adding a per-user `notification` event instead would mean tagging it with a
 `user_id` the crawl worker cannot determine (see "Why the drop rows are
@@ -386,12 +386,20 @@ a drop — and most stock-item searches legitimately find nothing, so counting
 them fanned a request out to every connected user for the majority of crawl
 results.
 
-The refetch on connect covers a *disconnect*, and only that.
+The bump on connect covers a *disconnect*, and only that.
 `listing_changed` is never buffered in `_recent`, and the SSE error handler only
 reopens the stream — so a drop recorded while the connection was down produces
 no tick at all, and the bell would sit stale until an unrelated price event or a
 reload. It does not cover a drop recorded on the other Machine while the stream
 is up; see the known limitation below.
+
+A generation bump rather than a bare count re-read, because the count is not
+the only thing left stale by a disconnect. `priceGeneration` is also the sole
+input an already-open Notifications list re-runs on, and a reconnect is exactly
+when there is no later tick guaranteed — so refreshing only the badge relit the
+dot over a list that never reloaded, and clicking that bell sets the view it is
+already on. Bumping refreshes both, through the one path that already reconciles
+the read and the write when they overlap.
 
 ### The view
 
@@ -517,7 +525,8 @@ payload shape; unread dropping to zero after `POST /notifications/read`.
 
 Frontend (`notifications.test.tsx`): the bell renders; the dot appears only
 when `unread > 0`; the view lists drops with their link, prices and source;
-opening the tab posts the read watermark and clears the dot; the empty state.
+opening the tab posts the read watermark and clears the dot; the empty state;
+a reconnect refreshes both the badge and an already-open list.
 `client.test.ts`: the three new client functions hit the right method/URL.
 
 Playwright-dependent code is untouched — nothing here changes crawling itself,

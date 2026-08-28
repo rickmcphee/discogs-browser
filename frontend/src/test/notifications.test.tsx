@@ -226,6 +226,29 @@ describe('notification bell', () => {
     expect(await screen.findByRole('button', { name: 'Notifications, 4 unread' })).toBeInTheDocument()
   })
 
+  it('reloads an already-open list on reconnect, not just the bell', async () => {
+    // The other half of the same gap. Refreshing only the count relit the dot
+    // over a list that never re-ran: with the tab already on screen there is
+    // no later tick guaranteed, and clicking the bell sets the view it is
+    // already on, so the row the dot was raised for could not be reached
+    // without a reload.
+    getNotificationsUnread.mockResolvedValue({ unread: 1, latest_id: 7 })
+    getNotifications.mockResolvedValue({ items: [drop()], unread: 1, latest_id: 7, last_read_id: 0 })
+
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Notifications, 1 unread' }))
+    await screen.findByRole('link', { name: /Selected Ambient Works/ })
+
+    getNotifications.mockResolvedValue({
+      items: [drop({ id: 8, title: 'Richard D. James Album', url: 'https://amazon.example/y' }), drop()],
+      unread: 1, latest_id: 8, last_read_id: 7,
+    })
+
+    await act(async () => { lastCrawlSource!.onopen!() })
+
+    expect(await screen.findByRole('link', { name: /Richard D. James Album/ })).toBeInTheDocument()
+  })
+
   it('does not load or mark notifications read until the tab is opened', async () => {
     getNotificationsUnread.mockResolvedValue({ unread: 2, latest_id: 7 })
     render(<App />)

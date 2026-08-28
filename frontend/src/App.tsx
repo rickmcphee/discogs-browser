@@ -591,9 +591,13 @@ export default function App() {
       // listing_changed is never buffered or replayed (see crawl_manager), and
       // the error path below only reopens the stream -- so a drop recorded
       // while the connection was down produces no tick at all, and the bell
-      // would sit stale until an unrelated price event or a reload. Re-reading
-      // on every successful open covers the gap the stream cannot.
-      source.onopen = () => fetchUnreadNotifications()
+      // would sit stale until an unrelated price event or a reload. A
+      // generation bump rather than a bare count re-read: it refreshes the
+      // badge through the effect below either way, and it is also the only
+      // thing an already-open Notifications tab listens to. Refreshing just
+      // the count relit the dot over a list that never re-ran, and clicking
+      // that bell only sets the view it is already on.
+      source.onopen = () => setPriceGeneration(g => g + 1)
       source.onmessage = handleEvent
       source.onerror = () => {
         source?.close()
@@ -607,7 +611,7 @@ export default function App() {
       source?.close()
       clearTimeout(reconnectTimer)
     }
-  }, [authState, setSyncStatus, fetchPriceStatus, fetchUnreadNotifications])
+  }, [authState, setSyncStatus, fetchPriceStatus])
 
   // Rides priceGeneration rather than a notification-specific SSE event: a
   // per-user event would have to be tagged with an owner, and the crawl worker
