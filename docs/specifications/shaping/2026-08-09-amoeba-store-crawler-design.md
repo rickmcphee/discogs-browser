@@ -63,10 +63,9 @@ Two existing behaviours combine to make it so:
 - `db.enqueue_crawl_queue_for_stock_item()` re-queues on conflict wherever
   `status = 'done'`, so every sync re-enqueues every item for a price
   refresh across each eligible `release` crawler — `crawler_type="release"`
-  with `requires_discogs_release = FALSE`, which today means amazon, ebay,
-  and ebay_general, assuming all enabled; `discogs_marketplace` is excluded by
-  its `requires_discogs_release = True`. Waterloo Records joined that set on
-  2026-08-28, when it was converted from a catalog crawler to a release one.
+  with `requires_discogs_release = FALSE` — amazon, ebay, ebay_general and
+  waterloorecords, assuming all enabled; `discogs_marketplace` is excluded by
+  its `requires_discogs_release = True`.
 
 So a window of W items costs one queue job per eligible release crawler per
 item on *every* sync, drained by 2

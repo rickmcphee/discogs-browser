@@ -496,6 +496,16 @@ Three things the conversion had to get right:
   path writes through `upsert_stock_item_from_release()`, which always carries
   a release_id.
 
+- **A miss here is not a fault.** The release path counts an empty result
+  against the per-site consecutive-failure breaker, on the reasoning that a
+  real Discogs release absent from a near-universal marketplace means
+  something is wrong. That does not hold for one shop: Waterloo stocks a
+  fraction of any given library, so a run of releases it does not carry is
+  ordinary. It therefore declares `empty_result_is_expected = True`, and an
+  empty result records no site-health signal at all — bot detection and real
+  matches still do. Without it, `consecutive_failure_limit` unstocked releases
+  in a row would cool off a site that answered every request correctly.
+
 **Consequences.** Waterloo keeps a Store tab presence, but a different one: a
 release crawler still writes `stock_items` through
 `upsert_stock_item_from_release()`, so what appears is the records from a

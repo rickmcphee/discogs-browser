@@ -98,6 +98,8 @@ Any crawler for a named storefront may additionally declare an optional `genre_s
 
 **`[]` means "the site answered and has nothing." Any failure must raise.** The consecutive-failure circuit breaker cannot tell the two apart otherwise, and on the stock-item path an empty result is deliberately not counted as a failure at all — so a crawler that swallows its errors into `[]` never cools its site off.
 
+`empty_result_is_expected` is optional and release-crawler-only: set it to `True` on a crawler for a single store rather than a near-universal marketplace, and an empty `search()` result records no site-health signal instead of counting toward the breaker. Without it, a run of library releases the store simply does not stock would cool off a perfectly healthy site. Only a literal `True` opts out.
+
 `failure_domain` is optional: crawlers declaring the same value count as one site to that breaker. Only the eBay plugins use it (`"ebay-browse-api"` — one app, one token, one API across more than one `crawlers` row). Omit it and the crawler is its own domain.
 
 ## Documentation — never write down a count of things that change

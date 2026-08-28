@@ -66,6 +66,14 @@ class Crawler:
     base_url: str = "https://waterloorecords.com"
     genre_summary: str = "Austin, Texas independent record store since 1982, with a deep new-vinyl catalog spanning every genre and a strong Texas-music selection."
     genre: str = "marketplace"
+    # One independent record store, not a near-universal marketplace. It stocks
+    # a fraction of any given library, so a run of releases it does not carry is
+    # its ordinary healthy behaviour rather than evidence it is broken -- and
+    # without this, consecutive_failure_limit such releases in a row would trip
+    # the circuit breaker and cool the site off. See item 8 of
+    # docs/superpowers/specs/2026-08-01-worker-pool-pacing-design.md and its
+    # 2026-08-28 amendment.
+    empty_result_is_expected: bool = True
 
     @classmethod
     def search_url(cls, release: dict) -> str:
