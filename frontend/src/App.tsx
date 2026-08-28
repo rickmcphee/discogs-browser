@@ -176,28 +176,35 @@ export default function App() {
     return params.get('signup_pending')
   })
 
+  // Counts every write to the banner. A claim that expires needs to know
+  // whether anything has spoken since it was taken, and it can no longer tell
+  // by recognising its own text on screen -- it puts none there.
+  const statusWrites = useRef(0)
+
   // eventId is null for locally-generated messages (button-click failures) that never
   // survive a refresh and so never need replay suppression; those always show.
   const setSyncStatus = useCallback((message: string, eventId: number | null = null) => {
+    statusWrites.current++
     setSyncMessage(message)
     setSyncMessageId(eventId)
   }, [])
 
-  // Releasing the button is only half of it: the "Starting…" message it was
-  // clicked with has to go too, or the banner ends up showing a Dismiss button
-  // beside "Starting…", which reads as finished -- exactly the state syncBusy
-  // exists to prevent. Replaced rather than blanked, because the user is owed
-  // an account of a refresh the app has lost track of. It points at the Logs
-  // tab rather than at a reload: stock_sync_running is this process's
-  // _stock_task, so a reconnect landing on the Machine that does not hold the
-  // advisory lock reports idle for a sync that is running. The log store is
-  // merged across Machines and durable, so it is the one signal that always
-  // answers. Guarded on the message still being the one this claim set, so a
-  // real progress message that arrived in the meantime is never clobbered.
-  // Bumping the sequence first drops the request this claim was waiting on:
-  // having told the user it is lost, contradicting that later with a different
-  // answer is worse than staying quiet.
-  const stockSyncClaimNotice = useRef<{ shown: string; lost: string } | null>(null)
+  // Taking a stock claim says nothing in the banner: the clicked button spins
+  // for itself, and stock_sync_started overwrites the banner a beat later
+  // anyway, so a "Starting…" line only repeated what the button already
+  // showed and then flickered away. An expiring claim is the exception -- a
+  // spinner that simply stops is no account of a refresh the app has lost
+  // track of. It points at the Logs tab rather than at a reload:
+  // stock_sync_running is this process's _stock_task, so a reconnect landing
+  // on the Machine that does not hold the advisory lock reports idle for a
+  // sync that is running. The log store is merged across Machines and durable,
+  // so it is the one signal that always answers. Guarded on nothing having
+  // been written to the banner since the claim was taken, so a real progress
+  // message that arrived in the meantime is never clobbered. Bumping the
+  // sequence first drops the request this claim was waiting on: having told
+  // the user it is lost, contradicting that later with a different answer is
+  // worse than staying quiet.
+  const stockSyncClaimNotice = useRef<{ writes: number; lost: string } | null>(null)
 
   useEffect(() => {
     if (stockSyncStarting === null) return
@@ -205,10 +212,10 @@ export default function App() {
       latestStockSyncStartSeq.current++
       setStockSyncStarting(null)
       const notice = stockSyncClaimNotice.current
-      if (notice) setSyncMessage((m) => (m === notice.shown ? notice.lost : m))
+      if (notice && statusWrites.current === notice.writes) setSyncStatus(notice.lost)
     }, START_CLAIM_TIMEOUT_MS)
     return () => clearTimeout(timer)
-  }, [stockSyncStarting])
+  }, [stockSyncStarting, setSyncStatus])
 
   // The price claim's own bound. Bumping the sequence first makes the stalled
   // response a no-op if it ever does land.
@@ -655,9 +662,13 @@ export default function App() {
   }, [handleFindPrices])
 
   // One handler for both the bulk Refresh and a single store's, because the
-  // feedback is the same either way: claim the button now, name what was
-  // clicked in the status bar now, and only hand back to the real
-  // stock_sync_* state once the server has answered.
+  // feedback is the same either way: claim the button now, and only hand back
+  // to the real stock_sync_* state once the server has answered. The claim is
+  // the whole of the confirmation -- the button it was clicked with spins and
+  // its row lights up, so a banner line saying the same thing was redundant
+  // from the moment it appeared until stock_sync_started replaced it. The
+  // banner still carries what the button cannot: a rejection, a failed
+  // request, and the real progress that follows.
   const startStockSync = useCallback(async (crawlerId?: number) => {
     const seq = ++latestStockSyncStartSeq.current
     const statusSeq = ++latestStatusOwnerSeq.current
@@ -666,28 +677,23 @@ export default function App() {
     const site = crawlerId != null ? crawlers.find((c) => c.id === crawlerId)?.site_name : null
     const what = site ? `${site} catalog refresh` : 'in-stock catalog refresh'
     stockSyncClaimNotice.current = {
-      shown: `Starting ${what}…`,
+      writes: statusWrites.current,
       lost: `Lost track of the ${what} — check the Logs tab to see whether it is still running.`,
     }
-    setBusyStatusMessage(stockSyncClaimNotice.current.shown)
-    setSyncStatus(stockSyncClaimNotice.current.shown)
     try {
       const result = await postStockSyncStart(crawlerId)
       if (seq !== latestStockSyncStartSeq.current) return
       // On an accepted start the optimistic state stays until
       // stock_sync_started replaces it; a rejection ends here.
       if (!result.started) setStockSyncStarting(null)
-      if (ownsStatus()) {
-        reportStockSyncRejection(result, setSyncStatus)
-        if (!result.started) setBusyStatusMessage(null)
-      }
+      // busyStatusMessage is left alone throughout: this handler no longer
+      // writes the banner on the way in, so anything set there belongs to
+      // another request and clearing it would stop that one's spinner.
+      if (ownsStatus()) reportStockSyncRejection(result, setSyncStatus)
     } catch (e: any) {
       if (seq !== latestStockSyncStartSeq.current) return
       setStockSyncStarting(null)
-      if (ownsStatus()) {
-        setBusyStatusMessage(null)
-        setSyncStatus(`In-stock sync failed to start: ${e.message}`)
-      }
+      if (ownsStatus()) setSyncStatus(`In-stock sync failed to start: ${e.message}`)
     }
   }, [crawlers, setSyncStatus])
 
