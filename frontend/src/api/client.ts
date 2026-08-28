@@ -463,7 +463,10 @@ export function getQueueNext(crawlerId: number, limit = 25): Promise<QueueNextIt
 }
 
 export async function getNotifications(limit?: number): Promise<NotificationsResponse> {
-  const qs = limit ? `?limit=${limit}` : ''
+  // Explicitly `undefined`, not falsy: `limit=0` is outside the endpoint's
+  // ge=1 range and should reach it and be rejected, not be silently dropped
+  // and answered with the default page.
+  const qs = limit === undefined ? '' : `?limit=${limit}`
   const r = await apiFetch(`/notifications${qs}`)
   if (!r.ok) throw new Error(await r.text())
   return r.json()

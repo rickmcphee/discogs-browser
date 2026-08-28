@@ -327,6 +327,11 @@ describe('crawl/user-settings client functions', () => {
 
     await getNotifications(10)
     expect(fetchMock.mock.calls[1][0]).toContain('/notifications?limit=10')
+
+    // Forwarded rather than dropped: 0 is outside the endpoint's ge=1 range and
+    // should be rejected there, not silently answered with the default page.
+    await getNotifications(0)
+    expect(fetchMock.mock.calls[2][0]).toContain('/notifications?limit=0')
   })
 
   it('getNotificationsUnread GETs the badge-only endpoint', async () => {

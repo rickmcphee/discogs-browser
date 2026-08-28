@@ -257,6 +257,10 @@ describe('notifications view', () => {
     const older = screen.getByRole('link', { name: /Older Album/ })
     expect(fresh).toHaveAttribute('data-unread', 'true')
     expect(older).toHaveAttribute('data-unread', 'false')
+    // The accent border is the sighted cue, and the bell's dot is gone by
+    // now, so the row's accessible name has to carry it too.
+    expect(fresh).toHaveAccessibleName(/^New\./)
+    expect(older).not.toHaveAccessibleName(/New\./)
   })
 
   it('explains itself when the user has no notifications yet', async () => {

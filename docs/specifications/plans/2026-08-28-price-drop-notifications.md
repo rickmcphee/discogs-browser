@@ -30,8 +30,9 @@ Tailwind 4 on the frontend, pytest and Vitest. No new dependency.
 - **No new RLS bypass, and no loosening of `stock_item_saves_isolation`.** If a
   change seems to need the worker to see who saved what, it is the wrong change.
 - **No new SSE event.** A per-user one would need an owner tag the worker cannot
-  determine; the badge rides `stockSyncGeneration`, which the Store and Track
-  tabs already refetch on.
+  determine; the badge rides `priceGeneration`, a strict subset of the
+  `stockSyncGeneration` the Store and Track tabs refetch on, carrying only the
+  events that follow a real price write.
 - **The Notifications view is mounted only while active.** Loading it is what
   marks its rows read.
 - Backend checks run from `backend/`: `pytest`. Frontend checks run from
@@ -100,7 +101,9 @@ Tailwind 4 on the frontend, pytest and Vitest. No new dependency.
 
 - [x] Bell before the avatar, both layouts, every user.
 - [x] View mounted only while active; read watermark written on load.
-- [x] Badge refetched off `stockSyncGeneration`.
+- [x] Badge refetched off `priceGeneration`, not the broader
+      `stockSyncGeneration`: the judgment events bump that one too, and a
+      judgment can never move a price.
 
 ### Task 7: Backend tests
 

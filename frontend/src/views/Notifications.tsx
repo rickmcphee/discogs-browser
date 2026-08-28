@@ -84,6 +84,13 @@ export default function Notifications({ generation, onLoaded }: Props) {
                     <div className="w-12 h-12 shrink-0 bg-gray-800 rounded" />
                   )}
                   <div className="min-w-0 flex-1">
+                    {/* The accent border says "new" to sighted users, and
+                        the bell's dot is gone the moment the tab is
+                        opened -- so without this the distinction exists
+                        only in paint. Part of the link's accessible name,
+                        not a title attribute, so it is announced when the
+                        link is reached. */}
+                    {isUnread && <span className="sr-only">New. </span>}
                     <div className="truncate text-sm text-gray-200">{item.artist}</div>
                     <div className="truncate text-sm text-gray-300">{item.title}</div>
                     <div className="mt-1 text-sm">

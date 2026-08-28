@@ -51,7 +51,8 @@ Touches:
   a Postgres `TIMESTAMP` as browser-local rather than UTC is a subtle enough
   bug to be worth one definition rather than two.
 - `frontend/src/App.tsx` — `'notifications'` view, bell button with unread
-  dot, unread polling off the existing SSE generation counter.
+  dot, and `priceGeneration`: a strict subset of the existing
+  `stockSyncGeneration` carrying only the events that follow a price write.
 - Tests: `backend/tests/test_price_drop_notifications.py`,
   `backend/tests/test_notifications_router.py`, RLS coverage in
   `backend/tests/test_tenant_schema.py`,
@@ -329,9 +330,17 @@ colour alone.
 ### Unread polling
 
 No new SSE event type. The header refetches the unread count on mount and
-whenever `stockSyncGeneration` ticks — the counter `App.tsx` already bumps on
-`listing_changed` and on every `stock_sync_*` event, which is precisely the set
-of events that can create a drop. Adding a per-user `notification` event would
+whenever `priceGeneration` ticks — a counter bumped only by `listing_changed`,
+`stock_sync_progress` and `stock_sync_complete`, which is precisely the set of
+events that follow a real price write.
+
+It is a strict subset of the `stockSyncGeneration` the Store and Track tabs
+ride, and the difference is the point: that counter is also bumped by the
+judgment events, which write `stock_item_judgments` and never touch a price.
+Riding it cost an unread request per judgment batch — and, with this tab open,
+a list reload and a read POST too. The other `stock_sync_*` events
+(`started`, `source_started`, `page_fetched`, `detail_progress`) report crawl
+progress before anything is written, so they are excluded as well. Adding a per-user `notification` event would
 mean tagging it with a `user_id` the crawl worker cannot determine (see "Why
 the drop rows are global"), so the global events that already exist do the job
 without weakening anything.
