@@ -29,10 +29,15 @@ async def iter_products(base_url: str, collection_slug: str) -> AsyncIterator[di
 
     Pagination has a hard ceiling: Shopify refuses `page` past _MAX_PAGE with an
     HTTP 400, so a collection larger than _MAX_PAGE * _PAGE_LIMIT can only be walked
-    in part. That 400 ends the walk rather than entering the retry budget, and the
-    ceiling itself is stopped at before page _MAX_PAGE + 1 is ever requested -- both
-    so the pages that did answer survive, since _sync_stock discards a catalog
-    crawl's entire result when it raises.
+    in part. The walk stops before page _MAX_PAGE + 1 is ever requested, so the
+    pages that did answer survive -- _sync_stock discards a catalog crawl's entire
+    result when it raises, and the ceiling is not a failure.
+
+    A 400 anywhere below the ceiling is left to the retry budget below and
+    ultimately raises, deliberately. It is unexplained rather than expected there,
+    and raising is the fail-safe outcome: _sync_stock skips replace_stock_items()
+    on a raise, leaving the previous snapshot intact, where returning a partial
+    walk would DELETE that snapshot and reinsert an arbitrary prefix of it.
 
     A 429 is never retried, regardless of consecutive_failure_limit or any Retry-After
     header value: confirmed empirically (see stock-sync-429-followup investigation notes)
@@ -62,28 +67,6 @@ async def iter_products(base_url: str, collection_slug: str) -> AsyncIterator[di
                     # signal (if any) accompanies it. Not acted on: see docstring above.
                     log.debug("[%s] 429 response headers: %s", base_url, dict(e.response.headers))
                     raise
-                # A 400 past the first page is this endpoint's pagination ceiling
-                # rather than a fault, and must end the walk instead of entering the
-                # retry budget below. It is deterministic, so those retries can only
-                # spend consecutive_failure_limit paced requests and then raise --
-                # and raising discards every product already collected, because
-                # _sync_stock skips replace_stock_items entirely when a catalog
-                # crawl raises. That is how a store larger than _MAX_PAGE * _PAGE_LIMIT
-                # reported a full run of healthy page-fetch logs and then wrote no
-                # rows at all. Kept off page 1 so a renamed or misspelled collection
-                # slug, which 400s on the very first request, still raises rather
-                # than quietly reporting the store as empty and wiping its snapshot.
-                if (
-                    isinstance(e, httpx.HTTPStatusError)
-                    and e.response.status_code == 400
-                    and page > 1
-                ):
-                    log.info(
-                        "[%s] %s: pagination ended at page %d (HTTP 400) -- keeping "
-                        "the %d pages already fetched",
-                        base_url, collection_slug, page, page - 1,
-                    )
-                    break
                 consecutive_failures += 1
                 # A limit of 0 means "disabled" elsewhere, but disabled must mean
                 # fail fast here, not unlimited retries — this loop has no next
@@ -105,17 +88,20 @@ async def iter_products(base_url: str, collection_slug: str) -> AsyncIterator[di
             for product in products:
                 yield product
             if page >= _MAX_PAGE:
-                # A short final page means the collection genuinely ran out on the
-                # ceiling page, so there is nothing to warn about.
+                # A short final page means the collection ran out on the ceiling
+                # page with room to spare, so nothing was left behind. A full one
+                # does not prove the opposite: a collection of exactly
+                # _MAX_PAGE * _PAGE_LIMIT products also ends on a full page, and is
+                # complete. Hence "any beyond that", not a claim that more exist.
                 if len(products) == _PAGE_LIMIT:
                     # INFO rather than WARNING on the same reasoning as _sync_stock's
                     # swept-rows line: routers/logs.py filters by exact level
                     # membership, so at WARNING this would be invisible to anyone
                     # watching the INFO stream that carries the rest of the crawl.
                     log.info(
-                        "[%s] %s truncated at %d products: Shopify's products.json "
-                        "stops paginating past page %d, so the rest of this "
-                        "collection is unreachable from this endpoint",
+                        "[%s] %s stopped at %d products: Shopify's products.json "
+                        "does not paginate past page %d, so any products beyond "
+                        "that are unreachable from this endpoint",
                         base_url, collection_slug, _MAX_PAGE * _PAGE_LIMIT, _MAX_PAGE,
                     )
                 break

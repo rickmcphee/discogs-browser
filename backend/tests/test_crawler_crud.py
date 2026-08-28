@@ -348,3 +348,64 @@ def test_register_crawler_does_not_backfill_on_an_unchanged_release_crawler(admi
         "SELECT status FROM crawl_queue WHERE discogs_id = 'r1'"
     ).fetchone()
     assert row["status"] == "done"
+
+
+def test_register_crawler_does_not_backfill_a_disabled_converted_crawler(admin_conn):
+    # register_crawler's upsert leaves `enabled` alone so an administrator's
+    # decision survives a redeploy, and get_eligible_crawlers filters on it --
+    # so reviving every done target here would re-walk the whole queue to
+    # produce no work at all.
+    admin_conn.execute(
+        "INSERT INTO catalog (discogs_id, artist, title, format) VALUES (%s, %s, %s, %s)",
+        ["r1", "Geese", "Getting Killed", "Vinyl"],
+    )
+    db.register_crawler(admin_conn, "Disabled Store", "/path/store.py", crawler_type="catalog")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute(
+        "SELECT id FROM crawlers WHERE site_name = %s", ["Disabled Store"]
+    ).fetchone()["id"]
+    db.set_crawler_enabled(admin_conn, crawler_id, False)
+    db.enqueue_crawl_queue(admin_conn, "r1")
+    admin_conn.execute("UPDATE crawl_queue SET status = 'done' WHERE discogs_id = 'r1'")
+    admin_conn.commit()
+
+    db.register_crawler(admin_conn, "Disabled Store", "/path/store.py", crawler_type="release")
+    admin_conn.commit()
+
+    row = admin_conn.execute(
+        "SELECT status FROM crawl_queue WHERE discogs_id = 'r1'"
+    ).fetchone()
+    assert row["status"] == "done"
+    # The conversion itself still happened -- only the backfill was withheld.
+    assert admin_conn.execute(
+        "SELECT crawler_type, enabled FROM crawlers WHERE id = %s", [crawler_id]
+    ).fetchone()["crawler_type"] == "release"
+
+
+def test_register_crawler_sweeps_queue_rows_orphaned_by_the_conversion(admin_conn):
+    # Clearing the catalog-era stock_items rows orphans any crawl_queue row
+    # targeting their item_keys: claim_crawl_queue_batch gates on an enabled
+    # store still listing the item_key, so they would sit pending and
+    # unclaimable until some later stock sync happened to sweep them.
+    db.register_crawler(admin_conn, "Sweeping Store", "/path/store.py", crawler_type="catalog")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute(
+        "SELECT id FROM crawlers WHERE site_name = %s", ["Sweeping Store"]
+    ).fetchone()["id"]
+    item_keys = db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "Geese", "title": "Getting Killed", "format": "Vinyl",
+         "price": 24.99, "currency": "USD",
+         "url": "https://example.test/products/getting-killed"},
+    ])
+    db.enqueue_crawl_queue_for_stock_item(admin_conn, item_keys[0])
+    admin_conn.commit()
+    assert admin_conn.execute(
+        "SELECT COUNT(*) FROM crawl_queue WHERE item_key = %s", [item_keys[0]]
+    ).fetchone()["count"] == 1
+
+    db.register_crawler(admin_conn, "Sweeping Store", "/path/store.py", crawler_type="release")
+    admin_conn.commit()
+
+    assert admin_conn.execute(
+        "SELECT COUNT(*) FROM crawl_queue WHERE item_key = %s", [item_keys[0]]
+    ).fetchone()["count"] == 0

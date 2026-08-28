@@ -1254,12 +1254,17 @@ def register_crawler(conn, site_name: str, module_path: str, crawler_type: str =
     # which always carries a release_id -- so a crawler re-registered without
     # changing kind never loses anything here.
     converted_id = None
+    converted_enabled = False
     if crawler_type == "release":
         previous = conn.execute(
-            "SELECT id, crawler_type FROM crawlers WHERE site_name = %s", [site_name]
+            "SELECT id, crawler_type, enabled FROM crawlers WHERE site_name = %s", [site_name]
         ).fetchone()
         if previous and previous["crawler_type"] != "release":
             converted_id = previous["id"]
+            # The upsert below deliberately leaves `enabled` alone, so an
+            # administrator's decision to disable this crawler survives the
+            # conversion -- and the backfill has to respect it too.
+            converted_enabled = previous["enabled"]
     conn.execute(
         """
         INSERT INTO crawlers (site_name, module_path, crawler_type, requires_discogs_release, enabled)
@@ -1281,7 +1286,22 @@ def register_crawler(conn, site_name: str, module_path: str, crawler_type: str =
         # 'done' would not see it until the next sync or scheduled sweep. Run
         # after the upsert above, since the backfill's own guard reads
         # crawler_type = 'release' off the row.
-        backfill_crawl_queue_for_crawler(conn, converted_id)
+        #
+        # Gated on the retained enabled state, which backfill itself does not
+        # check -- get_eligible_crawlers filters on `enabled`, so reviving every
+        # done target for a disabled crawler would re-walk the whole queue to
+        # produce no work at all.
+        if converted_enabled:
+            backfill_crawl_queue_for_crawler(conn, converted_id)
+        # Two sources of dead stock-item rows, swept together in this same
+        # transaction exactly as routers/settings.py's enable path does. The
+        # DELETE above orphans any crawl_queue row whose item_key came from this
+        # crawler's catalog-era snapshot, and backfill's first UPDATE carries no
+        # stock-source predicate, so it can revive rows whose store is disabled
+        # or whose item has left stock. Either way they would otherwise sit
+        # pending and unclaimable in the claim index until some later stock sync
+        # happened to catch them.
+        delete_dead_stock_crawl_queue_rows(conn)
 
 
 def set_crawler_enabled(conn, crawler_id: int, enabled: bool):

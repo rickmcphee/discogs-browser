@@ -105,32 +105,27 @@ async def test_iter_products_stops_at_the_endpoint_page_ceiling(tmp_config_dir):
 
 
 @respx.mock
-async def test_iter_products_keeps_earlier_pages_when_pagination_400s(tmp_config_dir):
-    # The regression this guards: a 400 used to enter the retry budget below,
-    # burn consecutive_failure_limit paced requests against a deterministic
-    # error, and then raise -- and _sync_stock skips replace_stock_items
-    # entirely when a catalog crawl raises, so a store whose pagination ran out
-    # this way wrote no rows at all after a full run of healthy page logs.
-    save_config({"crawl_delay_seconds": 0, "consecutive_failure_limit": 10})
+async def test_iter_products_raises_on_a_400_below_the_ceiling(tmp_config_dir):
+    # The ceiling is handled by not requesting past _MAX_PAGE at all, so a 400
+    # below it is unexplained rather than expected. Raising is the fail-safe
+    # outcome: _sync_stock skips replace_stock_items() on a raise and the
+    # previous snapshot survives, where ending the walk early would DELETE that
+    # snapshot and reinsert an arbitrary prefix of it.
+    save_config({"crawl_delay_seconds": 0, "consecutive_failure_limit": 2})
     respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(
         return_value=_page_response([{"id": 1}])
     )
-    wall = respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "2"}).mock(
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "2"}).mock(
         return_value=httpx.Response(400)
     )
 
-    products = [p async for p in iter_products("https://example.myshopify.test", "vinyl")]
-
-    assert [p["id"] for p in products] == [1]
-    assert wall.call_count == 1
+    with pytest.raises(httpx.HTTPStatusError):
+        [p async for p in iter_products("https://example.myshopify.test", "vinyl")]
 
 
 @respx.mock
-async def test_iter_products_still_raises_on_a_first_page_400(tmp_config_dir):
-    # A 400 on the very first request is a renamed or misspelled collection, not
-    # a pagination ceiling. It has to raise: returning empty would let
-    # _sync_stock treat the store as legitimately out of stock and let
-    # replace_stock_items wipe its whole snapshot.
+async def test_iter_products_raises_on_a_first_page_400(tmp_config_dir):
+    # A 400 on the very first request is a renamed or misspelled collection.
     save_config({"crawl_delay_seconds": 0, "consecutive_failure_limit": 2})
     respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(
         return_value=httpx.Response(400)

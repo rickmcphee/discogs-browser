@@ -94,7 +94,7 @@ class Crawler:
 
 The backend owns the Playwright browser. Plugins receive a live `Page` and must raise `BotDetectedError` on bot interstitials.
 
-Catalog crawlers (`crawl_catalog`, not shown above) may additionally declare an optional `genre_summary: str` attribute — a one-sentence description read by Settings to show as a hover tooltip on the store link.
+Any crawler for a named storefront may additionally declare an optional `genre_summary: str` attribute — a one-sentence description read by Settings to show as a hover tooltip on the store link. Not scoped to the catalog kinds: Settings renders the tooltip for any crawler carrying one, and Waterloo Records is a `release` crawler that declares it.
 
 **`[]` means "the site answered and has nothing." Any failure must raise.** The consecutive-failure circuit breaker cannot tell the two apart otherwise, and on the stock-item path an empty result is deliberately not counted as a failure at all — so a crawler that swallows its errors into `[]` never cools its site off.
 

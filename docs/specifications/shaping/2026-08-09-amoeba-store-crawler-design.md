@@ -69,7 +69,7 @@ Two existing behaviours combine to make it so:
   2026-08-28, when it was converted from a catalog crawler to a release one.
 
 So a window of W items costs one queue job per eligible release crawler per
-item on *every* sync -- `3W` at the three enumerated above, drained by 2
+item on *every* sync, drained by 2
 workers at `crawl_delay_seconds = 30` — about 4 jobs/minute. The multiplier
 tracks however many eligible release crawlers are enabled, so the figures
 below scale with that:
