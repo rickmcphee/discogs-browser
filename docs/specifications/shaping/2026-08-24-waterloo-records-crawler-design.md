@@ -420,3 +420,47 @@ interface — one new outbound host (`waterloorecords.com`).
 
 `backend/version.py`'s `VERSION` is derived from git and is not edited by
 this change.
+
+## Amendment (2026-08-28, branch `claude/store-crawler-activity-missing-1tybli`)
+
+**The "Scale, and why it is accepted" section above is wrong in its central
+assumption, and this crawler has never written a single row.**
+
+That section plans a full walk — "144 GETs per sync", "143 non-empty pages",
+"and then the empty page `iter_products()` needs to terminate" — and the
+verification list restates it as "pagination terminates on an empty page".
+Waterloo's `vinyl-lps` never reaches an empty page. Shopify's storefront
+`products.json` refuses `page` past 100 with an HTTP 400 whatever `limit`
+says, so the endpoint tops out at 25,000 products. Confirmed live on
+2026-08-28: pages 1-100 each return a full 250 products, page 101 returns
+400, and so does every page above it. The collection has since grown to
+36,138 products, so a complete walk would need 145 pages — 45 of them past
+the ceiling.
+
+The consequence was total, not partial. `iter_products()` classified the 400
+as a transient fault, retried page 101 for the whole `consecutive_failure_limit`
+budget, and then raised; `_sync_stock` skips `replace_stock_items()` entirely
+when a catalog crawl raises, so roughly 40 minutes of successfully fetched
+pages were discarded on every run. The store showed continuous healthy
+page-fetch activity at INFO and zero rows in the Store tab, with the
+explanatory line at ERROR, which `routers/logs.py`'s exact-level filter keeps
+out of an INFO view.
+
+`iter_products()` now stops cleanly at the ceiling and keeps what it fetched
+(see the 2026-08-28 amendment to
+[`2026-08-02-stock-sync-429-backoff-design.md`](../../superpowers/specs/2026-08-02-stock-sync-429-backoff-design.md)),
+which turns this crawler from zero rows into the first 25,000 products of the
+collection. That is a floor, not a resolution: roughly 11,000 products remain
+unreachable through this endpoint, and which ones fall outside the ceiling is
+decided by the collection's own ordering rather than by anything meaningful.
+
+The open question this raises is whether a catalog crawler is the right shape
+for this store at all. The Problem section above already records that Waterloo
+"is a general retailer, not a label store" — the trait that separates it from
+every sibling. A `release`-type crawler searching `/search/suggest.json`
+reaches the entire catalog with no ceiling, returns `available`, `price`,
+`url` and the same `type` field this crawler's vinyl gate already reads, and
+needs no Playwright (`crawlers/ebay.py` is the precedent for an API-backed
+release crawler). It would answer "can I buy this record here, and for how
+much" completely, at the cost of the Store tab's browse-what's-in-stock
+discovery. Not decided here.

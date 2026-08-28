@@ -3,7 +3,9 @@ import httpx
 import respx
 import pytest
 from config import save_config
-from shopify_catalog import iter_products, has_tag, strip_vendor_prefix, resolve_cover_image
+from shopify_catalog import (
+    _MAX_PAGE, _PAGE_LIMIT, iter_products, has_tag, strip_vendor_prefix, resolve_cover_image,
+)
 
 _PRODUCTS_URL = "https://example.myshopify.test/collections/vinyl/products.json"
 
@@ -79,6 +81,63 @@ async def test_iter_products_fails_fast_when_failure_limit_is_zero(tmp_config_di
     with pytest.raises(httpx.HTTPStatusError):
         await asyncio.wait_for(_collect(), timeout=1.0)
     assert route.call_count == 1
+
+
+@respx.mock
+async def test_iter_products_stops_at_the_endpoint_page_ceiling(tmp_config_dir):
+    # Shopify's storefront products.json 400s past _MAX_PAGE, so a collection
+    # bigger than _MAX_PAGE * _PAGE_LIMIT can only ever be walked in part. What
+    # matters is that the part it did walk survives: page _MAX_PAGE + 1 is never
+    # requested, and every product already fetched is still yielded.
+    save_config({"crawl_delay_seconds": 0})
+    for page in range(1, _MAX_PAGE + 1):
+        respx.get(_PRODUCTS_URL, params={"limit": "250", "page": str(page)}).mock(
+            return_value=_page_response([{"id": page}] * _PAGE_LIMIT)
+        )
+    over_ceiling = respx.get(
+        _PRODUCTS_URL, params={"limit": "250", "page": str(_MAX_PAGE + 1)}
+    ).mock(return_value=httpx.Response(400))
+
+    products = [p async for p in iter_products("https://example.myshopify.test", "vinyl")]
+
+    assert len(products) == _MAX_PAGE * _PAGE_LIMIT
+    assert over_ceiling.call_count == 0
+
+
+@respx.mock
+async def test_iter_products_keeps_earlier_pages_when_pagination_400s(tmp_config_dir):
+    # The regression this guards: a 400 used to enter the retry budget below,
+    # burn consecutive_failure_limit paced requests against a deterministic
+    # error, and then raise -- and _sync_stock skips replace_stock_items
+    # entirely when a catalog crawl raises, so a store whose pagination ran out
+    # this way wrote no rows at all after a full run of healthy page logs.
+    save_config({"crawl_delay_seconds": 0, "consecutive_failure_limit": 10})
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(
+        return_value=_page_response([{"id": 1}])
+    )
+    wall = respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "2"}).mock(
+        return_value=httpx.Response(400)
+    )
+
+    products = [p async for p in iter_products("https://example.myshopify.test", "vinyl")]
+
+    assert [p["id"] for p in products] == [1]
+    assert wall.call_count == 1
+
+
+@respx.mock
+async def test_iter_products_still_raises_on_a_first_page_400(tmp_config_dir):
+    # A 400 on the very first request is a renamed or misspelled collection, not
+    # a pagination ceiling. It has to raise: returning empty would let
+    # _sync_stock treat the store as legitimately out of stock and let
+    # replace_stock_items wipe its whole snapshot.
+    save_config({"crawl_delay_seconds": 0, "consecutive_failure_limit": 2})
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(
+        return_value=httpx.Response(400)
+    )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        [p async for p in iter_products("https://example.myshopify.test", "vinyl")]
 
 
 def test_has_tag_matches_case_insensitively():
