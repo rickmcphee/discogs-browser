@@ -216,7 +216,24 @@ describe('In Stock tab', () => {
     const button = await screen.findByTitle('Refreshing Epitaph catalog…')
     expect(button).toBeDisabled()
     expect(button.querySelector('.animate-spin')).toBeInTheDocument()
-    expect(screen.getByText('Starting Epitaph catalog refresh…')).toBeInTheDocument()
+  })
+
+  // The spinning button and its lit row already say a refresh was accepted,
+  // and stock_sync_started overwrites the banner a beat later regardless, so
+  // the claim writes nothing there.
+  it('says nothing in the status bar when a store refresh is claimed', async () => {
+    getCrawlers.mockResolvedValue([CATALOG_CRAWLER])
+    render(<App />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByTitle('Refresh Epitaph catalog now'))
+
+    await screen.findByTitle('Refreshing Epitaph catalog…')
+    expect(screen.getByRole('status')).toBeEmptyDOMElement()
+
+    // The real progress the server reports still lands there.
+    getLastCrawlSource().emit({ status: 'stock_sync_started', crawler_id: 9, id: 1 })
+    await waitFor(() => expect(screen.getByText('Syncing in-stock catalog…')).toBeInTheDocument())
   })
 
   it('names the bulk refresh rather than a store when the bulk button is clicked', async () => {
@@ -227,9 +244,9 @@ describe('In Stock tab', () => {
     const description = await screen.findByText('Scan all enabled catalog crawlers immediately.')
     fireEvent.click(within(description.closest('tr') as HTMLElement).getByText('Refresh'))
 
-    await waitFor(() => expect(screen.getByText('Starting in-stock catalog refresh…')).toBeInTheDocument())
     const bulkButton = within(description.closest('tr') as HTMLElement).getByRole('button')
-    expect(bulkButton).toHaveTextContent('Refreshing…')
+    await waitFor(() => expect(bulkButton).toHaveTextContent('Refreshing…'))
+    expect(screen.getByRole('status')).toBeEmptyDOMElement()
     // The bulk run has no single row to point at, so no row may claim it.
     expect(screen.getByTitle('Refresh Epitaph catalog now')).toBeDisabled()
   })
@@ -286,8 +303,7 @@ describe('In Stock tab', () => {
     // No stock_sync_started, no terminal event -- the stream missed the lot.
     await act(async () => { await vi.advanceTimersByTimeAsync(20_000) })
     expect(screen.getByTitle('Refresh Epitaph catalog now')).not.toBeDisabled()
-    // A Dismiss button beside "Starting…" would read as finished.
-    expect(screen.queryByText('Starting Epitaph catalog refresh…')).not.toBeInTheDocument()
+    // A spinner that just stops is no account of what happened to the refresh.
     expect(screen.getByText(
       'Lost track of the Epitaph catalog refresh — check the Logs tab to see whether it is still running.'
     )).toBeInTheDocument()
@@ -367,7 +383,6 @@ describe('In Stock tab', () => {
     })
     await settle()
     expect(screen.getByTitle('Refreshing Relapse catalog…')).toBeDisabled()
-    expect(screen.getByText('Starting Relapse catalog refresh…')).toBeInTheDocument()
     expect(screen.queryByText(/already running/)).not.toBeInTheDocument()
   })
 
@@ -387,7 +402,7 @@ describe('In Stock tab', () => {
 
     fireEvent.click(screen.getByTitle('Refresh Epitaph catalog now'))
     await settle()
-    expect(screen.getByText('Starting Epitaph catalog refresh…')).toBeInTheDocument()
+    expect(screen.getByTitle('Refreshing Epitaph catalog…')).toBeDisabled()
 
     // A price refresh takes the banner over while the stock request is still
     // unanswered.
@@ -416,8 +431,9 @@ describe('In Stock tab', () => {
     expect(region).toBeEmptyDOMElement()
 
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    fireEvent.click(await screen.findByTitle('Refresh Epitaph catalog now'))
-    await waitFor(() => expect(region).toHaveTextContent('Starting Epitaph catalog refresh…'))
+    const priceRow = (await screen.findByText('Run price crawlers immediately.')).closest('tr') as HTMLElement
+    fireEvent.click(priceRow.querySelector('button') as HTMLButtonElement)
+    await waitFor(() => expect(region).toHaveTextContent('Price refresh requested for 3 records.'))
     // The same node, not a replacement -- that is the whole point.
     expect(screen.getByRole('status')).toBe(region)
   })
