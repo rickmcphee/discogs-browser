@@ -1981,22 +1981,42 @@ def _queue_stranded_after_seconds(conn, crawl_delay_seconds: float) -> float:
     )
 
 
-def _queue_eligible_crawler_exists(alias: str) -> str:
-    """SQL fragment: does any enabled crawler currently resolve for this queue
-    row? Mirrors get_eligible_crawlers' WHERE clause exactly. If the two ever
-    disagree, the Queue tab reports work no worker will do (or hides work one
-    will), so this is written against that function and not re-derived.
+# The crawler sets a queue row's eligibility is decided against, aggregated once
+# for the whole report rather than re-derived per row.
+#
+# Same insight _queue_fanout already runs on: eligibility barely depends on the
+# row. get_eligible_crawlers' WHERE clause splits enabled release crawlers by a
+# single row property -- whether the target is a release -- so there are exactly
+# two possible answers for the entire queue. Both mirror that function's WHERE
+# clause exactly and are written against it rather than re-derived: if the two
+# ever disagree, the Queue tab reports work no worker will do, or hides work one
+# will.
+#
+# COALESCE because ARRAY_AGG over no matching rows returns NULL, not '{}': with
+# every release crawler disabled, a NULL here would make `&&` return NULL and
+# quietly reclassify every narrowed row as unactionable-by-null rather than by
+# the empty set.
+_QUEUE_CRAWLER_SETS_SQL = """
+    SELECT
+        COALESCE(ARRAY_AGG(id) FILTER (
+            WHERE enabled AND crawler_type = 'release'), '{}'::int[]) AS release_ids,
+        COALESCE(ARRAY_AGG(id) FILTER (
+            WHERE enabled AND crawler_type = 'release'
+              AND NOT requires_discogs_release), '{}'::int[]) AS stock_ids
+    FROM crawlers
+"""
 
-    alias is always a literal chosen at the call site -- a table alias, never
-    request-derived -- the same contract _enabled_stock_source_exists carries."""
-    return f"""
-        EXISTS (
-            SELECT 1 FROM crawlers c
-            WHERE c.enabled AND c.crawler_type = 'release'
-              AND ({alias}.discogs_id IS NOT NULL OR NOT c.requires_discogs_release)
-              AND ({alias}.pending_crawler_ids IS NULL OR c.id = ANY({alias}.pending_crawler_ids))
-        )
-    """
+
+# The item_keys some enabled store still lists -- _enabled_stock_source_exists'
+# predicate, asked once for the whole queue instead of once per row. DISTINCT so
+# an item several stores carry stays one row and cannot fan out the LEFT JOIN
+# below into duplicate queue rows.
+_QUEUE_LIVE_STOCK_KEYS_SQL = """
+    SELECT DISTINCT si.item_key
+    FROM stock_items si
+    JOIN crawlers sc ON sc.id = si.crawler_id
+    WHERE sc.enabled
+"""
 
 
 # Rows a worker could claim right now, in the same terms claim_crawl_queue_batch
@@ -2005,15 +2025,37 @@ def _queue_eligible_crawler_exists(alias: str) -> str:
 # count_pending_crawl_queue_for_user already applies: a row whose narrowed
 # pending_crawler_ids are all disabled is still 'pending' in the table but
 # nothing will ever run for it, and _drain_one_batch marks it done on sight.
+#
+# Set-based throughout, and that is the point rather than a style preference.
+# Both predicates started as correlated subqueries, which the planner runs as
+# SubPlans once per queue row: a seq scan of crawlers per row for eligibility,
+# an index probe of stock_items per stock row for the source gate. At 50k
+# pending rows that measured ~228k buffer hits and 1.5s, against the 1.6s
+# per-statement budget routers/queue.py hands each of this report's queries --
+# so a real deployment's backlog tripped the statement timeout and the tab
+# rendered an error instead of the queue. Hoisting both out of the row loop
+# leaves crawlers scanned once and stock_items hashed once: same numbers, and
+# at 280k pending rows (100k of them stock) this went 1.4s -> 0.17s.
+#
+# actionable reads as get_eligible_crawlers returning at least one row: the
+# eligible set for this row's kind, intersected with pending_crawler_ids when
+# the row narrows it. `&&` is that intersection test, and is false against an
+# empty array on either side, matching the EXISTS it replaces.
 def _queue_row_state_sql() -> str:
+    eligible = "CASE WHEN cq.discogs_id IS NOT NULL THEN cs.release_ids ELSE cs.stock_ids END"
     return f"""
         SELECT cq.status,
                cq.discogs_id IS NOT NULL AS is_release,
                cq.claimed_at,
                cq.available_at > CURRENT_TIMESTAMP AS held,
-               (cq.item_key IS NULL OR {_enabled_stock_source_exists("cq.item_key")}) AS live,
-               {_queue_eligible_crawler_exists("cq")} AS actionable
+               (cq.item_key IS NULL OR live.item_key IS NOT NULL) AS live,
+               CASE WHEN cq.pending_crawler_ids IS NULL
+                    THEN cardinality({eligible}) > 0
+                    ELSE {eligible} && cq.pending_crawler_ids
+               END AS actionable
         FROM crawl_queue cq
+        CROSS JOIN ({_QUEUE_CRAWLER_SETS_SQL}) cs
+        LEFT JOIN ({_QUEUE_LIVE_STOCK_KEYS_SQL}) live ON live.item_key = cq.item_key
         WHERE cq.status <> 'done'
     """
 
