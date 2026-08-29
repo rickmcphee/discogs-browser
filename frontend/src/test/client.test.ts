@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { postCrawlStart, postStockSyncStart, getUserSettings, saveUserSettings, logout, getStock, getStockArtists, getReleases, getArtists, postPlexMatchStart, refreshCollection, openCrawlStream, openLogsStream, importRecommendationsCsv, listInvites, createInvite, getUserHiddenCrawlers, postUserHiddenCrawlers, saveStockItem, unsaveStockItem, checkHealth, getQueueSummary, getQueueNext, getNotifications, getNotificationsUnread, markNotificationsRead } from '../api/client'
+import { postCrawlStart, postStockSyncStart, getUserSettings, saveUserSettings, logout, getStock, getStockArtists, getReleases, getArtists, postPlexMatchStart, refreshCollection, openCrawlStream, openLogsStream, importRecommendationsCsv, listInvites, createInvite, getUserHiddenCrawlers, postUserHiddenCrawlers, saveStockItem, unsaveStockItem, getStockStats, checkHealth, getQueueSummary, getQueueNext, getNotifications, getNotificationsUnread, markNotificationsRead } from '../api/client'
 
 describe('crawl/user-settings client functions', () => {
   let fetchMock: ReturnType<typeof vi.fn>
@@ -120,6 +120,40 @@ describe('crawl/user-settings client functions', () => {
 
     await getStock({})
     expect(fetchMock.mock.calls[3][0]).not.toContain('library_scope')
+  })
+
+  it('getStockStats requests /stock/stats and serializes every filter it is given', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ total: 0, sources: [] }) })
+    await getStockStats({
+      search: 'rob zombie', artist: 'Rob Zombie', libraryScope: 'wantlist',
+      recommended: true, saved: true, overlapped: true, hiddenCrawlerIds: [3, 7],
+    })
+    const url = fetchMock.mock.calls[0][0] as string
+    expect(url).toContain('/stock/stats?')
+    // The names are the backend's, not the browser's: a rename on either side
+    // has to break something, and the component tests mock this wrapper away.
+    expect(url).toContain('search=rob+zombie')
+    expect(url).toContain('artist=Rob+Zombie')
+    expect(url).toContain('library_scope=wishlist')
+    expect(url).toContain('recommended=true')
+    expect(url).toContain('saved=true')
+    expect(url).toContain('overlapped=true')
+    expect(url).toContain('hidden_crawler_ids=3%2C7')
+  })
+
+  it('getStockStats omits every filter it is not given, rather than sending falsey ones', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ total: 0, sources: [] }) })
+    await getStockStats({ recommended: false, saved: false, overlapped: false, hiddenCrawlerIds: [] })
+    const url = fetchMock.mock.calls[0][0] as string
+    // A bare /stock/stats, not one carrying recommended=false: the backend
+    // reads these as flags, and a sent false is a filter the user never set.
+    expect(url).toMatch(/\/stock\/stats$/)
+  })
+
+  it('getStockStats sends no query string at all when called with no arguments', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ total: 0, sources: [] }) })
+    await getStockStats()
+    expect(fetchMock.mock.calls[0][0]).toMatch(/\/stock\/stats$/)
   })
 
   it('getStockArtists maps libraryScope to the backend value', async () => {

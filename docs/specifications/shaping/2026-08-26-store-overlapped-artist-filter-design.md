@@ -158,6 +158,8 @@ hidden-crawler set all still apply on top of it, which is what the shared
 it returns plain artist-name strings, so — as with `saved_only` — there is no
 per-row field for a join to populate.
 
+**Amendment (2026-08-28, branch `claude/store-stats-pie-chart-22pc3p`):** the `conditions` list shown here now lives in `db._stock_filter_sql`, which both functions call for their WHERE clause. The parameters and the clause itself are unchanged; only the place they are assembled moved, so that a third caller (`get_stock_source_counts`, backing `GET /api/stock/stats`) filters identically by construction rather than by a third copy staying in step. See [`2026-08-28-store-source-stats-design.md`](2026-08-28-store-source-stats-design.md).
+
 ### Router
 
 `GET /stock` and `GET /stock/artists` each gain `overlapped: bool =

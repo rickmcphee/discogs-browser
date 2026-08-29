@@ -200,6 +200,8 @@ join to feed. This mirrors how it already mirrors `recommended`: same
 WHERE-clause treatment, no join, no field
 (`backend/db.py:1590-1634`).
 
+**Amendment (2026-08-28, branch `claude/store-stats-pie-chart-22pc3p`):** the `conditions` list shown here now lives in `db._stock_filter_sql`, which both functions call for their WHERE clause. The parameters and the clause itself are unchanged; only the place they are assembled moved, so that a third caller (`get_stock_source_counts`, backing `GET /api/stock/stats`) filters identically by construction rather than by a third copy staying in step. See [`2026-08-28-store-source-stats-design.md`](2026-08-28-store-source-stats-design.md).
+
 ### Router
 
 `GET /stock` and `GET /stock/artists` each gain `saved: bool =
