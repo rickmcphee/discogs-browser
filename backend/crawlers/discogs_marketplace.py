@@ -19,29 +19,30 @@ _USER_AGENT = "DiscogsCollectionBrowser/1.0 +https://github.com/local/discogs-br
 # JS challenge clears, so the title is only meaningful after it settles.
 _CHALLENGE_TITLES = ("just a moment", "attention required", "checking your browser")
 
-# Discogs has restyled this page before and will again. Each of these is a
-# separate generation of the listings markup; `data-pricevalue` is the
-# longest-lived hook among them because Discogs's own currency-switching JS
-# reads it, so it is the one most likely to survive the next restyle.
-#
-# Every one of them is scoped to a marketplace listings container. An
-# unscoped `tr:has([data-pricevalue])` would also match a recommendation
-# carousel, and amazon.py already learned where that ends: a carousel price
-# becoming matches[0] overwrites the release with an unrelated price. A
-# restyle that moves listings out of all of these containers is meant to raise
-# rather than be caught by a broader net.
-_LISTING_CONTAINERS = ("#pjax_container", "table.mpitems", "[class*='marketplace']")
+# Only containers Discogs is actually known to use: `table.mpitems` is the
+# listings table, and `#pjax_container table` is what this crawler originally
+# shipped with. Nothing speculative -- an earlier revision guessed at
+# restyled markup with `[class*='marketplace']` and card rows, and the guess
+# could not be scoped: that container is the whole app in any plausible
+# layout, so a recommendation card nested under it parses as a listing and,
+# because the cheapest wins, becomes the release's price. A guessed selector
+# that half-works is worse here than none, and the live DOM cannot be
+# verified from a sandbox Cloudflare challenges on every request. A restyle
+# that moves listings out of these containers raises, which is the outcome
+# this crawler is built around: loud, with the release id and page title in
+# the message, rather than a wrong price shown as fact.
+_LISTING_CONTAINERS = ("table.mpitems", "#pjax_container table")
 
-# Every row shape carries a price node _parse_row() understands -- either the
-# legacy `td.item_price .price` node (whose price may predate
-# data-pricevalue) or the attribute itself -- the two shapes _parse_row()
-# reads, so a selector cannot match a row it has no way to parse. A bare "tbody tr" would break the readiness invariant
-# below: an unrelated or half-rendered row inside the container would satisfy
-# the wait while the listings were still on their way.
+# Every row shape carries a price node _parse_row() reads -- the legacy
+# `td.item_price .price` node (whose price may predate data-pricevalue) or
+# the attribute itself -- so a selector cannot match a row it has no way to
+# parse. A bare "tbody tr" would break the readiness invariant below: an
+# unrelated or half-rendered row inside the container would satisfy the wait
+# while the listings were still on their way.
 _ROW_SELECTORS = tuple(
     f"{container} {row}"
     for container in _LISTING_CONTAINERS
-    for row in ("tbody tr:has(td.item_price .price)", "tr:has([data-pricevalue])", "li:has([data-pricevalue])")
+    for row in ("tbody tr:has(td.item_price .price)", "tbody tr:has([data-pricevalue])")
 )
 
 # The listings region rendering with nothing in it is a real answer ("nothing
@@ -50,11 +51,20 @@ _ROW_SELECTORS = tuple(
 # can be comma-joined with the row selectors into one wait -- otherwise a
 # genuine no-listings page burns the full listings timeout before anything
 # recognises it, on what is a common path.
-_EMPTY_STATE = (
-    ".marketplace_empty",
-    ":is(h1,h2,h3,p,strong):has-text('No items are available')",
-    ":is(h1,h2,h3,p,strong):has-text('There are no items for sale')",
-    ":is(h1,h2,h3,p,strong):has-text('No items for sale')",
+#
+# Scoped to the container and required to be :visible, because this is the
+# destructive direction: an unrelated or hidden "no items for sale" string
+# anywhere on the page would otherwise end the wait and be read as a
+# confirmed miss, clearing the release's stored price while the listings were
+# still rendering.
+_EMPTY_STATE = tuple(
+    f"#pjax_container {state}:visible"
+    for state in (
+        ".marketplace_empty",
+        ":is(h1,h2,h3,p,strong):has-text('No items are available')",
+        ":is(h1,h2,h3,p,strong):has-text('There are no items for sale')",
+        ":is(h1,h2,h3,p,strong):has-text('No items for sale')",
+    )
 )
 
 # Deliberately no bare "[data-pricevalue]" here: a stray price element

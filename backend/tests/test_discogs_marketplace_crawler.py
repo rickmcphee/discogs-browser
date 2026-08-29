@@ -139,13 +139,24 @@ async def test_reported_url_is_the_search_url_not_the_landed_url(browser_page):
     assert results[0]["url"] == Crawler.search_url(RELEASE)
 
 
-async def test_card_markup_without_the_legacy_table_still_parses(browser_page):
-    """A restyle that drops the pjax table but keeps data-pricevalue."""
-    page = _FakePage(browser_page, "card_listings.html")
-    results = await Crawler().search(RELEASE, page)
+async def test_unverified_card_markup_raises_rather_than_being_guessed_at(browser_page, monkeypatch):
+    """A restyle to cards is unsupported on purpose.
 
-    assert [r["price"] for r in results] == [8.00, 21.00]
-    assert results[0]["condition"] == "Very Good (VG)"
+    An earlier revision tried to support it speculatively, scoping card rows
+    to `[class*='marketplace']`. That container is the whole app in any
+    plausible layout, so a recommendation card nested under it parsed as a
+    listing and -- the cheapest winning -- became the release's price. The
+    real markup cannot be checked from here, and a guessed selector that
+    half-works is worse than none: this raises instead, naming what to fix.
+    """
+    async def _stats(release_id):
+        return 124
+
+    monkeypatch.setattr(dm, "_release_num_for_sale", _stats)
+    page = _FakePage(browser_page, "card_listings.html")
+
+    with pytest.raises(RuntimeError, match="markup not recognised"):
+        await Crawler().search(RELEASE, page)
 
 
 async def test_rendered_empty_state_is_an_honest_no_match(browser_page):
@@ -327,15 +338,83 @@ async def test_a_browser_failure_is_not_laundered_into_a_confirmed_miss(browser_
 async def test_an_unparseable_row_does_not_shadow_a_later_supported_layout(browser_page):
     """A selector matching rows it cannot parse must not end the search.
 
-    Here a stray summary table matches the legacy row selector but yields no
-    price, while the real listings are cards a later selector handles. Keying
-    on "this selector matched" rather than "this selector parsed something"
-    would raise instead of returning the cards.
+    The first row's price is a dash with no data-pricevalue, so the legacy
+    selector matches it and parses nothing; the real listing is reached only
+    by the attribute selector that comes after. Keying on "this selector
+    matched" rather than "this selector parsed something" would raise instead
+    of returning it.
     """
-    page = _FakePage(browser_page, "stray_table_and_cards.html")
+    page = _FakePage(browser_page, "unparseable_then_parseable_rows.html")
     results = await Crawler().search(RELEASE, page)
 
     assert [r["price"] for r in results] == [11.00]
+
+
+async def test_a_carousel_nested_inside_the_container_is_not_a_listing(browser_page):
+    """Scoping is to the listings table, not merely to the page region.
+
+    The recommendations here sit inside `#pjax_container` alongside the real
+    table, so container-level scoping alone would not exclude them -- at
+    $0.99 the carousel entry would win on price and become the release's.
+    """
+    page = _FakePage(browser_page, "carousel_inside_container.html")
+    results = await Crawler().search(RELEASE, page)
+
+    assert [r["price"] for r in results] == [24.00]
+
+
+async def test_a_hidden_empty_state_does_not_end_the_wait_before_listings_render(browser_page, monkeypatch):
+    """The destructive direction, and the reason empty states require :visible.
+
+    A stale hidden no-items node is in the shell from the start and the
+    listings arrive afterwards. Matching it while they were still rendering
+    ends the readiness wait, reads as a confirmed miss, and returns the []
+    that clears the release's stored price.
+    """
+    async def _stats(release_id):
+        return 124
+
+    monkeypatch.setattr(dm, "_release_num_for_sale", _stats)
+    body = re.search(r"<body>(.*)</body>",
+                     (FIXTURES / "usa_listings.html").read_text(encoding="utf-8"),
+                     re.S).group(1)
+
+    class _HiddenEmptyThenListings(_FakePage):
+        async def goto(self, url, wait_until=None):
+            await self._real.set_content(
+                "<html><head><title>x</title></head><body>"
+                "<div id='pjax_container'>"
+                "<div class='marketplace_empty' style='display:none'>"
+                "<h2>No items are available for this release</h2></div>"
+                "</div><div id='shell'></div></body></html>",
+                wait_until="domcontentloaded",
+            )
+            asyncio.create_task(self._render_later())
+
+        async def _render_later(self):
+            await asyncio.sleep(0.25)
+            await self._real.evaluate(
+                "html => { document.getElementById('shell').innerHTML = html; }", body
+            )
+
+        async def wait_for_selector(self, selector, timeout=None, state=None):
+            await self._real.wait_for_selector(selector, timeout=timeout, state=state)
+
+    results = await Crawler().search(RELEASE, _HiddenEmptyThenListings(browser_page, "usa_listings.html"))
+
+    assert [r["price"] for r in results] == [6.50, 9.25, 12.99]
+
+
+async def test_empty_state_text_outside_the_container_is_not_a_confirmed_miss(browser_page, monkeypatch):
+    """An unrelated "No items for sale?" in a footer is not an answer."""
+    async def _stats(release_id):
+        return 124
+
+    monkeypatch.setattr(dm, "_release_num_for_sale", _stats)
+    page = _FakePage(browser_page, "empty_text_outside_container.html")
+
+    with pytest.raises(RuntimeError, match="markup not recognised"):
+        await Crawler().search(RELEASE, page)
 
 
 async def test_a_price_less_row_cannot_end_the_readiness_wait_early(browser_page, monkeypatch):
