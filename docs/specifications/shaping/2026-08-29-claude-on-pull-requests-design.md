@@ -196,14 +196,37 @@ review-event paths can be exercised there; the `issue_comment` path cannot, and
 only takes effect once merged. Nothing about that is specific to this change,
 but it is the kind of thing that reads as a bug the first time it is met.
 
-### What the head gate assumes about this
+### What the guard was shown to do, and what stays assumed
 
-The guard step only protects a run whose workflow file this repository controls.
-That holds for every case it needs to: a same-repository head is by definition a
-branch here, and GitHub does not run a fork-supplied workflow definition with the
-base repository's secrets, so a fork pull request cannot delete the guard by
-editing `claude.yml`. This was not exercised directly — no fork pull request was
-opened to test it — and is recorded as the assumption it is.
+Its decision logic was exercised directly, by extracting the `run:` block from
+the workflow and driving it with a stubbed `gh` for each answer the API can
+give:
+
+| Head reported by the API | Step exit | Output | Job summary |
+| --- | --- | --- | --- |
+| this repository | 0 | `same_repo=true` | — |
+| a fork | 0 | `same_repo=false` | written |
+| null, i.e. a deleted fork | 0 | `same_repo=false` | written |
+| an error | 1, the step fails | none | — |
+
+The last row is the fail-closed claim, and it holds for a reason worth stating
+because it is easy to get wrong when editing these steps: a step-level `if:`
+that is not `always()` or `failure()` carries an implicit `success()`, so a
+failed guard skips the checkout and the action rather than letting them run with
+the output unset.
+
+Two things remain assumed rather than shown, and no amount of local testing
+reaches either.
+
+That GitHub dispatches a fork's pull request to this workflow from a file this
+repository controls, rather than from the fork's own copy. It does not run a
+fork-supplied workflow definition with the base repository's secrets, which is
+foundational rather than particular to this workflow — but no fork pull request
+was opened here to watch it happen.
+
+And the `issue_comment` path, which by GitHub's own dispatch rules (see the
+section above) can only ever run from the default branch, so it is unobservable
+until this merges. That is a property of the event, not a gap in the testing.
 
 ## Why Copilot does not trigger this itself
 
