@@ -151,11 +151,13 @@ away — and worse, because it arrives on schedule and needs nobody to be presen
 ### It would be an AI approving an AI, with no third party anywhere
 
 The recent merges into `main` come from `claude/*` branches. The reviewer would
-be a model, the author would be a model, and the sole human account would appear
-nowhere in the record. Whatever the merits of model review — and this repository
-has good evidence for them, below — an approval is a claim that someone other
-than the author accepted the change. Two agents in a loop do not make that claim
-true; they make it unfalsifiable.
+be a model and so would the writer of the code. The human account would still be
+on the pull request as its opener and its merger — which is what makes this hard
+to see rather than what makes it harmless. What would be missing is not the name
+but the judgment: no person would have read the change and said so. Whatever the
+merits of model review — and this repository has good evidence for them, below —
+an approval is a claim that someone other than the author accepted the change.
+Two agents in a loop do not make that claim true; they make it unfalsifiable.
 
 ### It does not know what this repository's rules are about
 
@@ -256,12 +258,15 @@ merged it, and would be indistinguishable in the log from the former.
 
 ### The cost, stated
 
-`review_on_push: true` means every push draws a fresh review and can open fresh
-threads, so thread resolution adds a step per push rather than per pull request.
-The weekly promotion pull request targets `main`, so it is reviewed even though
-the individual Dependabot pull requests into `integration` are not, and the batch
-grows a resolution step it does not have today — on a pull request whose whole
-purpose is to be cheap. That is a real cost and it is the correct one to pay: the batch
+`review_on_push: true` means every push draws a fresh review, so on a push whose
+review carries an inline finding, thread resolution adds a step per push rather
+than per pull request. On a push whose review carries none — or only body
+feedback, which these rounds suggest is the ordinary case — it adds nothing,
+because there is no thread to resolve. The weekly promotion pull request targets
+`main`, so it is reviewed even though the individual Dependabot pull requests
+into `integration` are not, and the batch grows a resolution step on any round
+that produces an inline finding — on a pull request whose whole purpose is to be
+cheap. That is a real cost where it lands, and the correct one to pay: the batch
 is the change that reaches production.
 
 ## Non-goals
@@ -281,10 +286,9 @@ is the change that reaches production.
 - The answer to "should Copilot approve pull requests" is recorded as no, with
   the mechanism rather than the sentiment as the reason, so that a future
   session meeting the toggle does not have to re-derive it.
-- The two ruleset gaps found while answering it —
+- The ruleset gaps found while answering it —
   `required_review_thread_resolution`, `dismiss_stale_reviews_on_push` and
-  `require_last_push_approval` — are
-  written down whether or not they are acted on. Both are live today and
-  neither depends on Copilot ever gaining an approval.
+  `require_last_push_approval` — are written down whether or not they are acted
+  on. All are live today, and none depends on Copilot ever gaining an approval.
 - If the promotion pull request is ever observed merging with an approval older
-  than its head commit, that is this gap, not a new one.
+  than its head commit, that is the stale-approval gap above, not a new one.
