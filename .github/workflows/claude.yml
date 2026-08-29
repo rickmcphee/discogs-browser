@@ -8,11 +8,30 @@ name: Claude Assistant
 # request triggers were withheld when this workflow was added.
 #
 # They are here now behind two gates, because untrusted content arrives by two
-# routes. Code: the `same-repo head` step below resolves the pull request's head
-# repository and skips everything after it unless that head lives in this
-# repository. Branches this action pushes (`claude/*`) and branches the owner
-# pushes qualify; a fork's head never does. Pushing to one needs write access,
-# so the diff is a trusted person's work.
+# routes. Code: the step below skips the run unless the pull request's head is
+# in this repository *and* a trusted author opened it. Both halves are needed —
+# pushing a branch here takes write access, but opening a pull request between
+# two branches that already exist pushes nothing, so the head says who wrote the
+# diff and not who wrote the body wrapped round it. The body reaches Claude on a
+# path the actor filter below does not cover.
+#
+# How much that step is carrying depends on the event, and the difference is the
+# thing to read before touching it:
+#
+#   issue_comment          runs THIS file, from the default branch, with this
+#                          repository's secrets and `contents: write` — even when
+#                          the pull request is a fork's. The step below is the
+#                          whole boundary there. Nothing else stops it.
+#
+#   pull_request_review*   runs the pull request's own copy of this file, which a
+#                          fork controls — but GitHub passes it no secrets and a
+#                          read-only token, so it cannot reach Claude or write
+#                          anything. There the step is belt to GitHub's braces.
+#
+# So do not read "a fork gets no credentials" as covering all three. It covers
+# the review events. On `issue_comment` this step is load-bearing, and deleting
+# it would hand a fork's pull request to Claude with the OAuth secret live. See
+# "Which gate is load-bearing depends on the event" in the design.
 #
 # Prose: a same-repository head says nothing about who may comment, and on a
 # public repository that is anyone. `include_comments_by_actor` on the action
@@ -113,15 +132,27 @@ jobs:
           PR_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
         run: |
           set -euo pipefail
-          head="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.repo.full_name // ""')"
-          if [ "$head" = "$GITHUB_REPOSITORY" ]; then
+          pr="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")"
+          head="$(jq -r '.head.repo.full_name // ""' <<<"$pr")"
+          assoc="$(jq -r '.author_association // ""' <<<"$pr")"
+
+          reason=""
+          [ "$head" = "$GITHUB_REPOSITORY" ] \
+            || reason="its head is in \`${head:-an unknown repository}\`, not \`${GITHUB_REPOSITORY}\`"
+          case "$assoc" in
+            OWNER|MEMBER|COLLABORATOR) ;;
+            *) reason="${reason:+$reason, and }it was opened by a \`${assoc:-UNKNOWN}\` author" ;;
+          esac
+
+          if [ -z "$reason" ]; then
             echo "same_repo=true" >> "$GITHUB_OUTPUT"
           else
             echo "same_repo=false" >> "$GITHUB_OUTPUT"
             printf '%s\n' \
-              "Skipped: pull request #${PR_NUMBER} has its head in \`${head:-an unknown repository}\`," \
-              "not \`${GITHUB_REPOSITORY}\`. Claude only runs on pull requests whose branch lives in" \
-              "this repository — see \`docs/specifications/shaping/2026-08-29-claude-on-pull-requests-design.md\`." \
+              "Skipped: pull request #${PR_NUMBER} because ${reason}." \
+              "Claude only runs on pull requests whose branch lives in this repository *and*" \
+              "which a trusted author opened — see" \
+              "\`docs/specifications/shaping/2026-08-29-claude-on-pull-requests-design.md\`." \
               >> "$GITHUB_STEP_SUMMARY"
           fi
 
