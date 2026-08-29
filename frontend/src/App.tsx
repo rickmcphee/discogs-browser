@@ -138,9 +138,17 @@ export default function App() {
   // bar*, which both write and which Settings lets them contend for -- a stock
   // start and a price refresh can be in flight at once. Without a shared
   // token, an older stock rejection lands on top of a newer price refresh's
-  // "Starting…" and clears its busy state while its request is still running.
+  // "Starting…" while its request is still running.
   // Cleanup of a claim's own state stays on the per-operation guard, since a
   // request that lost the banner must still release the button it took.
+  //
+  // Only the price path advances it, because only the price path writes on
+  // click. A stock click reads it instead: reading is enough to be invalidated
+  // by a later price click, which is the case above, and advancing it would
+  // silence a price response the stock click is not going to replace -- its
+  // own start writes nothing, so the "Starting…" line would stay up, spinning
+  // and undismissable, with the timer that could have retired it already
+  // cancelled by that discarded response's own cleanup.
   const latestStatusOwnerSeq = useRef(0)
   const latestHasJudgedItemsSeq = useRef(0)
   const [serverReady, setServerReady] = useState(false)
@@ -780,7 +788,7 @@ export default function App() {
   // request, and the real progress that follows.
   const startStockSync = useCallback(async (crawlerId?: number) => {
     const seq = ++latestStockSyncStartSeq.current
-    const statusSeq = ++latestStatusOwnerSeq.current
+    const statusSeq = latestStatusOwnerSeq.current
     const ownsStatus = () => statusSeq === latestStatusOwnerSeq.current
     setStockSyncStarting(crawlerId ?? 'all')
     try {

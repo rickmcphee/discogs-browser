@@ -313,6 +313,42 @@ describe('In Stock tab', () => {
     expect(screen.queryByText(/Lost track of/)).not.toBeInTheDocument()
   })
 
+  // A stock click no longer writes to the banner, so it must not take the
+  // banner from a price refresh that did: the price response is then thrown
+  // away by !ownsStatus() while its own "Starting…" line stays up, and its
+  // finally has already cleared priceRefreshStarting, cancelling the one timer
+  // that could have replaced it. busyStatusMessage still holds that line, so
+  // it spins with no Dismiss until a reload.
+  it('lets a price refresh report its own outcome when a silent stock claim is taken behind it', async () => {
+    vi.useFakeTimers()
+    getCrawlers.mockResolvedValue([CATALOG_CRAWLER])
+    let answerPrice: (value: unknown) => void = () => {}
+    postCrawlStart.mockReturnValue(new Promise((r) => { answerPrice = r }))
+    render(<App />)
+    const settle = () => act(async () => {})
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await settle()
+
+    const priceRow = screen.getByText('Run price crawlers immediately.').closest('tr') as HTMLElement
+    fireEvent.click(priceRow.querySelector('button') as HTMLButtonElement)
+    await settle()
+    expect(screen.getByText('Starting price refresh for records with no price yet…')).toBeInTheDocument()
+
+    // The store's Refresh is clicked while the price POST is still in flight,
+    // and its own events never arrive.
+    fireEvent.click(screen.getByTitle('Refresh Epitaph catalog now'))
+    await settle()
+
+    answerPrice({ enqueued: 3 })
+    await settle()
+    await act(async () => { await vi.advanceTimersByTimeAsync(20_000) })
+
+    expect(screen.getByText('Price refresh requested for 3 records.')).toBeInTheDocument()
+    expect(screen.queryByText('Starting price refresh for records with no price yet…')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Dismiss/i })).toBeInTheDocument()
+  })
+
   // The expiry must not clear or talk over whatever did arrive in the meantime.
   it('leaves a real progress message alone when the claim expires behind it', async () => {
     vi.useFakeTimers()

@@ -328,7 +328,12 @@ longer has, and both moved rather than went:
 click. It is deliberately still a *click*-ordered guard rather than a
 write-ordered one: an older stock rejection landing on top of a newer price
 refresh's notice is the case it exists for, and that case does not depend on
-the stock click having written anything.
+the stock click having written anything. **(2026-08-29: half right. The case
+does not depend on the stock click having *written*, but it does not depend on
+it *bumping* either — reading the counter is enough to be invalidated by a
+later price click. Bumping cost something: it silenced a price response the
+stock click was never going to replace. `startStockSync` reads now. See the
+third amendment.)**
 
 Tests: `frontend/src/test/inStockTab.test.tsx` — a claimed store refresh leaves
 the live region empty and the real `stock_sync_started` progress still lands
@@ -429,3 +434,51 @@ the button is released *and* the banner stays empty; the two-claim interleaving
 test is removed (see the note at the end of the second amendment); the test
 that a real progress message survives the expiry is kept, since it is now the
 structural guarantee rather than a guarded one.
+
+### Follow-up (2026-08-29): `startStockSync` reads the status owner rather than advancing it
+
+Copilot's review on the third amendment's PR found that silencing the stock
+expiry left a reachable stuck banner, and it was right. Reproduced as a test
+before fixing.
+
+`startStockSync` bumped `latestStatusOwnerSeq` on click, so a stock click
+during a price refresh's flight took the banner. When the price response then
+landed it was dropped by `!ownsStatus()` — while its own `Starting…` line was
+still on screen. `startCrawl`'s `finally` clears `priceRefreshStarting`
+regardless of ownership (correctly: the request settled, so the button must be
+released), which cancels the price claim's timer. So nothing was left that
+could retire that line: the response that would have replaced it was thrown
+away, and the expiry that would have replaced it was cancelled.
+`busyStatusMessage` still held it, so it spun with no Dismiss until a reload.
+
+Until the third amendment the stock expiry's own lost-track write happened to
+retire it. That was luck, not design — it wrote a message about the *stock*
+refresh to clear a *price* refresh's line — and removing the message exposed
+the gap rather than creating it.
+
+The fix is that `startStockSync` now *reads* `latestStatusOwnerSeq` instead of
+advancing it. Reading is enough for the case the guard exists for: a later
+price click still advances the counter, so an older stock rejection still finds
+its captured value stale and stays quiet
+(`inStockTab.test.tsx`, "does not let an older stock rejection overwrite a
+newer price refresh notice", unchanged and still passing). What reading drops
+is the half that was never argued for — invalidating a *newer* writer on behalf
+of a click that writes nothing.
+
+The rule this settles: a path takes the banner on click only if it writes to
+the banner on click. The price path does; the stock path stopped doing so at
+the first amendment, and this is the consequence that was missed then.
+
+One accepted behaviour change. Price click, stock click, then both responses:
+both may now write, so arrival order decides rather than click order, where
+before the stock rejection won and the price outcome was dropped. Both
+messages are true, the stock rejection is also visible on its own button, and
+the alternative was the stuck banner above — a stale outcome briefly overwritten
+beats a placeholder that never resolves.
+
+`frontend/src/test/inStockTab.test.tsx` gains the interleaving as a regression
+test — price refresh unanswered, store Refresh clicked behind it, price
+response released, stock events never arriving — asserting the price outcome
+reaches the banner and the banner becomes dismissible. It fails against the
+third amendment's code on exactly that assertion, showing the stuck
+`Starting…` line instead.
