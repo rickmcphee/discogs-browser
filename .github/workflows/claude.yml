@@ -1,33 +1,41 @@
 name: Claude Assistant
 
+# Issue events only, deliberately. This repository is public, so anyone can
+# open a pull request from a fork, and a run triggered on a pull request works
+# against that contributor's head. The action restores `.claude/` from the base
+# branch, but a `SessionStart` hook there invokes `scripts/cloud-setup.sh`, and
+# that script stays at the PR head — so a maintainer typing `@claude` on a
+# hostile PR would execute the contributor's shell with this job's write token
+# and the OAuth secret in its environment. Adding `pull_request_review`,
+# `pull_request_review_comment`, or letting `issue_comment` through on a pull
+# request all reopen that path. Do not add them until the hook is self-contained
+# (https://github.com/anthropics/claude-code-action/blob/main/docs/security.md).
 on:
   issues:
     types: [opened, labeled]
   issue_comment:
     types: [created]
-  pull_request_review_comment:
-    types: [created]
-  pull_request_review:
-    types: [submitted]
 
 jobs:
   claude:
     # There is no Claude account to put in this repository's Assignees field,
     # so `assignee_trigger` has no username to name. The `claude` label is the
     # hand-it-over gesture instead, and needs no account to exist.
+    #
+    # `issue_comment` fires on pull requests too — GitHub models a PR as an
+    # issue — so the comment clause excludes anything carrying `pull_request`.
     if: >-
       (github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'claude') ||
       (github.event_name == 'issues' && github.event.action == 'opened' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude'))) ||
-      ((github.event_name == 'issue_comment' || github.event_name == 'pull_request_review_comment') && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude'))
+      (github.event_name == 'issue_comment' && !github.event.issue.pull_request && contains(github.event.comment.body, '@claude'))
     # Scoped to the job, not the workflow: a workflow-level group is entered by
-    # every comment event before the `if` above is evaluated, and GitHub keeps
+    # every subscribed event before the `if` above is evaluated, and GitHub keeps
     # only one pending run per group, cancelling the previous one. An ordinary
     # comment would then evict a queued Claude request. Skipped jobs never enter
     # a job-level group, so only real requests serialise here — and between two
     # of those the later one still cancels the queued earlier one.
     concurrency:
-      group: claude-${{ github.event.issue.number || github.event.pull_request.number }}
+      group: claude-${{ github.event.issue.number }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
