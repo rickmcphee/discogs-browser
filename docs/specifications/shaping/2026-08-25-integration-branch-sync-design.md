@@ -193,7 +193,30 @@ Now `main` moving is exactly what strands a main-based PR, so skipping that even
 would leave the daily cron as the only thing catching them up — reintroducing,
 for `main`, the up-to-a-day lag this job exists to close.
 
-One consequence worth stating: the two base queries share the job's `set -e`, so
+**The promotion PR is excluded, and it is the one PR that must be.**
+`integration-promote.yml` opens it `--base main --head integration`, so widening
+`refresh` to `main` brought a PR into its scope whose *head* is a protected
+branch. `update-branch` on that PR pushes a merge commit straight onto
+`integration`, which `integration-branch-protection` rejects outright — it
+requires a pull request and names no bypass actors, so the call fails for every
+identity, the sync app included. The job would collect that failure and exit 1
+on every run for as long as the promotion PR is open and `main` has moved:
+weekly, and for days at a time while it waits on `main`'s required approving
+review. A job that is red every Tuesday for a benign reason is a job nobody
+reads, which costs the third goal above rather than serving it.
+
+It is excluded rather than tolerated as a known failure, because nothing is
+wrong when it happens: `sync` is what makes that PR's head current, by merging
+`main` into `integration` through a PR of its own — also the only route that
+keeps `git merge-base` current, which is why `integration` is merge-only. The
+exclusion is scoped to same-repository heads, so a fork PR that merely has a
+branch named `integration` is an ordinary PR and still gets refreshed.
+
+(Found by Copilot's review on the PR that made this change, not by the change's
+own testing — the interaction is invisible unless you are holding both
+workflows at once.)
+
+One further consequence: the two base queries share the job's `set -e`, so
 a transient API failure listing one base now aborts before the other is listed.
 That is deliberate and unchanged in spirit — the alternative is the silent no-op
 the third goal above exists to forbid — but it does mean a failure on `main`'s
