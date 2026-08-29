@@ -288,11 +288,23 @@ async def test_search_sorts_unpriced_matches_last_without_comparing_none_to_none
     # Two unpriced listings tie on the is-None flag, so the sort key's second
     # element is reached for both -- a bare price there would raise.
     _mock([
-        _product("Geese - Getting Killed [LP]", price=None),
-        _product("Geese - Getting Killed [Clear Vinyl] [LP]", price=None),
-        _product("Geese - Getting Killed [Indie LP]", price="24.99"),
+        _product("Geese - Getting Killed [LP]", price=None, handle="a-lp"),
+        _product("Geese - Getting Killed [Clear Vinyl] [LP]", price=None, handle="b-lp"),
+        # price == price_max, so this one is priced without a lookup.
+        _product("Geese - Getting Killed [Indie LP]", price="24.99", handle="c-lp"),
     ])
+    # An absent price leaves the range unknown, so both take the lookup. Their
+    # variants are buyable but unreadably priced, which is what keeps the row
+    # unpriced rather than dropped.
+    for handle in ("a-lp", "b-lp"):
+        respx.get(f"https://waterloorecords.com/products/{handle}.js").mock(
+            return_value=httpx.Response(200, json={"variants": [
+                {"title": "New", "price": None, "available": True},
+            ]})
+        )
+
     results = await Crawler().search({"artist": "Geese", "title": "Getting Killed"}, None)
+
     assert [r["price"] for r in results] == [24.99, None, None]
 
 
@@ -405,3 +417,69 @@ async def test_search_matches_an_album_whose_own_title_contains_a_delimiter():
     results = await Crawler().search({"artist": "Various", "title": "Live: In Concert"}, None)
 
     assert [r["price"] for r in results] == [31.99]
+
+
+@respx.mock
+async def test_search_falls_through_to_the_next_rank_when_the_closest_is_sold_out():
+    """A rank group holding nothing buyable must not end the search.
+
+    Stopping at the best *matched* rank reported the record as absent whenever
+    every base pressing had sold out since the suggest hit, hiding a qualified
+    edition still in stock.
+    """
+    base = _product("The Beatles - Abbey Road [LP]", price="24.99",
+                    price_max="29.99", handle="abbey-road-lp")
+    edition = _product("The Beatles - Abbey Road: Anniversary Edition [LP]",
+                       price="34.99", handle="abbey-road-anniv-lp")
+    _mock([base, edition])
+    # Rank 0, but every variant has gone.
+    respx.get("https://waterloorecords.com/products/abbey-road-lp.js").mock(
+        return_value=httpx.Response(200, json={"variants": [
+            {"title": "New", "price": 2499, "available": False},
+        ]})
+    )
+
+    results = await Crawler().search({"artist": "Beatles, The", "title": "Abbey Road"}, None)
+
+    # The rank-1 edition, which is now the closest buyable match.
+    assert [r["price"] for r in results] == [34.99]
+    assert results[0]["url"].endswith("/abbey-road-anniv-lp")
+
+
+@respx.mock
+async def test_search_does_not_reach_a_worse_rank_while_the_closest_is_buyable():
+    # The fall-through is a fallback, not a widening: a rank-1 candidate must
+    # still cost no request while a base pressing is in stock.
+    base = _product("The Beatles - Abbey Road [LP]", price="24.99", handle="abbey-road-lp")
+    edition = _product("The Beatles - Abbey Road: Anniversary Edition [LP]",
+                       price="19.99", price_max="39.99", handle="abbey-road-anniv-lp")
+    _mock([base, edition])
+    worse = respx.get("https://waterloorecords.com/products/abbey-road-anniv-lp.js")
+
+    results = await Crawler().search({"artist": "Beatles, The", "title": "Abbey Road"}, None)
+
+    assert [r["price"] for r in results] == [24.99]
+    assert worse.call_count == 0
+
+
+@respx.mock
+async def test_search_resolves_the_variant_price_when_the_low_bound_is_unreadable():
+    # An unreadable price_min leaves the range as unknown as a missing
+    # price_max does. Returning early on it published an unpriced row while an
+    # available variant carried a usable price -- and skipped the availability
+    # check along with it.
+    handle = "no-low-lp"
+    product = _product("Geese - Getting Killed [LP]", price="24.99", handle=handle)
+    product["price"] = None
+    product["price_min"] = "not-a-number"
+    _mock([product])
+    variants = respx.get(f"https://waterloorecords.com/products/{handle}.js").mock(
+        return_value=httpx.Response(200, json={"variants": [
+            {"title": "New", "price": 2799, "available": True},
+        ]})
+    )
+
+    results = await Crawler().search({"artist": "Geese", "title": "Getting Killed"}, None)
+
+    assert variants.call_count == 1
+    assert [r["price"] for r in results] == [27.99]

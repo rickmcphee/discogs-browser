@@ -153,19 +153,30 @@ class Crawler:
             # below and the fleet reads matches[0], so a worse-ranked candidate
             # could never be used -- and pricing it would spend a request on
             # the store for an answer nobody reads.
-            best = min(rank for rank, _, _ in ranked)
+            # Closest rank first, falling through when a group turns out to
+            # hold nothing buyable. Stopping at the best *matched* rank would
+            # report the record as absent whenever every base pressing had sold
+            # out since the suggest hit, hiding a qualified edition that is
+            # still in stock -- the store having "Abbey Road: Anniversary
+            # Edition" but not plain "Abbey Road". The first group that yields
+            # a listing wins, so a worse-ranked candidate is still only ever
+            # reached when nothing closer is buyable, and no request is spent
+            # on one until then.
             priced = []
-            for rank, product, url in ranked:
-                if rank != best:
-                    continue
-                price = await self._resolve_price(product, url, client, delay)
-                if price is _UNAVAILABLE:
-                    log.info(
-                        "[Waterloo Records] %s reported available but has no "
-                        "buyable variant; skipping", url,
-                    )
-                    continue
-                priced.append((url, price))
+            for rank in sorted({rank for rank, _, _ in ranked}):
+                for candidate_rank, product, url in ranked:
+                    if candidate_rank != rank:
+                        continue
+                    price = await self._resolve_price(product, url, client, delay)
+                    if price is _UNAVAILABLE:
+                        log.info(
+                            "[Waterloo Records] %s reported available but has no "
+                            "buyable variant; skipping", url,
+                        )
+                        continue
+                    priced.append((url, price))
+                if priced:
+                    break
 
             listings = [
                 {
@@ -254,16 +265,17 @@ class Crawler:
         variant costs the same, so whichever is available costs that, and no
         second request is worth making.
         """
+        # Only two *equal known* bounds prove the available variant costs this.
+        # Either bound missing or malformed leaves the range unknown, which is
+        # not the same as uniform, so it takes the lookup rather than the
+        # shortcut: shortcutting on an unknown range would republish exactly
+        # the sold-out minimum this exists to avoid, and returning early on an
+        # unreadable low bound would publish an unpriced row while an available
+        # variant carried a perfectly good price -- and would skip the
+        # availability check below along with it.
         low = cls._decimal(product, "price_min", "price")
-        if low is None:
-            return None
-        # Only *equal* known bounds prove the available variant costs `low`. A
-        # missing or malformed price_max is an unknown range, not a uniform
-        # one, so it takes the lookup rather than the shortcut -- shortcutting
-        # there would republish exactly the sold-out minimum this exists to
-        # avoid.
         high = cls._decimal(product, "price_max")
-        if high is not None and low == high:
+        if low is not None and low == high:
             return low
 
         # _paced_search spaces separate search() calls, not the requests inside
