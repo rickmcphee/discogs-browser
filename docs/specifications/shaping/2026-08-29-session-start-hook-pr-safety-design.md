@@ -91,15 +91,20 @@ first:
 3. **No `.claude-pr/` directory** — the only check keyed to the restore itself
    rather than to the environment around it. Before overwriting the sensitive
    paths, the action snapshots the pull request's own copies of them into
-   `.claude-pr/`; the directory existing means a PR head is checked out. A pull
-   request that creates the directory itself only makes this refuse, so the
-   check has no fail-open direction.
+   `.claude-pr/`; the directory existing means a PR head is checked out.
+   Best-effort, and deliberately last: the action snapshots only the paths the
+   head still has, so a pull request that deletes every one of them leaves
+   nothing to find. It cannot fail the other way — a pull request that creates
+   the directory only makes the launcher refuse — but it is not a substitute for
+   either check above.
 
-Each is independently sufficient today. They are layered because they fail in
-different directions: the first is an absence (a variable not being set), the
-second an invariant of the runner, the third an artefact of the action's
-implementation that could be renamed. None of them can be reached from a PR head,
-because all of them are inside `.claude/`.
+The first two are each sufficient on their own against `claude-code-action` as
+it stands. The third is not, and is there for the case where both of those have
+failed. They are layered because they fail in different directions: the first is
+an absence (a variable not being set), the second an invariant of the runner,
+the third an artefact of the action's implementation that a pull request can
+suppress and a future release could rename. None of them can be reached from a
+PR head, because all of them are inside `.claude/`.
 
 `cloud-setup.sh` keeps its own `CLAUDE_CODE_REMOTE` check and `--force` flag.
 That check is now a convenience for hand invocation, not a security boundary —

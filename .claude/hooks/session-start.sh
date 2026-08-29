@@ -39,11 +39,17 @@ set -e
 # can influence it.
 [ -z "${GITHUB_ACTIONS:-}" ] || exit 0
 
-# Third layer, and the only one keyed to the restore itself rather than to the
-# environment around it: before overwriting the sensitive paths, the action
-# snapshots the PR's own copies of them into `.claude-pr/`. That directory
-# existing means a PR head is checked out. A pull request that creates it itself
-# only makes this refuse, so the check has no fail-open direction.
+# Third layer: the only one keyed to the restore itself rather than to the
+# environment around it. Before overwriting the sensitive paths, the action
+# snapshots the PR's own copies of them into `.claude-pr/`, so that directory
+# existing means a PR head is checked out.
+#
+# Best-effort, and deliberately last. The action snapshots only the paths the
+# head still has, so a pull request that deletes every one of them -- `.claude/`,
+# `CLAUDE.md`, `.mcp.json` and the rest -- leaves nothing here to find. This
+# catches a case the two checks above would both have to fail for; it is not a
+# substitute for either. It cannot fail the other way: a pull request that
+# creates the directory itself only makes this refuse.
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 [ ! -e "$REPO_ROOT/.claude-pr" ] || exit 0
 

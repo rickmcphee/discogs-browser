@@ -104,18 +104,36 @@ def test_the_hook_command_stays_inside_the_restored_tree():
         assert "scripts/" not in command, command
 
 
+def _git_repo_available():
+    try:
+        subprocess.run(
+            ["git", "rev-parse", "--git-dir"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            timeout=10,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return True
+
+
 def test_the_launcher_is_tracked_by_git():
     # `.claude/*` is gitignored. The action restores base content with
     # `git checkout origin/<base> -- .claude`, which only reaches tracked files,
     # so an untracked launcher would be deleted on a PR and never restored --
     # leaving the hook pointing at nothing.
-    try:
-        tracked = subprocess.run(
-            ["git", "ls-files", "--error-unmatch", ".claude/hooks/session-start.sh"],
-            cwd=REPO_ROOT,
-            capture_output=True,
-            timeout=10,
-        )
-    except (OSError, subprocess.SubprocessError):
+    #
+    # Repository presence is probed separately rather than inferred from a
+    # non-zero `ls-files`, which is also what an untracked launcher looks like:
+    # catching that in the skip would swallow exactly the defect this test
+    # exists to catch. Same split as test_version.py's git test.
+    if not _git_repo_available():
         pytest.skip("no git repository available")
+    tracked = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", ".claude/hooks/session-start.sh"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        timeout=10,
+    )
     assert tracked.returncode == 0, tracked.stderr.decode()
