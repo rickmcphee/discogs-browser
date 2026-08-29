@@ -131,6 +131,12 @@ toggle rather than assuming it: nothing in this design requires `main` to
 accept merge commits, and letting it silently start doing so would put merge
 commits into the history this whole arrangement keeps linear.
 
+Checked 2026-08-29, reading the branch's rules anonymously: `main`'s ruleset
+pins `allowed_merge_methods: ["squash"]`. The repo-wide toggle has not loosened
+it. Recorded in
+[`2026-08-29-copilot-pr-approval-design.md`](2026-08-29-copilot-pr-approval-design.md),
+which dumps that ruleset in full for a different reason.
+
 ## Is there anything to sync?
 
 One question, answered from ancestry:
