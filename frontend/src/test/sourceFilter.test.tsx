@@ -131,6 +131,23 @@ describe('SourceFilter', () => {
     expect(onChange).toHaveBeenCalledWith([])
   })
 
+  it('clicking Clear all calls onChange with every crawler id', () => {
+    const onChange = renderFilter({ hiddenCrawlerIds: [] })
+    openDropdown()
+    fireEvent.click(screen.getByText('Clear all'))
+    expect(onChange).toHaveBeenCalledWith(expect.arrayContaining([1, 2, 3, 4]))
+    expect((onChange as any).mock.calls[0][0].length).toBe(4)
+  })
+
+  it('disables Clear all and does not call onChange while crawlers have not loaded yet', () => {
+    const onChange = renderFilter({ crawlers: [], hiddenCrawlerIds: [2, 3, 4] })
+    openDropdown()
+    const clearAll = screen.getByText('Clear all')
+    expect(clearAll).toBeDisabled()
+    fireEvent.click(clearAll)
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
   it('closes the dropdown when clicking outside it', () => {
     render(
       <div>
