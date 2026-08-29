@@ -1,5 +1,6 @@
 import asyncio
 import importlib
+import time
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -179,6 +180,41 @@ def test_configure_schedules_clears_jobs_when_config_has_no_schedules(_clear_job
     assert scheduler._scheduler.get_job("stock_sync") is None
 
 
+# The loop tests below wait on the loop's own progress, never on a fixed
+# wall-clock budget. `await asyncio.sleep(0.05)` followed by `assert
+# len(calls) > 1` asserts how fast the host is: under full-suite load a single
+# `asyncio.sleep(0.001)` iteration plus event-loop scheduling can eat most of
+# that window, so the second iteration hasn't happened yet and the test fails
+# with nothing broken (observed 2026-08-29). This timeout is a stuck-loop
+# backstop rather than a budget -- a working loop satisfies these waits in
+# milliseconds, and it stays far below the 3600s interval that
+# test_price_drop_sweep_loop_sweeps_before_its_first_sleep relies on to prove
+# the loop doesn't sleep first.
+_LOOP_PROGRESS_TIMEOUT = 5.0
+
+
+async def _wait_for_calls(calls, count, task, timeout=_LOOP_PROGRESS_TIMEOUT):
+    """Wait until the loop under test has recorded at least `count` calls.
+
+    `calls` is appended from a worker thread on the to_thread-based loops, so
+    this polls its length rather than waiting on an asyncio.Event the loop
+    would have to set across threads.
+    """
+    deadline = time.monotonic() + timeout
+    while len(calls) < count:
+        if task.done():
+            raise AssertionError(
+                f"loop exited after {len(calls)} call(s), expected at least "
+                f"{count}: {task.exception()!r}"
+            )
+        if time.monotonic() >= deadline:
+            task.cancel()
+            raise AssertionError(
+                f"loop made {len(calls)} call(s) in {timeout}s, expected at least {count}"
+            )
+        await asyncio.sleep(0.005)
+
+
 async def test_schedule_resync_loop_reapplies_the_latest_config(monkeypatch):
     import main
 
@@ -188,7 +224,7 @@ async def test_schedule_resync_loop_reapplies_the_latest_config(monkeypatch):
     monkeypatch.setattr(main, "_configure_schedules", lambda cfg: seen.append(cfg))
 
     task = asyncio.create_task(main._schedule_resync_loop())
-    await asyncio.sleep(0.05)
+    await _wait_for_calls(seen, 1, task)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
@@ -211,7 +247,7 @@ async def test_schedule_resync_loop_survives_a_failing_iteration(monkeypatch):
     monkeypatch.setattr(main, "_configure_schedules", _flaky)
 
     task = asyncio.create_task(main._schedule_resync_loop())
-    await asyncio.sleep(0.05)
+    await _wait_for_calls(calls, 2, task)
     still_running = not task.done()
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -243,7 +279,7 @@ async def test_price_drop_sweep_loop_sweeps_before_its_first_sleep(monkeypatch):
     monkeypatch.setattr(main, "_sweep_expired_price_drops", lambda: swept.append(1))
 
     task = asyncio.create_task(main._price_drop_sweep_loop())
-    await asyncio.sleep(0.05)
+    await _wait_for_calls(swept, 1, task)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
@@ -265,7 +301,7 @@ async def test_price_drop_sweep_loop_survives_a_failing_iteration(monkeypatch):
     monkeypatch.setattr(main, "_sweep_expired_price_drops", _flaky)
 
     task = asyncio.create_task(main._price_drop_sweep_loop())
-    await asyncio.sleep(0.05)
+    await _wait_for_calls(calls, 2, task)
     still_running = not task.done()
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
