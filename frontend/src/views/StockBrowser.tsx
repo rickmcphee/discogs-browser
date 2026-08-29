@@ -303,7 +303,8 @@ function StockBrowser({
         <div className="px-3 py-2 border-b border-gray-800 bg-gray-950 flex flex-col gap-2 md:flex-row md:items-center md:gap-0 md:px-4 md:py-3">
           {/* The count rides on the search line rather than the control line:
               it is the one thing here that is not a control, and giving it a
-              row of its own cost the list a row of chrome. */}
+              row of its own cost the list a row of chrome. Store omits it --
+              the Stats button beside the toolbar already surfaces the total. */}
           <div className="flex w-full items-center gap-3 md:contents">
             <div className="relative flex-1 md:w-full md:max-w-md md:flex-initial">
               <input
@@ -321,7 +322,9 @@ function StockBrowser({
                 <span aria-hidden="true">✕</span>
               </button>
             </div>
-            <span className="shrink-0 text-xs text-gray-500 md:ml-3 md:shrink">{total} items</span>
+            {scope !== 'store' && (
+              <span className="shrink-0 text-xs text-gray-500 md:ml-3 md:shrink">{total} items</span>
+            )}
           </div>
           <div className="flex flex-wrap items-center gap-1.5 md:contents">
             {isMobile && (
