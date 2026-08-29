@@ -546,14 +546,29 @@ What the conversion had to get right:
   request on the store for a question with no right answer. `crawlers/amazon.py`
   is the fleet precedent for a release crawler gating on the target's format.
 
-  The list names only unambiguous other media, and is matched as substrings
-  because Discogs qualifies these names (`CDr`, `DVD-Video`, `8-Track
-  Cartridge`); no vinyl-ish format name contains any of them. A container
-  format (`Box Set`, `All Media`) can perfectly well hold vinyl, and an absent
-  or unrecognised value is evidence of nothing, so **both still search** and
-  lean on the product-type gate — the failure this avoids is rejecting the one
-  format the crawler exists to serve. Rejecting costs no site-health signal,
-  per `empty_result_is_expected` below.
+  The list holds every medium Discogs named definitely that a Waterloo vinyl
+  product cannot be. **"A record you put a needle on" is not the test**, and
+  reading it that way is what first let `Shellac` and `Acetate` through: this
+  store sells *new vinyl*, so a pre-war 78 and a one-off lacquer are as wrong
+  a match for it as a CD is. `Flexi-disc` and `Lathe Cut` are worse than
+  either — both are usually alternate pressings of an album that also exists
+  as a standard LP, which is exactly the case where the title match succeeds
+  and the wrong price gets published.
+
+  What stays *out* of the list is only what Discogs left genuinely open: a
+  container format (`Box Set`, `All Media`) can perfectly well hold vinyl, and
+  an absent or unrecognised value is not an answer at all. Both still search
+  and lean on the product-type gate — the failure that guards against is
+  rejecting the one format the crawler exists to serve. Rejecting costs no
+  site-health signal either way, per `empty_result_is_expected` below.
+
+  Matched as substrings for two reasons: Discogs qualifies these names (`CDr`,
+  `DVD-Video`, `8-Track Cartridge`), and `search()` also receives **stock-item
+  targets** — `get_eligible_crawlers()` admits a release crawler with
+  `requires_discogs_release = False` for those too — whose format is whatever
+  a sibling store crawler wrote (`LP`, `2xLP`, `7"`) rather than Discogs'
+  controlled vocabulary. No vinyl format written by either side contains any
+  listed term, which is what makes the substring test safe across both.
 
 - **A malformed detail response is a failure, not an answer.** The
   `/products/<handle>.js` lookup is the only thing that decides *both*

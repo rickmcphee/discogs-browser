@@ -518,6 +518,41 @@ async def test_search_does_not_offer_vinyl_for_a_cassette_release():
 
 
 @respx.mock
+async def test_search_does_not_offer_vinyl_for_another_record_medium():
+    """"Record you put a needle on" is not the test; "what this store sells" is.
+
+    Waterloo sells new vinyl, so a pre-war 78 and a one-off lacquer are as
+    wrong a match for it as a CD, and a flexi or lathe cut is worse than
+    either -- both are usually alternate pressings of an album that also
+    exists as a standard LP, which is exactly when the title match succeeds
+    and the wrong price gets published.
+    """
+    for fmt in ("Shellac", "Acetate", "Flexi-disc", "Lathe Cut"):
+        suggest = _mock([_GEESE_LP])
+
+        results = await Crawler().search(
+            {"artist": "Geese", "title": "Getting Killed", "format": fmt}, None
+        )
+
+        assert results == [], fmt
+        assert suggest.call_count == 0, fmt
+
+
+@respx.mock
+async def test_search_runs_for_a_store_written_vinyl_format():
+    # This crawler also reads stock-item targets, whose format is whatever a
+    # sibling store crawler wrote rather than Discogs' controlled vocabulary --
+    # so the gate has to leave those alone too.
+    _mock([_GEESE_LP])
+
+    for fmt in ("LP", "2xLP", '7"', "Vinyl, LP, Album"):
+        results = await Crawler().search(
+            {"artist": "Geese", "title": "Getting Killed", "format": fmt}, None
+        )
+        assert [r["price"] for r in results] == [24.99], fmt
+
+
+@respx.mock
 async def test_search_runs_for_a_vinyl_release():
     # The gate rejects other media, so a vinyl target has to still reach the
     # store -- otherwise it would reject the only format this crawler serves.

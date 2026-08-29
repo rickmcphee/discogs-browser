@@ -38,17 +38,33 @@ _VINYL_PRODUCT_TYPES = frozenset({
 # target-side gate a CD or cassette release would take a vinyl hit for the
 # same artist and album -- and db.upsert_stock_item_from_release() writes the
 # *release's* format onto the row, so the Store tab would show a "CD" carrying
-# an LP's url and price. Discogs' formats[0].name, reaching search() on the
-# catalog row.
+# an LP's url and price. Usually Discogs' formats[0].name, reaching search()
+# on the catalog row; a stock-item target carries whatever a sibling store
+# crawler wrote instead.
 #
-# Only unambiguous other media are listed. A container format ("Box Set", "All
-# Media") can perfectly well hold vinyl, and an absent or unrecognised value is
-# evidence of nothing, so both still search and lean on the product-type gate.
-# Substrings because Discogs qualifies these names ("CDr", "DVD-Video",
-# "8-Track Cartridge"); no vinyl-ish format name contains any of them.
+# Listed when Discogs named a definite medium that a Waterloo vinyl product
+# cannot be. "Record you put a needle on" is NOT the test, and reading it that
+# way is what first let `Shellac` and `Acetate` through here: this store sells
+# new vinyl, so a pre-war 78 and a one-off lacquer are as wrong a match for it
+# as a CD is, and `Flexi-disc` and `Lathe Cut` are worse than either -- both
+# are usually alternate pressings of an album that also exists as a standard
+# LP, which is precisely when the title match succeeds and the wrong price
+# gets published.
+#
+# What stays out of the list is only what Discogs left genuinely open: a
+# container format ("Box Set", "All Media") can perfectly well hold vinyl, and
+# an absent or unrecognised value is not an answer at all. Those still search
+# and lean on the product-type gate.
+#
+# Substrings, because Discogs qualifies these names ("CDr", "DVD-Video",
+# "8-Track Cartridge") and this also reads stock-item targets, whose format is
+# whatever a sibling store crawler wrote ("LP", "2xLP", "7\"") rather than
+# Discogs' controlled vocabulary. No vinyl format written by either -- Discogs'
+# "Vinyl" or a store's "LP" -- contains any of these.
 _OTHER_MEDIUM_FORMATS = (
     "cd", "cassette", "file", "dvd", "blu-ray", "sacd", "minidisc",
     "8-track", "reel-to-reel", "vhs", "betamax", "dcc",
+    "shellac", "acetate", "flexi", "lathe",
 )
 
 # "Artist - Album [Format]", split on the FIRST spaced hyphen: album halves
