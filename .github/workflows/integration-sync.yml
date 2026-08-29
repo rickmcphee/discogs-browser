@@ -3,14 +3,20 @@ name: Sync integration with main
 # Two jobs, for two different failures. Keeping them apart matters, because
 # they have different causes and only one of them is about drift.
 #
-#   `refresh` -- integration-branch-protection sets
+#   `refresh` -- *both* branch rulesets set
 #   strict_required_status_checks_policy, which compares a PR's head with *its
-#   own base*. So every open PR based on `integration` turns un-mergeable
-#   ("behind") the moment anything at all lands on `integration` -- a Dependabot
-#   bump merging, or the sync job below -- and stays that way until something
-#   moves its head forward. Nothing used to. Note this has nothing to do with
-#   `main`: `main` is not an input to that comparison, and `integration`
-#   trailing `main` does not by itself make a single PR "behind".
+#   own base*. So every open PR turns un-mergeable ("behind") the moment
+#   anything at all lands on the branch it targets: for `integration`, a
+#   Dependabot bump merging or the sync job below; for `main`, every PR that
+#   merges. It stays that way until something moves its head forward, and
+#   nothing used to.
+#
+#   Note the comparison really is head-against-*own*-base, and widening this
+#   job to `main` does not change that. `integration` trailing `main` still
+#   does not by itself make a single integration-based PR "behind", and `main`
+#   advancing does not make one behind either -- what it makes behind is every
+#   PR based on `main`, which is its own instance of the same failure rather
+#   than a consequence of the drift `sync` exists to fix.
 #
 #   `sync` -- integration-promote.yml squash-merges `integration` into `main`,
 #   which advances `main` and leaves `integration` exactly where it stood. With
@@ -487,7 +493,7 @@ jobs:
           echo "Sync PR #$opened is queued to merge."
 
   refresh:
-    name: Catch up PRs integration left behind
+    name: Catch up PRs their base branch left behind
     needs: sync
     # always(): `sync` runs on every trigger, but it can fail -- a merge
     # conflict, a push rejected for want of the workflow scope -- and a failed
@@ -500,9 +506,15 @@ jobs:
     # parked awaiting approval, and every PR that falls behind meanwhile stays
     # stranded. That is the failure this workflow exists to prevent, traded
     # against nothing worse than a redundant update-branch, which is harmless.
-    if: >-
-      always()
-      && (github.event_name != 'push' || github.ref_name == 'integration')
+    #
+    # Every trigger, with no branch guard on the push. That guard used to skip
+    # a push to `main`, correctly: while this job only routed integration-based
+    # PRs, `main` moving made none of them behind and the run had nothing to
+    # do. Now that it routes main-based PRs too, a push to `main` is precisely
+    # the event that strands them, and skipping it would leave the daily cron
+    # as the only thing catching them up -- reintroducing, for `main`, the
+    # up-to-a-day lag this job exists to close.
+    if: always()
     runs-on: ubuntu-latest
     env:
       # `secrets` is available in jobs.<job_id>.env but NOT in a step-level
@@ -526,7 +538,7 @@ jobs:
           client-id: ${{ vars.INTEGRATION_PROMOTE_APP_CLIENT_ID }}
           private-key: ${{ secrets.INTEGRATION_PROMOTE_APP_PRIVATE_KEY }}
 
-      - name: Catch up every open PR that integration outran
+      - name: Catch up every open PR that its base branch outran
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           REPO: ${{ github.repository }}
@@ -540,17 +552,39 @@ jobs:
           #
           # --limit, because `gh pr list` returns 30 by default and this step
           # promises to catch up *every* open PR, not the newest thirty.
-          open_prs="$(gh pr list --repo "$REPO" --base integration --state open \
-                        --limit 200 --json number --jq '.[].number')"
+          #
+          # One query per base rather than one unfiltered query filtered in jq:
+          # --base filters server-side, so the limit stays a per-base promise.
+          # Listing everything and discarding the rest would silently make 200
+          # a budget shared between the two bases, and a flood of PRs on one
+          # could then push the other's off the end of the page.
+          #
+          # Each PR is carried as "<number>:<base>" because the messages below
+          # name the branch a PR is behind, and naming the wrong one is worse
+          # than naming none: it would send someone to look at `integration`
+          # over a PR that never touched it.
+          open_prs=""
+          for base in main integration; do
+            # Assigned, not inlined into the `for`, for the reason spelled out
+            # above: only an assignment lets `set -e` see this fail.
+            base_prs="$(gh pr list --repo "$REPO" --base "$base" --state open \
+                          --limit 200 --json number --jq '.[].number')"
+            for num in $base_prs; do
+              open_prs="$open_prs $num:$base"
+            done
+          done
           # Every PR this job could not refresh, collected rather than merely
           # warned about. Warning alone let the step exit 0 having refreshed
           # nothing at all -- the same silent no-op the job exists to prevent,
           # arriving from inside the job itself.
           failed=""
 
-          for n in $open_prs; do
+          for entry in $open_prs; do
+            n="${entry%%:*}"
+            base="${entry##*:}"
+
             # mergeable_state is computed asynchronously; a PR polled too soon
-            # after integration moved answers "unknown", which is neither state
+            # after its base moved answers "unknown", which is neither state
             # below and would quietly skip the one PR that needed this most.
             #
             # The read is guarded because `set -e` does see an assignment's
@@ -573,7 +607,7 @@ jobs:
                 # nothing of the PR's author -- including Dependabot, whose own
                 # branches take this happily: it leaves the bump commit in place
                 # and does not close or abandon the PR.
-                echo "PR #$n is behind; merging integration into it."
+                echo "PR #$n is behind; merging $base into it."
                 if ! gh api -X PUT "repos/$REPO/pulls/$n/update-branch"; then
                   # Per-PR, so one stuck PR cannot strand the rest -- but
                   # recorded, so the step still ends red.
@@ -620,8 +654,9 @@ jobs:
                 # is specifically about bots; "only users with push access can
                 # use that command" grants it to exactly the human being asked.
                 #
-                # Branched on author, because this job routes EVERY open PR
-                # based on `integration`, not only Dependabot's. Telling the
+                # Branched on author, because this job routes EVERY open PR on
+                # either base, not only Dependabot's -- and since it widened to
+                # `main`, most of what it sees is hand-written. Telling the
                 # author of a hand-written PR to run a Dependabot command is
                 # advice they cannot act on. The old recreate path read the
                 # author too, but for two jobs at once -- gating the command
@@ -635,7 +670,7 @@ jobs:
                 # never established.
                 author="$(gh api "repos/$REPO/pulls/$n" --jq '.user.login' 2>/dev/null || true)"
                 if [ "$author" = "dependabot[bot]" ]; then
-                  echo "::warning::PR #$n conflicts with integration and cannot be caught up automatically. A person with push access can comment '@dependabot recreate' on it -- that command works for people, only bots are refused. Do NOT just close it: Dependabot treats a close as 'skip this release' and will not raise it again until a newer version ships, and it deletes the branch, so the PR cannot be reopened."
+                  echo "::warning::PR #$n conflicts with $base and cannot be caught up automatically. A person with push access can comment '@dependabot recreate' on it -- that command works for people, only bots are refused. Do NOT just close it: Dependabot treats a close as 'skip this release' and will not raise it again until a newer version ships, and it deletes the branch, so the PR cannot be reopened."
                 elif [ -n "$author" ]; then
                   # "whoever can push to the head branch", not "$author". The
                   # wording this replaces said only the opener could rebuild it,
@@ -644,9 +679,9 @@ jobs:
                   # by any collaborator with push access, and a fork branch by
                   # maintainers when the PR allows maintainer edits. The
                   # capability is what matters, not the identity.
-                  echo "::warning::PR #$n conflicts with integration and cannot be caught up automatically. It was opened by $author, not Dependabot, so no @dependabot command applies: the branch has to be repaired by hand by someone who can push to it -- its author, any collaborator with write access if it lives in this repository, or a maintainer if it is a fork PR allowing maintainer edits."
+                  echo "::warning::PR #$n conflicts with $base and cannot be caught up automatically. It was opened by $author, not Dependabot, so no @dependabot command applies: the branch has to be repaired by hand by someone who can push to it -- its author, any collaborator with write access if it lives in this repository, or a maintainer if it is a fork PR allowing maintainer edits."
                 else
-                  echo "::warning::PR #$n conflicts with integration and cannot be caught up automatically, and its author could not be read. It needs a human either way: if Dependabot opened it, someone with push access can comment '@dependabot recreate' (and should not close it); otherwise the branch has to be repaired by hand by someone who can push to it."
+                  echo "::warning::PR #$n conflicts with $base and cannot be caught up automatically, and its author could not be read. It needs a human either way: if Dependabot opened it, someone with push access can comment '@dependabot recreate' (and should not close it); otherwise the branch has to be repaired by hand by someone who can push to it."
                 fi
                 ;;
 
@@ -665,6 +700,6 @@ jobs:
           done
 
           if [ -n "$failed" ]; then
-            echo "::error::could not refresh:$failed. Those PRs may still be behind integration -- re-run this workflow, or update them by hand."
+            echo "::error::could not refresh:$failed. Those PRs may still be behind their base branch -- re-run this workflow, or update them by hand."
             exit 1
           fi

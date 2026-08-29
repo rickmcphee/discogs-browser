@@ -37,7 +37,10 @@ out of it.
 
 - `integration` holds `main`'s files, without discarding bumps it is still
   carrying.
-- No PR based on `integration` is left stranded when `integration` moves.
+- No open PR is left stranded when the branch it targets moves. Written as
+  "no PR based on `integration`" until 2026-08-29 — see the amendment on
+  `refresh` below, which widened the job to `main`-based PRs for the same
+  reason, not a new one.
 - Every failure is loud. A silent no-op that reports success is worse than a
   failed run, because nobody investigates a green run.
 
@@ -170,9 +173,31 @@ way back in.
 
 ### `refresh`
 
-Triggers: push to `integration`, the same cron, and `workflow_dispatch`. It runs
-whatever `sync` did, including when `sync` failed — those are the moments PRs
-most need catching up, not least.
+Triggers: push to `main` or `integration`, the same cron, and
+`workflow_dispatch`. It runs whatever `sync` did, including when `sync` failed —
+those are the moments PRs most need catching up, not least.
+
+**Amended 2026-08-29: widened from `integration`-based PRs to both bases.**
+`main-branch-protection` sets `strict_required_status_checks_policy` too, so a
+PR based on `main` goes `behind` the moment any PR merges and cannot merge until
+something moves its head forward — the identical failure this job was built for,
+on the other branch, and it was left running by hand. The job now queries each
+base separately (server-side `--base`, so the 200 limit stays a promise per base
+rather than a budget shared between them) and carries each PR's base alongside
+its number, because every message here names the branch a PR is behind and
+naming the wrong one would send a reader to a branch the PR never touched.
+
+The push guard went with it. It used to skip a push to `main`, correctly: while
+the job only routed `integration`-based PRs, `main` moving stranded none of them.
+Now `main` moving is exactly what strands a main-based PR, so skipping that event
+would leave the daily cron as the only thing catching them up — reintroducing,
+for `main`, the up-to-a-day lag this job exists to close.
+
+One consequence worth stating: the two base queries share the job's `set -e`, so
+a transient API failure listing one base now aborts before the other is listed.
+That is deliberate and unchanged in spirit — the alternative is the silent no-op
+the third goal above exists to forbid — but it does mean a failure on `main`'s
+query leaves `integration`'s PRs for the next run.
 
 It deliberately does **not** ask whether a sync is queued. An earlier design did,
 reasoning that `integration` was about to move so any catch-up would be redone.
@@ -190,7 +215,8 @@ GitHub computes it asynchronously and answers `unknown` right after a push:
 - `behind` → `update-branch`. Deterministic, returns a status, needs nothing of
   the PR's author.
 - `dirty` → reported for a human, with the advice branched on who opened it.
-  This job routes *every* open PR based on `integration`, not only Dependabot's,
+  This job routes *every* open PR based on a branch it covers, not only
+  Dependabot's,
   and the two need different instructions: a Dependabot bump can be rebuilt by a
   maintainer's `@dependabot recreate`, while a hand-written PR has to be repaired
   by hand by someone who can push to its head branch. A failed author read falls
@@ -410,9 +436,25 @@ re-freezing the base.
 **Still available:**
 
 1. **Drop `strict_required_status_checks_policy` on `integration` only.** That
-   is the mechanism behind failure (1), and dropping it would make most of
-   `refresh` unnecessary. The promotion PR re-tests the whole batch against
-   `main` before anything ships, so it buys little on a staging branch.
+   is the mechanism behind failure (1), and dropping it would retire the
+   `integration` half of `refresh`. The promotion PR re-tests the whole batch
+   against `main` before anything ships, so it buys little on a staging branch.
+
+   It no longer retires the job, as it would have before the 2026-08-29
+   widening: `main` sets the same policy, deliberately, and the `main` half
+   would remain. Dropping it on `main` too is *not* on this list — that policy
+   is what stops a PR merging green against a base it was never tested on, which
+   is worth more on the branch that deploys than the hand-updating it costs.
+
+2. **A merge queue on `main`.** The properly native answer to that cost: per
+   GitHub's docs a merge queue "provides the same benefits as the **Require
+   branches to be up to date before merging** branch protection, but does not
+   require a pull request author to update their pull request branch." It would
+   retire the `main` half of `refresh` outright. Not taken, because it is not a
+   toggle: every required check would need a `merge_group` trigger, and none of
+   this repository's workflows has one, so queued groups would report nothing
+   and PRs would sit forever. Worth revisiting if open-PR volume ever makes the
+   `update-branch` churn expensive; at one or two PRs at a time it does not pay.
 
 ## Runtime/agent document impact
 
