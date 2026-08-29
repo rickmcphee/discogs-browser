@@ -700,17 +700,31 @@ Waterloo being a release crawler:
   `release` and is inert here, but it is generic and its reasoning is
   unchanged.
 
-**The reverse conversion needs no new code**, which the kind-change comment in
-`register_crawler()` already records. On the first boot after this change the
-plugin's declared `crawler_type = "catalog"` reaches `register_crawler()`'s
-upsert and the row flips kind. From there: release targets stop dispatching to
-Waterloo because `get_eligible_crawlers()` filters on `crawler_type` at
-dispatch; a pending `crawl_queue` row whose `pending_crawler_ids` the
-conversion backfill narrowed to Waterloo alone resolves as `done` up front
+**The reverse conversion is handled in `register_crawler()`, symmetric to the
+forward one.** An earlier draft of this amendment claimed it needed no new
+code, leaning on the kind-change comment's old assertion that the next catalog
+sync's `replace_stock_items()` covers it. Copilot's review on the reverting PR
+showed that covers less than it claims, twice over: `stock_schedule` defaults
+to empty, so "the next catalog sync" can be never and the release-era
+`stock_items` rows (written through `upsert_stock_item_from_release()`, always
+with a `release_id`) can linger in the Store tab indefinitely; and the
+crawler's `listings` rows have no cleanup path at all — once
+`get_eligible_crawlers()` stops dispatching release targets to a
+non-`release` crawler, nothing ever refreshes or deletes them, so their stale
+prices would show against library releases forever and
+`get_crawl_status_for_user()`'s `oldest_checked` — `MIN(last_checked)` over
+`listings` with no crawler filter — would be pinned to them for good.
+
+`register_crawler()` therefore now handles a kind change *from* `release` as
+well as to it: it deletes the crawler's release-written `stock_items` rows
+(`release_id IS NOT NULL`) and all of its `listings` rows, then sweeps dead
+`crawl_queue` rows in the same transaction — the `stock_items` DELETE orphans
+any queue row whose `item_key` existed only through those rows, same sweep and
+same reason as the forward branch. No backfill on this direction: the
+crawler's catalog targets do not exist until its first stock sync writes them.
+What needs no code remains true for dispatch: release targets stop reaching
+Waterloo because `get_eligible_crawlers()` filters on `crawler_type`, and a
+pending `crawl_queue` row whose `pending_crawler_ids` the forward-conversion
+backfill narrowed to Waterloo alone resolves as `done` up front
 (`_drain_one_batch` resolves any claimed row with zero eligible crawlers
-without dispatching it); and the release-era `stock_items` rows — written
-through `upsert_stock_item_from_release()` with a `release_id` — are deleted
-by the first catalog sync's `replace_stock_items()`, which clears every row
-for the `crawler_id` before inserting the fresh shelf. Until that first sync
-runs, the release-era rows linger in the Store tab; that window closes on its
-own and needs no sweep of its own.
+without dispatching it).
