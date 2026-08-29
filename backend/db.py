@@ -1993,9 +1993,12 @@ def _queue_stranded_after_seconds(conn, crawl_delay_seconds: float) -> float:
 # will.
 #
 # COALESCE because ARRAY_AGG over no matching rows returns NULL, not '{}': with
-# every release crawler disabled, a NULL here would make `&&` return NULL and
-# quietly reclassify every narrowed row as unactionable-by-null rather than by
-# the empty set.
+# every release crawler disabled, a NULL here would make `&&` return NULL, and a
+# NULL `actionable` satisfies neither the claimable and held filters nor
+# `NOT (live AND actionable)`. Every narrowed row would then drop out of all
+# three totals rather than being counted as work nothing will run -- and since
+# the tab sums those totals for the donut's centre, the queue would quietly
+# under-report its own size rather than misfile the rows somewhere visible.
 _QUEUE_CRAWLER_SETS_SQL = """
     SELECT
         COALESCE(ARRAY_AGG(id) FILTER (
