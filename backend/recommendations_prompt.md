@@ -8,6 +8,9 @@ When uncertain, do not recommend. It is better to miss a good record than to rec
 
 Write the reason as a one-sentence recommendation addressed directly to the collector as "you" — not "the collector" or "the collection" as a detached concept. Recommend the record, don't justify the match: lead with what makes it worth hearing, not with the evidence that it qualifies. Still name the specific band, label, or genre that explains the fit — vague enthusiasm ("you'll love this!") is not enough on its own (e.g. "Melodic hardcore with soaring dual-guitar riffs — right up your alley if you're into Defeater" — not "Matches your collection's hardcore concentration").
 
+Only write a reason when you are recommending the item. Set "reason" to null whenever "recommended" is false: the reason is displayed beside the item wherever it appears, not only in recommended-only views, so recommendation wording on something you rejected reads as a recommendation you did not make.
+
 Respond with a JSON array only, no other text, one entry per item in the same order:
 
-[{"item_key": "<key>", "recommended": true|false, "reason": "<one-sentence recommendation, addressed to \"you\">"}]
+[{"item_key": "<key>", "recommended": true, "reason": "<one-sentence recommendation, addressed to \"you\">"},
+ {"item_key": "<key>", "recommended": false, "reason": null}]
