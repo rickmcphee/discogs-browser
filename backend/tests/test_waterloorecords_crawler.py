@@ -160,18 +160,52 @@ async def test_search_rejects_a_fuzzy_hit_by_another_artist():
 
 
 @respx.mock
-async def test_search_ranks_the_base_pressing_above_a_longer_titled_release():
-    # Both are live for "radiohead kid a", and both pass the prefix rule the
-    # app's own library matcher uses -- "Kid A Mnesia" starts with "Kid A ".
-    # The Mnesia price is lowered from its real $54.99 so that price alone
-    # would pick the wrong record, pinning that rank beats price.
+async def test_search_excludes_a_longer_titled_release_even_when_it_is_cheaper():
+    # Both are live for "radiohead kid a", and both pass the exact-or-prefix
+    # rule the app's own library matcher uses -- "Kid A Mnesia" starts with
+    # "Kid A ". The Mnesia price is lowered from its real $54.99 so that a
+    # price-only ordering would pick the wrong record.
     mnesia = _product("Radiohead - Kid A Mnesia [3LP]", price="19.99",
                       handle="radiohead-kid-a-mnesia-blk-vinyl-lp-19140411661")
     kid_a = _product("Radiohead - Kid A [2LP]", price="32.99",
                      handle="radiohead-kid-a-2x12in-lp-63490407820")
     _mock([mnesia, kid_a])
     results = await Crawler().search({"artist": "Radiohead", "title": "Kid A"}, None)
-    assert [r["price"] for r in results] == [32.99, 19.99]
+    assert [r["price"] for r in results] == [32.99]
+
+
+@respx.mock
+async def test_search_reports_nothing_rather_than_a_different_release():
+    # The case ranking alone could not cover: with no base pressing in the
+    # results, a prefix match would publish Kid A Mnesia's price as Kid A's.
+    # A missing price is better than a wrong one -- the fleet reads matches[0]
+    # and shows it as this record's price at this store.
+    _mock([_product("Radiohead - Kid A Mnesia [3LP]", price="19.99",
+                    handle="radiohead-kid-a-mnesia-blk-vinyl-lp-19140411661")])
+    results = await Crawler().search({"artist": "Radiohead", "title": "Kid A"}, None)
+    assert results == []
+
+
+@respx.mock
+async def test_search_fetches_variants_when_the_price_range_is_unknown():
+    # A missing price_max is an unknown range, not a uniform one. Shortcutting
+    # on it would republish the product-level minimum, which is exactly the
+    # sold-out price the variant lookup exists to avoid.
+    handle = "unknown-range-lp"
+    product = _product("Geese - Getting Killed [LP]", price="24.99", handle=handle)
+    del product["price_max"]
+    _mock([product])
+    variants = respx.get(f"https://waterloorecords.com/products/{handle}.js").mock(
+        return_value=httpx.Response(200, json={"variants": [
+            {"title": "New", "price": 2999, "available": True},
+            {"title": "Old", "price": 2499, "available": False},
+        ]})
+    )
+
+    results = await Crawler().search({"artist": "Geese", "title": "Getting Killed"}, None)
+
+    assert variants.call_count == 1
+    assert [r["price"] for r in results] == [29.99]
 
 
 @respx.mock

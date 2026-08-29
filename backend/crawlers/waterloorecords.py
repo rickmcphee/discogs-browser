@@ -55,6 +55,15 @@ _PUNCT_RE = re.compile(r'[^\w\s]')
 # filters, and an unbracketed one still matches, just below a base pressing.
 _BRACKETED_RE = re.compile(r'\[[^\]]*\]')
 
+# Where this store stops naming the album and starts qualifying it. Every
+# qualifier it writes is introduced by one of these -- "Abbey Road:
+# Anniversary Edition [LP]", "Getting Killed [Clear Vinyl] [LP]" -- so what
+# precedes the first one is the album itself. A title that merely continues in
+# plain words is a *different* record: "Kid A Mnesia", "OK Computer Oknotok
+# 1997 2017". That distinction is the whole point, because the fleet reads
+# matches[0] and publishes its price.
+_QUALIFIER_CUT_RE = re.compile(r'\s*(?::|\[|\(|\s[-\u2013\u2014]\s)')
+
 # The store caps its own suggest widget at 10 and the fleet only ever reads
 # matches[0], so this is about how far down a fuzzy result set a real match
 # might sit, not about collecting everything.
@@ -202,8 +211,15 @@ class Crawler:
         second request is worth making.
         """
         low = cls._decimal(product, "price_min", "price")
+        if low is None:
+            return None
+        # Only *equal* known bounds prove the available variant costs `low`. A
+        # missing or malformed price_max is an unknown range, not a uniform
+        # one, so it takes the lookup rather than the shortcut -- shortcutting
+        # there would republish exactly the sold-out minimum this exists to
+        # avoid.
         high = cls._decimal(product, "price_max")
-        if low is None or high is None or low == high:
+        if high is not None and low == high:
             return low
 
         r = await client.get(f"{url}.js", timeout=30)
@@ -277,8 +293,17 @@ class Crawler:
         base = cls._fold(_BRACKETED_RE.sub(" ", store_album))
         if base == want_title:
             return 0
-        album = cls._fold(store_album)
-        if album == want_title or album.startswith(want_title + " "):
+        # Everything before the first qualifier delimiter, which is the album
+        # name as this store writes it. Deliberately an equality test and not
+        # the exact-or-prefix-with-space rule db._library_match_fragment uses:
+        # that rule is answering "does this stock row correspond to a release
+        # the user owns", where a wrong answer mislabels ownership, while this
+        # one decides which record's price gets published. With no base
+        # pressing in the results, a prefix match would report "Kid A Mnesia
+        # [3LP]" as the price of Kid A rather than reporting Kid A as absent,
+        # and a wrong price is worse than a missing one.
+        qualified = cls._fold(_QUALIFIER_CUT_RE.split(store_album, 1)[0])
+        if qualified == want_title:
             return 1
         return None
 

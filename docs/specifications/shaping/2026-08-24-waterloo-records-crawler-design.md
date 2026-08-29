@@ -482,12 +482,21 @@ What the conversion had to get right:
   for, and the fleet reads `matches[0]`. Both halves of the store's
   `Artist - Album` convention are checked, and matches are then *ranked*
   rather than filtered further: rank 0 is an exact title once the bracketed
-  qualifiers come off, which only a base pressing achieves, and rank 1 is the
-  looser exact-or-prefix-with-space rule `db._library_match_fragment` itself
-  uses. That ordering is what keeps "Kid A" from reporting the price of
-  "Kid A Mnesia [3LP]", while leaving "Abbey Road: Anniversary Edition [LP]"
-  — whose qualifier is not bracketed, and which is the only Abbey Road this
-  store stocks — still matching.
+  qualifiers come off, which only a base pressing achieves, and rank 1 is an
+  exact match against everything before the first qualifier delimiter (`:`,
+  `[`, `(`, a spaced dash). Rank 1 is deliberately *not*
+  `db._library_match_fragment`'s exact-or-prefix-with-space rule, though an
+  earlier draft used it. That rule answers "does this stock row correspond to
+  a release the user owns", where a wrong answer mislabels ownership; this one
+  decides whose price gets published. Under the prefix rule, a "Kid A" search
+  returning only "Kid A Mnesia [3LP]" would publish the Mnesia box set's price
+  as Kid A's — ranking only prevented that while a genuine "Kid A" was also in
+  the results. Cutting at the delimiter instead rejects a title that merely
+  continues in plain words ("Kid A Mnesia", "OK Computer Oknotok 1997 2017")
+  while still matching a qualified edition ("Abbey Road: Anniversary Edition
+  [LP]", the only Abbey Road this store stocks). A missing price beats a wrong
+  one, because the fleet reads `matches[0]` and shows it as this record's price
+  at this store.
 - **The old snapshot had to be cleared.** `db.replace_stock_items()` runs only
   for the catalog kinds, so rows written while this was a catalog crawler
   would never be refreshed and never deleted. `db.register_crawler()` now
