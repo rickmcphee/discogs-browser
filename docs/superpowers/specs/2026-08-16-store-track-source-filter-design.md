@@ -228,9 +228,12 @@ genres) → **marketplace**, per your call.
 
 **Note:** no crawler seeds to **pop** — every "indie pop" mention pairs
 with "indie rock," and the rock word wins the tie under the rule above.
-The bucket exists for the future (a pop-specific store) and is legitimately
-empty today; this isn't a gap to fix, just worth knowing before someone
-wonders why "Pop" shows zero stores.
+The genre-derivation rule above still names a pop case for completeness, but
+the **pop** bucket itself was removed from the `CrawlerGenre` type and the
+`SourceFilter` genre list: an always-empty selector read as broken rather
+than forward-looking, so there's no "pop" filter option today. Should a
+pop-specific store ever get added, `pop` can be reintroduced as a genre
+value and filter option at that point.
 
 ## Testing
 
