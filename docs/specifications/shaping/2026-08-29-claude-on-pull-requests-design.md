@@ -161,6 +161,47 @@ summary. Silence is deliberate: on a fork pull request the alternative is a red
 X or a bot comment on every `@claude` a maintainer types, and the reason belongs
 where someone who went looking for it will be.
 
+## Which file each event runs, and why it matters
+
+The three events do not read the same copy of this workflow, and the difference
+decides whether a change to it is live or has to merge first. Observed on the
+pull request that introduced them, from the runs' own `head_branch`:
+
+| Event | Workflow file taken from |
+| --- | --- |
+| `pull_request_review_comment` | the pull request's head branch |
+| `pull_request_review` | the pull request's head branch |
+| `issue_comment` | the default branch |
+
+The review events are pull request events and follow the pull request's branch,
+so the review half of this feature was live on its own pull request before it
+merged — the branch's file subscribed to those events while `main`'s did not,
+and the events dispatched anyway. `issue_comment` is not a pull request event.
+GitHub models a pull request as an issue for it, and an issue has no branch, so
+it reads the default branch even when the comment is on a pull request. A probe
+comment confirmed it: the run appeared with `head_branch: main`.
+
+Two consequences worth having written down.
+
+A maintainer whose `@claude` does nothing should check *where they typed it*
+before assuming the workflow is broken. On a branch whose `claude.yml` differs
+from the default branch's, replying under a review comment and commenting in the
+conversation run different code.
+
+And editing this workflow is not uniformly testable on its own pull request. The
+review-event paths can be exercised there; the `issue_comment` path cannot, and
+only takes effect once merged. Nothing about that is specific to this change,
+but it is the kind of thing that reads as a bug the first time it is met.
+
+### What the head gate assumes about this
+
+The guard step only protects a run whose workflow file this repository controls.
+That holds for every case it needs to: a same-repository head is by definition a
+branch here, and GitHub does not run a fork-supplied workflow definition with the
+base repository's secrets, so a fork pull request cannot delete the guard by
+editing `claude.yml`. This was not exercised directly — no fork pull request was
+opened to test it — and is recorded as the assumption it is.
+
 ## Why Copilot does not trigger this itself
 
 `pull_request_review: submitted` is subscribed, so the wiring to have Copilot's

@@ -159,5 +159,6 @@ jobs:
           label_trigger: "claude"
           include_comments_by_actor: >-
             ${{ github.actor }},${{ github.repository_owner }},
-            Copilot,Copilot[bot],copilot-pull-request-reviewer[bot],
+            Copilot,Copilot[bot],
+            copilot-pull-request-reviewer,copilot-pull-request-reviewer[bot],
             claude[bot],github-actions[bot]
