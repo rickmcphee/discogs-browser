@@ -962,3 +962,90 @@ def test_import_does_not_write_another_users_judgments(pg_test_db, authed_client
     assert [(r["user_id"], r["reason"]) for r in rows] == [
         (alice["id"], "alice's"), (bob["id"], "bob's"),
     ]
+
+
+def _stats_fixture():
+    """Two stores with different inventory sizes, plus one release crawler
+    whose comparison listing must not be counted as inventory."""
+    nb_id = _make_crawler("Nuclear Blast")
+    ep_id = _make_crawler("Epitaph")
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/y.py", crawler_type="release")
+        conn.commit()
+        amazon_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        item_keys = db.replace_stock_items(conn, nb_id, [
+            {"artist": "Rob Zombie", "title": "The Great Satan", "price": 31.99, "currency": "USD", "url": "https://nb/1"},
+            {"artist": "Dimmu Borgir", "title": "Puritanical", "price": 20.0, "currency": "USD", "url": "https://nb/2"},
+            {"artist": "Meshuggah", "title": "Nothing", "price": 25.0, "currency": "USD", "url": "https://nb/3"},
+        ])
+        db.replace_stock_items(conn, ep_id, [
+            {"artist": "Rancid", "title": "And Out Come The Wolves", "price": 22.0, "currency": "USD", "url": "https://ep/1"},
+        ])
+        db.upsert_stock_item_listing(conn, item_keys[0], amazon_id, "https://amazon/1", 29.99, None, "USD", "New")
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+    return user, nb_id, ep_id
+
+
+def test_stock_stats_counts_items_per_source(pg_test_db, authed_client_factory):
+    user, nb_id, ep_id = _stats_fixture()
+    client = authed_client_factory(user["id"])
+
+    r = client.get("/api/stock/stats")
+    assert r.status_code == 200
+    body = r.json()
+    # Largest source first, and the Amazon comparison listing is not inventory.
+    assert body["sources"] == [
+        {"crawler_id": nb_id, "site_name": "Nuclear Blast", "count": 3},
+        {"crawler_id": ep_id, "site_name": "Epitaph", "count": 1},
+    ]
+    assert body["total"] == 4
+
+
+def test_stock_stats_total_matches_list_stock_total(pg_test_db, authed_client_factory):
+    """The breakdown is rendered beside the list's own item count, so the two
+    have to be the same number under every filter combination."""
+    user, nb_id, _ = _stats_fixture()
+    client = authed_client_factory(user["id"])
+
+    for params in [
+        {},
+        {"search": "zombie"},
+        {"artist": "Rob Zombie"},
+        {"hidden_crawler_ids": str(nb_id)},
+        {"saved": "true"},
+        {"search": "no such record"},
+    ]:
+        stats = client.get("/api/stock/stats", params=params).json()
+        listing = client.get("/api/stock", params=params).json()
+        assert stats["total"] == listing["total"], params
+        assert sum(s["count"] for s in stats["sources"]) == stats["total"], params
+
+
+def test_stock_stats_excludes_hidden_sources(pg_test_db, authed_client_factory):
+    user, nb_id, ep_id = _stats_fixture()
+    client = authed_client_factory(user["id"])
+
+    body = client.get("/api/stock/stats", params={"hidden_crawler_ids": str(nb_id)}).json()
+    assert body["sources"] == [{"crawler_id": ep_id, "site_name": "Epitaph", "count": 1}]
+    assert body["total"] == 1
+
+
+def test_stock_stats_honours_saved_filter(pg_test_db, authed_client_factory):
+    user, nb_id, _ = _stats_fixture()
+    with db.user_scope(user["id"]) as conn:
+        db.save_stock_item(conn, user["id"], db.compute_item_key("Rob Zombie", "The Great Satan", "https://nb/1"))
+        conn.commit()
+    client = authed_client_factory(user["id"])
+
+    body = client.get("/api/stock/stats", params={"saved": "true"}).json()
+    assert body["sources"] == [{"crawler_id": nb_id, "site_name": "Nuclear Blast", "count": 1}]
+    assert body["total"] == 1
+
+
+def test_stock_stats_empty_when_nothing_matches(pg_test_db, authed_client_factory):
+    user, _, _ = _stats_fixture()
+    client = authed_client_factory(user["id"])
+
+    body = client.get("/api/stock/stats", params={"search": "no such record"}).json()
+    assert body == {"total": 0, "sources": []}

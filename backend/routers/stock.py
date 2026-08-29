@@ -73,6 +73,31 @@ def list_stock_artists(
         return {"artists": artists}
 
 
+@router.get("/stock/stats")
+def stock_stats(
+    request: Request,
+    search: Optional[str] = Query(None),
+    artist: Optional[str] = Query(None),
+    library_scope: Optional[str] = Query(None),
+    recommended: bool = Query(False),
+    saved: bool = Query(False),
+    overlapped: bool = Query(False),
+    hidden_crawler_ids: Optional[str] = Query(None),
+):
+    """Item count per source for the view /stock would list under the same
+    filters -- so `total` here is the same number the browser shows beside the
+    search box, and the per-source counts sum to it."""
+    user_id = request.state.user_id
+    exclude_crawler_ids = _parse_crawler_ids(hidden_crawler_ids)
+    with db.user_scope(user_id) as conn:
+        sources = db.get_stock_source_counts(
+            conn, user_id, search=search, artist=artist, library_scope=library_scope,
+            recommended=recommended, saved_only=saved, overlapped_artists=overlapped,
+            exclude_crawler_ids=exclude_crawler_ids,
+        )
+    return {"total": sum(s["count"] for s in sources), "sources": sources}
+
+
 @router.put("/stock/saved/{item_key}")
 def save_stock_item(item_key: str, request: Request):
     user_id = request.state.user_id
