@@ -361,7 +361,13 @@ Recorded so a future reader doesn't re-derive them:
 `backend/tests/test_waterloorecords_crawler.py`, on the sibling
 `respx`-mocked `products.json` pattern — hand-written product literals
 copied verbatim from confirmed-live products, driven through
-`crawl_catalog()`. No live site, no bot-detection risk. 16 cases:
+`crawl_catalog()`. No live site, no bot-detection risk. The cases:
+
+**(2026-08-28: the conversion below rebuilt this file around `search()` and
+`/search/suggest.json`, so the list that follows is the catalog-era one and is
+kept as the record of what that crawler pinned. Each rule the conversion
+introduced carries its own cases in the same file — read the amendment for
+the rules, and the file itself for the current set.)**
 
 - artist/album split with the format bracket preserved
 - first-hyphen split, not the last (the 10CC case)
@@ -409,8 +415,11 @@ This site's findings, from the `robots.txt` captured 2026-08-24:
   defaulting to 30s. No detail-page fan-out. `iter_products()` fails fast
   on 429 and gives up after `consecutive_failure_limit` on anything else.
   **(2026-08-28: superseded by the conversion below.** The load is no longer
-  a per-sync walk. It is one `/search/suggest.json` request per library
-  release, spaced by `_paced_search`'s per-site gap, plus at most one
+  a per-sync walk. It is one `/search/suggest.json` request per eligible
+  *target* the store could plausibly stock — library releases and, because
+  `requires_discogs_release` is `False`, queued stock items as well; a target
+  on another medium is rejected without asking — spaced by `_paced_search`'s
+  per-site gap, plus at most one
   `/products/<handle>.js` per *closest-ranked* match — and only where the
   product's own `price_min` and `price_max` disagree, which most do not.
   Those lookups are paced by the crawler itself at the same
@@ -433,6 +442,14 @@ interface — one new outbound host (`waterloorecords.com`).
 this change.
 
 ## Amendment (2026-08-28, branch `claude/store-crawler-activity-missing-1tybli`)
+
+*Extended 2026-08-29 (branch `claude/pr-212-comments-bvr2t9`) with the format
+gate's target-side half, the malformed-detail-response rule, and the backfill
+and dead-stock sweep that ride with the snapshot clear — all from review
+findings on [#210](https://github.com/rickmcphee/discogs-browser/pull/210) that
+landed after it merged. Kept in this amendment rather than split into a second
+one: each belongs to a conversion rule stated here, and a reader implementing
+from a half of the list would get it wrong.*
 
 **The "Scale, and why it is accepted" section above is wrong in its central
 assumption, and this crawler has never written a single row.**
@@ -477,9 +494,11 @@ which the endpoint below can answer completely.
 `crawl_catalog()` is therefore replaced by `search()` over
 `/search/suggest.json`, which has no page ceiling and reaches the whole
 catalog. It returns `available`, `price`, `url` and the same `type` field this
-crawler's vinyl gate already read, so the format and availability rules carry
-over unchanged; `crawlers/ebay.py` is the precedent for an API-backed release
-crawler that ignores the Playwright page it is handed.
+crawler's vinyl gate already read, so the availability rule and the store side
+of the format gate carry over unchanged — though the format gate acquires a
+second half it never needed as a catalog crawler, below;
+`crawlers/ebay.py` is the precedent for an API-backed release crawler that
+ignores the Playwright page it is handed.
 
 What the conversion had to get right:
 
@@ -513,6 +532,78 @@ What the conversion had to get right:
   [LP]", the only Abbey Road this store stocks). A missing price beats a wrong
   one, because the fleet reads `matches[0]` and shows it as this record's price
   at this store.
+- **The format gate needs a second half.** `_VINYL_PRODUCT_TYPES` above asks
+  what the *store* is selling, and as a catalog crawler that was the whole
+  question — nothing else chose which records it was asked about. A release
+  crawler is run for every release in every library, so the *target's* format
+  becomes a second question, and one this gate does not answer: a CD or
+  cassette release would otherwise take the vinyl pressing of the same artist
+  and album, and `db.upsert_stock_item_from_release()` writes the release's own
+  format onto the row — so the Store tab would show a "CD" carrying an LP's url
+  and price. `search()` therefore rejects a target on another medium before
+  querying, reading `release["format"]` — Discogs' `formats[0].name` on a
+  release target, and a store crawler's own string on a stock-item one, which
+  is what the two constants below are for. Rejecting before the request rather
+  than filtering after it also spends no request on the store for a question
+  with no right answer. `crawlers/amazon.py` is the fleet precedent for a
+  release crawler gating on the target's format.
+
+  **Two vocabularies reach this gate, and each needs the opposite structure.**
+  That is the whole design, and getting it wrong cost three review rounds.
+
+  A **release** target carries Discogs' controlled format vocabulary —
+  `discogs.parse_release()` forwards `formats[0].name` unchanged — which is a
+  *closed* set, so `_DISCOGS_VINYL_FORMATS` names what may **pass**. That is
+  complete by construction: `DAT`, `Cylinder`, `Laserdisc`, `Memory Stick` and
+  every other medium fail closed without anyone enumerating them, including
+  ones Discogs adds after this is written. A denylist here was wrong twice
+  over — `Shellac` and `Acetate` first, then the rest of the tail — and each
+  fix that only added terms invited the next gap.
+
+  A **stock-item** target carries whatever a sibling store crawler wrote
+  (`LP`, `2xLP`, `7"`) — `get_eligible_crawlers()` admits a release crawler
+  with `requires_discogs_release = False` for those too — which is open-ended
+  free text, so the release allowlist would reject every one of them. Those
+  rows are vinyl by construction, since the crawler that wrote each had
+  already filtered its own catalog to vinyl, so `_OTHER_MEDIUM_RE` only has to
+  catch the strays and names what may **not** pass. The two are told apart by
+  `discogs_id`, which a `catalog` row has and a `stock_item_identities` row
+  does not.
+
+  The same medium can be named differently in each vocabulary, which is the
+  trap: Discogs writes shellac as `Shellac`, while `crawlers/amoeba.py` reads
+  it off a title's trailing `(78)` and stores the bare `78`. Rejecting only
+  the Discogs spelling leaves the identical row arriving under the other
+  label. `_OTHER_MEDIUM_RE`'s terms are plain substrings, since a store
+  qualifies these names much as Discogs does and no vinyl format written by
+  either side contains one; the single numeric term is anchored on the left
+  and open on the right, so `78rpm` matches and a year never does.
+
+  **What passes, and why the allowlist is not narrower.** "A record you put a
+  needle on" is *not* the test: this store sells **new vinyl**, so a pre-war
+  78 (`Shellac`) and a one-off lacquer (`Acetate`) are as wrong a match for it
+  as a CD is, and `Flexi-disc` and `Lathe Cut` are worse than either — both
+  are usually alternate pressings of an album that also exists as a standard
+  LP, which is exactly when the title match succeeds and the wrong price gets
+  published. Only the two container formats join `Vinyl`: `Box Set` and `All
+  Media` can genuinely hold vinyl, so Discogs has not answered the question
+  there, and nor has it when the field is empty. Those still search and lean
+  on the product-type gate, because rejecting the one format this crawler
+  exists to serve is the failure on the other side of this gate. Rejecting
+  costs no site-health signal either way, per `empty_result_is_expected`
+  below.
+
+- **A malformed detail response is a failure, not an answer.** The
+  `/products/<handle>.js` lookup is the only thing that decides *both*
+  availability and price, so a 200 whose `variants` is absent, null or empty
+  cannot be read as "a product nobody can buy" — a real Shopify product always
+  carries at least one variant. Treating it as an answer would publish an
+  unpriced row on the strength of a payload nothing actually read, and record
+  the site as healthy while doing it. It raises instead, per CLAUDE.md's
+  crawler contract. Distinct from the two states that *are* answers, and that
+  the same lookup still reports: a product whose variants are all sold out
+  (dropped), and a buyable variant whose price will not parse (kept, unpriced).
+
 - **The old snapshot had to be cleared.** `db.replace_stock_items()` runs only
   for the catalog kinds, so rows written while this was a catalog crawler
   would never be refreshed and never deleted. `db.register_crawler()` now
@@ -520,6 +611,28 @@ What the conversion had to get right:
   `release_id IS NULL` — exactly the catalog-written set, since the release
   path writes through `upsert_stock_item_from_release()`, which always carries
   a release_id.
+
+  Two further writes ride in that same transaction, both load-bearing rather
+  than incidental, and an implementation from this section without them is
+  incomplete. **The queue is backfilled**, via
+  `backfill_crawl_queue_for_crawler()`, for the same reason enabling a release
+  crawler backfills: eligibility resolves at dispatch, so every still-pending
+  target picks the converted crawler up for free, but targets already marked
+  `done` would not see it until the next sync or scheduled sweep. It runs after
+  the upsert, since the backfill's own guard reads `crawler_type = 'release'`
+  off the row, and is **gated on the crawler's retained enabled state** —
+  the upsert deliberately leaves `enabled` out of its `DO UPDATE` list so an
+  administrator's decision survives a redeploy, and `get_eligible_crawlers()`
+  filters on `enabled`, so backfilling a disabled crawler would re-walk the
+  whole queue to produce no work at all. **Dead stock rows are then swept**,
+  via `delete_dead_stock_crawl_queue_rows()`, exactly as `routers/settings.py`'s
+  enable path does. There are two sources of them, not one: the `DELETE` above
+  orphans any `crawl_queue` row whose `item_key` came from this crawler's
+  catalog-era snapshot, and the backfill's first `UPDATE` carries no
+  stock-source predicate, so it can revive rows whose store is disabled or
+  whose item has left stock. Either way they would otherwise sit pending and
+  unclaimable in the claim index until some later stock sync happened to catch
+  them.
 
 - **A miss here is not a fault.** The release path counts an empty result
   against the per-site consecutive-failure breaker, on the reasoning that a
