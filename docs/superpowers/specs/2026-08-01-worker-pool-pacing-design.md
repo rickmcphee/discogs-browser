@@ -82,6 +82,10 @@ Discogs releases (see `docs/specifications/shaping/2026-08-08-crawl-target-expan
    `test_drain_one_batch_counts_bot_detected_stock_item_search_as_a_failure`,
    and `test_drain_one_batch_resets_failure_count_on_a_found_stock_item_match`.
 
+**Amendment (2026-08-28, branch `claude/store-crawler-activity-missing-1tybli`):** item 8's release-target half — an empty result on a *release* row counts as a failure — is no longer unconditional. Its rationale is that a real Discogs release absent from a near-universal marketplace is evidence something is wrong, and that reasoning does not survive contact with a crawler for a single shop: Waterloo Records stocks a fraction of any given library, so a run of releases it does not carry is its ordinary healthy behaviour. Left as it was, `consecutive_failure_limit` such releases in a row would trip the breaker and cool off a site that answered every request correctly, and a user whose library overlaps the store thinly would see it crawl only in short bursts.
+
+A release crawler can now declare `empty_result_is_expected = True`, which makes an empty result read exactly the way a stock-item row's already does: nothing recorded, neither increment nor reset. Bot detection and real matches are unaffected, so the breaker still sees every genuine signal. The check is `getattr(...) is True` rather than a truthiness test, because a plugin is duck-typed and an attribute of some other type must not silently switch the breaker off. Covered by `test_drain_one_batch_excludes_empty_release_result_when_the_crawler_expects_misses`, `test_drain_one_batch_still_counts_empty_release_result_for_a_normal_crawler`, and `test_drain_one_batch_counts_bot_detection_even_when_the_crawler_expects_misses`. Raised by GitHub Copilot's review on PR #210.
+
 **Amendment (2026-08-09, branch `claude/ebay-409-cooloff`):** item 8's exclusion
 had a consequence nobody spotted when it landed.
 

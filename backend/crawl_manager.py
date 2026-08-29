@@ -579,17 +579,29 @@ class CrawlManager:
                     await resolve_row(row_id)
                 continue
 
-            if is_release:
+            # An empty result is evidence the site is broken only where the site
+            # would be expected to have the record. That holds for a real Discogs
+            # release on a near-universal marketplace, and for nothing else here:
+            # most small-label stock isn't listed on Amazon/eBay at all, and a
+            # single record store legitimately does not stock most of anyone's
+            # library however healthy it is. A crawler for such a store says so
+            # with empty_result_is_expected, and is then read the same way a
+            # stock-item row already is -- only a genuine signal (bot detection,
+            # or a match proving the site currently works) is recorded, and a
+            # plain empty result is excluded from the circuit breaker rather than
+            # counted as either outcome. Without that, a run of
+            # consecutive_failure_limit library releases the store happens not to
+            # carry would cool off a perfectly healthy site.
+            # `is True`, not a truthiness test: a plugin is duck-typed, so an
+            # attribute of any other type must not silently switch the breaker
+            # off. Only an explicit True opts out; anything else keeps the
+            # conservative behaviour of counting the miss.
+            empty_counts_as_failure = is_release and (
+                getattr(plugin, "empty_result_is_expected", False) is not True
+            )
+            if empty_counts_as_failure:
                 await self._record_site_result(crawler_id, succeeded=bool(matches) and not bot_detected)
             elif bot_detected or matches:
-                # A stock item's search failing to find anything carries no
-                # site-health signal -- most small-label stock isn't listed on
-                # Amazon/eBay at all, so an empty result there isn't evidence the
-                # site is broken the way it is for a real Discogs release. Only
-                # a genuine signal (bot detection, or a match that proves the
-                # site currently works) is recorded; a plain empty result is
-                # silently excluded from the circuit breaker rather than counted
-                # as either outcome.
                 await self._record_site_result(crawler_id, succeeded=not bot_detected)
 
             # Ownership is re-checked here, in the same transaction as the
