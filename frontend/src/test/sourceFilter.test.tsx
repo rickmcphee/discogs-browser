@@ -58,6 +58,7 @@ describe('SourceFilter', () => {
     expect(screen.getByRole('checkbox', { name: 'Punk' })).toBeInTheDocument()
     expect(screen.getByRole('checkbox', { name: 'Metal' })).toBeInTheDocument()
     expect(screen.getByRole('checkbox', { name: 'Rock' })).toBeInTheDocument()
+    expect(screen.queryByRole('checkbox', { name: 'Pop' })).not.toBeInTheDocument()
     expect(screen.getByText('Amazon')).toBeInTheDocument()
     expect(screen.getByText('Epitaph')).toBeInTheDocument()
     expect(screen.getByText('Century Media')).toBeInTheDocument()
