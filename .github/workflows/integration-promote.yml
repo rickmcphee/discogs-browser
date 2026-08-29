@@ -13,6 +13,11 @@ name: Promote integration to main
 # strict_required_status_checks_policy compares a PR's head with its own base,
 # so a Dependabot PR goes "behind" whenever `integration` itself moves -- never
 # because `main` did. integration-sync.yml's `refresh` job covers that half.
+#
+# main-branch-protection sets that same policy, so a PR based on `main` goes
+# "behind" whenever `main` moves -- which this workflow's own promotion does.
+# That is the same mechanism again on the other branch, not this one, and
+# `refresh` routes both bases.
 
 on:
   schedule:
