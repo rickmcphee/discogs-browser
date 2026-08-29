@@ -408,6 +408,17 @@ This site's findings, from the `robots.txt` captured 2026-08-24:
   `random.uniform(delay * 0.5, delay)` with `crawl_delay_seconds`
   defaulting to 30s. No detail-page fan-out. `iter_products()` fails fast
   on 429 and gives up after `consecutive_failure_limit` on anything else.
+  **(2026-08-28: superseded by the conversion below.** The load is no longer
+  a per-sync walk. It is one `/search/suggest.json` request per library
+  release, spaced by `_paced_search`'s per-site gap, plus at most one
+  `/products/<handle>.js` per *closest-ranked* match — and only where the
+  product's own `price_min` and `price_max` disagree, which most do not.
+  Those lookups are paced by the crawler itself at the same
+  `random.uniform(delay * 0.5, delay)`, because `_paced_search` spaces
+  separate `search()` calls rather than the requests inside one; without
+  that the suggest request and each lookup would burst back to back. Both
+  paths are the public storefront JSON the `robots.txt` findings above
+  already cover, and neither carries `sort_by`, `+` or `filter`.**)
 - Contact for crawler issues, per the file: `bots@shopify.com`.
 - If Waterloo Records blocks this crawler, adds a `Disallow` covering
   this path, or asks us to stop, the response is to disable the plugin.
@@ -420,3 +431,117 @@ interface — one new outbound host (`waterloorecords.com`).
 
 `backend/version.py`'s `VERSION` is derived from git and is not edited by
 this change.
+
+## Amendment (2026-08-28, branch `claude/store-crawler-activity-missing-1tybli`)
+
+**The "Scale, and why it is accepted" section above is wrong in its central
+assumption, and this crawler has never written a single row.**
+
+That section plans a full walk — "144 GETs per sync", "143 non-empty pages",
+"and then the empty page `iter_products()` needs to terminate" — and the
+verification list restates it as "pagination terminates on an empty page".
+Waterloo's `vinyl-lps` never reaches an empty page. Shopify's storefront
+`products.json` refuses `page` past 100 with an HTTP 400 whatever `limit`
+says, so the endpoint tops out at 25,000 products. Confirmed live on
+2026-08-28: pages 1-100 each return a full 250 products, page 101 returns
+400, and so does every page above it. The collection has since grown to
+36,138 products, so a complete walk would need 145 pages — 45 of them past
+the ceiling.
+
+The consequence was total, not partial. `iter_products()` classified the 400
+as a transient fault, retried page 101 for the whole `consecutive_failure_limit`
+budget, and then raised; `_sync_stock` skips `replace_stock_items()` entirely
+when a catalog crawl raises, so roughly 40 minutes of successfully fetched
+pages were discarded on every run. The store showed continuous healthy
+page-fetch activity at INFO and zero rows in the Store tab, with the
+explanatory line at ERROR, which `routers/logs.py`'s exact-level filter keeps
+out of an INFO view.
+
+`iter_products()` now stops cleanly at the ceiling and keeps what it fetched
+(see the 2026-08-28 amendment to
+[`2026-08-02-stock-sync-429-backoff-design.md`](../../superpowers/specs/2026-08-02-stock-sync-429-backoff-design.md)),
+which turns this crawler from zero rows into the first 25,000 products of the
+collection. That is a floor, not a resolution: roughly 11,000 products remain
+unreachable through this endpoint, and which ones fall outside the ceiling is
+decided by the collection's own ordering rather than by anything meaningful.
+
+**Decided: this store is now a `release` crawler, not a `catalog` one.**
+
+The Problem section above already records that Waterloo "is a general
+retailer, not a label store" — the trait that separates it from every sibling
+— and that is what settles it. A catalog crawler answers "what is on the
+shelf", which only works if the shelf can be enumerated; this one cannot be.
+A release crawler answers "can I buy *this* record here, and for how much",
+which the endpoint below can answer completely.
+
+`crawl_catalog()` is therefore replaced by `search()` over
+`/search/suggest.json`, which has no page ceiling and reaches the whole
+catalog. It returns `available`, `price`, `url` and the same `type` field this
+crawler's vinyl gate already read, so the format and availability rules carry
+over unchanged; `crawlers/ebay.py` is the precedent for an API-backed release
+crawler that ignores the Playwright page it is handed.
+
+What the conversion had to get right:
+
+- **The url carries the search that produced it.** suggest.json returns
+  `/products/<handle>?_pos=…&_psq=…&_psid=…`, and every one of those varies per
+  search. `db.compute_item_key()` hashes the url, so they are stripped — left
+  on, one product would take a fresh `item_key` on every crawl and orphan the
+  saves and judgments hanging off the old one.
+- **The endpoint is a search box, not a lookup.** "geese getting killed"
+  returns 3D Country and a Third Man live record alongside the album asked
+  for, and the fleet reads `matches[0]`. Both halves of the store's
+  `Artist - Album` convention are checked, and matches are then *ranked*
+  rather than filtered further: rank 0 is an exact title once the bracketed
+  qualifiers come off, which only a base pressing achieves, and rank 1 is an
+  exact match against the text before *any* qualifier delimiter (`:`, `[`,
+  `(`, a spaced dash). Every boundary is tried rather than only the first,
+  because an album whose own title contains a delimiter would otherwise be
+  truncated to its opening fragment — "Live: In Concert" would become "Live"
+  and never match this store's "Live: In Concert: Anniversary Edition [LP]".
+  Trying each still rejects "Kid A Mnesia", since no boundary of it yields
+  "Kid A". Rank 1 is deliberately *not*
+  `db._library_match_fragment`'s exact-or-prefix-with-space rule, though an
+  earlier draft used it. That rule answers "does this stock row correspond to
+  a release the user owns", where a wrong answer mislabels ownership; this one
+  decides whose price gets published. Under the prefix rule, a "Kid A" search
+  returning only "Kid A Mnesia [3LP]" would publish the Mnesia box set's price
+  as Kid A's — ranking only prevented that while a genuine "Kid A" was also in
+  the results. Cutting at the delimiter instead rejects a title that merely
+  continues in plain words ("Kid A Mnesia", "OK Computer Oknotok 1997 2017")
+  while still matching a qualified edition ("Abbey Road: Anniversary Edition
+  [LP]", the only Abbey Road this store stocks). A missing price beats a wrong
+  one, because the fleet reads `matches[0]` and shows it as this record's price
+  at this store.
+- **The old snapshot had to be cleared.** `db.replace_stock_items()` runs only
+  for the catalog kinds, so rows written while this was a catalog crawler
+  would never be refreshed and never deleted. `db.register_crawler()` now
+  clears them when a crawler changes kind to `release`, scoped to
+  `release_id IS NULL` — exactly the catalog-written set, since the release
+  path writes through `upsert_stock_item_from_release()`, which always carries
+  a release_id.
+
+- **A miss here is not a fault.** The release path counts an empty result
+  against the per-site consecutive-failure breaker, on the reasoning that a
+  real Discogs release absent from a near-universal marketplace means
+  something is wrong. That does not hold for one shop: Waterloo stocks a
+  fraction of any given library, so a run of releases it does not carry is
+  ordinary. It therefore declares `empty_result_is_expected = True`, and an
+  empty result records no site-health signal at all — bot detection and real
+  matches still do. Without it, `consecutive_failure_limit` unstocked releases
+  in a row would cool off a site that answered every request correctly.
+
+**Consequences.** Waterloo keeps a Store tab presence, but a different one: a
+release crawler still writes `stock_items` through
+`upsert_stock_item_from_release()`, so what appears is driven by libraries
+rather than by the shelf. Note that `stock_items` carries no `user_id` and is
+not user-scoped -- a row written because *some* tenant's queue asked about a
+release is visible to everyone, so what surfaces is the union of what Waterloo
+stocks across all users' libraries, not one user's own. What cannot appear is a
+release absent from every library, since nothing would ever enqueue it. Browsing
+Waterloo for records you do not already have is gone, and that is the price of
+completeness on a catalog this size. Waterloo also joins the eligible release
+crawlers expanded per `crawl_queue` row at dispatch, alongside `amazon`,
+`ebay` and `ebay_general`; the per-source dispatch estimates in the other
+crawler design docs were computed against the set registered at the time and
+were not re-derived for this change.

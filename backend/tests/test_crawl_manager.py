@@ -5016,3 +5016,97 @@ async def test_drain_one_batch_does_not_clear_a_price_after_losing_its_claim(pg_
             "SELECT price FROM listings WHERE release_id = 'r1' AND crawler_id = %s", [crawler_id]
         ).fetchone()
     assert listing["price"] == 5.00
+
+
+def _release_queue_row(conn, site_name="Waterloo Records"):
+    db.register_crawler(conn, site_name, "/x.py")
+    crawler_id = conn.execute(
+        "SELECT id FROM crawlers WHERE site_name = %s", [site_name]
+    ).fetchone()["id"]
+    db.upsert_catalog_release(conn, {
+        "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+        "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+        "discogs_url": None,
+    })
+    db.enqueue_crawl_queue(conn, "r1")
+    conn.commit()
+    return crawler_id
+
+
+async def test_drain_one_batch_excludes_empty_release_result_when_the_crawler_expects_misses(pg_schema):
+    """A single record store legitimately does not stock most of any library.
+
+    Without this, `consecutive_failure_limit` library releases in a row that the
+    store happens not to carry would trip the breaker and cool off a site that
+    answered every request correctly.
+    """
+    with db.get_admin_pool().connection() as conn:
+        crawler_id = _release_queue_row(conn)
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    manager._site_consecutive_failures[crawler_id] = 5
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(return_value=[])
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Waterloo Records"
+    fake_plugin.empty_result_is_expected = True
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("config.load_config", return_value={"crawl_delay_seconds": 0, "consecutive_failure_limit": 10}):
+        await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    # Neither incremented nor reset -- an empty result carries no signal here.
+    assert manager._site_consecutive_failures[crawler_id] == 5
+
+
+async def test_drain_one_batch_still_counts_empty_release_result_for_a_normal_crawler(pg_schema):
+    """The opt-out is per crawler, not a blanket relaxation: a near-universal
+    marketplace that cannot find a real Discogs release is still evidence that
+    something is wrong with the site."""
+    with db.get_admin_pool().connection() as conn:
+        crawler_id = _release_queue_row(conn, site_name="Amazon")
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    manager._site_consecutive_failures[crawler_id] = 5
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(return_value=[])
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+    # Explicitly absent -- and an AsyncMock would otherwise auto-create a truthy
+    # attribute here, which is exactly what the `is True` check guards against.
+    fake_plugin.empty_result_is_expected = False
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("config.load_config", return_value={"crawl_delay_seconds": 0, "consecutive_failure_limit": 10}):
+        await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    assert manager._site_consecutive_failures[crawler_id] == 6
+
+
+async def test_drain_one_batch_counts_bot_detection_even_when_the_crawler_expects_misses(pg_schema):
+    """The opt-out covers empty results only. Bot detection is a genuine
+    site-health signal whatever the store's catalogue looks like."""
+    from crawler import BotDetectedError
+
+    with db.get_admin_pool().connection() as conn:
+        crawler_id = _release_queue_row(conn)
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(side_effect=[BotDetectedError(), []])
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Waterloo Records"
+    fake_plugin.empty_result_is_expected = True
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("crawler._reset_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("config.load_config", return_value={"crawl_delay_seconds": 0, "consecutive_failure_limit": 10}):
+        await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    assert manager._site_consecutive_failures[crawler_id] == 1

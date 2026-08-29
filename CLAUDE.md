@@ -94,9 +94,11 @@ class Crawler:
 
 The backend owns the Playwright browser. Plugins receive a live `Page` and must raise `BotDetectedError` on bot interstitials.
 
-Catalog crawlers (`crawl_catalog`, not shown above) may additionally declare an optional `genre_summary: str` attribute — a one-sentence description read by Settings to show as a hover tooltip on the store link.
+Any crawler for a named storefront may additionally declare an optional `genre_summary: str` attribute — a one-sentence description read by Settings to show as a hover tooltip on the store link. Not scoped to the catalog kinds: Settings renders the tooltip for any crawler carrying one, and Waterloo Records is a `release` crawler that declares it.
 
 **`[]` means "the site answered and has nothing." Any failure must raise.** The consecutive-failure circuit breaker cannot tell the two apart otherwise, and on the stock-item path an empty result is deliberately not counted as a failure at all — so a crawler that swallows its errors into `[]` never cools its site off.
+
+`empty_result_is_expected` is optional and release-crawler-only: set it to `True` on a crawler for a single store rather than a near-universal marketplace, and an empty `search()` result records no site-health signal instead of counting toward the breaker. Without it, a run of library releases the store simply does not stock would cool off a perfectly healthy site. Only a literal `True` opts out.
 
 `failure_domain` is optional: crawlers declaring the same value count as one site to that breaker. Only the eBay plugins use it (`"ebay-browse-api"` — one app, one token, one API across more than one `crawlers` row). Omit it and the crawler is its own domain.
 
