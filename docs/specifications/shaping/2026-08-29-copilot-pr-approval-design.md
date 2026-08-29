@@ -81,14 +81,16 @@ toggle that `integration` needs has not loosened `main`.)
 
 ## Why approval is the wrong power to hand it
 
-### The approval would attach to the first push and never move
+### The approval would attach to an early head and never move
 
-`review_on_push: true` means Copilot reviews the moment a branch is pushed —
-the first commit, before the work is finished. `dismiss_stale_reviews_on_push:
-false` means no later push clears that review, and `require_last_push_approval:
-false` means the final push needs no approval of its own. An approval granted to
-the first commit therefore satisfies the rule for every commit after it,
-including ones written in response to Copilot's own objections.
+`review_on_push: true` means Copilot reviews a pull request when it opens and
+again on every push to it. The first review therefore lands on whatever head the
+pull request opened with, which is rarely the head that merges.
+`dismiss_stale_reviews_on_push: false` means no later push clears that review,
+and `require_last_push_approval: false` means the final push needs no approval of
+its own. An approval granted to an early head therefore satisfies the rule for
+every head after it, including ones pushed in answer to Copilot's own
+objections.
 
 PR #233 is the worked example, and it is not a contrived one — it is a routine
 copy change that merged the same afternoon:
@@ -101,10 +103,15 @@ copy change that merged the same afternoon:
 | 18:28:43 | `89a5cc6` | 🟢 Approval recommended |
 | 18:33:15 | | merged |
 
-With approvals enabled, the 18:18 review unlocks the merge fifteen minutes
-before Copilot finds the bug at 18:23 — and because stale reviews are not
-dismissed, Copilot's own retraction cannot take the approval back. The gate ends
-up satisfied by a judgment its author revised.
+With approvals enabled, the 18:18 review unlocks the merge five minutes before
+Copilot finds the bug at 18:23, and fourteen before the merge actually happens.
+The exposure is that window rather than a permanent grant — a later
+`REQUEST_CHANGES` from the same reviewer would supersede its own approval — but a
+window is all it takes, and #134 went from green CI to merged in two seconds.
+What `dismiss_stale_reviews_on_push: false` adds is that no *push* closes the
+window either, so an approval also carries across the commits written to answer
+the objection. Either way the gate can be satisfied by a judgment its author is
+in the middle of revising.
 
 ### It re-opens the hole the rule was raised to close
 
@@ -191,18 +198,21 @@ Two changes to `main-branch-protection`, neither of which grants any bot an
 approval:
 
 1. **`required_review_thread_resolution: true`.** Copilot's *inline* findings
-   then block any non-bypass merge until each is explicitly resolved — the
-   18:23 finding on PR #233 among them, which was an inline comment on
-   `backend/recommendations_prompt.md:9`, so that example survives the
-   narrowing. The narrowing is real, though, and worth stating rather than
-   glossing: a finding Copilot emits only in the review *body* has no thread to
-   resolve and stays advisory. `CLAUDE.md` already draws that line where it
-   notes a suppressed comment carries no `comment_id` to reply to. Copilot's own
-   reviews of this design are the demonstration. Its first round raised one
-   inline comment and suppressed the rest into the body; its second round —
-   which produced the scoping caveat below, the sharpest finding of either —
-   raised no inline comment at all. Thread resolution would have reached none of
-   those. So this binds part of a review, not a review.
+   then block any non-bypass merge until each is explicitly resolved. PR #233's
+   18:23 finding was an inline comment on `backend/recommendations_prompt.md:9`,
+   so it is the *kind* of finding this reaches — though not that merge, which
+   the owner performed and the bypass would have waived along with everything
+   else in the rule. Two narrowings apply here, not one, and both are worth
+   stating rather than glossing. The second: a finding Copilot emits only in the
+   review *body* has no thread to resolve and stays advisory. `CLAUDE.md`
+   already draws that line where it notes a suppressed comment carries no
+   `comment_id` to reply to. Copilot's own reviews of this design are the
+   demonstration: over its rounds on this pull request most findings arrived
+   suppressed into the body, and one round raised nothing inline at all. The
+   body is also where its sharpest findings landed — the bypass scoping above
+   among them, and the correction that this document had its own timeline
+   wrong. Thread resolution would have reached none of those. So this binds part
+   of a review, not a review.
 
 2. **`require_last_push_approval: true`.** The most recent push has to be
    approved by someone who did not push it, closing the stale-approval gap on
