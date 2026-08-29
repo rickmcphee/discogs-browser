@@ -28,3 +28,212 @@ def test_search_url_strips_leading_r_from_discogs_id():
 
 def test_site_name_is_discogs():
     assert Crawler.site_name == "Discogs"
+
+
+# --- Page-reading tests -----------------------------------------------------
+#
+# A real headless browser loads a saved fixture via set_content() (no
+# navigation, no live site), mirroring test_sideonedummyrecords_crawler.py.
+# These cover the behaviour the crawler previously got wrong: it read the DOM
+# at domcontentloaded without waiting for anything, and reported every page it
+# could not parse as "no listings" -- which the crawl manager acts on by
+# clearing the release's stored price.
+
+from pathlib import Path
+
+import httpx
+import pytest
+import respx
+from playwright.async_api import async_playwright
+
+import crawlers.discogs_marketplace as dm
+from crawler import BotDetectedError
+
+FIXTURES = Path(__file__).parent / "fixtures" / "crawlers" / "discogs_marketplace"
+LISTED_TITLE = "Rick Astley - Never Gonna Give You Up | Releases for Sale | Discogs"
+RELEASE = {"discogs_id": "r249504", "artist": "Rick Astley", "title": "Never Gonna Give You Up"}
+
+
+@pytest.fixture
+async def browser_page():
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch()
+        page = await browser.new_page()
+        yield page
+        await browser.close()
+
+
+class _FakePage:
+    """Wraps a real page so goto() loads a fixture, and scripts the title.
+
+    `titles` is consumed one entry per title() call, the last entry sticking --
+    that is what lets a test drive Cloudflare's interstitial being replaced by
+    the real page a moment later, which is the case the old crawler could never
+    see because it read the title once and immediately gave up.
+    """
+
+    def __init__(self, real_page, fixture, titles=(LISTED_TITLE,)):
+        self._real = real_page
+        self._html = (FIXTURES / fixture).read_text(encoding="utf-8")
+        self._titles = list(titles)
+        self.waits = 0
+
+    async def goto(self, url, wait_until=None):
+        await self._real.set_content(self._html, wait_until="domcontentloaded")
+
+    async def title(self):
+        return self._titles[0] if len(self._titles) == 1 else self._titles.pop(0)
+
+    async def wait_for_timeout(self, ms):
+        self.waits += 1
+
+    async def wait_for_selector(self, selector, timeout=None, state=None):
+        # set_content() has already painted everything the fixture will ever
+        # have, so presence is decided once rather than really waiting out
+        # `timeout` -- otherwise the "markup not recognised" tests would each
+        # burn the full 15s.
+        if await self._real.locator(selector).count() == 0:
+            raise TimeoutError(f"selector not found in fixture: {selector}")
+
+    def locator(self, selector):
+        return self._real.locator(selector)
+
+
+async def test_returns_every_usa_listing_cheapest_first(browser_page):
+    page = _FakePage(browser_page, "usa_listings.html")
+    results = await Crawler().search(RELEASE, page)
+
+    assert [r["price"] for r in results] == [6.50, 9.25, 12.99]
+    assert results[0]["currency"] == "USD"
+    assert results[0]["shipping"] == 3.00
+    assert "Near Mint" in results[0]["condition"]
+
+
+async def test_cheapest_is_chosen_here_not_taken_from_page_order(browser_page):
+    """The fixture's rows are deliberately not price-ascending.
+
+    `sort=price,asc` in the search URL has never been confirmed against the
+    live page, so a crawler that trusted it would report $12.99 -- the first
+    row -- as the cheapest listing.
+    """
+    page = _FakePage(browser_page, "usa_listings.html")
+    results = await Crawler().search(RELEASE, page)
+
+    assert results[0]["price"] == 6.50
+
+
+async def test_free_shipping_row_keeps_a_null_shipping(browser_page):
+    page = _FakePage(browser_page, "usa_listings.html")
+    results = await Crawler().search(RELEASE, page)
+
+    assert next(r for r in results if r["price"] == 9.25)["shipping"] is None
+
+
+async def test_reported_url_is_the_search_url_not_the_landed_url(browser_page):
+    page = _FakePage(browser_page, "usa_listings.html")
+    results = await Crawler().search(RELEASE, page)
+
+    assert results[0]["url"] == Crawler.search_url(RELEASE)
+
+
+async def test_card_markup_without_the_legacy_table_still_parses(browser_page):
+    """A restyle that drops the pjax table but keeps data-pricevalue."""
+    page = _FakePage(browser_page, "card_listings.html")
+    results = await Crawler().search(RELEASE, page)
+
+    assert [r["price"] for r in results] == [8.00, 21.00]
+    assert results[0]["condition"] == "Very Good (VG)"
+
+
+async def test_rendered_empty_state_is_an_honest_no_match(browser_page):
+    page = _FakePage(browser_page, "no_usa_listings.html")
+
+    assert await Crawler().search(RELEASE, page) == []
+
+
+async def test_unreadable_page_raises_when_copies_are_for_sale(browser_page, monkeypatch):
+    """The bug this crawler shipped with.
+
+    Unrecognised markup used to return [], which the crawl manager reads as
+    "the site answered and has nothing" -- clearing the release's stored price
+    and counting the miss toward the circuit breaker. It has to raise instead.
+    """
+    async def _stats(release_id):
+        return 124
+
+    monkeypatch.setattr(dm, "_release_num_for_sale", _stats)
+    page = _FakePage(browser_page, "redesigned.html")
+
+    with pytest.raises(RuntimeError, match="markup not recognised"):
+        await Crawler().search(RELEASE, page)
+
+
+async def test_unreadable_page_is_a_no_match_when_nothing_is_for_sale(browser_page, monkeypatch):
+    """A release with no copies anywhere renders no listings region either.
+
+    Raising here would cool the whole site off for 30 minutes over a run of
+    obscure records, so Discogs's own count is what settles it.
+    """
+    async def _stats(release_id):
+        return 0
+
+    monkeypatch.setattr(dm, "_release_num_for_sale", _stats)
+    page = _FakePage(browser_page, "redesigned.html")
+
+    assert await Crawler().search(RELEASE, page) == []
+
+
+async def test_unreadable_page_raises_when_the_stats_api_will_not_answer(browser_page, monkeypatch):
+    async def _stats(release_id):
+        return None
+
+    monkeypatch.setattr(dm, "_release_num_for_sale", _stats)
+    page = _FakePage(browser_page, "redesigned.html")
+
+    with pytest.raises(RuntimeError, match="unknown"):
+        await Crawler().search(RELEASE, page)
+
+
+async def test_interstitial_that_clears_is_not_treated_as_bot_detection(browser_page):
+    page = _FakePage(browser_page, "usa_listings.html",
+                     titles=["Just a moment...", "Just a moment...", LISTED_TITLE])
+    results = await Crawler().search(RELEASE, page)
+
+    assert results[0]["price"] == 6.50
+    assert page.waits == 2
+
+
+async def test_interstitial_that_never_clears_raises_bot_detected(browser_page, monkeypatch):
+    monkeypatch.setattr(dm, "_SETTLE_TIMEOUT_MS", 50)
+    page = _FakePage(browser_page, "usa_listings.html", titles=["Just a moment..."])
+
+    with pytest.raises(BotDetectedError):
+        await Crawler().search(RELEASE, page)
+
+
+@respx.mock
+async def test_release_num_for_sale_reads_the_marketplace_stats_api():
+    respx.get("https://api.discogs.com/marketplace/stats/249504").mock(
+        return_value=httpx.Response(200, json={"num_for_sale": 124, "blocked_from_sale": False})
+    )
+
+    assert await dm._release_num_for_sale("249504") == 124
+
+
+@respx.mock
+async def test_release_num_for_sale_returns_none_when_the_api_errors():
+    respx.get("https://api.discogs.com/marketplace/stats/249504").mock(
+        return_value=httpx.Response(502, text="bad gateway")
+    )
+
+    assert await dm._release_num_for_sale("249504") is None
+
+
+def test_empty_result_is_expected_so_a_confirmed_miss_does_not_trip_the_breaker():
+    """Only safe because unreadable pages now raise rather than returning [].
+
+    With both outcomes collapsed into [], the crawl manager could only guess,
+    and it guessed "broken" -- cooling Discogs off over releases that genuinely
+    have no USA seller.
+    """
+    assert Crawler.empty_result_is_expected is True
