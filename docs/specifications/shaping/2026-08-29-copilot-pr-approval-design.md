@@ -104,15 +104,22 @@ copy change that merged the same afternoon:
 | 18:28:43 | `89a5cc6` | 🟢 Approval recommended |
 | 18:33:15 | | merged |
 
-With approvals enabled, the 18:18 review unlocks the merge five minutes before
-Copilot finds the bug at 18:23, and fourteen before the merge actually happens.
-The exposure is that window rather than a permanent grant — a later
-`REQUEST_CHANGES` from the same reviewer would supersede its own approval — but a
-window is all it takes, and #134 went from green CI to merged in two seconds.
-What `dismiss_stale_reviews_on_push: false` adds is that no *push* closes the
-window either, so an approval also carries across the commits written to answer
-the objection. Either way the gate can be satisfied by a judgment its author is
-in the middle of revising.
+With approvals enabled, the 18:18:57 review is the approval the rule asks for,
+and it stands untouched while the work continues. It is not the whole gate,
+though, and this example should not imply otherwise: a merge also needs the
+required checks green. On `e17f096` the last of them finished at 18:21:51 and
+the next commit landed at 18:21:56, so the interval in which every gate was
+actually satisfied on that stale approval was a handful of seconds — not the
+five minutes until Copilot found the bug at 18:23:59, and not the fourteen until
+the merge.
+
+A handful of seconds is the point rather than a reprieve from it: #134 went from
+green CI to merged in two. And the approval is not confined to one window.
+`dismiss_stale_reviews_on_push: false` carries it across every later push, so it
+sits there already granted each time the checks go green again — including on
+the commits written to answer the objection. A later `REQUEST_CHANGES` from the
+same reviewer would supersede it, so the exposure is those repeated windows
+rather than a permanent grant. Any one of them is wide enough.
 
 ### It re-opens the hole the rule was raised to close
 
