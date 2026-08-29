@@ -24,8 +24,9 @@ Touches:
   `stock_items` query is extracted into `_stock_filter_sql`; new
   `get_stock_source_counts` built on it.
 - `backend/routers/stock.py` — new `GET /api/stock/stats`.
-- `frontend/src/components/Donut.tsx` — new, the ring geometry lifted
-  verbatim out of `QueueView`'s `StateDonut`, which now renders through it.
+- `frontend/src/components/Donut.tsx` — new, the ring geometry lifted out of
+  `QueueView`'s `StateDonut`, which now renders through it, with one
+  correction to how it draws a sub-gap-sized segment (see below).
 - `frontend/src/components/StockStats.tsx` — new, the `Stats` button and its
   panel; `frontend/src/components/stockSlices.ts` — new, the palette and the
   ring's fold rule, in their own module so the component file exports only a
@@ -155,9 +156,13 @@ store identity in the store one) and only the geometry is shared.
 `StateDonut` stays, as the thin wrapper that maps queue states onto it.
 
 The geometry carries one correction rather than moving verbatim — the
-small-segment cap below. It is a fix, not a redesign: it changes only
-segments allocated less than the gap floor, which is a case the queue ring's
-three states cannot reach, so that ring renders identically before and after.
+small-segment cap below. It is shared, not store-only: the queue ring reaches
+that case too, since its three values are unconstrained work-unit totals and
+one state holding a single unit against twenty thousand claimable is an
+ordinary queue. Both rings get the same fix, and in both it is a fix — a
+sliver stops overstating itself and stops painting over its neighbour.
+`queueView.test.tsx` passing unchanged says the queue ring's contract is
+intact, not that every pixel of it is.
 
 `onSelect` and `onHover` are both optional and independent: the queue ring
 selects, the store ring highlights on hover, and neither grows the other's
@@ -170,6 +175,11 @@ overstates a sliver — 1 item of 5,000 is allocated 0.08 of the ring and would
 be drawn at the 0.5 floor, six times its share. The drawn length is therefore
 capped at the allocation: below the floor a segment gives up its gap rather
 than its neighbour's circumference.
+
+The threshold is where the floor meets the allocation: 0.5 of a 2π·60 ≈ 377
+circumference, so any segment under ~0.13% of the total. That is reachable
+from either ring — 1 item of 5,000 in a store breakdown, 1 in-progress work
+unit against 20,000 claimable in the queue.
 
 ### `StockStats`
 
