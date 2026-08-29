@@ -23,10 +23,11 @@ def _product(title, type_="Vinyl", price="24.99", available=True, handle=None, e
              price_max=None):
     """One product in the shape /search/suggest.json actually returns.
 
-    `variants` is deliberately absent rather than populated: the suggest
+    `variants` is deliberately left empty rather than populated: the suggest
     payload really does return an empty variants list for every product, which
-    is why the crawler reads the product-level `price` and `available` instead
-    of picking a variant the way the old catalog crawler did.
+    is why the crawler reads the product-level `price` and `available` and
+    fetches the product endpoint when it needs a variant, instead of picking
+    one from this payload the way the old catalog crawler could.
     """
     handle = handle or title.lower().replace(" ", "-")
     product = {
@@ -223,8 +224,9 @@ async def test_search_fetches_variants_when_the_price_range_is_unknown():
 @respx.mock
 async def test_search_keeps_an_unbracketed_qualifier_when_no_base_pressing_exists():
     # "Abbey Road: Anniversary Edition [LP]" is the only Abbey Road this store
-    # stocks, and its qualifier is not bracketed -- so the looser prefix rank
-    # has to still match, or the record would read as out of stock.
+    # stocks, and its qualifier is introduced by a colon rather than brackets,
+    # so rank 0's bracket strip does not reach it. Rank 1's match at the
+    # delimiter boundary has to, or the record would read as out of stock.
     _mock([_product("The Beatles - Abbey Road: Anniversary Edition [LP]", price="29.99")])
     results = await Crawler().search({"artist": "Beatles, The", "title": "Abbey Road"}, None)
     assert len(results) == 1
@@ -365,3 +367,19 @@ async def test_search_only_prices_the_closest_matches(monkeypatch):
     # only it is returned and only it would have been worth a lookup.
     assert [r["price"] for r in results] == [24.99]
     assert worse.call_count == 0
+
+
+@respx.mock
+async def test_search_matches_an_album_whose_own_title_contains_a_delimiter():
+    """Cutting at only the *first* delimiter would truncate the album itself.
+
+    "Live: In Concert" would become "Live", which matches nothing, so this
+    store's further-qualified edition of it would read as out of stock. Every
+    boundary is tried instead -- which still rejects "Kid A Mnesia", because
+    none of its boundaries yields "Kid A" (see the test above).
+    """
+    _mock([_product("Various - Live: In Concert: Anniversary Edition [LP]", price="31.99")])
+
+    results = await Crawler().search({"artist": "Various", "title": "Live: In Concert"}, None)
+
+    assert [r["price"] for r in results] == [31.99]

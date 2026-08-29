@@ -494,8 +494,13 @@ What the conversion had to get right:
   `Artist - Album` convention are checked, and matches are then *ranked*
   rather than filtered further: rank 0 is an exact title once the bracketed
   qualifiers come off, which only a base pressing achieves, and rank 1 is an
-  exact match against everything before the first qualifier delimiter (`:`,
-  `[`, `(`, a spaced dash). Rank 1 is deliberately *not*
+  exact match against the text before *any* qualifier delimiter (`:`, `[`,
+  `(`, a spaced dash). Every boundary is tried rather than only the first,
+  because an album whose own title contains a delimiter would otherwise be
+  truncated to its opening fragment — "Live: In Concert" would become "Live"
+  and never match this store's "Live: In Concert: Anniversary Edition [LP]".
+  Trying each still rejects "Kid A Mnesia", since no boundary of it yields
+  "Kid A". Rank 1 is deliberately *not*
   `db._library_match_fragment`'s exact-or-prefix-with-space rule, though an
   earlier draft used it. That rule answers "does this stock row correspond to
   a release the user owns", where a wrong answer mislabels ownership; this one

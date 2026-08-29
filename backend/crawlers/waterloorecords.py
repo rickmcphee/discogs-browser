@@ -297,15 +297,18 @@ class Crawler:
         checked rather than the fleet's usual substring sniff, because that
         convention makes a real comparison available here.
 
-        Title is exact-or-prefix-with-space, matching
-        db._library_match_fragment: the store appends its own qualifiers, so
-        catalog "Getting Killed" has to match "Getting Killed [Clear Vinyl]
-        [LP]". That rule alone also admits a different release that merely
-        starts the same way -- "Kid A" matches "Kid A Mnesia [3LP]" -- which
-        matters because the fleet reads matches[0]. Rather than tighten it out
-        of step with the app's own library matcher, the two cases are ranked:
-        rank 0 is an exact title once the bracketed qualifiers come off, which
-        only a base pressing achieves, and rank 1 is the looser prefix.
+        The store appends its own qualifiers, so catalog "Getting Killed" has
+        to match "Getting Killed [Clear Vinyl] [LP]". Both ranks are equality
+        tests against a stripped form of the store's title, never a prefix
+        test: a prefix would admit a different release that merely starts the
+        same way -- "Kid A" against "Kid A Mnesia [3LP]" -- and the fleet reads
+        matches[0] and publishes its price.
+
+        Rank 0 is an exact title once the bracketed qualifiers come off, which
+        only a base pressing achieves. Rank 1 is an exact title at any
+        qualifier-delimiter boundary, which admits a qualified edition
+        ("Abbey Road: Anniversary Edition [LP]") without admitting a longer
+        album name.
         """
         store_artist, store_album = parsed
         want_artist = cls._fold(release.get("artist", ""))
@@ -323,18 +326,25 @@ class Crawler:
         base = cls._fold(_BRACKETED_RE.sub(" ", store_album))
         if base == want_title:
             return 0
-        # Everything before the first qualifier delimiter, which is the album
-        # name as this store writes it. Deliberately an equality test and not
-        # the exact-or-prefix-with-space rule db._library_match_fragment uses:
-        # that rule is answering "does this stock row correspond to a release
-        # the user owns", where a wrong answer mislabels ownership, while this
-        # one decides which record's price gets published. With no base
-        # pressing in the results, a prefix match would report "Kid A Mnesia
-        # [3LP]" as the price of Kid A rather than reporting Kid A as absent,
-        # and a wrong price is worse than a missing one.
-        qualified = cls._fold(_QUALIFIER_CUT_RE.split(store_album, 1)[0])
-        if qualified == want_title:
-            return 1
+        # The album name as this store writes it, which is whatever precedes
+        # one of its qualifier delimiters. Every boundary is tried, not just
+        # the first: an album whose own title contains a delimiter would
+        # otherwise be truncated to its opening fragment, so
+        # "Live: In Concert" could never match this store's
+        # "Live: In Concert: Anniversary Edition [LP]". Trying each still
+        # rejects "Kid A Mnesia", because no boundary of it yields "Kid A".
+        #
+        # Deliberately an equality test at each boundary, not the
+        # exact-or-prefix-with-space rule db._library_match_fragment uses: that
+        # rule answers "does this stock row correspond to a release the user
+        # owns", where a wrong answer mislabels ownership, while this one
+        # decides which record's price gets published. With no base pressing in
+        # the results, a prefix match would report "Kid A Mnesia [3LP]" as the
+        # price of Kid A rather than reporting Kid A as absent, and a wrong
+        # price is worse than a missing one.
+        for boundary in _QUALIFIER_CUT_RE.finditer(store_album):
+            if cls._fold(store_album[:boundary.start()]) == want_title:
+                return 1
         return None
 
     @staticmethod
