@@ -7,6 +7,18 @@ from crawlers.waterloorecords import Crawler
 _SUGGEST_URL = "https://waterloorecords.com/search/suggest.json"
 
 
+@pytest.fixture(autouse=True)
+def _no_crawl_delay(monkeypatch):
+    """Zero the per-site gap so the suite does not sleep the real default.
+
+    Patched rather than written to config so these tests keep needing no
+    database -- the crawler reads crawl_delay_seconds through load_config().
+    """
+    monkeypatch.setattr(
+        "crawlers.waterloorecords.load_config", lambda: {"crawl_delay_seconds": 0}
+    )
+
+
 def _product(title, type_="Vinyl", price="24.99", available=True, handle=None, extra=None,
              price_max=None):
     """One product in the shape /search/suggest.json actually returns.
@@ -300,3 +312,56 @@ def test_crawler_is_registered_as_a_release_crawler():
     # a catalog type -- see the module docstring for why.
     assert getattr(Crawler, "crawler_type", "release") == "release"
     assert getattr(Crawler, "requires_discogs_release", False) is False
+
+
+@respx.mock
+async def test_search_paces_each_variant_lookup_behind_the_configured_gap(monkeypatch):
+    """_paced_search spaces separate search() calls, not the requests inside one.
+
+    Without the crawler keeping its own gap, the suggest request and every
+    product lookup would go out back to back -- the burst the per-site pacing
+    contract in 2026-08-01-worker-pool-pacing-design.md exists to prevent.
+    """
+    monkeypatch.setattr(
+        "crawlers.waterloorecords.load_config", lambda: {"crawl_delay_seconds": 40}
+    )
+    slept = []
+
+    async def fake_sleep(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr("crawlers.waterloorecords.sleep", fake_sleep)
+
+    handle = "paced-lp"
+    _mock([_product("Geese - Getting Killed [LP]", price="24.99", price_max="29.99", handle=handle)])
+    respx.get(f"https://waterloorecords.com/products/{handle}.js").mock(
+        return_value=httpx.Response(200, json={"variants": [
+            {"title": "New", "price": 2999, "available": True},
+        ]})
+    )
+
+    await Crawler().search({"artist": "Geese", "title": "Getting Killed"}, None)
+
+    assert len(slept) == 1
+    assert 20 <= slept[0] <= 40
+
+
+@respx.mock
+async def test_search_only_prices_the_closest_matches(monkeypatch):
+    """A worse-ranked candidate can never be matches[0], so pricing it would
+    spend a request on the store for an answer nobody reads."""
+    monkeypatch.setattr(
+        "crawlers.waterloorecords.load_config", lambda: {"crawl_delay_seconds": 0}
+    )
+    base = _product("Geese - Getting Killed [LP]", price="24.99", handle="base-lp")
+    qualified = _product("Geese - Getting Killed: Deluxe Edition [LP]", price="19.99",
+                         price_max="39.99", handle="qualified-lp")
+    _mock([base, qualified])
+    worse = respx.get("https://waterloorecords.com/products/qualified-lp.js")
+
+    results = await Crawler().search({"artist": "Geese", "title": "Getting Killed"}, None)
+
+    # The bracket-stripped exact match outranks the colon-qualified edition, so
+    # only it is returned and only it would have been worth a lookup.
+    assert [r["price"] for r in results] == [24.99]
+    assert worse.call_count == 0

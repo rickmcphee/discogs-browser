@@ -1,9 +1,13 @@
+import asyncio
+import random
 import re
 import urllib.parse
+from asyncio import sleep
 from typing import Optional
 
 import httpx
 
+from config import load_config
 from crawler import clean_search_text
 from logging_config import get_logger
 
@@ -105,6 +109,12 @@ class Crawler:
         if not query:
             return []
 
+        # load_config() is a blocking Postgres call; offloaded so it cannot
+        # stall the process's single event loop, the same way crawlers/ebay.py
+        # and crawl_manager's _paced_search do.
+        cfg = await asyncio.to_thread(load_config)
+        delay = float(cfg.get("crawl_delay_seconds", 30))
+
         async with httpx.AsyncClient() as client:
             r = await client.get(
                 f"{self.base_url}/search/suggest.json",
@@ -126,27 +136,52 @@ class Crawler:
 
             ranked = []
             for product in products:
-                scored = await self._listing(product, release, client)
+                scored = self._candidate(product, release)
                 if scored is not None:
                     ranked.append(scored)
 
-        if not ranked:
-            log.info("[Waterloo Records] no in-stock vinyl match for %r", query)
-            return []
+            if not ranked:
+                log.info("[Waterloo Records] no in-stock vinyl match for %r", query)
+                return []
 
-        # Base pressings ahead of everything else, then cheapest. The fleet
-        # reads matches[0], and this store has no condition field, so -- as the
+            # Only the closest matches are priced. Rank dominates the ordering
+            # below and the fleet reads matches[0], so a worse-ranked candidate
+            # could never be used -- and pricing it would spend a request on
+            # the store for an answer nobody reads.
+            best = min(rank for rank, _, _ in ranked)
+            listings = [
+                {
+                    "url": url,
+                    "price": await self._resolve_price(product, url, client, delay),
+                    # The store ships from one shop and quotes postage at
+                    # checkout only; nothing in this payload carries it, and
+                    # inventing a zero would read as free shipping.
+                    "shipping": None,
+                    "currency": "USD",
+                    # No condition field on this store: its stock is new, and
+                    # the catalog crawler recorded the same absence.
+                    "condition": None,
+                }
+                for rank, product, url in ranked
+                if rank == best
+            ]
+
+        # Cheapest first. This store has no condition field, so -- as the
         # catalog crawler did before it -- a row reports the least it costs to
         # get the record. Unpriced sorts last rather than being dropped: the
         # product is real and still linkable. `l["price"] or 0.0` rather than
         # the bare price so two unpriced listings, which tie on the flag before
         # it, never compare None against None.
-        ranked.sort(key=lambda r: (r[0], r[1]["price"] is None, r[1]["price"] or 0.0))
-        return [listing for _, listing in ranked]
+        listings.sort(key=lambda l: (l["price"] is None, l["price"] or 0.0))
+        return listings
 
     @classmethod
-    async def _listing(cls, product: dict, release: dict, client):
-        """(rank, listing) for a matching product, or None. Lower rank is closer."""
+    def _candidate(cls, product: dict, release: dict):
+        """(rank, product, url) for a matching product, or None. Lower rank is closer.
+
+        Deliberately does no fetching, so which products are worth a request is
+        decided before any is sent.
+        """
         if not product.get("available"):
             return None
         if (product.get("type") or "").strip().lower() not in _VINYL_PRODUCT_TYPES:
@@ -163,18 +198,7 @@ class Crawler:
         if not url:
             return None
 
-        return rank, {
-            "url": url,
-            "price": await cls._resolve_price(product, url, client),
-            # The store ships from one shop and quotes postage at checkout
-            # only; nothing in this payload carries it, and inventing a zero
-            # would read as free shipping.
-            "shipping": None,
-            "currency": "USD",
-            # No condition field on this store: its stock is new, and the
-            # catalog crawler recorded the same absence.
-            "condition": None,
-        }
+        return rank, product, url
 
     @staticmethod
     def _clean_url(raw: str) -> str:
@@ -192,7 +216,7 @@ class Crawler:
         return urllib.parse.urljoin(Crawler.base_url, path)
 
     @classmethod
-    async def _resolve_price(cls, product: dict, url: str, client) -> Optional[float]:
+    async def _resolve_price(cls, product: dict, url: str, client, delay: float) -> Optional[float]:
         """What the record actually costs, not what its cheapest variant costs.
 
         `available` on a suggest hit means *some* variant is purchasable, while
@@ -222,6 +246,12 @@ class Crawler:
         if high is not None and low == high:
             return low
 
+        # _paced_search spaces separate search() calls, not the requests inside
+        # one, so this gap is the crawler's own to keep -- exactly as every
+        # detail-fetching crawler in the fleet does it. Without it the suggest
+        # request and each product lookup would go out back to back, which is
+        # the burst the per-site pacing contract exists to prevent.
+        await sleep(random.uniform(delay * 0.5, delay))
         r = await client.get(f"{url}.js", timeout=30)
         r.raise_for_status()
         variants = (r.json() or {}).get("variants") or []

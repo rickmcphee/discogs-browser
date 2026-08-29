@@ -408,6 +408,17 @@ This site's findings, from the `robots.txt` captured 2026-08-24:
   `random.uniform(delay * 0.5, delay)` with `crawl_delay_seconds`
   defaulting to 30s. No detail-page fan-out. `iter_products()` fails fast
   on 429 and gives up after `consecutive_failure_limit` on anything else.
+  **(2026-08-28: superseded by the conversion below.** The load is no longer
+  a per-sync walk. It is one `/search/suggest.json` request per library
+  release, spaced by `_paced_search`'s per-site gap, plus at most one
+  `/products/<handle>.js` per *closest-ranked* match — and only where the
+  product's own `price_min` and `price_max` disagree, which most do not.
+  Those lookups are paced by the crawler itself at the same
+  `random.uniform(delay * 0.5, delay)`, because `_paced_search` spaces
+  separate `search()` calls rather than the requests inside one; without
+  that the suggest request and each lookup would burst back to back. Both
+  paths are the public storefront JSON the `robots.txt` findings above
+  already cover, and neither carries `sort_by`, `+` or `filter`.**)
 - Contact for crawler issues, per the file: `bots@shopify.com`.
 - If Waterloo Records blocks this crawler, adds a `Disallow` covering
   this path, or asks us to stop, the response is to disable the plugin.
