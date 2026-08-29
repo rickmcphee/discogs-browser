@@ -226,9 +226,14 @@ password, creates the test database, writes those three variables to
 `backend/.env` (picked up by the `pytest-dotenv` dev dependency, so plain
 `pytest` works), and installs the backend, Playwright Chromium, and frontend
 dependencies. It runs automatically via the `SessionStart` hook in
-`.claude/settings.json` and no-ops outside a cloud session; pass `--force` to
-run it anyway. It mirrors `.github/workflows/fly-deploy.yml`, which stays the
-authoritative statement of what a green run needs.
+`.claude/settings.json`, which reaches it through `.claude/hooks/session-start.sh`
+— a launcher that declines to provision anywhere the working tree might have come
+from a pull request head, so that no fork contributor's code runs from the hook
+(see
+[`docs/specifications/shaping/2026-08-29-session-start-hook-pr-safety-design.md`](docs/specifications/shaping/2026-08-29-session-start-hook-pr-safety-design.md)).
+Either way it no-ops outside a cloud session; pass `--force` to run it anyway. It
+mirrors `.github/workflows/fly-deploy.yml`, which stays the authoritative
+statement of what a green run needs.
 
 The passwords are arbitrary local test values, not real secrets. The database
 named in `TEST_DATABASE_URL` is never itself read from or written to —
