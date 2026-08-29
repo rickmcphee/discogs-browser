@@ -19,32 +19,42 @@ _USER_AGENT = "DiscogsCollectionBrowser/1.0 +https://github.com/local/discogs-br
 _CHALLENGE_TITLES = ("just a moment", "attention required", "checking your browser")
 
 # Discogs has restyled this page before and will again. Each of these is a
-# separate generation of the listings markup; `[data-pricevalue]` is the
+# separate generation of the listings markup; `data-pricevalue` is the
 # longest-lived hook among them because Discogs's own currency-switching JS
 # reads it, so it is the one most likely to survive the next restyle.
-_ROW_SELECTORS = (
-    "#pjax_container table tbody tr",
-    "table.mpitems tbody tr",
-    "tr:has([data-pricevalue])",
-    "li:has([data-pricevalue])",
+#
+# Every one of them is scoped to a marketplace listings container. An
+# unscoped `tr:has([data-pricevalue])` would also match a recommendation
+# carousel, and amazon.py already learned where that ends: a carousel price
+# becoming matches[0] overwrites the release with an unrelated price. A
+# restyle that moves listings out of all of these containers is meant to raise
+# rather than be caught by a broader net.
+_LISTING_CONTAINERS = ("#pjax_container", "table.mpitems", "[class*='marketplace']")
+
+_ROW_SELECTORS = tuple(
+    f"{container} {row}"
+    for container in _LISTING_CONTAINERS
+    for row in ("tbody tr", "tr:has([data-pricevalue])", "li:has([data-pricevalue])")
 )
-
-# Deliberately no bare "[data-pricevalue]" sweep as a last resort: amazon.py
-# learned that scraping every price-shaped element on the page picks up
-# carousel and recommendation prices, and a wrong price is worse here than a
-# loud failure.
-
-_LISTINGS_PRESENT = ", ".join(_ROW_SELECTORS) + ", [data-pricevalue]"
 
 # The listings region rendering with nothing in it is a real answer ("nothing
 # ships from the USA"), and has to be told apart from the region never
-# rendering at all.
+# rendering at all. Written as :has-text() rather than the text= engine so it
+# can be comma-joined with the row selectors into one wait -- otherwise a
+# genuine no-listings page burns the full listings timeout before anything
+# recognises it, on what is a common path.
 _EMPTY_STATE = (
-    "text=/no items? (are )?(currently )?(available|for sale)/i",
-    "text=/there are no items for sale/i",
-    "text=/0 items? for sale/i",
     ".marketplace_empty",
+    ":is(h1,h2,h3,p,strong):has-text('No items are available')",
+    ":is(h1,h2,h3,p,strong):has-text('There are no items for sale')",
+    ":is(h1,h2,h3,p,strong):has-text('No items for sale')",
 )
+
+# Deliberately no bare "[data-pricevalue]" here: a stray price element
+# anywhere on the page would satisfy this wait before the listings themselves
+# render, which is the immediate-read race this crawler exists to stop. Every
+# row selector already contains the price node, so nothing is lost.
+_PAGE_READ = ", ".join(_ROW_SELECTORS + _EMPTY_STATE)
 
 _SETTLE_TIMEOUT_MS = 15_000
 _LISTINGS_TIMEOUT_MS = 15_000
@@ -126,7 +136,9 @@ class Crawler:
             log.warning("[Discogs] bot interstitial did not clear for release %s", discogs_id)
             raise BotDetectedError()
 
-        listings = await self._read_listings(page, url)
+        recognised = await self._wait_until_page_read(page)
+
+        listings = await self._read_listings(page, url) if recognised else []
         if listings:
             best = listings[0]
             log.info(
@@ -135,7 +147,7 @@ class Crawler:
             )
             return listings
 
-        if await self._empty_state_rendered(page):
+        if recognised and await self._empty_state_rendered(page):
             log.info("[Discogs] no USA-shipping listings for release %s", discogs_id)
             return []
 
@@ -157,6 +169,19 @@ class Crawler:
             f"{__name__} against {url}"
         )
 
+    async def _wait_until_page_read(self, page) -> bool:
+        """Whether either listings or a recognised empty state ever rendered.
+
+        Waiting is the point: the listings are not necessarily in the DOM at
+        domcontentloaded, and reading straight through was what turned a page
+        that had not finished rendering into "no listings".
+        """
+        try:
+            await page.wait_for_selector(_PAGE_READ, timeout=_LISTINGS_TIMEOUT_MS, state="attached")
+            return True
+        except Exception:
+            return False
+
     async def _read_listings(self, page, url: str) -> list[dict]:
         """Every listing row the page rendered, cheapest first.
 
@@ -164,11 +189,6 @@ class Crawler:
         that parameter has never been confirmed against the live page, and a
         silently ignored sort would otherwise make "the first row" masquerade
         as "the cheapest listing"."""
-        try:
-            await page.wait_for_selector(_LISTINGS_PRESENT, timeout=_LISTINGS_TIMEOUT_MS, state="attached")
-        except Exception:
-            return []
-
         rows = None
         for selector in _ROW_SELECTORS:
             candidate = page.locator(selector)

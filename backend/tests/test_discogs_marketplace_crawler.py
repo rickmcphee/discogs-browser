@@ -39,6 +39,8 @@ def test_site_name_is_discogs():
 # could not parse as "no listings" -- which the crawl manager acts on by
 # clearing the release's stored price.
 
+import asyncio
+import re
 from pathlib import Path
 
 import httpx
@@ -237,3 +239,63 @@ def test_empty_result_is_expected_so_a_confirmed_miss_does_not_trip_the_breaker(
     have no USA seller.
     """
     assert Crawler.empty_result_is_expected is True
+
+
+async def test_listings_that_render_after_navigation_are_waited_for(browser_page):
+    """The actual regression: content that is not in the DOM at goto() time.
+
+    Every other fixture here is fully painted by the time set_content()
+    returns, so none of them can tell a crawler that waits from one that reads
+    straight through -- which is precisely the bug. Here goto() lands an empty
+    shell and the listings are injected a moment later, so search() only sees
+    them if it genuinely waits.
+    """
+    body = re.search(r"<body>(.*)</body>",
+                     (FIXTURES / "usa_listings.html").read_text(encoding="utf-8"),
+                     re.S).group(1)
+
+    class _LateRenderPage(_FakePage):
+        async def goto(self, url, wait_until=None):
+            await self._real.set_content(
+                "<html><head><title>x</title></head><body><div id='shell'></div></body></html>",
+                wait_until="domcontentloaded",
+            )
+            asyncio.create_task(self._render_later())
+
+        async def _render_later(self):
+            await asyncio.sleep(0.25)
+            await self._real.evaluate(
+                "html => { document.getElementById('shell').innerHTML = html; }", body
+            )
+
+        async def wait_for_selector(self, selector, timeout=None, state=None):
+            # The real wait, not the presence shortcut -- that shortcut is what
+            # makes the other tests unable to catch this.
+            await self._real.wait_for_selector(selector, timeout=timeout, state=state)
+
+    results = await Crawler().search(RELEASE, _LateRenderPage(browser_page, "usa_listings.html"))
+
+    assert [r["price"] for r in results] == [6.50, 9.25, 12.99]
+
+
+async def test_recommendation_carousel_price_is_not_mistaken_for_a_listing(browser_page):
+    """A carousel price sits outside the listings container and must stay there.
+
+    Unscoped row selectors would match it, and since the cheapest wins it would
+    become matches[0] -- overwriting the release with an unrelated price.
+    """
+    page = _FakePage(browser_page, "listings_with_carousel.html")
+    results = await Crawler().search(RELEASE, page)
+
+    assert [r["price"] for r in results] == [18.00]
+
+
+async def test_a_page_with_only_carousel_prices_raises_rather_than_guessing(browser_page, monkeypatch):
+    async def _stats(release_id):
+        return 124
+
+    monkeypatch.setattr(dm, "_release_num_for_sale", _stats)
+    page = _FakePage(browser_page, "carousel_only.html")
+
+    with pytest.raises(RuntimeError, match="markup not recognised"):
+        await Crawler().search(RELEASE, page)
