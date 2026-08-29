@@ -50,8 +50,10 @@ reasons. Nothing below depends on *who* automates the approval.
 ## The ruleset as it stands
 
 Read anonymously from `GET /repos/rickmcphee/discogs-browser/rules/branches/main`
-on 2026-08-29, so it is the unfiltered rule set — bypass actors are not
-reflected in it:
+on 2026-08-29, so it is the unfiltered rule set. Bypass actors are not in it —
+an unauthenticated read of the ruleset itself returns `bypass_actors: null` — so
+the owner's `bypass_mode: pull_request` entry is taken from `CLAUDE.md` and the
+integration sync design, which both record it:
 
 ```
 ruleset 18814478 (main-branch-protection)
@@ -126,7 +128,9 @@ request from `integration` into `main` and arms it with `gh pr merge integration
 gate between a week of batched Dependabot updates and a production Fly deploy.
 The status checks in the ruleset above gate it too, but passing them involves
 nobody. It is the single case in this repository where the review requirement
-genuinely binds rather than being waived.
+genuinely binds rather than being waived — and the waiver is total, because a
+bypass actor bypasses the `pull_request` rule entire rather than its approval
+count alone.
 
 The integration sync design spends its "Why an app rather than a PAT" section on
 precisely this: a personal access token owned by the bypass actor would make the
@@ -187,24 +191,39 @@ Two changes to `main-branch-protection`, neither of which grants any bot an
 approval:
 
 1. **`required_review_thread_resolution: true`.** Copilot's *inline* findings
-   then block the merge until each is explicitly resolved — the 18:23 finding on
-   PR #233 among them, which was an inline comment on
+   then block any non-bypass merge until each is explicitly resolved — the
+   18:23 finding on PR #233 among them, which was an inline comment on
    `backend/recommendations_prompt.md:9`, so that example survives the
    narrowing. The narrowing is real, though, and worth stating rather than
    glossing: a finding Copilot emits only in the review *body* has no thread to
    resolve and stays advisory. `CLAUDE.md` already draws that line where it
    notes a suppressed comment carries no `comment_id` to reply to. Copilot's own
-   review of this design is the demonstration — one inline comment, its other
-   findings suppressed into the body, where thread resolution would never have
-   reached them. So this binds part of a review, not a review.
+   reviews of this design are the demonstration. Its first round raised one
+   inline comment and suppressed the rest into the body; its second round —
+   which produced the scoping caveat below, the sharpest finding of either —
+   raised no inline comment at all. Thread resolution would have reached none of
+   those. So this binds part of a review, not a review.
 
-2. **`require_last_push_approval: true`.** The most recent push must be approved
-   by someone who did not push it. This closes the stale-approval gap on its
-   own terms, independently of Copilot: today an approval on the promotion pull
-   request survives any subsequent push to it. `dismiss_stale_reviews_on_push:
-   true` covers similar ground; `require_last_push_approval` is the tighter of
+2. **`require_last_push_approval: true`.** The most recent push has to be
+   approved by someone who did not push it, closing the stale-approval gap on
+   the promotion path independently of Copilot: today an approval on the
+   promotion pull request survives any subsequent push to it.
+   `dismiss_stale_reviews_on_push: true` covers similar ground; `require_last_push_approval` is the tighter of
    the two here, because approvals on this repository are rare enough that
    dismissing them is nearly a no-op while requiring a fresh one is not.
+
+Both are scoped by the same bypass that shapes everything else here, and saying
+so is the difference between a proposal and an overclaim. The owner's entry sits
+on the ruleset, and a bypass actor bypasses the `pull_request` rule entire — so
+neither change binds a merge performed through it. Unresolved threads and a stale
+last push would be waivable exactly the way the missing approval already is. What
+they bind is every merge that does not use the bypass, the promotion pull request
+above all, opened as it is by a bot that is not a bypass actor.
+
+That is a narrower claim than "the review becomes binding," and it is still the
+one worth having: the promotion path is the unattended one. On the owner's own
+pull requests these are prompts rather than gates — the correct shape for a rule
+whose whole purpose is to make a person look.
 
 And keep merging the owner's own pull requests by bypass. That is not a
 workaround to be engineered away — it is an accurate record of what happened.
