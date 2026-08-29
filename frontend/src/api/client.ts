@@ -1,6 +1,6 @@
 import type {
   ReleasesResponse, Crawler, Settings, UserSettings, SortField, SortOrder, CrawlStatus, CollectionStatus, ScreenshotSession,
-  AuthStatus, RecordScope, StockResponse, StockSortField, LibraryScope, RecommendationImportResult, Invite,
+  AuthStatus, RecordScope, StockResponse, StockStats, StockSortField, LibraryScope, RecommendationImportResult, Invite,
   QueueSummary, QueueNextItem, NotificationsResponse, NotificationsUnread,
 } from './types'
 
@@ -229,6 +229,29 @@ export async function getStockArtists(params: {
   if (!r.ok) throw new Error(await r.text())
   const data = await r.json()
   return data.artists
+}
+
+export async function getStockStats(params: {
+  search?: string
+  artist?: string
+  libraryScope?: LibraryScope
+  recommended?: boolean
+  saved?: boolean
+  overlapped?: boolean
+  hiddenCrawlerIds?: number[]
+} = {}): Promise<StockStats> {
+  const q = new URLSearchParams()
+  if (params.search) q.set('search', params.search)
+  if (params.artist) q.set('artist', params.artist)
+  if (params.libraryScope) q.set('library_scope', LIBRARY_SCOPE_PARAM[params.libraryScope])
+  if (params.recommended) q.set('recommended', 'true')
+  if (params.saved) q.set('saved', 'true')
+  if (params.overlapped) q.set('overlapped', 'true')
+  if (params.hiddenCrawlerIds?.length) q.set('hidden_crawler_ids', params.hiddenCrawlerIds.join(','))
+  const qs = q.toString() ? `?${q}` : ''
+  const r = await apiFetch(`/stock/stats${qs}`)
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
 }
 
 export async function saveStockItem(itemKey: string): Promise<{ saved: boolean }> {

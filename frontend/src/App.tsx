@@ -159,6 +159,18 @@ export default function App() {
   // touch a price -- riding it would fire an unread request per judgment batch,
   // and, with the Notifications tab open, a list reload and a read POST too.
   const [priceGeneration, setPriceGeneration] = useState(0)
+  // Two more strict subsets of stockSyncGeneration, for the same reason
+  // priceGeneration is one. The Store tab's Stats panel counts stock_items
+  // rows, so a listing_changed -- which writes listings and is broadcast
+  // globally to every connected user -- can never change what it shows, and
+  // riding the union would fire a grouped count per marketplace write, for
+  // every user with the panel open, during a crawl. The item list beside it
+  // does need listing_changed, because its comparison rows are listings; the
+  // two signals differ because the two views count different things.
+  const [stockInventoryGeneration, setStockInventoryGeneration] = useState(0)
+  // Judgments only move the Recommended filter, so the panel adds this one
+  // conditionally rather than always.
+  const [stockJudgmentGeneration, setStockJudgmentGeneration] = useState(0)
   const [stockSyncTarget, setStockSyncTarget] = useState<number | 'all' | null>(null)
   // Optimistic twin of stockSyncTarget, set the instant a Refresh is clicked.
   // stockSyncTarget can't do this job on its own: it's only set once the
@@ -499,6 +511,7 @@ export default function App() {
       if (event.status === 'stock_sync_progress') {
         setSyncStatus(`Syncing in-stock catalog… ${event.synced} items (${event.source})`, event.id ?? null)
         setStockSyncGeneration(g => g + 1)
+        setStockInventoryGeneration(g => g + 1)
         setPriceGeneration(g => g + 1)
         return
       }
@@ -508,6 +521,7 @@ export default function App() {
         setStockSyncStarting(null)
         setSyncStatus(`In-stock sync complete: ${event.synced} items`, event.id ?? null)
         setStockSyncGeneration(g => g + 1)
+        setStockInventoryGeneration(g => g + 1)
         setPriceGeneration(g => g + 1)
         return
       }
@@ -539,6 +553,7 @@ export default function App() {
           setHasJudgedItems(true)
         }
         setStockSyncGeneration(g => g + 1)
+        setStockJudgmentGeneration(g => g + 1)
         setSyncStatus(`Finding recommendations for Store items… ${event.judged}/${event.total}`, event.id ?? null)
         return
       }
@@ -549,6 +564,7 @@ export default function App() {
           setHasJudgedItems(true)
         }
         setStockSyncGeneration(g => g + 1)
+        setStockJudgmentGeneration(g => g + 1)
         setSyncStatus(`Finished finding recommendations — ${event.judged} items checked`, event.id ?? null)
         return
       }
@@ -1047,7 +1063,7 @@ export default function App() {
           />
         </div>
         <div className={view === 'store' ? 'h-full' : 'hidden'}>
-          <StockBrowser recommendedAvailable={recommendedAvailable} hiddenCrawlerIds={hiddenCrawlerIds} crawlers={crawlers} onHiddenCrawlerIdsChange={updateHiddenCrawlerIds} hiddenCrawlerIdsLoaded={hiddenCrawlerIdsLoaded} syncGeneration={stockSyncGeneration} isAdmin={showAdminNav} />
+          <StockBrowser recommendedAvailable={recommendedAvailable} hiddenCrawlerIds={hiddenCrawlerIds} crawlers={crawlers} onHiddenCrawlerIdsChange={updateHiddenCrawlerIds} hiddenCrawlerIdsLoaded={hiddenCrawlerIdsLoaded} syncGeneration={stockSyncGeneration} inventoryGeneration={stockInventoryGeneration} judgmentGeneration={stockJudgmentGeneration} isAdmin={showAdminNav} />
         </div>
         <div className={view === 'track' ? 'h-full' : 'hidden'}>
           <StockBrowser scope="track" hiddenCrawlerIds={hiddenCrawlerIds} crawlers={crawlers} onHiddenCrawlerIdsChange={updateHiddenCrawlerIds} hiddenCrawlerIdsLoaded={hiddenCrawlerIdsLoaded} syncGeneration={stockSyncGeneration} isAdmin={showAdminNav} hasPriceField={hasPriceData} />

@@ -211,6 +211,8 @@ allow-set gate lives in exactly one place. This also removed the
 call sites pre-branch (`get_stock_items` and `get_distinct_stock_artists`),
 not just the one the next section describes.
 
+**Amendment (2026-08-28, branch `claude/store-stats-pie-chart-22pc3p`):** the `conditions` list shown here now lives in `db._stock_filter_sql`, which both functions call for their WHERE clause. The parameters and the clause itself are unchanged; only the place they are assembled moved, so that a third caller (`get_stock_source_counts`, backing `GET /api/stock/stats`) filters identically by construction rather than by a third copy staying in step. See [`2026-08-28-store-source-stats-design.md`](2026-08-28-store-source-stats-design.md).
+
 `routers/stock.py` performs no validation of its own — it passes query
 params straight through, exactly as it does for `sort` — so this is the
 only gate, and a hand-crafted query string must not be able to produce a
