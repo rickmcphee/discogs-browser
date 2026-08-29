@@ -322,3 +322,56 @@ async def test_a_browser_failure_is_not_laundered_into_a_confirmed_miss(browser_
 
     with pytest.raises(RuntimeError, match="browser has been closed"):
         await Crawler().search(RELEASE, _DeadBrowserPage(browser_page, "usa_listings.html"))
+
+
+async def test_an_unparseable_row_does_not_shadow_a_later_supported_layout(browser_page):
+    """A selector matching rows it cannot parse must not end the search.
+
+    Here a stray summary table matches the legacy row selector but yields no
+    price, while the real listings are cards a later selector handles. Keying
+    on "this selector matched" rather than "this selector parsed something"
+    would raise instead of returning the cards.
+    """
+    page = _FakePage(browser_page, "stray_table_and_cards.html")
+    results = await Crawler().search(RELEASE, page)
+
+    assert [r["price"] for r in results] == [11.00]
+
+
+async def test_a_price_less_row_cannot_end_the_readiness_wait_early(browser_page, monkeypatch):
+    """The readiness invariant: every row selector carries a price node.
+
+    A bare "tbody tr" would be satisfied by the placeholder row present from
+    the start, so the wait would return before the real listings arrived and
+    the crawl would raise on a page that was merely still rendering.
+    """
+    async def _stats(release_id):
+        return 124
+
+    monkeypatch.setattr(dm, "_release_num_for_sale", _stats)
+    body = re.search(r"<body>(.*)</body>",
+                     (FIXTURES / "usa_listings.html").read_text(encoding="utf-8"),
+                     re.S).group(1)
+
+    class _PlaceholderThenListings(_FakePage):
+        async def goto(self, url, wait_until=None):
+            await self._real.set_content(
+                "<html><head><title>x</title></head><body>"
+                "<div id='pjax_container'><table><tbody><tr><td>Loading&hellip;</td></tr></tbody></table></div>"
+                "<div id='shell'></div></body></html>",
+                wait_until="domcontentloaded",
+            )
+            asyncio.create_task(self._render_later())
+
+        async def _render_later(self):
+            await asyncio.sleep(0.25)
+            await self._real.evaluate(
+                "html => { document.getElementById('shell').innerHTML = html; }", body
+            )
+
+        async def wait_for_selector(self, selector, timeout=None, state=None):
+            await self._real.wait_for_selector(selector, timeout=timeout, state=state)
+
+    results = await Crawler().search(RELEASE, _PlaceholderThenListings(browser_page, "usa_listings.html"))
+
+    assert [r["price"] for r in results] == [6.50, 9.25, 12.99]

@@ -32,10 +32,16 @@ _CHALLENGE_TITLES = ("just a moment", "attention required", "checking your brows
 # rather than be caught by a broader net.
 _LISTING_CONTAINERS = ("#pjax_container", "table.mpitems", "[class*='marketplace']")
 
+# Every row shape carries a price node _parse_row() understands -- either the
+# legacy `td.item_price .price` node (whose price may predate
+# data-pricevalue) or the attribute itself -- the two shapes _parse_row()
+# reads, so a selector cannot match a row it has no way to parse. A bare "tbody tr" would break the readiness invariant
+# below: an unrelated or half-rendered row inside the container would satisfy
+# the wait while the listings were still on their way.
 _ROW_SELECTORS = tuple(
     f"{container} {row}"
     for container in _LISTING_CONTAINERS
-    for row in ("tbody tr", "tr:has([data-pricevalue])", "li:has([data-pricevalue])")
+    for row in ("tbody tr:has(td.item_price .price)", "tr:has([data-pricevalue])", "li:has([data-pricevalue])")
 )
 
 # The listings region rendering with nothing in it is a real answer ("nothing
@@ -195,20 +201,21 @@ class Crawler:
         that parameter has never been confirmed against the live page, and a
         silently ignored sort would otherwise make "the first row" masquerade
         as "the cheapest listing"."""
-        rows = None
-        for selector in _ROW_SELECTORS:
-            candidate = page.locator(selector)
-            if await candidate.count():
-                rows = candidate
-                break
-        if rows is None:
-            return []
-
+        # Keyed on parsed listings, not on a selector merely matching: a
+        # selector that matches rows it cannot parse must not shadow a later
+        # one that would have worked, or a page mixing a stray table with
+        # supported listing cards raises instead of returning the cards.
         listings = []
-        for i in range(await rows.count()):
-            parsed = await self._parse_row(rows.nth(i), url)
-            if parsed:
-                listings.append(parsed)
+        for selector in _ROW_SELECTORS:
+            rows = page.locator(selector)
+            for i in range(await rows.count()):
+                parsed = await self._parse_row(rows.nth(i), url)
+                if parsed:
+                    listings.append(parsed)
+            if listings:
+                break
+        if not listings:
+            return []
 
         listings.sort(key=lambda x: (x["price"] is None, x["price"] or 0.0, x["shipping"] or 0.0))
         return listings
