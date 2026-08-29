@@ -10,18 +10,24 @@ on:
   pull_request_review:
     types: [submitted]
 
-concurrency:
-  group: claude-${{ github.event.issue.number || github.event.pull_request.number }}
-
 jobs:
   claude:
-    # GitHub has no assignable Claude account, so `assignee_trigger` has no
-    # username to name. The `claude` label is the hand-it-over gesture instead.
+    # There is no Claude account to put in this repository's Assignees field,
+    # so `assignee_trigger` has no username to name. The `claude` label is the
+    # hand-it-over gesture instead, and needs no account to exist.
     if: >-
       (github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'claude') ||
       (github.event_name == 'issues' && github.event.action == 'opened' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude'))) ||
       ((github.event_name == 'issue_comment' || github.event_name == 'pull_request_review_comment') && contains(github.event.comment.body, '@claude')) ||
       (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude'))
+    # Scoped to the job, not the workflow: a workflow-level group is entered by
+    # every comment event before the `if` above is evaluated, and GitHub keeps
+    # only one pending run per group, cancelling the previous one. An ordinary
+    # comment would then evict a queued Claude request. Skipped jobs never enter
+    # a job-level group, so only real requests serialise here — and between two
+    # of those the later one still cancels the queued earlier one.
+    concurrency:
+      group: claude-${{ github.event.issue.number || github.event.pull_request.number }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
