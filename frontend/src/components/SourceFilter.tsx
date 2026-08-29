@@ -104,9 +104,19 @@ function SourceFilter({ crawlers, hiddenCrawlerIds, onChange, disabled = false }
     <>
       <div className="flex items-center justify-between mb-2">
         <span className="text-xs uppercase tracking-wider text-gray-500">By genre</span>
-        <button type="button" onClick={() => onChange([])} className="text-xs text-gray-400 hover:text-white">
-          Show all
-        </button>
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={() => onChange([])} className="text-xs text-gray-400 hover:text-white">
+            Show all
+          </button>
+          <button
+            type="button"
+            onClick={() => onChange(crawlers.map((c) => c.id))}
+            disabled={crawlers.length === 0}
+            className="text-xs text-gray-400 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-gray-400"
+          >
+            Clear all
+          </button>
+        </div>
       </div>
       {GENRES.map(({ key, label }) => (
         <FilterCheckbox
