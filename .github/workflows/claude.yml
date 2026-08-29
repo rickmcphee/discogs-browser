@@ -15,12 +15,23 @@ name: Claude Assistant
 # diff and not who wrote the body wrapped round it. The body reaches Claude on a
 # path the actor filter below does not cover.
 #
-# On a fork's pull request this step is belt to GitHub's braces, and the braces
-# are the stronger half: secrets are not passed to a runner for a workflow
-# triggered from a forked repository, and `GITHUB_TOKEN` is read-only there, so
-# a fork cannot reach this job's credentials on these events even by supplying
-# its own copy of this file. The author check is what does real work, on pull
-# requests that do carry secrets.
+# How much that step is carrying depends on the event, and the difference is the
+# thing to read before touching it:
+#
+#   issue_comment          runs THIS file, from the default branch, with this
+#                          repository's secrets and `contents: write` — even when
+#                          the pull request is a fork's. The step below is the
+#                          whole boundary there. Nothing else stops it.
+#
+#   pull_request_review*   runs the pull request's own copy of this file, which a
+#                          fork controls — but GitHub passes it no secrets and a
+#                          read-only token, so it cannot reach Claude or write
+#                          anything. There the step is belt to GitHub's braces.
+#
+# So do not read "a fork gets no credentials" as covering all three. It covers
+# the review events. On `issue_comment` this step is load-bearing, and deleting
+# it would hand a fork's pull request to Claude with the OAuth secret live. See
+# "Which gate is load-bearing depends on the event" in the design.
 #
 # Prose: a same-repository head says nothing about who may comment, and on a
 # public repository that is anyone. `include_comments_by_actor` on the action

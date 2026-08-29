@@ -60,14 +60,16 @@ See <https://github.com/anthropics/claude-code-action/blob/main/docs/security.md
   **Amendment (2026-08-29):** that review happened, and the triggers are back —
   `issue_comment` on pull requests, `pull_request_review_comment` and
   `pull_request_review`. It does not weaken the paragraph above, because it does
-  not run Claude against a fork head at all. Two things stop it, and the
-  weaker one is the workflow's: a first step skips the run unless the head is
-  in this repository and a trusted author opened it. The load-bearing one is
-  GitHub's — secrets are not passed to a runner for a workflow triggered from a
-  forked repository, and `GITHUB_TOKEN` is read-only there, so on these events
-  a fork cannot obtain the credentials this paragraph is about even by
-  supplying its own workflow file. The wider surface is excluded rather than
-  mitigated. The hook fix remains the
+  not run Claude against a fork head. What stops it differs by event, and the
+  distinction matters here because this paragraph is about credentials. On
+  `pull_request_review` and `pull_request_review_comment`, GitHub does it:
+  secrets are not passed to a runner for a workflow triggered from a forked
+  repository and `GITHUB_TOKEN` is read-only there, so a fork cannot obtain the
+  credentials this design worries about even by supplying its own workflow
+  file. On `issue_comment` GitHub does *not* — that path runs the default
+  branch's workflow with this repository's secrets — and there the workflow's
+  own first step, which skips unless the head is in this repository and a
+  trusted author opened it, is the entire boundary. The hook fix remains the
   precondition it is described as here, and everything below still holds
   unchanged — a Claude Code session opened on a pull request head must still
   find a launcher that declines to provision it. See

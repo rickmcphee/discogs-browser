@@ -43,13 +43,18 @@ review.
 
 The concern is exact and worth restating rather than paraphrasing: this
 repository is public, so anyone may open a pull request from a fork; a run
-triggered by a comment or review event executes with the base repository's
-secrets rather than a fork's reduced permissions; and this job holds
+triggered by `issue_comment` executes the default branch's workflow with the base
+repository's secrets rather than a fork's reduced permissions; and this job holds
 `contents: write` together with `CLAUDE_CODE_OAUTH_TOKEN`. Claude would be
 reading a stranger's diff and a stranger's comment text — both attacker-supplied
 — with a write token in scope. The action's own security documentation names
 prompt injection through pull request content as a first-class risk.
 See <https://github.com/anthropics/claude-code-action/blob/main/docs/security.md>.
+
+That describes `issue_comment`. The review events differ, and treating all three
+alike is a mistake this design has now made in both directions — first assuming
+they were all base-controlled, then assuming they were all fork-credential-starved.
+"Which gate is load-bearing depends on the event" below is the corrected model.
 
 One concrete hole underneath that has since been closed independently: the
 `SessionStart` hook used to invoke `scripts/cloud-setup.sh`, which stays at the
@@ -234,18 +239,26 @@ that is not `always()` or `failure()` carries an implicit `success()`, so a
 failed guard skips the checkout and the action rather than letting them run with
 the output unset.
 
-### Why the fork case does not rest on this guard at all
+### Which gate is load-bearing depends on the event
 
-An earlier draft of this section assumed GitHub dispatches a fork's pull request
-from a workflow file this repository controls. That assumption should not be
-relied on, and Copilot was right to challenge it: the review events demonstrably
-run the workflow from the pull request's own ref, which is how the review half of
-this feature came to be live on its own pull request before merging. A fork could
-therefore supply a `claude.yml` with this guard deleted.
+An earlier draft assumed GitHub dispatches a fork's pull request from a workflow
+file this repository controls. A later one assumed no subscribed event hands a
+fork's pull request usable credentials. Both are wrong, in opposite directions,
+and the truth is per-event:
 
-It does not matter, and the reason is a stronger guarantee than the guard.
-GitHub's events reference says this under `pull_request_review` and
-`pull_request_review_comment` specifically:
+| | `issue_comment` | `pull_request_review*` |
+| --- | --- | --- |
+| Workflow file | the default branch's — this repository's | the pull request's own ref — a fork can supply it |
+| On a fork's pull request | full base-repository secrets, `contents: write` | no secrets; `GITHUB_TOKEN` read-only |
+| What stops the fork case | **the guard step. Nothing else.** | GitHub's fork policy, before the guard is reached |
+
+So the guard is not decoration on one path and belt-and-braces on the other; it
+is the entire boundary for `issue_comment`, which is also the most natural way to
+invoke Claude. Anyone editing it should read that column first. This correction
+came from Copilot, on the pull request that introduced the error.
+
+On the review events, GitHub's events reference says, under
+`pull_request_review` and `pull_request_review_comment` specifically:
 
 > With the exception of `GITHUB_TOKEN`, secrets are not passed to the runner when
 > a workflow is triggered from a forked repository.
@@ -253,14 +266,36 @@ GitHub's events reference says this under `pull_request_review` and
 > The `GITHUB_TOKEN` has read-only permissions in pull requests from forked
 > repositories.
 
-So the run a fork could arrange has no `CLAUDE_CODE_OAUTH_TOKEN` — the action
-cannot authenticate and does not start — and no write token, whatever
-`permissions:` asks for. The thing being protected against, Claude reading a
-stranger's code while holding this job's credentials, cannot be assembled on
-these events at all. The guard is defence in depth over that, and its real work
-is the author check above, which applies to pull requests that *do* carry
-secrets.
+A fork that supplies its own `claude.yml` with the guard deleted therefore gets a
+run with no `CLAUDE_CODE_OAUTH_TOKEN` and no write token. It could also swap in a
+different action entirely, which is why nothing inside `claude-code-action` counts
+as a control in that scenario — the controls that bind are GitHub's.
 See <https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows>.
+
+### The OIDC caveat, and the exchange that answers it
+
+"No secrets" is not on its own sufficient, and this is worth writing down because
+it is a step past where the argument naturally stops. This job grants
+`id-token: write`, and an OIDC token is not a secret. The action fetches one
+(`core.getIDToken`) and exchanges it for a GitHub App token — which is how its
+comments arrive as `claude[bot]` rather than `github-actions[bot]` — and it does
+so in `setupGitHubToken()`, which `prepare.ts` calls *before*
+`checkWritePermissions()`. So the action's own actor check is not what stands
+between a fork-supplied workflow and a write-capable token.
+
+The exchange endpoint is. `src/github/token.ts` treats
+`workflow_not_found_on_default_branch` as a workflow-validation failure from that
+exchange, so a workflow that is not on the repository's default branch is refused
+an App token server-side. A fork-supplied `claude.yml` is by definition not on
+this repository's default branch.
+
+Two limits on that, stated rather than glossed: the endpoint's policy is
+Anthropic's and can change without anything in this repository changing, and
+whether GitHub issues an OIDC token at all on a fork's pull request run was not
+established here. Neither is load-bearing while GitHub withholds the secret the
+action needs to reach Claude, but both are the reason this section says the
+review events are protected by *GitHub's* policy first and the exchange second,
+rather than by anything written here.
 
 ### What is still unobservable
 
