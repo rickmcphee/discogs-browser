@@ -729,3 +729,20 @@ pending `crawl_queue` row whose `pending_crawler_ids` the forward-conversion
 backfill narrowed to Waterloo alone resolves as `done` up front
 (`_drain_one_batch` resolves any claimed row with zero eligible crawlers
 without dispatching it).
+
+**Per-user state and `item_key`s across the round trip.** Saves, judgments
+and price-drop history are keyed by `item_key` =
+`sha256(artist|title|url)`, and the two paths derive different keys for the
+same product: the catalog path hashes the store's own bracketed title
+("Getting Killed [Clear Vinyl] [LP]"), the release path hashed the Discogs
+title. The reversal *restores* the original catalog-era keys — same title
+convention, same `/products/<handle>` url — so per-user state from before
+the 2026-08-28 conversion re-attaches on the first catalog sync. What stays
+orphaned is state created during the brief release-crawler spell, whose
+Discogs-derived keys never recur. That is accepted, not solved: it is the
+mirror image of the orphaning the forward conversion itself shipped with
+(its own rationale for stripping search-tracking url parameters records
+that a changed key "orphan[s] the saves and judgments hanging off the old
+one"), it spans a window measured in a day, and a url-keyed migration
+table to rescue it would outlive its one use. Kind changes re-key a
+store's items; per-user state rides the keys.

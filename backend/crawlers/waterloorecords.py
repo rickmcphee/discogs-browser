@@ -3,11 +3,11 @@ from typing import AsyncIterator, Optional
 
 from shopify_catalog import iter_products, resolve_cover_image
 
-# The store's whole catalog (`all`, 455,864 products) is two orders of
-# magnitude past what one sync can walk; `vinyl-lps` (35,645) is the vinyl
-# cut of it. The nearly-empty `12-singles` (2) and `7-singles-45s` (0)
-# collections are not worth a second pass -- the format gate below already
-# admits those product types wherever they appear in this collection.
+# The store's whole catalog (`all`) is two orders of magnitude past what one
+# sync can walk; `vinyl-lps` is the vinyl cut of it. The nearly-empty
+# `12-singles` and `7-singles-45s` collections are not worth a second pass --
+# the format gate below already admits those product types wherever they
+# appear in this collection.
 #
 # This collection is larger than Shopify's storefront products.json can
 # enumerate: the endpoint refuses `page` past shopify_catalog._MAX_PAGE, so
