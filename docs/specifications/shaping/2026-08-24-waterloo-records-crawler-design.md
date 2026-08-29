@@ -696,9 +696,10 @@ Waterloo being a release crawler:
 - `crawl_manager`'s `empty_result_is_expected` handling. `discogs_marketplace`
   declares it (on the separates-its-own-failures grounds CLAUDE.md records),
   so the mechanism has a live user with Waterloo gone.
-- `db.register_crawler()`'s kind-change handling. It fires on a move *to*
-  `release` and is inert here, but it is generic and its reasoning is
-  unchanged.
+- `db.register_crawler()`'s kind-change handling for the move *to* `release`,
+  which is unchanged; the reversal adds the mirror-image branch for the move
+  *from* `release`, described below, and that branch is the one that fires
+  here.
 
 **The reverse conversion is handled in `register_crawler()`, symmetric to the
 forward one.** An earlier draft of this amendment claimed it needed no new

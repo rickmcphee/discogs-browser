@@ -478,6 +478,36 @@ def test_register_crawler_keeps_release_artifacts_on_an_unchanged_release_crawle
     assert _listing_count(admin_conn, crawler_id) == 1
 
 
+def test_crawler_is_release_lock_conflicts_with_an_in_flight_kind_change(admin_conn):
+    """crawler_is_release() reads FOR SHARE so the result write and a kind
+    change serialize instead of racing. A plain SELECT under READ COMMITTED
+    would neither wait for an in-flight conversion nor keep one out until the
+    result transaction commits -- the flip could commit between the check and
+    the listing write's commit, and the write would survive the conversion's
+    DELETE. The property that closes that window is the lock conflict itself,
+    which is what this pins: with a conversion open and uncommitted, the check
+    blocks (here surfaced as a lock timeout) rather than reading the old kind
+    and sailing on; once the conversion commits, it reads the new kind."""
+    import psycopg
+
+    crawler_id = _release_era_artifacts(admin_conn, "Locked Store")
+
+    with db.get_admin_pool().connection() as conv_conn:
+        conv_conn.execute("BEGIN")
+        db.register_crawler(conv_conn, "Locked Store", "/path/store.py", crawler_type="catalog")
+
+        with db.get_admin_pool().connection() as check_conn:
+            check_conn.execute("SET lock_timeout = '200ms'")
+            with pytest.raises(psycopg.errors.LockNotAvailable):
+                db.crawler_is_release(check_conn, crawler_id)
+            check_conn.rollback()
+
+        conv_conn.commit()
+
+    with db.get_admin_pool().connection() as check_conn:
+        assert db.crawler_is_release(check_conn, crawler_id) is False
+
+
 def test_register_crawler_sweeps_queue_rows_orphaned_by_the_reversion(admin_conn):
     # Deleting the release-written stock rows orphans any crawl_queue row whose
     # item_key existed only through them, exactly as the forward conversion's

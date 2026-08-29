@@ -1390,9 +1390,20 @@ def crawler_is_release(conn, crawler_id: int) -> bool:
     cleanup deleted, and nothing ever deletes them again: the cleanup only
     fires on a kind *change*, which has already happened. So the result
     transaction rechecks the kind the same way it rechecks the claim.
+
+    FOR SHARE, not a plain SELECT, because under READ COMMITTED a plain read
+    neither waits for an in-flight conversion nor keeps one out until this
+    transaction commits -- the kind flip could commit between this check and
+    the listing write's commit, and the write would survive its DELETE. The
+    row lock serializes the two: taken first, it holds register_crawler()'s
+    UPDATE off until this transaction's writes are committed and its DELETEs
+    can see them; taken second, it waits the conversion out and reads the new
+    kind. No deadlock is reachable from the conversion side: its crawl_queue
+    sweep deletes only 'pending' rows, never the 'in_progress' row whose
+    FOR UPDATE this transaction already holds.
     """
     row = conn.execute(
-        "SELECT crawler_type FROM crawlers WHERE id = %s", [crawler_id]
+        "SELECT crawler_type FROM crawlers WHERE id = %s FOR SHARE", [crawler_id]
     ).fetchone()
     return bool(row) and row["crawler_type"] == "release"
 
