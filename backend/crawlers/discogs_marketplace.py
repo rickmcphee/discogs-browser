@@ -5,7 +5,6 @@ import urllib.parse
 from typing import Optional
 
 import httpx
-from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from crawler import BotDetectedError
 from logging_config import get_logger
@@ -34,6 +33,10 @@ _CHALLENGE_TITLES = ("just a moment", "attention required", "checking your brows
 # the message, rather than a wrong price shown as fact.
 _LISTING_CONTAINERS = ("table.mpitems", "#pjax_container table")
 
+# Readiness is decided by _read_when_ready() parsing a row, not by any of
+# these merely matching, so there is no bare "[data-pricevalue]" anywhere: a
+# stray price element cannot stand in for a listing at any stage.
+#
 # Every row shape carries a price node _parse_row() reads -- the legacy
 # `td.item_price .price` node (whose price may predate data-pricevalue) or
 # the attribute itself -- so a selector cannot match a row it has no way to
@@ -73,14 +76,9 @@ _EMPTY_STATE = tuple(
     )
 )
 
-# Deliberately no bare "[data-pricevalue]" here: a stray price element
-# anywhere on the page would satisfy this wait before the listings themselves
-# render, which is the immediate-read race this crawler exists to stop. Every
-# row selector already contains the price node, so nothing is lost.
-_PAGE_READ = ", ".join(_ROW_SELECTORS + _EMPTY_STATE)
-
 _SETTLE_TIMEOUT_MS = 15_000
 _LISTINGS_TIMEOUT_MS = 15_000
+_POLL_INTERVAL_MS = 250
 
 
 def _finite_price(value: Optional[float]) -> Optional[float]:
@@ -196,9 +194,7 @@ class Crawler:
             log.warning("[Discogs] bot interstitial did not clear for release %s", discogs_id)
             raise BotDetectedError()
 
-        recognised = await self._wait_until_page_read(page)
-
-        listings = await self._read_listings(page, url) if recognised else []
+        listings, recognised = await self._read_when_ready(page, url)
         if listings:
             best = listings[0]
             log.info(
@@ -207,7 +203,7 @@ class Crawler:
             )
             return listings
 
-        if recognised and await self._empty_state_rendered(page):
+        if recognised:
             log.info("[Discogs] no USA-shipping listings for release %s", discogs_id)
             return []
 
@@ -229,23 +225,30 @@ class Crawler:
             f"{__name__} against {url}"
         )
 
-    async def _wait_until_page_read(self, page) -> bool:
-        """Whether either listings or a recognised empty state ever rendered.
+    async def _read_when_ready(self, page, url: str):
+        """Poll until a row actually parses or a visible empty state renders.
 
-        Waiting is the point: the listings are not necessarily in the DOM at
-        domcontentloaded, and reading straight through was what turned a page
-        that had not finished rendering into "no listings".
+        Returns (listings, recognised); recognised is False only if the
+        deadline passed with neither.
+
+        Waiting for a price-shaped node to attach would be weaker than what
+        the caller needs. _parse_row() rejects a matched row whose price is a
+        placeholder or malformed, so a skeleton row satisfies that weaker
+        wait while the real listings are still on their way -- and the crawl
+        then raises "markup not recognised" on a page that was about to be
+        perfectly readable. Waiting is the point, so wait for the thing that
+        is actually wanted.
         """
-        # Only a timeout means "it never rendered". Catching every exception
-        # would fold a closed page or a dead browser into that same answer, and
-        # a confirmed-zero stats lookup would then turn it into an empty result
-        # -- clearing the stored price on what was really a browser failure,
-        # which is the whole class of bug this crawler was changed to stop.
-        try:
-            await page.wait_for_selector(_PAGE_READ, timeout=_LISTINGS_TIMEOUT_MS, state="attached")
-            return True
-        except PlaywrightTimeoutError:
-            return False
+        deadline = time.monotonic() + _LISTINGS_TIMEOUT_MS / 1000
+        while True:
+            listings = await self._read_listings(page, url)
+            if listings:
+                return listings, True
+            if await self._empty_state_rendered(page):
+                return [], True
+            if time.monotonic() >= deadline:
+                return [], False
+            await page.wait_for_timeout(_POLL_INTERVAL_MS)
 
     async def _read_listings(self, page, url: str) -> list[dict]:
         """Every listing row the page rendered, cheapest first.

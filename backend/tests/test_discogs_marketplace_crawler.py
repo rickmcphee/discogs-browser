@@ -46,7 +46,6 @@ from pathlib import Path
 import httpx
 import pytest
 import respx
-from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 
 import crawlers.discogs_marketplace as dm
@@ -55,6 +54,14 @@ from crawler import BotDetectedError
 FIXTURES = Path(__file__).parent / "fixtures" / "crawlers" / "discogs_marketplace"
 LISTED_TITLE = "Rick Astley - Never Gonna Give You Up | Releases for Sale | Discogs"
 RELEASE = {"discogs_id": "r249504", "artist": "Rick Astley", "title": "Never Gonna Give You Up"}
+
+
+@pytest.fixture(autouse=True)
+def short_listings_deadline(monkeypatch):
+    """Readiness polls to a deadline now, so the no-listings cases would each
+    wait out the real 15s. Long enough to outlast the late-render fixtures'
+    injections, short enough to keep the file quick."""
+    monkeypatch.setattr(dm, "_LISTINGS_TIMEOUT_MS", 1000)
 
 
 @pytest.fixture
@@ -89,14 +96,7 @@ class _FakePage:
 
     async def wait_for_timeout(self, ms):
         self.waits += 1
-
-    async def wait_for_selector(self, selector, timeout=None, state=None):
-        # set_content() has already painted everything the fixture will ever
-        # have, so presence is decided once rather than really waiting out
-        # `timeout` -- otherwise the "markup not recognised" tests would each
-        # burn the full 15s.
-        if await self._real.locator(selector).count() == 0:
-            raise PlaywrightTimeoutError(f"selector not found in fixture: {selector}")
+        await asyncio.sleep(ms / 1000)
 
     def locator(self, selector):
         return self._real.locator(selector)
@@ -275,7 +275,7 @@ async def test_listings_that_render_after_navigation_are_waited_for(browser_page
             asyncio.create_task(self._render_later())
 
         async def _render_later(self):
-            await asyncio.sleep(0.25)
+            await asyncio.sleep(0.05)
             await self._real.evaluate(
                 "html => { document.getElementById('shell').innerHTML = html; }", body
             )
@@ -316,11 +316,12 @@ async def test_a_page_with_only_carousel_prices_raises_rather_than_guessing(brow
 async def test_a_browser_failure_is_not_laundered_into_a_confirmed_miss(browser_page, monkeypatch):
     """A dead page must not read as "the listings never rendered".
 
-    Catching every exception around the readiness wait would fold a closed
-    page or browser into that answer, and a stats lookup returning zero would
-    then turn it into an empty result -- clearing the release's stored price
-    on what was really a browser failure. The stats stub returns 0 here so
-    that a broad catch would produce exactly that silent [].
+    Readiness is decided by reading the DOM, so a closed page or browser
+    surfaces from the locator calls themselves. Swallowing those would leave
+    the poll returning "nothing rendered", and a stats lookup returning zero
+    would then turn it into an empty result -- clearing the release's stored
+    price on what was really a browser failure. The stats stub returns 0 here
+    so that any such catch would produce exactly that silent [].
     """
     async def _stats(release_id):
         return 0
@@ -328,7 +329,7 @@ async def test_a_browser_failure_is_not_laundered_into_a_confirmed_miss(browser_
     monkeypatch.setattr(dm, "_release_num_for_sale", _stats)
 
     class _DeadBrowserPage(_FakePage):
-        async def wait_for_selector(self, selector, timeout=None, state=None):
+        def locator(self, selector):
             raise RuntimeError("Target page, context or browser has been closed")
 
     with pytest.raises(RuntimeError, match="browser has been closed"):
@@ -391,7 +392,7 @@ async def test_a_hidden_empty_state_does_not_end_the_wait_before_listings_render
             asyncio.create_task(self._render_later())
 
         async def _render_later(self):
-            await asyncio.sleep(0.25)
+            await asyncio.sleep(0.05)
             await self._real.evaluate(
                 "html => { document.getElementById('shell').innerHTML = html; }", body
             )
@@ -442,7 +443,7 @@ async def test_a_price_less_row_cannot_end_the_readiness_wait_early(browser_page
             asyncio.create_task(self._render_later())
 
         async def _render_later(self):
-            await asyncio.sleep(0.25)
+            await asyncio.sleep(0.05)
             await self._real.evaluate(
                 "html => { document.getElementById('shell').innerHTML = html; }", body
             )
@@ -533,3 +534,43 @@ async def test_malformed_price_attributes_do_not_abandon_the_other_rows(browser_
     results = await Crawler().search(RELEASE, page)
 
     assert [r["price"] for r in results] == [14.00, 99.99]
+
+
+async def test_a_placeholder_row_does_not_end_readiness_before_real_listings(browser_page, monkeypatch):
+    """Price-shaped is not the same as parseable.
+
+    The shell holds a row whose price is a dash: it matches the row selector,
+    so waiting for a selector to match would return immediately, find nothing
+    parseable, and raise "markup not recognised" on a page whose real
+    listings were still a moment away. Readiness polls until a row actually
+    parses instead.
+    """
+    async def _stats(release_id):
+        return 124
+
+    monkeypatch.setattr(dm, "_release_num_for_sale", _stats)
+    body = re.search(r"<body>(.*)</body>",
+                     (FIXTURES / "usa_listings.html").read_text(encoding="utf-8"),
+                     re.S).group(1)
+
+    class _PlaceholderPriceThenListings(_FakePage):
+        async def goto(self, url, wait_until=None):
+            await self._real.set_content(
+                "<html><head><title>x</title></head><body>"
+                "<div id='pjax_container'><table class='mpitems'><tbody><tr>"
+                "<td class='item_price'><span class='price'>&mdash;</span></td>"
+                "</tr></tbody></table></div>"
+                "<div id='shell'></div></body></html>",
+                wait_until="domcontentloaded",
+            )
+            asyncio.create_task(self._render_later())
+
+        async def _render_later(self):
+            await asyncio.sleep(0.05)
+            await self._real.evaluate(
+                "html => { document.getElementById('shell').innerHTML = html; }", body
+            )
+
+    results = await Crawler().search(RELEASE, _PlaceholderPriceThenListings(browser_page, "usa_listings.html"))
+
+    assert [r["price"] for r in results] == [6.50, 9.25, 12.99]
