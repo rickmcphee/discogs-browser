@@ -157,6 +157,19 @@ export interface StockResponse {
 
 export type StockSortField = 'artist' | 'title' | 'format' | 'price' | 'discogs_price' | 'source'
 
+export interface StockSourceCount {
+  crawler_id: number
+  site_name: string
+  count: number
+}
+
+// `total` is the same number StockResponse carries under the same filters, and
+// the source counts sum to it -- see the /stock/stats docstring.
+export interface StockStats {
+  total: number
+  sources: StockSourceCount[]
+}
+
 export interface RecommendationImportError {
   line: number
   error: string

@@ -2677,38 +2677,24 @@ def _collection_artist_clause(user_id_param: str) -> str:
 _STOCK_ALLOWED_SORT = {"artist", "title", "format", "price"}
 
 
-def get_stock_items(
-    conn,
+def _stock_filter_sql(
     user_id: int,
     search: Optional[str] = None,
     artist: Optional[str] = None,
-    sort: str = "artist",
-    order: str = "asc",
-    page: int = 1,
-    per_page: int = 50,
     library_scope: Optional[str] = None,
     recommended: bool = False,
     saved_only: bool = False,
     overlapped_artists: bool = False,
     exclude_crawler_ids: Optional[list[int]] = None,
-) -> dict:
-    order_sql = "DESC" if order.lower() == "desc" else "ASC"
-    # The sort expression is collection-pinned, so it only applies to a scope
-    # that can contain rows carrying a collection price. Under wishlist scope
-    # every key would be NULL, leaving all rows tied and pagination unstable.
-    # The lookup's default covers None and any unmapped scope.
-    if sort == "discogs_price" and "in_collection" in _LIBRARY_MEMBERSHIP.get(library_scope, ()):
-        sort_expr = "(SELECT {price} {match} LIMIT 1)".format(
-            price=_price_sort_sql("li.price_paid"),
-            match=_library_match_fragment("%(user_id)s", "collection"),
-        )
-    elif sort == "source":
-        sort_expr = "cr.site_name"
-    else:
-        sort_col = sort if sort in _STOCK_ALLOWED_SORT else "artist"
-        # See get_library_releases: keeps casing variants of one artist together.
-        sort_expr = _artist_sort_sql("s.artist") if sort_col == "artist" else f"s.{sort_col}"
+) -> tuple[str, dict]:
+    """The WHERE clause every stock_items query shares, as (sql, params).
 
+    The item list, the artist sidebar and the source breakdown all have to
+    agree on what "the current view" holds -- a breakdown whose parts don't sum
+    to the count rendered beside them is worse than no breakdown at all. One
+    builder makes that true by construction instead of leaving three copies to
+    stay in step by hand.
+    """
     conditions = []
     params: dict = {"user_id": user_id}
     if search:
@@ -2747,6 +2733,46 @@ def get_stock_items(
         conditions.append("s.crawler_id != ALL(%(exclude_crawler_ids)s)")
         params["exclude_crawler_ids"] = exclude_crawler_ids
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    return where, params
+
+
+def get_stock_items(
+    conn,
+    user_id: int,
+    search: Optional[str] = None,
+    artist: Optional[str] = None,
+    sort: str = "artist",
+    order: str = "asc",
+    page: int = 1,
+    per_page: int = 50,
+    library_scope: Optional[str] = None,
+    recommended: bool = False,
+    saved_only: bool = False,
+    overlapped_artists: bool = False,
+    exclude_crawler_ids: Optional[list[int]] = None,
+) -> dict:
+    order_sql = "DESC" if order.lower() == "desc" else "ASC"
+    # The sort expression is collection-pinned, so it only applies to a scope
+    # that can contain rows carrying a collection price. Under wishlist scope
+    # every key would be NULL, leaving all rows tied and pagination unstable.
+    # The lookup's default covers None and any unmapped scope.
+    if sort == "discogs_price" and "in_collection" in _LIBRARY_MEMBERSHIP.get(library_scope, ()):
+        sort_expr = "(SELECT {price} {match} LIMIT 1)".format(
+            price=_price_sort_sql("li.price_paid"),
+            match=_library_match_fragment("%(user_id)s", "collection"),
+        )
+    elif sort == "source":
+        sort_expr = "cr.site_name"
+    else:
+        sort_col = sort if sort in _STOCK_ALLOWED_SORT else "artist"
+        # See get_library_releases: keeps casing variants of one artist together.
+        sort_expr = _artist_sort_sql("s.artist") if sort_col == "artist" else f"s.{sort_col}"
+
+    where, params = _stock_filter_sql(
+        user_id, search=search, artist=artist, library_scope=library_scope,
+        recommended=recommended, saved_only=saved_only,
+        overlapped_artists=overlapped_artists, exclude_crawler_ids=exclude_crawler_ids,
+    )
 
     total = conn.execute(f"SELECT COUNT(*) FROM stock_items s {where}", params).fetchone()["count"]
 
@@ -2820,30 +2846,53 @@ def get_distinct_stock_artists(conn, user_id: int, library_scope: Optional[str] 
     overlapped_artists: bool = False,
     exclude_crawler_ids: Optional[list[int]] = None,
 ) -> list[str]:
-    conditions = []
-    params: dict = {"user_id": user_id}
-    in_library = _in_library_clause("%(user_id)s", library_scope)
-    if in_library:
-        conditions.append(in_library)
-    if overlapped_artists:
-        conditions.append(_collection_artist_clause("%(user_id)s"))
-    if recommended:
-        conditions.append(
-            "s.item_key IN (SELECT item_key FROM stock_item_judgments "
-            "WHERE user_id = %(user_id)s AND recommended = TRUE)"
-        )
-        conditions.append(_not_owned_clause("%(user_id)s"))
-    if saved_only:
-        conditions.append(
-            "s.item_key IN (SELECT item_key FROM stock_item_saves "
-            "WHERE user_id = %(user_id)s)"
-        )
-    if exclude_crawler_ids:
-        conditions.append("s.crawler_id != ALL(%(exclude_crawler_ids)s)")
-        params["exclude_crawler_ids"] = exclude_crawler_ids
-    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    # No search/artist: the sidebar lists what the *unsearched* view holds, so
+    # typing in the search box never removes an artist from it.
+    where, params = _stock_filter_sql(
+        user_id, library_scope=library_scope, recommended=recommended,
+        saved_only=saved_only, overlapped_artists=overlapped_artists,
+        exclude_crawler_ids=exclude_crawler_ids,
+    )
     rows = conn.execute(f"SELECT DISTINCT s.artist FROM stock_items s {where}", params).fetchall()
     return _canonical_artist_list(conn, [row["artist"] for row in rows])
+
+
+def get_stock_source_counts(
+    conn,
+    user_id: int,
+    search: Optional[str] = None,
+    artist: Optional[str] = None,
+    library_scope: Optional[str] = None,
+    recommended: bool = False,
+    saved_only: bool = False,
+    overlapped_artists: bool = False,
+    exclude_crawler_ids: Optional[list[int]] = None,
+) -> list[dict]:
+    """In-stock item count per source, for the same view get_stock_items lists.
+
+    Counts stock_items rows, not the listing rows get_stock_items interleaves
+    for price comparison -- those belong to a release crawler that priced
+    somebody else's item, not to a store's own inventory. So these counts sum
+    to exactly the `total` returned beside them, which is the whole point of
+    showing them together.
+    """
+    where, params = _stock_filter_sql(
+        user_id, search=search, artist=artist, library_scope=library_scope,
+        recommended=recommended, saved_only=saved_only,
+        overlapped_artists=overlapped_artists, exclude_crawler_ids=exclude_crawler_ids,
+    )
+    rows = conn.execute(
+        f"""
+        SELECT cr.id AS crawler_id, cr.site_name, COUNT(*) AS count
+        FROM stock_items s
+        JOIN crawlers cr ON cr.id = s.crawler_id
+        {where}
+        GROUP BY cr.id, cr.site_name
+        ORDER BY COUNT(*) DESC, cr.site_name ASC
+        """,
+        params,
+    ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def get_unjudged_stock_items(conn, user_id: int, limit: int) -> list[dict]:
