@@ -117,7 +117,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          if ! git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+          # Asked over the API rather than with git. The action rewrites
+          # `origin` to embed its own token and unsets the credential
+          # `actions/checkout` left, so the remote still carries the token that
+          # was revoked above: any git call against it answers 401, which this
+          # guard would have read as "committed nothing" and silently skipped
+          # every run. `gh` reads GH_TOKEN, which is the freshly minted one.
+          if ! gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$BRANCH" >/dev/null 2>&1; then
             echo "No remote branch $BRANCH: Claude committed nothing. Nothing to open."
             exit 0
           fi
