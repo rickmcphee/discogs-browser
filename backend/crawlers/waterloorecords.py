@@ -108,18 +108,18 @@ class Crawler:
             )
             r.raise_for_status()
 
-        try:
-            products = r.json()["resources"]["results"]["products"]
-        except (KeyError, TypeError, ValueError) as e:
-            raise RuntimeError(
-                f"unexpected suggest.json payload shape for {query!r}: {e}"
-            ) from None
+            try:
+                products = r.json()["resources"]["results"]["products"]
+            except (KeyError, TypeError, ValueError) as e:
+                raise RuntimeError(
+                    f"unexpected suggest.json payload shape for {query!r}: {e}"
+                ) from None
 
-        ranked = []
-        for product in products:
-            scored = self._listing(product, release)
-            if scored is not None:
-                ranked.append(scored)
+            ranked = []
+            for product in products:
+                scored = await self._listing(product, release, client)
+                if scored is not None:
+                    ranked.append(scored)
 
         if not ranked:
             log.info("[Waterloo Records] no in-stock vinyl match for %r", query)
@@ -136,7 +136,7 @@ class Crawler:
         return [listing for _, listing in ranked]
 
     @classmethod
-    def _listing(cls, product: dict, release: dict):
+    async def _listing(cls, product: dict, release: dict, client):
         """(rank, listing) for a matching product, or None. Lower rank is closer."""
         if not product.get("available"):
             return None
@@ -156,7 +156,7 @@ class Crawler:
 
         return rank, {
             "url": url,
-            "price": cls._price(product),
+            "price": await cls._resolve_price(product, url, client),
             # The store ships from one shop and quotes postage at checkout
             # only; nothing in this payload carries it, and inventing a zero
             # would read as free shipping.
@@ -182,11 +182,48 @@ class Crawler:
             return ""
         return urllib.parse.urljoin(Crawler.base_url, path)
 
+    @classmethod
+    async def _resolve_price(cls, product: dict, url: str, client) -> Optional[float]:
+        """What the record actually costs, not what its cheapest variant costs.
+
+        `available` on a suggest hit means *some* variant is purchasable, while
+        `price`/`price_min` are minima across every variant including the sold
+        out ones -- so the two can describe different variants. Live example:
+        "070 Shake - Petrichor [LP]" reports available with price 24.99 and
+        price_max 29.99, and the 24.99 variant is the sold out one. Publishing
+        24.99 there would quote a price nobody can pay. The catalog crawler
+        this replaced avoided it by picking the cheapest *in-stock* variant,
+        and that very product was its fixture.
+
+        suggest.json carries an empty `variants` list, so the variants have to
+        come from the product endpoint -- but only when the product's own price
+        range leaves room for disagreement. price_min == price_max means every
+        variant costs the same, so whichever is available costs that, and no
+        second request is worth making.
+        """
+        low = cls._decimal(product, "price_min", "price")
+        high = cls._decimal(product, "price_max")
+        if low is None or high is None or low == high:
+            return low
+
+        r = await client.get(f"{url}.js", timeout=30)
+        r.raise_for_status()
+        variants = (r.json() or {}).get("variants") or []
+        # Cents here, unlike suggest.json's decimal strings.
+        prices = [
+            v["price"] / 100
+            for v in variants
+            if v.get("available") and isinstance(v.get("price"), (int, float))
+        ]
+        # No available variant priced in a shape this understands. Falling back
+        # to `low` would reintroduce exactly the sold-out price this exists to
+        # avoid, so the row goes out unpriced and still linkable.
+        return min(prices) if prices else None
+
     @staticmethod
-    def _price(product: dict) -> Optional[float]:
-        # A string in this payload ("24.99"), unlike products.json's variant
-        # prices -- and dollars, not cents.
-        for key in ("price", "price_min"):
+    def _decimal(product: dict, *keys: str) -> Optional[float]:
+        # Decimal strings in this payload ("24.99"), not cents.
+        for key in keys:
             try:
                 return float(product[key])
             except (KeyError, TypeError, ValueError):

@@ -7,7 +7,8 @@ from crawlers.waterloorecords import Crawler
 _SUGGEST_URL = "https://waterloorecords.com/search/suggest.json"
 
 
-def _product(title, type_="Vinyl", price="24.99", available=True, handle=None, extra=None):
+def _product(title, type_="Vinyl", price="24.99", available=True, handle=None, extra=None,
+             price_max=None):
     """One product in the shape /search/suggest.json actually returns.
 
     `variants` is deliberately absent rather than populated: the suggest
@@ -21,6 +22,10 @@ def _product(title, type_="Vinyl", price="24.99", available=True, handle=None, e
         "type": type_,
         "price": price,
         "price_min": price,
+        # Equal to price unless a case is exercising a mixed-price product --
+        # every live suggest hit carries this field, and price_min == price_max
+        # is what tells the crawler no variant lookup is needed.
+        "price_max": price if price_max is None else price_max,
         "available": available,
         # The tracking parameters are part of the fixture on purpose -- every
         # live url carries them and _clean_url has to remove them.
@@ -64,6 +69,63 @@ async def test_search_returns_matching_in_stock_vinyl():
         "currency": "USD",
         "condition": None,
     }]
+
+
+@respx.mock
+async def test_search_prices_from_an_available_variant_not_a_sold_out_cheaper_one():
+    """Real shape, from "070 Shake - Petrichor [LP]".
+
+    `available` says only that *some* variant is purchasable, while `price` and
+    `price_min` are minima across every variant including the sold-out ones --
+    live, that product reports available at 24.99 with price_max 29.99, and the
+    24.99 variant is the sold-out one. Publishing 24.99 would quote a price
+    nobody can pay. The catalog crawler this replaced picked the cheapest
+    in-stock variant and used this very product as its fixture.
+    """
+    handle = "070-shake-petrichor-lp-60245876931"
+    _mock([_product("070 Shake - Petrichor [LP]", price="24.99", price_max="29.99", handle=handle)])
+    # Cents in this payload, unlike suggest.json's decimal strings.
+    respx.get(f"https://waterloorecords.com/products/{handle}.js").mock(
+        return_value=httpx.Response(200, json={"variants": [
+            {"title": "New / Default / Default", "price": 2999, "available": True},
+            {"title": "New / Default / 24.99", "price": 2499, "available": False},
+        ]})
+    )
+
+    results = await Crawler().search({"artist": "070 Shake", "title": "Petrichor"}, None)
+
+    assert [r["price"] for r in results] == [29.99]
+
+
+@respx.mock
+async def test_search_does_not_fetch_variants_when_every_variant_costs_the_same():
+    # price_min == price_max leaves nothing to disambiguate, so the second
+    # request is not worth making against the store.
+    variants = respx.get("https://waterloorecords.com/products/geese-getting-killed-clear-vinyl-lp-540086318802.js")
+    _mock([_GEESE_LP])
+
+    results = await Crawler().search({"artist": "Geese", "title": "Getting Killed"}, None)
+
+    assert [r["price"] for r in results] == [24.99]
+    assert variants.call_count == 0
+
+
+@respx.mock
+async def test_search_leaves_the_row_unpriced_when_no_available_variant_is_priced():
+    # Falling back to the product-level minimum would reintroduce exactly the
+    # sold-out price the lookup exists to avoid, so the row goes out unpriced
+    # and still linkable.
+    handle = "mystery-lp"
+    _mock([_product("Geese - Getting Killed [LP]", price="24.99", price_max="29.99", handle=handle)])
+    respx.get(f"https://waterloorecords.com/products/{handle}.js").mock(
+        return_value=httpx.Response(200, json={"variants": [
+            {"title": "New", "price": 2499, "available": False},
+        ]})
+    )
+
+    results = await Crawler().search({"artist": "Geese", "title": "Getting Killed"}, None)
+
+    assert [r["price"] for r in results] == [None]
 
 
 @respx.mock

@@ -470,7 +470,7 @@ crawler's vinyl gate already read, so the format and availability rules carry
 over unchanged; `crawlers/ebay.py` is the precedent for an API-backed release
 crawler that ignores the Playwright page it is handed.
 
-Three things the conversion had to get right:
+What the conversion had to get right:
 
 - **The url carries the search that produced it.** suggest.json returns
   `/products/<handle>?_pos=…&_psq=…&_psid=…`, and every one of those varies per
@@ -508,8 +508,12 @@ Three things the conversion had to get right:
 
 **Consequences.** Waterloo keeps a Store tab presence, but a different one: a
 release crawler still writes `stock_items` through
-`upsert_stock_item_from_release()`, so what appears is the records from a
-user's own library that Waterloo stocks, not the store's shelf. Browsing
+`upsert_stock_item_from_release()`, so what appears is driven by libraries
+rather than by the shelf. Note that `stock_items` carries no `user_id` and is
+not user-scoped -- a row written because *some* tenant's queue asked about a
+release is visible to everyone, so what surfaces is the union of what Waterloo
+stocks across all users' libraries, not one user's own. What cannot appear is a
+release absent from every library, since nothing would ever enqueue it. Browsing
 Waterloo for records you do not already have is gone, and that is the price of
 completeness on a catalog this size. Waterloo also joins the eligible release
 crawlers expanded per `crawl_queue` row at dispatch, alongside `amazon`,
