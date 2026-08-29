@@ -477,7 +477,9 @@ discogs-browser/
 ├── CLAUDE.md
 ├── README.md
 ├── .claude/
-│   └── settings.json           # SessionStart hook that runs scripts/cloud-setup.sh
+│   ├── settings.json           # SessionStart hook, pointed at the launcher below
+│   └── hooks/
+│       └── session-start.sh    # refuses to provision a PR head, else runs scripts/cloud-setup.sh
 └── .gitignore
 ```
 
