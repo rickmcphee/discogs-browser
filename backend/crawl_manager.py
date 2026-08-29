@@ -579,19 +579,29 @@ class CrawlManager:
                     await resolve_row(row_id)
                 continue
 
-            # An empty result is evidence the site is broken only where the site
-            # would be expected to have the record. That holds for a real Discogs
-            # release on a near-universal marketplace, and for nothing else here:
-            # most small-label stock isn't listed on Amazon/eBay at all, and a
-            # single record store legitimately does not stock most of anyone's
-            # library however healthy it is. A crawler for such a store says so
-            # with empty_result_is_expected, and is then read the same way a
-            # stock-item row already is -- only a genuine signal (bot detection,
-            # or a match proving the site currently works) is recorded, and a
-            # plain empty result is excluded from the circuit breaker rather than
-            # counted as either outcome. Without that, a run of
-            # consecutive_failure_limit library releases the store happens not to
-            # carry would cool off a perfectly healthy site.
+            # Reading an empty result as evidence of breakage is an inference,
+            # and it is only needed while a crawler cannot tell "the site has
+            # nothing" from "I could not read the page" -- a crawler that
+            # declares empty_result_is_expected promises it can, so its empty
+            # results are confirmed misses and are excluded from the breaker.
+            # It is then read the same way a stock-item row already is: only a
+            # genuine signal (bot detection, or a match proving the site
+            # currently works) is recorded, and a plain empty result counts as
+            # neither outcome.
+            #
+            # Two kinds of crawler earn that promise. A crawler for a single
+            # store legitimately does not stock most of anyone's library
+            # however healthy it is, so a run of consecutive_failure_limit
+            # releases it happens not to carry would otherwise cool off a site
+            # that answered every request correctly. And a crawler that
+            # separates the two cases itself, raising on a page it could not
+            # read, has already given the breaker its breakage signal by that
+            # route -- discogs_marketplace does this, which is why a
+            # near-universal marketplace can opt out too. Everything else
+            # keeps the inference: most small-label stock isn't listed on
+            # Amazon/eBay at all, but a real Discogs release missing from a
+            # marketplace that does not make that promise is a reason to
+            # suspect the crawler.
             # `is True`, not a truthiness test: a plugin is duck-typed, so an
             # attribute of any other type must not silently switch the breaker
             # off. Only an explicit True opts out; anything else keeps the
