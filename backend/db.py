@@ -2037,8 +2037,12 @@ _QUEUE_LIVE_STOCK_KEYS_SQL = """
 # per-statement budget routers/queue.py hands each of this report's queries --
 # so a real deployment's backlog tripped the statement timeout and the tab
 # rendered an error instead of the queue. Hoisting both out of the row loop
-# leaves crawlers scanned once and stock_items hashed once: same numbers, and
-# at 280k pending rows (100k of them stock) this went 1.4s -> 0.17s.
+# leaves every scan below executing exactly once whatever the queue's size --
+# `crawlers` is still read twice, once for each subquery that needs it, but
+# neither read repeats per row. That is the property the regression test pins,
+# and it is the one that matters: what broke this was cost per queue row, not
+# the number of scan nodes. Same numbers, and at 280k pending rows (100k of
+# them stock) this went 1.4s -> 0.17s.
 #
 # actionable reads as get_eligible_crawlers returning at least one row: the
 # eligible set for this row's kind, intersected with pending_crawler_ids when
