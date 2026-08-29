@@ -193,28 +193,40 @@ Now `main` moving is exactly what strands a main-based PR, so skipping that even
 would leave the daily cron as the only thing catching them up — reintroducing,
 for `main`, the up-to-a-day lag this job exists to close.
 
-**The promotion PR is excluded, and it is the one PR that must be.**
-`integration-promote.yml` opens it `--base main --head integration`, so widening
-`refresh` to `main` brought a PR into its scope whose *head* is a protected
-branch. `update-branch` on that PR pushes a merge commit straight onto
-`integration`, which `integration-branch-protection` rejects outright — it
-requires a pull request and names no bypass actors, so the call fails for every
-identity, the sync app included. The job would collect that failure and exit 1
-on every run for as long as the promotion PR is open and `main` has moved:
-weekly, and for days at a time while it waits on `main`'s required approving
-review. A job that is red every Tuesday for a benign reason is a job nobody
+**A PR whose *head* is a protected branch is skipped.** `update-branch` pushes
+the base merge onto the head branch, and neither ruleset permits that push:
+`integration` requires a pull request and names no bypass actors at all, while
+`main`'s sole bypass actor is a User rather than the sync app. The call is
+therefore rejected for this workflow's identity either way, the job collects the
+failure, and it exits 1 on every run for as long as such a PR is open and its
+base has moved.
+
+The live case is the promotion PR. `integration-promote.yml` opens it
+`--base main --head integration`, so widening `refresh` to `main` brought it
+into scope — weekly, and open for days while it waits on `main`'s required
+approving review. Unhandled, `refresh` would be red for that entire window every
+week, and a job that is red every Tuesday for a benign reason is a job nobody
 reads, which costs the third goal above rather than serving it.
 
-It is excluded rather than tolerated as a known failure, because nothing is
-wrong when it happens: `sync` is what makes that PR's head current, by merging
+`main` is named in the filter for symmetry rather than for a case that has
+occurred: no PR in this repository has ever had `main` as its head, and `sync`
+opens its own from `SYNC_BRANCH` precisely so that one is never needed. It is
+there because the rule being encoded is "a protected head cannot be pushed to",
+and a filter naming only one of the two protected branches would not be that
+rule — it would be a coincidence that happened to hold.
+
+Skipped rather than tolerated as a known failure, because nothing is wrong when
+it happens: `sync` is what makes the promotion PR's head current, by merging
 `main` into `integration` through a PR of its own — also the only route that
 keeps `git merge-base` current, which is why `integration` is merge-only. The
-exclusion is scoped to same-repository heads, so a fork PR that merely has a
-branch named `integration` is an ordinary PR and still gets refreshed.
+filter is scoped to same-repository heads, so a fork PR that merely has a branch
+named `main` or `integration` is an ordinary PR and still gets refreshed.
 
-(Found by Copilot's review on the PR that made this change, not by the change's
-own testing — the interaction is invisible unless you are holding both
-workflows at once.)
+(Both halves came from Copilot's review on the PR that made this change, in two
+rounds, rather than from the change's own testing — the promotion-PR collision
+is invisible unless you hold both workflows at once, and the generalisation to
+`main` is invisible unless you notice the code was narrower than the comment
+justifying it.)
 
 One further consequence: the two base queries share the job's `set -e`, so
 a transient API failure listing one base now aborts before the other is listed.

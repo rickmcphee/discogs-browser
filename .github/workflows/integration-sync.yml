@@ -565,34 +565,45 @@ jobs:
           # over a PR that never touched it.
           open_prs=""
           for base in main integration; do
-            # The promotion PR is excluded, and it is the one PR here that
-            # MUST be: integration-promote.yml opens it `--base main --head
-            # integration`, so its head is itself a protected branch.
-            # update-branch on it would push a merge commit straight onto
-            # `integration`, which integration-branch-protection rejects
-            # outright -- it requires a pull request and names no bypass
-            # actors, so the call fails for every identity, the sync app
-            # included. This job would then collect it into `failed` and exit
-            # 1 on every run for as long as that PR is open and `main` has
-            # moved: weekly, and for days at a time while it waits on `main`'s
-            # required approving review.
+            # A PR whose HEAD is one of the two protected branches is skipped.
+            # update-branch pushes the base merge onto the *head* branch, and
+            # neither ruleset permits that push: `integration` requires a pull
+            # request and names no bypass actors at all, while `main`'s only
+            # bypass actor is a User, not the sync app. So the call is rejected
+            # for this workflow's identity either way, this job collects the
+            # failure, and it exits 1 on every run for as long as such a PR is
+            # open and its base has moved.
             #
-            # Excluded rather than tolerated as a known failure, because
-            # nothing is wrong when it happens. `sync` is what makes that PR's
-            # head current, by merging `main` into `integration` through a PR
-            # of its own -- which is also the only route that keeps
-            # `git merge-base` current, the reason `integration` is merge-only.
+            # The live case is the promotion PR: integration-promote.yml opens
+            # it `--base main --head integration`, weekly, and it can wait days
+            # on `main`'s required approving review. Without this, `refresh`
+            # would be red for that whole window, every week. A job that is red
+            # every Tuesday for a benign reason is one nobody reads, which
+            # costs the "every failure is loud" goal rather than serving it.
             #
-            # Scoped to same-repository heads: a fork PR that merely happens to
-            # have a branch named `integration` is an ordinary PR and still
-            # gets refreshed. (No PR can have head and base both `integration`,
-            # so applying this to either base is safe.)
+            # `main` is named here for symmetry rather than for a case that has
+            # occurred: no PR in this repository has ever had `main` as its
+            # head, and `sync` opens its own from SYNC_BRANCH precisely so that
+            # one is never needed. But the rule this filter encodes is "a
+            # protected head cannot be pushed to", and a filter that checked
+            # only one of the two protected branches would not be that rule --
+            # it would be a coincidence that happened to hold.
+            #
+            # Skipped rather than tolerated as a known failure, because nothing
+            # is wrong when it happens. `sync` is what makes the promotion PR's
+            # head current, by merging `main` into `integration` through a PR of
+            # its own -- also the only route that keeps `git merge-base`
+            # current, the reason `integration` is merge-only.
+            #
+            # Scoped to same-repository heads, so a fork PR that merely has a
+            # branch named `main` or `integration` is an ordinary PR and still
+            # gets refreshed.
             #
             # Assigned, not inlined into the `for`, for the reason spelled out
             # above: only an assignment lets `set -e` see this fail.
             base_prs="$(gh pr list --repo "$REPO" --base "$base" --state open \
                           --limit 200 --json number,headRefName,isCrossRepository \
-                          --jq '.[] | select(.headRefName != "integration" or .isCrossRepository) | .number')"
+                          --jq '.[] | select(.isCrossRepository or (.headRefName != "main" and .headRefName != "integration")) | .number')"
             for num in $base_prs; do
               open_prs="$open_prs $num:$base"
             done
