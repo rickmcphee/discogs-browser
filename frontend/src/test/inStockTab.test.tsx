@@ -307,49 +307,13 @@ describe('In Stock tab', () => {
     // No stock_sync_started, no terminal event -- the stream missed the lot.
     await act(async () => { await vi.advanceTimersByTimeAsync(20_000) })
     expect(screen.getByTitle('Refresh Epitaph catalog now')).not.toBeDisabled()
-    // A spinner that just stops is no account of what happened to the refresh.
-    expect(screen.getByText(
-      'Lost track of the Epitaph catalog refresh — check the Logs tab to see whether it is still running.'
-    )).toBeInTheDocument()
+    // Releasing the button is the whole of it: the usual cause is a stream
+    // that missed the events for a sync that ran fine, and naming the store in
+    // the banner reported a fault the user had no way to act on.
+    expect(screen.queryByText(/Lost track of/)).not.toBeInTheDocument()
   })
 
-  // Both claims expire into the same banner, and the price one goes first
-  // here. Its notice is the newer of the two, so the stock expiry behind it
-  // has to stay quiet -- which it only does if the price expiry's own write
-  // was counted. It used to go through setSyncMessage and be invisible.
-  it('leaves a newer price lost-track notice alone when a stock claim expires behind it', async () => {
-    vi.useFakeTimers()
-    getCrawlers.mockResolvedValue([CATALOG_CRAWLER])
-    postCrawlStart.mockReturnValue(new Promise(() => {}))
-    postStockSyncStart.mockReturnValue(new Promise(() => {}))
-    render(<App />)
-    const settle = () => act(async () => {})
-    await settle()
-    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    await settle()
-
-    const priceRow = screen.getByText('Run price crawlers immediately.').closest('tr') as HTMLElement
-    fireEvent.click(priceRow.querySelector('button') as HTMLButtonElement)
-    await settle()
-
-    // The store's Refresh follows five seconds later, so its claim outlives
-    // the price one by five seconds.
-    await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
-    fireEvent.click(screen.getByTitle('Refresh Epitaph catalog now'))
-    await settle()
-
-    await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
-    const priceLost = 'Lost track of the price refresh — check the Logs tab to see whether it started.'
-    expect(screen.getByText(priceLost)).toBeInTheDocument()
-
-    await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
-    expect(screen.getByText(priceLost)).toBeInTheDocument()
-    expect(screen.queryByText(/Lost track of the Epitaph catalog refresh/)).not.toBeInTheDocument()
-    // Quiet about it, but it still let its own button go.
-    expect(screen.getByTitle('Refresh Epitaph catalog now')).not.toBeDisabled()
-  })
-
-  // The expiry must not talk over whatever did arrive in the meantime.
+  // The expiry must not clear or talk over whatever did arrive in the meantime.
   it('leaves a real progress message alone when the claim expires behind it', async () => {
     vi.useFakeTimers()
     getCrawlers.mockResolvedValue([CATALOG_CRAWLER])

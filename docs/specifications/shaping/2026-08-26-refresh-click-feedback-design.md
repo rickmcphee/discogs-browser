@@ -93,6 +93,9 @@ that a click landed.
   more — see the amendment at the end. The expiry still writes the lost-track
   message, since a spinner that simply stops is no account of what happened;
   it is what the message replaces, and the guard on writing it, that changed.)**
+  **(2026-08-29 correction: the stock expiry writes nothing at all now — see
+  the third amendment. Only the price expiry still posts a lost-track message,
+  and only because it has a "Starting…" line of its own left standing.)**
   Not at a reload: `stock_sync_running` is this process's `_stock_task`, so on a
   multi-Machine deployment a reconnect landing on the Machine that does not
   hold the advisory lock reports idle for a sync that is genuinely running,
@@ -105,7 +108,9 @@ that a click landed.
   is now "nothing has been written to the banner since the claim was taken",
   counted rather than compared by text, because the claim no longer has a
   message of its own to recognise. The price claim was moved onto the same
-  counter shortly afterwards — see the second amendment.)**
+  counter shortly afterwards — see the second amendment.)** **(2026-08-29: the
+  stock claim has no guard left to describe, having nothing to write; the
+  counter now serves the price claim alone.)**
 - **The thing that is running is the thing that stands out.** The running row's
   button inverts to the lit nav pill (`navButtonClass(true)`) instead of being
   dimmed by the disabled styling that the rows merely waiting on it carry.
@@ -189,7 +194,9 @@ that a click landed.
   only difference is whether the status message can name a store
   (`crawlers.find(...)?.site_name`) or has to say "in-stock catalog".
   **(2026-08-28 amendment: that name now only reaches the lost-track message —
-  the click itself writes nothing to the banner.)**
+  the click itself writes nothing to the banner.)** **(2026-08-29: the
+  lost-track message is gone too, so the store name is no longer read at all
+  and the two handlers differ only in the `crawler_id` they post.)**
 - `startCrawl` now awaits `postCrawlStart` and reports the outcome in the
   status bar. This also removes the `alert()` it used to raise on failure —
   the one error path in the app that blocked the page — so the checkpoint
@@ -212,7 +219,7 @@ dismissed-event-id replay guard):
 | --- | --- |
 | A store's Refresh | `Starting {site} catalog refresh…` — **removed 2026-08-28, see amendment** |
 | Bulk Store Refresh | `Starting in-stock catalog refresh…` — **removed 2026-08-28, see amendment** |
-| Either stock claim expired unconfirmed | `Lost track of the {what} — check the Logs tab to see whether it is still running.` |
+| Either stock claim expired unconfirmed | `Lost track of the {what} — check the Logs tab to see whether it is still running.` — **removed 2026-08-29, see third amendment** |
 | Price claim expired unconfirmed | `Lost track of the price refresh — check the Logs tab to see whether it started.` |
 | Marketplace Refresh, in flight | `Starting price refresh for records with no price yet…` / `…for every record…` |
 | Marketplace Refresh, done | `Price refresh requested for {n} record(s).` |
@@ -248,9 +255,11 @@ dismissed-event-id replay guard):
   the bulk run and no row claims it; the button is released on a rejected start
   and on a thrown one; the claim survives the hand-over to `stock_sync_started`
   and is released by `stock_sync_complete`; a claim that never receives any
-  event at all is released by the timeout and swaps its "Starting…" message for
-  the lost-track one, is not released before the timeout, and does not overwrite
-  a real progress message that arrived while it was held; a start response that
+  event at all is released by the timeout while writing nothing to the banner
+  (**2026-08-29**; it used to swap its "Starting…" message for a lost-track one,
+  then to write that message unprompted), is not released before the timeout,
+  and does not overwrite a real progress message that arrived while it was
+  held; a start response that
   arrives after a newer click is ignored rather than clobbering the newer
   claim; the banner is reachable by its `status` role.
 - `frontend/src/test/crawlStatusBar.test.tsx` — the requested count is
@@ -292,7 +301,8 @@ produced *nothing*; the optimistic claim, its hand-over to `stock_sync_target`,
 its timeout, and the sequence guards are all untouched, and they are what fills
 it. Only the duplicate line goes. The banner still carries everything the
 button cannot say: a rejected start, a failed request, the lost-track notice,
-and the real `stock_sync_*` progress.
+and the real `stock_sync_*` progress. **(2026-08-29: the lost-track notice
+comes off that list — see the third amendment.)**
 
 Two mechanisms in this design were built around a message the stock path no
 longer has, and both moved rather than went:
@@ -305,7 +315,9 @@ longer has, and both moved rather than went:
   intent, and it now also covers the case the text comparison could not: a
   banner the claim never recognised in the first place. **(Corrected by the
   second amendment: a counter is only as good as its coverage, and the price
-  claim's expiry was still writing around it.)**
+  claim's expiry was still writing around it.)** **(Overtaken by the third
+  amendment: the stock expiry no longer writes, so it no longer needs a guard.
+  The counter stayed — the price claim depends on it.)**
 - **`busyStatusMessage`.** The stock path set it on click and cleared it on
   rejection. It does neither now, and the clearing had to go with the setting:
   the flag is whoever's message is on screen, so a stock rejection blanking a
@@ -321,8 +333,9 @@ the stock click having written anything.
 Tests: `frontend/src/test/inStockTab.test.tsx` — a claimed store refresh leaves
 the live region empty and the real `stock_sync_started` progress still lands
 there; the bulk click is read off the bulk button; the expiry still writes the
-lost-track message and still stays quiet behind a real one; the banner-
-contention tests read the claim off its button. The live-region test is driven
+lost-track message and still stays quiet behind a real one (**2026-08-29**: it
+writes nothing now, and the test asserts that); the banner-contention tests
+read the claim off its button. The live-region test is driven
 by the Marketplace Refresh, which still writes on click and so still exercises
 "a message arriving into an already-mounted region".
 
@@ -366,3 +379,53 @@ regression test — price refresh, store Refresh five seconds later, both left
 unanswered — asserting the price notice survives the stock expiry behind it
 and that the stock claim still releases its own button while staying quiet.
 It fails against the pre-fix code on exactly that assertion.
+**(2026-08-29: that test is removed with the third amendment. The collision it
+guarded needs two claims that write, and only one writes now — the stock
+expiry cannot overwrite the price notice because it cannot write at all. The
+counter and the price claim's use of it are unchanged, and the argument above
+still applies to any future second writer.)**
+
+## Third amendment (2026-08-29, branch `claude/remove-catalog-refresh-comment-kok7oz`)
+
+**The stock claim's lost-track message is removed.** An expiring stock claim
+now releases its button and says nothing. `stockSyncClaimNotice` goes with it,
+as does the store-name lookup in `startStockSync` that only fed it.
+
+The message read as a fault report — it named a store, said the app had lost
+track of its refresh, and sent the user to the Logs tab — but the condition it
+fires on is not a fault, and usually not even a problem. The claim expires when
+no `stock_sync_*` event reaches this client within `START_CLAIM_TIMEOUT_MS`,
+and the ordinary cause is the one the "Every path releases the button" decision
+above describes: a stream reconnecting across a sync that both started and
+finished, for which `_events_to_replay` has nothing to hand back. The sync ran.
+Nothing went wrong. The banner announced a problem anyway, and then pointed at
+a log the user could do nothing with — the entries there are a crawler's
+progress, not an answer to "did my click land", and reading them requires
+knowing what the app failed to observe in order to spot its absence.
+
+The reasoning that put it there was "a spinner that simply stops is no account
+of what happened to the refresh", which is true of the price claim and not of
+this one. The price path has a `Starting…` line that nothing else will ever
+replace, because `POST /crawl/start`'s reply is its only confirmation — leave
+that line up and it reads as a refresh permanently starting, so its expiry has
+to replace it with something. The stock path writes no line, so its expiry has
+nothing to correct: releasing the button restores the UI exactly to its
+pre-click state, which is an honest account of a click whose outcome is
+unknown. Recovery does not depend on the message either — a late
+`stock_sync_started` takes the button straight back, and a click during a sync
+the UI has lost track of is rejected by the server rather than starting
+anything twice.
+
+What the banner still carries on this path is unchanged: a rejected start, a
+failed request, and the real `stock_sync_*` progress. Those are all events with
+something to report.
+
+`statusWrites` stays. It is the price claim's guard now rather than both
+claims', and the property it rests on — `setSyncStatus` being the only way a
+message reaches the banner — is unchanged.
+
+Tests: `frontend/src/test/inStockTab.test.tsx` — the expiry test now asserts
+the button is released *and* the banner stays empty; the two-claim interleaving
+test is removed (see the note at the end of the second amendment); the test
+that a real progress message survives the expiry is kept, since it is now the
+structural guarantee rather than a guarded one.

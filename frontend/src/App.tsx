@@ -200,11 +200,12 @@ export default function App() {
     return params.get('signup_pending')
   })
 
-  // Counts every write to the banner. A claim that expires needs to know
-  // whether anything has spoken since it was taken, and the stock one cannot
-  // tell by recognising its own text on screen -- it puts none there. So this
-  // has to be the only way a message reaches the banner: a write that skips
-  // it is invisible to the guard, and the guard then talks over it.
+  // Counts every write to the banner. The price claim's expiry needs to know
+  // whether anything has spoken since the claim was taken, and counting is the
+  // only way to tell -- recognising its own text on screen breaks the moment
+  // another message happens to read the same. So this has to be the only way a
+  // message reaches the banner: a write that skips it is invisible to the
+  // guard, and the guard then talks over it.
   const statusWrites = useRef(0)
 
   // eventId is null for locally-generated messages (button-click failures) that never
@@ -215,41 +216,35 @@ export default function App() {
     setSyncMessageId(eventId)
   }, [])
 
-  // Taking a stock claim says nothing in the banner: the clicked button spins
-  // for itself, and stock_sync_started overwrites the banner a beat later
-  // anyway, so a "Starting…" line only repeated what the button already
-  // showed and then flickered away. An expiring claim is the exception -- a
-  // spinner that simply stops is no account of a refresh the app has lost
-  // track of. It points at the Logs tab rather than at a reload:
-  // stock_sync_running is this process's _stock_task, so a reconnect landing
-  // on the Machine that does not hold the advisory lock reports idle for a
-  // sync that is running. The log store is merged across Machines and durable,
-  // so it is the one signal that always answers. Guarded on nothing having
-  // been written to the banner since the claim was taken, so a real progress
-  // message that arrived in the meantime is never clobbered. Bumping the
-  // sequence first drops the request this claim was waiting on: having told
-  // the user it is lost, contradicting that later with a different answer is
-  // worse than staying quiet.
-  const stockSyncClaimNotice = useRef<{ writes: number; lost: string } | null>(null)
-
+  // A stock claim says nothing in the banner from either end: the clicked
+  // button spins for itself, and stock_sync_started overwrites the banner a
+  // beat later anyway, so a "Starting…" line only repeated what the button
+  // already showed and then flickered away. Its expiry is no louder. Naming
+  // the store and pointing at the Logs tab read as a fault report, but the
+  // ordinary cause is a stream that missed the events for a sync that ran
+  // fine, and the Logs tab shows the user nothing they can act on. Releasing
+  // the button is the whole of the recovery: a late stock_sync_started takes
+  // it straight back, and a click during a sync the UI has lost track of is
+  // rejected by the server rather than starting anything twice. Bumping the
+  // sequence first drops the request this claim was waiting on.
   useEffect(() => {
     if (stockSyncStarting === null) return
     const timer = setTimeout(() => {
       latestStockSyncStartSeq.current++
       setStockSyncStarting(null)
-      const notice = stockSyncClaimNotice.current
-      if (notice && statusWrites.current === notice.writes) setSyncStatus(notice.lost)
     }, START_CLAIM_TIMEOUT_MS)
     return () => clearTimeout(timer)
-  }, [stockSyncStarting, setSyncStatus])
+  }, [stockSyncStarting])
 
-  // The price claim's own bound, guarded exactly as the stock one is. It used
-  // to compare the displayed text against its own "Starting…" message instead,
-  // which read the same but wrote through setSyncMessage and so never reached
-  // the counter -- and a write the counter cannot see is one a later stock
-  // expiry mistakes for silence and talks over. One idiom, one write path.
-  // Bumping the sequence first makes the stalled response a no-op if it ever
-  // does land.
+  // The price claim's own bound. Unlike the stock one it does speak on expiry,
+  // because it wrote a "Starting…" line on the way in that nothing else will
+  // ever replace: POST /crawl/start's reply is the only confirmation that
+  // exists, so a stalled request leaves that line standing forever. It used to
+  // guard itself by comparing the displayed text against that message, which
+  // wrote through setSyncMessage and so never reached the counter -- and a
+  // write the counter cannot see is one a later expiry mistakes for silence
+  // and talks over. One idiom, one write path. Bumping the sequence first
+  // makes the stalled response a no-op if it ever does land.
   const priceClaimNotice = useRef<{ writes: number; lost: string } | null>(null)
 
   useEffect(() => {
@@ -788,12 +783,6 @@ export default function App() {
     const statusSeq = ++latestStatusOwnerSeq.current
     const ownsStatus = () => statusSeq === latestStatusOwnerSeq.current
     setStockSyncStarting(crawlerId ?? 'all')
-    const site = crawlerId != null ? crawlers.find((c) => c.id === crawlerId)?.site_name : null
-    const what = site ? `${site} catalog refresh` : 'in-stock catalog refresh'
-    stockSyncClaimNotice.current = {
-      writes: statusWrites.current,
-      lost: `Lost track of the ${what} — check the Logs tab to see whether it is still running.`,
-    }
     try {
       const result = await postStockSyncStart(crawlerId)
       if (seq !== latestStockSyncStartSeq.current) return
@@ -809,7 +798,7 @@ export default function App() {
       setStockSyncStarting(null)
       if (ownsStatus()) setSyncStatus(`In-stock sync failed to start: ${e.message}`)
     }
-  }, [crawlers, setSyncStatus])
+  }, [setSyncStatus])
 
   const handleRefreshStock = useCallback(() => startStockSync(), [startStockSync])
 
