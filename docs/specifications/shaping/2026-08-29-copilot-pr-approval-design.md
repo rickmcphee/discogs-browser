@@ -195,8 +195,7 @@ the half that has no force today.
 
 ## What to give Copilot instead
 
-Two changes to `main-branch-protection`, neither of which grants any bot an
-approval:
+Changes to `main-branch-protection`, none of which grants any bot an approval:
 
 1. **`required_review_thread_resolution: true`.** Copilot's *inline* findings
    then block any non-bypass merge until each is explicitly resolved. PR #233's
@@ -215,27 +214,34 @@ approval:
    wrong. Thread resolution would have reached none of those. So this binds part
    of a review, not a review.
 
-2. **`require_last_push_approval: true`.** The most recent push has to be
-   approved by someone who did not push it, closing the stale-approval gap on
-   the promotion path independently of Copilot: today an approval on the
-   promotion pull request survives any subsequent push to it.
-   `dismiss_stale_reviews_on_push: true` covers similar ground;
-   `require_last_push_approval` is the tighter of the two here, because
-   approvals on this repository are rare enough that
-   dismissing them is nearly a no-op while requiring a fresh one is not.
+2. **`dismiss_stale_reviews_on_push: true`, with `require_last_push_approval:
+   true` alongside it.** Both close today's gap, in which an approval on the
+   promotion pull request survives every later push to it — and neither depends
+   on Copilot. They are not two names for one control, though, and the safer of
+   them is the first. GitHub's own framing settles the order: dismissing stale
+   reviews is what it recommends "if you are concerned about pull requests being
+   'hijacked'", unapproved content added to an approved pull request, which is
+   exactly the failure this section describes; requiring approval from someone
+   other than the last pusher is "a compromise that avoids the need to dismiss
+   all stale reviews", leaving prior approvals standing. What the compromise
+   adds is a condition dismissal does not carry — that whoever approves the most
+   recent push is not the person who made it. On the promotion pull request, a
+   bot pushes and a person approves, so that condition is worth having. Take
+   both and there is no gap between them.
+   See <https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches>.
 
-Both are scoped by the same bypass that shapes everything else here, and saying
-so is the difference between a proposal and an overclaim. The owner's entry sits
-on the *ruleset*, not on any one of its rules, so what it waives is the
-`pull_request` rule entire rather than the approval count alone — and both of
-these live in that rule. The sync design describes the same entry as "letting
-them merge one that has not met the required approving review" because the
-approval is the case it cared about, not because the rest of the rule survives
-it. So neither change binds a merge performed through the bypass: unresolved
-threads and a stale last push would be waivable exactly the way the missing
-approval already is. What they bind is every merge that does not use it — the
-promotion pull request above all, opened as it is by a bot that is not a bypass
-actor.
+All of these are scoped by the same bypass that shapes everything else here, and
+saying so is the difference between a proposal and an overclaim. The owner's
+entry sits on the *ruleset*, not on any one of its rules, so what it waives is
+the `pull_request` rule entire rather than the approval count alone — and every
+setting named above lives in that rule. The sync design describes the same entry
+as "letting them merge one that has not met the required approving review"
+because the approval is the case it cared about, not because the rest of the
+rule survives it. So none of them binds a merge performed through the bypass:
+unresolved threads, an undismissed stale approval and an unapproved last push
+would all be waivable exactly the way the missing approval already is. What they
+bind is every merge that does not use it — the promotion pull request above all,
+opened as it is by a bot that is not a bypass actor.
 
 That is a narrower claim than "the review becomes binding," and it is still the
 one worth having: the promotion path is the unattended one. On the owner's own
@@ -276,7 +282,8 @@ is the change that reaches production.
   the mechanism rather than the sentiment as the reason, so that a future
   session meeting the toggle does not have to re-derive it.
 - The two ruleset gaps found while answering it —
-  `required_review_thread_resolution` and `require_last_push_approval` — are
+  `required_review_thread_resolution`, `dismiss_stale_reviews_on_push` and
+  `require_last_push_approval` — are
   written down whether or not they are acted on. Both are live today and
   neither depends on Copilot ever gaining an approval.
 - If the promotion pull request is ever observed merging with an approval older
