@@ -6,11 +6,13 @@ this repository, and nothing in this branch changes them.
 
 ## Problem
 
-Every pull request here is reviewed by `copilot-pull-request-reviewer[bot]`, and
-every one of those reviews ends in a verdict: `🟢 Approval recommended` or
-`🟡 Changes recommended`. `main-branch-protection` requires one approving
-review. The two facts sit next to each other and suggest an obvious wiring:
-let the verdict be the approval.
+Every pull request into `main` is reviewed by
+`copilot-pull-request-reviewer[bot]` — `copilot_code_review` sits in
+`main-branch-protection` and nowhere else, so the Dependabot pull requests that
+target `integration` draw no such review — and every one of those reviews ends
+in a verdict: `🟢 Approval recommended` or `🟡 Changes recommended`. The same
+ruleset requires one approving review. The two facts sit next to each other and
+suggest an obvious wiring: let the verdict be the approval.
 
 The pressure behind that is real, and it is worth stating plainly rather than
 dismissing. `rickmcphee` is the repository's only collaborator, and the pull
@@ -20,8 +22,8 @@ their own pull request. So on the owner's own work the required review can never
 be *satisfied*; it is only ever *waived*, by the owner's bypass entry
 (`bypass_mode: pull_request`, recorded in the integration sync design's "Why an
 app rather than a PAT"). A gate that is bypassed every single time looks like a
-gate in want of an approver, and there is already a reviewer on every pull
-request with an opinion to offer.
+gate in want of an approver, and there is already a reviewer on every one of
+them with an opinion to offer.
 
 This document is why that wiring is wrong, and what to do with the impulse
 instead.
@@ -120,10 +122,11 @@ requirement present but self-satisfying.
 `.github/workflows/integration-promote.yml` opens the weekly promotion pull
 request from `integration` into `main` and arms it with `gh pr merge integration
 --auto --squash`. That pull request is opened by a bot which is deliberately
-*not* a bypass actor, so `main`'s required approving review is the only thing
-between a week of batched Dependabot updates and a production Fly deploy. It is
-the single case in this repository where the review requirement genuinely binds
-rather than being waived.
+*not* a bypass actor, so `main`'s required approving review is the only *human*
+gate between a week of batched Dependabot updates and a production Fly deploy.
+The status checks in the ruleset above gate it too, but passing them involves
+nobody. It is the single case in this repository where the review requirement
+genuinely binds rather than being waived.
 
 The integration sync design spends its "Why an app rather than a PAT" section on
 precisely this: a personal access token owned by the bypass actor would make the
@@ -144,13 +147,15 @@ true; they make it unfalsifiable.
 
 ### It does not know what this repository's rules are about
 
-Copilot reviews the diff. The invariants that actually break things here are
-conventions it has no visibility into: never writing an inventory count into a
-document, the AI-attribution trailers required on every commit, `VERSION` in
-`backend/version.py` being derived and never edited, the pre-PR spec-drift check
-across both spec trees, the standing ban on auto-merge. A green tick from a
-reviewer that cannot see any of those would be read — by a human skimming, later
-— as though it had.
+Copilot reviews the diff, and several of the invariants that actually break
+things here are not in one. The AI-attribution trailers live in commit messages;
+the pre-PR spec-drift check is about documents the diff does *not* touch; whether
+auto-merge is armed is pull request state rather than content. A reviewer reading
+the patch cannot certify any of those three. Others are visible in principle and
+simply not what it is looking for — an inventory count arrives on an added line,
+and so does an edit to `VERSION` in `backend/version.py`. Either way, a green
+tick would be read — by a human skimming, later — as though they had been
+checked.
 
 `required_review_thread_resolution: false` sharpens this: an approval today
 would not even require Copilot's *own* inline comments to be resolved first. The
@@ -181,11 +186,17 @@ the half that has no force today.
 Two changes to `main-branch-protection`, neither of which grants any bot an
 approval:
 
-1. **`required_review_thread_resolution: true`.** Copilot's inline findings then
-   block the merge until each one is explicitly resolved. This is the change
-   that converts its review from advisory to binding, and it is the one that
-   would have caught the 18:23 finding on PR #233 regardless of what any
-   approval said.
+1. **`required_review_thread_resolution: true`.** Copilot's *inline* findings
+   then block the merge until each is explicitly resolved — the 18:23 finding on
+   PR #233 among them, which was an inline comment on
+   `backend/recommendations_prompt.md:9`, so that example survives the
+   narrowing. The narrowing is real, though, and worth stating rather than
+   glossing: a finding Copilot emits only in the review *body* has no thread to
+   resolve and stays advisory. `CLAUDE.md` already draws that line where it
+   notes a suppressed comment carries no `comment_id` to reply to. Copilot's own
+   review of this design is the demonstration — one inline comment, its other
+   findings suppressed into the body, where thread resolution would never have
+   reached them. So this binds part of a review, not a review.
 
 2. **`require_last_push_approval: true`.** The most recent push must be approved
    by someone who did not push it. This closes the stale-approval gap on its
@@ -205,9 +216,10 @@ merged it, and would be indistinguishable in the log from the former.
 
 `review_on_push: true` means every push draws a fresh review and can open fresh
 threads, so thread resolution adds a step per push rather than per pull request.
-The weekly promotion pull request is reviewed too, so the Dependabot batch grows
-a resolution step it does not have today — on a pull request whose whole purpose
-is to be cheap. That is a real cost and it is the correct one to pay: the batch
+The weekly promotion pull request targets `main`, so it is reviewed even though
+the individual Dependabot pull requests into `integration` are not, and the batch
+grows a resolution step it does not have today — on a pull request whose whole
+purpose is to be cheap. That is a real cost and it is the correct one to pay: the batch
 is the change that reaches production.
 
 ## Non-goals
