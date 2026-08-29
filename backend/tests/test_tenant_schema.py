@@ -335,6 +335,78 @@ def test_stock_item_saves_insert_with_mismatched_user_id_is_rejected(pg_test_db,
             conn.commit()
 
 
+def test_user_notification_reads_is_rls_isolated_per_user(pg_test_db, monkeypatch):
+    # Same pattern, and same reason for the APP_DATABASE_URL repoint, as
+    # test_stock_item_saves_is_rls_isolated_per_user above: pg_test_db points
+    # the app pool at the superuser DSN, which bypasses RLS regardless of
+    # FORCE ROW LEVEL SECURITY, so db.user_scope() would prove nothing without
+    # this.
+    db.init_global_schema()
+    db.init_tenant_schema()
+    monkeypatch.setattr(
+        config,
+        "APP_DATABASE_URL",
+        config._with_userinfo(
+            os.environ["TEST_DATABASE_URL"], "app_user", os.environ["APP_DB_PASSWORD"]
+        ),
+    )
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=910, discogs_username="rlsnotifyalice")
+        bob = db.create_user(conn, discogs_user_id=911, discogs_username="rlsnotifybob")
+        conn.execute(
+            "INSERT INTO user_notification_reads (user_id, last_read_drop_id) VALUES (%s, %s)",
+            [alice["id"], 42],
+        )
+        conn.commit()
+
+    try:
+        with db.user_scope(bob["id"]) as conn:
+            assert conn.execute("SELECT * FROM user_notification_reads").fetchall() == []
+
+        with db.user_scope(alice["id"]) as conn:
+            rows = conn.execute("SELECT * FROM user_notification_reads").fetchall()
+        assert len(rows) == 1
+        assert rows[0]["last_read_drop_id"] == 42
+    finally:
+        with db.get_admin_pool().connection() as conn:
+            conn.execute("DELETE FROM user_notification_reads WHERE user_id IN (%s, %s)", [alice["id"], bob["id"]])
+            conn.execute("DELETE FROM users WHERE id IN (%s, %s)", [alice["id"], bob["id"]])
+            conn.commit()
+
+
+def test_user_notification_reads_insert_with_mismatched_user_id_is_rejected(pg_test_db, monkeypatch):
+    """The write-side counterpart to the test above -- WITH CHECK on
+    user_notification_reads_isolation must reject a watermark written for
+    somebody else, so marking one account's notifications read can never
+    silence another's."""
+    db.init_global_schema()
+    db.init_tenant_schema()
+    monkeypatch.setattr(
+        config,
+        "APP_DATABASE_URL",
+        config._with_userinfo(
+            os.environ["TEST_DATABASE_URL"], "app_user", os.environ["APP_DB_PASSWORD"]
+        ),
+    )
+    with db.get_admin_pool().connection() as conn:
+        alice = db.create_user(conn, discogs_user_id=912, discogs_username="rlsnotifywritealice")
+        bob = db.create_user(conn, discogs_user_id=913, discogs_username="rlsnotifywritebob")
+        conn.commit()
+
+    try:
+        with db.user_scope(alice["id"]) as conn:
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                conn.execute(
+                    "INSERT INTO user_notification_reads (user_id, last_read_drop_id) VALUES (%s, %s)",
+                    [bob["id"], 1],
+                )
+    finally:
+        with db.get_admin_pool().connection() as conn:
+            conn.execute("DELETE FROM user_notification_reads WHERE user_id IN (%s, %s)", [alice["id"], bob["id"]])
+            conn.execute("DELETE FROM users WHERE id IN (%s, %s)", [alice["id"], bob["id"]])
+            conn.commit()
+
+
 def test_library_items_has_price_paid_column(admin_conn):
     row = admin_conn.execute(
         "SELECT data_type FROM information_schema.columns "

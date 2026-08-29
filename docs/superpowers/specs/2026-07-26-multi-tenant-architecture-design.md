@@ -83,6 +83,19 @@ FastAPI (shared, multi-tenant)
           └── invites           (redemption is pre-session; see Data model)
 ```
 
+**Note (2026-08-28, branch `claude/notifications-tab-price-alerts-rvdnfu`):**
+the tree above is this design's original snapshot, not a live inventory — it
+was already missing tables added by later branches (`stock_item_identities`,
+`app_config`, `app_logs`, `user_hidden_crawlers`, `stock_item_saves`,
+`oauth_request_state`, `pending_signups`) before this branch added two more:
+`stock_item_price_drops` (global, no RLS — an observation about the catalog)
+and `user_notification_reads` (per-user, RLS). Read it as the shape of the
+tenancy split rather than as the current table list; `TENANT_SCHEMA` and
+`GLOBAL_SCHEMA` in `backend/db.py` are the authority on what exists. The split
+itself — global tables carry no `user_id` and no policy, per-user tables carry
+both — has held for every table added since. See
+[`../../specifications/shaping/2026-08-28-price-drop-notifications-design.md`](../../specifications/shaping/2026-08-28-price-drop-notifications-design.md).
+
 Playwright-based crawling keeps its existing plugin interface and per-crawler-plugin
 `Page` model unchanged (`backend/crawlers/*`, `crawler.py`'s `crawl_releases()`
 generator, `BotDetectedError` recovery) — only the loop feeding it work changes, from

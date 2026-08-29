@@ -1,7 +1,7 @@
 import type {
   ReleasesResponse, Crawler, Settings, UserSettings, SortField, SortOrder, CrawlStatus, CollectionStatus, ScreenshotSession,
   AuthStatus, RecordScope, StockResponse, StockSortField, LibraryScope, RecommendationImportResult, Invite,
-  QueueSummary, QueueNextItem,
+  QueueSummary, QueueNextItem, NotificationsResponse, NotificationsUnread,
 } from './types'
 
 const BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/+$/, '')
@@ -460,4 +460,36 @@ export function getQueueNext(crawlerId: number, limit = 25): Promise<QueueNextIt
   })()
   nextInFlight.set(key, request)
   return request
+}
+
+export async function getNotifications(limit?: number): Promise<NotificationsResponse> {
+  // Explicitly `undefined`, not falsy: `limit=0` is outside the endpoint's
+  // ge=1 range and should reach it and be rejected, not be silently dropped
+  // and answered with the default page.
+  const qs = limit === undefined ? '' : `?limit=${limit}`
+  const r = await apiFetch(`/notifications${qs}`)
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
+}
+
+// Separate from getNotifications so the header's badge -- refetched on every SSE
+// generation tick, on whatever screen the user is on -- doesn't pull rows
+// nothing is going to render.
+export async function getNotificationsUnread(): Promise<NotificationsUnread> {
+  const r = await apiFetch('/notifications/unread')
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
+}
+
+// Returns only the recomputed unread count -- deliberately not
+// NotificationsUnread, which also promises latest_id the server never sends
+// back from this route.
+export async function markNotificationsRead(upToId: number): Promise<{ unread: number }> {
+  const r = await apiFetch('/notifications/read', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ up_to_id: upToId }),
+  })
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
 }

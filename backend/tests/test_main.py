@@ -225,6 +225,101 @@ def test_shutdown_cancels_the_schedule_resync_task(pg_test_db):
     assert main._schedule_resync_task is None
 
 
+async def test_price_drop_sweep_loop_sweeps_before_its_first_sleep(monkeypatch):
+    # Sweeping after the interval instead would mean every restart resets the
+    # clock, and a process that never stays up an hour never prunes at all --
+    # the same reason logging_config's writer loop backdates its own timer.
+    import main
+
+    swept = []
+    monkeypatch.setattr(main, "PRICE_DROP_SWEEP_INTERVAL_SECONDS", 3600)
+    monkeypatch.setattr(main, "_sweep_expired_price_drops", lambda: swept.append(1))
+
+    task = asyncio.create_task(main._price_drop_sweep_loop())
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert swept
+
+
+async def test_price_drop_sweep_loop_survives_a_failing_iteration(monkeypatch):
+    import main
+
+    calls = []
+
+    def _flaky():
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("database went away")
+
+    monkeypatch.setattr(main, "PRICE_DROP_SWEEP_INTERVAL_SECONDS", 0.001)
+    monkeypatch.setattr(main, "_sweep_expired_price_drops", _flaky)
+
+    task = asyncio.create_task(main._price_drop_sweep_loop())
+    await asyncio.sleep(0.05)
+    still_running = not task.done()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert still_running
+    assert len(calls) > 1
+
+
+def test_shutdown_cancels_the_price_drop_sweep_task(pg_test_db):
+    import main
+
+    with patch("main.crawl_manager.start_worker_pool", new=AsyncMock()), \
+         patch("main.crawl_manager.stop_worker_pool", new=AsyncMock()), \
+         patch("main.migrate_legacy_config_file"):
+        with TestClient(main.app):
+            assert main._price_drop_sweep_task is not None
+    assert main._price_drop_sweep_task is None
+
+
+def test_sweep_expired_price_drops_removes_only_rows_past_the_window(pg_test_db):
+    # The retention guarantee no longer rides on a stock sync ever running --
+    # stock_schedule is optional, while the worker pool records drops through
+    # the release path regardless -- so this asserts the standalone sweep does
+    # the real DELETE, not just that the loop calls something.
+    import db
+    import main
+
+    db.init_global_schema()
+    db.init_tenant_schema()
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Sweep Store", "/s.py", crawler_type="catalog")
+        crawler_id = conn.execute(
+            "SELECT id FROM crawlers WHERE site_name = 'Sweep Store'"
+        ).fetchone()["id"]
+        db.replace_stock_items(conn, crawler_id, [
+            {"artist": "A", "title": "T", "url": "https://s/1", "price": 20.0, "currency": "USD"},
+        ])
+        db.replace_stock_items(conn, crawler_id, [
+            {"artist": "A", "title": "T", "url": "https://s/1", "price": 18.0, "currency": "USD"},
+        ])
+        db.replace_stock_items(conn, crawler_id, [
+            {"artist": "A", "title": "T", "url": "https://s/1", "price": 16.0, "currency": "USD"},
+        ])
+        oldest = conn.execute("SELECT MIN(id) AS id FROM stock_item_price_drops").fetchone()["id"]
+        conn.execute(
+            "UPDATE stock_item_price_drops SET created_at = CURRENT_TIMESTAMP - interval '100 days' "
+            "WHERE id = %s",
+            [oldest],
+        )
+        conn.commit()
+
+    main._sweep_expired_price_drops()
+
+    with db.get_admin_pool().connection() as conn:
+        remaining = conn.execute("SELECT id FROM stock_item_price_drops ORDER BY id").fetchall()
+        conn.execute("TRUNCATE catalog, users, crawlers, stock_item_identities CASCADE")
+        conn.commit()
+    assert [r["id"] for r in remaining] == [oldest + 1]
+
+
 def test_startup_starts_log_writer_and_shutdown_stops_it(pg_test_db):
     import logging_config
     import main

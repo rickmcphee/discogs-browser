@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { postCrawlStart, postStockSyncStart, getUserSettings, saveUserSettings, logout, getStock, getStockArtists, getReleases, getArtists, postPlexMatchStart, refreshCollection, openCrawlStream, openLogsStream, importRecommendationsCsv, listInvites, createInvite, getUserHiddenCrawlers, postUserHiddenCrawlers, saveStockItem, unsaveStockItem, checkHealth, getQueueSummary, getQueueNext } from '../api/client'
+import { postCrawlStart, postStockSyncStart, getUserSettings, saveUserSettings, logout, getStock, getStockArtists, getReleases, getArtists, postPlexMatchStart, refreshCollection, openCrawlStream, openLogsStream, importRecommendationsCsv, listInvites, createInvite, getUserHiddenCrawlers, postUserHiddenCrawlers, saveStockItem, unsaveStockItem, checkHealth, getQueueSummary, getQueueNext, getNotifications, getNotificationsUnread, markNotificationsRead } from '../api/client'
 
 describe('crawl/user-settings client functions', () => {
   let fetchMock: ReturnType<typeof vi.fn>
@@ -315,6 +315,39 @@ describe('crawl/user-settings client functions', () => {
     await unsaveStockItem('abc123')
     expect(fetchMock.mock.calls[0][0]).toContain('/stock/saved/abc123')
     expect(fetchMock.mock.calls[0][1].method).toBe('DELETE')
+  })
+
+  it('getNotifications GETs /notifications, forwarding an explicit limit', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true, json: async () => ({ items: [], unread: 0, latest_id: null, last_read_id: 0 }),
+    })
+    await getNotifications()
+    expect(fetchMock.mock.calls[0][0]).toContain('/notifications')
+    expect(fetchMock.mock.calls[0][0]).not.toContain('limit')
+
+    await getNotifications(10)
+    expect(fetchMock.mock.calls[1][0]).toContain('/notifications?limit=10')
+
+    // Forwarded rather than dropped: 0 is outside the endpoint's ge=1 range and
+    // should be rejected there, not silently answered with the default page.
+    await getNotifications(0)
+    expect(fetchMock.mock.calls[2][0]).toContain('/notifications?limit=0')
+  })
+
+  it('getNotificationsUnread GETs the badge-only endpoint', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ unread: 2, latest_id: 9 }) })
+    await expect(getNotificationsUnread()).resolves.toEqual({ unread: 2, latest_id: 9 })
+    expect(fetchMock.mock.calls[0][0]).toContain('/notifications/unread')
+  })
+
+  it('markNotificationsRead POSTs the watermark', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ unread: 0, latest_id: 9 }) })
+    await markNotificationsRead(9)
+    expect(fetchMock.mock.calls[0][0]).toContain('/notifications/read')
+    expect(fetchMock.mock.calls[0][1].method).toBe('POST')
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ up_to_id: 9 })
+    // Every mutating request needs it -- AuthMiddleware rejects a POST without.
+    expect(new Headers(fetchMock.mock.calls[0][1].headers).get('X-Requested-With')).toBe('fetch')
   })
 })
 
