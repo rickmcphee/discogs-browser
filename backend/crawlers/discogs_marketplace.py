@@ -39,10 +39,15 @@ _LISTING_CONTAINERS = ("table.mpitems", "#pjax_container table")
 # parse. A bare "tbody tr" would break the readiness invariant below: an
 # unrelated or half-rendered row inside the container would satisfy the wait
 # while the listings were still on their way.
+# One selector per container accepting either price shape, rather than one
+# per shape: _read_listings() stops at the first selector that parses
+# anything, so splitting them means a table holding both a legacy-priced row
+# and a data-pricevalue-only row would be read by the first selector alone --
+# and if the row it skipped was the cheaper one, that is the price the crawl
+# persists.
 _ROW_SELECTORS = tuple(
-    f"{container} {row}"
+    f"{container} tbody tr:has(td.item_price .price, [data-pricevalue])"
     for container in _LISTING_CONTAINERS
-    for row in ("tbody tr:has(td.item_price .price)", "tbody tr:has([data-pricevalue])")
 )
 
 # The listings region rendering with nothing in it is a real answer ("nothing
@@ -98,7 +103,18 @@ async def _release_num_for_sale(release_id: str) -> Optional[int]:
             r = await client.get(url, headers={"User-Agent": _USER_AGENT})
             r.raise_for_status()
             value = r.json().get("num_for_sale")
-        return int(value) if value is not None else None
+        # Type-checked rather than coerced. int(False) and int(0.5) are both
+        # 0, so a schema change would arrive here looking exactly like a
+        # confirmed "nothing for sale" -- the one answer that lets search()
+        # return the empty result that clears a stored price. A value that
+        # isn't a plain integer is an unknown, not a zero.
+        if isinstance(value, bool) or not isinstance(value, int):
+            log.warning(
+                "[Discogs] marketplace stats for release %s returned a non-integer num_for_sale: %r",
+                release_id, value,
+            )
+            return None
+        return value
     except (httpx.HTTPError, ValueError, TypeError) as e:
         log.warning("[Discogs] marketplace stats lookup failed for release %s: %s", release_id, e)
         return None

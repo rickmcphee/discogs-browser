@@ -454,3 +454,41 @@ async def test_a_price_less_row_cannot_end_the_readiness_wait_early(browser_page
     results = await Crawler().search(RELEASE, _PlaceholderThenListings(browser_page, "usa_listings.html"))
 
     assert [r["price"] for r in results] == [6.50, 9.25, 12.99]
+
+
+async def test_both_price_shapes_in_one_table_are_read_together(browser_page):
+    """A cheaper row must not be skipped for using the other price shape.
+
+    Emitting one selector per price shape read this table with whichever
+    selector matched first, so the $7.00 row -- priced by attribute rather
+    than by the legacy cell -- was never considered, and the crawl persisted
+    the $40.00 one as the cheapest listing.
+    """
+    page = _FakePage(browser_page, "mixed_price_shapes.html")
+    results = await Crawler().search(RELEASE, page)
+
+    assert [r["price"] for r in results] == [7.00, 40.00]
+
+
+@respx.mock
+async def test_a_non_integer_num_for_sale_is_unknown_not_zero():
+    """int(False) and int(0.5) are both 0.
+
+    Coercing them would turn an API schema change into a confirmed
+    no-listings result -- the one answer that lets search() return the empty
+    result which clears a stored price.
+    """
+    for malformed in (False, 0.5, "124", None):
+        respx.get("https://api.discogs.com/marketplace/stats/249504").mock(
+            return_value=httpx.Response(200, json={"num_for_sale": malformed})
+        )
+        assert await dm._release_num_for_sale("249504") is None
+
+
+@respx.mock
+async def test_a_real_zero_num_for_sale_is_still_a_confirmed_miss():
+    respx.get("https://api.discogs.com/marketplace/stats/249504").mock(
+        return_value=httpx.Response(200, json={"num_for_sale": 0})
+    )
+
+    assert await dm._release_num_for_sale("249504") == 0
