@@ -124,21 +124,43 @@ async def test_search_does_not_fetch_variants_when_every_variant_costs_the_same(
 
 
 @respx.mock
-async def test_search_leaves_the_row_unpriced_when_no_available_variant_is_priced():
+async def test_search_leaves_the_row_unpriced_when_an_available_variant_has_no_usable_price():
     # Falling back to the product-level minimum would reintroduce exactly the
-    # sold-out price the lookup exists to avoid, so the row goes out unpriced
-    # and still linkable.
+    # sold-out price the lookup exists to avoid, so a buyable record with an
+    # unreadable price goes out unpriced and still linkable.
     handle = "mystery-lp"
     _mock([_product("Geese - Getting Killed [LP]", price="24.99", price_max="29.99", handle=handle)])
     respx.get(f"https://waterloorecords.com/products/{handle}.js").mock(
         return_value=httpx.Response(200, json={"variants": [
-            {"title": "New", "price": 2499, "available": False},
+            {"title": "New", "price": "not-a-number", "available": True},
+            {"title": "Old", "price": 2499, "available": False},
         ]})
     )
 
     results = await Crawler().search({"artist": "Geese", "title": "Getting Killed"}, None)
 
     assert [r["price"] for r in results] == [None]
+
+
+@respx.mock
+async def test_search_drops_a_product_whose_variants_are_all_sold_out():
+    """The two endpoints disagree, and the later, more specific one wins.
+
+    A suggest hit's `available` flag and the product endpoint are separate
+    responses, so stock can move between them. Keeping the candidate would put
+    a Waterloo row in the Store tab for a record nobody can buy -- distinct
+    from an unpriced row, which still represents something buyable.
+    """
+    handle = "sold-out-lp"
+    _mock([_product("Geese - Getting Killed [LP]", price="24.99", price_max="29.99", handle=handle)])
+    respx.get(f"https://waterloorecords.com/products/{handle}.js").mock(
+        return_value=httpx.Response(200, json={"variants": [
+            {"title": "New", "price": 2499, "available": False},
+            {"title": "Old", "price": 2999, "available": False},
+        ]})
+    )
+
+    assert await Crawler().search({"artist": "Geese", "title": "Getting Killed"}, None) == []
 
 
 @respx.mock

@@ -73,6 +73,11 @@ _QUALIFIER_CUT_RE = re.compile(r'\s*(?::|\[|\(|\s[-\u2013\u2014]\s)')
 # might sit, not about collecting everything.
 _SUGGEST_LIMIT = 10
 
+# Returned by _resolve_price when the product endpoint shows nothing buyable,
+# which has to stay distinguishable from a None price -- None means "buyable,
+# but the price did not parse", and only this one drops the candidate.
+_UNAVAILABLE = object()
+
 
 class Crawler:
     site_name: str = "Waterloo Records"
@@ -149,10 +154,23 @@ class Crawler:
             # could never be used -- and pricing it would spend a request on
             # the store for an answer nobody reads.
             best = min(rank for rank, _, _ in ranked)
+            priced = []
+            for rank, product, url in ranked:
+                if rank != best:
+                    continue
+                price = await self._resolve_price(product, url, client, delay)
+                if price is _UNAVAILABLE:
+                    log.info(
+                        "[Waterloo Records] %s reported available but has no "
+                        "buyable variant; skipping", url,
+                    )
+                    continue
+                priced.append((url, price))
+
             listings = [
                 {
                     "url": url,
-                    "price": await self._resolve_price(product, url, client, delay),
+                    "price": price,
                     # The store ships from one shop and quotes postage at
                     # checkout only; nothing in this payload carries it, and
                     # inventing a zero would read as free shipping.
@@ -162,9 +180,11 @@ class Crawler:
                     # the catalog crawler recorded the same absence.
                     "condition": None,
                 }
-                for rank, product, url in ranked
-                if rank == best
+                for url, price in priced
             ]
+            if not listings:
+                log.info("[Waterloo Records] no in-stock vinyl match for %r", query)
+                return []
 
         # Cheapest first. This store has no condition field, so -- as the
         # catalog crawler did before it -- a row reports the least it costs to
@@ -255,15 +275,25 @@ class Crawler:
         r = await client.get(f"{url}.js", timeout=30)
         r.raise_for_status()
         variants = (r.json() or {}).get("variants") or []
+        available = [v for v in variants if v.get("available")]
+        if variants and not available:
+            # The product endpoint says nothing here is buyable, contradicting
+            # the `available` flag on the suggest hit that got us this far --
+            # the two are separate responses and the stock moved between them.
+            # Believe the later, more specific one and drop the candidate:
+            # returning it would put a Waterloo row in the Store tab for a
+            # record nobody can buy. _UNAVAILABLE is distinct from a None
+            # price, which means "buyable, but the price did not parse".
+            return _UNAVAILABLE
         # Cents here, unlike suggest.json's decimal strings.
         prices = [
             v["price"] / 100
-            for v in variants
-            if v.get("available") and isinstance(v.get("price"), (int, float))
+            for v in available
+            if isinstance(v.get("price"), (int, float))
         ]
-        # No available variant priced in a shape this understands. Falling back
-        # to `low` would reintroduce exactly the sold-out price this exists to
-        # avoid, so the row goes out unpriced and still linkable.
+        # An available variant whose price is unreadable. Falling back to `low`
+        # would reintroduce exactly the sold-out price this exists to avoid, so
+        # the row goes out unpriced and still linkable.
         return min(prices) if prices else None
 
     @staticmethod
