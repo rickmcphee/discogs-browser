@@ -45,6 +45,13 @@ jobs:
     concurrency:
       group: claude-${{ github.event.issue.number }}
     runs-on: ubuntu-latest
+    env:
+      # `secrets` is available in a job-level `env` but not in a step-level
+      # `if`, so the key is reduced to a boolean here to be testable below.
+      # Same shape and same reason as integration-promote.yml: with the client
+      # ID set and the key absent, create-github-app-token rejects the empty
+      # private key and fails the step outright.
+      PR_APP_PRIVATE_KEY_SET: ${{ secrets.CLAUDE_PR_APP_PRIVATE_KEY != '' }}
     timeout-minutes: 30
     permissions:
       contents: write
@@ -70,15 +77,34 @@ jobs:
           claude_args: |
             --json-schema '{"type":"object","properties":{"pr_title":{"type":"string","description":"Imperative one-line pull request title for the change you committed. Empty if you committed nothing."},"pr_body":{"type":"string","description":"Pull request body filling the section headings of .github/pull_request_template.md: What changed, Verification with the commands you ran and their output, Spec drift, Checklist. Empty if you committed nothing."}},"required":[]}'
 
+      # The action revokes its own OIDC-exchanged token in a final `always()`
+      # step, so `steps.claude.outputs.github_token` is already dead here and
+      # every call with it would 401. A fresh installation token is minted
+      # instead. Not `github.token`: GitHub raises no workflow run for anything
+      # it creates, so a pull request opened with it would carry no CI at all,
+      # which is worse than the link the action already posts. That is also why
+      # this does not take integration-promote.yml's `|| github.token` fallback
+      # — with no app configured the right outcome is to leave the link alone.
+      #
       # Only on the label. Every run cuts its own branch, so opening a pull
-      # request per `@claude` comment would stack a separate one per follow-up;
-      # those keep the prefilled link the action posts on the issue.
-      - name: Open a pull request for Claude's branch
+      # request per `@claude` comment would stack a separate one per follow-up.
+      - name: Mint a token for opening the pull request
+        id: pr-token
         if: >-
           steps.claude.outputs.branch_name != '' &&
-          github.event_name == 'issues' && github.event.action == 'labeled'
+          github.event_name == 'issues' && github.event.action == 'labeled' &&
+          vars.CLAUDE_PR_APP_CLIENT_ID != '' && env.PR_APP_PRIVATE_KEY_SET == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.CLAUDE_PR_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CLAUDE_PR_APP_PRIVATE_KEY }}
+
+      # A skipped mint yields an empty output, which is the "no app configured"
+      # path: the issue keeps the action's prefilled link and nothing fails.
+      - name: Open a pull request for Claude's branch
+        if: steps.pr-token.outputs.token != ''
         env:
-          GH_TOKEN: ${{ steps.claude.outputs.github_token }}
+          GH_TOKEN: ${{ steps.pr-token.outputs.token }}
           BRANCH: ${{ steps.claude.outputs.branch_name }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           ISSUE_TITLE: ${{ github.event.issue.title }}
