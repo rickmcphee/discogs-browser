@@ -1,61 +1,110 @@
 name: Claude Assistant
 
-# Issue events only, deliberately. This repository is public, so anyone can
-# open a pull request from a fork, and a run triggered on a pull request works
-# against that contributor's head.
+# Issue events, plus pull request events restricted to same-repository heads.
 #
-# The specific hole that first forced this narrowing is closed. The action
-# restores `.claude/` from the base branch, and the `SessionStart` hook there
-# used to invoke `scripts/cloud-setup.sh`, which stays at the PR head — so a
-# maintainer typing `@claude` on a hostile PR would have executed the
-# contributor's shell with this job's write token and the OAuth secret in its
-# environment. That hook now goes through `.claude/hooks/session-start.sh`,
-# which is restored from the base branch too and declines to provision anything
-# it cannot establish is trusted. See
+# This repository is public, so anyone can open a pull request from a fork, and
+# a run triggered on a pull request works against that contributor's head while
+# this job holds `contents: write` and the OAuth secret. That is why the pull
+# request triggers were withheld when this workflow was added.
+#
+# They are here now behind two gates, because untrusted content arrives by two
+# routes. Code: the step below skips the run unless the pull request's head is
+# in this repository *and* a trusted author opened it. Both halves are needed —
+# pushing a branch here takes write access, but opening a pull request between
+# two branches that already exist pushes nothing, so the head says who wrote the
+# diff and not who wrote the body wrapped round it. The body reaches Claude on a
+# path the actor filter below does not cover.
+#
+# How much that step is carrying depends on the event, and the difference is the
+# thing to read before touching it:
+#
+#   issue_comment          runs THIS file, from the default branch, with this
+#                          repository's secrets and `contents: write` — even when
+#                          the pull request is a fork's. The step below is the
+#                          whole boundary there. Nothing else stops it.
+#
+#   pull_request_review*   runs the pull request's own copy of this file, which a
+#                          fork controls — but GitHub passes it no secrets and a
+#                          read-only token, so it cannot reach Claude or write
+#                          anything. There the step is belt to GitHub's braces.
+#
+# So do not read "a fork gets no credentials" as covering all three. It covers
+# the review events. On `issue_comment` this step is load-bearing, and deleting
+# it would hand a fork's pull request to Claude with the OAuth secret live. See
+# "Which gate is load-bearing depends on the event" in the design.
+#
+# Prose: a same-repository head says nothing about who may comment, and on a
+# public repository that is anyone. `include_comments_by_actor` on the action
+# step narrows whose comments are put in front of Claude automatically — its
+# starting context, not what it can fetch through its GitHub tooling once
+# running. So the code gate is a boundary and this one is defence in depth;
+# see "What is not claimed" in
+# docs/specifications/shaping/2026-08-29-claude-on-pull-requests-design.md
+#
+# The `SessionStart` hook hole that made even a maintainer's `@claude` on a
+# fork pull request dangerous is separately closed: the hook now goes through
+# `.claude/hooks/session-start.sh`, restored from the base branch, which
+# declines to provision anything it cannot establish is trusted. See
 # docs/specifications/shaping/2026-08-29-session-start-hook-pr-safety-design.md
-#
-# What remains is not a bug awaiting a fix. It is that this job holds
-# `contents: write` and the OAuth secret while reading a fork's code, and code
-# that is read is code that can carry instructions. Adding
-# `pull_request_review`, `pull_request_review_comment`, or letting
-# `issue_comment` through on a pull request each widen that surface, and are a
-# deliberate open choice to be taken on their own merits rather than waved
-# through as a consequence of the hook fix
-# (https://github.com/anthropics/claude-code-action/blob/main/docs/security.md).
 on:
   issues:
     types: [opened, labeled]
   issue_comment:
     types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
 
 jobs:
   claude:
     # There is no Claude account to put in this repository's Assignees field,
     # so `assignee_trigger` has no username to name. The `claude` label is the
-    # hand-it-over gesture instead, and needs no account to exist.
+    # hand-it-over gesture instead, and needs no account to exist. It reaches
+    # issues only — GitHub's `issues` event does not fire for pull requests, and
+    # labelling one emits `pull_request: labeled`, which is not subscribed here.
+    # On a pull request the gesture is `@claude` in a comment.
     #
-    # `issue_comment` fires on pull requests too — GitHub models a PR as an
-    # issue — so the comment clause excludes anything carrying `pull_request`.
+    # `issue_comment` fires on pull requests too, because GitHub models a pull
+    # request as an issue; that clause no longer excludes them, and covers the
+    # comment box under the conversation. `pull_request_review_comment` is the
+    # one that matters for acting on a review: inline findings live there, and
+    # replying `@claude` underneath one is the natural gesture.
+    # `pull_request_review` catches `@claude` written into a submitted review
+    # body.
     #
-    # The `@claude` paths also check `author_association`, because this
-    # repository is public and the action's own write-access check runs only
-    # after the job has started. Without it a stranger's `@claude` comment
-    # enters the concurrency group below, evicts a maintainer's queued run, and
-    # is only then rejected. Applying a label already requires triage access, so
-    # that path is gated by GitHub itself. This is a pre-filter, not the
+    # No bot can trigger any of this. The action's `allowed_bots` defaults to
+    # empty, and `author_association` below admits only OWNER, MEMBER and
+    # COLLABORATOR, so a review posted by `copilot-pull-request-reviewer[bot]`
+    # does not wake Claude by itself. Someone asks for it. That is deliberate;
+    # see the "Why Copilot does not trigger this itself" section of the design.
+    #
+    # Every `@claude` path checks `author_association`, because this repository
+    # is public and the action's own write-access check runs only after the job
+    # has started. Without it a stranger's `@claude` comment enters the
+    # concurrency group below, evicts a maintainer's queued run, and is only
+    # then rejected. Applying a label already requires triage access, so that
+    # path is gated by GitHub itself. This is a pre-filter, not the
     # authorisation: the action still makes the real decision.
     if: >-
       (github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'claude') ||
       (github.event_name == 'issues' && github.event.action == 'opened' && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association) && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude'))) ||
-      (github.event_name == 'issue_comment' && !github.event.issue.pull_request && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) && contains(github.event.comment.body, '@claude'))
+      (github.event_name == 'issue_comment' && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review' && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association) && contains(github.event.review.body, '@claude'))
     # Scoped to the job, not the workflow: a workflow-level group is entered by
     # every subscribed event before the `if` above is evaluated, and GitHub keeps
     # only one pending run per group, cancelling the previous one. An ordinary
     # comment would then evict a queued Claude request. Skipped jobs never enter
     # a job-level group, so only real requests serialise here — and between two
     # of those the later one still cancels the queued earlier one.
+    #
+    # The review events carry `pull_request`, not `issue`, so the number has to
+    # be taken from whichever is present. Reading only one of them would leave
+    # the group named `claude-` on the other, serialising every pull request in
+    # the repository against every other.
     concurrency:
-      group: claude-${{ github.event.issue.number }}
+      group: claude-${{ github.event.issue.number || github.event.pull_request.number }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -65,11 +114,84 @@ jobs:
       id-token: write
       actions: read
     steps:
+      # Deliberately before the checkout, so a fork's head is never even
+      # fetched. `issue_comment` is why this is a step rather than another
+      # clause in the `if:` above: its payload describes the issue side of a
+      # pull request and carries no head repository at all, so it has to be
+      # asked for. The review events do carry one, and are resolved the same
+      # way here rather than introducing a second mechanism that could drift.
+      #
+      # Fails closed. A deleted fork leaves `head.repo` null, which is not this
+      # repository and so skips, and any error here fails the step rather than
+      # falling through to the action.
+      - id: pr
+        name: Require a same-repo head
+        if: github.event.issue.pull_request || github.event.pull_request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          pr="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")"
+          head="$(jq -r '.head.repo.full_name // ""' <<<"$pr")"
+          assoc="$(jq -r '.author_association // ""' <<<"$pr")"
+
+          reason=""
+          [ "$head" = "$GITHUB_REPOSITORY" ] \
+            || reason="its head is in \`${head:-an unknown repository}\`, not \`${GITHUB_REPOSITORY}\`"
+          case "$assoc" in
+            OWNER|MEMBER|COLLABORATOR) ;;
+            *) reason="${reason:+$reason, and }it was opened by a \`${assoc:-UNKNOWN}\` author" ;;
+          esac
+
+          if [ -z "$reason" ]; then
+            echo "same_repo=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "same_repo=false" >> "$GITHUB_OUTPUT"
+            printf '%s\n' \
+              "Skipped: pull request #${PR_NUMBER} because ${reason}." \
+              "Claude only runs on pull requests whose branch lives in this repository *and*" \
+              "which a trusted author opened — see" \
+              "\`docs/specifications/shaping/2026-08-29-claude-on-pull-requests-design.md\`." \
+              >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # `!= 'false'` rather than `== 'true'`: the guard does not run for issue
+      # events, leaving the output empty, and those must still proceed.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        if: steps.pr.outputs.same_repo != 'false'
         with:
           fetch-depth: 1
 
+      # The head check above governs which *code* is read. This governs which
+      # *prose* is, and the two are separate holes: anyone on the internet can
+      # comment on a same-repository pull request, and the action includes every
+      # actor's comments by default (`filterCommentsByActor` returns the lot when
+      # the include list is empty). Without this a stranger's comment is fed to
+      # Claude the moment a maintainer types `@claude`, with the write token and
+      # the OAuth secret in scope. Found by Copilot on the pull request that
+      # added these triggers.
+      #
+      # Humans are narrowed to the actor who triggered the run — already gated to
+      # OWNER, MEMBER or COLLABORATOR by the `if:` above — and the repository
+      # owner, whose own pull request it usually is.
+      #
+      # Copilot needs two entries because it posts under two identities, and
+      # keeping only the obvious one silently discards every finding this feature
+      # exists to act on: the review body comes from
+      # `copilot-pull-request-reviewer[bot]`, but the inline comments — the
+      # findings themselves — come from `Copilot`. Both are listed in bare and
+      # `[bot]`-suffixed form because matching is exact and the action normalises
+      # App logins by appending the suffix when GraphQL returns it bare
+      # (`resolveActorName`), which REST does not show. A pattern that matches
+      # nothing costs nothing; a missing one loses the review.
       - uses: anthropics/claude-code-action@a874e9ecd7bb36efdad65429c6b35815f5a08f10 # v1
+        if: steps.pr.outputs.same_repo != 'false'
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           label_trigger: "claude"
+          include_comments_by_actor: >-
+            ${{ github.actor }},${{ github.repository_owner }},
+            Copilot,Copilot[bot],
+            copilot-pull-request-reviewer,copilot-pull-request-reviewer[bot],
+            claude[bot],github-actions[bot]

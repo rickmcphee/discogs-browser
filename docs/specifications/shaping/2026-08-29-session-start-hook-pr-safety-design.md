@@ -30,6 +30,12 @@ anything carrying `pull_request`. That narrowing was the mitigation, adopted
 during review of the pull request that added the workflow, and the hook is the
 reason it could not be lifted. This design removes that reason.
 
+**Amendment (2026-08-29):** the narrowing described in this paragraph is
+historical. The workflow now subscribes to pull request comment and review
+events as well, gated on the head being in this repository — see the Non-goals
+amendment below. Nothing in the analysis above changes: the hook fix is what
+made that gate the only thing left to decide.
+
 The action's own security documentation names this exact case: a base-branch
 hook that runs "a repo-relative script" resolves through files the pull request
 supplies, and its advice is to keep such commands self-contained.
@@ -50,6 +56,24 @@ See <https://github.com/anthropics/claude-code-action/blob/main/docs/security.md
   Closing this hole is a precondition for that, not the same decision: running
   Claude with `contents: write` against a fork head has a wider surface than one
   hook, and it deserves its own review.
+
+  **Amendment (2026-08-29):** that review happened, and the triggers are back —
+  `issue_comment` on pull requests, `pull_request_review_comment` and
+  `pull_request_review`. It does not weaken the paragraph above, because it does
+  not run Claude against a fork head. What stops it differs by event, and the
+  distinction matters here because this paragraph is about credentials. On
+  `pull_request_review` and `pull_request_review_comment`, GitHub does it:
+  secrets are not passed to a runner for a workflow triggered from a forked
+  repository and `GITHUB_TOKEN` is read-only there, so a fork cannot obtain the
+  credentials this design worries about even by supplying its own workflow
+  file. On `issue_comment` GitHub does *not* — that path runs the default
+  branch's workflow with this repository's secrets — and there the workflow's
+  own first step, which skips unless the head is in this repository and a
+  trusted author opened it, is the entire boundary. The hook fix remains the
+  precondition it is described as here, and everything below still holds
+  unchanged — a Claude Code session opened on a pull request head must still
+  find a launcher that declines to provision it. See
+  [`2026-08-29-claude-on-pull-requests-design.md`](2026-08-29-claude-on-pull-requests-design.md).
 - Hardening a Claude Code cloud session opened directly on an untrusted branch.
   There the operator chose the branch, no workflow secret is injected, and
   running the suite at all executes that branch's `conftest.py`. It is the same
@@ -129,7 +153,9 @@ ignored.
   someone decides the rest of the surface is acceptable. Its comment above `on:`
   is rewritten to say so: it no longer names a precondition to wait for, because
   what is left is a standing judgement about `contents: write` and a fork's
-  prompt-injectable code, not a defect.
+  prompt-injectable code, not a defect. **(2026-08-29: that judgement was made
+  the same day — the events are subscribed, and a fork's code is kept out by a
+  head-repository check rather than by declining the events.)**
 - `.claude/settings.json` is no longer the only tracked file under `.claude/`.
 - A cloud session is one process hop longer to start. Nothing else changes: the
   provisioning script, its output, and its `--force` behaviour are untouched.
