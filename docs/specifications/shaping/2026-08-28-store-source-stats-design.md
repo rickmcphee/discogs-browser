@@ -38,6 +38,7 @@ Touches:
 - Tests: `backend/tests/test_stock_router.py`,
   `frontend/src/test/stockStats.test.tsx`,
   `frontend/src/test/donut.test.tsx`,
+  `frontend/src/test/client.test.ts`,
   `frontend/src/test/stockBrowser.test.tsx`.
 
 Not in scope: the Track tab (see "Known limitations"), and clicking a wedge
@@ -147,11 +148,16 @@ list where it needs one.
 `QueueView`'s `StateDonut` was already the ring this feature needs: one
 `<circle>` per segment, `stroke-dasharray` for the arc, a 2px surface gap
 between fills, a `<title>` per arc, and the centre value/label pair. It is
-lifted into `components/Donut.tsx` unchanged and generic over the segment key,
+lifted into `components/Donut.tsx` and made generic over the segment key,
 with the colour, tooltip text and aria-label passed in — the two use sites
 encode different things (three states of one quantity in the queue view,
 store identity in the store one) and only the geometry is shared.
 `StateDonut` stays, as the thin wrapper that maps queue states onto it.
+
+The geometry carries one correction rather than moving verbatim — the
+small-segment cap below. It is a fix, not a redesign: it changes only
+segments allocated less than the gap floor, which is a case the queue ring's
+three states cannot reach, so that ring renders identically before and after.
 
 `onSelect` and `onHover` are both optional and independent: the queue ring
 selects, the store ring highlights on hover, and neither grows the other's
@@ -232,6 +238,12 @@ Backend (`backend/tests/test_stock_router.py`):
 - hidden sources are excluded
 - the `saved` filter narrows the breakdown
 - nothing matching returns `{"total": 0, "sources": []}`
+
+`frontend/src/test/client.test.ts` covers `getStockStats`' own URL, which
+nothing else can: every component test mocks the wrapper away, so a param
+renamed on one side of the wire would otherwise pass the whole suite. It
+asserts the path, each backend param name for a fully-populated call, and that
+an unset filter is omitted rather than sent as `false`.
 
 `frontend/src/test/donut.test.tsx` covers the ring's geometry directly: a
 segment never drawn wider than its share, the 2px gap kept where a segment can
