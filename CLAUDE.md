@@ -250,8 +250,25 @@ A single check right after CI passes has the same race shifted one step later: C
 
 - In a Claude Code cloud session, `scripts/cloud-setup.sh` provisions everything the
   suite needs (Postgres, test database, `backend/.env`, backend + Playwright +
-  frontend dependencies). It runs automatically via the `SessionStart` hook in
-  `.claude/settings.json` — the one file under `.claude/` that is not gitignored.
+  frontend dependencies). The `SessionStart` hook in `.claude/settings.json` does
+  not name it directly: it calls `.claude/hooks/session-start.sh`, which refuses
+  to provision unless it can establish the working tree is trusted, and hands off
+  only then. **That launcher has to stay inside `.claude/`, and the hook has to
+  keep going through it.** `anthropics/claude-code-action` restores `.claude/`
+  (along with `CLAUDE.md`, `.mcp.json` and a few others) from a pull request's
+  *base* branch and leaves everything else at the PR head, and the CLI acts on
+  `.claude/settings.json` — hooks included — before any tool-permission gating. A
+  hook pointing straight at `scripts/` therefore executes a fork contributor's
+  shell with the workflow's write token and `CLAUDE_CODE_OAUTH_TOKEN` in its
+  environment. Moving the provisioning script into `.claude/` would *not* fix
+  that on its own; it installs `backend/pyproject.toml` and
+  `frontend/package.json`, which stay at the PR head and run code at install
+  time. The fix is declining to provision at all, from a path a pull request
+  cannot edit. `cloud-setup.sh` keeps its own `CLAUDE_CODE_REMOTE` check, but
+  that one is a convenience for hand invocation, not the boundary — `scripts/` is
+  not restored, so a pull request can delete it. See
+  [`docs/specifications/shaping/2026-08-29-session-start-hook-pr-safety-design.md`](docs/specifications/shaping/2026-08-29-session-start-hook-pr-safety-design.md).
+  These are the only files under `.claude/` that are not gitignored.
 - `pytest-asyncio` with `asyncio_mode = "auto"` (all async tests run automatically)
 - HTML fixtures for Amazon price regression tests: `backend/tests/fixtures/crawlers/amazon/`
 - To capture a new fixture: `python backend/scripts/capture_fixture.py amazon <url> "Artist - Title"`
