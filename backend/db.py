@@ -1408,6 +1408,34 @@ def crawler_is_release(conn, crawler_id: int) -> bool:
     return bool(row) and row["crawler_type"] == "release"
 
 
+def crawler_is_catalog(conn, crawler_id: int) -> bool:
+    """Whether the crawler is still a catalog kind, read at write time.
+
+    The forward twin of crawler_is_release(): _sync_stock snapshots the
+    enabled catalog crawlers before crawling, and a kind change can land
+    while a source's crawl is in flight -- register_crawler() on a newer
+    deploy flipping the crawler to `release` and deleting its catalog-era
+    snapshot (stock_items with release_id IS NULL). A replace_stock_items()
+    call after that rewrites the whole snapshot for a crawler that is no
+    longer a catalog kind, and nothing ever deletes it again: that function
+    only runs for catalog kinds, and the conversion cleanup only fires on a
+    kind change that has already happened.
+
+    FOR SHARE for the same reason as crawler_is_release(): under READ
+    COMMITTED a plain read neither waits for an in-flight conversion nor
+    keeps one out until this transaction commits. Taken first, it holds
+    register_crawler()'s UPDATE off until this transaction's snapshot write
+    is committed and the conversion's DELETE can see it; taken second, it
+    waits the conversion out and reads the new kind. No deadlock: both
+    transactions lock the crawlers row before touching stock_items, so the
+    lock order is consistent.
+    """
+    row = conn.execute(
+        "SELECT crawler_type FROM crawlers WHERE id = %s FOR SHARE", [crawler_id]
+    ).fetchone()
+    return bool(row) and row["crawler_type"] in ("catalog", "catalog_browser")
+
+
 def get_eligible_crawlers(conn, is_release: bool, pending_crawler_ids: Optional[list] = None) -> list[dict]:
     return conn.execute(
         """
@@ -2643,6 +2671,17 @@ def _apply_canonical_artists(conn, rows: list[dict]) -> None:
 
 
 def replace_stock_items(conn, crawler_id: int, items: list[dict]) -> list[str]:
+    # Checked inside the write transaction, before the DELETE below, so the
+    # kind recheck and the snapshot write commit or skip together -- see
+    # crawler_is_catalog's docstring for the mid-sync conversion race this
+    # closes.
+    if not crawler_is_catalog(conn, crawler_id):
+        log.warning(
+            "Dropping a stock snapshot of %d items for crawler %d: "
+            "it is no longer a catalog kind",
+            len(items), crawler_id,
+        )
+        return []
     rows = []
     identity_rows = []
     item_keys = []

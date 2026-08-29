@@ -746,3 +746,28 @@ that a changed key "orphan[s] the saves and judgments hanging off the old
 one"), it spans a window measured in a day, and a url-keyed migration
 table to rescue it would outlive its one use. Kind changes re-key a
 store's items; per-user state rides the keys.
+
+**Rolling deploys race the kind change, in both directions, and both write
+paths recheck the kind inside their own write transaction.**
+`register_crawler()`'s cleanup runs once, at the kind change; an old
+machine's in-flight work can land after it and rebuild exactly the rows the
+cleanup deleted, with nothing left to ever delete them again, because each
+write path only runs for the kind the crawler no longer is. Reverse
+direction (to a catalog kind): `_drain_one_batch` snapshots eligibility
+before awaiting `search()`, so its result transaction calls
+`db.crawler_is_release()` alongside `crawl_queue_claim_held()` and drops a
+release result whose crawler has stopped being `release` — the queue row is
+still resolved, since this worker still owns its claim. Forward direction
+(to `release`): `_sync_stock`'s enabled-source list is a snapshot too, and
+one source's crawl can run for hours, so `replace_stock_items()` itself
+calls `db.crawler_is_catalog()` before its DELETE and skips the whole
+snapshot write, with a log line, when the crawler has stopped being a
+catalog kind. Both helpers read the `crawlers` row `FOR SHARE` rather than
+with a plain SELECT: under READ COMMITTED a plain read neither waits for an
+in-flight conversion nor keeps one out until the writing transaction
+commits, and the row lock serializes the recheck with `register_crawler()`'s
+upsert UPDATE in whichever order they arrive. Lock order stays consistent —
+both sides lock the `crawlers` row before touching `stock_items` — so no
+deadlock is reachable. (Reverse gate added on branch
+`claude/waterloo-records-crawler-type-a2woiz`; forward gate on
+`claude/catalog-write-kind-gate`, which stacks on it.)

@@ -271,6 +271,33 @@ def test_register_crawler_clears_catalog_stock_when_a_crawler_becomes_release_ty
     assert row["crawler_type"] == "release"
 
 
+def test_replace_stock_items_skips_the_write_after_the_crawler_converts_to_release(admin_conn):
+    # The forward twin of the mid-search revert race: an old machine's
+    # in-flight catalog sync can reach replace_stock_items() after a newer
+    # machine's register_crawler() converted the crawler to `release` and
+    # deleted its catalog-era snapshot. A late write would rebuild the whole
+    # snapshot, and nothing ever deletes it again -- replace_stock_items()
+    # only runs for catalog kinds, and the conversion cleanup already fired.
+    db.register_crawler(admin_conn, "Converting Mid-Sync", "/path/store.py", crawler_type="catalog")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute(
+        "SELECT id FROM crawlers WHERE site_name = %s", ["Converting Mid-Sync"]
+    ).fetchone()["id"]
+
+    db.register_crawler(admin_conn, "Converting Mid-Sync", "/path/store.py", crawler_type="release")
+    admin_conn.commit()
+
+    item_keys = db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "Geese", "title": "Getting Killed", "format": "Vinyl",
+         "price": 24.99, "currency": "USD",
+         "url": "https://example.test/products/getting-killed"},
+    ])
+    admin_conn.commit()
+
+    assert item_keys == []
+    assert _stock_row_count(admin_conn, crawler_id) == 0
+
+
 def test_register_crawler_keeps_release_written_stock_on_a_plain_re_register(admin_conn):
     # The release path writes its own stock_items rows through
     # upsert_stock_item_from_release(), which always carries a release_id.
