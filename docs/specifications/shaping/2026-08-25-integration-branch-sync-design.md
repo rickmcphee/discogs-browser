@@ -145,7 +145,9 @@ Checked 2026-08-29, reading the branch's rules anonymously: `main`'s ruleset
 pins `allowed_merge_methods: ["squash"]`. The repo-wide toggle has not loosened
 it. Recorded in
 [`2026-08-29-copilot-pr-approval-design.md`](2026-08-29-copilot-pr-approval-design.md),
-which dumps that ruleset in full for a different reason.
+which records those effective branch rules for a different reason. They are the
+rules the endpoint returns, not the whole ruleset — an anonymous read omits
+bypass actors.
 
 ## Is there anything to sync?
 

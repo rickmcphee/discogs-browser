@@ -83,9 +83,10 @@ toggle that `integration` needs has not loosened `main`.)
 
 ### The approval would attach to an early head and never move
 
-`review_on_push: true` means Copilot reviews a pull request when it opens and
-again on every push to it. The first review therefore lands on whatever head the
-pull request opened with, which is rarely the head that merges.
+The `copilot_code_review` rule reviews a pull request when it opens, and
+`review_on_push: true` adds a fresh review on each push to it afterwards. The
+first review therefore lands on whatever head the pull request opened with,
+which is rarely the head that merges.
 `dismiss_stale_reviews_on_push: false` means no later push clears that review,
 and `require_last_push_approval: false` means the final push needs no approval of
 its own. An approval granted to an early head therefore satisfies the rule for
