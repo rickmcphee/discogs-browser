@@ -4,14 +4,22 @@
 # that workflow is the authoritative statement of what a green run needs, and
 # this script is its sandbox equivalent.
 #
-# Wired up as a SessionStart hook in .claude/settings.json rather than as the
-# cloud environment's "Setup script" field, because the environment cache is a
-# filesystem snapshot: it keeps installed packages but loses running processes,
-# so a Postgres started by a setup script is gone by the second session. The
-# database has to be started per session, which is what a SessionStart hook is
-# for. See https://code.claude.com/docs/en/cloud-environments#environment-caching
+# Reached from a SessionStart hook rather than from the cloud environment's
+# "Setup script" field, because the environment cache is a filesystem snapshot:
+# it keeps installed packages but loses running processes, so a Postgres started
+# by a setup script is gone by the second session. The database has to be
+# started per session, which is what a SessionStart hook is for. See
+# https://code.claude.com/docs/en/cloud-environments#environment-caching
 #
-# No-ops outside a cloud session so it is harmless as a local hook. Pass
+# The hook does not name this file. It calls .claude/hooks/session-start.sh,
+# which decides whether the working tree is trusted before handing off here.
+# `scripts/` is not restored from a pull request's base branch, so the guard
+# below is editable from a PR head and cannot be the security boundary -- it is
+# a convenience for anyone running this by hand. The boundary lives in that
+# launcher; see its header, and
+# docs/specifications/shaping/2026-08-29-session-start-hook-pr-safety-design.md
+#
+# No-ops outside a cloud session so it is harmless to run anywhere. Pass
 # --force to run it anyway (it will overwrite backend/.env).
 set -e
 
