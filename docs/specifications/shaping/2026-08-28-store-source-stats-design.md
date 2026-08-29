@@ -36,12 +36,12 @@ Touches:
   `SourceFilter`, store scope only.
 - `frontend/src/api/client.ts`, `types.ts` — `getStockStats`, `StockStats`,
   `StockSourceCount`.
+- `frontend/src/App.tsx` — two strict subsets of `stockSyncGeneration` for the
+  panel's refresh key (see "`refreshKey` is deliberately narrower").
 - Tests: `backend/tests/test_stock_router.py`,
   `frontend/src/test/stockStats.test.tsx`,
   `frontend/src/test/donut.test.tsx`,
   `frontend/src/test/client.test.ts`,
-- `frontend/src/App.tsx` — two strict subsets of `stockSyncGeneration` for the
-  panel's refresh key (see "`refreshKey` is deliberately narrower").
   `frontend/src/test/stockBrowser.test.tsx`.
 
 Not in scope: the Track tab (see "Known limitations"), and clicking a wedge
