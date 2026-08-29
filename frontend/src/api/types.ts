@@ -21,7 +21,7 @@ export interface ReleasesResponse {
   releases: Release[]
 }
 
-export type CrawlerGenre = 'marketplace' | 'punk' | 'metal' | 'rock' | 'pop'
+export type CrawlerGenre = 'marketplace' | 'punk' | 'metal' | 'rock'
 
 export interface Crawler {
   id: number

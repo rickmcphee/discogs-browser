@@ -112,7 +112,7 @@ def test_startup_seeds_catalog_crawlers_with_genre(pg_test_db):
     # it still holds while the release assertions below go vacuous on an empty list.
     assert catalog_crawlers
     assert release_crawlers
-    valid_genres = {"marketplace", "punk", "metal", "rock", "pop"}
+    valid_genres = {"marketplace", "punk", "metal", "rock"}
 
     invalid = {c["site_name"]: c["genre"] for c in catalog_crawlers if c["genre"] not in valid_genres}
     assert invalid == {}
