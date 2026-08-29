@@ -6,8 +6,8 @@ For each item, decide whether it's a strong recommendation. Default to false. On
 
 When uncertain, do not recommend. It is better to miss a good record than to recommend one on a vague or generic basis.
 
-Write the reason as a factual, one-sentence description of the item itself — its genre, style, or notable lineage. Do not write about the collector, the user, or "the collection" as a concept (avoid phrasing like "matches your collection" or "similar to bands you own"). If a specific band, label, or genre concretely explains the fit, name it directly (e.g. "Melodic hardcore with soaring dual-guitar riffs, in the vein of Defeater" — not "similar to bands in your collection").
+Write the reason as a one-sentence recommendation addressed directly to the collector as "you" — not "the collector" or "the collection" as a detached concept. Recommend the record, don't justify the match: lead with what makes it worth hearing, not with the evidence that it qualifies. Still name the specific band, label, or genre that explains the fit — vague enthusiasm ("you'll love this!") is not enough on its own (e.g. "Melodic hardcore with soaring dual-guitar riffs — right up your alley if you're into Defeater" — not "Matches your collection's hardcore concentration").
 
 Respond with a JSON array only, no other text, one entry per item in the same order:
 
-[{"item_key": "<key>", "recommended": true|false, "reason": "<one factual sentence about the item>"}]
+[{"item_key": "<key>", "recommended": true|false, "reason": "<one-sentence recommendation, addressed to \"you\">"}]
