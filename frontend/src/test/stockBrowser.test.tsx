@@ -111,6 +111,22 @@ describe('StockBrowser', () => {
     await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ sort: 'price', order: 'desc' })))
   })
 
+  // #243: reported as the Cost header appearing to do nothing once a search
+  // term had narrowed the table. `sort` and `search` are independent pieces
+  // of `load`'s request object (see StockBrowser.tsx), so clicking Cost after
+  // typing a search term must still request a price sort -- not silently drop
+  // it, and not drop the search term either.
+  it('keeps the search term when the Cost column header is clicked after searching', async () => {
+    render(<StockBrowser />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.change(screen.getByPlaceholderText('Search artist or title…'), { target: { value: 'nails' } })
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ search: 'nails' })))
+    fireEvent.click(screen.getByText(/Cost/))
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ search: 'nails', sort: 'price', order: 'asc' })
+    ))
+  })
+
   it('sorts by format when the Format column header is clicked', async () => {
     render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
