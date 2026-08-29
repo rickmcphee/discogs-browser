@@ -94,10 +94,12 @@ Eligibility mirrors `get_eligible_crawlers` exactly: `enabled`,
 `crawler_type = 'release'`, `discogs_id IS NOT NULL OR NOT
 requires_discogs_release`, and `pending_crawler_ids IS NULL OR id = ANY(...)`.
 The claim-side gates from `claim_crawl_queue_batch` apply too: a stock row
-counts only while `_enabled_stock_source_exists` still holds for its
-`item_key`, and `available_at > CURRENT_TIMESTAMP` marks a row held rather than
-claimable. Any divergence between this resolution and dispatch's is a bug in
-this feature, not a difference of opinion.
+counts only while `_enabled_stock_source_exists`' predicate still holds for
+its `item_key` (the totals query now evaluates that predicate set-based rather
+than calling the helper per row — see the amendment below), and `available_at >
+CURRENT_TIMESTAMP` marks a row held rather than claimable. Any divergence
+between this resolution and dispatch's is a bug in this feature, not a
+difference of opinion.
 
 ## Cost: why the fan-out is not a join
 
@@ -131,6 +133,23 @@ status <> 'done'` does the same for the totals aggregate: the existing
 `crawl_queue_claimable_idx` is partial on `'pending'` and so serves neither the
 `in_progress` rows nor the deferred ones, leaving the poll to seq-scan the whole
 table for what is usually a handful of live rows.
+
+**Amendment (2026-08-29, after the tab shipped and then broke):** the
+reasoning above was applied to the fan-out and not to the totals aggregate, and
+the totals aggregate is what failed. It asked both of its per-row questions —
+eligibility, and the stock source gate — as correlated subqueries, which
+Postgres runs as SubPlans once per queue row, so every pending row re-scanned
+`crawlers`. The cost therefore grew with the backlog in exactly the way this
+section sets out to avoid: at 50k pending rows, a seq scan of `crawlers`
+executed 50k times, ~228k buffer hits and 1.5s against the 1.6s per-statement
+budget below, at which point the statement timeout fired and the tab rendered an
+error instead of the queue. Both gates are now resolved once for the whole
+report — the eligible crawler ids aggregated into two arrays (one per target
+kind, which is all the eligibility rule distinguishes), the live stock keys
+hashed into a single semi-join. Same numbers, verified row-for-row against the
+original SQL. The rule the fan-out section states is the general one, and it
+binds every query in this report, not just the fan-out: nothing here may cost a
+scan per queue row.
 
 The ETA is **claimable-only, and named that way in the UI.** It divides
 claimable rows by the drain rate, so a queue holding nothing but held or
