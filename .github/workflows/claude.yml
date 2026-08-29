@@ -2,13 +2,25 @@ name: Claude Assistant
 
 # Issue events only, deliberately. This repository is public, so anyone can
 # open a pull request from a fork, and a run triggered on a pull request works
-# against that contributor's head. The action restores `.claude/` from the base
-# branch, but a `SessionStart` hook there invokes `scripts/cloud-setup.sh`, and
-# that script stays at the PR head — so a maintainer typing `@claude` on a
-# hostile PR would execute the contributor's shell with this job's write token
-# and the OAuth secret in its environment. Adding `pull_request_review`,
-# `pull_request_review_comment`, or letting `issue_comment` through on a pull
-# request all reopen that path. Do not add them until the hook is self-contained
+# against that contributor's head.
+#
+# The specific hole that first forced this narrowing is closed. The action
+# restores `.claude/` from the base branch, and the `SessionStart` hook there
+# used to invoke `scripts/cloud-setup.sh`, which stays at the PR head — so a
+# maintainer typing `@claude` on a hostile PR would have executed the
+# contributor's shell with this job's write token and the OAuth secret in its
+# environment. That hook now goes through `.claude/hooks/session-start.sh`,
+# which is restored from the base branch too and declines to provision anything
+# it cannot establish is trusted. See
+# docs/specifications/shaping/2026-08-29-session-start-hook-pr-safety-design.md
+#
+# What remains is not a bug awaiting a fix. It is that this job holds
+# `contents: write` and the OAuth secret while reading a fork's code, and code
+# that is read is code that can carry instructions. Adding
+# `pull_request_review`, `pull_request_review_comment`, or letting
+# `issue_comment` through on a pull request each widen that surface, and are a
+# deliberate open choice to be taken on their own merits rather than waved
+# through as a consequence of the hook fix
 # (https://github.com/anthropics/claude-code-action/blob/main/docs/security.md).
 on:
   issues:

@@ -121,7 +121,10 @@ ignored.
 
 - The hook now executes only base-controlled code. `.github/workflows/claude.yml`
   can subscribe to pull request events without that particular hole, once
-  someone decides the rest of the surface is acceptable.
+  someone decides the rest of the surface is acceptable. Its comment above `on:`
+  is rewritten to say so: it no longer names a precondition to wait for, because
+  what is left is a standing judgement about `contents: write` and a fork's
+  prompt-injectable code, not a defect.
 - `.claude/settings.json` is no longer the only tracked file under `.claude/`.
 - A cloud session is one process hop longer to start. Nothing else changes: the
   provisioning script, its output, and its `--force` behaviour are untouched.
