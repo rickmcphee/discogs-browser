@@ -66,6 +66,8 @@ vi.mock('../api/client', () => ({
   exportRecommendationsCsv: (...args: unknown[]) => exportRecommendationsCsv(...args),
   getJudgmentStatus: (...args: unknown[]) => getJudgmentStatus(...args),
   getPriceStatus: (...args: unknown[]) => getPriceStatus(...args),
+  getNotificationsUnread: vi.fn().mockResolvedValue({ unread: 0, latest_id: null }),
+  markNotificationsRead: vi.fn().mockResolvedValue({ unread: 0, latest_id: null }),
   listInvites: vi.fn().mockResolvedValue([]),
   createInvite: vi.fn().mockResolvedValue({ code: '' }),
 }))
