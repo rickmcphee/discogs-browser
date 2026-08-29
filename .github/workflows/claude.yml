@@ -24,10 +24,18 @@ jobs:
     #
     # `issue_comment` fires on pull requests too — GitHub models a PR as an
     # issue — so the comment clause excludes anything carrying `pull_request`.
+    #
+    # The `@claude` paths also check `author_association`, because this
+    # repository is public and the action's own write-access check runs only
+    # after the job has started. Without it a stranger's `@claude` comment
+    # enters the concurrency group below, evicts a maintainer's queued run, and
+    # is only then rejected. Applying a label already requires triage access, so
+    # that path is gated by GitHub itself. This is a pre-filter, not the
+    # authorisation: the action still makes the real decision.
     if: >-
       (github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'claude') ||
-      (github.event_name == 'issues' && github.event.action == 'opened' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude'))) ||
-      (github.event_name == 'issue_comment' && !github.event.issue.pull_request && contains(github.event.comment.body, '@claude'))
+      (github.event_name == 'issues' && github.event.action == 'opened' && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association) && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude'))) ||
+      (github.event_name == 'issue_comment' && !github.event.issue.pull_request && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) && contains(github.event.comment.body, '@claude'))
     # Scoped to the job, not the workflow: a workflow-level group is entered by
     # every subscribed event before the `if` above is evaluated, and GitHub keeps
     # only one pending run per group, cancelling the previous one. An ordinary
