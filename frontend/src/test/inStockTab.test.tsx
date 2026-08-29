@@ -300,6 +300,7 @@ describe('In Stock tab', () => {
     await settle()
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     await settle()
+    const region = screen.getByRole('status')
     fireEvent.click(screen.getByTitle('Refresh Epitaph catalog now'))
     await settle()
     expect(screen.getByTitle('Refreshing Epitaph catalog…')).toBeDisabled()
@@ -309,8 +310,10 @@ describe('In Stock tab', () => {
     expect(screen.getByTitle('Refresh Epitaph catalog now')).not.toBeDisabled()
     // Releasing the button is the whole of it: the usual cause is a stream
     // that missed the events for a sync that ran fine, and naming the store in
-    // the banner reported a fault the user had no way to act on.
-    expect(screen.queryByText(/Lost track of/)).not.toBeInTheDocument()
+    // the banner reported a fault the user had no way to act on. Asserted on
+    // the live region rather than on the removed wording, which any other
+    // stray message would have satisfied just as well.
+    expect(region).toBeEmptyDOMElement()
   })
 
   // A stock click no longer writes to the banner, so it must not take the
