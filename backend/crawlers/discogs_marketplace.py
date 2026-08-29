@@ -4,6 +4,7 @@ import urllib.parse
 from typing import Optional
 
 import httpx
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from crawler import BotDetectedError
 from logging_config import get_logger
@@ -176,10 +177,15 @@ class Crawler:
         domcontentloaded, and reading straight through was what turned a page
         that had not finished rendering into "no listings".
         """
+        # Only a timeout means "it never rendered". Catching every exception
+        # would fold a closed page or a dead browser into that same answer, and
+        # a confirmed-zero stats lookup would then turn it into an empty result
+        # -- clearing the stored price on what was really a browser failure,
+        # which is the whole class of bug this crawler was changed to stop.
         try:
             await page.wait_for_selector(_PAGE_READ, timeout=_LISTINGS_TIMEOUT_MS, state="attached")
             return True
-        except Exception:
+        except PlaywrightTimeoutError:
             return False
 
     async def _read_listings(self, page, url: str) -> list[dict]:
@@ -235,10 +241,11 @@ class Crawler:
         }
 
     async def _empty_state_rendered(self, page) -> bool:
+        # No exception handling on purpose, for the reason above: these
+        # selectors are static and tested, so a locator error here is a browser
+        # failure, and it has to reach the caller as one rather than becoming a
+        # confirmed miss.
         for selector in _EMPTY_STATE:
-            try:
-                if await page.locator(selector).count():
-                    return True
-            except Exception:
-                continue
+            if await page.locator(selector).count():
+                return True
         return False

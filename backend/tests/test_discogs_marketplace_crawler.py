@@ -46,6 +46,7 @@ from pathlib import Path
 import httpx
 import pytest
 import respx
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 
 import crawlers.discogs_marketplace as dm
@@ -95,7 +96,7 @@ class _FakePage:
         # `timeout` -- otherwise the "markup not recognised" tests would each
         # burn the full 15s.
         if await self._real.locator(selector).count() == 0:
-            raise TimeoutError(f"selector not found in fixture: {selector}")
+            raise PlaywrightTimeoutError(f"selector not found in fixture: {selector}")
 
     def locator(self, selector):
         return self._real.locator(selector)
@@ -299,3 +300,25 @@ async def test_a_page_with_only_carousel_prices_raises_rather_than_guessing(brow
 
     with pytest.raises(RuntimeError, match="markup not recognised"):
         await Crawler().search(RELEASE, page)
+
+
+async def test_a_browser_failure_is_not_laundered_into_a_confirmed_miss(browser_page, monkeypatch):
+    """A dead page must not read as "the listings never rendered".
+
+    Catching every exception around the readiness wait would fold a closed
+    page or browser into that answer, and a stats lookup returning zero would
+    then turn it into an empty result -- clearing the release's stored price
+    on what was really a browser failure. The stats stub returns 0 here so
+    that a broad catch would produce exactly that silent [].
+    """
+    async def _stats(release_id):
+        return 0
+
+    monkeypatch.setattr(dm, "_release_num_for_sale", _stats)
+
+    class _DeadBrowserPage(_FakePage):
+        async def wait_for_selector(self, selector, timeout=None, state=None):
+            raise RuntimeError("Target page, context or browser has been closed")
+
+    with pytest.raises(RuntimeError, match="browser has been closed"):
+        await Crawler().search(RELEASE, _DeadBrowserPage(browser_page, "usa_listings.html"))
