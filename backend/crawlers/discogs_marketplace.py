@@ -1,3 +1,4 @@
+import math
 import re
 import time
 import urllib.parse
@@ -80,6 +81,32 @@ _PAGE_READ = ", ".join(_ROW_SELECTORS + _EMPTY_STATE)
 
 _SETTLE_TIMEOUT_MS = 15_000
 _LISTINGS_TIMEOUT_MS = 15_000
+
+
+def _finite_price(value: Optional[float]) -> Optional[float]:
+    """None unless `value` is usable as a price.
+
+    float() accepts "nan"/"inf"/"-inf" and negative numeric text without
+    raising, and none of those is a price. A NaN in particular would sort
+    into matches[0] and reach the DOUBLE PRECISION price column, where it
+    also breaks JSON serialisation downstream -- sideonedummyrecords.py
+    rejects them for the same reason."""
+    if value is None or not math.isfinite(value) or value < 0:
+        return None
+    return value
+
+
+def _attribute_price(raw: Optional[str]) -> Optional[float]:
+    """`data-pricevalue` is site-controlled text, so a malformed one makes the
+    row unparseable rather than the crawl a failure. Letting float() raise
+    would abandon every remaining row over one bad cell -- including rows
+    that parse perfectly well, and including the cheapest listing."""
+    if not raw:
+        return None
+    try:
+        return _finite_price(float(raw))
+    except ValueError:
+        return None
 
 
 def _parse_amount(text: str) -> Optional[float]:
@@ -254,8 +281,12 @@ class Crawler:
             return None
 
         currency = await price_el.get_attribute("data-currency")
-        price_attr = await price_el.get_attribute("data-pricevalue")
-        price = float(price_attr) if price_attr else _parse_amount(await price_el.inner_text())
+        price = _attribute_price(await price_el.get_attribute("data-pricevalue"))
+        if price is None:
+            # Falls through on a malformed attribute rather than only on a
+            # missing one: the rendered text is a second reading of the same
+            # price, and is worth trying before giving the row up.
+            price = _finite_price(_parse_amount(await price_el.inner_text()))
         if price is None:
             return None
 

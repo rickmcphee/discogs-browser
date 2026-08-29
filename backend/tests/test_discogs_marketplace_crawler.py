@@ -505,3 +505,31 @@ async def test_a_container_whose_rows_all_fail_to_parse_falls_through(browser_pa
     results = await Crawler().search(RELEASE, page)
 
     assert [r["price"] for r in results] == [15.00]
+
+
+@pytest.mark.parametrize("raw", ["nan", "NaN", "inf", "-inf", "-3.00", "not-a-price", "", None])
+def test_attribute_price_rejects_anything_that_is_not_a_price(raw):
+    assert dm._attribute_price(raw) is None
+
+
+@pytest.mark.parametrize("raw,expected", [("14.00", 14.00), ("0", 0.0), ("1024.99", 1024.99)])
+def test_attribute_price_accepts_a_real_price(raw, expected):
+    assert dm._attribute_price(raw) == expected
+
+
+async def test_malformed_price_attributes_do_not_abandon_the_other_rows(browser_page):
+    """`data-pricevalue` is site-controlled text.
+
+    Letting float() raise on it would abandon every remaining row over one
+    bad cell -- including the cheapest listing. NaN is worse than a raise: it
+    sorts into matches[0] and reaches the DOUBLE PRECISION price column,
+    where it also breaks JSON serialisation downstream.
+
+    The NaN row here carries a readable $99.99 in its text and falls back to
+    it; the negative and non-numeric rows have no readable text either and
+    are skipped; the well-formed $14.00 row is unaffected.
+    """
+    page = _FakePage(browser_page, "malformed_price_attributes.html")
+    results = await Crawler().search(RELEASE, page)
+
+    assert [r["price"] for r in results] == [14.00, 99.99]
