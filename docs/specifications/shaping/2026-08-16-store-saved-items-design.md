@@ -47,8 +47,24 @@ Out of scope:
 - **Notifications, expiry, or any behavior once an item is saved beyond
   showing it under the Saved filter.** No price-drop alerts, no
   auto-clearing when a saved item goes out of stock.
+
+  **Amendment (2026-08-28, branch `claude/notifications-tab-price-alerts-rvdnfu`):**
+  the price-drop half of this exclusion no longer holds. A Notifications tab
+  now tells a user when one of their saved items becomes the cheapest it
+  currently is anywhere, and links to the listing that undercut the rest. It
+  reads through this document's `stock_item_saves` table — its
+  `saved_at` column, unused here beyond bookkeeping, is what scopes a user's
+  notifications to drops that happened *after* they saved the item. Expiry
+  and auto-clearing remain out of scope. See
+  [`2026-08-28-price-drop-notifications-design.md`](2026-08-28-price-drop-notifications-design.md).
 - **A save count or badge anywhere in the nav.** Only the row/tile icon and
   the filter option.
+
+  **Amendment (2026-08-28, same branch):** the header now carries a bell with
+  an unread dot. It is not the save count this line rules out — nothing counts
+  or badges saves themselves — but it *is* a nav badge driven by saved items,
+  so the claim as written no longer reads true. The bell counts unread price
+  drops on saved items; the Store tab's own controls are unchanged.
 
 ## Decisions carried from brainstorming
 

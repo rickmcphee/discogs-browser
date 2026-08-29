@@ -238,3 +238,36 @@ export interface QueueNextItem {
   waiting_seconds: number
   narrowed: boolean
 }
+
+// One observed price drop on a record the user saved. price/url/previous_best
+// are the drop's own copies, not a live lookup: the stock row they came from is
+// deleted and reinserted on every catalog sync, so a notification that resolved
+// them at read time would silently start describing something else.
+export interface PriceDropNotification {
+  id: number
+  item_key: string
+  artist: string
+  title: string
+  format: string | null
+  source: string
+  url: string
+  price: number
+  currency: string | null
+  previous_best: number
+  cover_image_url: string | null
+  created_at: string
+}
+
+export interface NotificationsResponse {
+  items: PriceDropNotification[]
+  unread: number
+  latest_id: number | null
+  // The read watermark: every item with a greater id is new since the user
+  // last opened the tab.
+  last_read_id: number
+}
+
+export interface NotificationsUnread {
+  unread: number
+  latest_id: number | null
+}

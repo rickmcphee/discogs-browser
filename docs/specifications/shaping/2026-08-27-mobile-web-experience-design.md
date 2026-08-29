@@ -164,6 +164,16 @@ Out of scope:
   profile control belongs on every platform, and it is the only header
   control a non-admin has, so the header does not collapse to nothing.
 
+  **Amendment (2026-08-28, branch `claude/notifications-tab-price-alerts-rvdnfu`):**
+  the avatar is no longer the only header control a non-admin has — a
+  notification bell now sits immediately to its left, on mobile and desktop
+  alike, for every user. It went there rather than into the bottom tab bar
+  precisely because of this document's reasoning about that bar: a fifth
+  thumb-width tab would squeeze the four that actually browse records. The
+  header's mobile bar is therefore title, admin overflow menu (admin only),
+  bell, avatar. See
+  [`2026-08-28-price-drop-notifications-design.md`](2026-08-28-price-drop-notifications-design.md).
+
 - **An anchored dropdown cannot be made safe on a wrapping toolbar, so the
   source filter becomes a sheet too.** `absolute right-0` aligns to the
   *trigger*, and below the breakpoint that trigger wraps to wherever the
@@ -267,6 +277,7 @@ Out of scope:
 | Library nav | Pills, left of the header | Bottom tab bar, icon over label |
 | Admin nav | Queue/Logs/Settings pills, right of the header | "More" menu in the header (admin only) |
 | Profile | Avatar, header right | Avatar, header right |
+| Notifications *(added 2026-08-28)* | Bell, header right of the admin pills | Bell, header right |
 | Artist filter | 192 px sidebar, always open | `Artist: …` button opening a sheet |
 | Rows | Table, 7–8 columns | Card list: cover, artist, title, meta |
 | Sort | Column headers | `<select>` + direction toggle in the toolbar |
