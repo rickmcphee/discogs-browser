@@ -16,7 +16,6 @@ const GENRES: { key: CrawlerGenre; label: string }[] = [
   { key: 'punk', label: 'Punk' },
   { key: 'metal', label: 'Metal' },
   { key: 'rock', label: 'Rock' },
-  { key: 'pop', label: 'Pop' },
 ]
 
 function FilterCheckbox({ label, checked, indeterminate, onToggle }: {

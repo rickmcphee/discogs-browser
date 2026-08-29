@@ -12,7 +12,7 @@ devices, and inconvenient to reach while actually browsing.
 
 This spec replaces that mechanism with a "Source" filter button in the
 Store/Track header itself, backed by a per-user server-persisted hidden-set,
-plus a coarse genre grouping (marketplace/punk/metal/rock/pop) so the
+plus a coarse genre grouping (marketplace/punk/metal/rock) so the
 long crawler list can be bulk-toggled instead of checked one at a time. It
 also removes the now-empty Settings tab for non-admin users.
 
@@ -22,7 +22,7 @@ also removes the now-empty Settings tab for non-admin users.
 - A "Source" button in the Store and Track tab headers (right side, next to
   the existing list/tiles view toggle) opens a dropdown for narrowing which
   crawlers' results appear.
-- The dropdown has two sections: **by genre** (5 coarse buckets, bulk
+- The dropdown has two sections: **by genre** (coarse buckets, bulk
   toggle) and **by store** (every crawler individually, grouped under its
   genre heading).
 - The selection persists server-side per user, surviving app restarts and
@@ -55,7 +55,7 @@ also removes the now-empty Settings tab for non-admin users.
 
 - Add `genre: str = "marketplace"` as a class attribute on each catalog
   crawler plugin (`backend/crawlers/*.py`), one of
-  `marketplace | punk | metal | rock | pop`.
+  `marketplace | punk | metal | rock`.
 - `db.get_all_crawlers()` reads it the same way it already reads
   `base_url`/`genre_summary` — `getattr(mod.Crawler, "genre", "marketplace")`
   inside the existing try/except, defaulting to `"marketplace"` on import
@@ -143,7 +143,7 @@ is on the left. Desktop keeps this dropdown, at its original `w-72`. See
 [`2026-08-27-mobile-web-experience-design.md`](../../specifications/shaping/2026-08-27-mobile-web-experience-design.md).
 
 **Dropdown panel**, opened by the Source button:
-- *By genre* — 5 rows (Marketplace, Punk, Metal, Rock, Pop), each a
+- *By genre* — one row per bucket (Marketplace, Punk, Metal, Rock), each a
   tri-state checkbox computed from the crawler list + hidden set (checked =
   every crawler in that genre visible, unchecked = none visible,
   indeterminate = mixed). Clicking bulk-adds or bulk-removes every crawler
@@ -235,9 +235,12 @@ genres) → **marketplace**, per your call.
 
 **Note:** no crawler seeds to **pop** — every "indie pop" mention pairs
 with "indie rock," and the rock word wins the tie under the rule above.
-The bucket exists for the future (a pop-specific store) and is legitimately
-empty today; this isn't a gap to fix, just worth knowing before someone
-wonders why "Pop" shows zero stores.
+The genre-derivation rule above still names a pop case for completeness, but
+the **pop** bucket itself was removed from the `CrawlerGenre` type and the
+`SourceFilter` genre list: an always-empty selector read as broken rather
+than forward-looking, so there's no "pop" filter option today. Should a
+pop-specific store ever get added, `pop` can be reintroduced as a genre
+value and filter option at that point.
 
 ## Testing
 
