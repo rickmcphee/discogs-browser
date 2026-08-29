@@ -617,3 +617,82 @@ def test_summary_reads_config_before_borrowing_the_app_connection(pg_test_db, au
 
     assert r.status_code == 200
     assert order[:2] == ["config", "borrow"], order
+
+
+def _plan_nodes(node):
+    yield node
+    for child in node.get("Plans", []):
+        yield from _plan_nodes(child)
+
+
+def test_totals_resolve_eligibility_once_not_per_queue_row(admin_conn):
+    """The regression that made the Queue tab unusable, asserted on the plan
+    rather than the clock so it does not depend on how fast the box is.
+
+    Both of _queue_row_state_sql's predicates began as correlated subqueries --
+    "does an enabled crawler resolve for this row" and "does an enabled store
+    still list this item" -- which the planner runs as SubPlans once per queue
+    row. Every pending row therefore re-scanned crawlers, so the statement's
+    cost grew with the backlog: at 50k rows it spent ~1.5s and ~228k buffer
+    hits, crossed the per-statement budget routers/queue.py sets, and the
+    statement timeout turned the whole tab into an error.
+
+    A node re-executed once per row is exactly what `Actual Loops` > 1 reports
+    on these two relations, so that is what this pins."""
+    _crawler(admin_conn, "Amazon")
+    _crawler(admin_conn, "Discogs", requires_discogs_release=True)
+    for i in range(40):
+        db.enqueue_crawl_queue(admin_conn, _release(admin_conn, f"r{i}"))
+        db.enqueue_crawl_queue_for_stock_item(admin_conn, _stock_identity(admin_conn, f"k{i}"))
+    admin_conn.commit()
+
+    row = admin_conn.execute(
+        f"EXPLAIN (ANALYZE, FORMAT JSON) WITH q AS ({db._queue_row_state_sql()}) "
+        f"SELECT count(*) FILTER (WHERE live AND actionable) FROM q"
+    ).fetchone()
+    root = list(row.values())[0][0]["Plan"]
+
+    repeated = [
+        (n.get("Relation Name"), n["Actual Loops"])
+        for n in _plan_nodes(root)
+        if n.get("Relation Name") in ("crawlers", "stock_items") and n.get("Actual Loops", 1) > 1
+    ]
+    assert not repeated, (
+        f"crawlers/stock_items are re-scanned per queue row: {repeated}. Both "
+        f"gates must be resolved once for the whole report -- a correlated "
+        f"subquery here makes the statement's cost grow with the backlog until "
+        f"it trips QUEUE_REPORT_BUDGET_MS."
+    )
+
+
+def test_totals_survive_every_release_crawler_being_disabled(admin_conn):
+    """ARRAY_AGG over no rows returns NULL, not '{}'. Without the COALESCE in
+    _QUEUE_CRAWLER_SETS_SQL a narrowed row's `&&` would return NULL here rather
+    than false, so the row would fall out of both the actionable and the
+    unactionable count instead of being reported as work nothing will run."""
+    amazon = _crawler(admin_conn, "Amazon")
+    db.enqueue_crawl_queue(admin_conn, _release(admin_conn, "r1"))
+    admin_conn.execute(
+        "UPDATE crawl_queue SET pending_crawler_ids = %s WHERE discogs_id = 'r1'", [[amazon]]
+    )
+    db.set_crawler_enabled(admin_conn, amazon, False)
+    admin_conn.commit()
+
+    totals = db.queue_summary(admin_conn)["totals"]
+    assert totals["unactionable_rows"] == 1
+    assert totals["claimable_rows"] == 0
+
+
+def test_stock_row_listed_by_several_stores_is_counted_once(admin_conn):
+    """The live-source gate is a join now, not an EXISTS. An item two enabled
+    stores both carry must still be one queue row in the totals -- a
+    non-DISTINCT join would fan it out and inflate every count."""
+    _crawler(admin_conn, "Amazon")
+    item_key = _stock_identity(admin_conn, "k1", source_site_name="Store A")
+    _stock_identity(admin_conn, "k1", source_site_name="Store B")
+    db.enqueue_crawl_queue_for_stock_item(admin_conn, item_key)
+    admin_conn.commit()
+
+    totals = db.queue_summary(admin_conn)["totals"]
+    assert totals["claimable_rows"] == 1
+    assert totals["unactionable_rows"] == 0
