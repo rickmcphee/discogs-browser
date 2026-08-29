@@ -449,7 +449,8 @@ discogs-browser/
 │   │        recommendations, shopify_catalog, and other modules)
 │   ├── crawlers/               # bundled plugins (amazon.py, ebay.py, label and store crawlers)
 │   ├── routers/                # one per domain (collection, crawl, discover, health, logs,
-│   │                           #   plex, releases, screenshots, session, settings, stock)
+│   │                           #   notifications, plex, queue, releases, screenshots,
+│   │                           #   session, settings, stock)
 │   ├── scripts/                # capture_fixture.py, drop_leaked_test_dbs.py, migrate_from_sqlite.py
 │   └── tests/                  # pytest files, plus tests/fixtures/crawlers/amazon/*.html
 ├── frontend/
@@ -461,9 +462,11 @@ discogs-browser/
 │       ├── main.tsx
 │       ├── App.tsx
 │       ├── api/                # types.ts, client.ts
-│       ├── components/         # Avatar, SourceFilter, TornadoBackground
+│       ├── components/         # Avatar, ArtistFilter, BottomNav, MobileSort, NotificationBell,
+│       │                       #   Sheet, SourceFilter, TornadoBackground
 │       ├── views/              # RecordBrowser, StockBrowser, Settings, LogViewer, Account,
-│       │                       #   LoginScreen, InviteCodeScreen, BackendDownScreen, DebugView
+│       │                       #   Notifications, QueueView, LoginScreen, InviteCodeScreen,
+│       │                       #   BackendDownScreen, DebugView
 │       └── test/               # vitest suites
 ├── docs/                       # specs and plans; read before touching code
 ├── scripts/

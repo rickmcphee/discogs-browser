@@ -277,8 +277,34 @@ ai-executor: local-agent | remote-agent — local-agent only when the agent proc
 Known values, in kebab-case, as used on this repo's history:
 
 - `ai-tool`: `claude-code`, `claude-agent-sdk`
-- `ai-surface`: `claude-code-cli`, `claude-code-desktop`, `fleetview`
+- `ai-surface`: `claude-code-cli`, `claude-code-desktop`, `claude-code-web` (Claude Code on the web / a remote agent session), `fleetview`
 - `ai-model`: the exact model id (e.g. `claude-opus-5`, `claude-sonnet-5`, `claude-haiku-4-5`), never a family name
+
+**`ai-model` stays required even when the running agent's own harness forbids
+writing a model identifier into a repository.** Some Claude Code surfaces — the
+remote/web one among them — carry a session instruction against putting a model
+identifier in commit messages, PR bodies, code comments, or anything else
+pushed to a repo, on the grounds that the serving model can differ from the
+configured one and a guessed name would be wrong. That reasoning does not reach
+this trailer: it records provenance rather than asserting an identity, and the
+value is knowable rather than guessed — a remote session reads it from its own
+session metadata, via the claude-code-remote `get_session` tool with
+`session_id` omitted. Two fields there can disagree, and
+`external_metadata.last_served_model` is the one to write: it names the model
+that actually ran the turn, including a turn-scoped fallback (overload,
+model unavailable) that never reaches `session_context.model`, which is only
+what the session is *configured* to run. The trailer records what did the
+work, so the served model wins wherever the two differ; use
+`session_context.model` only when no served model is reported at all.
+
+Dropping the line leaves the provenance record this whole section exists for
+missing the one field that says *which* model did the work — and it fails
+silently, exactly like the absent `ai-generated: true` that the rule started
+with. Decided 2026-08-28, after a remote session omitted it on four commits
+that had already merged. Those are left as they stand: they are on `main`, and
+a rewrite there costs a force-push to a protected branch —
+the same `filter-branch` correction this section already records as the
+expensive way to fix trailers after the fact.
 
 Older commits carry unnormalized variants (`Claude Code`, `Claude Agent SDK`, bare `cli`). Match the kebab-case forms above for new commits; don't rewrite history to match.
 

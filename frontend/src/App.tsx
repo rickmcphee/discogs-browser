@@ -5,19 +5,21 @@ import Settings from './views/Settings'
 import Account from './views/Account'
 import LogViewer from './views/LogViewer'
 import QueueView from './views/QueueView'
+import Notifications from './views/Notifications'
 import LoginScreen from './views/LoginScreen'
 import InviteCodeScreen from './views/InviteCodeScreen'
 import BackendDownScreen from './views/BackendDownScreen'
 import Avatar from './components/Avatar'
 import BottomNav from './components/BottomNav'
+import NotificationBell from './components/NotificationBell'
 import Sheet from './components/Sheet'
 import { useIsMobile } from './hooks/useMediaQuery'
 import { navButtonClass, primaryButtonClass, secondaryButtonClass, dismissButtonClass } from './styles/buttons'
-import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, clearJudgments, exportRecommendationsCsv, importRecommendationsCsv, getCrawlers, getUserSettings, getUserHiddenCrawlers, postUserHiddenCrawlers, getJudgmentStatus, getPriceStatus, checkHealth, getAuthStatus, setUnauthorizedHandler, hasAvatar } from './api/client'
+import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus, postCrawlStart, postStockSyncStart, postJudgmentStart, clearJudgments, exportRecommendationsCsv, importRecommendationsCsv, getCrawlers, getUserSettings, getUserHiddenCrawlers, postUserHiddenCrawlers, getJudgmentStatus, getPriceStatus, getNotificationsUnread, markNotificationsRead, checkHealth, getAuthStatus, setUnauthorizedHandler, hasAvatar } from './api/client'
 import type { StockSyncStartResult } from './api/client'
 import type { CrawlEvent, CrawlStatus, CollectionStatus, Crawler, AuthStatus } from './api/types'
 
-type View = 'collection' | 'wantlist' | 'store' | 'track' | 'settings' | 'logs' | 'queue' | 'account'
+type View = 'collection' | 'wantlist' | 'store' | 'track' | 'settings' | 'logs' | 'queue' | 'account' | 'notifications'
 type LibraryView = Extract<View, 'collection' | 'wantlist' | 'store' | 'track'>
 
 // One table drives the desktop header pills and the mobile tab bar, so the two
@@ -30,7 +32,8 @@ const LIBRARY_TABS: { view: LibraryView; label: string; icon: 'collection' | 'wa
 ]
 
 // Admin-only, and rarely visited -- header pills on desktop, an overflow sheet
-// on mobile, where the header has room for a title and two controls.
+// on mobile, where the header has room for a title and a short row of controls
+// (the notification bell and the avatar, plus this menu's own button).
 const ADMIN_TABS: { view: View; label: string }[] = [
   { view: 'queue', label: 'Queue' },
   { view: 'logs', label: 'Logs' },
@@ -120,6 +123,8 @@ export default function App() {
   const [hasJudgedItems, setHasJudgedItems] = useState(false)
   const [hasPriceData, setHasPriceData] = useState(false)
   const latestPriceStatusSeq = useRef(0)
+  const [unreadNotifications, setUnreadNotifications] = useState(0)
+  const latestNotificationsSeq = useRef(0)
   // Same race, same fix, for the two start requests. Neither has a bounded
   // response time -- POST /stock/sync/start opens a fresh psycopg connection
   // before it answers -- and the claim timeout below can re-enable the button
@@ -147,6 +152,13 @@ export default function App() {
   const [syncing, setSyncing] = useState(false)
   const [syncGeneration, setSyncGeneration] = useState(0)
   const [stockSyncGeneration, setStockSyncGeneration] = useState(0)
+  // A strict subset of stockSyncGeneration: bumped only by the events that can
+  // actually have written a price, so the notification badge and view are not
+  // woken by work that cannot produce a price drop. stockSyncGeneration is also
+  // bumped by the judgment events, which write stock_item_judgments and never
+  // touch a price -- riding it would fire an unread request per judgment batch,
+  // and, with the Notifications tab open, a list reload and a read POST too.
+  const [priceGeneration, setPriceGeneration] = useState(0)
   const [stockSyncTarget, setStockSyncTarget] = useState<number | 'all' | null>(null)
   // Optimistic twin of stockSyncTarget, set the instant a Refresh is clicked.
   // stockSyncTarget can't do this job on its own: it's only set once the
@@ -177,8 +189,10 @@ export default function App() {
   })
 
   // Counts every write to the banner. A claim that expires needs to know
-  // whether anything has spoken since it was taken, and it can no longer tell
-  // by recognising its own text on screen -- it puts none there.
+  // whether anything has spoken since it was taken, and the stock one cannot
+  // tell by recognising its own text on screen -- it puts none there. So this
+  // has to be the only way a message reaches the banner: a write that skips
+  // it is invisible to the guard, and the guard then talks over it.
   const statusWrites = useRef(0)
 
   // eventId is null for locally-generated messages (button-click failures) that never
@@ -217,9 +231,14 @@ export default function App() {
     return () => clearTimeout(timer)
   }, [stockSyncStarting, setSyncStatus])
 
-  // The price claim's own bound. Bumping the sequence first makes the stalled
-  // response a no-op if it ever does land.
-  const priceClaimNotice = useRef<{ shown: string; lost: string } | null>(null)
+  // The price claim's own bound, guarded exactly as the stock one is. It used
+  // to compare the displayed text against its own "Starting…" message instead,
+  // which read the same but wrote through setSyncMessage and so never reached
+  // the counter -- and a write the counter cannot see is one a later stock
+  // expiry mistakes for silence and talks over. One idiom, one write path.
+  // Bumping the sequence first makes the stalled response a no-op if it ever
+  // does land.
+  const priceClaimNotice = useRef<{ writes: number; lost: string } | null>(null)
 
   useEffect(() => {
     if (!priceRefreshStarting) return
@@ -227,10 +246,10 @@ export default function App() {
       latestPriceRefreshSeq.current++
       setPriceRefreshStarting(false)
       const notice = priceClaimNotice.current
-      if (notice) setSyncMessage((m) => (m === notice.shown ? notice.lost : m))
+      if (notice && statusWrites.current === notice.writes) setSyncStatus(notice.lost)
     }, START_CLAIM_TIMEOUT_MS)
     return () => clearTimeout(timer)
-  }, [priceRefreshStarting])
+  }, [priceRefreshStarting, setSyncStatus])
 
   const updateHiddenCrawlerIds = useCallback((ids: number[]) => {
     setHiddenCrawlerIds(ids)
@@ -256,6 +275,53 @@ export default function App() {
       setHasPriceData(s.any_price_paid)
     }).catch(() => {})
   }, [])
+
+  // Same counter, same reason: the bootstrap fetch, every SSE generation tick,
+  // and the write that follows opening the Notifications tab can all be in
+  // flight at once, and a slow bootstrap response landing last would relight a
+  // dot the user has just cleared.
+  const fetchUnreadNotifications = useCallback(() => {
+    const seq = ++latestNotificationsSeq.current
+    getNotificationsUnread().then((s) => {
+      if (seq !== latestNotificationsSeq.current) return
+      setUnreadNotifications(s.unread)
+    }).catch(() => {})
+  }, [])
+
+  // Opening the tab is what marks it read -- but the badge only follows the
+  // write, never runs ahead of it. Clearing optimistically would make a
+  // dropped POST look like success, and the price change that produced those
+  // unread rows has already happened, so nothing guarantees a later generation
+  // tick to correct it: the dot would stay wrong until an unrelated change or
+  // a reload. Waiting costs one round trip the user does not see, since the
+  // list they came for is already on screen by then.
+  const handleNotificationsLoaded = useCallback((latestId: number | null) => {
+    if (latestId === null) {
+      // Re-read rather than assume zero. The payload is one snapshot, so an
+      // empty list really did mean nothing was unread -- at the moment the
+      // server took it. A drop committing immediately after leaves this branch
+      // holding a count that is already stale, and forcing zero would then hide
+      // a dot the server had raised, with no guaranteed later tick to correct
+      // it. The fetch also takes a newer token, which is what the bump was for.
+      fetchUnreadNotifications()
+      return
+    }
+    const seq = ++latestNotificationsSeq.current
+    markNotificationsRead(latestId).then((s) => {
+      if (seq === latestNotificationsSeq.current) {
+        setUnreadNotifications(s.unread)
+        return
+      }
+      // A read overlapped this write and already claimed the token, so the
+      // count above cannot be applied. That read may also be stale: a
+      // generation tick can start a GET after this POST began and the server
+      // can still answer it from before the watermark commits, which would
+      // relight a dot the user had just cleared. Re-reading is what settles
+      // it -- this request is issued strictly after the write committed, and
+      // takes a newer token than the read that overtook us.
+      fetchUnreadNotifications()
+    }).catch(() => {})
+  }, [fetchUnreadNotifications])
 
   // Same race, same fix, for hasJudgedItems: the bootstrap fetch below and
   // handleImportRecommendations's post-import refresh can both have a
@@ -433,6 +499,7 @@ export default function App() {
       if (event.status === 'stock_sync_progress') {
         setSyncStatus(`Syncing in-stock catalog… ${event.synced} items (${event.source})`, event.id ?? null)
         setStockSyncGeneration(g => g + 1)
+        setPriceGeneration(g => g + 1)
         return
       }
       if (event.status === 'stock_sync_complete') {
@@ -441,6 +508,7 @@ export default function App() {
         setStockSyncStarting(null)
         setSyncStatus(`In-stock sync complete: ${event.synced} items`, event.id ?? null)
         setStockSyncGeneration(g => g + 1)
+        setPriceGeneration(g => g + 1)
         return
       }
       if (event.status === 'stock_sync_error') {
@@ -491,6 +559,13 @@ export default function App() {
       }
       if (event.type === 'listing_changed') {
         setStockSyncGeneration(g => g + 1)
+        // 'found' only. A 'not_found' writes no price at all on the stock-item
+        // path, and on the release path only clears or deletes one, so neither
+        // can have recorded a drop -- and most stock-item searches legitimately
+        // find nothing, so counting them would fan a request out to every
+        // connected user for the majority of crawl results. The Store and Track
+        // tabs still want both: a cleared price changes what they render.
+        if (event.status === 'found') setPriceGeneration(g => g + 1)
         return
       }
       if (event.status === 'started') {
@@ -513,6 +588,16 @@ export default function App() {
     function connect() {
       if (destroyed) return
       source = openCrawlStream()
+      // listing_changed is never buffered or replayed (see crawl_manager), and
+      // the error path below only reopens the stream -- so a drop recorded
+      // while the connection was down produces no tick at all, and the bell
+      // would sit stale until an unrelated price event or a reload. A
+      // generation bump rather than a bare count re-read: it refreshes the
+      // badge through the effect below either way, and it is also the only
+      // thing an already-open Notifications tab listens to. Refreshing just
+      // the count relit the dot over a list that never re-ran, and clicking
+      // that bell only sets the view it is already on.
+      source.onopen = () => setPriceGeneration(g => g + 1)
       source.onmessage = handleEvent
       source.onerror = () => {
         source?.close()
@@ -527,6 +612,17 @@ export default function App() {
       clearTimeout(reconnectTimer)
     }
   }, [authState, setSyncStatus, fetchPriceStatus])
+
+  // Rides priceGeneration rather than a notification-specific SSE event: a
+  // per-user event would have to be tagged with an owner, and the crawl worker
+  // cannot determine one -- saves are RLS-scoped and invisible to it (see the
+  // price-drop design doc). Every event that bumps priceGeneration is one that
+  // could have just recorded a drop. Also covers the first fetch, since
+  // serverReady only flips once bootstrap runs.
+  useEffect(() => {
+    if (authState?.state !== 'authenticated' || !serverReady) return
+    fetchUnreadNotifications()
+  }, [priceGeneration, authState, serverReady, fetchUnreadNotifications])
 
   useEffect(() => {
     setUnauthorizedHandler(() => setAuthState({ state: 'unauthenticated' }))
@@ -614,12 +710,14 @@ export default function App() {
       : mode === 'missing'
         ? 'Starting price refresh for records with no price yet…'
         : 'Starting price refresh for every record…'
-    priceClaimNotice.current = {
-      shown: starting,
-      lost: 'Lost track of the price refresh — check the Logs tab to see whether it started.',
-    }
     setBusyStatusMessage(starting)
     setSyncStatus(starting)
+    // Recorded after its own write, so the claim is measuring silence from the
+    // point its message landed rather than counting that message as news.
+    priceClaimNotice.current = {
+      writes: statusWrites.current,
+      lost: 'Lost track of the price refresh — check the Logs tab to see whether it started.',
+    }
     try {
       const { enqueued } = await postCrawlStart(mode ?? 'all', releaseId)
       if (seq !== latestPriceRefreshSeq.current || !ownsStatus()) return
@@ -910,6 +1008,11 @@ export default function App() {
                 </button>
               ))
             ))}
+            <NotificationBell
+              unread={unreadNotifications}
+              active={view === 'notifications'}
+              onClick={() => setView('notifications')}
+            />
             <button
               onClick={() => setView('account')}
               aria-label="Profile"
@@ -976,6 +1079,15 @@ export default function App() {
             hasJudgedItems={hasJudgedItems}
           />
         </div>
+        {/* Mounted only while it is the active view, not hidden like the tabs
+            above: loading this view is what marks its notifications read, so a
+            permanently-mounted copy would clear the bell's dot on app start,
+            before the user had seen anything. */}
+        {view === 'notifications' && (
+          <div className="h-full overflow-y-auto">
+            <Notifications generation={priceGeneration} onLoaded={handleNotificationsLoaded} />
+          </div>
+        )}
         {/* Gated on showAdminNav, not just hidden: LogViewer opens its SSE
             stream on mount regardless of visibility, so mounting it for every
             user would hand each one an open stream of the operator's log. */}
