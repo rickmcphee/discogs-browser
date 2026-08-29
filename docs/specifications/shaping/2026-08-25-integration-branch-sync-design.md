@@ -48,8 +48,15 @@ out of it.
 
 - Changing what `integration` is for, or how the promotion works.
 - Pushing to `main` or `integration` directly. Both rulesets require a pull
-  request and name no bypass actors, so a direct push is rejected however the
-  workflow authenticates.
+  request, and a direct push is rejected however the workflow authenticates.
+  The reason differs between them, and the earlier wording here ("both … name
+  no bypass actors") was wrong about `main`: `integration` names no bypass
+  actors at all, while `main` names the repository owner with
+  `bypass_mode: pull_request` — a bypass that applies *within* a pull request,
+  letting them merge one that has not met the required approving review, and
+  which grants no direct-push permission to anyone. The conclusion held; the
+  premise did not. This matters to `refresh`, which skips PRs whose head is
+  either branch precisely because that push is unavailable to it.
 - Deleting the `integration` branch, or otherwise resetting its history.
 
 ## The merge base

@@ -646,7 +646,7 @@ jobs:
                 if ! gh api -X PUT "repos/$REPO/pulls/$n/update-branch"; then
                   # Per-PR, so one stuck PR cannot strand the rest -- but
                   # recorded, so the step still ends red.
-                  echo "::warning::could not update PR #$n automatically"
+                  echo "::warning::could not update PR #$n (base $base) automatically"
                   failed="$failed #$n"
                 fi
                 ;;
@@ -725,11 +725,11 @@ jobs:
                 # every read of it failed. Falling into the catch-all below
                 # would report "nothing to do" and skip the PR silently --
                 # precisely what the polling is for.
-                echo "::warning::could not resolve mergeable_state for PR #$n after polling; it may still be behind and was not refreshed."
+                echo "::warning::could not resolve mergeable_state for PR #$n after polling; it may still be behind $base and was not refreshed."
                 failed="$failed #$n"
                 ;;
               *)
-                echo "PR #$n is '$state'; nothing for this job to do."
+                echo "PR #$n (base $base) is '$state'; nothing for this job to do."
                 ;;
             esac
           done
