@@ -483,3 +483,82 @@ async def test_search_resolves_the_variant_price_when_the_low_bound_is_unreadabl
 
     assert variants.call_count == 1
     assert [r["price"] for r in results] == [27.99]
+
+
+@respx.mock
+async def test_search_does_not_offer_vinyl_for_a_cd_release():
+    """A release crawler runs for every release, not just the vinyl ones.
+
+    The product-type gate filters what the store *sells* down to vinyl, so
+    without a target-side gate a CD release would take the LP of the same album
+    -- and db.upsert_stock_item_from_release() writes the release's own format
+    onto the row, putting a "CD" in the Store tab with an LP's url and price.
+    Settled before the request, so the store is never asked.
+    """
+    suggest = _mock([_GEESE_LP])
+
+    results = await Crawler().search(
+        {"artist": "Geese", "title": "Getting Killed", "format": "CD"}, None
+    )
+
+    assert results == []
+    assert suggest.call_count == 0
+
+
+@respx.mock
+async def test_search_does_not_offer_vinyl_for_a_cassette_release():
+    suggest = _mock([_GEESE_LP])
+
+    results = await Crawler().search(
+        {"artist": "Geese", "title": "Getting Killed", "format": "Cassette"}, None
+    )
+
+    assert results == []
+    assert suggest.call_count == 0
+
+
+@respx.mock
+async def test_search_runs_for_a_vinyl_release():
+    # The gate rejects other media, so a vinyl target has to still reach the
+    # store -- otherwise it would reject the only format this crawler serves.
+    _mock([_GEESE_LP, _GEESE_CD])
+
+    results = await Crawler().search(
+        {"artist": "Geese", "title": "Getting Killed", "format": "Vinyl"}, None
+    )
+
+    assert [r["price"] for r in results] == [24.99]
+
+
+@respx.mock
+async def test_search_runs_for_a_container_format_release():
+    # "Box Set" and friends can perfectly well hold vinyl, and an unrecognised
+    # value is evidence of nothing, so neither is rejected -- the product-type
+    # gate still decides what comes back.
+    _mock([_GEESE_LP])
+
+    for fmt in ("Box Set", "All Media", ""):
+        results = await Crawler().search(
+            {"artist": "Geese", "title": "Getting Killed", "format": fmt}, None
+        )
+        assert [r["price"] for r in results] == [24.99], fmt
+
+
+@respx.mock
+async def test_search_raises_when_the_product_payload_carries_no_variants():
+    """A 200 with no variants is malformed, not a product nobody can buy.
+
+    This lookup decides both availability and price, so treating an empty or
+    absent `variants` as an answer would publish an unpriced row on the
+    strength of a payload it never read -- and record the site healthy while
+    doing it. Per CLAUDE.md's crawler contract, a failure raises.
+    """
+    handle = "malformed-lp"
+    for payload in ({"variants": []}, {"variants": None}, {}):
+        _mock([_product("Geese - Getting Killed [LP]", price="24.99",
+                        price_max="29.99", handle=handle)])
+        respx.get(f"https://waterloorecords.com/products/{handle}.js").mock(
+            return_value=httpx.Response(200, json=payload)
+        )
+        with pytest.raises(RuntimeError):
+            await Crawler().search({"artist": "Geese", "title": "Getting Killed"}, None)

@@ -32,6 +32,25 @@ _VINYL_PRODUCT_TYPES = frozenset({
     "vinyl", "7-in vinyl", "10-in vinyl", "12-in single",
 })
 
+# The *target's* format, which is a separate question from the store's. The
+# product-type gate above filters what Waterloo sells down to vinyl, but a
+# release crawler runs for every release in every library, so with no
+# target-side gate a CD or cassette release would take a vinyl hit for the
+# same artist and album -- and db.upsert_stock_item_from_release() writes the
+# *release's* format onto the row, so the Store tab would show a "CD" carrying
+# an LP's url and price. Discogs' formats[0].name, reaching search() on the
+# catalog row.
+#
+# Only unambiguous other media are listed. A container format ("Box Set", "All
+# Media") can perfectly well hold vinyl, and an absent or unrecognised value is
+# evidence of nothing, so both still search and lean on the product-type gate.
+# Substrings because Discogs qualifies these names ("CDr", "DVD-Video",
+# "8-Track Cartridge"); no vinyl-ish format name contains any of them.
+_OTHER_MEDIUM_FORMATS = (
+    "cd", "cassette", "file", "dvd", "blu-ray", "sacd", "minidisc",
+    "8-track", "reel-to-reel", "vhs", "betamax", "dcc",
+)
+
 # "Artist - Album [Format]", split on the FIRST spaced hyphen: album halves
 # legitimately contain further " - " runs ("10CC - Deceptive Bends - 180gm
 # Vinyl [LP]" is Deceptive Bends, not Deceptive Bends by 10CC - Deceptive
@@ -105,13 +124,27 @@ class Crawler:
         is deliberately unused: this is a public JSON endpoint, so a browser
         buys nothing and costs a context. crawlers/ebay.py is the precedent.
 
-        Returns [] only when the store answered and had no matching in-stock
-        vinyl. Every failure raises, per the crawler contract in CLAUDE.md --
-        the consecutive-failure breaker cannot tell a dead site from an empty
-        shelf otherwise.
+        Returns [] when the store answered and had no matching in-stock vinyl,
+        and for a release this store could never stock -- one on another
+        medium, which is settled without asking. Every failure raises, per the
+        crawler contract in CLAUDE.md: the consecutive-failure breaker cannot
+        tell a dead site from an empty shelf otherwise. An empty result costs
+        this store no site-health signal either way, per
+        empty_result_is_expected above.
         """
         query = self._query(release)
         if not query:
+            return []
+
+        # Settled before the request, not after: a release on another medium
+        # has no right answer here, so asking would spend a request on the
+        # store to reach the same empty result.
+        fmt = (release.get("format") or "").strip().lower()
+        if any(medium in fmt for medium in _OTHER_MEDIUM_FORMATS):
+            log.info(
+                "[Waterloo Records] not searching for %r: %s is not a vinyl release",
+                query, release.get("format"),
+            )
             return []
 
         # load_config() is a blocking Postgres call; offloaded so it cannot
@@ -286,9 +319,19 @@ class Crawler:
         await sleep(random.uniform(delay * 0.5, delay))
         r = await client.get(f"{url}.js", timeout=30)
         r.raise_for_status()
-        variants = (r.json() or {}).get("variants") or []
+        payload = r.json()
+        variants = payload.get("variants") if isinstance(payload, dict) else None
+        # A real Shopify product always carries at least one variant, so a 200
+        # with none is a malformed response rather than a product nobody can
+        # buy. This lookup is the only thing that decides both availability and
+        # price, so treating that as an answer would publish an unpriced row on
+        # the strength of a payload this never actually read -- and record the
+        # site as healthy while doing it. Failures raise, per the crawler
+        # contract in CLAUDE.md.
+        if not isinstance(variants, list) or not variants:
+            raise RuntimeError(f"no variants in product payload for {url}")
         available = [v for v in variants if v.get("available")]
-        if variants and not available:
+        if not available:
             # The product endpoint says nothing here is buyable, contradicting
             # the `available` flag on the suggest hit that got us this far --
             # the two are separate responses and the stock moved between them.
