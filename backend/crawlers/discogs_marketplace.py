@@ -56,16 +56,14 @@ _ROW_SELECTORS = tuple(
 
 # The listings region rendering with nothing in it is a real answer ("nothing
 # ships from the USA"), and has to be told apart from the region never
-# rendering at all. Written as :has-text() rather than the text= engine so it
-# can be comma-joined with the row selectors into one wait -- otherwise a
-# genuine no-listings page burns the full listings timeout before anything
-# recognises it, on what is a common path.
+# rendering at all. Recognising one ends the readiness poll immediately, so a
+# genuine no-listings page does not sit out the full timeout -- a common path
+# for a library with obscure records.
 #
 # Scoped to the container and required to be :visible, because this is the
 # destructive direction: an unrelated or hidden "no items for sale" string
-# anywhere on the page would otherwise end the wait and be read as a
-# confirmed miss, clearing the release's stored price while the listings were
-# still rendering.
+# anywhere on the page would otherwise be read as a confirmed miss, clearing
+# the release's stored price while the listings were still rendering.
 _EMPTY_STATE = tuple(
     f"#pjax_container {state}:visible"
     for state in (
@@ -127,7 +125,12 @@ async def _release_num_for_sale(release_id: str) -> Optional[int]:
         async with httpx.AsyncClient(timeout=15.0) as client:
             r = await client.get(url, headers={"User-Agent": _USER_AGENT})
             r.raise_for_status()
-            value = r.json().get("num_for_sale")
+            payload = r.json()
+            # A successful response whose body is null, a list, or anything
+            # else non-object would raise AttributeError on .get() and escape
+            # as a bare exception, losing both this helper's unknown path and
+            # the detailed RuntimeError search() raises from it.
+            value = payload.get("num_for_sale") if isinstance(payload, dict) else None
         # Type-checked rather than coerced. int(False) and int(0.5) are both
         # 0, so a schema change would arrive here looking exactly like a
         # confirmed "nothing for sale" -- the one answer that lets search()

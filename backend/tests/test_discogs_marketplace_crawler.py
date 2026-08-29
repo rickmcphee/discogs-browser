@@ -574,3 +574,18 @@ async def test_a_placeholder_row_does_not_end_readiness_before_real_listings(bro
     results = await Crawler().search(RELEASE, _PlaceholderPriceThenListings(browser_page, "usa_listings.html"))
 
     assert [r["price"] for r in results] == [6.50, 9.25, 12.99]
+
+
+@respx.mock
+@pytest.mark.parametrize("body", ["null", "[]", '"124"'])
+async def test_a_non_object_stats_payload_is_unknown_not_an_exception(body):
+    """`.get()` on a null or list body raises AttributeError.
+
+    That escapes as a bare exception, losing both this helper's unknown path
+    and the detailed RuntimeError search() raises from it.
+    """
+    respx.get("https://api.discogs.com/marketplace/stats/249504").mock(
+        return_value=httpx.Response(200, content=body, headers={"content-type": "application/json"})
+    )
+
+    assert await dm._release_num_for_sale("249504") is None
