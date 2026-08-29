@@ -94,9 +94,12 @@ to Claude the moment a maintainer typed `@claude`, with `contents: write` and th
 OAuth secret in scope. That is the same prompt-injection surface the head gate
 was raised against, reached by prose instead of by code.
 
-`include_comments_by_actor` closes it. Humans are narrowed to the actor who
-triggered the run — already restricted to `OWNER`, `MEMBER` or `COLLABORATOR` by
-the job's `if:` — and to the repository owner, whose pull request it usually is.
+`include_comments_by_actor` narrows it. Narrows rather than closes: see "What is
+not claimed" below, and note that the code gate above is a boundary while this
+one is defence in depth — the two are not the same kind of thing and the
+workflow's own comment says so. Humans are narrowed to the actor who triggered
+the run — already restricted to `OWNER`, `MEMBER` or `COLLABORATOR` by the job's
+`if:` — and to the repository owner, whose pull request it usually is.
 
 The bots on the list are the ones whose output is the point, and getting that
 list right is less obvious than it looks. **Copilot posts under two identities.**

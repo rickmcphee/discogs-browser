@@ -16,8 +16,10 @@ name: Claude Assistant
 #
 # Prose: a same-repository head says nothing about who may comment, and on a
 # public repository that is anyone. `include_comments_by_actor` on the action
-# step narrows whose comments reach Claude at all. Neither gate is claimed to be
-# total — see "What is not claimed" in
+# step narrows whose comments are put in front of Claude automatically — its
+# starting context, not what it can fetch through its GitHub tooling once
+# running. So the code gate is a boundary and this one is defence in depth;
+# see "What is not claimed" in
 # docs/specifications/shaping/2026-08-29-claude-on-pull-requests-design.md
 #
 # The `SessionStart` hook hole that made even a maintainer's `@claude` on a
