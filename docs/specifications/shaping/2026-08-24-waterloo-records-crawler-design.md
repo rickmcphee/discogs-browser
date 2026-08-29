@@ -658,3 +658,59 @@ crawlers expanded per `crawl_queue` row at dispatch, alongside `amazon`,
 `ebay` and `ebay_general`; the per-source dispatch estimates in the other
 crawler design docs were computed against the set registered at the time and
 were not re-derived for this change.
+
+## Amendment (2026-08-29, branch `claude/waterloo-records-crawler-type-a2woiz`)
+
+**Decision reversed: this store is a `catalog` crawler again.** The owner
+judged the 2026-08-28 promotion to a `release` crawler a mistake and asked for
+it to be switched back. The technical facts the amendment above records are
+all still true — the ceiling, the search endpoint's reach, the three
+conversion hazards — but the product judgment is now the opposite one:
+Waterloo's value in the Store tab is its *shelf*, browsable for records a user
+does not already own, and a truncated shelf beats a complete
+answer restricted to records already in somebody's library. What the release
+form gave up ("browsing Waterloo for records you do not already have is
+gone") turned out to be the thing worth keeping.
+
+**What comes back.** `crawl_catalog()` over the `vinyl-lps` collection's
+`products.json`, exactly as this document's body specifies — the plugin file
+returns to its pre-conversion form. The walk now runs on top of
+`iter_products()`'s ceiling stop, so it keeps the first
+`_MAX_PAGE * _PAGE_LIMIT` products and terminates cleanly instead of
+discarding the run; the "floor, not a resolution" the previous amendment
+described is accepted as the standing state. Which products fall outside the
+ceiling is decided by the collection's own ordering. The
+`empty_result_is_expected` declaration leaves with `search()`: it is
+release-crawler-only, and a catalog crawler's emptiness never reached the
+breaker in the first place. The target-side format gate and the
+malformed-variants rule leave with it too — both were answers to questions
+only the release path asks (`_pick_variant()` keeps the catalog path's own
+availability rules).
+
+**What stays from the conversion work**, because none of it was specific to
+Waterloo being a release crawler:
+
+- `shopify_catalog.iter_products()`'s `_MAX_PAGE` stop. It is what fixed the
+  original zero-rows bug, and it protects any catalog source that ever
+  outgrows the ceiling.
+- `crawl_manager`'s `empty_result_is_expected` handling. `discogs_marketplace`
+  declares it (on the separates-its-own-failures grounds CLAUDE.md records),
+  so the mechanism has a live user with Waterloo gone.
+- `db.register_crawler()`'s kind-change handling. It fires on a move *to*
+  `release` and is inert here, but it is generic and its reasoning is
+  unchanged.
+
+**The reverse conversion needs no new code**, which the kind-change comment in
+`register_crawler()` already records. On the first boot after this change the
+plugin's declared `crawler_type = "catalog"` reaches `register_crawler()`'s
+upsert and the row flips kind. From there: release targets stop dispatching to
+Waterloo because `get_eligible_crawlers()` filters on `crawler_type` at
+dispatch; a pending `crawl_queue` row whose `pending_crawler_ids` the
+conversion backfill narrowed to Waterloo alone resolves as `done` up front
+(`_drain_one_batch` resolves any claimed row with zero eligible crawlers
+without dispatching it); and the release-era `stock_items` rows — written
+through `upsert_stock_item_from_release()` with a `release_id` — are deleted
+by the first catalog sync's `replace_stock_items()`, which clears every row
+for the `crawler_id` before inserting the fresh shelf. Until that first sync
+runs, the release-era rows linger in the Store tab; that window closes on its
+own and needs no sweep of its own.

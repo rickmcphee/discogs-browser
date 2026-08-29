@@ -81,11 +81,13 @@ def test_startup_seeds_catalog_crawlers_with_genre_summary(pg_test_db):
     missing = [c["site_name"] for c in catalog_crawlers if not c["genre_summary"]]
     assert missing == [], f"catalog crawlers missing genre_summary: {missing}"
     # Negative control -- genre_summary is read off each plugin, not blanket
-    # populated. Named rather than asserted across every release crawler:
-    # Waterloo Records is a release crawler that legitimately declares one. It
-    # is a storefront with a real description that happens to be searched per
-    # release rather than walked (see its design doc), and Settings renders the
-    # tooltip for any crawler carrying one, with no crawler_type gate.
+    # populated. Named rather than asserted across every release crawler: the
+    # attribute is scoped by whether a crawler is a describable storefront, not
+    # by how it is crawled -- Settings renders the tooltip for any crawler
+    # carrying one, with no crawler_type gate -- and Waterloo Records
+    # legitimately declared one during its spell as a release crawler, so a
+    # blanket "no release crawler declares one" would only ever be
+    # incidentally true.
     amazon = next(c for c in release_crawlers if c["site_name"] == "Amazon")
     assert amazon["genre_summary"] is None
 

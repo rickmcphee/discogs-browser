@@ -5018,7 +5018,7 @@ async def test_drain_one_batch_does_not_clear_a_price_after_losing_its_claim(pg_
     assert listing["price"] == 5.00
 
 
-def _release_queue_row(conn, site_name="Waterloo Records"):
+def _release_queue_row(conn, site_name="Some Record Store"):
     db.register_crawler(conn, site_name, "/x.py")
     crawler_id = conn.execute(
         "SELECT id FROM crawlers WHERE site_name = %s", [site_name]
@@ -5050,7 +5050,7 @@ async def test_drain_one_batch_excludes_empty_release_result_when_the_crawler_ex
     fake_plugin = AsyncMock()
     fake_plugin.search = AsyncMock(return_value=[])
     fake_plugin._db_id = crawler_id
-    fake_plugin._db_site_name = "Waterloo Records"
+    fake_plugin._db_site_name = "Some Record Store"
     fake_plugin.empty_result_is_expected = True
 
     with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
@@ -5101,7 +5101,7 @@ async def test_drain_one_batch_counts_bot_detection_even_when_the_crawler_expect
     fake_plugin = AsyncMock()
     fake_plugin.search = AsyncMock(side_effect=[BotDetectedError(), []])
     fake_plugin._db_id = crawler_id
-    fake_plugin._db_site_name = "Waterloo Records"
+    fake_plugin._db_site_name = "Some Record Store"
     fake_plugin.empty_result_is_expected = True
 
     with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
