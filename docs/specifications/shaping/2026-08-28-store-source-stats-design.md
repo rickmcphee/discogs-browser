@@ -37,6 +37,7 @@ Touches:
   `StockSourceCount`.
 - Tests: `backend/tests/test_stock_router.py`,
   `frontend/src/test/stockStats.test.tsx`,
+  `frontend/src/test/donut.test.tsx`,
   `frontend/src/test/stockBrowser.test.tsx`.
 
 Not in scope: the Track tab (see "Known limitations"), and clicking a wedge
@@ -156,6 +157,14 @@ store identity in the store one) and only the geometry is shared.
 selects, the store ring highlights on hover, and neither grows the other's
 affordance.
 
+**An arc never exceeds its share.** The 2px gap is applied as a floor on the
+drawn length, and `offset` advances by the *allocated* length, so a floor
+above a segment's own allocation paints over the wedge that follows and
+overstates a sliver — 1 item of 5,000 is allocated 0.08 of the ring and would
+be drawn at the 0.5 floor, six times its share. The drawn length is therefore
+capped at the allocation: below the floor a segment gives up its gap rather
+than its neighbour's circumference.
+
 ### `StockStats`
 
 A `Stats` button in `StockBrowser`'s toolbar, immediately after `Source`, in
@@ -180,6 +189,13 @@ and folds the rest into one neutral `Other` wedge, labelled with how many
 sources it covers. The legend does not fold: it lists every source, so the
 wedge that is folded is a drawing decision and not a hiding one, and identity
 never rests on colour alone.
+
+**Both rounding boundaries are held open.** The share label already read
+`<1%` rather than `0%`, but the top end rounded: 999 of 1,000 is 99.9%, which
+`Math.round` turns into `100%` — a source labelled as the whole of the total
+while another source is listed beneath it, which is the same
+breakdown-contradicts-itself failure the endpoint's own design guards against.
+Only `value === total` is `100%`; anything above 99% that isn't reads `>99%`.
 
 **The legend's height cap is desktop-only** (`md:max-h-56
 md:overflow-y-auto`). The anchored dropdown has no scroll of its own and
@@ -216,6 +232,11 @@ Backend (`backend/tests/test_stock_router.py`):
 - hidden sources are excluded
 - the `saved` filter narrows the breakdown
 - nothing matching returns `{"total": 0, "sources": []}`
+
+`frontend/src/test/donut.test.tsx` covers the ring's geometry directly: a
+segment never drawn wider than its share, the 2px gap kept where a segment can
+afford one, and a whole-ring segment taking the full circumference less its
+gap.
 
 Frontend (`frontend/src/test/stockStats.test.tsx`): no fetch before the panel
 is opened or while disabled; `aria-expanded`; the ring's centre total and one

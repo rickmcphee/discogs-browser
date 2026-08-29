@@ -79,6 +79,34 @@ describe('StockStats', () => {
     }
   })
 
+  it('holds both rounding boundaries open, so only the whole total reads 100%', async () => {
+    getStockStats.mockResolvedValue({
+      total: 1000,
+      sources: [
+        { crawler_id: 1, site_name: 'Nuclear Blast', count: 999 },
+        { crawler_id: 2, site_name: 'Epitaph', count: 1 },
+      ],
+    })
+    renderStats()
+    openPanel()
+    await screen.findByRole('img', { name: /items by source/i })
+
+    // 999/1000 rounds to 100, and "100%" beside another listed source
+    // contradicts the breakdown it belongs to.
+    expect(screen.getByText('Nuclear Blast').closest('li')).toHaveTextContent('>99%')
+    expect(screen.getByText('Epitaph').closest('li')).toHaveTextContent('<1%')
+  })
+
+  it('reads 100% when one source really is the whole of the total', async () => {
+    getStockStats.mockResolvedValue({
+      total: 42, sources: [{ crawler_id: 1, site_name: 'Nuclear Blast', count: 42 }],
+    })
+    renderStats()
+    openPanel()
+    await screen.findByRole('img', { name: /items by source/i })
+    expect(screen.getByText('Nuclear Blast').closest('li')).toHaveTextContent('100%')
+  })
+
   it('passes the browser’s current filters through to the request', async () => {
     renderStats({
       search: 'zombie', artist: 'Rob Zombie', saved: true, hiddenCrawlerIds: [7, 9],

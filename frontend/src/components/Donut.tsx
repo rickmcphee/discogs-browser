@@ -37,8 +37,14 @@ export default function Donut<K extends string>({
       {total > 0 && segments.filter((s) => s.value > 0).map((s) => {
         const length = (s.value / total) * C
         // A 2px gap between fills, per the mark spec, so adjacent segments read
-        // as separate rather than as one continuous band.
-        const dash = `${Math.max(length - 2, 0.5)} ${C - Math.max(length - 2, 0.5)}`
+        // as separate rather than as one continuous band -- but never more
+        // circumference than the segment's own share: `offset` advances by
+        // `length`, so a floor above it would paint over the next wedge and
+        // overstate a sliver (1 of 5,000 is allocated 0.08 and would be drawn
+        // at the 0.5 floor). Below the floor a segment gives up its gap
+        // instead, which is the honest end of that trade.
+        const drawn = Math.min(Math.max(length - 2, 0.5), length)
+        const dash = `${drawn} ${C - drawn}`
         const dashOffset = -offset
         offset += length
         return (

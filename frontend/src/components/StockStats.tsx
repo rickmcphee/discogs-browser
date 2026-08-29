@@ -20,10 +20,17 @@ interface Props {
   disabled?: boolean
 }
 
+// Both rounding boundaries are held open, not just the bottom one: 999 of
+// 1,000 rounds to 100, and a source labelled 100% beside another source in the
+// same list contradicts the breakdown it belongs to. Only the whole of the
+// total is 100%, and only nothing at all is 0%.
 function share(value: number, total: number): string {
   if (total === 0) return '0%'
+  if (value === total) return '100%'
   const pct = (value / total) * 100
-  return pct < 1 ? '<1%' : `${Math.round(pct)}%`
+  if (pct < 1) return '<1%'
+  if (pct > 99) return '>99%'
+  return `${Math.round(pct)}%`
 }
 
 function StockStats({
