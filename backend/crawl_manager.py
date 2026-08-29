@@ -453,7 +453,7 @@ class CrawlManager:
         DB call below is a plain asyncio.to_thread rather than wrapped
         again -- protecting the same thing twice would be redundant."""
         from crawler import _new_context
-        from db import get_app_pool, mark_crawl_queue_done, defer_crawl_queue_row, upsert_listing, get_catalog_release, get_stock_item_identity, upsert_stock_item_listing, upsert_stock_item_from_release, delete_stock_item_for_release, clear_listing_price, get_eligible_crawlers, crawl_queue_claim_held
+        from db import get_app_pool, mark_crawl_queue_done, defer_crawl_queue_row, upsert_listing, get_catalog_release, get_stock_item_identity, upsert_stock_item_listing, upsert_stock_item_from_release, delete_stock_item_for_release, clear_listing_price, get_eligible_crawlers, crawl_queue_claim_held, crawler_is_release
 
         # Two passes: resolve every claimed row's target and eligible crawler
         # set first, then drain the resulting work units in target-major order.
@@ -625,7 +625,19 @@ class CrawlManager:
                 with get_app_pool().connection() as conn:
                     if not crawl_queue_claim_held(conn, row_id, worker_id):
                         conn.rollback()
-                        return False
+                        return "reclaimed"
+                    # The crawler's kind is re-checked alongside the claim, in
+                    # the same transaction, because eligibility was snapshotted
+                    # before the search and a rolling deploy can change it in
+                    # between: register_crawler() on the newer machine flips
+                    # the crawler to a catalog kind and deletes its release-era
+                    # listings and stock rows, and a result written after that
+                    # commit recreates exactly the rows the cleanup deleted --
+                    # permanently, since the cleanup only fires on a kind
+                    # change that has by then already happened.
+                    if not crawler_is_release(conn, crawler_id):
+                        conn.rollback()
+                        return "kind_changed"
                     if matches:
                         best = matches[0]
                         if is_release:
@@ -643,8 +655,9 @@ class CrawlManager:
                         delete_stock_item_for_release(conn, row["discogs_id"], crawler_id)
                         clear_listing_price(conn, row["discogs_id"], crawler_id)
                     conn.commit()
-                    return True
-            if not await asyncio.to_thread(_write_result):
+                    return "written"
+            write_outcome = await asyncio.to_thread(_write_result)
+            if write_outcome == "reclaimed":
                 # The row belongs to another worker now, so it is that worker's
                 # to resolve and broadcast for -- skip both rather than
                 # reporting a change this pass did not make. Anything this row
@@ -654,6 +667,17 @@ class CrawlManager:
                     "[%s] Queue row %s was reclaimed mid-search; dropping this worker's result for crawler %s",
                     worker_id, row_id, crawler_id,
                 )
+                continue
+            if write_outcome == "kind_changed":
+                # Unlike a reclaim, this worker still holds the row, so the
+                # row still gets resolved below -- only the writes and the
+                # broadcast are dropped, since no listing changed.
+                log.warning(
+                    "[%s] Crawler %s is no longer a release crawler; dropping this worker's result for queue row %s",
+                    worker_id, crawler_id, row_id,
+                )
+                if is_last_unit_for_row:
+                    await resolve_row(row_id)
                 continue
 
             # Before the broadcast, not after, so a broadcast failure can't

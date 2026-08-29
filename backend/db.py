@@ -1380,6 +1380,23 @@ def get_crawlers(conn, crawler_type: str = "release") -> list[dict]:
 # pending_crawler_ids narrows the set to a previous pass's unfinished work;
 # NULL means no narrowing. The intersection is what makes a crawler disabled
 # since that pass drop out silently.
+def crawler_is_release(conn, crawler_id: int) -> bool:
+    """Whether the crawler is still a release crawler, read at write time.
+
+    _drain_one_batch snapshots eligibility before awaiting search(), and a
+    kind change can land in between -- register_crawler() on a newer deploy
+    flipping the crawler to a catalog kind and deleting its release-era rows.
+    A result written after that recreates exactly the rows the conversion
+    cleanup deleted, and nothing ever deletes them again: the cleanup only
+    fires on a kind *change*, which has already happened. So the result
+    transaction rechecks the kind the same way it rechecks the claim.
+    """
+    row = conn.execute(
+        "SELECT crawler_type FROM crawlers WHERE id = %s", [crawler_id]
+    ).fetchone()
+    return bool(row) and row["crawler_type"] == "release"
+
+
 def get_eligible_crawlers(conn, is_release: bool, pending_crawler_ids: Optional[list] = None) -> list[dict]:
     return conn.execute(
         """

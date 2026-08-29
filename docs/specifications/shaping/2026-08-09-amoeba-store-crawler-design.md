@@ -62,20 +62,23 @@ Two existing behaviours combine to make it so:
   window.
 - `db.enqueue_crawl_queue_for_stock_item()` re-queues on conflict wherever
   `status = 'done'`, so every sync re-enqueues every item for a price
-  refresh across each eligible `release` crawler — `crawler_type="release"`
+  refresh — one `crawl_queue` row per item, expanded at dispatch into one
+  work unit per eligible `release` crawler (per the per-item-crawler-fanout
+  design; this paragraph predates it and originally described one queue row
+  per crawler per item) — `crawler_type="release"`
   with `requires_discogs_release = FALSE` — amazon, ebay and ebay_general,
   assuming all enabled; `discogs_marketplace` is excluded by
   its `requires_discogs_release = True`. (waterloorecords appeared in this
   enumeration during its brief 2026-08-28 spell as a release crawler; it
   reverted to a catalog crawler on 2026-08-29.)
 
-So a window of W items costs one queue job per eligible release crawler per
-item on *every* sync, drained by 2
-workers at `crawl_delay_seconds = 30` — about 4 jobs/minute. The multiplier
-tracks however many eligible release crawlers are enabled, so the figures
-below scale with that:
+So a window of W items costs one queue row per item on *every* sync, each
+expanded at dispatch into one work unit per eligible release crawler, drained
+by 2 workers at `crawl_delay_seconds = 30` — about 4 work units/minute. The
+multiplier tracks however many eligible release crawlers are enabled, so the
+figures below scale with that:
 
-| Window | Arrivals covered | Amoeba requests | Queue jobs | Drain time |
+| Window | Arrivals covered | Amoeba requests | Dispatch work units | Drain time |
 |---|---|---|---|---|
 | 1,000 (chosen) | ~2 months | 5 | 3,000 | ~12.5 h |
 | 2,000 | ~4 months | 10 | 6,000 | ~25 h |
