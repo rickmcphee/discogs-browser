@@ -335,14 +335,13 @@ async def test_a_browser_failure_is_not_laundered_into_a_confirmed_miss(browser_
         await Crawler().search(RELEASE, _DeadBrowserPage(browser_page, "usa_listings.html"))
 
 
-async def test_an_unparseable_row_does_not_shadow_a_later_supported_layout(browser_page):
-    """A selector matching rows it cannot parse must not end the search.
+async def test_an_unparseable_row_does_not_hide_the_parseable_one_beside_it(browser_page):
+    """A matched row that yields no price is skipped, not counted.
 
-    The first row's price is a dash with no data-pricevalue, so the legacy
-    selector matches it and parses nothing; the real listing is reached only
-    by the attribute selector that comes after. Keying on "this selector
-    matched" rather than "this selector parsed something" would raise instead
-    of returning it.
+    Both rows match the container's selector -- the first prices a dash with
+    no data-pricevalue and parses to nothing, the second carries the
+    attribute. Treating "this selector matched rows" as "this selector found
+    listings" would report the release as unreadable.
     """
     page = _FakePage(browser_page, "unparseable_then_parseable_rows.html")
     results = await Crawler().search(RELEASE, page)
@@ -492,3 +491,17 @@ async def test_a_real_zero_num_for_sale_is_still_a_confirmed_miss():
     )
 
     assert await dm._release_num_for_sale("249504") == 0
+
+
+async def test_a_container_whose_rows_all_fail_to_parse_falls_through(browser_page):
+    """The other half of keying on parsed listings: the container loop.
+
+    `table.mpitems` is tried first and its only row prices a dash, so it
+    yields nothing; the listing is reached by the `#pjax_container table`
+    selector after it. Stopping at the first container that matched any row
+    would raise instead.
+    """
+    page = _FakePage(browser_page, "unparseable_container_then_next.html")
+    results = await Crawler().search(RELEASE, page)
+
+    assert [r["price"] for r in results] == [15.00]

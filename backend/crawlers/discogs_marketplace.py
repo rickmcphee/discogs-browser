@@ -227,10 +227,12 @@ class Crawler:
         that parameter has never been confirmed against the live page, and a
         silently ignored sort would otherwise make "the first row" masquerade
         as "the cheapest listing"."""
-        # Keyed on parsed listings, not on a selector merely matching: a
-        # selector that matches rows it cannot parse must not shadow a later
-        # one that would have worked, or a page mixing a stray table with
-        # supported listing cards raises instead of returning the cards.
+        # Keyed on parsed listings, not on a selector merely matching. Two
+        # things follow: a row that matches but yields no price is skipped
+        # rather than counted, and a container whose rows all fail to parse
+        # advances to the next one instead of shadowing it. Stopping at the
+        # first selector that matched anything would raise on a page whose
+        # listings a later container would have found.
         listings = []
         for selector in _ROW_SELECTORS:
             rows = page.locator(selector)
