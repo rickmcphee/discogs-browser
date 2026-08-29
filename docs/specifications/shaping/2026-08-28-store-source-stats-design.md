@@ -40,6 +40,8 @@ Touches:
   `frontend/src/test/stockStats.test.tsx`,
   `frontend/src/test/donut.test.tsx`,
   `frontend/src/test/client.test.ts`,
+- `frontend/src/App.tsx` — two strict subsets of `stockSyncGeneration` for the
+  panel's refresh key (see "`refreshKey` is deliberately narrower").
   `frontend/src/test/stockBrowser.test.tsx`.
 
 Not in scope: the Track tab (see "Known limitations"), and clicking a wedge
@@ -218,9 +220,24 @@ md:overflow-y-auto`). The anchored dropdown has no scroll of its own and
 needs one; the mobile sheet already scrolls, and a nested scroll region
 inside it is just something else to get stuck in.
 
-`refreshKey` is `syncGeneration + retryTick`. Both move the counts — a stock
-sync adds and drops items, and a save/unsave changes what the `Saved` filter
-holds — and either ticking has to refetch.
+**`refreshKey` is deliberately narrower than the list's signal**, because the
+two views count different things. `StockBrowser` refetches its rows on
+`syncGeneration`, the union App bumps for every stock-sync, judgment *and*
+`listing_changed` event — and it needs all three, since its comparison rows
+*are* listings. This panel counts `stock_items`, which a `listing_changed`
+never touches; and that event is global by design (see the per-user SSE
+filtering invariant in `CLAUDE.md`), so riding the union would fire a grouped
+count for every user with the panel open on every marketplace write during a
+crawl. App therefore exposes two strict subsets alongside it — the same shape
+`priceGeneration` already uses, for the same reason:
+
+- `inventoryGeneration`, bumped only by `stock_sync_progress`/`_complete`,
+  the events that write `stock_items`
+- `judgmentGeneration`, bumped only by the judgment events, and added to the
+  key only under the `Recommended` filter, the one place a judgment can move
+  the count
+
+`retryTick` stays in the key for save/unsave, which moves what `Saved` holds.
 
 ## Known limitations
 
@@ -233,6 +250,18 @@ holds — and either ticking has to refetch.
   assignment, so hiding a source in the Source filter can repaint the ring.
   The legend, which names every source, is what the reader identifies a store
   by; the ring carries proportion.
+- **The panel and the list settle independently.** A filter change starts
+  `/stock/stats` and `/stock` as two requests; the panel clears and repaints
+  as soon as its own (single, grouped) query returns, while the toolbar's
+  `{total} items` holds its previous value until `/stock`'s slower
+  count-plus-select-plus-comparison round trip lands. For that window the
+  panel shows the new view's numbers beside the old one's total — the same
+  disagreement the discard-on-view-change rule exists to shorten, now reduced
+  to the gap between two latencies rather than a whole stale breakdown.
+  Closing it properly means gating the panel on a view key the *list* reports
+  as loaded, which couples the two components and makes correct data wait on
+  slower data; that trade wants a deliberate decision rather than being made
+  in passing here.
 - **Wedges are not clickable.** Clicking a store's wedge to hide every other
   source is the obvious next affordance, and deliberately not in this change.
 

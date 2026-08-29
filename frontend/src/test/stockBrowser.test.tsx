@@ -913,6 +913,53 @@ describe('StockBrowser Source filter', () => {
     expect(screen.queryByRole('button', { name: 'Stats' })).toBeNull()
   })
 
+  it('does not refetch the breakdown for a listing_changed, which cannot move a stock_items count', async () => {
+    // syncGeneration is the union the item list rides: it includes
+    // listing_changed, broadcast to every connected user on every marketplace
+    // write. The panel counts stock_items, which such an event never touches.
+    const { rerender } = render(
+      <StockBrowser crawlers={CRAWLERS} syncGeneration={0} inventoryGeneration={0} judgmentGeneration={0} />
+    )
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: 'Stats' }))
+    await waitFor(() => expect(getStockStats).toHaveBeenCalledTimes(1))
+
+    rerender(
+      <StockBrowser crawlers={CRAWLERS} syncGeneration={1} inventoryGeneration={0} judgmentGeneration={0} />
+    )
+    await waitFor(() => expect(getStock).toHaveBeenCalledTimes(2))
+    expect(getStockStats).toHaveBeenCalledTimes(1)
+
+    // A real inventory write does refetch it.
+    rerender(
+      <StockBrowser crawlers={CRAWLERS} syncGeneration={2} inventoryGeneration={1} judgmentGeneration={0} />
+    )
+    await waitFor(() => expect(getStockStats).toHaveBeenCalledTimes(2))
+  })
+
+  it('refetches the breakdown for a judgment only under the Recommended filter', async () => {
+    const { rerender } = render(
+      <StockBrowser crawlers={CRAWLERS} recommendedAvailable inventoryGeneration={0} judgmentGeneration={0} />
+    )
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: 'Stats' }))
+    await waitFor(() => expect(getStockStats).toHaveBeenCalledTimes(1))
+
+    // Under All, a judgment cannot change the count.
+    rerender(
+      <StockBrowser crawlers={CRAWLERS} recommendedAvailable inventoryGeneration={0} judgmentGeneration={1} />
+    )
+    await new Promise((r) => setTimeout(r, 0))
+    expect(getStockStats).toHaveBeenCalledTimes(1)
+
+    fireEvent.change(screen.getByDisplayValue('All'), { target: { value: 'recommended' } })
+    await waitFor(() => expect(getStockStats).toHaveBeenCalledTimes(2))
+    rerender(
+      <StockBrowser crawlers={CRAWLERS} recommendedAvailable inventoryGeneration={0} judgmentGeneration={2} />
+    )
+    await waitFor(() => expect(getStockStats).toHaveBeenCalledTimes(3))
+  })
+
   it('breaks the store tab down by source under the filters the list is showing', async () => {
     render(<StockBrowser crawlers={CRAWLERS} hiddenCrawlerIds={[5]} />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())

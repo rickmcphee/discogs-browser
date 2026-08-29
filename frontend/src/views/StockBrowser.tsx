@@ -19,6 +19,11 @@ interface Props {
   onHiddenCrawlerIdsChange?: (hiddenCrawlerIds: number[]) => void
   hiddenCrawlerIdsLoaded?: boolean
   syncGeneration?: number
+  /** Strict subsets of syncGeneration -- see App.tsx. The item list needs the
+   *  union (its comparison rows are listings); the Stats panel counts
+   *  stock_items and takes only what can actually move that count. */
+  inventoryGeneration?: number
+  judgmentGeneration?: number
   isAdmin?: boolean
   hasPriceField?: boolean
 }
@@ -44,7 +49,8 @@ function BookmarkIcon({ filled }: { filled: boolean }) {
 function StockBrowser({
   scope = 'store', recommendedAvailable = false, hiddenCrawlerIds = NO_HIDDEN_CRAWLER_IDS,
   crawlers = NO_CRAWLERS, onHiddenCrawlerIdsChange = NOOP_HIDDEN_CRAWLER_IDS_CHANGE,
-  hiddenCrawlerIdsLoaded = true, syncGeneration, isAdmin = false, hasPriceField = true,
+  hiddenCrawlerIdsLoaded = true, syncGeneration, inventoryGeneration, judgmentGeneration,
+  isAdmin = false, hasPriceField = true,
 }: Props) {
   const isMobile = useIsMobile()
   const [items, setItems] = useState<StockItem[]>([])
@@ -334,10 +340,19 @@ function StockBrowser({
                   saved={filter === 'saved'}
                   overlapped={filter === 'overlapped'}
                   hiddenCrawlerIds={hiddenCrawlerIds}
-                  // Both counters move the counts: a stock sync adds and drops
-                  // items, and a save/unsave changes what the Saved filter
-                  // holds. Summed because either one ticking has to refetch.
-                  refreshKey={(syncGeneration ?? 0) + retryTick}
+                  // Deliberately narrower than the list's syncGeneration: a
+                  // listing_changed writes listings, not stock_items, and is
+                  // broadcast to every connected user, so riding the union
+                  // would fire a grouped count per marketplace write for every
+                  // open panel. Judgments only move the Recommended filter, so
+                  // they are added only there; retryTick covers save/unsave,
+                  // which moves what Saved holds. Summed because any of them
+                  // ticking has to refetch.
+                  refreshKey={
+                    (inventoryGeneration ?? 0)
+                    + (filter === 'recommended' ? (judgmentGeneration ?? 0) : 0)
+                    + retryTick
+                  }
                   disabled={!hiddenCrawlerIdsLoaded}
                 />
               )}
