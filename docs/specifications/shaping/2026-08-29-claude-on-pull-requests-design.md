@@ -57,15 +57,22 @@ pull request head, so a maintainer's `@claude` would have run a contributor's
 shell before Claude read a line of the prompt. That is fixed. But the hook was
 an instance of the risk, not the whole of it, and the non-goal says so.
 
-## The gate
+## The gates
 
-Nothing above is mitigated here. It is excluded.
+There are two, because there are two ways untrusted content reaches Claude, and
+the first draft of this design shipped only the first gate and claimed it covered
+both. Copilot caught that on the pull request. Keeping the correction visible
+here rather than quietly rewriting the claim, because the shape of the mistake is
+the useful part: a gate on *code* was described as if it were a gate on
+*everything a pull request carries*.
+
+### The code gate: a same-repository head
 
 The job's first step resolves the pull request's head repository and skips every
 step after it unless that head is in this repository. A branch pushed by the
-action or by the owner qualifies. A fork's head never does, so no run ever
-reaches a fork's code or a fork contributor's prose, and the risk the narrowing
-was holding back is not reduced but absent.
+action or by the owner qualifies; a fork's head never does. Pushing to a branch
+in this repository requires write access, so the diff, and the pull request body
+that opens it, are the work of someone already trusted.
 
 This costs the flow above nothing, which is what makes it the right shape rather
 than a compromise. The pull requests that draw a Copilot review are opened from
@@ -75,6 +82,55 @@ fork anywhere in the loop.
 What is given up is a maintainer's ability to hand a fork contributor's pull
 request to Claude. That is the case with the wide surface, and it is not the
 case this exists to serve.
+
+### The discussion gate: an actor allowlist
+
+A same-repository head says nothing about who may *talk* on the pull request.
+This repository is public, so anyone with a GitHub account can comment on one —
+including the fork contributor whose head was just refused. The action includes
+every actor's comments by default: `filterCommentsByActor` returns the array
+untouched when both filter lists are empty. So a stranger's prose would be handed
+to Claude the moment a maintainer typed `@claude`, with `contents: write` and the
+OAuth secret in scope. That is the same prompt-injection surface the head gate
+was raised against, reached by prose instead of by code.
+
+`include_comments_by_actor` closes it. Humans are narrowed to the actor who
+triggered the run — already restricted to `OWNER`, `MEMBER` or `COLLABORATOR` by
+the job's `if:` — and to the repository owner, whose pull request it usually is.
+
+The bots on the list are the ones whose output is the point, and getting that
+list right is less obvious than it looks. **Copilot posts under two identities.**
+The review body, carrying the verdict, comes from
+`copilot-pull-request-reviewer[bot]`; the inline comments, which are the actual
+findings, come from `Copilot`. An allowlist naming only the first — the name
+`CLAUDE.md` uses throughout, and the one the checks tab shows — would have
+silently discarded every finding this feature exists to act on, and the failure
+would have looked exactly like Copilot having nothing to say. Both are listed in
+bare and `[bot]`-suffixed form, because `actorMatchesPattern` compares exactly
+and `resolveActorName` appends the suffix only when GraphQL returns a bot login
+bare, which is not something REST or the UI shows.
+
+Blanket `*[bot]` was the alternative, and is defensible — only the owner can
+install an App, so only owner-installed Apps can comment. It is not taken,
+because an enumerated list says which bots this flow actually depends on, and a
+future reader can check it against what the action received.
+
+### What is not claimed
+
+Neither gate is total, and the first draft's error was claiming otherwise.
+
+The actor filter narrows Claude's *starting context*. It does not stop Claude
+fetching a filtered comment itself once running, because the action grants it
+GitHub tooling and a stranger's comment is still reachable through the API. What
+the filter buys is that untrusted prose is no longer placed in front of Claude
+automatically, on every run, without anyone choosing to look at it — defence in
+depth, not a boundary.
+
+The same surface exists on issues, which this workflow already allowed before
+this change: a public issue takes comments from anyone, and `@claude` on it
+ingests them with the same token in scope. This change does not introduce that
+class, and does not fix it there either; the allowlist applies to every event the
+workflow subscribes to, issues included, so it happens to narrow that path too.
 
 ### Why a step and not another clause in `if:`
 
@@ -163,6 +219,11 @@ subscribing to the review events without noticing.
 - A fork contributor's pull request is inert to every one of those gestures, and
   a maintainer who tries will find the reason in the job summary rather than on
   the pull request.
+- Comments from anyone outside the allowlist no longer reach Claude's starting
+  context on any event this workflow subscribes to, issues included.
+- If Copilot's inline findings ever stop reaching Claude, the allowlist is the
+  first place to look: it pins two identities that Copilot's own tooling
+  presents under one name.
 - The `claude` label remains an issues-only gesture. Nothing here gives it a
   pull request meaning, and `pull_request: labeled` stays unsubscribed.
 - Claude answering a review it can be asked for does not change who is

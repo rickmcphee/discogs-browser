@@ -7,13 +7,17 @@ name: Claude Assistant
 # this job holds `contents: write` and the OAuth secret. That is why the pull
 # request triggers were withheld when this workflow was added.
 #
-# They are here now under a gate that removes the fork case rather than
-# mitigating it: the `same-repo head` step below resolves the pull request's
-# head repository and skips everything after it unless that head lives in this
+# They are here now behind two gates, because untrusted content arrives by two
+# routes. Code: the `same-repo head` step below resolves the pull request's head
+# repository and skips everything after it unless that head lives in this
 # repository. Branches this action pushes (`claude/*`) and branches the owner
-# pushes qualify; a fork's head never does. So the surface the narrowing was
-# protecting — Claude reading a stranger's code with a write token in scope —
-# is not narrowed but absent. See
+# pushes qualify; a fork's head never does. Pushing to one needs write access,
+# so the diff is a trusted person's work.
+#
+# Prose: a same-repository head says nothing about who may comment, and on a
+# public repository that is anyone. `include_comments_by_actor` on the action
+# step narrows whose comments reach Claude at all. Neither gate is claimed to be
+# total — see "What is not claimed" in
 # docs/specifications/shaping/2026-08-29-claude-on-pull-requests-design.md
 #
 # The `SessionStart` hook hole that made even a maintainer's `@claude` on a
@@ -126,8 +130,34 @@ jobs:
         with:
           fetch-depth: 1
 
+      # The head check above governs which *code* is read. This governs which
+      # *prose* is, and the two are separate holes: anyone on the internet can
+      # comment on a same-repository pull request, and the action includes every
+      # actor's comments by default (`filterCommentsByActor` returns the lot when
+      # the include list is empty). Without this a stranger's comment is fed to
+      # Claude the moment a maintainer types `@claude`, with the write token and
+      # the OAuth secret in scope. Found by Copilot on the pull request that
+      # added these triggers.
+      #
+      # Humans are narrowed to the actor who triggered the run — already gated to
+      # OWNER, MEMBER or COLLABORATOR by the `if:` above — and the repository
+      # owner, whose own pull request it usually is.
+      #
+      # Copilot needs two entries because it posts under two identities, and
+      # keeping only the obvious one silently discards every finding this feature
+      # exists to act on: the review body comes from
+      # `copilot-pull-request-reviewer[bot]`, but the inline comments — the
+      # findings themselves — come from `Copilot`. Both are listed in bare and
+      # `[bot]`-suffixed form because matching is exact and the action normalises
+      # App logins by appending the suffix when GraphQL returns it bare
+      # (`resolveActorName`), which REST does not show. A pattern that matches
+      # nothing costs nothing; a missing one loses the review.
       - uses: anthropics/claude-code-action@a874e9ecd7bb36efdad65429c6b35815f5a08f10 # v1
         if: steps.pr.outputs.same_repo != 'false'
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           label_trigger: "claude"
+          include_comments_by_actor: >-
+            ${{ github.actor }},${{ github.repository_owner }},
+            Copilot,Copilot[bot],copilot-pull-request-reviewer[bot],
+            claude[bot],github-actions[bot]
