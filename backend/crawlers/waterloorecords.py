@@ -32,6 +32,59 @@ _VINYL_PRODUCT_TYPES = frozenset({
     "vinyl", "7-in vinyl", "10-in vinyl", "12-in single",
 })
 
+# The *target's* format, which is a separate question from the store's. The
+# product-type gate above filters what Waterloo sells down to vinyl, but a
+# release crawler runs for every release in every library, so with no
+# target-side gate a CD or cassette release would take a vinyl hit for the
+# same artist and album -- and db.upsert_stock_item_from_release() writes the
+# *release's* format onto the row, so the Store tab would show a "CD" carrying
+# an LP's url and price. Usually Discogs' formats[0].name, reaching search()
+# on the catalog row; a stock-item target carries whatever a sibling store
+# crawler wrote instead.
+#
+# Two vocabularies reach this gate, and each needs the opposite structure.
+#
+# A RELEASE target carries Discogs' controlled format vocabulary
+# (discogs.parse_release() forwards formats[0].name unchanged), which is a
+# closed set -- so the gate names what may PASS. That is complete by
+# construction: `DAT`, `Cylinder`, `Laserdisc`, `Memory Stick` and every other
+# medium, including ones Discogs adds after this is written, fail closed
+# without anyone having to enumerate them. A denylist here was wrong twice
+# over before this, letting `Shellac` and `Acetate` through and then the rest
+# of the long tail, and every fix that only added terms invited the next gap.
+#
+# "A record you put a needle on" is NOT the test for what passes: this store
+# sells *new vinyl*, so a pre-war 78 (`Shellac`) and a one-off lacquer
+# (`Acetate`) are as wrong a match for it as a CD is, and `Flexi-disc` and
+# `Lathe Cut` are worse than either -- both are usually alternate pressings of
+# an album that also exists as a standard LP, which is precisely when the
+# title match succeeds and the wrong price gets published. Only the two
+# container formats join `Vinyl`: each can genuinely hold vinyl, so Discogs
+# has not actually answered the question there. Nor has it when the field is
+# empty, which is handled at the call site rather than here.
+_DISCOGS_VINYL_FORMATS = frozenset({"vinyl", "box set", "all media"})
+
+# A STOCK-ITEM target carries whatever a sibling store crawler wrote instead
+# ("LP", "2xLP", "7\""), which is open-ended free text, so the same allowlist
+# would reject every one of them. Those are vinyl by construction -- the
+# crawler that wrote the row had already filtered its own catalog to vinyl --
+# so the gate only has to catch the strays, and names what may NOT pass.
+#
+# Plain substrings, because a store qualifies these names much as Discogs does
+# and no vinyl format written by either side contains one. The same medium can
+# appear under a different name in each vocabulary: Discogs writes shellac as
+# `Shellac`, while crawlers/amoeba.py reads it off a title's trailing "(78)"
+# and stores the bare "78".
+_OTHER_MEDIUM_RE = re.compile("|".join([
+    "cd", "cassette", "file", "dvd", "blu-ray", "sacd", "minidisc",
+    "8-track", "reel-to-reel", "vhs", "betamax", "dcc",
+    "shellac", "acetate", "flexi", "lathe",
+    # The one numeric term, so it is anchored rather than left as a bare
+    # substring: open on the right so "78rpm" still matches, closed on the
+    # left so a year inside some future format string never can.
+    r"\b78",
+]), re.IGNORECASE)
+
 # "Artist - Album [Format]", split on the FIRST spaced hyphen: album halves
 # legitimately contain further " - " runs ("10CC - Deceptive Bends - 180gm
 # Vinyl [LP]" is Deceptive Bends, not Deceptive Bends by 10CC - Deceptive
@@ -105,13 +158,37 @@ class Crawler:
         is deliberately unused: this is a public JSON endpoint, so a browser
         buys nothing and costs a context. crawlers/ebay.py is the precedent.
 
-        Returns [] only when the store answered and had no matching in-stock
-        vinyl. Every failure raises, per the crawler contract in CLAUDE.md --
-        the consecutive-failure breaker cannot tell a dead site from an empty
-        shelf otherwise.
+        Returns [] when the store answered and had no matching in-stock vinyl,
+        and for a release this store could never stock -- one on another
+        medium, which is settled without asking. Every failure raises, per the
+        crawler contract in CLAUDE.md: the consecutive-failure breaker cannot
+        tell a dead site from an empty shelf otherwise. An empty result costs
+        this store no site-health signal either way, per
+        empty_result_is_expected above.
         """
         query = self._query(release)
         if not query:
+            return []
+
+        # Settled before the request, not after: a target on another medium
+        # has no right answer here, so asking would spend a request on the
+        # store to reach the same empty result.
+        #
+        # Which test applies depends on which vocabulary wrote the format, and
+        # a release target is the one that carries Discogs' -- it comes from
+        # `catalog`, so it has a discogs_id; a stock-item target comes from
+        # `stock_item_identities`, which has no such column. An empty format
+        # is not an answer under either and always searches.
+        fmt = (release.get("format") or "").strip()
+        if release.get("discogs_id"):
+            wrong_medium = bool(fmt) and fmt.lower() not in _DISCOGS_VINYL_FORMATS
+        else:
+            wrong_medium = bool(_OTHER_MEDIUM_RE.search(fmt))
+        if wrong_medium:
+            log.info(
+                "[Waterloo Records] not searching for %r: %s is not vinyl",
+                query, fmt,
+            )
             return []
 
         # load_config() is a blocking Postgres call; offloaded so it cannot
@@ -286,9 +363,19 @@ class Crawler:
         await sleep(random.uniform(delay * 0.5, delay))
         r = await client.get(f"{url}.js", timeout=30)
         r.raise_for_status()
-        variants = (r.json() or {}).get("variants") or []
+        payload = r.json()
+        variants = payload.get("variants") if isinstance(payload, dict) else None
+        # A real Shopify product always carries at least one variant, so a 200
+        # with none is a malformed response rather than a product nobody can
+        # buy. This lookup is the only thing that decides both availability and
+        # price, so treating that as an answer would publish an unpriced row on
+        # the strength of a payload this never actually read -- and record the
+        # site as healthy while doing it. Failures raise, per the crawler
+        # contract in CLAUDE.md.
+        if not isinstance(variants, list) or not variants:
+            raise RuntimeError(f"no variants in product payload for {url}")
         available = [v for v in variants if v.get("available")]
-        if variants and not available:
+        if not available:
             # The product endpoint says nothing here is buyable, contradicting
             # the `available` flag on the suggest hit that got us this far --
             # the two are separate responses and the stock moved between them.

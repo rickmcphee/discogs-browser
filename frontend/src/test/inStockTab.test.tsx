@@ -300,6 +300,7 @@ describe('In Stock tab', () => {
     await settle()
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     await settle()
+    const region = screen.getByRole('status')
     fireEvent.click(screen.getByTitle('Refresh Epitaph catalog now'))
     await settle()
     expect(screen.getByTitle('Refreshing Epitaph catalog…')).toBeDisabled()
@@ -307,21 +308,25 @@ describe('In Stock tab', () => {
     // No stock_sync_started, no terminal event -- the stream missed the lot.
     await act(async () => { await vi.advanceTimersByTimeAsync(20_000) })
     expect(screen.getByTitle('Refresh Epitaph catalog now')).not.toBeDisabled()
-    // A spinner that just stops is no account of what happened to the refresh.
-    expect(screen.getByText(
-      'Lost track of the Epitaph catalog refresh — check the Logs tab to see whether it is still running.'
-    )).toBeInTheDocument()
+    // Releasing the button is the whole of it: the usual cause is a stream
+    // that missed the events for a sync that ran fine, and naming the store in
+    // the banner reported a fault the user had no way to act on. Asserted on
+    // the live region rather than on the removed wording, which any other
+    // stray message would have satisfied just as well.
+    expect(region).toBeEmptyDOMElement()
   })
 
-  // Both claims expire into the same banner, and the price one goes first
-  // here. Its notice is the newer of the two, so the stock expiry behind it
-  // has to stay quiet -- which it only does if the price expiry's own write
-  // was counted. It used to go through setSyncMessage and be invisible.
-  it('leaves a newer price lost-track notice alone when a stock claim expires behind it', async () => {
+  // A stock click no longer writes to the banner, so it must not take the
+  // banner from a price refresh that did: the price response is then thrown
+  // away by !ownsStatus() while its own "Starting…" line stays up, and its
+  // finally has already cleared priceRefreshStarting, cancelling the one timer
+  // that could have replaced it. busyStatusMessage still holds that line, so
+  // it spins with no Dismiss until a reload.
+  it('lets a price refresh report its own outcome when a silent stock claim is taken behind it', async () => {
     vi.useFakeTimers()
     getCrawlers.mockResolvedValue([CATALOG_CRAWLER])
-    postCrawlStart.mockReturnValue(new Promise(() => {}))
-    postStockSyncStart.mockReturnValue(new Promise(() => {}))
+    let answerPrice: (value: unknown) => void = () => {}
+    postCrawlStart.mockReturnValue(new Promise((r) => { answerPrice = r }))
     render(<App />)
     const settle = () => act(async () => {})
     await settle()
@@ -331,25 +336,23 @@ describe('In Stock tab', () => {
     const priceRow = screen.getByText('Run price crawlers immediately.').closest('tr') as HTMLElement
     fireEvent.click(priceRow.querySelector('button') as HTMLButtonElement)
     await settle()
+    expect(screen.getByText('Starting price refresh for records with no price yet…')).toBeInTheDocument()
 
-    // The store's Refresh follows five seconds later, so its claim outlives
-    // the price one by five seconds.
-    await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+    // The store's Refresh is clicked while the price POST is still in flight,
+    // and its own events never arrive.
     fireEvent.click(screen.getByTitle('Refresh Epitaph catalog now'))
     await settle()
 
-    await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
-    const priceLost = 'Lost track of the price refresh — check the Logs tab to see whether it started.'
-    expect(screen.getByText(priceLost)).toBeInTheDocument()
+    answerPrice({ enqueued: 3 })
+    await settle()
+    await act(async () => { await vi.advanceTimersByTimeAsync(20_000) })
 
-    await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
-    expect(screen.getByText(priceLost)).toBeInTheDocument()
-    expect(screen.queryByText(/Lost track of the Epitaph catalog refresh/)).not.toBeInTheDocument()
-    // Quiet about it, but it still let its own button go.
-    expect(screen.getByTitle('Refresh Epitaph catalog now')).not.toBeDisabled()
+    expect(screen.getByText('Price refresh requested for 3 records.')).toBeInTheDocument()
+    expect(screen.queryByText('Starting price refresh for records with no price yet…')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Dismiss/i })).toBeInTheDocument()
   })
 
-  // The expiry must not talk over whatever did arrive in the meantime.
+  // The expiry must not clear or talk over whatever did arrive in the meantime.
   it('leaves a real progress message alone when the claim expires behind it', async () => {
     vi.useFakeTimers()
     getCrawlers.mockResolvedValue([CATALOG_CRAWLER])

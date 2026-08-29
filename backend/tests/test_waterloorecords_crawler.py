@@ -483,3 +483,155 @@ async def test_search_resolves_the_variant_price_when_the_low_bound_is_unreadabl
 
     assert variants.call_count == 1
     assert [r["price"] for r in results] == [27.99]
+
+
+@respx.mock
+async def test_search_does_not_offer_vinyl_for_a_cd_release():
+    """A release crawler runs for every release, not just the vinyl ones.
+
+    The product-type gate filters what the store *sells* down to vinyl, so
+    without a target-side gate a CD release would take the LP of the same album
+    -- and db.upsert_stock_item_from_release() writes the release's own format
+    onto the row, putting a "CD" in the Store tab with an LP's url and price.
+    Settled before the request, so the store is never asked.
+    """
+    suggest = _mock([_GEESE_LP])
+
+    results = await Crawler().search(
+        {"discogs_id": "r1", "artist": "Geese", "title": "Getting Killed",
+         "format": "CD"}, None
+    )
+
+    assert results == []
+    assert suggest.call_count == 0
+
+
+@respx.mock
+async def test_search_does_not_offer_vinyl_for_any_other_discogs_medium():
+    """A release target is gated by allowlist, so the long tail fails closed.
+
+    Discogs' format names are a closed vocabulary, and enumerating the ones to
+    reject was wrong twice: `Shellac` and `Acetate` slipped through first, then
+    `DAT`, `Laserdisc` and the rest of the tail. Naming what may pass instead
+    needs no term added for a medium nobody thought of -- including one Discogs
+    adds after this is written.
+
+    "A record you put a needle on" is not the test either. This store sells new
+    vinyl, so a pre-war 78 and a one-off lacquer are as wrong a match as a CD,
+    and a flexi or lathe cut is worse than both: each is usually an alternate
+    pressing of an album that also exists as a standard LP, which is exactly
+    when the title match succeeds and the wrong price gets published.
+    """
+    others = (
+        "CD", "CDr", "Cassette", "Microcassette", "File", "DVD", "DVD-Video",
+        "Blu-ray", "SACD", "MiniDisc", "8-Track Cartridge", "Reel-To-Reel",
+        "VHS", "Betamax", "DCC", "DAT", "Cylinder", "Laserdisc",
+        "Memory Stick", "UMD", "Elcaset", "Hybrid", "Edison Diamond Disc",
+        "Shellac", "Acetate", "Flexi-disc", "Lathe Cut",
+    )
+    for fmt in others:
+        suggest = _mock([_GEESE_LP])
+
+        results = await Crawler().search(
+            {"discogs_id": "r1", "artist": "Geese", "title": "Getting Killed",
+             "format": fmt}, None
+        )
+
+        assert results == [], fmt
+        assert suggest.call_count == 0, fmt
+
+
+@respx.mock
+async def test_search_runs_for_every_discogs_format_that_may_hold_vinyl():
+    """The other side of the allowlist, which is what stops it over-rejecting.
+
+    `Box Set` and `All Media` are multi-format containers that can perfectly
+    well hold vinyl, so Discogs has not actually answered the question there;
+    an empty format is not an answer either. All three search and lean on the
+    product-type gate, because rejecting the one format this crawler exists to
+    serve is the failure on the other side of this gate.
+    """
+    _mock([_GEESE_LP])
+
+    for fmt in ("Vinyl", "Box Set", "All Media", ""):
+        results = await Crawler().search(
+            {"discogs_id": "r1", "artist": "Geese", "title": "Getting Killed",
+             "format": fmt}, None
+        )
+        assert [r["price"] for r in results] == [24.99], fmt
+
+
+@respx.mock
+async def test_search_does_not_offer_vinyl_for_a_store_written_78():
+    """The same medium, under the other vocabulary this crawler receives.
+
+    A stock-item target has no discogs_id and carries whatever a sibling store
+    crawler wrote, not Discogs' controlled name -- and crawlers/amoeba.py reads
+    shellac off a title's trailing "(78)" and stores the bare "78"
+    (test_extract_format_reads_trailing_token pins that). Waterloo is
+    dispatched for stock-item targets too, so rejecting "Shellac" alone would
+    have left the identical row reaching it under a different label.
+    """
+    for fmt in ("78", "78rpm", "CD", "Cassette"):
+        suggest = _mock([_GEESE_LP])
+
+        results = await Crawler().search(
+            {"item_key": "k1", "artist": "Geese", "title": "Getting Killed",
+             "format": fmt}, None
+        )
+
+        assert results == [], fmt
+        assert suggest.call_count == 0, fmt
+
+
+@respx.mock
+async def test_search_does_not_read_a_year_as_a_78():
+    # The one numeric term in the stock-item gate is anchored on the left for
+    # this: a bare "78" substring would match any format carrying a year.
+    _mock([_GEESE_LP])
+
+    results = await Crawler().search(
+        {"item_key": "k1", "artist": "Geese", "title": "Getting Killed",
+         "format": "1978 Reissue"}, None
+    )
+
+    assert [r["price"] for r in results] == [24.99]
+
+
+@respx.mock
+async def test_search_runs_for_a_store_written_vinyl_format():
+    """Why the stock-item side is a denylist and not the release side's allowlist.
+
+    These formats are open-ended free text rather than a controlled vocabulary,
+    so the release allowlist would reject every one of them -- and they are
+    vinyl by construction, since the crawler that wrote the row had already
+    filtered its own catalog to vinyl.
+    """
+    _mock([_GEESE_LP])
+
+    for fmt in ("LP", "2xLP", '7"', '12"', "Vinyl, LP, Album", ""):
+        results = await Crawler().search(
+            {"item_key": "k1", "artist": "Geese", "title": "Getting Killed",
+             "format": fmt}, None
+        )
+        assert [r["price"] for r in results] == [24.99], fmt
+
+
+@respx.mock
+async def test_search_raises_when_the_product_payload_carries_no_variants():
+    """A 200 with no variants is malformed, not a product nobody can buy.
+
+    This lookup decides both availability and price, so treating an empty or
+    absent `variants` as an answer would publish an unpriced row on the
+    strength of a payload it never read -- and record the site healthy while
+    doing it. Per CLAUDE.md's crawler contract, a failure raises.
+    """
+    handle = "malformed-lp"
+    for payload in ({"variants": []}, {"variants": None}, {}):
+        _mock([_product("Geese - Getting Killed [LP]", price="24.99",
+                        price_max="29.99", handle=handle)])
+        respx.get(f"https://waterloorecords.com/products/{handle}.js").mock(
+            return_value=httpx.Response(200, json=payload)
+        )
+        with pytest.raises(RuntimeError):
+            await Crawler().search({"artist": "Geese", "title": "Getting Killed"}, None)
