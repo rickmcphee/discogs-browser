@@ -58,6 +58,59 @@ jobs:
           fetch-depth: 1
 
       - uses: anthropics/claude-code-action@a874e9ecd7bb36efdad65429c6b35815f5a08f10 # v1
+        id: claude
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           label_trigger: "claude"
+          # Asks for a pull request title and body alongside the work, so the
+          # step below opens something readable rather than a bare "Closes #N".
+          # The descriptions are the only instruction Claude gets here: a
+          # `prompt` input would switch the action into automation mode and
+          # break the label trigger entirely.
+          claude_args: |
+            --json-schema '{"type":"object","properties":{"pr_title":{"type":"string","description":"Imperative one-line pull request title for the change you committed. Empty if you committed nothing."},"pr_body":{"type":"string","description":"Pull request body filling the section headings of .github/pull_request_template.md: What changed, Verification with the commands you ran and their output, Spec drift, Checklist. Empty if you committed nothing."}},"required":[]}'
+
+      # Only on the label. Every run cuts its own branch, so opening a pull
+      # request per `@claude` comment would stack a separate one per follow-up;
+      # those keep the prefilled link the action posts on the issue.
+      - name: Open a pull request for Claude's branch
+        if: >-
+          steps.claude.outputs.branch_name != '' &&
+          github.event_name == 'issues' && github.event.action == 'labeled'
+        env:
+          GH_TOKEN: ${{ steps.claude.outputs.github_token }}
+          BRANCH: ${{ steps.claude.outputs.branch_name }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          STRUCTURED: ${{ steps.claude.outputs.structured_output }}
+        # Every one of these values reaches the script through the environment
+        # rather than `${{ }}` interpolation. An issue title is written by
+        # whoever opened the issue, and interpolating one into a run block
+        # substitutes it before bash parses the line, so a crafted title would
+        # execute here.
+        run: |
+          set -euo pipefail
+
+          if ! git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            echo "No remote branch $BRANCH: Claude committed nothing. Nothing to open."
+            exit 0
+          fi
+
+          if [ "$(gh pr list --head "$BRANCH" --state open --json number --jq 'length')" != "0" ]; then
+            echo "A pull request for $BRANCH is already open."
+            exit 0
+          fi
+
+          title=""
+          body=""
+          if [ -n "${STRUCTURED:-}" ]; then
+            title=$(jq -r '.pr_title // empty' <<<"$STRUCTURED" 2>/dev/null || true)
+            body=$(jq -r '.pr_body // empty' <<<"$STRUCTURED" 2>/dev/null || true)
+          fi
+          [ -n "$title" ] || title="$ISSUE_TITLE"
+          [ -n "$body" ] || body="Opened automatically for the \`claude\` label run on this issue. Claude reported no summary, so this body is a placeholder: read the diff."
+
+          printf '%s\n\nCloses #%s\n' "$body" "$ISSUE_NUMBER" > "$RUNNER_TEMP/pr-body.md"
+
+          gh pr create --base main --head "$BRANCH" \
+            --title "$title" --body-file "$RUNNER_TEMP/pr-body.md"
