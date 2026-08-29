@@ -415,10 +415,11 @@ This site's findings, from the `robots.txt` captured 2026-08-24:
   defaulting to 30s. No detail-page fan-out. `iter_products()` fails fast
   on 429 and gives up after `consecutive_failure_limit` on anything else.
   **(2026-08-28: superseded by the conversion below.** The load is no longer
-  a per-sync walk. It is one `/search/suggest.json` request per library
-  release the store could plausibly stock — a target on another medium is
-  rejected without asking — spaced by `_paced_search`'s per-site gap, plus at
-  most one
+  a per-sync walk. It is one `/search/suggest.json` request per eligible
+  *target* the store could plausibly stock — library releases and, because
+  `requires_discogs_release` is `False`, queued stock items as well; a target
+  on another medium is rejected without asking — spaced by `_paced_search`'s
+  per-site gap, plus at most one
   `/products/<handle>.js` per *closest-ranked* match — and only where the
   product's own `price_min` and `price_max` disagree, which most do not.
   Those lookups are paced by the crawler itself at the same
@@ -562,13 +563,24 @@ What the conversion had to get right:
   rejecting the one format the crawler exists to serve. Rejecting costs no
   site-health signal either way, per `empty_result_is_expected` below.
 
-  Matched as substrings for two reasons: Discogs qualifies these names (`CDr`,
-  `DVD-Video`, `8-Track Cartridge`), and `search()` also receives **stock-item
-  targets** — `get_eligible_crawlers()` admits a release crawler with
-  `requires_discogs_release = False` for those too — whose format is whatever
-  a sibling store crawler wrote (`LP`, `2xLP`, `7"`) rather than Discogs'
-  controlled vocabulary. No vinyl format written by either side contains any
-  listed term, which is what makes the substring test safe across both.
+  **Two vocabularies reach this gate, not one**, and that is what decides its
+  shape. A release target carries Discogs' controlled format name; a
+  **stock-item** target carries whatever a sibling store crawler wrote (`LP`,
+  `2xLP`, `7"`) — `get_eligible_crawlers()` admits a release crawler with
+  `requires_discogs_release = False` for those too. The list must cover both,
+  and the same medium can appear under a different name in each: Discogs
+  writes shellac as `Shellac`, while `crawlers/amoeba.py` reads it off a
+  title's trailing `(78)` and stores the bare `78`. Rejecting only the Discogs
+  spelling leaves the identical row arriving under the other label.
+
+  This also rules out the otherwise-tidier shape of an exact-match allowlist
+  over Discogs' format names — it would reject every stock-item target. So the
+  terms are matched as plain substrings, which is safe because Discogs
+  qualifies these names (`CDr`, `DVD-Video`, `8-Track Cartridge`,
+  `Microcassette`) and no vinyl format written by either side contains one.
+  The single numeric term is the exception and is anchored on the left, open
+  on the right: `78rpm` must match, a year in some future format string must
+  not.
 
 - **A malformed detail response is a failure, not an answer.** The
   `/products/<handle>.js` lookup is the only thing that decides *both*

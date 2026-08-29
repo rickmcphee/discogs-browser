@@ -539,6 +539,41 @@ async def test_search_does_not_offer_vinyl_for_another_record_medium():
 
 
 @respx.mock
+async def test_search_does_not_offer_vinyl_for_a_store_written_78():
+    """The same medium, under the other vocabulary this crawler receives.
+
+    A stock-item target carries whatever a sibling store crawler wrote, not
+    Discogs' controlled name -- and crawlers/amoeba.py reads shellac off a
+    title's trailing "(78)" and stores the bare "78"
+    (test_extract_format_reads_trailing_token pins that). Waterloo is
+    dispatched for stock-item targets too, so rejecting "Shellac" alone would
+    have left the identical row reaching it under a different label.
+    """
+    for fmt in ("78", "78rpm"):
+        suggest = _mock([_GEESE_LP])
+
+        results = await Crawler().search(
+            {"artist": "Geese", "title": "Getting Killed", "format": fmt}, None
+        )
+
+        assert results == [], fmt
+        assert suggest.call_count == 0, fmt
+
+
+@respx.mock
+async def test_search_does_not_read_a_year_as_a_78():
+    # The one numeric term in the gate is anchored on the left for this: a
+    # bare "78" substring would have matched any format string carrying a year.
+    _mock([_GEESE_LP])
+
+    results = await Crawler().search(
+        {"artist": "Geese", "title": "Getting Killed", "format": "1978 Reissue"}, None
+    )
+
+    assert [r["price"] for r in results] == [24.99]
+
+
+@respx.mock
 async def test_search_runs_for_a_store_written_vinyl_format():
     # This crawler also reads stock-item targets, whose format is whatever a
     # sibling store crawler wrote rather than Discogs' controlled vocabulary --

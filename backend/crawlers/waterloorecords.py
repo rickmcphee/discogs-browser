@@ -56,16 +56,26 @@ _VINYL_PRODUCT_TYPES = frozenset({
 # an absent or unrecognised value is not an answer at all. Those still search
 # and lean on the product-type gate.
 #
-# Substrings, because Discogs qualifies these names ("CDr", "DVD-Video",
-# "8-Track Cartridge") and this also reads stock-item targets, whose format is
-# whatever a sibling store crawler wrote ("LP", "2xLP", "7\"") rather than
-# Discogs' controlled vocabulary. No vinyl format written by either -- Discogs'
-# "Vinyl" or a store's "LP" -- contains any of these.
-_OTHER_MEDIUM_FORMATS = (
+# Two vocabularies reach this, not one. A release target carries Discogs'
+# controlled format name; a stock-item target -- which get_eligible_crawlers()
+# also dispatches this crawler for, since requires_discogs_release is False --
+# carries whatever a sibling store crawler wrote ("LP", "2xLP", "7\""). The
+# list has to cover both, and the same medium appears under a different name
+# in each: Discogs writes shellac as "Shellac", while crawlers/amoeba.py reads
+# it off a title's trailing "(78)" and stores the bare "78".
+#
+# Plain substrings, because Discogs qualifies these names ("CDr", "DVD-Video",
+# "8-Track Cartridge", "Microcassette") and no vinyl format written by either
+# side -- Discogs' "Vinyl", a store's "LP" -- contains one.
+_OTHER_MEDIUM_RE = re.compile("|".join([
     "cd", "cassette", "file", "dvd", "blu-ray", "sacd", "minidisc",
     "8-track", "reel-to-reel", "vhs", "betamax", "dcc",
     "shellac", "acetate", "flexi", "lathe",
-)
+    # The one numeric term, so it is anchored rather than left as a bare
+    # substring: open on the right so "78rpm" still matches, closed on the
+    # left so a year inside some future format string never can.
+    r"\b78",
+]), re.IGNORECASE)
 
 # "Artist - Album [Format]", split on the FIRST spaced hyphen: album halves
 # legitimately contain further " - " runs ("10CC - Deceptive Bends - 180gm
@@ -155,8 +165,8 @@ class Crawler:
         # Settled before the request, not after: a release on another medium
         # has no right answer here, so asking would spend a request on the
         # store to reach the same empty result.
-        fmt = (release.get("format") or "").strip().lower()
-        if any(medium in fmt for medium in _OTHER_MEDIUM_FORMATS):
+        fmt = (release.get("format") or "").strip()
+        if _OTHER_MEDIUM_RE.search(fmt):
             log.info(
                 "[Waterloo Records] not searching for %r: %s is not a vinyl release",
                 query, release.get("format"),
