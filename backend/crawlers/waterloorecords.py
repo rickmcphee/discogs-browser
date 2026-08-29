@@ -42,31 +42,39 @@ _VINYL_PRODUCT_TYPES = frozenset({
 # on the catalog row; a stock-item target carries whatever a sibling store
 # crawler wrote instead.
 #
-# Listed when Discogs named a definite medium that a Waterloo vinyl product
-# cannot be. "Record you put a needle on" is NOT the test, and reading it that
-# way is what first let `Shellac` and `Acetate` through here: this store sells
-# new vinyl, so a pre-war 78 and a one-off lacquer are as wrong a match for it
-# as a CD is, and `Flexi-disc` and `Lathe Cut` are worse than either -- both
-# are usually alternate pressings of an album that also exists as a standard
-# LP, which is precisely when the title match succeeds and the wrong price
-# gets published.
+# Two vocabularies reach this gate, and each needs the opposite structure.
 #
-# What stays out of the list is only what Discogs left genuinely open: a
-# container format ("Box Set", "All Media") can perfectly well hold vinyl, and
-# an absent or unrecognised value is not an answer at all. Those still search
-# and lean on the product-type gate.
+# A RELEASE target carries Discogs' controlled format vocabulary
+# (discogs.parse_release() forwards formats[0].name unchanged), which is a
+# closed set -- so the gate names what may PASS. That is complete by
+# construction: `DAT`, `Cylinder`, `Laserdisc`, `Memory Stick` and every other
+# medium, including ones Discogs adds after this is written, fail closed
+# without anyone having to enumerate them. A denylist here was wrong twice
+# over before this, letting `Shellac` and `Acetate` through and then the rest
+# of the long tail, and every fix that only added terms invited the next gap.
 #
-# Two vocabularies reach this, not one. A release target carries Discogs'
-# controlled format name; a stock-item target -- which get_eligible_crawlers()
-# also dispatches this crawler for, since requires_discogs_release is False --
-# carries whatever a sibling store crawler wrote ("LP", "2xLP", "7\""). The
-# list has to cover both, and the same medium appears under a different name
-# in each: Discogs writes shellac as "Shellac", while crawlers/amoeba.py reads
-# it off a title's trailing "(78)" and stores the bare "78".
+# "A record you put a needle on" is NOT the test for what passes: this store
+# sells *new vinyl*, so a pre-war 78 (`Shellac`) and a one-off lacquer
+# (`Acetate`) are as wrong a match for it as a CD is, and `Flexi-disc` and
+# `Lathe Cut` are worse than either -- both are usually alternate pressings of
+# an album that also exists as a standard LP, which is precisely when the
+# title match succeeds and the wrong price gets published. Only the two
+# container formats join `Vinyl`: each can genuinely hold vinyl, so Discogs
+# has not actually answered the question there. Nor has it when the field is
+# empty, which is handled at the call site rather than here.
+_DISCOGS_VINYL_FORMATS = frozenset({"vinyl", "box set", "all media"})
+
+# A STOCK-ITEM target carries whatever a sibling store crawler wrote instead
+# ("LP", "2xLP", "7\""), which is open-ended free text, so the same allowlist
+# would reject every one of them. Those are vinyl by construction -- the
+# crawler that wrote the row had already filtered its own catalog to vinyl --
+# so the gate only has to catch the strays, and names what may NOT pass.
 #
-# Plain substrings, because Discogs qualifies these names ("CDr", "DVD-Video",
-# "8-Track Cartridge", "Microcassette") and no vinyl format written by either
-# side -- Discogs' "Vinyl", a store's "LP" -- contains one.
+# Plain substrings, because a store qualifies these names much as Discogs does
+# and no vinyl format written by either side contains one. The same medium can
+# appear under a different name in each vocabulary: Discogs writes shellac as
+# `Shellac`, while crawlers/amoeba.py reads it off a title's trailing "(78)"
+# and stores the bare "78".
 _OTHER_MEDIUM_RE = re.compile("|".join([
     "cd", "cassette", "file", "dvd", "blu-ray", "sacd", "minidisc",
     "8-track", "reel-to-reel", "vhs", "betamax", "dcc",
@@ -162,14 +170,24 @@ class Crawler:
         if not query:
             return []
 
-        # Settled before the request, not after: a release on another medium
+        # Settled before the request, not after: a target on another medium
         # has no right answer here, so asking would spend a request on the
         # store to reach the same empty result.
+        #
+        # Which test applies depends on which vocabulary wrote the format, and
+        # a release target is the one that carries Discogs' -- it comes from
+        # `catalog`, so it has a discogs_id; a stock-item target comes from
+        # `stock_item_identities`, which has no such column. An empty format
+        # is not an answer under either and always searches.
         fmt = (release.get("format") or "").strip()
-        if _OTHER_MEDIUM_RE.search(fmt):
+        if release.get("discogs_id"):
+            wrong_medium = bool(fmt) and fmt.lower() not in _DISCOGS_VINYL_FORMATS
+        else:
+            wrong_medium = bool(_OTHER_MEDIUM_RE.search(fmt))
+        if wrong_medium:
             log.info(
-                "[Waterloo Records] not searching for %r: %s is not a vinyl release",
-                query, release.get("format"),
+                "[Waterloo Records] not searching for %r: %s is not vinyl",
+                query, fmt,
             )
             return []
 

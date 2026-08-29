@@ -541,46 +541,57 @@ What the conversion had to get right:
   and album, and `db.upsert_stock_item_from_release()` writes the release's own
   format onto the row — so the Store tab would show a "CD" carrying an LP's url
   and price. `search()` therefore rejects a target on another medium before
-  querying, matching `release["format"]` (Discogs' `formats[0].name`, which
-  reaches `search()` on the catalog row) against `_OTHER_MEDIUM_FORMATS`.
-  Rejecting before the request rather than filtering after it also spends no
-  request on the store for a question with no right answer. `crawlers/amazon.py`
-  is the fleet precedent for a release crawler gating on the target's format.
+  querying, reading `release["format"]` — Discogs' `formats[0].name` on a
+  release target, and a store crawler's own string on a stock-item one, which
+  is what the two constants below are for. Rejecting before the request rather
+  than filtering after it also spends no request on the store for a question
+  with no right answer. `crawlers/amazon.py` is the fleet precedent for a
+  release crawler gating on the target's format.
 
-  The list holds every medium Discogs named definitely that a Waterloo vinyl
-  product cannot be. **"A record you put a needle on" is not the test**, and
-  reading it that way is what first let `Shellac` and `Acetate` through: this
-  store sells *new vinyl*, so a pre-war 78 and a one-off lacquer are as wrong
-  a match for it as a CD is. `Flexi-disc` and `Lathe Cut` are worse than
-  either — both are usually alternate pressings of an album that also exists
-  as a standard LP, which is exactly the case where the title match succeeds
-  and the wrong price gets published.
+  **Two vocabularies reach this gate, and each needs the opposite structure.**
+  That is the whole design, and getting it wrong cost three review rounds.
 
-  What stays *out* of the list is only what Discogs left genuinely open: a
-  container format (`Box Set`, `All Media`) can perfectly well hold vinyl, and
-  an absent or unrecognised value is not an answer at all. Both still search
-  and lean on the product-type gate — the failure that guards against is
-  rejecting the one format the crawler exists to serve. Rejecting costs no
-  site-health signal either way, per `empty_result_is_expected` below.
+  A **release** target carries Discogs' controlled format vocabulary —
+  `discogs.parse_release()` forwards `formats[0].name` unchanged — which is a
+  *closed* set, so `_DISCOGS_VINYL_FORMATS` names what may **pass**. That is
+  complete by construction: `DAT`, `Cylinder`, `Laserdisc`, `Memory Stick` and
+  every other medium fail closed without anyone enumerating them, including
+  ones Discogs adds after this is written. A denylist here was wrong twice
+  over — `Shellac` and `Acetate` first, then the rest of the tail — and each
+  fix that only added terms invited the next gap.
 
-  **Two vocabularies reach this gate, not one**, and that is what decides its
-  shape. A release target carries Discogs' controlled format name; a
-  **stock-item** target carries whatever a sibling store crawler wrote (`LP`,
-  `2xLP`, `7"`) — `get_eligible_crawlers()` admits a release crawler with
-  `requires_discogs_release = False` for those too. The list must cover both,
-  and the same medium can appear under a different name in each: Discogs
-  writes shellac as `Shellac`, while `crawlers/amoeba.py` reads it off a
-  title's trailing `(78)` and stores the bare `78`. Rejecting only the Discogs
-  spelling leaves the identical row arriving under the other label.
+  A **stock-item** target carries whatever a sibling store crawler wrote
+  (`LP`, `2xLP`, `7"`) — `get_eligible_crawlers()` admits a release crawler
+  with `requires_discogs_release = False` for those too — which is open-ended
+  free text, so the release allowlist would reject every one of them. Those
+  rows are vinyl by construction, since the crawler that wrote each had
+  already filtered its own catalog to vinyl, so `_OTHER_MEDIUM_RE` only has to
+  catch the strays and names what may **not** pass. The two are told apart by
+  `discogs_id`, which a `catalog` row has and a `stock_item_identities` row
+  does not.
 
-  This also rules out the otherwise-tidier shape of an exact-match allowlist
-  over Discogs' format names — it would reject every stock-item target. So the
-  terms are matched as plain substrings, which is safe because Discogs
-  qualifies these names (`CDr`, `DVD-Video`, `8-Track Cartridge`,
-  `Microcassette`) and no vinyl format written by either side contains one.
-  The single numeric term is the exception and is anchored on the left, open
-  on the right: `78rpm` must match, a year in some future format string must
-  not.
+  The same medium can be named differently in each vocabulary, which is the
+  trap: Discogs writes shellac as `Shellac`, while `crawlers/amoeba.py` reads
+  it off a title's trailing `(78)` and stores the bare `78`. Rejecting only
+  the Discogs spelling leaves the identical row arriving under the other
+  label. `_OTHER_MEDIUM_RE`'s terms are plain substrings, since a store
+  qualifies these names much as Discogs does and no vinyl format written by
+  either side contains one; the single numeric term is anchored on the left
+  and open on the right, so `78rpm` matches and a year never does.
+
+  **What passes, and why the allowlist is not narrower.** "A record you put a
+  needle on" is *not* the test: this store sells **new vinyl**, so a pre-war
+  78 (`Shellac`) and a one-off lacquer (`Acetate`) are as wrong a match for it
+  as a CD is, and `Flexi-disc` and `Lathe Cut` are worse than either — both
+  are usually alternate pressings of an album that also exists as a standard
+  LP, which is exactly when the title match succeeds and the wrong price gets
+  published. Only the two container formats join `Vinyl`: `Box Set` and `All
+  Media` can genuinely hold vinyl, so Discogs has not answered the question
+  there, and nor has it when the field is empty. Those still search and lean
+  on the product-type gate, because rejecting the one format this crawler
+  exists to serve is the failure on the other side of this gate. Rejecting
+  costs no site-health signal either way, per `empty_result_is_expected`
+  below.
 
 - **A malformed detail response is a failure, not an answer.** The
   `/products/<handle>.js` lookup is the only thing that decides *both*

@@ -498,7 +498,8 @@ async def test_search_does_not_offer_vinyl_for_a_cd_release():
     suggest = _mock([_GEESE_LP])
 
     results = await Crawler().search(
-        {"artist": "Geese", "title": "Getting Killed", "format": "CD"}, None
+        {"discogs_id": "r1", "artist": "Geese", "title": "Getting Killed",
+         "format": "CD"}, None
     )
 
     assert results == []
@@ -506,32 +507,34 @@ async def test_search_does_not_offer_vinyl_for_a_cd_release():
 
 
 @respx.mock
-async def test_search_does_not_offer_vinyl_for_a_cassette_release():
-    suggest = _mock([_GEESE_LP])
+async def test_search_does_not_offer_vinyl_for_any_other_discogs_medium():
+    """A release target is gated by allowlist, so the long tail fails closed.
 
-    results = await Crawler().search(
-        {"artist": "Geese", "title": "Getting Killed", "format": "Cassette"}, None
-    )
+    Discogs' format names are a closed vocabulary, and enumerating the ones to
+    reject was wrong twice: `Shellac` and `Acetate` slipped through first, then
+    `DAT`, `Laserdisc` and the rest of the tail. Naming what may pass instead
+    needs no term added for a medium nobody thought of -- including one Discogs
+    adds after this is written.
 
-    assert results == []
-    assert suggest.call_count == 0
-
-
-@respx.mock
-async def test_search_does_not_offer_vinyl_for_another_record_medium():
-    """"Record you put a needle on" is not the test; "what this store sells" is.
-
-    Waterloo sells new vinyl, so a pre-war 78 and a one-off lacquer are as
-    wrong a match for it as a CD, and a flexi or lathe cut is worse than
-    either -- both are usually alternate pressings of an album that also
-    exists as a standard LP, which is exactly when the title match succeeds
-    and the wrong price gets published.
+    "A record you put a needle on" is not the test either. This store sells new
+    vinyl, so a pre-war 78 and a one-off lacquer are as wrong a match as a CD,
+    and a flexi or lathe cut is worse than both: each is usually an alternate
+    pressing of an album that also exists as a standard LP, which is exactly
+    when the title match succeeds and the wrong price gets published.
     """
-    for fmt in ("Shellac", "Acetate", "Flexi-disc", "Lathe Cut"):
+    others = (
+        "CD", "CDr", "Cassette", "Microcassette", "File", "DVD", "DVD-Video",
+        "Blu-ray", "SACD", "MiniDisc", "8-Track Cartridge", "Reel-To-Reel",
+        "VHS", "Betamax", "DCC", "DAT", "Cylinder", "Laserdisc",
+        "Memory Stick", "UMD", "Elcaset", "Hybrid", "Edison Diamond Disc",
+        "Shellac", "Acetate", "Flexi-disc", "Lathe Cut",
+    )
+    for fmt in others:
         suggest = _mock([_GEESE_LP])
 
         results = await Crawler().search(
-            {"artist": "Geese", "title": "Getting Killed", "format": fmt}, None
+            {"discogs_id": "r1", "artist": "Geese", "title": "Getting Killed",
+             "format": fmt}, None
         )
 
         assert results == [], fmt
@@ -539,21 +542,42 @@ async def test_search_does_not_offer_vinyl_for_another_record_medium():
 
 
 @respx.mock
+async def test_search_runs_for_every_discogs_format_that_may_hold_vinyl():
+    """The other side of the allowlist, which is what stops it over-rejecting.
+
+    `Box Set` and `All Media` are multi-format containers that can perfectly
+    well hold vinyl, so Discogs has not actually answered the question there;
+    an empty format is not an answer either. All three search and lean on the
+    product-type gate, because rejecting the one format this crawler exists to
+    serve is the failure on the other side of this gate.
+    """
+    _mock([_GEESE_LP])
+
+    for fmt in ("Vinyl", "Box Set", "All Media", ""):
+        results = await Crawler().search(
+            {"discogs_id": "r1", "artist": "Geese", "title": "Getting Killed",
+             "format": fmt}, None
+        )
+        assert [r["price"] for r in results] == [24.99], fmt
+
+
+@respx.mock
 async def test_search_does_not_offer_vinyl_for_a_store_written_78():
     """The same medium, under the other vocabulary this crawler receives.
 
-    A stock-item target carries whatever a sibling store crawler wrote, not
-    Discogs' controlled name -- and crawlers/amoeba.py reads shellac off a
-    title's trailing "(78)" and stores the bare "78"
+    A stock-item target has no discogs_id and carries whatever a sibling store
+    crawler wrote, not Discogs' controlled name -- and crawlers/amoeba.py reads
+    shellac off a title's trailing "(78)" and stores the bare "78"
     (test_extract_format_reads_trailing_token pins that). Waterloo is
     dispatched for stock-item targets too, so rejecting "Shellac" alone would
     have left the identical row reaching it under a different label.
     """
-    for fmt in ("78", "78rpm"):
+    for fmt in ("78", "78rpm", "CD", "Cassette"):
         suggest = _mock([_GEESE_LP])
 
         results = await Crawler().search(
-            {"artist": "Geese", "title": "Getting Killed", "format": fmt}, None
+            {"item_key": "k1", "artist": "Geese", "title": "Getting Killed",
+             "format": fmt}, None
         )
 
         assert results == [], fmt
@@ -562,12 +586,13 @@ async def test_search_does_not_offer_vinyl_for_a_store_written_78():
 
 @respx.mock
 async def test_search_does_not_read_a_year_as_a_78():
-    # The one numeric term in the gate is anchored on the left for this: a
-    # bare "78" substring would have matched any format string carrying a year.
+    # The one numeric term in the stock-item gate is anchored on the left for
+    # this: a bare "78" substring would match any format carrying a year.
     _mock([_GEESE_LP])
 
     results = await Crawler().search(
-        {"artist": "Geese", "title": "Getting Killed", "format": "1978 Reissue"}, None
+        {"item_key": "k1", "artist": "Geese", "title": "Getting Killed",
+         "format": "1978 Reissue"}, None
     )
 
     assert [r["price"] for r in results] == [24.99]
@@ -575,41 +600,19 @@ async def test_search_does_not_read_a_year_as_a_78():
 
 @respx.mock
 async def test_search_runs_for_a_store_written_vinyl_format():
-    # This crawler also reads stock-item targets, whose format is whatever a
-    # sibling store crawler wrote rather than Discogs' controlled vocabulary --
-    # so the gate has to leave those alone too.
+    """Why the stock-item side is a denylist and not the release side's allowlist.
+
+    These formats are open-ended free text rather than a controlled vocabulary,
+    so the release allowlist would reject every one of them -- and they are
+    vinyl by construction, since the crawler that wrote the row had already
+    filtered its own catalog to vinyl.
+    """
     _mock([_GEESE_LP])
 
-    for fmt in ("LP", "2xLP", '7"', "Vinyl, LP, Album"):
+    for fmt in ("LP", "2xLP", '7"', '12"', "Vinyl, LP, Album", ""):
         results = await Crawler().search(
-            {"artist": "Geese", "title": "Getting Killed", "format": fmt}, None
-        )
-        assert [r["price"] for r in results] == [24.99], fmt
-
-
-@respx.mock
-async def test_search_runs_for_a_vinyl_release():
-    # The gate rejects other media, so a vinyl target has to still reach the
-    # store -- otherwise it would reject the only format this crawler serves.
-    _mock([_GEESE_LP, _GEESE_CD])
-
-    results = await Crawler().search(
-        {"artist": "Geese", "title": "Getting Killed", "format": "Vinyl"}, None
-    )
-
-    assert [r["price"] for r in results] == [24.99]
-
-
-@respx.mock
-async def test_search_runs_for_a_container_format_release():
-    # "Box Set" and friends can perfectly well hold vinyl, and an unrecognised
-    # value is evidence of nothing, so neither is rejected -- the product-type
-    # gate still decides what comes back.
-    _mock([_GEESE_LP])
-
-    for fmt in ("Box Set", "All Media", ""):
-        results = await Crawler().search(
-            {"artist": "Geese", "title": "Getting Killed", "format": fmt}, None
+            {"item_key": "k1", "artist": "Geese", "title": "Getting Killed",
+             "format": fmt}, None
         )
         assert [r["price"] for r in results] == [24.99], fmt
 
