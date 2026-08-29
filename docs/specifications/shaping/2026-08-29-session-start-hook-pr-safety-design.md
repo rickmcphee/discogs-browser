@@ -60,9 +60,14 @@ See <https://github.com/anthropics/claude-code-action/blob/main/docs/security.md
   **Amendment (2026-08-29):** that review happened, and the triggers are back —
   `issue_comment` on pull requests, `pull_request_review_comment` and
   `pull_request_review`. It does not weaken the paragraph above, because it does
-  not run Claude against a fork head at all: a first step resolves the pull
-  request's head repository and skips the rest unless it is this one, so the
-  wider surface is excluded rather than mitigated. The hook fix remains the
+  not run Claude against a fork head at all. Two things stop it, and the
+  weaker one is the workflow's: a first step skips the run unless the head is
+  in this repository and a trusted author opened it. The load-bearing one is
+  GitHub's — secrets are not passed to a runner for a workflow triggered from a
+  forked repository, and `GITHUB_TOKEN` is read-only there, so on these events
+  a fork cannot obtain the credentials this paragraph is about even by
+  supplying its own workflow file. The wider surface is excluded rather than
+  mitigated. The hook fix remains the
   precondition it is described as here, and everything below still holds
   unchanged — a Claude Code session opened on a pull request head must still
   find a launcher that declines to provision it. See

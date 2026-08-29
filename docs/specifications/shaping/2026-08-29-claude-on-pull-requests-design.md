@@ -66,13 +66,27 @@ here rather than quietly rewriting the claim, because the shape of the mistake i
 the useful part: a gate on *code* was described as if it were a gate on
 *everything a pull request carries*.
 
-### The code gate: a same-repository head
+### The code gate: a same-repository head, and a trusted author
 
-The job's first step resolves the pull request's head repository and skips every
-step after it unless that head is in this repository. A branch pushed by the
-action or by the owner qualifies; a fork's head never does. Pushing to a branch
-in this repository requires write access, so the diff, and the pull request body
-that opens it, are the work of someone already trusted.
+The job's first step skips every step after it unless the pull request clears
+two checks: its head is in this repository, and its `author_association` is
+`OWNER`, `MEMBER` or `COLLABORATOR`.
+
+The head check alone was the first version, on the reasoning that pushing to a
+branch here requires write access, so the diff *and the body that opens it* are
+a trusted person's work. The second half of that does not follow, and Copilot
+caught it: **a pull request's author is independent of whoever pushed its head
+branch.** Opening one between two branches that already exist here pushes
+nothing. And the body is not covered by the discussion gate below — the action
+adds it to the prompt on a separate path from `filterCommentsByActor`, guarded
+against post-trigger edits but not against its author. So a head check by itself
+establishes trust in the branch contents and not in the prose wrapped round them,
+which is the same code-versus-prose confusion this design already made once.
+
+The author check closes it, and is cheap: one more field from the same API call
+the step already makes. Whether a non-write user can in fact open a pull request
+from an existing branch here was not the deciding question — the inference was
+invalid either way, and a gate should not rest on an argument that does not hold.
 
 This costs the flow above nothing, which is what makes it the right shape rather
 than a compromise. The pull requests that draw a Copilot review are opened from
@@ -202,12 +216,17 @@ Its decision logic was exercised directly, by extracting the `run:` block from
 the workflow and driving it with a stubbed `gh` for each answer the API can
 give:
 
-| Head reported by the API | Step exit | Output | Job summary |
+| Head | Author association | Step exit | Output |
 | --- | --- | --- | --- |
-| this repository | 0 | `same_repo=true` | — |
-| a fork | 0 | `same_repo=false` | written |
-| null, i.e. a deleted fork | 0 | `same_repo=false` | written |
-| an error | 1, the step fails | none | — |
+| this repository | `OWNER` / `MEMBER` / `COLLABORATOR` | 0 | `same_repo=true` |
+| this repository | `NONE` | 0 | `same_repo=false` |
+| this repository | `CONTRIBUTOR` | 0 | `same_repo=false` |
+| a fork | any | 0 | `same_repo=false` |
+| null, i.e. a deleted fork | any | 0 | `same_repo=false` |
+| an error | — | 1, the step fails | none |
+
+Every skip writes its reason to the job summary, naming which of the two checks
+failed rather than reporting a bare refusal.
 
 The last row is the fail-closed claim, and it holds for a reason worth stating
 because it is easy to get wrong when editing these steps: a step-level `if:`
@@ -215,18 +234,39 @@ that is not `always()` or `failure()` carries an implicit `success()`, so a
 failed guard skips the checkout and the action rather than letting them run with
 the output unset.
 
-Two things remain assumed rather than shown, and no amount of local testing
-reaches either.
+### Why the fork case does not rest on this guard at all
 
-That GitHub dispatches a fork's pull request to this workflow from a file this
-repository controls, rather than from the fork's own copy. It does not run a
-fork-supplied workflow definition with the base repository's secrets, which is
-foundational rather than particular to this workflow — but no fork pull request
-was opened here to watch it happen.
+An earlier draft of this section assumed GitHub dispatches a fork's pull request
+from a workflow file this repository controls. That assumption should not be
+relied on, and Copilot was right to challenge it: the review events demonstrably
+run the workflow from the pull request's own ref, which is how the review half of
+this feature came to be live on its own pull request before merging. A fork could
+therefore supply a `claude.yml` with this guard deleted.
 
-And the `issue_comment` path, which by GitHub's own dispatch rules (see the
-section above) can only ever run from the default branch, so it is unobservable
-until this merges. That is a property of the event, not a gap in the testing.
+It does not matter, and the reason is a stronger guarantee than the guard.
+GitHub's events reference says this under `pull_request_review` and
+`pull_request_review_comment` specifically:
+
+> With the exception of `GITHUB_TOKEN`, secrets are not passed to the runner when
+> a workflow is triggered from a forked repository.
+
+> The `GITHUB_TOKEN` has read-only permissions in pull requests from forked
+> repositories.
+
+So the run a fork could arrange has no `CLAUDE_CODE_OAUTH_TOKEN` — the action
+cannot authenticate and does not start — and no write token, whatever
+`permissions:` asks for. The thing being protected against, Claude reading a
+stranger's code while holding this job's credentials, cannot be assembled on
+these events at all. The guard is defence in depth over that, and its real work
+is the author check above, which applies to pull requests that *do* carry
+secrets.
+See <https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows>.
+
+### What is still unobservable
+
+The `issue_comment` path, which by GitHub's own dispatch rules (see the section
+above) can only ever run from the default branch, so it cannot be exercised until
+this merges. That is a property of the event, not a gap in the testing.
 
 ## Why Copilot does not trigger this itself
 
