@@ -154,7 +154,10 @@ is on the left. Desktop keeps this dropdown, at its original `w-72`. See
   set. Toggling one fires the same `POST` with the updated full set.
 - A "Show all" link at the top clears the hidden set entirely (empties the
   `POST` body) — a plain affordance for undoing an over-aggressive genre
-  toggle, not a separately-asked design decision.
+  toggle, not a separately-asked design decision. A "Clear all" link next to
+  it does the inverse, setting the hidden set to every crawler id, for
+  quickly starting from none-visible instead of unchecking each store by
+  hand.
 
 ## Settings / nav changes
 
