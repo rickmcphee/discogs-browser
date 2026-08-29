@@ -612,6 +612,11 @@ jobs:
           # warned about. Warning alone let the step exit 0 having refreshed
           # nothing at all -- the same silent no-op the job exists to prevent,
           # arriving from inside the job itself.
+          #
+          # Each entry carries its base, so the one-line summary at the end
+          # stays as useful as the per-PR warnings above it: on a mixed-base
+          # run, "#222 #400" alone cannot say which branch either is behind,
+          # and that summary is the annotation a reader sees first.
           failed=""
 
           for entry in $open_prs; do
@@ -647,7 +652,7 @@ jobs:
                   # Per-PR, so one stuck PR cannot strand the rest -- but
                   # recorded, so the step still ends red.
                   echo "::warning::could not update PR #$n (base $base) automatically"
-                  failed="$failed #$n"
+                  failed="$failed #$n($base)"
                 fi
                 ;;
 
@@ -726,7 +731,7 @@ jobs:
                 # would report "nothing to do" and skip the PR silently --
                 # precisely what the polling is for.
                 echo "::warning::could not resolve mergeable_state for PR #$n after polling; it may still be behind $base and was not refreshed."
-                failed="$failed #$n"
+                failed="$failed #$n($base)"
                 ;;
               *)
                 echo "PR #$n (base $base) is '$state'; nothing for this job to do."
@@ -735,6 +740,6 @@ jobs:
           done
 
           if [ -n "$failed" ]; then
-            echo "::error::could not refresh:$failed. Those PRs may still be behind their base branch -- re-run this workflow, or update them by hand."
+            echo "::error::could not refresh:$failed. Each is annotated with the base it may still be behind -- re-run this workflow, or update them by hand."
             exit 1
           fi
