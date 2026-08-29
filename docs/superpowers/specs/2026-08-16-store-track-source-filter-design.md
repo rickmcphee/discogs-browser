@@ -157,7 +157,11 @@ is on the left. Desktop keeps this dropdown, at its original `w-72`. See
   toggle, not a separately-asked design decision. A "Clear all" link next to
   it does the inverse, setting the hidden set to every crawler id, for
   quickly starting from none-visible instead of unchecking each store by
-  hand.
+  hand. The panel's own `disabled` prop only tracks the hidden-set fetch, not
+  the independent crawler-list fetch, so "Clear all" carries its own disabled
+  state (`crawlers.length === 0`) — otherwise, opened during that window, it
+  would compute the same empty set as "Show all" and silently discard
+  whatever the user had hidden.
 
 ## Settings / nav changes
 

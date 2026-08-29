@@ -139,6 +139,15 @@ describe('SourceFilter', () => {
     expect((onChange as any).mock.calls[0][0].length).toBe(4)
   })
 
+  it('disables Clear all and does not call onChange while crawlers have not loaded yet', () => {
+    const onChange = renderFilter({ crawlers: [], hiddenCrawlerIds: [2, 3, 4] })
+    openDropdown()
+    const clearAll = screen.getByText('Clear all')
+    expect(clearAll).toBeDisabled()
+    fireEvent.click(clearAll)
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
   it('closes the dropdown when clicking outside it', () => {
     render(
       <div>

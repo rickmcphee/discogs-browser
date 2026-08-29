@@ -112,7 +112,8 @@ function SourceFilter({ crawlers, hiddenCrawlerIds, onChange, disabled = false }
           <button
             type="button"
             onClick={() => onChange(crawlers.map((c) => c.id))}
-            className="text-xs text-gray-400 hover:text-white"
+            disabled={crawlers.length === 0}
+            className="text-xs text-gray-400 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-gray-400"
           >
             Clear all
           </button>
