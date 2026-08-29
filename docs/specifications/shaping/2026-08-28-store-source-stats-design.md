@@ -6,10 +6,16 @@ Branch: `claude/store-stats-pie-chart-22pc3p`
 **Amendment (2026-08-29, issue #235):** the Store tab's toolbar no longer
 shows `{total} items` — it was redundant with this panel's own total and is
 removed for `scope === 'store'` in `StockBrowser.tsx` (kept for Track, which
-has no `Stats` button). Every claim below that the toolbar prints `{total}
-items` beside the panel describes Track only now; see the "Known
-limitations" bullet on the panel/list settling independently, which no
-longer applies to Store.
+has no `Stats` button). References below to the toolbar's `{total} items`
+sitting beside this panel — the "Problem" statement and "The breakdown
+answers the same question the list does" — describe Store's behavior
+*before* this amendment; they are kept because the design rationale they
+explain (the panel's total must match the list's, by construction) still
+holds even though Store's toolbar no longer prints that number. Track is now
+the only scope where that toolbar text renders. The "Known limitations"
+bullet on the panel/list settling independently is updated in place rather
+than left as history: the race itself is unchanged, only the toolbar's
+second number that used to expose it is gone for Store.
 
 ## Problem
 
