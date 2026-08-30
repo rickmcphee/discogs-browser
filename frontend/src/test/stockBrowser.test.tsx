@@ -111,6 +111,55 @@ describe('StockBrowser', () => {
     await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ sort: 'price', order: 'desc' })))
   })
 
+  // #243: reported as the Cost header appearing to do nothing once a search
+  // term had narrowed the table. `sort` and `search` are independent pieces
+  // of `load`'s request object (see StockBrowser.tsx), so clicking Cost after
+  // typing a search term must still request a price sort -- not silently drop
+  // it, and not drop the search term either.
+  it('keeps the search term when the Cost column header is clicked after searching', async () => {
+    render(<StockBrowser />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.change(screen.getByPlaceholderText('Search artist or title…'), { target: { value: 'nails' } })
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ search: 'nails' })))
+    fireEvent.click(screen.getByText(/Cost/))
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ search: 'nails', sort: 'price', order: 'asc' })
+    ))
+  })
+
+  // The request-params assertion above would still pass even if the
+  // price-sorted response never made it to the screen (e.g. a stale response
+  // from the pre-sort search winning a race). StockBrowser renders rows in
+  // whatever order the server returns them in -- it does no client-side
+  // sorting -- so pin the actual regression: clicking Cost after a search
+  // must re-render the table in the order of *that* response.
+  it('re-renders rows in price order once Cost is clicked after searching, not the pre-sort order', async () => {
+    const zombie = items[0] // price 31.99
+    const nails = items[1] // price 25.99
+    const { container } = render(<StockBrowser />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+
+    getStock.mockResolvedValue({ total: 2, page: 1, per_page: 250, items: [zombie, nails] })
+    fireEvent.change(screen.getByPlaceholderText('Search artist or title…'), { target: { value: 'e' } })
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ search: 'e' })))
+    await waitFor(() => expect(screen.getAllByRole('row').length).toBe(3)) // header + 2 items
+
+    // The server's price-ascending response for the same search: the cheaper
+    // NAILS item first, the pricier Rob Zombie item second -- reversed from
+    // both the pre-sort order above and the default fixture order.
+    getStock.mockResolvedValue({ total: 2, page: 1, per_page: 250, items: [nails, zombie] })
+    fireEvent.click(screen.getByText(/Cost/))
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ search: 'e', sort: 'price', order: 'asc' })
+    ))
+
+    await waitFor(() => {
+      const tbody = container.querySelector('tbody')!.textContent!
+      expect(tbody.indexOf('Every Bridge Burning')).toBeGreaterThanOrEqual(0)
+      expect(tbody.indexOf('Every Bridge Burning')).toBeLessThan(tbody.indexOf('The Great Satan'))
+    })
+  })
+
   it('sorts by format when the Format column header is clicked', async () => {
     render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
