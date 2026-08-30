@@ -22,7 +22,12 @@ dependencies = [
     "psycopg[binary]>=3.1,<4.0",
     "psycopg-pool>=3.2,<4.0",
     "cryptography>=50.0.0,<51",
-    "authlib>=1.7.2,<2.0",
+    # <1.8: authlib 1.8.0's httpx_client transports over httpx2 whenever it is
+    # importable (and anthropic always installs it), which respx cannot
+    # intercept -- the OAuth1 test mocks silently stop applying and tests hit
+    # the live Discogs API. Lift only together with an httpx2-aware mocking
+    # strategy for discogs.py/oauth_discogs.py.
+    "authlib>=1.7.2,<1.8",
 ]
 
 [project.optional-dependencies]
