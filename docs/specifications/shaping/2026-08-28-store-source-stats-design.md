@@ -3,6 +3,20 @@
 Date: 2026-08-28
 Branch: `claude/store-stats-pie-chart-22pc3p`
 
+**Amendment (2026-08-29, issue #235):** the Store tab's toolbar no longer
+shows `{total} items` — it was redundant with this panel's own total and is
+removed for `scope === 'store'` in `StockBrowser.tsx` (kept for Track, which
+has no `Stats` button). References below to the toolbar's `{total} items`
+sitting beside this panel — the "Problem" statement and "The breakdown
+answers the same question the list does" — describe Store's behavior
+*before* this amendment; they are kept because the design rationale they
+explain (the panel's total must match the list's, by construction) still
+holds even though Store's toolbar no longer prints that number. Track is now
+the only scope where that toolbar text renders. The "Known limitations"
+bullet on the panel/list settling independently is updated in place rather
+than left as history: the race itself is unchanged, only the toolbar's
+second number that used to expose it is gone for Store.
+
 ## Problem
 
 The Store tab's toolbar shows one number — `{total} items` — and a Source
@@ -252,16 +266,13 @@ crawl. App therefore exposes two strict subsets alongside it — the same shape
   by; the ring carries proportion.
 - **The panel and the list settle independently.** A filter change starts
   `/stock/stats` and `/stock` as two requests; the panel clears and repaints
-  as soon as its own (single, grouped) query returns, while the toolbar's
-  `{total} items` holds its previous value until `/stock`'s slower
-  count-plus-select-plus-comparison round trip lands. For that window the
-  panel shows the new view's numbers beside the old one's total — the same
-  disagreement the discard-on-view-change rule exists to shorten, now reduced
-  to the gap between two latencies rather than a whole stale breakdown.
-  Closing it properly means gating the panel on a view key the *list* reports
-  as loaded, which couples the two components and makes correct data wait on
-  slower data; that trade wants a deliberate decision rather than being made
-  in passing here.
+  as soon as its own (single, grouped) query returns. Before issue #235 this
+  bullet described a window where the toolbar's `{total} items` held its
+  previous value beside the panel's fresher one; that toolbar text is gone
+  for Store now, so there is nothing beside the panel left to disagree with
+  it. The underlying race is unchanged — `/stock`'s slower
+  count-plus-select-plus-comparison round trip can still land after the
+  panel's — it just no longer has a visible second number to show it up.
 - **Wedges are not clickable.** Clicking a store's wedge to hide every other
   source is the obvious next affordance, and deliberately not in this change.
 

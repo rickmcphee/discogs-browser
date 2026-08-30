@@ -1380,6 +1380,34 @@ def get_crawlers(conn, crawler_type: str = "release") -> list[dict]:
 # pending_crawler_ids narrows the set to a previous pass's unfinished work;
 # NULL means no narrowing. The intersection is what makes a crawler disabled
 # since that pass drop out silently.
+def crawler_is_release(conn, crawler_id: int) -> bool:
+    """Whether the crawler is still a release crawler, read at write time.
+
+    _drain_one_batch snapshots eligibility before awaiting search(), and a
+    kind change can land in between -- register_crawler() on a newer deploy
+    flipping the crawler to a catalog kind and deleting its release-era rows.
+    A result written after that recreates exactly the rows the conversion
+    cleanup deleted, and nothing ever deletes them again: the cleanup only
+    fires on a kind *change*, which has already happened. So the result
+    transaction rechecks the kind the same way it rechecks the claim.
+
+    FOR SHARE, not a plain SELECT, because under READ COMMITTED a plain read
+    neither waits for an in-flight conversion nor keeps one out until this
+    transaction commits -- the kind flip could commit between this check and
+    the listing write's commit, and the write would survive its DELETE. The
+    row lock serializes the two: taken first, it holds register_crawler()'s
+    UPDATE off until this transaction's writes are committed and its DELETEs
+    can see them; taken second, it waits the conversion out and reads the new
+    kind. No deadlock is reachable from the conversion side: its crawl_queue
+    sweep deletes only 'pending' rows, never the 'in_progress' row whose
+    FOR UPDATE this transaction already holds.
+    """
+    row = conn.execute(
+        "SELECT crawler_type FROM crawlers WHERE id = %s FOR SHARE", [crawler_id]
+    ).fetchone()
+    return bool(row) and row["crawler_type"] == "release"
+
+
 def get_eligible_crawlers(conn, is_release: bool, pending_crawler_ids: Optional[list] = None) -> list[dict]:
     return conn.execute(
         """
@@ -1439,35 +1467,44 @@ def rename_crawler(conn, old_site_name: str, new_site_name: str):
 
 
 def register_crawler(conn, site_name: str, module_path: str, crawler_type: str = "release", requires_discogs_release: bool = False):
-    # A crawler that changes kind strands its old stock. replace_stock_items()
-    # runs only for the catalog kinds and clears by crawler_id, so a
-    # catalog-era snapshot belonging to a crawler now registered as `release`
-    # is never refreshed and never deleted -- it would sit in the Store tab
-    # indefinitely with its prices frozen at whatever the last catalog sync
-    # wrote, and no normal path could remove it. Cleared here, the one place
-    # that sees both the old kind and the new -- recorded before the upsert,
-    # which is what overwrites the old kind, and acted on after it.
+    # A crawler that changes kind strands what its old kind wrote, in either
+    # direction, and this is the one place that sees both the old kind and the
+    # new -- recorded before the upsert, which is what overwrites the old kind,
+    # and acted on after it.
     #
-    # Only the move *to* `release` leaks. The reverse direction is already
-    # covered: the first catalog sync afterwards calls replace_stock_items(),
-    # which deletes every row for the crawler_id before inserting.
+    # To `release`: replace_stock_items() runs only for the catalog kinds and
+    # clears by crawler_id, so the catalog-era snapshot is never refreshed and
+    # never deleted -- it would sit in the Store tab indefinitely with its
+    # prices frozen at whatever the last catalog sync wrote. release_id IS NULL
+    # is exactly the catalog-written set -- the release path writes its own
+    # stock_items rows through upsert_stock_item_from_release(), which always
+    # carries a release_id -- so a crawler re-registered without changing kind
+    # never loses anything here.
     #
-    # release_id IS NULL is exactly the catalog-written set -- the release path
-    # writes its own stock_items rows through upsert_stock_item_from_release(),
-    # which always carries a release_id -- so a crawler re-registered without
-    # changing kind never loses anything here.
+    # From `release`: two leaks, neither of which any later path is guaranteed
+    # to close. The release-written stock_items rows (release_id IS NOT NULL)
+    # would be cleared by the next catalog sync's replace_stock_items(), but
+    # stock_schedule defaults to empty, so "the next sync" can be never. And
+    # the crawler's `listings` rows have no cleanup path at all: no release
+    # crawl will ever refresh or delete them once get_eligible_crawlers()
+    # stops dispatching to this crawler, so their stale prices would show
+    # against library releases forever, and get_crawl_status_for_user()'s
+    # oldest_checked -- MIN(last_checked) over listings with no crawler
+    # filter -- would be pinned to them for good.
+    previous = conn.execute(
+        "SELECT id, crawler_type, enabled FROM crawlers WHERE site_name = %s", [site_name]
+    ).fetchone()
     converted_id = None
     converted_enabled = False
-    if crawler_type == "release":
-        previous = conn.execute(
-            "SELECT id, crawler_type, enabled FROM crawlers WHERE site_name = %s", [site_name]
-        ).fetchone()
-        if previous and previous["crawler_type"] != "release":
-            converted_id = previous["id"]
-            # The upsert below deliberately leaves `enabled` alone, so an
-            # administrator's decision to disable this crawler survives the
-            # conversion -- and the backfill has to respect it too.
-            converted_enabled = previous["enabled"]
+    reverted_id = None
+    if previous and previous["crawler_type"] != "release" and crawler_type == "release":
+        converted_id = previous["id"]
+        # The upsert below deliberately leaves `enabled` alone, so an
+        # administrator's decision to disable this crawler survives the
+        # conversion -- and the backfill has to respect it too.
+        converted_enabled = previous["enabled"]
+    if previous and previous["crawler_type"] == "release" and crawler_type != "release":
+        reverted_id = previous["id"]
     conn.execute(
         """
         INSERT INTO crawlers (site_name, module_path, crawler_type, requires_discogs_release, enabled)
@@ -1504,6 +1541,20 @@ def register_crawler(conn, site_name: str, module_path: str, crawler_type: str =
         # or whose item has left stock. Either way they would otherwise sit
         # pending and unclaimable in the claim index until some later stock sync
         # happened to catch them.
+        delete_dead_stock_crawl_queue_rows(conn)
+    if reverted_id is not None:
+        conn.execute(
+            "DELETE FROM stock_items WHERE crawler_id = %s AND release_id IS NOT NULL",
+            [reverted_id],
+        )
+        conn.execute("DELETE FROM listings WHERE crawler_id = %s", [reverted_id])
+        # The stock_items DELETE above orphans any crawl_queue row whose
+        # item_key existed only through this crawler's release-written rows --
+        # same sweep, same reason, as the conversion branch. No backfill: the
+        # crawler's catalog targets do not exist until its first stock sync
+        # writes them, and pending release-target rows narrowed to this crawler
+        # resolve as 'done' at dispatch once get_eligible_crawlers() stops
+        # returning it.
         delete_dead_stock_crawl_queue_rows(conn)
 
 

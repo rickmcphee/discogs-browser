@@ -111,6 +111,55 @@ describe('StockBrowser', () => {
     await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ sort: 'price', order: 'desc' })))
   })
 
+  // #243: reported as the Cost header appearing to do nothing once a search
+  // term had narrowed the table. `sort` and `search` are independent pieces
+  // of `load`'s request object (see StockBrowser.tsx), so clicking Cost after
+  // typing a search term must still request a price sort -- not silently drop
+  // it, and not drop the search term either.
+  it('keeps the search term when the Cost column header is clicked after searching', async () => {
+    render(<StockBrowser />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.change(screen.getByPlaceholderText('Search artist or title…'), { target: { value: 'nails' } })
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ search: 'nails' })))
+    fireEvent.click(screen.getByText(/Cost/))
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ search: 'nails', sort: 'price', order: 'asc' })
+    ))
+  })
+
+  // The request-params assertion above would still pass even if the
+  // price-sorted response never made it to the screen (e.g. a stale response
+  // from the pre-sort search winning a race). StockBrowser renders rows in
+  // whatever order the server returns them in -- it does no client-side
+  // sorting -- so pin the actual regression: clicking Cost after a search
+  // must re-render the table in the order of *that* response.
+  it('re-renders rows in price order once Cost is clicked after searching, not the pre-sort order', async () => {
+    const zombie = items[0] // price 31.99
+    const nails = items[1] // price 25.99
+    const { container } = render(<StockBrowser />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+
+    getStock.mockResolvedValue({ total: 2, page: 1, per_page: 250, items: [zombie, nails] })
+    fireEvent.change(screen.getByPlaceholderText('Search artist or title…'), { target: { value: 'e' } })
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ search: 'e' })))
+    await waitFor(() => expect(screen.getAllByRole('row').length).toBe(3)) // header + 2 items
+
+    // The server's price-ascending response for the same search: the cheaper
+    // NAILS item first, the pricier Rob Zombie item second -- reversed from
+    // both the pre-sort order above and the default fixture order.
+    getStock.mockResolvedValue({ total: 2, page: 1, per_page: 250, items: [nails, zombie] })
+    fireEvent.click(screen.getByText(/Cost/))
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ search: 'e', sort: 'price', order: 'asc' })
+    ))
+
+    await waitFor(() => {
+      const tbody = container.querySelector('tbody')!.textContent!
+      expect(tbody.indexOf('Every Bridge Burning')).toBeGreaterThanOrEqual(0)
+      expect(tbody.indexOf('Every Bridge Burning')).toBeLessThan(tbody.indexOf('The Great Satan'))
+    })
+  })
+
   it('sorts by format when the Format column header is clicked', async () => {
     render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
@@ -753,7 +802,7 @@ describe('StockBrowser', () => {
     expect((capturedEvent as unknown as Event).defaultPrevented).toBe(true)
   })
 
-  it('unsaving under the Saved filter removes the row and decrements the count', async () => {
+  it('unsaving under the Saved filter removes the row', async () => {
     getStock.mockResolvedValue({
       total: 1, page: 1, per_page: 250,
       items: [{ ...items[0], saved: true }],
@@ -765,7 +814,6 @@ describe('StockBrowser', () => {
     const button = await screen.findByTitle('Remove from saved')
     fireEvent.click(button)
     await waitFor(() => expect(screen.queryByText('The Great Satan — Ghostly Black Vinyl')).toBeNull())
-    expect(screen.getByText(/^0 items$/)).toBeTruthy()
   })
 
   it('re-fetches from the server when a toggle fails, undoing the optimistic removal under the Saved filter', async () => {
@@ -780,16 +828,15 @@ describe('StockBrowser', () => {
     const button = await screen.findByTitle('Remove from saved')
     const callsBefore = getStock.mock.calls.length
     fireEvent.click(button)
-    // Optimistic update removes the row and decrements the count immediately.
+    // Optimistic update removes the row immediately.
     await waitFor(() => expect(screen.queryByText('The Great Satan — Ghostly Black Vinyl')).toBeNull())
     // unsaveStockItem rejects; the failure must trigger a re-fetch so the
     // phantom deletion self-corrects rather than persisting until an
     // unrelated refetch happens to occur. getStock keeps returning the same
-    // saved item, so the row (and count) coming back proves load() actually
-    // ran on failure, not just that it was called.
+    // saved item, so the row coming back proves load() actually ran on
+    // failure, not just that it was called.
     await waitFor(() => expect(getStock.mock.calls.length).toBeGreaterThan(callsBefore))
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    expect(screen.getByText(/^1 items$/)).toBeTruthy()
   })
 
   it('refreshes the artist sidebar after a successful unsave under the Saved filter', async () => {
@@ -861,7 +908,7 @@ describe('StockBrowser', () => {
     // race guard were broken.
     await new Promise((r) => setTimeout(r, 0))
     expect(screen.queryByText('The Great Satan — Ghostly Black Vinyl')).toBeNull()
-    expect(screen.getByText(/^1 items$/)).toBeTruthy()
+    expect(screen.getByText('Every Bridge Burning — Forest Green LP')).toBeTruthy()
   })
 })
 
@@ -911,6 +958,17 @@ describe('StockBrowser Source filter', () => {
     render(<StockBrowser scope="track" crawlers={CRAWLERS} />)
     await waitFor(() => expect(screen.getByRole('button', { name: 'Source' })).toBeInTheDocument())
     expect(screen.queryByRole('button', { name: 'Stats' })).toBeNull()
+  })
+
+  it('omits the toolbar item count on the Store tab, since Stats already shows the total, but keeps it on Track', async () => {
+    const { unmount } = render(<StockBrowser crawlers={CRAWLERS} />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    expect(screen.queryByText(/^2 items$/)).toBeNull()
+    unmount()
+
+    render(<StockBrowser scope="track" crawlers={CRAWLERS} />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    expect(screen.getByText(/^2 items$/)).toBeTruthy()
   })
 
   it('does not refetch the breakdown for a listing_changed, which cannot move a stock_items count', async () => {

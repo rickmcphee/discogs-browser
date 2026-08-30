@@ -754,6 +754,63 @@ def test_get_stock_items_sort_by_discogs_price_orders_numerically_nulls_last(adm
     assert [r["artist"] for r in result["items"]] == ["Artist D", "Artist A", "Artist B", "Artist C"]
 
 
+def test_get_stock_items_sort_by_price_orders_numerically_nulls_last(admin_conn):
+    # Unlike discogs_price (li.price_paid, free text, needs _price_sort_sql),
+    # the Cost column is stock_items.price -- a plain DOUBLE PRECISION -- so
+    # this sort was never expected to need special handling and, until now,
+    # had no direct test of its own either. Filed as #243 after the Cost
+    # header appeared to do nothing once the list was search-filtered; this
+    # pins the unfiltered baseline the search case below builds on.
+    crawler_id = _register(admin_conn, "Nuclear Blast")
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 30.0, "currency": "USD"},
+        {"artist": "Artist B", "title": "Album B", "url": "https://x/2", "price": 10.0, "currency": "USD"},
+        {"artist": "Artist C", "title": "Album C", "url": "https://x/3", "price": None, "currency": None},
+        {"artist": "Artist D", "title": "Album D", "url": "https://x/4", "price": 20.0, "currency": "USD"},
+    ])
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], sort="price", order="asc")
+    assert [r["artist"] for r in result["items"]] == ["Artist B", "Artist D", "Artist A", "Artist C"]
+
+    # Nulls last in both directions, not just ascending -- see the matching
+    # discogs_price assertion above and the null_order note in
+    # docs/specifications/shaping/2026-08-24-numeric-price-sort-design.md.
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], sort="price", order="desc")
+    assert [r["artist"] for r in result["items"]] == ["Artist A", "Artist D", "Artist B", "Artist C"]
+
+
+def test_get_stock_items_sort_by_price_orders_numerically_when_search_filters_the_list(admin_conn):
+    # The reported symptom (#243): typing a search term narrows the table to a
+    # handful of rows and the Cost header then appears inert. get_stock_items
+    # builds the WHERE (search) and the ORDER BY (sort_expr) independently and
+    # ANDs them into one query -- there is no code path where a search term
+    # changes what `sort_expr` is or how it is applied, so this pins that down
+    # directly against a small, search-filtered result set rather than by
+    # inference from reading the query builder.
+    crawler_id = _register(admin_conn, "Nuclear Blast")
+    db.replace_stock_items(admin_conn, crawler_id, [
+        {"artist": "Rob Zombie", "title": "Hellbilly Deluxe", "url": "https://x/1", "price": 30.0, "currency": "USD"},
+        {"artist": "Rob Zombie", "title": "The Sinister Urge", "url": "https://x/2", "price": 10.0, "currency": "USD"},
+        {"artist": "Rob Zombie", "title": "Educated Horses", "url": "https://x/3", "price": 20.0, "currency": "USD"},
+        {"artist": "NAILS", "title": "Unsilent Death", "url": "https://x/4", "price": 5.0, "currency": "USD"},
+    ])
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], search="zombie", sort="price", order="asc")
+    assert result["total"] == 3
+    assert [r["title"] for r in result["items"]] == ["The Sinister Urge", "Educated Horses", "Hellbilly Deluxe"]
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], search="zombie", sort="price", order="desc")
+    assert [r["title"] for r in result["items"]] == ["Hellbilly Deluxe", "Educated Horses", "The Sinister Urge"]
+
+
 def test_get_stock_items_sort_by_discogs_price_reads_decimal_commas_as_decimals(admin_conn):
     # The Track tab shares _price_sort_sql with the library path, so the
     # decimal-comma resolution has to hold here too -- see the matching test in
