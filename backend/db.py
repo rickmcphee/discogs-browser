@@ -2973,7 +2973,14 @@ def get_stock_items(
     if exclude_crawler_ids:
         comparison_sql += " AND cr.id != ALL(%(exclude_crawler_ids)s)"
         comparison_params["exclude_crawler_ids"] = exclude_crawler_ids
-    comparison_sql += " ORDER BY l.item_key, cr.site_name"
+    # A "Cost" sort otherwise looked broken: the own row landed in numeric
+    # price order, but its comparison rows -- shown right beneath it in the
+    # same Cost column -- were always alphabetical by source regardless of
+    # `sort`, so the visible column jumped around whenever an item had more
+    # than one comparison. Only `price` gets a numeric sub-order; every other
+    # sort keeps the site-name order the comparisons have always had.
+    comparison_order = f"l.price {order_sql}, cr.site_name" if sort == "price" else "cr.site_name"
+    comparison_sql += f" ORDER BY l.item_key, {comparison_order}"
     comparisons_by_item: dict[str, list[dict]] = {}
     for c in conn.execute(comparison_sql, comparison_params).fetchall():
         comparisons_by_item.setdefault(c["item_key"], []).append(c)
