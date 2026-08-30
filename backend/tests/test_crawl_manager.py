@@ -3525,6 +3525,54 @@ async def test_sync_stock_does_not_count_a_429_toward_the_cooloff(pg_schema):
     assert manager._site_cooldown_until.get(throttled_id, 0) == 0
 
 
+async def test_sync_stock_does_not_count_a_kind_changed_snapshot_toward_synced(pg_schema, caplog):
+    """The forward half of the rolling-deploy kind-change race: the crawler
+    converts to `release` mid-crawl, so replace_stock_items() returns None
+    instead of writing the stale snapshot -- and returns None rather than []
+    precisely so this caller can tell a dropped write apart from a genuinely
+    empty one. Counting the dropped items toward total_synced or broadcasting
+    stock_sync_progress for them would report a snapshot that was never
+    persisted."""
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Converting Site", "/x.py", crawler_type="catalog")
+        conn.commit()
+        crawler_id = conn.execute(
+            "SELECT id FROM crawlers WHERE site_name = 'Converting Site'"
+        ).fetchone()["id"]
+
+    async def _items():
+        with db.get_admin_pool().connection() as conn:
+            db.register_crawler(conn, "Converting Site", "/x.py", crawler_type="release")
+            conn.commit()
+        yield {"artist": "A", "title": "T", "url": "https://x/1", "price": 5.0, "currency": "USD"}
+
+    plugin = AsyncMock()
+    plugin.crawl_catalog = lambda: _items()
+    plugin._db_id = crawler_id
+    plugin._db_site_name = "Converting Site"
+
+    manager = CrawlManager()
+    with patch("crawler.load_enabled_crawlers", return_value=[plugin]), \
+         caplog.at_level(logging.WARNING, logger="db"):
+        await manager._sync_stock()
+
+    with db.get_admin_pool().connection() as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM stock_items WHERE crawler_id = %s", [crawler_id]
+        ).fetchone()["count"]
+        last_run = conn.execute(
+            "SELECT last_run FROM crawlers WHERE id = %s", [crawler_id]
+        ).fetchone()["last_run"]
+    assert count == 0
+    assert last_run is None
+
+    events = manager.recent_events()
+    assert "stock_sync_progress" not in [e["status"] for e in events]
+    complete = [e for e in events if e["status"] == "stock_sync_complete"]
+    assert complete[0]["synced"] == 0
+    assert any("no longer a catalog kind" in r.getMessage() for r in caplog.records)
+
+
 async def test_sync_stock_completion_log_names_failed_and_skipped_sources(pg_schema, caplog):
     """"Stock sync complete: 0 items" on its own reads as a clean run. The
     ERROR explaining the zero is a different level, and the log viewer filters
