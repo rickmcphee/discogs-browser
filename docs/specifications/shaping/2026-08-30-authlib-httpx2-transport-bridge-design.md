@@ -26,15 +26,20 @@ below the signing layer, at the transport.
 
 ## Rejected: rewrite the affected tests onto a new mocking API
 
-respx (0.23.1, current) has no httpx2 support and no httpx2-aware equivalent
-exists on PyPI, so keeping HTTP-layer mocking for these tests means building
-something. Rewriting every Discogs route onto a hand-rolled
-`MockTransport`-style DSL was rejected because `test_crawl_manager.py`
-registers Discogs routes and eBay routes inside the same respx router in the
-same tests — the eBay client speaks plain `httpx` and stays respx-patched, so
-a per-test rewrite would leave two mocking dialects interleaved in single test
-bodies, and the respx assertion API (`route.called`, `route.calls.last`,
-`assert_all_mocked`) would need re-implementing to keep the tests' guarantees.
+respx (0.23.1, current) has no httpx2 support. An off-the-shelf alternative
+does exist — `pytest-httpx2` (1.0.0), a pytest plugin that mocks httpx2
+through a respx-backed `httpx2_mock` fixture — but was rejected on two
+grounds: it requires Python >=3.10 while this backend supports >=3.9
+(`requires-python` in `backend/pyproject.toml`), and its fixture is its own
+router, separate from the global respx router the existing tests register
+routes on, which lands in the same two-dialect problem as a hand-rolled
+rewrite. That problem: `test_crawl_manager.py` registers Discogs routes and
+eBay routes inside the same respx router in the same tests — the eBay client
+speaks plain `httpx` and stays respx-patched, so any per-test rewrite (onto
+`pytest-httpx2` or a hand-rolled `MockTransport`-style DSL) would leave two
+mocking dialects interleaved in single test bodies, and the respx assertion
+API (`route.called`, `route.calls.last`, `assert_all_mocked`) would need
+re-implementing or re-plumbing to keep the tests' guarantees.
 
 ## Chosen: keep respx as the DSL, bridge the transport into its router
 
@@ -70,7 +75,10 @@ catches. One production site was exposed: `crawl_manager`'s
 have been bypassed in favor of the generic sync-failure path. `discogs.py`
 now re-exports `HTTPStatusError` chosen by the same httpx2-or-httpx rule, and
 both that guard and `test_get_identity_raises_on_bad_token` reference
-`discogs.HTTPStatusError` instead of naming a transport module. The
+`discogs.HTTPStatusError` instead of naming a transport module;
+`test_sync_broadcasts_sanitized_error_when_fields_fetch_fails` pins the
+guard itself, failing if the catch drifts back to a type the client does
+not raise. The
 catalog-crawler 429 handling in `crawl_manager` keeps `httpx.HTTPStatusError`
 — catalog crawlers speak plain `httpx` and are untouched by authlib.
 

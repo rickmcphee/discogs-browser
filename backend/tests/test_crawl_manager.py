@@ -240,6 +240,37 @@ async def test_sync_collection_enqueues_crawl_queue_for_missing_listings(pg_sche
 
 
 @respx.mock
+async def test_sync_broadcasts_sanitized_error_when_fields_fetch_fails(pg_schema, monkeypatch):
+    # Pins the guard around discogs.fetch_collection_fields to the exception
+    # type the client actually raises. authlib >=1.8 raises
+    # httpx2.HTTPStatusError, so an `except httpx.HTTPStatusError` there stops
+    # matching and the raw exception escapes to the generic sync-failure path
+    # instead of this sanitized broadcast.
+    import config
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(403, json={"message": "You don't have permission"})
+    )
+
+    manager = CrawlManager()
+    await manager._sync_collection(user["id"], "all")
+
+    errors = [e for e in manager.recent_events() if e["status"] == "sync_error"]
+    assert [e["error"] for e in errors] == ["Discogs request failed"]
+
+
+@respx.mock
 async def test_sync_collection_captures_date_added(pg_schema, monkeypatch):
     import config
     monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
