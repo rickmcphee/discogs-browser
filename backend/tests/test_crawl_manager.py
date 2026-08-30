@@ -5018,7 +5018,61 @@ async def test_drain_one_batch_does_not_clear_a_price_after_losing_its_claim(pg_
     assert listing["price"] == 5.00
 
 
-def _release_queue_row(conn, site_name="Waterloo Records"):
+async def test_drain_one_batch_drops_a_result_after_the_crawler_reverts_to_catalog(pg_schema):
+    """A rolling deploy can flip a crawler's kind mid-search: eligibility was
+    snapshotted before search() ran, and register_crawler() on the newer
+    machine deletes the crawler's release-era listings and stock rows. A
+    result written after that commit would recreate exactly the rows the
+    cleanup deleted -- and nothing would ever delete them again, since the
+    cleanup only fires on a kind change that has by then already happened."""
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Reverting Mid-Search", "/x.py")
+        crawler_id = conn.execute(
+            "SELECT id FROM crawlers WHERE site_name = 'Reverting Mid-Search'"
+        ).fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T", "year": None, "label": None,
+            "format": None, "discogs_price": None, "barcode": None, "cover_image_url": None,
+            "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1")
+        conn.commit()
+
+    def _revert_the_kind_then_find_a_match(*_args, **_kwargs):
+        with db.get_admin_pool().connection() as conn:
+            db.register_crawler(conn, "Reverting Mid-Search", "/x.py", crawler_type="catalog")
+            conn.commit()
+        return [{"url": "https://a", "price": 9.99, "shipping": None,
+                 "currency": "USD", "condition": None}]
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(side_effect=_revert_the_kind_then_find_a_match)
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Reverting Mid-Search"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        await manager._drain_one_batch("worker-a", {crawler_id: fake_plugin}, pages={})
+
+    with db.get_admin_pool().connection() as conn:
+        listings = conn.execute(
+            "SELECT COUNT(*) FROM listings WHERE crawler_id = %s", [crawler_id]
+        ).fetchone()["count"]
+        stock = conn.execute(
+            "SELECT COUNT(*) FROM stock_items WHERE crawler_id = %s", [crawler_id]
+        ).fetchone()["count"]
+        queue_row = conn.execute(
+            "SELECT status FROM crawl_queue WHERE discogs_id = 'r1'"
+        ).fetchone()
+    assert listings == 0
+    assert stock == 0
+    # Unlike a lost claim, this worker still owns the row, so it resolves it.
+    assert queue_row["status"] == "done"
+
+
+def _release_queue_row(conn, site_name="Some Record Store"):
     db.register_crawler(conn, site_name, "/x.py")
     crawler_id = conn.execute(
         "SELECT id FROM crawlers WHERE site_name = %s", [site_name]
@@ -5050,7 +5104,7 @@ async def test_drain_one_batch_excludes_empty_release_result_when_the_crawler_ex
     fake_plugin = AsyncMock()
     fake_plugin.search = AsyncMock(return_value=[])
     fake_plugin._db_id = crawler_id
-    fake_plugin._db_site_name = "Waterloo Records"
+    fake_plugin._db_site_name = "Some Record Store"
     fake_plugin.empty_result_is_expected = True
 
     with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
@@ -5101,7 +5155,7 @@ async def test_drain_one_batch_counts_bot_detection_even_when_the_crawler_expect
     fake_plugin = AsyncMock()
     fake_plugin.search = AsyncMock(side_effect=[BotDetectedError(), []])
     fake_plugin._db_id = crawler_id
-    fake_plugin._db_site_name = "Waterloo Records"
+    fake_plugin._db_site_name = "Some Record Store"
     fake_plugin.empty_result_is_expected = True
 
     with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
