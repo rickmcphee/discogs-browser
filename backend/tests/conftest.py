@@ -328,3 +328,49 @@ def _fast_catalog_crawl_sleep(request, monkeypatch):
                     monkeypatch.setattr(f"{module_name}.{attr}", replacement)
                 except (ModuleNotFoundError, AttributeError):
                     pass
+
+
+try:
+    import httpx2 as _authlib_httpx
+except ImportError:
+    import httpx as _authlib_httpx
+
+import httpx
+import respx
+
+
+class _RespxBridgeTransport(_authlib_httpx.BaseTransport):
+    """Routes the authlib OAuth1 clients' traffic into respx's router.
+
+    authlib >=1.8's httpx_client transports over httpx2 whenever it is
+    importable (the import above mirrors that selection), and respx only
+    patches httpx -- without this bridge every OAuth1 request would leave
+    the process, which is exactly what broke the suite when authlib 1.8.0
+    was released. Requests are translated to legacy httpx objects so
+    existing respx routes, call records, and assert_all_mocked behave
+    exactly as they do for plain-httpx callers like the eBay client.
+    """
+
+    def handle_request(self, request):
+        legacy = httpx.Request(
+            request.method,
+            str(request.url),
+            headers=request.headers.raw,
+            content=request.read(),
+        )
+        response = respx.mock.handler(legacy)
+        return _authlib_httpx.Response(
+            response.status_code,
+            headers=response.headers.raw,
+            content=response.read(),
+        )
+
+
+@pytest.fixture(autouse=True)
+def _oauth1_transport_bridge(monkeypatch):
+    import discogs
+    import oauth_discogs
+
+    bridge = _RespxBridgeTransport()
+    monkeypatch.setattr(discogs, "_transport", bridge)
+    monkeypatch.setattr(oauth_discogs, "_transport", bridge)
