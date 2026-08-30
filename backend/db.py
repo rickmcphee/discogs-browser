@@ -1430,16 +1430,17 @@ def crawler_is_catalog(conn, crawler_id: int) -> bool:
 
     FOR NO KEY UPDATE here, not FOR SHARE: _sync_stock calls
     update_crawler_last_run() -- an UPDATE on this same row -- in the same
-    transaction right after the snapshot write. Under FOR SHARE, that second
-    statement would need to upgrade the lock this function already holds to
-    an exclusive one, and a register_crawler() UPDATE queued in between the
-    two calls -- locked out by the FOR SHARE, but ahead of this transaction's
-    upgrade request in Postgres's lock queue -- would deadlock the two
-    transactions against each other. FOR NO KEY UPDATE already holds a lock
-    at least as strong as what update_crawler_last_run() needs, so that
-    later statement never has to wait, whatever else is queued on the row.
-    Lock order stays consistent with the conversion side regardless: both
-    transactions lock the crawlers row before touching stock_items.
+    transaction right after the snapshot write. Under FOR SHARE that second
+    statement is a lock upgrade: safe while this transaction is the row's
+    only locker (a sole holder's upgrade proceeds even past a queued
+    register_crawler() UPDATE), but FOR SHARE admits other share lockers
+    concurrently, and an upgrade attempted with another share holder
+    present and an UPDATE queued behind them is Postgres's classic row-lock
+    deadlock. FOR NO KEY UPDATE is already as strong as what
+    update_crawler_last_run() needs -- no upgrade ever happens -- and
+    admits no second locker in the first place. Lock order stays consistent
+    with the conversion side regardless: both transactions lock the
+    crawlers row before touching stock_items.
     """
     row = conn.execute(
         "SELECT crawler_type FROM crawlers WHERE id = %s FOR NO KEY UPDATE", [crawler_id]

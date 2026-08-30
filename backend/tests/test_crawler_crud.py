@@ -571,22 +571,50 @@ def test_crawler_is_catalog_lock_conflicts_with_an_in_flight_kind_change(admin_c
         assert db.crawler_is_catalog(check_conn, crawler_id) is False
 
 
-def test_crawler_is_catalog_lock_lets_last_run_update_proceed_without_deadlock(admin_conn):
-    """crawler_is_catalog() takes FOR NO KEY UPDATE, not FOR SHARE, because
-    _sync_stock calls update_crawler_last_run() -- an UPDATE on this same row
-    -- in the same transaction right after the snapshot write. Under FOR
-    SHARE, that second statement would need to upgrade the lock to exclusive,
-    and a register_crawler() UPDATE queued in between -- locked out by the
-    FOR SHARE, but ahead of this transaction's upgrade request in Postgres's
-    lock queue -- would deadlock the two transactions against each other.
+def test_crawler_is_catalog_locks_out_a_concurrent_share_locker(admin_conn):
+    """Pins the lock strength itself: crawler_is_catalog() must hold FOR NO
+    KEY UPDATE, not FOR SHARE. A sole share locker's later UPDATE upgrades
+    safely even past a queued waiter (the threaded test below passes with
+    the helper flipped to FOR SHARE), so lock strength cannot be pinned
+    through the two-transaction deadlock story -- what FOR SHARE actually
+    risks is admitting a *second* share locker alongside this transaction,
+    and it is that admission that turns _sync_stock's later
+    update_crawler_last_run() into a deadlock-prone upgrade. FOR NO KEY
+    UPDATE conflicts with FOR SHARE, so the strength is asserted directly:
+    with the gate's lock held, a concurrent share request must be refused."""
+    import psycopg
 
-    This pins the ordering the deadlock needs to exist: the snapshot
-    transaction locks the row first (crawler_is_catalog), a conversion queues
-    behind it second (blocked on register_crawler()'s UPDATE), and only then
-    does the snapshot transaction run its own UPDATE. With FOR NO KEY UPDATE
-    that later UPDATE needs no upgrade, so it proceeds immediately -- bounded
-    here by a short lock_timeout so a regression to FOR SHARE fails fast
-    instead of hanging until Postgres's own deadlock_timeout fires."""
+    db.register_crawler(admin_conn, "Strength Pinned Store", "/path/store.py", crawler_type="catalog")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute(
+        "SELECT id FROM crawlers WHERE site_name = %s", ["Strength Pinned Store"]
+    ).fetchone()["id"]
+
+    with db.get_admin_pool().connection() as sync_conn:
+        assert db.crawler_is_catalog(sync_conn, crawler_id) is True
+        with db.get_admin_pool().connection() as other_conn:
+            with pytest.raises(psycopg.errors.LockNotAvailable):
+                other_conn.execute(
+                    "SELECT crawler_type FROM crawlers WHERE id = %s FOR SHARE NOWAIT",
+                    [crawler_id],
+                )
+            other_conn.rollback()
+        sync_conn.rollback()
+
+
+def test_crawler_is_catalog_lock_lets_last_run_update_proceed_without_deadlock(admin_conn):
+    """_sync_stock calls update_crawler_last_run() -- an UPDATE on the same
+    crawlers row crawler_is_catalog() locked -- in the same transaction
+    right after the snapshot write. This pins that the later UPDATE proceeds
+    promptly while a register_crawler() conversion is already queued behind
+    the gate's lock: the snapshot transaction locks the row first, the
+    conversion demonstrably blocks on it second (synchronized below via
+    pg_blocking_pids, not elapsed time), and only then does the snapshot
+    transaction run its own UPDATE -- bounded by a short lock_timeout so any
+    hang or deadlock regression fails fast instead of waiting out Postgres's
+    own deadlock_timeout. The lock *strength* backing this behaviour is
+    pinned separately by
+    test_crawler_is_catalog_locks_out_a_concurrent_share_locker."""
     import threading
     import time
 
@@ -599,10 +627,14 @@ def test_crawler_is_catalog_lock_lets_last_run_update_proceed_without_deadlock(a
     conv_started = threading.Event()
     conv_done = threading.Event()
     conv_errors = []
+    conv_pid = {}
 
     def convert():
         try:
             with db.get_admin_pool().connection() as conv_conn:
+                conv_pid["pid"] = conv_conn.execute(
+                    "SELECT pg_backend_pid() AS pid"
+                ).fetchone()["pid"]
                 conv_started.set()
                 db.register_crawler(conv_conn, "Locking Order Store", "/path/store.py", crawler_type="release")
                 conv_conn.commit()
@@ -612,15 +644,24 @@ def test_crawler_is_catalog_lock_lets_last_run_update_proceed_without_deadlock(a
             conv_done.set()
 
     with db.get_admin_pool().connection() as sync_conn:
+        sync_pid = sync_conn.execute("SELECT pg_backend_pid() AS pid").fetchone()["pid"]
         assert db.crawler_is_catalog(sync_conn, crawler_id) is True
 
         thread = threading.Thread(target=convert)
         thread.start()
-        conv_started.wait(timeout=2)
-        # No reliable signal for "register_crawler is now blocked on the row
-        # lock" short of polling pg_locks, so give it a moment to reach and
-        # queue behind that UPDATE before the assertion below.
-        time.sleep(0.2)
+        assert conv_started.wait(timeout=2)
+        # Wait until the conversion backend is actually queued behind this
+        # transaction's row lock -- a fixed sleep could elapse before
+        # register_crawler() reaches the row at all, and the UPDATE below
+        # would then run with nothing queued, passing even under a FOR SHARE
+        # regression without exercising the ordering the deadlock needs.
+        deadline = time.monotonic() + 5
+        while not admin_conn.execute(
+            "SELECT %s = ANY(pg_blocking_pids(%s)) AS blocked",
+            [sync_pid, conv_pid["pid"]],
+        ).fetchone()["blocked"]:
+            assert time.monotonic() < deadline, "conversion never queued behind the row lock"
+            time.sleep(0.02)
         assert not conv_done.is_set()
 
         sync_conn.execute("SET LOCAL lock_timeout = '500ms'")
