@@ -817,7 +817,7 @@ class CrawlManager:
             if scope != "wishlist":
                 try:
                     fields = discogs.fetch_collection_fields(oauth_token, oauth_secret, username)
-                except httpx.HTTPStatusError:
+                except discogs.HTTPStatusError:
                     broadcast({"status": "sync_error", "error": "Discogs request failed"})
                     return
                 price_field_id = next((fid for fid, name in fields.items() if name.lower() == "price"), None)
