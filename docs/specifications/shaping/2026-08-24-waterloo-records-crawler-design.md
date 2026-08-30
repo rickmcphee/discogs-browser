@@ -658,3 +658,91 @@ crawlers expanded per `crawl_queue` row at dispatch, alongside `amazon`,
 `ebay` and `ebay_general`; the per-source dispatch estimates in the other
 crawler design docs were computed against the set registered at the time and
 were not re-derived for this change.
+
+## Amendment (2026-08-29, branch `claude/waterloo-records-crawler-type-a2woiz`)
+
+**Decision reversed: this store is a `catalog` crawler again.** The owner
+judged the 2026-08-28 promotion to a `release` crawler a mistake and asked for
+it to be switched back. The technical facts the amendment above records are
+all still true — the ceiling, the search endpoint's reach, the three
+conversion hazards — but the product judgment is now the opposite one:
+Waterloo's value in the Store tab is its *shelf*, browsable for records a user
+does not already own, and a truncated shelf beats a complete
+answer restricted to records already in somebody's library. What the release
+form gave up ("browsing Waterloo for records you do not already have is
+gone") turned out to be the thing worth keeping.
+
+**What comes back.** `crawl_catalog()` over the `vinyl-lps` collection's
+`products.json`, exactly as this document's body specifies — the plugin file
+returns to its pre-conversion form. The walk now runs on top of
+`iter_products()`'s ceiling stop, so it keeps the first
+`_MAX_PAGE * _PAGE_LIMIT` products and terminates cleanly instead of
+discarding the run; the "floor, not a resolution" the previous amendment
+described is accepted as the standing state. Which products fall outside the
+ceiling is decided by the collection's own ordering. The
+`empty_result_is_expected` declaration leaves with `search()`: it is
+release-crawler-only, and a catalog crawler's emptiness never reached the
+breaker in the first place. The target-side format gate and the
+malformed-variants rule leave with it too — both were answers to questions
+only the release path asks (`_pick_variant()` keeps the catalog path's own
+availability rules).
+
+**What stays from the conversion work**, because none of it was specific to
+Waterloo being a release crawler:
+
+- `shopify_catalog.iter_products()`'s `_MAX_PAGE` stop. It is what fixed the
+  original zero-rows bug, and it protects any catalog source that ever
+  outgrows the ceiling.
+- `crawl_manager`'s `empty_result_is_expected` handling. `discogs_marketplace`
+  declares it (on the separates-its-own-failures grounds CLAUDE.md records),
+  so the mechanism has a live user with Waterloo gone.
+- `db.register_crawler()`'s kind-change handling for the move *to* `release`,
+  which is unchanged; the reversal adds the mirror-image branch for the move
+  *from* `release`, described below, and that branch is the one that fires
+  here.
+
+**The reverse conversion is handled in `register_crawler()`, symmetric to the
+forward one.** An earlier draft of this amendment claimed it needed no new
+code, leaning on the kind-change comment's old assertion that the next catalog
+sync's `replace_stock_items()` covers it. Copilot's review on the reverting PR
+showed that covers less than it claims, twice over: `stock_schedule` defaults
+to empty, so "the next catalog sync" can be never and the release-era
+`stock_items` rows (written through `upsert_stock_item_from_release()`, always
+with a `release_id`) can linger in the Store tab indefinitely; and the
+crawler's `listings` rows have no cleanup path at all — once
+`get_eligible_crawlers()` stops dispatching release targets to a
+non-`release` crawler, nothing ever refreshes or deletes them, so their stale
+prices would show against library releases forever and
+`get_crawl_status_for_user()`'s `oldest_checked` — `MIN(last_checked)` over
+`listings` with no crawler filter — would be pinned to them for good.
+
+`register_crawler()` therefore now handles a kind change *from* `release` as
+well as to it: it deletes the crawler's release-written `stock_items` rows
+(`release_id IS NOT NULL`) and all of its `listings` rows, then sweeps dead
+`crawl_queue` rows in the same transaction — the `stock_items` DELETE orphans
+any queue row whose `item_key` existed only through those rows, same sweep and
+same reason as the forward branch. No backfill on this direction: the
+crawler's catalog targets do not exist until its first stock sync writes them.
+What needs no code remains true for dispatch: release targets stop reaching
+Waterloo because `get_eligible_crawlers()` filters on `crawler_type`, and a
+pending `crawl_queue` row whose `pending_crawler_ids` the forward-conversion
+backfill narrowed to Waterloo alone resolves as `done` up front
+(`_drain_one_batch` resolves any claimed row with zero eligible crawlers
+without dispatching it).
+
+**Per-user state and `item_key`s across the round trip.** Saves, judgments
+and price-drop history are keyed by `item_key` =
+`sha256(artist|title|url)`, and the two paths derive different keys for the
+same product: the catalog path hashes the store's own bracketed title
+("Getting Killed [Clear Vinyl] [LP]"), the release path hashed the Discogs
+title. The reversal *restores* the original catalog-era keys — same title
+convention, same `/products/<handle>` url — so per-user state from before
+the 2026-08-28 conversion re-attaches on the first catalog sync. What stays
+orphaned is state created during the brief release-crawler spell, whose
+Discogs-derived keys never recur. That is accepted, not solved: it is the
+mirror image of the orphaning the forward conversion itself shipped with
+(its own rationale for stripping search-tracking url parameters records
+that a changed key "orphan[s] the saves and judgments hanging off the old
+one"), it spans a window measured in a day, and a url-keyed migration
+table to rescue it would outlive its one use. Kind changes re-key a
+store's items; per-user state rides the keys.

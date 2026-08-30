@@ -1,89 +1,34 @@
-import asyncio
-import random
 import re
-import urllib.parse
-from asyncio import sleep
-from typing import Optional
+from typing import AsyncIterator, Optional
 
-import httpx
+from shopify_catalog import iter_products, resolve_cover_image
 
-from config import load_config
-from crawler import clean_search_text
-from logging_config import get_logger
-
-log = get_logger("crawlers.waterloorecords")
-
-# Why this store searches per release instead of walking its catalog:
-# Shopify's storefront products.json refuses `page` past 100, so the
-# `vinyl-lps` collection (36,138 products, 145 pages) could never be walked
-# past the first 25,000 -- and which third fell outside was decided by the
-# collection's own ordering rather than by anything meaningful. /search/
-# suggest.json has no such ceiling and reaches the whole catalog. See the
-# 2026-08-28 amendment to
+# The store's whole catalog (`all`) is two orders of magnitude past what one
+# sync can walk; `vinyl-lps` is the vinyl cut of it. The nearly-empty
+# `12-singles` and `7-singles-45s` collections are not worth a second pass --
+# the format gate below already admits those product types wherever they
+# appear in this collection.
+#
+# This collection is larger than Shopify's storefront products.json can
+# enumerate: the endpoint refuses `page` past shopify_catalog._MAX_PAGE, so
+# the walk keeps the first _MAX_PAGE * _PAGE_LIMIT products and stops, and
+# which products fall outside is decided by the collection's own ordering.
+# Accepted deliberately -- this store was briefly a release crawler to reach
+# the whole catalog, and the owner reverted it: a browsable (if truncated)
+# shelf in the Store tab is worth more here than complete per-release
+# coverage. See the 2026-08-29 amendment to
 # docs/specifications/shaping/2026-08-24-waterloo-records-crawler-design.md.
+_COLLECTION_SLUG = "vinyl-lps"
 
-# `type` in the suggest payload is the store's own `product_type` field --
-# the same one the catalog crawler gated on, and still the only trustworthy
+# `product_type` is the store's own format field and the only trustworthy
 # format signal here. The title's trailing bracket is NOT one: live values
-# include "[Import]", "[Reissue]", "[Limited Edition]" and "[Deluxe]", none
-# of which name a format, while CDs carry "[Digipak]". Compared lowercased
+# include "[Import]", "[Reissue]", "[Limited Edition]", "[Deluxe]" and
+# "[Magenta/Black/White Haze/Splatter]", none of which name a format, while
+# CDs carry "[Digipak]" and "[Standard Edition CD]". Compared lowercased
 # because the store's own casing is inconsistent ("Vinyl" vs "7-IN VINYL").
 _VINYL_PRODUCT_TYPES = frozenset({
     "vinyl", "7-in vinyl", "10-in vinyl", "12-in single",
 })
-
-# The *target's* format, which is a separate question from the store's. The
-# product-type gate above filters what Waterloo sells down to vinyl, but a
-# release crawler runs for every release in every library, so with no
-# target-side gate a CD or cassette release would take a vinyl hit for the
-# same artist and album -- and db.upsert_stock_item_from_release() writes the
-# *release's* format onto the row, so the Store tab would show a "CD" carrying
-# an LP's url and price. Usually Discogs' formats[0].name, reaching search()
-# on the catalog row; a stock-item target carries whatever a sibling store
-# crawler wrote instead.
-#
-# Two vocabularies reach this gate, and each needs the opposite structure.
-#
-# A RELEASE target carries Discogs' controlled format vocabulary
-# (discogs.parse_release() forwards formats[0].name unchanged), which is a
-# closed set -- so the gate names what may PASS. That is complete by
-# construction: `DAT`, `Cylinder`, `Laserdisc`, `Memory Stick` and every other
-# medium, including ones Discogs adds after this is written, fail closed
-# without anyone having to enumerate them. A denylist here was wrong twice
-# over before this, letting `Shellac` and `Acetate` through and then the rest
-# of the long tail, and every fix that only added terms invited the next gap.
-#
-# "A record you put a needle on" is NOT the test for what passes: this store
-# sells *new vinyl*, so a pre-war 78 (`Shellac`) and a one-off lacquer
-# (`Acetate`) are as wrong a match for it as a CD is, and `Flexi-disc` and
-# `Lathe Cut` are worse than either -- both are usually alternate pressings of
-# an album that also exists as a standard LP, which is precisely when the
-# title match succeeds and the wrong price gets published. Only the two
-# container formats join `Vinyl`: each can genuinely hold vinyl, so Discogs
-# has not actually answered the question there. Nor has it when the field is
-# empty, which is handled at the call site rather than here.
-_DISCOGS_VINYL_FORMATS = frozenset({"vinyl", "box set", "all media"})
-
-# A STOCK-ITEM target carries whatever a sibling store crawler wrote instead
-# ("LP", "2xLP", "7\""), which is open-ended free text, so the same allowlist
-# would reject every one of them. Those are vinyl by construction -- the
-# crawler that wrote the row had already filtered its own catalog to vinyl --
-# so the gate only has to catch the strays, and names what may NOT pass.
-#
-# Plain substrings, because a store qualifies these names much as Discogs does
-# and no vinyl format written by either side contains one. The same medium can
-# appear under a different name in each vocabulary: Discogs writes shellac as
-# `Shellac`, while crawlers/amoeba.py reads it off a title's trailing "(78)"
-# and stores the bare "78".
-_OTHER_MEDIUM_RE = re.compile("|".join([
-    "cd", "cassette", "file", "dvd", "blu-ray", "sacd", "minidisc",
-    "8-track", "reel-to-reel", "vhs", "betamax", "dcc",
-    "shellac", "acetate", "flexi", "lathe",
-    # The one numeric term, so it is anchored rather than left as a bare
-    # substring: open on the right so "78rpm" still matches, closed on the
-    # left so a year inside some future format string never can.
-    r"\b78",
-]), re.IGNORECASE)
 
 # "Artist - Album [Format]", split on the FIRST spaced hyphen: album halves
 # legitimately contain further " - " runs ("10CC - Deceptive Bends - 180gm
@@ -94,400 +39,92 @@ _OTHER_MEDIUM_RE = re.compile("|".join([
 # not a label or an artist.
 _TITLE_RE = re.compile(r'^(?P<artist>.+?)\s+-\s+(?P<album>.+)$')
 
-# Discogs writes an article either way round ("The Beatles", "Beatles, The")
-# and Waterloo writes it only the first way, so both forms fold to a bare key
-# before comparison. Left in place mid-string -- only the leading and trailing
-# positions are the article.
-_LEADING_ARTICLE_RE = re.compile(r'^(?:the|a|an)\s+', re.IGNORECASE)
-_TRAILING_ARTICLE_RE = re.compile(r',\s*(?:the|a|an)$', re.IGNORECASE)
-_PUNCT_RE = re.compile(r'[^\w\s]')
-
-# The store's edition and format qualifiers, which sit in brackets on top of
-# the album name: "OK Computer [2LP]", "Getting Killed [Clear Vinyl] [LP]".
-# Removed before ranking so a base pressing is recognisable as an exact title
-# match, which is what separates it from a genuinely different release that
-# merely starts the same way ("Kid A" vs "Kid A Mnesia", "OK Computer" vs
-# "OK Computer Oknotok 1997 2017"). Not every qualifier is bracketed --
-# "Abbey Road: Anniversary Edition [LP]" is live -- so this ranks rather than
-# filters, and an unbracketed one still matches, just below a base pressing.
-_BRACKETED_RE = re.compile(r'\[[^\]]*\]')
-
-# Where this store stops naming the album and starts qualifying it. Every
-# qualifier it writes is introduced by one of these -- "Abbey Road:
-# Anniversary Edition [LP]", "Getting Killed [Clear Vinyl] [LP]" -- so what
-# precedes the first one is the album itself. A title that merely continues in
-# plain words is a *different* record: "Kid A Mnesia", "OK Computer Oknotok
-# 1997 2017". That distinction is the whole point, because the fleet reads
-# matches[0] and publishes its price.
-_QUALIFIER_CUT_RE = re.compile(r'\s*(?::|\[|\(|\s[-\u2013\u2014]\s)')
-
-# The store caps its own suggest widget at 10 and the fleet only ever reads
-# matches[0], so this is about how far down a fuzzy result set a real match
-# might sit, not about collecting everything.
-_SUGGEST_LIMIT = 10
-
-# Returned by _resolve_price when the product endpoint shows nothing buyable,
-# which has to stay distinguishable from a None price -- None means "buyable,
-# but the price did not parse", and only this one drops the candidate.
-_UNAVAILABLE = object()
-
 
 class Crawler:
     site_name: str = "Waterloo Records"
     base_url: str = "https://waterloorecords.com"
     genre_summary: str = "Austin, Texas independent record store since 1982, with a deep new-vinyl catalog spanning every genre and a strong Texas-music selection."
     genre: str = "marketplace"
-    # One independent record store, not a near-universal marketplace. It stocks
-    # a fraction of any given library, so a run of releases it does not carry is
-    # its ordinary healthy behaviour rather than evidence it is broken -- and
-    # without this, consecutive_failure_limit such releases in a row would trip
-    # the circuit breaker and cool the site off. See item 8 of
-    # docs/superpowers/specs/2026-08-01-worker-pool-pacing-design.md and its
-    # 2026-08-28 amendment.
-    empty_result_is_expected: bool = True
+    crawler_type: str = "catalog"
+
+    async def crawl_catalog(self) -> AsyncIterator[dict]:
+        async for product in iter_products(self.base_url, _COLLECTION_SLUG):
+            item = self._item(product)
+            if item is not None:
+                yield item
 
     @classmethod
-    def search_url(cls, release: dict) -> str:
-        query = urllib.parse.quote_plus(cls._query(release))
-        return f"{cls.base_url}/search?q={query}"
-
-    async def search(self, release: dict, page) -> list[dict]:
-        """The in-stock vinyl this store lists for one release, cheapest first.
-
-        `page` is the Playwright page the release path hands every crawler, and
-        is deliberately unused: this is a public JSON endpoint, so a browser
-        buys nothing and costs a context. crawlers/ebay.py is the precedent.
-
-        Returns [] when the store answered and had no matching in-stock vinyl,
-        and for a release this store could never stock -- one on another
-        medium, which is settled without asking. Every failure raises, per the
-        crawler contract in CLAUDE.md: the consecutive-failure breaker cannot
-        tell a dead site from an empty shelf otherwise. An empty result costs
-        this store no site-health signal either way, per
-        empty_result_is_expected above.
-        """
-        query = self._query(release)
-        if not query:
-            return []
-
-        # Settled before the request, not after: a target on another medium
-        # has no right answer here, so asking would spend a request on the
-        # store to reach the same empty result.
-        #
-        # Which test applies depends on which vocabulary wrote the format, and
-        # a release target is the one that carries Discogs' -- it comes from
-        # `catalog`, so it has a discogs_id; a stock-item target comes from
-        # `stock_item_identities`, which has no such column. An empty format
-        # is not an answer under either and always searches.
-        fmt = (release.get("format") or "").strip()
-        if release.get("discogs_id"):
-            wrong_medium = bool(fmt) and fmt.lower() not in _DISCOGS_VINYL_FORMATS
-        else:
-            wrong_medium = bool(_OTHER_MEDIUM_RE.search(fmt))
-        if wrong_medium:
-            log.info(
-                "[Waterloo Records] not searching for %r: %s is not vinyl",
-                query, fmt,
-            )
-            return []
-
-        # load_config() is a blocking Postgres call; offloaded so it cannot
-        # stall the process's single event loop, the same way crawlers/ebay.py
-        # and crawl_manager's _paced_search do.
-        cfg = await asyncio.to_thread(load_config)
-        delay = float(cfg.get("crawl_delay_seconds", 30))
-
-        async with httpx.AsyncClient() as client:
-            r = await client.get(
-                f"{self.base_url}/search/suggest.json",
-                params={
-                    "q": query,
-                    "resources[type]": "product",
-                    "resources[limit]": _SUGGEST_LIMIT,
-                },
-                timeout=30,
-            )
-            r.raise_for_status()
-
-            try:
-                products = r.json()["resources"]["results"]["products"]
-            except (KeyError, TypeError, ValueError) as e:
-                raise RuntimeError(
-                    f"unexpected suggest.json payload shape for {query!r}: {e}"
-                ) from None
-
-            ranked = []
-            for product in products:
-                scored = self._candidate(product, release)
-                if scored is not None:
-                    ranked.append(scored)
-
-            if not ranked:
-                log.info("[Waterloo Records] no in-stock vinyl match for %r", query)
-                return []
-
-            # Only the closest matches are priced. Rank dominates the ordering
-            # below and the fleet reads matches[0], so a worse-ranked candidate
-            # could never be used -- and pricing it would spend a request on
-            # the store for an answer nobody reads.
-            # Closest rank first, falling through when a group turns out to
-            # hold nothing buyable. Stopping at the best *matched* rank would
-            # report the record as absent whenever every base pressing had sold
-            # out since the suggest hit, hiding a qualified edition that is
-            # still in stock -- the store having "Abbey Road: Anniversary
-            # Edition" but not plain "Abbey Road". The first group that yields
-            # a listing wins, so a worse-ranked candidate is still only ever
-            # reached when nothing closer is buyable, and no request is spent
-            # on one until then.
-            priced = []
-            for rank in sorted({rank for rank, _, _ in ranked}):
-                for candidate_rank, product, url in ranked:
-                    if candidate_rank != rank:
-                        continue
-                    price = await self._resolve_price(product, url, client, delay)
-                    if price is _UNAVAILABLE:
-                        log.info(
-                            "[Waterloo Records] %s reported available but has no "
-                            "buyable variant; skipping", url,
-                        )
-                        continue
-                    priced.append((url, price))
-                if priced:
-                    break
-
-            listings = [
-                {
-                    "url": url,
-                    "price": price,
-                    # The store ships from one shop and quotes postage at
-                    # checkout only; nothing in this payload carries it, and
-                    # inventing a zero would read as free shipping.
-                    "shipping": None,
-                    "currency": "USD",
-                    # No condition field on this store: its stock is new, and
-                    # the catalog crawler recorded the same absence.
-                    "condition": None,
-                }
-                for url, price in priced
-            ]
-            if not listings:
-                log.info("[Waterloo Records] no in-stock vinyl match for %r", query)
-                return []
-
-        # Cheapest first. This store has no condition field, so -- as the
-        # catalog crawler did before it -- a row reports the least it costs to
-        # get the record. Unpriced sorts last rather than being dropped: the
-        # product is real and still linkable. `l["price"] or 0.0` rather than
-        # the bare price so two unpriced listings, which tie on the flag before
-        # it, never compare None against None.
-        listings.sort(key=lambda l: (l["price"] is None, l["price"] or 0.0))
-        return listings
-
-    @classmethod
-    def _candidate(cls, product: dict, release: dict):
-        """(rank, product, url) for a matching product, or None. Lower rank is closer.
-
-        Deliberately does no fetching, so which products are worth a request is
-        decided before any is sent.
-        """
-        if not product.get("available"):
-            return None
-        if (product.get("type") or "").strip().lower() not in _VINYL_PRODUCT_TYPES:
+    def _item(cls, product: dict) -> Optional[dict]:
+        if (product.get("product_type") or "").strip().lower() not in _VINYL_PRODUCT_TYPES:
             return None
 
-        parsed = cls._split_title(product.get("title") or "")
-        if parsed is None:
-            return None
-        rank = cls._match_rank(parsed, release)
-        if rank is None:
-            return None
-
-        url = cls._clean_url(product.get("url") or "")
-        if not url:
-            return None
-
-        return rank, product, url
-
-    @staticmethod
-    def _clean_url(raw: str) -> str:
-        """Absolute product URL with the search tracking parameters removed.
-
-        suggest.json returns `/products/<handle>?_pos=1&_psq=<query>&_psid=<id>`,
-        and every one of those parameters varies with the search that produced
-        it. db.compute_item_key() hashes the url, so leaving them on would give
-        one product a fresh item_key on every crawl and orphan the saves and
-        judgments hanging off the old one.
-        """
-        path = urllib.parse.urlsplit(raw).path
-        if not path:
-            return ""
-        return urllib.parse.urljoin(Crawler.base_url, path)
-
-    @classmethod
-    async def _resolve_price(cls, product: dict, url: str, client, delay: float) -> Optional[float]:
-        """What the record actually costs, not what its cheapest variant costs.
-
-        `available` on a suggest hit means *some* variant is purchasable, while
-        `price`/`price_min` are minima across every variant including the sold
-        out ones -- so the two can describe different variants. Live example:
-        "070 Shake - Petrichor [LP]" reports available with price 24.99 and
-        price_max 29.99, and the 24.99 variant is the sold out one. Publishing
-        24.99 there would quote a price nobody can pay. The catalog crawler
-        this replaced avoided it by picking the cheapest *in-stock* variant,
-        and that very product was its fixture.
-
-        suggest.json carries an empty `variants` list, so the variants have to
-        come from the product endpoint -- but only when the product's own price
-        range leaves room for disagreement. price_min == price_max means every
-        variant costs the same, so whichever is available costs that, and no
-        second request is worth making.
-        """
-        # Only two *equal known* bounds prove the available variant costs this.
-        # Either bound missing or malformed leaves the range unknown, which is
-        # not the same as uniform, so it takes the lookup rather than the
-        # shortcut: shortcutting on an unknown range would republish exactly
-        # the sold-out minimum this exists to avoid, and returning early on an
-        # unreadable low bound would publish an unpriced row while an available
-        # variant carried a perfectly good price -- and would skip the
-        # availability check below along with it.
-        low = cls._decimal(product, "price_min", "price")
-        high = cls._decimal(product, "price_max")
-        if low is not None and low == high:
-            return low
-
-        # _paced_search spaces separate search() calls, not the requests inside
-        # one, so this gap is the crawler's own to keep -- exactly as every
-        # detail-fetching crawler in the fleet does it. Without it the suggest
-        # request and each product lookup would go out back to back, which is
-        # the burst the per-site pacing contract exists to prevent.
-        await sleep(random.uniform(delay * 0.5, delay))
-        r = await client.get(f"{url}.js", timeout=30)
-        r.raise_for_status()
-        payload = r.json()
-        variants = payload.get("variants") if isinstance(payload, dict) else None
-        # A real Shopify product always carries at least one variant, so a 200
-        # with none is a malformed response rather than a product nobody can
-        # buy. This lookup is the only thing that decides both availability and
-        # price, so treating that as an answer would publish an unpriced row on
-        # the strength of a payload this never actually read -- and record the
-        # site as healthy while doing it. Failures raise, per the crawler
-        # contract in CLAUDE.md.
-        if not isinstance(variants, list) or not variants:
-            raise RuntimeError(f"no variants in product payload for {url}")
-        available = [v for v in variants if v.get("available")]
-        if not available:
-            # The product endpoint says nothing here is buyable, contradicting
-            # the `available` flag on the suggest hit that got us this far --
-            # the two are separate responses and the stock moved between them.
-            # Believe the later, more specific one and drop the candidate:
-            # returning it would put a Waterloo row in the Store tab for a
-            # record nobody can buy. _UNAVAILABLE is distinct from a None
-            # price, which means "buyable, but the price did not parse".
-            return _UNAVAILABLE
-        # Cents here, unlike suggest.json's decimal strings.
-        prices = [
-            v["price"] / 100
-            for v in available
-            if isinstance(v.get("price"), (int, float))
-        ]
-        # An available variant whose price is unreadable. Falling back to `low`
-        # would reintroduce exactly the sold-out price this exists to avoid, so
-        # the row goes out unpriced and still linkable.
-        return min(prices) if prices else None
-
-    @staticmethod
-    def _decimal(product: dict, *keys: str) -> Optional[float]:
-        # Decimal strings in this payload ("24.99"), not cents.
-        for key in keys:
-            try:
-                return float(product[key])
-            except (KeyError, TypeError, ValueError):
-                continue
-        return None
-
-    @classmethod
-    def _split_title(cls, raw_title: str):
-        m = _TITLE_RE.match(raw_title.strip())
+        m = _TITLE_RE.match((product.get("title") or "").strip())
         if not m:
             return None
         artist = m.group("artist").strip()
         album = m.group("album").strip()
         if not artist or not album:
             return None
-        return artist, album
 
-    @classmethod
-    def _match_rank(cls, parsed: tuple, release: dict) -> Optional[int]:
-        """How closely a fuzzy suggest hit matches the release, or None for no match.
-
-        The endpoint is a search box, not a lookup: "geese getting killed"
-        returns Getting Killed alongside 3D Country and a Third Man live
-        record. Both halves of the store's own `Artist - Album` convention are
-        checked rather than the fleet's usual substring sniff, because that
-        convention makes a real comparison available here.
-
-        The store appends its own qualifiers, so catalog "Getting Killed" has
-        to match "Getting Killed [Clear Vinyl] [LP]". Both ranks are equality
-        tests against a stripped form of the store's title, never a prefix
-        test: a prefix would admit a different release that merely starts the
-        same way -- "Kid A" against "Kid A Mnesia [3LP]" -- and the fleet reads
-        matches[0] and publishes its price.
-
-        Rank 0 is an exact title once the bracketed qualifiers come off, which
-        only a base pressing achieves. Rank 1 is an exact title at any
-        qualifier-delimiter boundary, which admits a qualified edition
-        ("Abbey Road: Anniversary Edition [LP]") without admitting a longer
-        album name.
-        """
-        store_artist, store_album = parsed
-        want_artist = cls._fold(release.get("artist", ""))
-        want_title = cls._fold(release.get("title", ""))
-        if not want_title:
+        variant = cls._pick_variant(product)
+        if variant is None:
             return None
 
-        # Discogs' catch-all entity for a compilation. The store files those
-        # under a real artist or the label ("Soundtrack", "VA"), so there is
-        # nothing to compare and the title check below carries the match alone.
-        if want_artist and want_artist != "various":
-            if cls._fold(store_artist) != want_artist:
-                return None
-
-        base = cls._fold(_BRACKETED_RE.sub(" ", store_album))
-        if base == want_title:
-            return 0
-        # The album name as this store writes it, which is whatever precedes
-        # one of its qualifier delimiters. Every boundary is tried, not just
-        # the first: an album whose own title contains a delimiter would
-        # otherwise be truncated to its opening fragment, so
-        # "Live: In Concert" could never match this store's
-        # "Live: In Concert: Anniversary Edition [LP]". Trying each still
-        # rejects "Kid A Mnesia", because no boundary of it yields "Kid A".
-        #
-        # Deliberately an equality test at each boundary, not the
-        # exact-or-prefix-with-space rule db._library_match_fragment uses: that
-        # rule answers "does this stock row correspond to a release the user
-        # owns", where a wrong answer mislabels ownership, while this one
-        # decides which record's price gets published. With no base pressing in
-        # the results, a prefix match would report "Kid A Mnesia [3LP]" as the
-        # price of Kid A rather than reporting Kid A as absent, and a wrong
-        # price is worse than a missing one.
-        for boundary in _QUALIFIER_CUT_RE.finditer(store_album):
-            if cls._fold(store_album[:boundary.start()]) == want_title:
-                return 1
-        return None
-
-    @staticmethod
-    def _fold(text: str) -> str:
-        text = clean_search_text(text or "")
-        text = _TRAILING_ARTICLE_RE.sub("", text)
-        text = _LEADING_ARTICLE_RE.sub("", text)
-        text = _PUNCT_RE.sub(" ", text)
-        return re.sub(r'\s+', ' ', text).strip().lower()
+        return {
+            "artist": artist,
+            # The trailing bracket stays in the title. It is what separates
+            # two pressings of one album ("Let It Be Blue [LP]" vs "Let It Be
+            # Blue [Indie Exclusive Limited Edition Blue LP]"), which share a
+            # handle-derived URL prefix but are distinct products, and it
+            # still matches the catalog: _library_match_fragment matches a
+            # stock title exactly OR as a prefix followed by a space, so
+            # "Kid A [LP]" matches catalog "Kid A".
+            "title": album,
+            # "Vinyl" unconditionally, as every sibling catalog crawler does.
+            # The specific cut (7", 10", 12") is already carried in the
+            # title's own bracket, so nothing is lost by not encoding it here.
+            "format": "Vinyl",
+            "price": cls._price(variant),
+            "currency": "USD",
+            "url": f"{cls.base_url}/products/{product.get('handle', '')}",
+            # featured_image is null on every variant this store publishes,
+            # so this always resolves to the product image -- called anyway
+            # to stay correct if the store ever populates it.
+            "cover_image_url": resolve_cover_image(product, variant),
+        }
 
     @classmethod
-    def _query(cls, release: dict) -> str:
-        artist = clean_search_text(release.get("artist", ""))
-        if artist.lower() == "various":
-            artist = ""
-        title = clean_search_text(release.get("title", ""))
-        return f"{artist} {title}".strip()
+    def _pick_variant(cls, product: dict) -> Optional[dict]:
+        """The cheapest in-stock variant, or None when nothing is in stock.
+
+        One row per *product*, never per variant. `db.compute_item_key` hashes
+        (artist, title, url), and every variant of a product shares all three
+        -- so a per-variant fan-out would emit rows that collide on item_key,
+        which `replace_stock_items` INSERTs without an ON CONFLICT guard.
+
+        The variants are conditions and placeholders ("New", "New / Default",
+        "Default / New"), not editions, so unlike the sibling label crawlers
+        there is no descriptor worth appending to the title to tell them
+        apart. Cheapest wins because `stock_items` has no condition column:
+        a used copy cannot be labelled as one, so the row reports the least
+        it costs to get the record. That is this store's own policy, not a
+        fleet convention -- amoeba.py also sees used stock and prefers the
+        new price, falling back to used only when no new price parses,
+        rather than comparing the two.
+        """
+        available = [v for v in product.get("variants") or [] if v.get("available")]
+        if not available:
+            return None
+        priced = [v for v in available if cls._price(v) is not None]
+        # No parseable price anywhere: still emit the row (price None), same
+        # as every sibling, rather than dropping in-stock vinyl over a bad field.
+        if not priced:
+            return available[0]
+        return min(priced, key=cls._price)
+
+    @staticmethod
+    def _price(variant: dict) -> Optional[float]:
+        try:
+            return float(variant["price"])
+        except (KeyError, TypeError, ValueError):
+            return None
