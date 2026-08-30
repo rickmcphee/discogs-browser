@@ -17,7 +17,7 @@
 - **`artist` is `product["vendor"]`, always; a blank vendor skips the product.** Never split the title — the artist prefix that appears there is redundant with `vendor` and is stripped, not parsed.
 - **No pre-order availability bypass.** This store flags purchasable pre-orders available (23/24 live), and its one unavailable pre-order renders "Sold Out" on its own page. A test pins the absence; see the design spec before "fixing" this to match `napalmrecords.py`.
 - **The format filter's counted forms (`\d*x?`) stay on both sides.** A bare `\bcds?\b` cannot see the CD in `2xCD` — the `spv.py`/`onetwothreefourgo.py` regression.
-- Multi-variant products (none live) append a variant descriptor to the title, falling back to the immutable variant id, and raise when a variant has neither — identity over cosmetics, because `replace_stock_items()` INSERTs with no ON CONFLICT guard.
+- Multi-variant products (none live) append a variant descriptor to the title, falling back to the immutable variant id, and raise when a variant has neither — identity over cosmetics: `stock_items.item_key` is deliberately non-unique, so colliding rows insert fine and then share identity, crawl results, judgments, and saved state downstream.
 - No comments except where the WHY is non-obvious.
 - Registration is automatic via `main.py`'s `seed_bundled_crawlers()` — no wiring changes anywhere else.
 - Every commit carries the AI-attribution trailer block required by this repo's `CLAUDE.md`, created via `git commit -F <message-file>`, not `-m`.

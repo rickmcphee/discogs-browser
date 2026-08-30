@@ -252,7 +252,10 @@ async def test_all_blank_vendors_raises(crawler):
 async def test_multi_variant_product_appends_variant_descriptor(crawler):
     # Invented: every live product is single-variant. If the store moved
     # pressing colors into variants, rows sharing (artist, title, url) would
-    # collapse onto one item_key and fail the sync in replace_stock_items().
+    # collapse onto one item_key -- inserted fine (stock_items.item_key is
+    # deliberately non-unique) but indistinguishable downstream, where
+    # item_key is the identity for crawl targets, listings, judgments, and
+    # saves.
     product = {**_EXACT_PREFIX_PRODUCT, "variants": [
         {"id": 1, "title": "Black", "price": "23.99", "available": True},
         {"id": 2, "title": "Baby Blue", "price": "25.99", "available": True},

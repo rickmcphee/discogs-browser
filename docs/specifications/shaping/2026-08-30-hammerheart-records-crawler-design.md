@@ -84,12 +84,12 @@ Three title shapes are live:
 - `Album (Pressing-color vinyl)` with no artist prefix at all.
 
 A per-product regex `^{re.escape(vendor)}\s*[-/]\s+` (IGNORECASE) strips
-the first two shapes and leaves the third alone. Confirmed live: 393/447
-titles strip (98 of them exact-case), and the residual 54 are the
-unprefixed parenthetical shape plus the separator oddities the pattern is
-written for — a tab before the dash on two products
-(`Sarcasm\t- Lifeforce Omnibound / …`) and one product separating with
-` / ` instead (`ORPHANAGE / Oblivion / Blue Vinyl LP`). Requiring
+the first two shapes and leaves the third alone. Confirmed live: 396/447
+titles strip (only 98 of them exact-case), including the separator
+oddities the pattern is written for — a tab before the dash on two
+products (`Sarcasm\t- Lifeforce Omnibound / …`) and one product
+separating with ` / ` instead (`ORPHANAGE / Oblivion / Blue Vinyl LP`) —
+and the residual 51 are all the unprefixed parenthetical shape. Requiring
 whitespace after the separator keeps a self-titled album with no separator
 (`Abramelin (Black vinyl)`) intact, and keeps a hypothetical
 `Artist-something` compound from splitting.
@@ -148,8 +148,13 @@ the product title and the variant title either `Default Title` or a
 redundant color name — so nothing is appended on the live catalog. On a
 multi-variant product the variant descriptor *is* appended
 (`… — {variant title}`), because rows sharing (artist, title, url) collapse
-onto one `item_key` and fail the sync in `replace_stock_items()`, which
-INSERTs with no ON CONFLICT guard. Blank/placeholder variant titles fall
+onto one `item_key`. `stock_items.item_key` is deliberately non-unique
+(the same record can be seen by several crawlers), so the sync *accepts*
+the collision — which is exactly the problem: the colliding rows share one
+`stock_item_identities` row, one `crawl_queue` target, and one
+`(item_key, crawler_id)` listings slot, so judgments, saves, and
+release-crawler results cannot tell the variants apart. Blank/placeholder
+variant titles fall
 back to the immutable variant id, and a variant with neither raises —
 `darksiderecords.py`'s chain, for `onetwothreefourgo.py`'s reasons.
 

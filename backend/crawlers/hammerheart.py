@@ -95,8 +95,8 @@ class Crawler:
         # The store leads most titles with the artist, but rarely in the
         # vendor's own casing -- "TROUBLE - Psalm 9 / Black Vinyl LP" against
         # vendor "Trouble" -- so shopify_catalog.strip_vendor_prefix's
-        # exact-case match misses the bulk of them (confirmed live: 393/447
-        # titles strip case-insensitively, 98 exactly). The separator varies
+        # exact-case match misses the bulk of them (confirmed live: 396/447
+        # titles strip, only 98 of them exact-case). The separator varies
         # too: " - " usually, a tab before the dash on two products, " / " on
         # one. Requiring whitespace after the separator keeps a self-titled
         # album with no separator ("Abramelin (Black vinyl)") intact.
@@ -109,9 +109,12 @@ class Crawler:
     def _variant_descriptor(variant: dict) -> str:
         # Only reached on a multi-variant product, which the live catalog
         # doesn't have (447/447 single-variant) -- without a per-variant
-        # descriptor those rows would share (artist, title, url), collapse
-        # onto one item_key, and fail the sync in replace_stock_items(),
-        # which INSERTs with no ON CONFLICT guard. Variant id as fallback
+        # descriptor those rows would share (artist, title, url) and collapse
+        # onto one item_key. The sync accepts that (stock_items.item_key is
+        # deliberately non-unique), which is exactly the problem: item_key is
+        # the identity everything downstream keys on -- stock_item_identities,
+        # crawl_queue targets, listings, judgments, saves -- so colliding
+        # variants become indistinguishable there. Variant id as fallback
         # follows darksiderecords.py: immutable, unique, identity over
         # cosmetics.
         title = (variant.get("title") or "").strip()
