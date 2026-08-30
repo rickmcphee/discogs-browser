@@ -294,7 +294,11 @@ def test_replace_stock_items_skips_the_write_after_the_crawler_converts_to_relea
     ])
     admin_conn.commit()
 
-    assert item_keys == []
+    # None, not [] -- [] is also the correct result of replacing a catalog
+    # with a genuinely empty snapshot, and _sync_stock relies on the two
+    # being distinguishable to skip its own success-reporting for a write
+    # that never happened.
+    assert item_keys is None
     assert _stock_row_count(admin_conn, crawler_id) == 0
 
 
@@ -533,6 +537,102 @@ def test_crawler_is_release_lock_conflicts_with_an_in_flight_kind_change(admin_c
 
     with db.get_admin_pool().connection() as check_conn:
         assert db.crawler_is_release(check_conn, crawler_id) is False
+
+
+def test_crawler_is_catalog_lock_conflicts_with_an_in_flight_kind_change(admin_conn):
+    """The forward twin of test_crawler_is_release_lock_conflicts_with_an_in_flight_kind_change:
+    crawler_is_catalog() locks the crawlers row so the snapshot write and a
+    kind change serialize instead of racing. This only pins the serialization
+    itself (the lock conflict); the regression that would still pass if
+    FOR NO KEY UPDATE were weakened back to a plain SELECT is
+    test_crawler_is_catalog_lock_lets_last_run_update_proceed_without_deadlock
+    below, since a plain SELECT would not conflict with anything here either."""
+    import psycopg
+
+    db.register_crawler(admin_conn, "Locked Catalog Store", "/path/store.py", crawler_type="catalog")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute(
+        "SELECT id FROM crawlers WHERE site_name = %s", ["Locked Catalog Store"]
+    ).fetchone()["id"]
+
+    with db.get_admin_pool().connection() as conv_conn:
+        conv_conn.execute("BEGIN")
+        db.register_crawler(conv_conn, "Locked Catalog Store", "/path/store.py", crawler_type="release")
+
+        with db.get_admin_pool().connection() as check_conn:
+            check_conn.execute("SET lock_timeout = '200ms'")
+            with pytest.raises(psycopg.errors.LockNotAvailable):
+                db.crawler_is_catalog(check_conn, crawler_id)
+            check_conn.rollback()
+
+        conv_conn.commit()
+
+    with db.get_admin_pool().connection() as check_conn:
+        assert db.crawler_is_catalog(check_conn, crawler_id) is False
+
+
+def test_crawler_is_catalog_lock_lets_last_run_update_proceed_without_deadlock(admin_conn):
+    """crawler_is_catalog() takes FOR NO KEY UPDATE, not FOR SHARE, because
+    _sync_stock calls update_crawler_last_run() -- an UPDATE on this same row
+    -- in the same transaction right after the snapshot write. Under FOR
+    SHARE, that second statement would need to upgrade the lock to exclusive,
+    and a register_crawler() UPDATE queued in between -- locked out by the
+    FOR SHARE, but ahead of this transaction's upgrade request in Postgres's
+    lock queue -- would deadlock the two transactions against each other.
+
+    This pins the ordering the deadlock needs to exist: the snapshot
+    transaction locks the row first (crawler_is_catalog), a conversion queues
+    behind it second (blocked on register_crawler()'s UPDATE), and only then
+    does the snapshot transaction run its own UPDATE. With FOR NO KEY UPDATE
+    that later UPDATE needs no upgrade, so it proceeds immediately -- bounded
+    here by a short lock_timeout so a regression to FOR SHARE fails fast
+    instead of hanging until Postgres's own deadlock_timeout fires."""
+    import threading
+    import time
+
+    db.register_crawler(admin_conn, "Locking Order Store", "/path/store.py", crawler_type="catalog")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute(
+        "SELECT id FROM crawlers WHERE site_name = %s", ["Locking Order Store"]
+    ).fetchone()["id"]
+
+    conv_started = threading.Event()
+    conv_done = threading.Event()
+    conv_errors = []
+
+    def convert():
+        try:
+            with db.get_admin_pool().connection() as conv_conn:
+                conv_started.set()
+                db.register_crawler(conv_conn, "Locking Order Store", "/path/store.py", crawler_type="release")
+                conv_conn.commit()
+        except Exception as e:
+            conv_errors.append(e)
+        finally:
+            conv_done.set()
+
+    with db.get_admin_pool().connection() as sync_conn:
+        assert db.crawler_is_catalog(sync_conn, crawler_id) is True
+
+        thread = threading.Thread(target=convert)
+        thread.start()
+        conv_started.wait(timeout=2)
+        # No reliable signal for "register_crawler is now blocked on the row
+        # lock" short of polling pg_locks, so give it a moment to reach and
+        # queue behind that UPDATE before the assertion below.
+        time.sleep(0.2)
+        assert not conv_done.is_set()
+
+        sync_conn.execute("SET LOCAL lock_timeout = '500ms'")
+        db.update_crawler_last_run(sync_conn, crawler_id)  # must not block or raise
+        sync_conn.commit()
+
+        thread.join(timeout=2)
+
+    assert conv_errors == []
+    assert admin_conn.execute(
+        "SELECT crawler_type FROM crawlers WHERE id = %s", [crawler_id]
+    ).fetchone()["crawler_type"] == "release"
 
 
 def test_register_crawler_sweeps_queue_rows_orphaned_by_the_reversion(admin_conn):

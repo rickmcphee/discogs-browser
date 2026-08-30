@@ -1421,17 +1421,28 @@ def crawler_is_catalog(conn, crawler_id: int) -> bool:
     only runs for catalog kinds, and the conversion cleanup only fires on a
     kind change that has already happened.
 
-    FOR SHARE for the same reason as crawler_is_release(): under READ
-    COMMITTED a plain read neither waits for an in-flight conversion nor
-    keeps one out until this transaction commits. Taken first, it holds
-    register_crawler()'s UPDATE off until this transaction's snapshot write
-    is committed and the conversion's DELETE can see it; taken second, it
-    waits the conversion out and reads the new kind. No deadlock: both
-    transactions lock the crawlers row before touching stock_items, so the
-    lock order is consistent.
+    Locked for the same reason as crawler_is_release(): under READ COMMITTED
+    a plain read neither waits for an in-flight conversion nor keeps one out
+    until this transaction commits. Taken first, it holds register_crawler()'s
+    UPDATE off until this transaction's snapshot write is committed and the
+    conversion's DELETE can see it; taken second, it waits the conversion out
+    and reads the new kind.
+
+    FOR NO KEY UPDATE here, not FOR SHARE: _sync_stock calls
+    update_crawler_last_run() -- an UPDATE on this same row -- in the same
+    transaction right after the snapshot write. Under FOR SHARE, that second
+    statement would need to upgrade the lock this function already holds to
+    an exclusive one, and a register_crawler() UPDATE queued in between the
+    two calls -- locked out by the FOR SHARE, but ahead of this transaction's
+    upgrade request in Postgres's lock queue -- would deadlock the two
+    transactions against each other. FOR NO KEY UPDATE already holds a lock
+    at least as strong as what update_crawler_last_run() needs, so that
+    later statement never has to wait, whatever else is queued on the row.
+    Lock order stays consistent with the conversion side regardless: both
+    transactions lock the crawlers row before touching stock_items.
     """
     row = conn.execute(
-        "SELECT crawler_type FROM crawlers WHERE id = %s FOR SHARE", [crawler_id]
+        "SELECT crawler_type FROM crawlers WHERE id = %s FOR NO KEY UPDATE", [crawler_id]
     ).fetchone()
     return bool(row) and row["crawler_type"] in ("catalog", "catalog_browser")
 
@@ -2670,18 +2681,25 @@ def _apply_canonical_artists(conn, rows: list[dict]) -> None:
         row["artist"] = labels.get(row["artist"], row["artist"])
 
 
-def replace_stock_items(conn, crawler_id: int, items: list[dict]) -> list[str]:
+def replace_stock_items(conn, crawler_id: int, items: list[dict]) -> Optional[list[str]]:
     # Checked inside the write transaction, before the DELETE below, so the
     # kind recheck and the snapshot write commit or skip together -- see
     # crawler_is_catalog's docstring for the mid-sync conversion race this
     # closes.
+    #
+    # Returns None on this branch, not [] -- [] is also the correct result of
+    # replacing a catalog with a genuinely empty snapshot, and a caller that
+    # can't tell the two apart would count a dropped write as a successful
+    # empty one. _sync_stock relies on that distinction to skip its own
+    # success-reporting (total_synced, the "found N items" log line, and the
+    # stock_sync_progress broadcast) for a write that never happened.
     if not crawler_is_catalog(conn, crawler_id):
         log.warning(
             "Dropping a stock snapshot of %d items for crawler %d: "
             "it is no longer a catalog kind",
             len(items), crawler_id,
         )
-        return []
+        return None
     rows = []
     identity_rows = []
     item_keys = []

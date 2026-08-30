@@ -761,13 +761,32 @@ still resolved, since this worker still owns its claim. Forward direction
 (to `release`): `_sync_stock`'s enabled-source list is a snapshot too, and
 one source's crawl can run for hours, so `replace_stock_items()` itself
 calls `db.crawler_is_catalog()` before its DELETE and skips the whole
-snapshot write, with a log line, when the crawler has stopped being a
-catalog kind. Both helpers read the `crawlers` row `FOR SHARE` rather than
-with a plain SELECT: under READ COMMITTED a plain read neither waits for an
-in-flight conversion nor keeps one out until the writing transaction
-commits, and the row lock serializes the recheck with `register_crawler()`'s
-upsert UPDATE in whichever order they arrive. Lock order stays consistent —
-both sides lock the `crawlers` row before touching `stock_items` — so no
-deadlock is reachable. (Reverse gate added on branch
-`claude/waterloo-records-crawler-type-a2woiz`; forward gate on
-`claude/catalog-write-kind-gate`, which stacks on it.)
+snapshot write when the crawler has stopped being a catalog kind — logging
+why, and returning `None` rather than `[]` so `_sync_stock` can tell a
+dropped write apart from a genuinely empty catalog and skip its own
+success-reporting (`total_synced`, the "found N items" log line, and the
+`stock_sync_progress` broadcast) for a write that never happened. (Gates:
+`db.crawler_is_release()`, and `db.crawler_is_catalog()` defined immediately
+after it in `db.py`.)
+
+Both helpers read the `crawlers` row locked rather than with a plain SELECT:
+under READ COMMITTED a plain read neither waits for an in-flight conversion
+nor keeps one out until the writing transaction commits, and the row lock
+serializes the recheck with `register_crawler()`'s upsert UPDATE in
+whichever order they arrive. They differ in lock strength. `crawler_is_release()`
+takes `FOR SHARE`, which is sufficient there because nothing later in that
+same transaction writes to the `crawlers` row itself. `crawler_is_catalog()`
+takes `FOR NO KEY UPDATE` instead, because `_sync_stock` calls
+`update_crawler_last_run()` — an `UPDATE` on that same row — in the same
+transaction right after the snapshot write. Under `FOR SHARE`, that second
+statement would need to upgrade the lock it already holds to an exclusive
+one, and a `register_crawler()` UPDATE queued in between the two — locked
+out by the `FOR SHARE`, but ahead of this transaction's upgrade request in
+Postgres's lock queue — would deadlock the two transactions against each
+other. `FOR NO KEY UPDATE` already holds a lock at least as strong as what
+`update_crawler_last_run()` needs, so that later statement never has to
+wait, whatever else is queued on the row. Lock order stays consistent on
+both directions — every side locks the `crawlers` row before touching
+`stock_items` or `listings` — so no deadlock is reachable through lock
+*ordering*; the lock *strength* on the forward gate is what closes the
+separate self-upgrade hazard.
