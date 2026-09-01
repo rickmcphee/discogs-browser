@@ -162,6 +162,39 @@ def test_title_matches_requires_every_title_word():
     )
 
 
+def test_title_matches_respects_the_artist_delimiter():
+    # Normalizing the whole title would let artist "Love" + title "Is" claim
+    # a page whose artist is actually "Love Is All".
+    assert not Crawler._title_matches(
+        "Love Is All - Nine Times That Same Song on Vinyl LP | Rough Trade",
+        "Love", "Is",
+    )
+    assert Crawler._title_matches(
+        "Love Is All - Nine Times That Same Song on Vinyl LP | Rough Trade",
+        "Love Is All", "Nine Times That Same Song",
+    )
+
+
+def test_title_matches_rejects_a_short_prefix_as_truncation():
+    # "superhits".startswith("super") -- but a name segment ending that far
+    # short of the length live titles truncate at is a different, shorter
+    # title, not a truncation.
+    assert not Crawler._title_matches(
+        "Sample Artist - International Super on Vinyl LP | Rough Trade",
+        "Sample Artist", "International Superhits Volume Two",
+    )
+
+
+def test_title_matches_only_relaxes_the_final_compared_word():
+    # A mid-name fragment (more name words follow before the suffix) is a
+    # mismatch, never a truncation -- truncation only happens at the end of
+    # the name segment.
+    assert not Crawler._title_matches(
+        "Sample Artist - Great Esc Deluxe Something Longer Here on Vinyl LP",
+        "Sample Artist", "Great Escape",
+    )
+
+
 def test_title_matches_does_not_read_the_format_suffix_as_a_truncation():
     # "one".startswith("on") -- but that "on" is the format suffix of a page
     # for the *shorter* title "Greatest Hits", a different release.
@@ -341,6 +374,22 @@ async def test_search_falls_back_to_og_price_metas(browser_page):
     page = _FakePage(browser_page, {PRODUCT_URL: (_fixture("product_meta_only.html"), 200)})
     results = await Crawler().search(RELEASE, page)
     assert [(r["price"], r["currency"]) for r in results] == [(29.99, "USD")]
+
+
+async def test_search_never_mixes_meta_namespaces(browser_page):
+    # A stale product: currency without a product: amount must not attach to
+    # the og: namespace's amount.
+    html = (
+        "<html><head>"
+        "<title>Sample Artist - Sample Album on Vinyl LP | Rough Trade</title>"
+        '<meta property="product:price:currency" content="USD" />'
+        '<meta property="og:price:amount" content="24.99" />'
+        '<meta property="og:price:currency" content="GBP" />'
+        "</head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    results = await Crawler().search(RELEASE, page)
+    assert [(r["price"], r["currency"]) for r in results] == [(24.99, "GBP")]
 
 
 async def test_search_raises_rather_than_scraping_visible_prices(browser_page):

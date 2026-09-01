@@ -190,16 +190,22 @@ is exactly what the caller does with it.
    wall, not a product answer. A page that *passes* the identity check is
    parsed whatever the status says: a cleared challenge reloads the real
    page while `goto()`'s response object still holds the interstitial's 403.
-3. Identity check: the settled `<title>` must start with the release's
-   artist and then *every* word of its title, in order (both sides
-   normalized). Wrong-product landings are an expected case, so a bounded
-   prefix is not enough — "Greatest Hits Volume One" must not pass on a
-   "Volume Two" page; the one relaxation is the documented mid-word
-   truncation of live page titles, which may shorten the final compared
-   word — except when the fragment is a word the format suffix itself
-   starts with ("on", "vinyl"), which is what a page for a *shorter*,
-   different title looks like. A mismatch means the slug resolved to some
-   other product — a miss, never a parse attempt against the wrong page.
+3. Identity check: the settled `<title>` is split on its first literal
+   `" - "` delimiter; the segment before it must equal the release's artist
+   exactly (normalized) — comparing normalized whole titles instead would
+   let artist "Love" + title "Is" claim a "Love Is All - …" page. The name
+   segment must then carry *every* word of the release's title, in order.
+   Wrong-product landings are an expected case, so a bounded prefix is not
+   enough — "Greatest Hits Volume One" must not pass on a "Volume Two"
+   page; the one relaxation is the documented mid-word truncation of live
+   page titles, accepted only where truncation is actually plausible: the
+   fragment ends the name segment, it is not a word the format suffix
+   itself starts with ("on", "vinyl" — what a page for a *shorter*,
+   different title looks like), and the matched span has reached the length
+   live titles truncate at (~30+ characters — "International Super" must
+   not pass for "International Superhits …"). A mismatch means the slug
+   resolved to some other product — a miss, never a parse attempt against
+   the wrong page.
 4. Extract price signals in one `page.evaluate` round trip: every
    `script[type="application/ld+json"]` text plus the OG price metas.
    Parsing happens in Python:
@@ -216,7 +222,10 @@ is exactly what the caller does with it.
      kept (Rough Trade trades heavily in pre-orders).
    - Prices must be finite and positive (`discogs_marketplace._finite_price`
      rationale — `float()` accepts NaN/inf text).
-   - Fallback when the JSON-LD produced no answer: the OG meta pair alone.
+   - Fallback when the JSON-LD produced no answer: the OG price metas,
+     read as namespace pairs (`product:price:*`, then `og:price:*`) so a
+     stale currency from one namespace never attaches to the other's
+     amount.
 5. Outcomes, in the caller's terms:
    - usable offers → listings sorted cheapest-first, each
      `{url, price, shipping: None, currency, condition: None}`;

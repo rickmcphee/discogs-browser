@@ -22,8 +22,13 @@ _SETTLE_TIMEOUT_MS = 15_000
 # what a wantlist watcher wants to see.
 _UNAVAILABLE_RE = re.compile(r"(outofstock|soldout|discontinued)\s*$", re.IGNORECASE)
 
-_META_PRICE_PROPS = ("product:price:amount", "og:price:amount")
-_META_CURRENCY_PROPS = ("product:price:currency", "og:price:currency")
+# Amount and currency read as namespace pairs, never mixed across them: a
+# valid og: amount next to a stale product: currency must not combine into a
+# price in the wrong currency.
+_META_PAIRS = (
+    ("product:price:amount", "product:price:currency"),
+    ("og:price:amount", "og:price:currency"),
+)
 
 # One round trip: every JSON-LD script body plus the OG price metas. All
 # parsing happens in Python -- the page only hands over raw strings.
@@ -78,8 +83,18 @@ def _norm_words(text: str) -> list:
 # pass as a mid-word truncation fragment: the name ending cleanly right where
 # the suffix starts is exactly what a *shorter* product name looks like, so
 # "Greatest Hits One" would otherwise match a "Greatest Hits on Vinyl LP"
-# page ("one".startswith("on")) -- a different release.
+# page ("one".startswith("on")) -- a different release. The same set marks
+# where a name segment ends for the boundary check below.
 _SUFFIX_FRAGMENT_STOP = frozenset({"on", "vinyl", "lp", "cd"})
+
+# Live page titles only truncate *long* product names -- the observed case
+# cut around 35 characters. A name segment ending on a prefix word well
+# short of that is not a truncation, it is a different, shorter title
+# ("International Super" vs "International Superhits ..."), so the
+# relaxation below requires the matched span to have plausibly hit the
+# truncation length. Misses a name truncated shorter than this; that errs
+# toward a miss, never a wrong product.
+_TRUNCATION_MIN_CHARS = 30
 
 
 def _words_match_prefix(expected: list, got: list) -> bool:
@@ -88,10 +103,11 @@ def _words_match_prefix(expected: list, got: list) -> bool:
     All of them, not a fixed-length prefix -- "Greatest Hits Volume One" must
     not match a page for "Greatest Hits Volume Two". The one relaxation is
     the documented mid-word truncation of live page titles and product names
-    ("...Start Your Ear Off R on Vinyl LP"): a compared word may be a leading
-    fragment of the expected word, and that ends the comparison as a match --
-    unless the fragment is a word the format suffix itself starts with, which
-    is what a shorter, different product name looks like.
+    ("...Start Your Ear Off R on Vinyl LP"): the *final* compared word may be
+    a leading fragment of the expected word, but only where truncation is
+    actually plausible -- the fragment ends the name segment (the format
+    suffix or nothing follows), it is not itself a suffix word, and the
+    matched span has reached the length live titles truncate at.
     """
     if not expected or not got:
         return False
@@ -100,11 +116,13 @@ def _words_match_prefix(expected: list, got: list) -> bool:
             return False
         if got[i] == word:
             continue
-        return (
-            bool(got[i])
-            and got[i] not in _SUFFIX_FRAGMENT_STOP
-            and word.startswith(got[i])
-        )
+        if not got[i] or got[i] in _SUFFIX_FRAGMENT_STOP:
+            return False
+        if not word.startswith(got[i]):
+            return False
+        if i + 1 < len(got) and got[i + 1] not in _SUFFIX_FRAGMENT_STOP:
+            return False
+        return len(" ".join(got[: i + 1])) >= _TRUNCATION_MIN_CHARS
     return True
 
 
@@ -112,17 +130,18 @@ def _name_matches(name: str, artist: str, title: str) -> bool:
     """Does a Product node's name describe this release?
 
     Accepts the two shapes a product name plausibly takes -- the bare title,
-    or "{Artist} - {Title}" -- under the same all-words-prefix rule as the
-    page title check.
+    or "{Artist} - {Title}" split on the literal delimiter -- under the same
+    all-words rule as the page title check.
     """
-    name_words = _norm_words(name)
     title_words = _norm_words(title)
-    if _words_match_prefix(title_words, name_words):
+    if _words_match_prefix(title_words, _norm_words(name)):
         return True
-    artist_words = _norm_words(artist)
-    if artist_words and name_words[: len(artist_words)] == artist_words:
-        return _words_match_prefix(title_words, name_words[len(artist_words):])
-    return False
+    artist_seg, sep, name_seg = name.partition(" - ")
+    return bool(
+        sep
+        and _norm_words(artist_seg) == _norm_words(artist)
+        and _words_match_prefix(title_words, _norm_words(name_seg))
+    )
 
 
 def _product_nodes(ldjson_texts: list) -> list:
@@ -239,21 +258,26 @@ class Crawler:
     def _title_matches(page_title: str, artist: str, title: str) -> bool:
         """Did the slug land on this release's product page?
 
-        Confirmed page titles start "{Artist} - {Title}..." with the product
-        name sometimes truncated mid-word, so the check is: artist words as an
-        exact prefix, then *every* release-title word in order (see
-        _words_match_prefix -- wrong-product landings are an expected case
-        here, so "Volume One" must not pass on a "Volume Two" page; only the
-        documented mid-word truncation relaxes the final word).
+        Confirmed page titles are "{Artist} - {Title}..." with a literal
+        " - " delimiter, so the artist is compared against the segment
+        *before* the first delimiter, exactly -- normalizing the whole title
+        first would let artist "Love" + title "Is" claim a "Love Is All -
+        ..." page. The name segment then needs *every* release-title word in
+        order (see _words_match_prefix -- wrong-product landings are an
+        expected case here, so "Volume One" must not pass on a "Volume Two"
+        page; only the documented mid-word truncation relaxes the final
+        word).
         """
-        page_words = _norm_words(page_title)
+        artist_seg, sep, name_seg = page_title.partition(" - ")
+        if not sep:
+            return False
         artist_words = _norm_words(artist)
+        if not artist_words or _norm_words(artist_seg) != artist_words:
+            return False
         title_words = _norm_words(title)
-        if not page_words or not artist_words or not title_words:
+        if not title_words:
             return False
-        if page_words[: len(artist_words)] != artist_words:
-            return False
-        return _words_match_prefix(title_words, page_words[len(artist_words):])
+        return _words_match_prefix(title_words, _norm_words(name_seg))
 
     async def _settled_title(self, page) -> str:
         # Cloudflare's interstitial always renders first, so a title read at
@@ -381,19 +405,16 @@ class Crawler:
             return []
 
         meta = signals.get("meta") or {}
-        price = next(
-            (p for p in (_finite_price(meta.get(k)) for k in _META_PRICE_PROPS) if p),
-            None,
-        )
-        if price is not None:
-            currency = next(
-                (meta.get(k) for k in _META_CURRENCY_PROPS if meta.get(k)), None
-            )
+        for amount_key, currency_key in _META_PAIRS:
+            price = _finite_price(meta.get(amount_key))
+            if price is None:
+                continue
+            currency = meta.get(currency_key)
             return [{
                 "url": url,
                 "price": price,
                 "shipping": None,
-                "currency": currency or "USD",
+                "currency": currency if isinstance(currency, str) and currency else "USD",
                 "condition": None,
             }]
         return None
