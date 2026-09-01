@@ -193,25 +193,28 @@ is exactly what the caller does with it.
 3. Identity check: the settled `<title>` is split on its first literal
    `" - "` delimiter; the segment before it must equal the release's artist
    exactly (normalized) — comparing normalized whole titles instead would
-   let artist "Love" + title "Is" claim a "Love Is All - …" page. The name
-   segment must then carry *every* word of the release's title, in order.
-   Wrong-product landings are an expected case, so a bounded prefix is not
-   enough — "Greatest Hits Volume One" must not pass on a "Volume Two"
-   page; the one relaxation is the documented mid-word truncation of live
-   page titles, accepted only where truncation is actually plausible: the
-   fragment shortens the *final* release-title word only (an earlier
-   fragment leaves the remaining title words unchecked, letting a sibling
-   title through), it ends the name segment, it is not a word the format
-   suffix itself starts with ("on", "vinyl" — what a page for a *shorter*,
-   different title looks like), and the matched span has reached the length
-   live titles truncate at (~30+ characters — "International Super" must
-   not pass for "International Superhits …"). A mismatch is a miss — never
-   a parse attempt against the wrong page — but only with positive evidence
-   of what was landed on: a not-found page, or a structurally valid Rough
-   Trade product page for some other product. A 200 whose title is neither
-   (a maintenance page, a consent wall) is unclassifiable and raises: a
-   miss there would clear a stored price with no site-health signal
-   recorded, since this crawler's empty results bypass the breaker.
+   let artist "Love" + title "Is" claim a "Love Is All - …" page. The
+   product-name *core* is then isolated — everything up to the next
+   `" - "` or `" | "`, with the trailing format marker ("on Vinyl LP",
+   "on CD") stripped — and must equal the release title word for word.
+   Wrong-product landings are an expected case, and trailing words in the
+   core are a *sibling title* ("Greatest Hits Volume Two" for "Greatest
+   Hits"), not edition noise — even with its own JSON-LD name-filtered, a
+   sibling page's nameless Product node or OG metas could persist the
+   wrong price, so nothing short of equality passes. The one relaxation is
+   the documented mid-word truncation of live page titles: the core's
+   final word may be a leading fragment of the title's final word, once
+   the matched span has reached the length live titles truncate at (~30+
+   characters — "International Super" must not pass for "International
+   Superhits …"). A mismatch is a miss — never a parse attempt against the
+   wrong page — but only with positive evidence of what was landed on: a
+   not-found page, or a structurally valid Rough Trade *product* page for
+   some other product (the delimiter, the branding, and a format marker —
+   "Access Denied - Rough Trade" has no format marker and does not
+   qualify). A 200 whose title is neither (a maintenance page, a consent
+   wall) is unclassifiable and raises: a miss there would clear a stored
+   price with no site-health signal recorded, since this crawler's empty
+   results bypass the breaker.
 4. Extract price signals in one `page.evaluate` round trip: every
    `script[type="application/ld+json"]` text plus the OG price metas.
    Parsing happens in Python:

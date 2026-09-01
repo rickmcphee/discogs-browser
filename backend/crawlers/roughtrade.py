@@ -78,59 +78,48 @@ def _norm_words(text: str) -> list:
     return _slugify(text).split("-") if text else []
 
 
-# Words the page-title format suffix ("on Vinyl LP | Rough Trade",
-# "- (Vinyl LP)", "on CD") begins with after normalization. They must never
-# pass as a mid-word truncation fragment: the name ending cleanly right where
-# the suffix starts is exactly what a *shorter* product name looks like, so
-# "Greatest Hits One" would otherwise match a "Greatest Hits on Vinyl LP"
-# page ("one".startswith("on")) -- a different release. The same set marks
-# where a name segment ends for the boundary check below.
+# Words that must never stand as a mid-word truncation fragment -- an
+# unstripped format-marker remnant coinciding with a title word's prefix
+# ("one".startswith("on")) would otherwise pass as truncation.
 _SUFFIX_FRAGMENT_STOP = frozenset({"on", "vinyl", "lp", "cd"})
 
 # Live page titles only truncate *long* product names -- the observed case
-# cut around 35 characters. A name segment ending on a prefix word well
-# short of that is not a truncation, it is a different, shorter title
+# cut around 35 characters. A name ending on a prefix word well short of
+# that is not a truncation, it is a different, shorter title
 # ("International Super" vs "International Superhits ..."), so the
 # relaxation below requires the matched span to have plausibly hit the
 # truncation length. Misses a name truncated shorter than this; that errs
 # toward a miss, never a wrong product.
 _TRUNCATION_MIN_CHARS = 30
 
+# The trailing format marker a product-name core carries in confirmed page
+# titles ("{Title} on Vinyl LP", "{Title} on CD").
+_FORMAT_MARKER_RE = re.compile(r"\s+on\s+(vinyl(\s+lp)?|lp|cd)\s*$", re.IGNORECASE)
 
-def _words_match_prefix(expected: list, got: list) -> bool:
-    """Every expected word, in order, at the start of `got`.
 
-    All of them, not a fixed-length prefix -- "Greatest Hits Volume One" must
-    not match a page for "Greatest Hits Volume Two". The one relaxation is
-    the documented mid-word truncation of live page titles and product names
-    ("...Start Your Ear Off R on Vinyl LP"): the *final* compared word may be
-    a leading fragment of the expected word, but only where truncation is
-    actually plausible -- the fragment ends the name segment (the format
-    suffix or nothing follows), it is not itself a suffix word, and the
+def _title_core_matches(expected: list, got: list) -> bool:
+    """Does a page's product-name core name exactly this release?
+
+    `got` is the name core -- delimiter/branding/format-marker segments
+    already stripped -- so trailing words are a *sibling title* ("Greatest
+    Hits Volume Two" for "Greatest Hits"), not edition noise: equality is
+    required, word for word. The one relaxation is the documented mid-word
+    truncation of live page titles ("...Start Your Ear Off R"): the final
+    word may be a leading fragment of the final expected word, once the
     matched span has reached the length live titles truncate at.
     """
     if not expected or not got:
         return False
-    for i, word in enumerate(expected):
-        if i >= len(got):
-            return False
-        if got[i] == word:
-            continue
-        if not got[i] or got[i] in _SUFFIX_FRAGMENT_STOP:
-            return False
-        if not word.startswith(got[i]):
-            return False
-        # Only the *final* expected word may be truncated: with later
-        # expected words unchecked, a sibling title ("... Superhits Volume
-        # Two") could match a page whose name merely ends on this fragment.
-        # A page truncated earlier than the final expected word is missed --
-        # the safe direction.
-        if i != len(expected) - 1:
-            return False
-        if i + 1 < len(got) and got[i + 1] not in _SUFFIX_FRAGMENT_STOP:
-            return False
-        return len(" ".join(got[: i + 1])) >= _TRUNCATION_MIN_CHARS
-    return True
+    if got == expected:
+        return True
+    if len(got) != len(expected) or got[:-1] != expected[:-1]:
+        return False
+    fragment = got[-1]
+    if not fragment or fragment in _SUFFIX_FRAGMENT_STOP:
+        return False
+    if not expected[-1].startswith(fragment):
+        return False
+    return len(" ".join(got)) >= _TRUNCATION_MIN_CHARS
 
 
 def _name_matches(name: str, artist: str, title: str) -> bool:
@@ -212,19 +201,32 @@ def _offer_listing(offer: dict, url: str) -> Optional[dict]:
     }
 
 
+# A product page's title carries a format marker ("on Vinyl LP", "on CD",
+# "(Vinyl LP)", "(LP)"). Site pages that merely carry the branding --
+# "Access Denied - Rough Trade", "Privacy Choices - Rough Trade" -- do not.
+_PRODUCT_TITLE_SHAPE_RE = re.compile(
+    r"\bon\s+(vinyl|cd|lp)\b|\((vinyl|lp|cd|\d+\s*\")", re.IGNORECASE
+)
+
+
 def _recognized_non_match(page_title: str) -> bool:
     """Positive evidence that a mismatching 200 page is a *confirmed* miss.
 
-    Either a not-found page, or a structurally valid Rough Trade product
-    page for some other product ("{Artist} - {Name} ... | Rough Trade").
-    Anything else -- a maintenance page, a consent wall, an unrecognised
-    layout -- is unclassifiable, and the caller raises instead of recording
-    a miss that would clear a stored price.
+    Either a not-found page, or a structurally valid Rough Trade *product*
+    page for some other product -- the "{Artist} - {Name}" shape plus a
+    format marker, so a generic site page ("Access Denied - Rough Trade")
+    never qualifies. Anything else -- a maintenance page, a consent wall, an
+    unrecognised layout -- is unclassifiable, and the caller raises instead
+    of recording a miss that would clear a stored price.
     """
     lower = page_title.lower()
     if "not found" in lower or "404" in lower:
         return True
-    return " - " in page_title and "rough trade" in lower
+    return (
+        " - " in page_title
+        and "rough trade" in lower
+        and bool(_PRODUCT_TITLE_SHAPE_RE.search(page_title))
+    )
 
 
 class Crawler:
@@ -287,17 +289,19 @@ class Crawler:
     def _title_matches(page_title: str, artist: str, title: str) -> bool:
         """Did the slug land on this release's product page?
 
-        Confirmed page titles are "{Artist} - {Title}..." with a literal
-        " - " delimiter, so the artist is compared against the segment
-        *before* the first delimiter, exactly -- normalizing the whole title
-        first would let artist "Love" + title "Is" claim a "Love Is All -
-        ..." page. The name segment then needs *every* release-title word in
-        order (see _words_match_prefix -- wrong-product landings are an
-        expected case here, so "Volume One" must not pass on a "Volume Two"
-        page; only the documented mid-word truncation relaxes the final
-        word).
+        Confirmed page titles are "{Artist} - {Title}[ format marker][ -
+        edition/format segments]..." with literal " - " delimiters, so the
+        artist is compared against the segment *before* the first delimiter,
+        exactly -- normalizing the whole title first would let artist "Love"
+        + title "Is" claim a "Love Is All - ..." page. The product-name core
+        is then isolated -- everything up to the next " - " or " | ", with
+        the trailing format marker stripped -- and must equal the release
+        title word for word (see _title_core_matches): trailing words there
+        are a sibling title ("... Volume Two"), not edition noise, and even
+        with its JSON-LD filtered a sibling page's nameless node or OG metas
+        could persist the wrong price.
         """
-        artist_seg, sep, name_seg = page_title.partition(" - ")
+        artist_seg, sep, rest = page_title.partition(" - ")
         if not sep:
             return False
         artist_words = _norm_words(artist)
@@ -306,7 +310,9 @@ class Crawler:
         title_words = _norm_words(title)
         if not title_words:
             return False
-        return _words_match_prefix(title_words, _norm_words(name_seg))
+        name_core = rest.split(" - ")[0].split(" | ")[0]
+        name_core = _FORMAT_MARKER_RE.sub("", name_core)
+        return _title_core_matches(title_words, _norm_words(name_core))
 
     async def _settled_title(self, page) -> str:
         # Cloudflare's interstitial always renders first, so a title read at

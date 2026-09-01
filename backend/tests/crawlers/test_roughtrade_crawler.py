@@ -205,6 +205,16 @@ def test_title_matches_truncation_only_applies_to_the_final_title_word():
     )
 
 
+def test_title_matches_rejects_a_sibling_title_with_trailing_words():
+    # Even though the sibling's own JSON-LD node would be name-filtered, its
+    # nameless nodes or OG metas could persist a price -- the page must not
+    # pass identity at all.
+    assert not Crawler._title_matches(
+        "Sample Artist - Greatest Hits Volume Two on Vinyl LP | Rough Trade",
+        "Sample Artist", "Greatest Hits",
+    )
+
+
 def test_title_matches_does_not_read_the_format_suffix_as_a_truncation():
     # "one".startswith("on") -- but that "on" is the format suffix of a page
     # for the *shorter* title "Greatest Hits", a different release.
@@ -448,6 +458,16 @@ async def test_search_raises_on_an_unclassifiable_success_page(browser_page):
     # raise: a miss here would clear a stored price with no site-health
     # signal recorded.
     html = "<html><head><title>Scheduled Maintenance</title></head><body></body></html>"
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    with pytest.raises(RuntimeError, match="unrecognised page"):
+        await Crawler().search(RELEASE, page)
+
+
+async def test_search_raises_on_a_branded_site_page_without_a_product_shape(browser_page):
+    # "Access Denied - Rough Trade" carries the delimiter and the branding
+    # but no format marker -- it is a site page, not a different product, so
+    # it must raise rather than count as a confirmed miss.
+    html = "<html><head><title>Access Denied - Rough Trade</title></head><body></body></html>"
     page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
     with pytest.raises(RuntimeError, match="unrecognised page"):
         await Crawler().search(RELEASE, page)
