@@ -177,9 +177,9 @@ alone.
 1. Does `integration` already contain `main`? Exit if so (above).
 2. A sync PR already open? Resolve its own `mergeable_state`: `behind` gets
    `update-branch` before auto-merge is re-armed; `dirty` fails loudly and
-   leaves auto-merge off; `blocked` fails loudly *only* when a required check
-   has actually failed. Do not rebuild its branch — it may carry a
-   hand-resolved conflict.
+   leaves auto-merge off; `blocked` fails loudly once a failed check is left
+   standing with nothing still running that could clear it. Do not rebuild its
+   branch — it may carry a hand-resolved conflict.
 
 **Amended 2026-09-01: `blocked` is routed rather than falling through.**
 `integration` requires no approving review, so a sync PR is `blocked` for one of
@@ -548,7 +548,7 @@ guard that failed open.
 | Unrelated PRs blocked by someone else's conflict | A conflicted sync PR reported a pending sync, suppressing `refresh`, though auto-merge was off and nothing was about to move | Superseded: the pending guard is gone entirely |
 | Refresh silently doing nothing | `for n in $(gh pr list …)` is a word expansion, so `set -e` never saw the command fail | Assign first |
 | Fork PR handed auto-merge | `--head` matches branch *name* only | `isCrossRepository == false` |
-| **A red sync PR stalling both branches, silently** | `blocked` fell through to the re-arm, which is a no-op on an already-armed PR; the job exited 0 while the branch kept the failure it could never shed | `blocked` is routed, and fails the run when a required check has actually concluded in failure |
+| **A red sync PR stalling both branches, silently** | `blocked` fell through to the re-arm, which is a no-op on an already-armed PR; the job exited 0 while the branch kept the failure it could never shed | `blocked` is routed, and fails the run once a failed check stands with nothing still running that could clear it |
 
 ## Simplifications available
 
