@@ -112,6 +112,13 @@ env:
   # what stops the next run re-arming auto-merge underneath them; see the
   # `dirty` branch and the re-arm guard.
   CONFLICT_LABEL: sync-conflict-needs-hand-merge
+  # How long a pending check on a sync PR goes on shielding a failed one, in
+  # seconds. Six hours: this repository's checks finish in minutes, so the grace
+  # period never expires while anything is genuinely running, and a check still
+  # pending after it is hung rather than slow. See the `blocked` branch, where
+  # the alternative to a bound is a failed required check staying unreported for
+  # as long as some optional check sits queued.
+  PENDING_CHECK_GRACE: 21600
 
 jobs:
   sync:
@@ -401,9 +408,27 @@ jobs:
                 # on it would put a run red every week for a condition the
                 # design deliberately accepts. CANCELLED and STALE get no such
                 # excuse: nothing is coming for them.
+                # A pending check only shields a failure while it is plausibly
+                # still running. `statusCheckRollup` does not say which checks
+                # are *required*, so waiting on the whole board is what keeps an
+                # optional failure from firing this while a required check is
+                # still going -- but read naively that same rule inverts into
+                # something worse: a required check that has conclusively failed
+                # would stay unreported for as long as any optional check sat
+                # queued, and an optional check that hangs would bury it for
+                # good. Silence is this branch's own failure mode, so it must
+                # not be reachable by waiting.
+                #
+                # A check pending longer than PENDING_CHECK_GRACE is hung, not
+                # running, and stops shielding anything. Real checks here finish
+                # in minutes, so the grace period never expires mid-run and the
+                # optional-failure noise stays suppressed exactly as long as it
+                # should be. A pending check carrying no timestamp counts as
+                # waiting: that state is transient by nature, and the next run
+                # re-decides.
                 blocked_waiting="$(gh pr view "$existing" --repo "$REPO" \
                   --json statusCheckRollup \
-                  --jq '[ .statusCheckRollup[]? | select(((.status // "") | . == "QUEUED" or . == "IN_PROGRESS" or . == "WAITING" or . == "PENDING" or . == "REQUESTED") or ((.conclusion // "") == "ACTION_REQUIRED") or ((.state // "") | . == "PENDING" or . == "EXPECTED")) ] | length')"
+                  --jq '[ .statusCheckRollup[]? | select((((.status // "") | . == "QUEUED" or . == "IN_PROGRESS" or . == "WAITING" or . == "PENDING" or . == "REQUESTED") or ((.conclusion // "") == "ACTION_REQUIRED") or ((.state // "") | . == "PENDING" or . == "EXPECTED")) and ((.startedAt // .createdAt // "") | if . == "" then true else (fromdateiso8601 > (now - '"$PENDING_CHECK_GRACE"')) end)) ] | length')"
                 blocked_failures="$(gh pr view "$existing" --repo "$REPO" \
                   --json statusCheckRollup \
                   --jq '[ .statusCheckRollup[]? | (.conclusion // .state // "") as $c | select($c == "FAILURE" or $c == "ERROR" or $c == "TIMED_OUT" or $c == "STARTUP_FAILURE" or $c == "CANCELLED" or $c == "STALE") | (.name // .context // "unnamed check") ] | unique | join(", ")')"

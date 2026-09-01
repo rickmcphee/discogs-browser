@@ -208,6 +208,20 @@ required: with nothing left running, an optional-only failure leaves the PR
 `unstable` rather than `blocked`, so it never reaches this routing at all. That
 is why no `isRequired` field is read.
 
+Read naively, though, that same rule inverts into something worse than the noise
+it prevents. Because the rollup does not mark required checks, waiting on the
+whole board means a required check that has *conclusively failed* goes
+unreported for as long as any optional check sits queued beside it — and an
+optional check that hangs buries it for good, restoring the exact silence this
+routing exists to end. Failing loud is recoverable; failing open is the bug.
+
+So a pending check only shields a failure while it is plausibly still running.
+Past `PENDING_CHECK_GRACE` (six hours) it is hung rather than slow, and stops
+shielding anything. Checks here finish in minutes, so the bound never expires
+while something is genuinely running, and the optional-failure suppression holds
+for exactly as long as it should. A pending check carrying no timestamp counts
+as waiting — that state is transient, and the next run re-decides.
+
 `CANCELLED` and `STALE` count as failures alongside the obvious ones — nothing
 is coming for either. `ACTION_REQUIRED` counts as *waiting*: it means a person
 has been asked for a click, which is the parked "Approve and run" state this
