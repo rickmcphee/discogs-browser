@@ -226,6 +226,58 @@ jobs:
             fi
           }
 
+          secure_conflicted_pr() {  # $1 = PR number
+            # Two independent defences, and both are attempted before anything
+            # is reported: the label is durable (it survives to the next run and
+            # is what blocks the re-arm), disabling is immediate (it clears the
+            # request that would otherwise take a resolution straight in).
+            # Neither substitutes for the other, so a failure in one must not
+            # skip the other.
+            #
+            # A function rather than just the `dirty` case body, because the
+            # `blocked` branch can discover a conflict too -- it re-reads
+            # mergeable_state after the rollup, and that read can come back
+            # `dirty`. Declining to re-arm there is not safety: a sync PR is
+            # armed at creation, so an untouched conflicted PR still carries a
+            # live auto-merge request and no label, and whoever resolves it has
+            # their resolution merged unreviewed into a branch that requires no
+            # approving review. Both discoveries need the same two defences.
+            label_ok=yes
+            # `|| true` only because --force already makes this a no-op when the
+            # label exists; the attach below is what has to work.
+            gh label create "$CONFLICT_LABEL" --repo "$REPO" --color B60205 \
+              --description "Sync PR whose conflict needs resolving and merging by hand -- with a merge commit, never a squash" \
+              --force >/dev/null 2>&1 || true
+            gh pr edit "$1" --repo "$REPO" --add-label "$CONFLICT_LABEL" \
+              || label_ok=no
+
+            # `--disable-auto` fails when there is no auto-merge request, so read
+            # first and only call it when something is armed -- treating "nothing
+            # to disable" as a failure aborted the job with auto-merge already
+            # safely off. If the read itself fails we cannot tell, so try anyway
+            # and let the result decide.
+            disable_ok=yes
+            if dirty_automerge="$(gh pr view "$1" --repo "$REPO" \
+                 --json autoMergeRequest --jq '.autoMergeRequest.mergeMethod // empty')"; then
+              if [ -n "$dirty_automerge" ]; then
+                gh pr merge "$1" --repo "$REPO" --disable-auto || disable_ok=no
+              fi
+            else
+              gh pr merge "$1" --repo "$REPO" --disable-auto || disable_ok=no
+            fi
+
+            if [ "$label_ok" = no ] || [ "$disable_ok" = no ]; then
+              # Stop *before* printing the resolve-and-push instructions below.
+              # Those invite exactly the push that an un-labelled, still-armed
+              # PR would merge unreviewed.
+              echo "::error::Sync PR #$1 conflicts with integration and this job could not secure it (label applied: $label_ok, auto-merge cleared: $disable_ok). Do NOT resolve the conflict yet -- a resolution could merge itself, unreviewed, into a branch that requires no approving review. Apply $CONFLICT_LABEL and turn auto-merge off by hand first; if labelling failed, check the token has Issues: write."
+              exit 1
+            fi
+
+            echo "::error::Sync PR #$1 conflicts with integration. Auto-merge is off and $CONFLICT_LABEL is applied: resolve $SYNC_BRANCH by hand, push it, and merge it deliberately -- WITH A MERGE COMMIT, not a squash. This is the one path where nothing here can enforce that, and a squash re-freezes git's merge base between main and integration for good. Setting allowed_merge_methods to merge only on integration-branch-protection removes the choice."
+            exit 1
+          }
+
 
           # git's own merge base is authoritative, and that is a recent
           # property of this repository rather than a given. Both directions
@@ -320,47 +372,7 @@ jobs:
                 fi
                 ;;
               dirty)
-                # Two independent defences, and both are attempted before
-                # anything is reported: the label is durable (it survives to
-                # the next run and is what blocks the re-arm), disabling is
-                # immediate (it clears the request that would otherwise take a
-                # resolution straight in). Neither substitutes for the other,
-                # so a failure in one must not skip the other -- which is what
-                # ordering them as a fail-fast chain used to do.
-                label_ok=yes
-                # `|| true` only because --force already makes this a no-op
-                # when the label exists; the attach below is what has to work.
-                gh label create "$CONFLICT_LABEL" --repo "$REPO" --color B60205 \
-                  --description "Sync PR whose conflict needs resolving and merging by hand -- with a merge commit, never a squash" \
-                  --force >/dev/null 2>&1 || true
-                gh pr edit "$existing" --repo "$REPO" --add-label "$CONFLICT_LABEL" \
-                  || label_ok=no
-
-                # `--disable-auto` fails when there is no auto-merge request,
-                # so read first and only call it when something is armed --
-                # treating "nothing to disable" as a failure aborted the job
-                # with auto-merge already safely off. If the read itself fails
-                # we cannot tell, so try anyway and let the result decide.
-                disable_ok=yes
-                if dirty_automerge="$(gh pr view "$existing" --repo "$REPO" \
-                     --json autoMergeRequest --jq '.autoMergeRequest.mergeMethod // empty')"; then
-                  if [ -n "$dirty_automerge" ]; then
-                    gh pr merge "$existing" --repo "$REPO" --disable-auto || disable_ok=no
-                  fi
-                else
-                  gh pr merge "$existing" --repo "$REPO" --disable-auto || disable_ok=no
-                fi
-
-                if [ "$label_ok" = no ] || [ "$disable_ok" = no ]; then
-                  # Stop *before* printing the resolve-and-push instructions
-                  # below. Those invite exactly the push that an un-labelled,
-                  # still-armed PR would merge unreviewed.
-                  echo "::error::Sync PR #$existing conflicts with integration and this job could not secure it (label applied: $label_ok, auto-merge cleared: $disable_ok). Do NOT resolve the conflict yet -- a resolution could merge itself, unreviewed, into a branch that requires no approving review. Apply $CONFLICT_LABEL and turn auto-merge off by hand first; if labelling failed, check the token has Issues: write."
-                  exit 1
-                fi
-
-                echo "::error::Sync PR #$existing conflicts with integration. Auto-merge is off and $CONFLICT_LABEL is applied: resolve $SYNC_BRANCH by hand, push it, and merge it deliberately -- WITH A MERGE COMMIT, not a squash. This is the one path where nothing here can enforce that, and a squash re-freezes git's merge base between main and integration for good. Setting allowed_merge_methods to merge only on integration-branch-protection removes the choice."
-                exit 1
+                secure_conflicted_pr "$existing"
                 ;;
               blocked)
                 # `blocked` is two unrelated states, and only one of them is a
@@ -517,6 +529,17 @@ jobs:
                   # reached sideways through a read added for a different
                   # purpose. Exiting leaves the PR untouched for one run; the
                   # next decides on a settled read.
+                  # A conflict discovered here is not a state to walk away from.
+                  # Declining to re-arm is not the same as leaving the PR safe:
+                  # a sync PR is armed at creation, so an untouched `dirty` one
+                  # still carries a live auto-merge request and no label, and
+                  # whoever resolves the conflict has their resolution merged
+                  # unreviewed into a branch that requires no approving review.
+                  # Route it through the same defences the `dirty` case applies.
+                  if [ "$blocked_now" = dirty ]; then
+                    secure_conflicted_pr "$existing"
+                  fi
+
                   if [ "$blocked_now" != blocked ]; then
                     echo "Sync PR #$existing has a failed check, but its state now reads ${blocked_now:-unknown} rather than blocked. Not reporting and not re-arming on a state this run cannot resolve; the next run decides."
                     exit 0
