@@ -165,8 +165,11 @@ candidate product URLs from the release's own fields:
    convention and the evidence doesn't settle which side Rough Trade is on.
 
 `slug()` is NFKD-folded ASCII, lowercased, non-alphanumeric runs collapsed to
-single hyphens. Artist and title both pass through `clean_search_text()`
-first to shed Discogs `(2)` disambiguators. Candidates are tried in order,
+single hyphens. Only the artist passes through `clean_search_text()` first —
+its trailing-`(2)` strip is the Discogs *artist* disambiguator convention,
+and applying it to a title legitimately named "Album (2)" would probe the
+sibling `/album` instead of `/album-2`; the title stays raw for slug
+construction and identity matching alike. Candidates are tried in order,
 each a paced `page.goto`; probing stops at the first candidate that yields
 this release's own product page — a 404 *or* a wrong-product landing (the
 identity check below failing) moves on to the next candidate. Two candidates
@@ -196,9 +199,11 @@ is exactly what the caller does with it.
    `" - "` delimiter; the segment before it must equal the release's artist
    exactly (normalized) — comparing normalized whole titles instead would
    let artist "Love" + title "Is" claim a "Love Is All - …" page. The
-   product-name *core* is then isolated — everything up to the next
-   `" - "` or `" | "`, with the trailing format marker ("on Vinyl LP",
-   "on CD") stripped — and must equal the release title word for word.
+   product-name *core* is then matched by trying every progressive
+   `" - "`-segment join of the pre-`" | "` chunk (a release title may
+   contain the delimiter itself — "Sample Album - Deluxe"), each with its
+   trailing format marker ("on Vinyl LP", "on CD") stripped, and a
+   candidate must equal the release title word for word.
    Wrong-product landings are an expected case, and trailing words in the
    core are a *sibling title* ("Greatest Hits Volume Two" for "Greatest
    Hits"), not edition noise — even with its own JSON-LD name-filtered, a
@@ -231,13 +236,14 @@ is exactly what the caller does with it.
      whose `url`/`@id` names this product's path is this page's product
      whatever it is called, one naming another path is not whatever it is
      called (the guard against a carousel node for a same-titled album by
-     another artist), and a url-less node is read only when a
-     `" - "`-delimited segment of its name equals the release title
-     exactly (the bare title with any edition suffix after the delimiter,
-     or the "Artist - Title" shape) — stricter than the identity check,
-     because every accepted node contributes offers and a name merely
-     *starting* with the title would let a sibling product ("… Volume
-     Two") supply the price. A nameless, url-less node is unattributable:
+     another artist), and a url-less node is read only when its name is
+     the bare release title as the *whole* name (no suffix tolerance — a
+     bare "{title} - {anything}" also reads as someone else's
+     "Artist - Title"), or the "Artist - Title[ - edition suffix]" shape
+     with the first segment anchored to this release's artist — stricter
+     than the identity check, because every accepted node contributes
+     offers and a name merely *starting* with the title would let a
+     sibling product ("… Volume Two") supply the price. A nameless, url-less node is unattributable:
      it is used only as the page's sole Product node, and otherwise
      poisons the read like an unparsable offer — never merged in, never
      silently dropped. A recommendation carousel emitting Product JSON-LD

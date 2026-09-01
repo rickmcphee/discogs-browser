@@ -100,6 +100,19 @@ def test_candidate_urls_keeps_a_titles_trailing_number():
     assert urls == ["https://www.roughtrade.com/en-us/product/sample-artist/album-2"]
 
 
+def test_title_matches_preserves_non_latin_characters():
+    # ASCII slugification would equate same-artist titles that differ only
+    # in non-Latin characters, letting a sibling page pass identity.
+    assert not Crawler._title_matches(
+        "Sample Artist - Album 中国 on Vinyl LP | Rough Trade",
+        "Sample Artist", "Album 日本",
+    )
+    assert Crawler._title_matches(
+        "Sample Artist - Album 日本 on Vinyl LP | Rough Trade",
+        "Sample Artist", "Album 日本",
+    )
+
+
 def test_title_matches_keeps_a_titles_trailing_number():
     assert Crawler._title_matches(
         "Sample Artist - Album (2) on Vinyl LP | Rough Trade",
@@ -545,6 +558,23 @@ async def test_search_falls_back_to_og_price_metas(browser_page):
     page = _FakePage(browser_page, {PRODUCT_URL: (_fixture("product_meta_only.html"), 200)})
     results = await Crawler().search(RELEASE, page)
     assert [(r["price"], r["currency"]) for r in results] == [(29.99, "USD")]
+
+
+async def test_search_skips_a_meta_pair_with_a_blank_currency(browser_page):
+    # A whitespace-only product: currency makes that pair malformed; the og:
+    # pair is used instead rather than persisting a blank or stamping USD.
+    html = (
+        "<html><head>"
+        "<title>Sample Artist - Sample Album on Vinyl LP | Rough Trade</title>"
+        '<meta property="product:price:amount" content="31.99" />'
+        '<meta property="product:price:currency" content="   " />'
+        '<meta property="og:price:amount" content="24.99" />'
+        '<meta property="og:price:currency" content="GBP" />'
+        "</head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    results = await Crawler().search(RELEASE, page)
+    assert [(r["price"], r["currency"]) for r in results] == [(24.99, "GBP")]
 
 
 async def test_search_never_mixes_meta_namespaces(browser_page):

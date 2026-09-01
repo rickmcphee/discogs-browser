@@ -83,9 +83,16 @@ def _slugify(text: str) -> str:
 
 
 def _norm_words(text: str) -> list:
-    """Lowercased alphanumeric words, diacritics folded -- the comparison
-    space in which slugs, page titles, and release fields all meet."""
-    return _slugify(text).split("-") if text else []
+    """Lowercased words for identity comparison: diacritics folded, but
+    Unicode letters preserved -- reusing the ASCII URL slugification here
+    would discard every non-Latin character, equating same-artist titles
+    that differ only in them ("Album 日本" vs "Album 中国")."""
+    if not text:
+        return []
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(c for c in text if not unicodedata.combining(c)).lower()
+    text = re.sub(r"['’]", "", text)
+    return [w for w in re.split(r"[^\w]+", text) if w]
 
 
 # Words that must never stand as a mid-word truncation fragment -- an
@@ -185,9 +192,11 @@ def _name_matches(name: str, artist: str, title: str) -> bool:
     Stricter than the page-title check: every accepted node contributes
     offers, so a name merely *starting* with the title would let a sibling
     product ("Greatest Hits Volume Two" for release "Greatest Hits") supply
-    the stored price. A segment of the " - "-delimited name must therefore
-    equal the title exactly -- the bare title (with any " - " edition suffix
-    after it), or the "{Artist} - {Title}[ - suffix]" shape. JSON-LD names
+    the stored price. Two shapes match: the bare title as the *whole* name
+    (no suffix tolerance -- "{title} - {anything}" also reads as someone
+    else's "Artist - Title"), or "{Artist} - {Title}[ - edition suffix]"
+    with the first segment anchored to this release's artist, where
+    progressive joins let the title carry its own delimiter. JSON-LD names
     are not length-truncated the way page titles are, so no truncation
     relaxation applies here.
     """
@@ -661,11 +670,18 @@ class Crawler:
             if price is None:
                 continue
             currency = meta.get(currency_key)
+            if currency is None:
+                currency = "USD"
+            elif not isinstance(currency, str) or not currency.strip():
+                # Same rule as the JSON-LD path: default only for an absent
+                # currency, and skip a malformed pair rather than persisting
+                # a blank or stamping USD over drifted data.
+                continue
             return [{
                 "url": url,
                 "price": price,
                 "shipping": None,
-                "currency": currency if isinstance(currency, str) and currency else "USD",
+                "currency": currency,
                 "condition": None,
             }]
         return None
