@@ -93,6 +93,24 @@ def test_candidate_urls_strips_discogs_disambiguator():
     assert urls == ["https://www.roughtrade.com/en-us/product/nirvana/nevermind"]
 
 
+def test_candidate_urls_keeps_a_titles_trailing_number():
+    # The "(2)" strip is the artist disambiguator convention; a title
+    # legitimately named "Album (2)" must probe "/album-2", not "/album".
+    urls = Crawler._candidate_urls({"artist": "Sample Artist", "title": "Album (2)"})
+    assert urls == ["https://www.roughtrade.com/en-us/product/sample-artist/album-2"]
+
+
+def test_title_matches_keeps_a_titles_trailing_number():
+    assert Crawler._title_matches(
+        "Sample Artist - Album (2) on Vinyl LP | Rough Trade",
+        "Sample Artist", "Album (2)",
+    )
+    assert not Crawler._title_matches(
+        "Sample Artist - Album on Vinyl LP | Rough Trade",
+        "Sample Artist", "Album (2)",
+    )
+
+
 def test_candidate_urls_empty_without_artist_or_title():
     assert Crawler._candidate_urls({"artist": "", "title": "Something"}) == []
     assert Crawler._candidate_urls({"artist": "Someone", "title": ""}) == []
@@ -243,6 +261,11 @@ def test_title_matches_rejects_a_cross_format_landing():
     assert not Crawler._title_matches(
         "Sample Artist - Sample Album - (CD) | Rough Trade",
         "Sample Artist", "Sample Album", "Vinyl",
+    )
+    # Numeric-inch markers are vinyl evidence too.
+    assert not Crawler._title_matches(
+        'Sample Artist - Sample Album - (12") | Rough Trade',
+        "Sample Artist", "Sample Album", "CD",
     )
     assert Crawler._title_matches(
         "Sample Artist - Sample Album - (LP - Rainbow Road) | Rough Trade",

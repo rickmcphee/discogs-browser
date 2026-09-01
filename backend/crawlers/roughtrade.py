@@ -108,8 +108,12 @@ _FORMAT_MARKER_RE = re.compile(r"\s+on\s+(vinyl(\s+lp)?|lp|cd)\s*$", re.IGNORECA
 
 
 # The parenthesised format shape of the later title segments ("- (Vinyl
-# LP)", "- (CD)", "- (LP - Rainbow Road)").
-_PAREN_FORMAT_RE = re.compile(r"\(\s*(vinyl(?:\s+lp)?|lp|cd)\b", re.IGNORECASE)
+# LP)", "- (CD)", "- (LP - Rainbow Road)", '- (12")'). Numeric-inch markers
+# are vinyl -- _PRODUCT_TITLE_SHAPE_RE already counts them as product-page
+# evidence, so the format guard must read them too.
+_PAREN_FORMAT_RE = re.compile(
+    r"\(\s*(vinyl(?:\s+lp)?|lp|cd|\d+\s*\")", re.IGNORECASE
+)
 
 
 def _page_format_after_core(candidate_raw: str, title_rest: str) -> Optional[str]:
@@ -380,8 +384,12 @@ class Crawler:
             (raw_artist, raw_title),
             (raw_artist.replace("&", " and "), raw_title.replace("&", " and ")),
         ):
+            # clean_search_text() is for the artist only: its trailing-"(2)"
+            # strip is the Discogs *artist* disambiguator convention, and
+            # applying it to a title legitimately named "Album (2)" would
+            # probe the sibling "/album" instead of "/album-2".
             artist_slug = _slugify(clean_search_text(a))
-            title_slug = _slugify(clean_search_text(t))
+            title_slug = _slugify(t)
             if not (artist_slug and title_slug):
                 continue
             url = f"{cls.base_url}/en-us/product/{artist_slug}/{title_slug}"
@@ -454,7 +462,9 @@ class Crawler:
 
     async def search(self, release: dict, page) -> list[dict]:
         artist = clean_search_text(release.get("artist", ""))
-        title = clean_search_text(release.get("title", ""))
+        # The raw title, for the same reason as _candidate_urls: stripping a
+        # trailing "(2)" would let a sibling page pass identity.
+        title = (release.get("title") or "").strip()
         candidates = self._candidate_urls(release)
         if not candidates:
             return []
