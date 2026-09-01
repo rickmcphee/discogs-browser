@@ -307,6 +307,8 @@ def test_offer_listing_skips_unavailable():
     for availability in (
         "https://schema.org/OutOfStock", "http://schema.org/SoldOut",
         "OutOfStock", "Discontinued",
+        # JSON-LD also encodes the IRI as a node reference.
+        {"@id": "https://schema.org/OutOfStock"},
     ):
         offer = {"price": "31.99", "priceCurrency": "USD", "availability": availability}
         assert _offer_listing(offer, PRODUCT_URL) is None
@@ -601,18 +603,28 @@ async def test_search_raises_when_an_unattributable_node_sits_beside_others(brow
         await Crawler().search(RELEASE, page)
 
 
+_CD_PAGE = (
+    "<html><head>"
+    "<title>Sample Artist - Sample Album on CD | Rough Trade</title>"
+    + _ld('{"@type": "Product", "name": "Sample Album",'
+          ' "offers": {"@type": "Offer", "price": "12.99", "priceCurrency": "USD",'
+          ' "availability": "https://schema.org/InStock"}}')
+    + "</head><body></body></html>"
+)
+
+
 async def test_search_treats_a_cross_format_landing_as_a_miss(browser_page):
-    html = (
-        "<html><head>"
-        "<title>Sample Artist - Sample Album on CD | Rough Trade</title>"
-        + _ld('{"@type": "Product", "name": "Sample Album",'
-              ' "offers": {"@type": "Offer", "price": "12.99", "priceCurrency": "USD",'
-              ' "availability": "https://schema.org/InStock"}}')
-        + "</head><body></body></html>"
-    )
-    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
-    # The release dict carries no format, so search() defaults it to vinyl.
-    assert await Crawler().search(RELEASE, page) == []
+    page = _FakePage(browser_page, {PRODUCT_URL: (_CD_PAGE, 200)})
+    release = dict(RELEASE, format="Vinyl")
+    assert await Crawler().search(release, page) == []
+
+
+async def test_search_accepts_a_cd_page_for_a_formatless_release(browser_page):
+    # An absent format is unknown, not vinyl-by-default: a formatless release
+    # landing on its own CD page must not be recorded as a price-clearing miss.
+    page = _FakePage(browser_page, {PRODUCT_URL: (_CD_PAGE, 200)})
+    results = await Crawler().search(RELEASE, page)
+    assert [r["price"] for r in results] == [12.99]
 
 
 async def test_search_raises_when_a_priced_page_also_half_parses(browser_page):

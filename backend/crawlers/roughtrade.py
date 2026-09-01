@@ -233,9 +233,21 @@ def _iter_offers(offers) -> list:
     return []
 
 
+def _offer_unavailable(offer: dict) -> bool:
+    """Is the offer deliberately marked unpurchasable?
+
+    JSON-LD encodes availability as a string IRI or as a node reference
+    ({"@id": "https://schema.org/OutOfStock"}); both forms must be read, or
+    an out-of-stock offer with a price passes as purchasable.
+    """
+    value = offer.get("availability")
+    if isinstance(value, dict):
+        value = value.get("@id")
+    return isinstance(value, str) and bool(_UNAVAILABLE_RE.search(value))
+
+
 def _offer_listing(offer: dict, url: str) -> Optional[dict]:
-    availability = offer.get("availability")
-    if isinstance(availability, str) and _UNAVAILABLE_RE.search(availability):
+    if _offer_unavailable(offer):
         return None
     # AggregateOffer carries lowPrice instead of price; when both somehow
     # exist, price is the offer's own and wins.
@@ -411,8 +423,11 @@ class Crawler:
                     log.debug("[Rough Trade] 404 for %s", url)
                     continue
 
+                # An absent format passes through as unknown -- forcing a
+                # default would turn a formatless release's landing on its
+                # own (say) CD page into a price-clearing miss.
                 if not self._title_matches(page_title, artist, title,
-                                           release.get("format", "vinyl") or "vinyl"):
+                                           release.get("format") or ""):
                     if status is not None and status >= 400:
                         # An error status whose settled page is neither a
                         # challenge nor this product is the Cloudflare wall
@@ -496,8 +511,7 @@ class Crawler:
 
         def read_node(node):
             for offer in _iter_offers(node.get("offers")):
-                availability = offer.get("availability")
-                if isinstance(availability, str) and _UNAVAILABLE_RE.search(availability):
+                if _offer_unavailable(offer):
                     tallies["unavailable"] += 1
                     continue
                 listing = _offer_listing(offer, url)
