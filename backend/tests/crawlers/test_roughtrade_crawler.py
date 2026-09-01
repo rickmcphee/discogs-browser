@@ -270,6 +270,29 @@ def test_name_matches_accepts_bare_title_and_artist_title_shapes():
     assert _name_matches("Sample Artist - Sample Album", "Sample Artist", "Sample Album")
 
 
+def test_name_matches_accepts_a_release_title_containing_the_delimiter():
+    assert _name_matches(
+        "Sample Album - Deluxe", "Sample Artist", "Sample Album - Deluxe"
+    )
+    assert _name_matches(
+        "Sample Artist - Sample Album - Deluxe", "Sample Artist", "Sample Album - Deluxe"
+    )
+
+
+def test_title_matches_accepts_a_release_title_containing_the_delimiter():
+    # Cutting at the first " - " unconditionally would classify this
+    # release's own page as a miss and clear its stored price.
+    assert Crawler._title_matches(
+        "Sample Artist - Sample Album - Deluxe on Vinyl LP | Rough Trade",
+        "Sample Artist", "Sample Album - Deluxe",
+    )
+    # And its sibling with different subtitle words still fails.
+    assert not Crawler._title_matches(
+        "Sample Artist - Sample Album - Redux on Vinyl LP | Rough Trade",
+        "Sample Artist", "Sample Album - Deluxe",
+    )
+
+
 def test_name_matches_rejects_other_products():
     assert not _name_matches("Other Album", "Sample Artist", "Sample Album")
     assert not _name_matches("Sample Artist - Other Album", "Sample Artist", "Sample Album")
