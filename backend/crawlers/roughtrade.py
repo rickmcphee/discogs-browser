@@ -92,7 +92,10 @@ def _norm_words(text: str) -> list:
         return []
     text = unicodedata.normalize("NFKD", text)
     text = "".join(c for c in text if not unicodedata.combining(c)).lower()
-    text = re.sub(r"['’]", "", text)
+    # Apostrophes split rather than vanish -- deleting them fuses "We're"
+    # into the same identity as "Were", and with the guessed slugs also
+    # colliding, a wrong-product landing would pass both identity checks.
+    # Both comparison sides render the apostrophe, so they split alike.
     return [w for w in re.split(r"[^\w]+", text) if w]
 
 
@@ -135,9 +138,14 @@ def _page_format_after_core(candidate_raw: str, title_rest: str) -> Optional[str
     neutralise the guard.
     """
     signals = set()
-    marker = _FORMAT_MARKER_RE.search(candidate_raw)
-    if marker:
-        signals.add("cd" if marker.group(1).lower() == "cd" else "vinyl")
+    # Trailing markers can end the matched core itself ("{Title} on CD") or
+    # the pre-branding suffix after it ("{Title} - Deluxe on CD") -- reading
+    # only the core would let a vinyl target accept the latter's CD price.
+    after_core_primary = title_rest.split(" | ")[0][len(candidate_raw):]
+    for marker in (_FORMAT_MARKER_RE.search(candidate_raw),
+                   _FORMAT_MARKER_RE.search(after_core_primary)):
+        if marker:
+            signals.add("cd" if marker.group(1).lower() == "cd" else "vinyl")
     for m in _PAREN_FORMAT_RE.finditer(title_rest[len(candidate_raw):]):
         signals.add("cd" if m.group(1).lower() == "cd" else "vinyl")
     return signals.pop() if len(signals) == 1 else None

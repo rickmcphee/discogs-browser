@@ -100,6 +100,32 @@ def test_candidate_urls_keeps_a_titles_trailing_number():
     assert urls == ["https://www.roughtrade.com/en-us/product/sample-artist/album-2"]
 
 
+def test_title_matches_keeps_contractions_distinct():
+    # Deleting apostrophes would fuse "We're" and "Were" into one identity;
+    # with the slugs also colliding, the wrong product's price could persist.
+    assert not Crawler._title_matches(
+        "Sample Artist - Were on Vinyl LP | Rough Trade",
+        "Sample Artist", "We're",
+    )
+    assert Crawler._title_matches(
+        "Sample Artist - We're on Vinyl LP | Rough Trade",
+        "Sample Artist", "We're",
+    )
+
+
+def test_title_matches_sees_a_marker_after_an_edition_suffix():
+    # An unparenthesised "on CD" ending the pre-branding suffix after the
+    # matched core is a format statement too.
+    assert not Crawler._title_matches(
+        "Sample Artist - Sample Album - Deluxe on CD | Rough Trade",
+        "Sample Artist", "Sample Album", "Vinyl",
+    )
+    assert Crawler._title_matches(
+        "Sample Artist - Sample Album - Deluxe on CD | Rough Trade",
+        "Sample Artist", "Sample Album", "CD",
+    )
+
+
 def test_title_matches_preserves_non_latin_characters():
     # ASCII slugification would equate same-artist titles that differ only
     # in non-Latin characters, letting a sibling page pass identity.
