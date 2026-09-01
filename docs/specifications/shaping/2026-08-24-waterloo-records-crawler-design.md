@@ -746,3 +746,51 @@ that a changed key "orphan[s] the saves and judgments hanging off the old
 one"), it spans a window measured in a day, and a url-keyed migration
 table to rescue it would outlive its one use. Kind changes re-key a
 store's items; per-user state rides the keys.
+
+**Rolling deploys race the kind change, in both directions, and both write
+paths recheck the kind inside their own write transaction.**
+`register_crawler()`'s cleanup runs once, at the kind change; an old
+machine's in-flight work can land after it and rebuild exactly the rows the
+cleanup deleted, with nothing left to ever delete them again, because each
+write path only runs for the kind the crawler no longer is. Reverse
+direction (to a catalog kind): `_drain_one_batch` snapshots eligibility
+before awaiting `search()`, so its result transaction calls
+`db.crawler_is_release()` alongside `crawl_queue_claim_held()` and drops a
+release result whose crawler has stopped being `release` — the queue row is
+still resolved, since this worker still owns its claim. Forward direction
+(to `release`): `_sync_stock`'s enabled-source list is a snapshot too, and
+one source's crawl can run for hours, so `replace_stock_items()` itself
+calls `db.crawler_is_catalog()` before its DELETE and skips the whole
+snapshot write when the crawler has stopped being a catalog kind — logging
+why, and returning `None` rather than `[]` so `_sync_stock` can tell a
+dropped write apart from a genuinely empty catalog and skip its own
+success-reporting (`total_synced`, the "found N items" log line, and the
+`stock_sync_progress` broadcast) for a write that never happened. (Gates:
+`db.crawler_is_release()`, and `db.crawler_is_catalog()` defined immediately
+after it in `db.py`.)
+
+Both helpers read the `crawlers` row locked rather than with a plain SELECT:
+under READ COMMITTED a plain read neither waits for an in-flight conversion
+nor keeps one out until the writing transaction commits, and the row lock
+serializes the recheck with `register_crawler()`'s upsert UPDATE in
+whichever order they arrive. They differ in lock strength. `crawler_is_release()`
+takes `FOR SHARE`, which is sufficient there because nothing later in that
+same transaction writes to the `crawlers` row itself. `crawler_is_catalog()`
+takes `FOR NO KEY UPDATE` instead, because `_sync_stock` calls
+`update_crawler_last_run()` — an `UPDATE` on that same row — in the same
+transaction right after the snapshot write. Under `FOR SHARE` that second
+statement is a lock upgrade: safe while this transaction is the row's only
+locker — a sole holder's upgrade proceeds even past a queued
+`register_crawler()` UPDATE, confirmed by running the queued-conversion
+test with the helper flipped to `FOR SHARE` — but `FOR SHARE` admits other
+share lockers concurrently, and an upgrade attempted with another share
+holder present and an UPDATE queued behind them is Postgres's classic
+row-lock deadlock. `FOR NO KEY UPDATE` is already as strong as what
+`update_crawler_last_run()` needs, so no upgrade ever happens, and it
+admits no second locker in the first place — which is also how the lock
+strength is pinned in tests: a concurrent `FOR SHARE NOWAIT` must be
+refused while the gate's lock is held. Lock order stays consistent on
+both directions — every side locks the `crawlers` row before touching
+`stock_items` or `listings` — so no deadlock is reachable through lock
+*ordering*; the lock *strength* on the forward gate is what closes the
+separate self-upgrade hazard.

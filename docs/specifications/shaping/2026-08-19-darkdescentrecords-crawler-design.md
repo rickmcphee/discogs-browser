@@ -3,6 +3,14 @@
 Date: 2026-08-19
 Branch: `claude/dark-descent-vinyl-crawler-9189a5`
 
+> **Amendment (2026-09-01):** "any HTTP failure raises" below now means
+> "raises once `catalog_http.get_with_retry()`'s paced retry budget
+> (`consecutive_failure_limit`) is spent" — a single transient
+> `ConnectTimeout` had been enough to discard a whole crawl. Pacing and the
+> raise-on-failure contract are unchanged, now applied by the shared helper
+> rather than inline `sleep`/`client.get`/`raise_for_status`. See
+> [`2026-09-01-stock-crawl-timeout-retry-design.md`](2026-09-01-stock-crawl-timeout-retry-design.md).
+
 ## Problem
 
 Dark Descent Records (`darkdescentrecords.com`), an underground metal label

@@ -1312,6 +1312,39 @@ def test_get_stock_items_comparison_rows_ordered_by_site_name(admin_conn):
     assert [c["source"] for c in comparisons] == ["Amazon", "eBay"]
 
 
+def test_get_stock_items_sort_by_price_orders_comparison_rows_numerically(admin_conn):
+    # Sorting the Cost column used to only reorder the own row -- its
+    # comparison rows stayed pinned to alphabetical-by-source, so the visible
+    # Cost column wasn't actually in numeric order once an item had more than
+    # one comparison. Amazon/eBay are deliberately priced so alphabetical and
+    # numeric order disagree in both directions: alphabetical is [Amazon,
+    # eBay], numeric ascending is [eBay, Amazon].
+    db.register_crawler(admin_conn, "Nuclear Blast", "/x.py", crawler_type="catalog")
+    db.register_crawler(admin_conn, "eBay", "/y.py", crawler_type="release")
+    db.register_crawler(admin_conn, "Amazon", "/z.py", crawler_type="release")
+    admin_conn.commit()
+    store_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()["id"]
+    ebay_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'eBay'").fetchone()["id"]
+    amazon_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+    item_key = db.replace_stock_items(admin_conn, store_id, [
+        {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+    ])[0]
+    db.upsert_stock_item_listing(admin_conn, item_key, ebay_id, "https://ebay/1", 9.0, None, "USD", "Used")
+    db.upsert_stock_item_listing(admin_conn, item_key, amazon_id, "https://amazon/1", 20.0, None, "USD", "New")
+    admin_conn.commit()
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        asc = db.get_stock_items(conn, alice["id"], sort="price", order="asc")
+        desc = db.get_stock_items(conn, alice["id"], sort="price", order="desc")
+
+    asc_comparisons = [r for r in asc["items"] if not r["is_own"]]
+    assert [c["source"] for c in asc_comparisons] == ["eBay", "Amazon"]
+    desc_comparisons = [r for r in desc["items"] if not r["is_own"]]
+    assert [c["source"] for c in desc_comparisons] == ["Amazon", "eBay"]
+
+
 def test_get_distinct_stock_artists_plain_browse(admin_conn):
     db.register_crawler(admin_conn, "Amazon", "/x.py", crawler_type="catalog")
     admin_conn.commit()
