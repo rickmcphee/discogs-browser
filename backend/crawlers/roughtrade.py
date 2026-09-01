@@ -120,6 +120,13 @@ def _words_match_prefix(expected: list, got: list) -> bool:
             return False
         if not word.startswith(got[i]):
             return False
+        # Only the *final* expected word may be truncated: with later
+        # expected words unchecked, a sibling title ("... Superhits Volume
+        # Two") could match a page whose name merely ends on this fragment.
+        # A page truncated earlier than the final expected word is missed --
+        # the safe direction.
+        if i != len(expected) - 1:
+            return False
         if i + 1 < len(got) and got[i + 1] not in _SUFFIX_FRAGMENT_STOP:
             return False
         return len(" ".join(got[: i + 1])) >= _TRUNCATION_MIN_CHARS
@@ -393,16 +400,19 @@ class Crawler:
                 else:
                     unparsed_available += 1
 
-        if listings:
-            listings.sort(key=lambda x: x["price"])
-            return listings
-
-        # No priced offer. [] is only a confirmed miss when every observed
-        # offer was deliberately unpurchasable -- an available offer whose
-        # price could not be read means the page was only half-parsed, and
-        # that must reach the caller as a failure, not clear a stored price.
-        if unavailable and not unparsed_available:
-            return []
+        # An unparseable available offer poisons the whole JSON-LD read, not
+        # just the empty case: returning the offers that *did* parse would
+        # report their cheapest as the store's price while the unparsed
+        # variant could undercut it. Half-parsed means the OG metas rescue
+        # the page or the caller raises -- never a partial answer.
+        if not unparsed_available:
+            if listings:
+                listings.sort(key=lambda x: x["price"])
+                return listings
+            # [] is only a confirmed miss when every observed offer was
+            # deliberately unpurchasable.
+            if unavailable:
+                return []
 
         meta = signals.get("meta") or {}
         for amount_key, currency_key in _META_PAIRS:

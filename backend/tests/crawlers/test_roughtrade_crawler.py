@@ -195,6 +195,16 @@ def test_title_matches_only_relaxes_the_final_compared_word():
     )
 
 
+def test_title_matches_truncation_only_applies_to_the_final_title_word():
+    # Even past the length floor, a fragment mid-way through the release
+    # title leaves its remaining words unchecked -- a sibling title must not
+    # match.
+    assert not Crawler._title_matches(
+        "Sample Artist - This Is A Very Long International Super on Vinyl LP",
+        "Sample Artist", "This Is A Very Long International Superhits Volume Two",
+    )
+
+
 def test_title_matches_does_not_read_the_format_suffix_as_a_truncation():
     # "one".startswith("on") -- but that "on" is the format suffix of a page
     # for the *shorter* title "Greatest Hits", a different release.
@@ -436,6 +446,26 @@ async def test_search_raises_when_every_available_offer_is_priceless(browser_pag
         '<script type="application/ld+json">'
         '{"@type": "Product", "name": "Sample Album",'
         ' "offers": [{"@type": "Offer", "price": "TBC", "priceCurrency": "USD",'
+        ' "availability": "https://schema.org/InStock"}]}'
+        "</script></head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    with pytest.raises(RuntimeError, match="price signals"):
+        await Crawler().search(RELEASE, page)
+
+
+async def test_search_raises_when_a_priced_page_also_half_parses(browser_page):
+    # One parsed offer next to an available-but-unpriceable one must not
+    # return the parsed price as "cheapest" -- the unparsed variant could
+    # undercut it.
+    html = (
+        "<html><head>"
+        "<title>Sample Artist - Sample Album on Vinyl LP | Rough Trade</title>"
+        '<script type="application/ld+json">'
+        '{"@type": "Product", "name": "Sample Album", "offers": ['
+        '{"@type": "Offer", "price": "31.99", "priceCurrency": "USD",'
+        ' "availability": "https://schema.org/InStock"},'
+        '{"@type": "Offer", "price": "TBC", "priceCurrency": "USD",'
         ' "availability": "https://schema.org/InStock"}]}'
         "</script></head><body></body></html>"
     )

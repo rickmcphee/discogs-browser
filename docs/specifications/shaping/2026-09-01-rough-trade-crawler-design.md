@@ -199,8 +199,10 @@ is exactly what the caller does with it.
    enough — "Greatest Hits Volume One" must not pass on a "Volume Two"
    page; the one relaxation is the documented mid-word truncation of live
    page titles, accepted only where truncation is actually plausible: the
-   fragment ends the name segment, it is not a word the format suffix
-   itself starts with ("on", "vinyl" — what a page for a *shorter*,
+   fragment shortens the *final* release-title word only (an earlier
+   fragment leaves the remaining title words unchecked, letting a sibling
+   title through), it ends the name segment, it is not a word the format
+   suffix itself starts with ("on", "vinyl" — what a page for a *shorter*,
    different title looks like), and the matched span has reached the length
    live titles truncate at (~30+ characters — "International Super" must
    not pass for "International Superhits …"). A mismatch means the slug
@@ -232,8 +234,10 @@ is exactly what the caller does with it.
      currency from the signal, defaulting to USD on the `en-us` storefront.
    - every observed offer confirmed unpurchasable, none half-parsed → `[]`
      (the site answered: nothing purchasable). An *available* offer whose
-     price could not be read is a half-parsed page, not a confirmed miss —
-     with no OG rescue it raises rather than clearing a stored price.
+     price could not be read poisons the whole JSON-LD read — even
+     alongside offers that did parse, since the unparsed variant could
+     undercut the "cheapest" reported: with no OG rescue the crawl raises
+     rather than persisting a partial answer or clearing a stored price.
    - identity check passed but no price signal at all → `RuntimeError`
      naming the URL and title (markup/assumption drift, must stay loud).
 
