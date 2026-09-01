@@ -52,6 +52,7 @@ _EXTRACT_SIGNALS_JS = """
   for (const prop of [
     'product:price:amount', 'product:price:currency',
     'og:price:amount', 'og:price:currency',
+    'product:availability', 'og:availability',
   ]) {
     const el = document.querySelector(`meta[property="${prop}"]`);
     meta[prop] = el ? el.getAttribute('content') : null;
@@ -240,14 +241,19 @@ def _name_matches(name: str, artist: str, title: str) -> bool:
     return False
 
 
-def _product_nodes(ldjson_texts: list) -> list:
-    """Every schema.org Product node across the page's JSON-LD scripts --
-    top-level objects, list roots, and @graph members alike."""
+def _product_nodes(ldjson_texts: list) -> tuple:
+    """(Product nodes, malformed script count) across the page's JSON-LD --
+    top-level objects, list roots, and @graph members alike. A script that
+    does not parse is counted, not silently discarded: it could have been
+    this product's node, so a page carrying one is half-parsed and must not
+    produce a confirmed miss or a partial cheapest result."""
     nodes = []
+    malformed = 0
     for raw in ldjson_texts:
         try:
             data = json.loads(raw or "")
         except (TypeError, ValueError):
+            malformed += 1
             continue
         roots = data if isinstance(data, list) else [data]
         for root in roots:
@@ -262,7 +268,7 @@ def _product_nodes(ldjson_texts: list) -> list:
                 types = node_type if isinstance(node_type, list) else [node_type]
                 if any(t == "Product" for t in types if isinstance(t, str)):
                     nodes.append(node)
-    return nodes
+    return nodes, malformed
 
 
 def _node_scope(node: dict, product_path: str) -> str:
@@ -693,7 +699,8 @@ class Crawler:
 
         anonymous_nodes = []
         accepted_any = False
-        all_nodes = _product_nodes(signals.get("ldjson") or [])
+        all_nodes, malformed_scripts = _product_nodes(signals.get("ldjson") or [])
+        tallies["unparsed_available"] += malformed_scripts
         for node in all_nodes:
             scope = _node_scope(node, product_path)
             if scope == "other":
@@ -741,6 +748,26 @@ class Crawler:
                 return []
 
         meta = signals.get("meta") or {}
+        # An OG amount alone does not establish purchasability -- sold-out
+        # pages commonly retain their price metadata -- so the fallback
+        # requires a machine-readable availability meta too: unavailable is a
+        # confirmed miss, available unlocks the price pairs, and absent or
+        # unrecognised means the metas cannot answer (the caller raises).
+        meta_availability = None
+        for key in ("product:availability", "og:availability"):
+            value = meta.get(key)
+            if not (isinstance(value, str) and value.strip()):
+                continue
+            token = re.sub(r"[^a-z]", "", value.lower())
+            if token in ("instock", "available", "preorder", "presale", "backorder"):
+                meta_availability = "available"
+            elif token in ("oos", "outofstock", "soldout", "discontinued", "unavailable"):
+                meta_availability = "unavailable"
+            break
+        if meta_availability == "unavailable":
+            return []
+        if meta_availability != "available":
+            return None
         for amount_key, currency_key in _META_PAIRS:
             price = _finite_price(meta.get(amount_key))
             if price is None:

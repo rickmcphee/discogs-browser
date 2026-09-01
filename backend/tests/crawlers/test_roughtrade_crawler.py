@@ -444,7 +444,11 @@ def test_product_nodes_reads_top_level_lists_and_graph():
         "not json at all",
         None,
     ]
-    assert [n["name"] for n in _product_nodes(texts)] == ["A", "B", "C"]
+    nodes, malformed = _product_nodes(texts)
+    assert [n["name"] for n in nodes] == ["A", "B", "C"]
+    # The unparseable script and the null are counted, not silently
+    # discarded -- either could have been this product's node.
+    assert malformed == 2
 
 
 def test_offer_listing_skips_unavailable():
@@ -614,11 +618,49 @@ async def test_search_skips_a_meta_pair_with_a_blank_currency(browser_page):
         '<meta property="product:price:currency" content="   " />'
         '<meta property="og:price:amount" content="24.99" />'
         '<meta property="og:price:currency" content="GBP" />'
+        '<meta property="og:availability" content="instock" />'
         "</head><body></body></html>"
     )
     page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
     results = await Crawler().search(RELEASE, page)
     assert [(r["price"], r["currency"]) for r in results] == [(24.99, "GBP")]
+
+
+async def test_search_meta_fallback_requires_an_availability_signal(browser_page):
+    # An OG amount alone does not establish purchasability -- sold-out pages
+    # commonly retain their price metadata. Without an availability meta the
+    # fallback cannot answer, and an out-of-stock one is a confirmed miss.
+    base = (
+        "<html><head>"
+        "<title>Sample Artist - Sample Album on Vinyl LP | Rough Trade</title>"
+        '<meta property="og:price:amount" content="24.99" />'
+        '<meta property="og:price:currency" content="USD" />'
+    )
+    no_availability = base + "</head><body></body></html>"
+    page = _FakePage(browser_page, {PRODUCT_URL: (no_availability, 200)})
+    with pytest.raises(RuntimeError, match="price signals"):
+        await Crawler().search(RELEASE, page)
+
+    oos = base + '<meta property="og:availability" content="oos" /></head><body></body></html>'
+    page = _FakePage(browser_page, {PRODUCT_URL: (oos, 200)})
+    assert await Crawler().search(RELEASE, page) == []
+
+
+async def test_search_raises_when_a_jsonld_script_is_malformed(browser_page):
+    # A malformed script next to a parseable out-of-stock Product must not
+    # add up to a confirmed miss -- the broken blob could have been this
+    # product's node.
+    html = (
+        _PAGE_HEAD
+        + _ld('{"@type": "Product", "name": "Sample Album",'
+              ' "offers": {"@type": "Offer", "price": "27.99", "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/OutOfStock"}}')
+        + _ld('{"@type": "Product", "name": "Sample Alb')
+        + "</head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    with pytest.raises(RuntimeError, match="price signals"):
+        await Crawler().search(RELEASE, page)
 
 
 async def test_search_never_mixes_meta_namespaces(browser_page):
@@ -630,6 +672,7 @@ async def test_search_never_mixes_meta_namespaces(browser_page):
         '<meta property="product:price:currency" content="USD" />'
         '<meta property="og:price:amount" content="24.99" />'
         '<meta property="og:price:currency" content="GBP" />'
+        '<meta property="product:availability" content="in stock" />'
         "</head><body></body></html>"
     )
     page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
