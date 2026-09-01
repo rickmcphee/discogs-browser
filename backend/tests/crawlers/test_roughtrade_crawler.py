@@ -225,6 +225,16 @@ def test_name_matches_rejects_other_products():
     assert not _name_matches("Sample Artist - Other Album", "Sample Artist", "Sample Album")
 
 
+def test_name_matches_rejects_sibling_titles_with_trailing_words():
+    # A carousel node named for a sibling release must not contribute offers:
+    # extra words are only acceptable as a " - " edition suffix, never fused
+    # onto the title segment itself.
+    assert not _name_matches("Sample Album Volume Two", "Sample Artist", "Sample Album")
+    assert not _name_matches(
+        "Sample Artist - Sample Album Volume Two", "Sample Artist", "Sample Album"
+    )
+
+
 def test_finite_price_parses_strings_and_numbers():
     assert _finite_price("31.99") == 31.99
     assert _finite_price(24.5) == 24.5
@@ -430,6 +440,17 @@ async def test_search_tries_the_and_variant_after_a_404(browser_page):
 async def test_search_returns_empty_when_every_candidate_404s(browser_page):
     page = _FakePage(browser_page, {PRODUCT_URL: _NOT_FOUND})
     assert await Crawler().search(RELEASE, page) == []
+
+
+async def test_search_raises_on_an_unclassifiable_success_page(browser_page):
+    # A 200 whose title is neither this product, a not-found page, nor
+    # another Rough Trade product page (maintenance, consent wall, ...) must
+    # raise: a miss here would clear a stored price with no site-health
+    # signal recorded.
+    html = "<html><head><title>Scheduled Maintenance</title></head><body></body></html>"
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    with pytest.raises(RuntimeError, match="unrecognised page"):
+        await Crawler().search(RELEASE, page)
 
 
 async def test_search_treats_a_wrong_product_landing_as_a_miss(browser_page):

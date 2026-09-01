@@ -205,18 +205,26 @@ is exactly what the caller does with it.
    suffix itself starts with ("on", "vinyl" — what a page for a *shorter*,
    different title looks like), and the matched span has reached the length
    live titles truncate at (~30+ characters — "International Super" must
-   not pass for "International Superhits …"). A mismatch means the slug
-   resolved to some other product — a miss, never a parse attempt against
-   the wrong page.
+   not pass for "International Superhits …"). A mismatch is a miss — never
+   a parse attempt against the wrong page — but only with positive evidence
+   of what was landed on: a not-found page, or a structurally valid Rough
+   Trade product page for some other product. A 200 whose title is neither
+   (a maintenance page, a consent wall) is unclassifiable and raises: a
+   miss there would clear a stored price with no site-health signal
+   recorded, since this crawler's empty results bypass the breaker.
 4. Extract price signals in one `page.evaluate` round trip: every
    `script[type="application/ld+json"]` text plus the OG price metas.
    Parsing happens in Python:
    - JSON-LD nodes of `@type` `Product` (top-level, in lists, or under
      `@graph`), **scoped to this release**: a named node is read only when
-     its name describes the release (bare title or "Artist - Title", same
-     all-words rule as the identity check); a nameless node is kept. A
-     recommendation carousel emitting Product JSON-LD of its own must never
-     supply the cheapest listing.
+     a `" - "`-delimited segment of its name equals the release title
+     exactly (the bare title with any edition suffix after the delimiter,
+     or the "Artist - Title" shape) — stricter than the identity check,
+     because every accepted node contributes offers and a name merely
+     *starting* with the title would let a sibling product ("… Volume
+     Two") supply the price; a nameless node is kept. A recommendation
+     carousel emitting Product JSON-LD of its own must never supply the
+     cheapest listing.
    - Accepted nodes' `offers` normalized across `Offer`, offer lists, and
      `AggregateOffer` (`lowPrice`).
    - Offers whose `availability` says `OutOfStock`/`SoldOut`/`Discontinued`

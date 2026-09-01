@@ -134,20 +134,27 @@ def _words_match_prefix(expected: list, got: list) -> bool:
 
 
 def _name_matches(name: str, artist: str, title: str) -> bool:
-    """Does a Product node's name describe this release?
+    """Does a Product node's name unambiguously describe this release?
 
-    Accepts the two shapes a product name plausibly takes -- the bare title,
-    or "{Artist} - {Title}" split on the literal delimiter -- under the same
-    all-words rule as the page title check.
+    Stricter than the page-title check: every accepted node contributes
+    offers, so a name merely *starting* with the title would let a sibling
+    product ("Greatest Hits Volume Two" for release "Greatest Hits") supply
+    the stored price. A segment of the " - "-delimited name must therefore
+    equal the title exactly -- the bare title (with any " - " edition suffix
+    after it), or the "{Artist} - {Title}[ - suffix]" shape. JSON-LD names
+    are not length-truncated the way page titles are, so no truncation
+    relaxation applies here.
     """
     title_words = _norm_words(title)
-    if _words_match_prefix(title_words, _norm_words(name)):
+    if not title_words:
+        return False
+    segments = [_norm_words(s) for s in name.split(" - ")]
+    if segments and segments[0] == title_words:
         return True
-    artist_seg, sep, name_seg = name.partition(" - ")
-    return bool(
-        sep
-        and _norm_words(artist_seg) == _norm_words(artist)
-        and _words_match_prefix(title_words, _norm_words(name_seg))
+    return (
+        len(segments) > 1
+        and segments[0] == _norm_words(artist)
+        and segments[1] == title_words
     )
 
 
@@ -203,6 +210,21 @@ def _offer_listing(offer: dict, url: str) -> Optional[dict]:
         "currency": currency if isinstance(currency, str) and currency else "USD",
         "condition": None,
     }
+
+
+def _recognized_non_match(page_title: str) -> bool:
+    """Positive evidence that a mismatching 200 page is a *confirmed* miss.
+
+    Either a not-found page, or a structurally valid Rough Trade product
+    page for some other product ("{Artist} - {Name} ... | Rough Trade").
+    Anything else -- a maintenance page, a consent wall, an unrecognised
+    layout -- is unclassifiable, and the caller raises instead of recording
+    a miss that would clear a stored price.
+    """
+    lower = page_title.lower()
+    if "not found" in lower or "404" in lower:
+        return True
+    return " - " in page_title and "rough trade" in lower
 
 
 class Crawler:
@@ -328,6 +350,19 @@ class Crawler:
                         # challenge nor this product is the Cloudflare wall
                         # (or an outage), never a product answer.
                         raise BotDetectedError(f"HTTP {status} on {url}")
+                    if not _recognized_non_match(page_title):
+                        # A 200 whose title is neither this product, a
+                        # not-found page, nor another Rough Trade product
+                        # page (maintenance, consent wall, ...) cannot be
+                        # classified -- and a miss here would clear a stored
+                        # price with no site-health signal recorded, since
+                        # this crawler's empty results bypass the breaker.
+                        raise RuntimeError(
+                            f"unrecognised page at {url} (page title "
+                            f"{page_title!r}) -- neither this release's "
+                            f"product page, a not-found page, nor another "
+                            f"product; refusing to record a miss"
+                        )
                     # The slug resolved, but to something else -- a soft-404
                     # page or a different product. A miss, never a parse
                     # attempt against the wrong page.
