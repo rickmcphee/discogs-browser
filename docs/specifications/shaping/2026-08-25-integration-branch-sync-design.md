@@ -250,13 +250,26 @@ recomputes) means this run cannot honestly call the PR stuck, so it says
 nothing. That silence lasts one run and corrects itself; a genuinely stuck PR
 stays stuck and is reported next time round.
 
-It also stops there rather than continuing. Falling through would carry every
-non-`blocked` value into the generic re-arm below, which is where each of them
-does the damage its own branch exists to prevent: `unknown` arms auto-merge on a
-state the top of this routing refuses to guess at, `dirty` arms it on a conflict
-without the label or the disable, and `behind` arms it without `update-branch`.
-A read added to avoid one false report must not become a side entrance past the
-fail-closed handling it sits inside.
+It does not fall through. Carrying a non-`blocked` value into the generic re-arm
+below is where each of them does the damage its own branch exists to prevent:
+`unknown` arms auto-merge on a state the top of this routing refuses to guess
+at, and `behind` arms it without `update-branch`. A read added to avoid one
+false report must not become a side entrance past the fail-closed handling it
+sits inside.
+
+But stopping is not by itself the protection, and `dirty` is where that
+distinction bites. A sync PR is armed at creation, so a PR that has turned
+`dirty` in this window already carries a live auto-merge request and no label —
+declining to *re-arm* leaves it exactly as dangerous as arming it would, and
+whoever resolves the conflict has their resolution merged unreviewed into a
+branch that requires no approving review. Only the `dirty` case's two defences
+address that: the label, durable and blocking the next run's re-arm, and the
+disable, which clears the request already outstanding.
+
+So a refreshed `dirty` is routed through those defences rather than exited past,
+and they live in a function both callers share, so the two paths cannot drift
+apart — which is precisely how this divergence arose. Every other non-`blocked`
+value still stops and leaves the next run to decide on a settled read.
 
 The report names the checks the grace period stopped shielding, alongside the
 failed ones. Because the rollup does not mark required checks, one visible
