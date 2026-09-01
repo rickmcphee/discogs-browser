@@ -761,6 +761,21 @@ async def test_search_scopes_nodes_by_the_landed_url_after_a_redirect(browser_pa
     assert [(r["price"], r["url"]) for r in results] == [(27.99, canonical)]
 
 
+async def test_search_treats_a_fragment_only_id_as_no_scoping_evidence(browser_page):
+    # "#product" is document-relative: it must not classify the node as
+    # another product's; the matching name decides instead.
+    html = (
+        _PAGE_HEAD
+        + _ld('{"@type": "Product", "@id": "#product", "name": "Sample Album",'
+              ' "offers": {"@type": "Offer", "price": "27.99", "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/InStock"}}')
+        + "</head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    results = await Crawler().search(RELEASE, page)
+    assert [r["price"] for r in results] == [27.99]
+
+
 async def test_search_accepts_a_nameless_urlless_node_only_when_sole(browser_page):
     html = (
         _PAGE_HEAD

@@ -260,6 +260,11 @@ def _node_scope(node: dict, product_path: str) -> str:
         value = node.get(key)
         if isinstance(value, str) and value.strip():
             clean = value.split("?", 1)[0].split("#", 1)[0].rstrip("/")
+            if not clean:
+                # A fragment- or query-only identifier ("#product") is
+                # document-relative -- it carries no cross-product evidence,
+                # so it must not classify the node as another product's.
+                continue
             return "match" if clean.endswith(product_path) else "other"
     return "unknown"
 
