@@ -489,6 +489,26 @@ def test_offer_listing_uses_low_price_for_aggregate_offers():
     assert listing["currency"] == "GBP"
 
 
+def test_offer_listing_ignores_low_price_on_a_plain_offer():
+    # A stale lowPrice on a plain Offer must not stand in for its price.
+    assert _offer_listing(
+        {"@type": "Offer", "lowPrice": "5.99", "priceCurrency": "USD"}, PRODUCT_URL
+    ) is None
+
+
+def test_offer_listing_reads_offer_count_as_availability():
+    # Zero offers means nothing for sale; a malformed count is ambiguous.
+    assert _offer_listing(
+        {"@type": "AggregateOffer", "lowPrice": "24.50", "offerCount": 0}, PRODUCT_URL
+    ) is None
+    assert _offer_listing(
+        {"@type": "AggregateOffer", "lowPrice": "24.50", "offerCount": "many"}, PRODUCT_URL
+    ) is None
+    assert _offer_listing(
+        {"@type": "AggregateOffer", "lowPrice": "24.50", "offerCount": 3}, PRODUCT_URL
+    )["price"] == 24.50
+
+
 def test_offer_listing_defaults_currency_to_usd():
     assert _offer_listing({"price": "31.99"}, PRODUCT_URL)["currency"] == "USD"
 
@@ -905,6 +925,40 @@ async def test_search_raises_on_an_explicitly_non_offer_payload(browser_page):
         await Crawler().search(RELEASE, page)
 
 
+async def test_search_reads_array_valued_node_urls(browser_page):
+    # A carousel node hiding its url in an array must still be rejected; a
+    # node whose array names this product's path is accepted.
+    html = (
+        _PAGE_HEAD
+        + _ld('{"@type": "Product", "name": "Sample Album",'
+              ' "url": ["https://www.roughtrade.com/en-us/product/other-artist/sample-album"],'
+              ' "offers": {"@type": "Offer", "price": "5.99", "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/InStock"}}')
+        + _ld('{"@type": "Product",'
+              ' "url": ["https://www.roughtrade.com/en-us/product/sample-artist/sample-album"],'
+              ' "offers": {"@type": "Offer", "price": "31.99", "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/InStock"}}')
+        + "</head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    results = await Crawler().search(RELEASE, page)
+    assert [r["price"] for r in results] == [31.99]
+
+
+async def test_search_raises_on_an_unreadable_node_url(browser_page):
+    # A present but unreadable url must not fall through to name scoping.
+    html = (
+        _PAGE_HEAD
+        + _ld('{"@type": "Product", "name": "Sample Album", "url": {},'
+              ' "offers": {"@type": "Offer", "price": "5.99", "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/InStock"}}')
+        + "</head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    with pytest.raises(RuntimeError, match="price signals"):
+        await Crawler().search(RELEASE, page)
+
+
 async def test_search_treats_a_fragment_only_id_as_no_scoping_evidence(browser_page):
     # "#product" is document-relative: it must not classify the node as
     # another product's; the matching name decides instead.
@@ -1076,6 +1130,15 @@ async def test_search_raises_on_an_unresolved_challenge(browser_page):
     challenge = ("<html><head><title>Just a moment...</title></head><body></body></html>", 403)
     page = _FakePage(browser_page, {PRODUCT_URL: challenge})
     with pytest.raises(BotDetectedError):
+        await Crawler().search(RELEASE, page)
+
+
+async def test_search_never_bot_retries_a_429(browser_page):
+    # BotDetectedError would repeat the whole probe within seconds while the
+    # site is rate-limiting; the repo's 429 policy is to never retry.
+    limited = ("<html><head><title>Rate limited</title></head><body></body></html>", 429)
+    page = _FakePage(browser_page, {PRODUCT_URL: limited})
+    with pytest.raises(RuntimeError, match="429"):
         await Crawler().search(RELEASE, page)
 
 

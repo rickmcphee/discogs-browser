@@ -287,29 +287,46 @@ def _node_scope(node: dict, product_path: str) -> str:
     """
     for key in ("url", "@id"):
         value = node.get(key)
-        if not (isinstance(value, str) and value.strip()):
+        if value is None:
             continue
-        clean = value.split("?", 1)[0].split("#", 1)[0].rstrip("/")
-        if not clean:
-            # A fragment- or query-only identifier ("#product") is
-            # document-relative -- it carries no cross-product evidence,
-            # so it must not classify the node as another product's.
-            continue
-        parsed = urlparse(clean)
-        if parsed.scheme or parsed.netloc:
-            # A suffix match alone would accept another origin, or another
-            # storefront locale whose same-slug product prices in a
-            # different currency; the host and the exact locale path both
-            # have to agree.
-            if parsed.netloc.lower() not in ("www.roughtrade.com", "roughtrade.com"):
-                return "other"
-            path = parsed.path
-        else:
-            path = clean
-        path = "/" + path.strip("/")
-        if path in (product_path, "/en-us" + product_path):
+        # JSON-LD permits an array value; each member is read, and a present
+        # but unreadable value must not fall through to name scoping -- that
+        # is exactly the path a mis-shaped carousel node would take.
+        members = value if isinstance(value, list) else [value]
+        verdicts = set()
+        for member in members:
+            if not isinstance(member, str) or not member.strip():
+                verdicts.add("unreadable")
+                continue
+            clean = member.split("?", 1)[0].split("#", 1)[0].rstrip("/")
+            if not clean:
+                # A fragment- or query-only identifier ("#product") is
+                # document-relative -- it carries no cross-product evidence.
+                continue
+            parsed = urlparse(clean)
+            if parsed.scheme or parsed.netloc:
+                # A suffix match alone would accept another origin, or
+                # another storefront locale whose same-slug product prices
+                # in a different currency; the host and the exact locale
+                # path both have to agree.
+                if parsed.netloc.lower() not in ("www.roughtrade.com", "roughtrade.com"):
+                    verdicts.add("other")
+                    continue
+                path = parsed.path
+            else:
+                path = clean
+            path = "/" + path.strip("/")
+            verdicts.add(
+                "match" if path in (product_path, "/en-us" + product_path) else "other"
+            )
+        # A member explicitly naming this product's path outweighs aliases; a
+        # carousel node for another product never lists this product's path.
+        if "match" in verdicts:
             return "match"
-        return "other"
+        if "other" in verdicts:
+            return "other"
+        if "unreadable" in verdicts:
+            return "ambiguous"
     return "unknown"
 
 
@@ -338,6 +355,14 @@ def _iter_offers(offers) -> tuple:
     return usable, len(members) - len(usable)
 
 
+def _is_aggregate_offer(offer: dict) -> bool:
+    node_type = offer.get("@type")
+    types = node_type if isinstance(node_type, list) else [node_type]
+    return any(
+        isinstance(t, str) and t.split("/")[-1] == "AggregateOffer" for t in types
+    )
+
+
 def _offer_availability(offer: dict) -> str:
     """"available", "unavailable", or "ambiguous".
 
@@ -349,7 +374,17 @@ def _offer_availability(offer: dict) -> str:
     stored price, and a malformed member (an object without @id, a blank)
     must not pass as available -- both are ambiguous, which the caller
     routes to the unparsed/loud path. An absent field stays available.
+
+    An AggregateOffer's offerCount is availability evidence too: zero means
+    nothing is for sale, and a malformed count is ambiguous.
     """
+    if _is_aggregate_offer(offer):
+        count = offer.get("offerCount")
+        if count is not None:
+            if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+                return "ambiguous"
+            if count == 0:
+                return "unavailable"
     value = offer.get("availability")
     if value is None:
         return "available"
@@ -380,10 +415,11 @@ def _offer_availability(offer: dict) -> str:
 def _offer_listing(offer: dict, url: str) -> Optional[dict]:
     if _offer_availability(offer) != "available":
         return None
-    # AggregateOffer carries lowPrice instead of price; when both somehow
-    # exist, price is the offer's own and wins.
+    # lowPrice is only meaningful on a confirmed AggregateOffer -- a stale
+    # lowPrice on a plain Offer must not stand in for its missing price.
+    # When both somehow exist, price is the offer's own and wins.
     price = _finite_price(offer.get("price"))
-    if price is None:
+    if price is None and _is_aggregate_offer(offer):
         price = _finite_price(offer.get("lowPrice"))
     if price is None:
         return None
@@ -583,6 +619,15 @@ class Crawler:
                 # own (say) CD page into a price-clearing miss.
                 if not self._title_matches(page_title, artist, title,
                                            release.get("format") or ""):
+                    if status == 429:
+                        # A plain failure, never BotDetectedError: the
+                        # bot-retry path would repeat the whole probe within
+                        # seconds, and this repo's 429 policy is to never
+                        # retry while a site is rate-limiting
+                        # (shopify_catalog.iter_products records why).
+                        raise RuntimeError(
+                            f"HTTP 429 (rate limited) on {url} -- not retried"
+                        )
                     if status is not None and status >= 400:
                         # An error status whose settled page is neither a
                         # challenge nor this product is the Cloudflare wall
@@ -719,6 +764,11 @@ class Crawler:
         for node in all_nodes:
             scope = _node_scope(node, product_path)
             if scope == "other":
+                continue
+            if scope == "ambiguous":
+                # A present but unreadable url/@id must not fall through to
+                # name scoping -- unattributable, so it poisons the read.
+                tallies["ambiguous"] += 1
                 continue
             name = node.get("name")
             if scope == "unknown":
