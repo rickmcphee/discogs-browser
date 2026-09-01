@@ -564,6 +564,24 @@ _PRODUCT_TITLE_SHAPE_RE = re.compile(
 )
 
 
+def _is_challenge_title(page_title: str) -> bool:
+    """Is this title a bot interstitial's, rather than a product's?
+
+    Substring alone over-matches: a release legitimately titled "Just a
+    Moment" would stall the settle loop on every crawl and then read as an
+    uncleared challenge, so that release could never produce a listing. A
+    real interstitial's title ("Just a moment...", "Attention Required! |
+    Cloudflare") is never product-shaped, so a title carrying the
+    delimiter and a post-delimiter format marker is a product's whatever
+    phrases it contains.
+    """
+    lower = page_title.lower()
+    if not any(c in lower for c in _CHALLENGE_TITLES):
+        return False
+    _, sep, rest = page_title.partition(" - ")
+    return not (sep and _PRODUCT_TITLE_SHAPE_RE.search(rest))
+
+
 def _recognized_non_match(page_title: str) -> bool:
     """Positive evidence that a mismatching 200 page is a *confirmed* miss.
 
@@ -703,7 +721,7 @@ class Crawler:
         # including the ones about to clear (discogs_marketplace pattern).
         deadline = time.monotonic() + _SETTLE_TIMEOUT_MS / 1000
         title = await page.title()
-        while any(c in title.lower() for c in _CHALLENGE_TITLES):
+        while _is_challenge_title(title):
             if time.monotonic() >= deadline:
                 return title
             await page.wait_for_timeout(500)
@@ -747,7 +765,7 @@ class Crawler:
                 await sleep(random.uniform(1, 2))
 
                 page_title = await self._settled_title(page)
-                if any(c in page_title.lower() for c in _CHALLENGE_TITLES):
+                if _is_challenge_title(page_title):
                     raise BotDetectedError(f"challenge did not clear on {url}")
 
                 if status == 404:

@@ -1524,6 +1524,25 @@ async def test_search_raises_when_an_out_of_stock_page_also_half_parses(browser_
         await Crawler().search(RELEASE, page)
 
 
+async def test_search_reads_a_release_titled_like_a_challenge(browser_page):
+    # A release legitimately titled "Just A Moment" must neither stall the
+    # settle loop nor read as an uncleared challenge: a real interstitial's
+    # title is never product-shaped.
+    release = {"artist": "Sample Artist", "title": "Just A Moment"}
+    url = "https://www.roughtrade.com/en-us/product/sample-artist/just-a-moment"
+    html = (
+        "<html><head>"
+        "<title>Sample Artist - Just A Moment on Vinyl LP | Rough Trade</title>"
+        + _ld('{"@type": "Product", "name": "Just A Moment",'
+              ' "offers": {"@type": "Offer", "price": "27.99", "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/InStock"}}')
+        + "</head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {url: (html, 200)})
+    results = await Crawler().search(release, page)
+    assert [r["price"] for r in results] == [27.99]
+
+
 async def test_search_raises_on_an_unresolved_challenge(browser_page):
     challenge = ("<html><head><title>Just a moment...</title></head><body></body></html>", 403)
     page = _FakePage(browser_page, {PRODUCT_URL: challenge})

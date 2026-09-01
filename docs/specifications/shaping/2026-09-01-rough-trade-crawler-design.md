@@ -195,7 +195,11 @@ is exactly what the caller does with it.
    confirmed miss when it was the last).
 2. Wait out Cloudflare's interstitial by polling the title
    (`discogs_marketplace._await_settled_title` pattern); a challenge title
-   that never settles raises `BotDetectedError`. `BotDetectedError` is
+   that never settles raises `BotDetectedError`. A challenge title is a
+   challenge *phrase on a non-product-shaped title*: a release
+   legitimately titled "Just a Moment" must neither stall the settle loop
+   nor read as an uncleared challenge, and a real interstitial's title is
+   never product-shaped. `BotDetectedError` is
    otherwise reserved for the one known WAF status — a 403 whose settled
    page is not this product is Cloudflare's block page, where a fresh
    browser context genuinely can help. Any other ≥400 status (a 5xx
