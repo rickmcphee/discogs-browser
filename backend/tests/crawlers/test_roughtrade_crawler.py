@@ -713,6 +713,56 @@ async def test_search_skips_a_meta_pair_with_a_blank_currency(browser_page):
     assert [(r["price"], r["currency"]) for r in results] == [(24.99, "GBP")]
 
 
+async def test_search_raises_when_complete_meta_pairs_disagree(browser_page):
+    # Two complete namespaces that disagree mean at least one is stale,
+    # with nothing to say which -- returning the first would persist the
+    # stale pair half the time. Agreement (or a single usable pair) still
+    # yields the listing.
+    head = (
+        "<html><head>"
+        "<title>Sample Artist - Sample Album on Vinyl LP | Rough Trade</title>"
+        '<meta property="product:price:amount" content="31.99" />'
+        '<meta property="product:price:currency" content="USD" />'
+        '<meta property="og:availability" content="instock" />'
+    )
+    disagreeing = (
+        head
+        + '<meta property="og:price:amount" content="24.99" />'
+        + '<meta property="og:price:currency" content="GBP" />'
+        + "</head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (disagreeing, 200)})
+    with pytest.raises(RuntimeError, match="price signals"):
+        await Crawler().search(RELEASE, page)
+
+    agreeing = (
+        head
+        + '<meta property="og:price:amount" content="31.99" />'
+        + '<meta property="og:price:currency" content="USD" />'
+        + "</head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (agreeing, 200)})
+    results = await Crawler().search(RELEASE, page)
+    assert [(r["price"], r["currency"]) for r in results] == [(31.99, "USD")]
+
+
+async def test_search_raises_on_a_scalar_graph(browser_page):
+    # "@graph": "..." is as unreadable as a malformed member -- whatever it
+    # was meant to hold could have been this product's node, so a sold-out
+    # sibling must not confirm a miss on the half-parsed page.
+    html = (
+        _PAGE_HEAD
+        + _ld('{"@graph": "not-a-node-list"}')
+        + _ld('{"@type": "Product", "name": "Sample Album",'
+              ' "offers": {"@type": "Offer", "price": "31.99", "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/OutOfStock"}}')
+        + "</head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    with pytest.raises(RuntimeError, match="price signals"):
+        await Crawler().search(RELEASE, page)
+
+
 async def test_search_normalizes_a_padded_meta_currency(browser_page):
     # The meta path cleans currencies like the JSON-LD path: " gbp "
     # persisted verbatim would open its own price bucket downstream, where

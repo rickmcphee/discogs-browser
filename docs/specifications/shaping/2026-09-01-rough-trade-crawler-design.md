@@ -308,9 +308,11 @@ is exactly what the caller does with it.
    - Prices must be finite and positive (`discogs_marketplace._finite_price`
      rationale — `float()` accepts NaN/inf text).
    - Fallback when the JSON-LD produced no answer: the OG price metas,
-     read as namespace pairs (`product:price:*`, then `og:price:*`) so a
+     read as namespace pairs (`product:price:*` and `og:price:*`) so a
      stale currency from one namespace never attaches to the other's
-     amount. The fallback needs an availability meta to answer at all, and
+     amount — and when both namespaces yield complete pairs they must
+     agree, since a disagreement means at least one is stale with nothing
+     to say which (loud, never the first one). The fallback needs an availability meta to answer at all, and
      an *unavailable* one confirms a miss only when the JSON-LD read was
      complete — a half-parsed in-stock offer is contrary evidence, and a
      stale unavailable meta must not clear a price the JSON-LD says the

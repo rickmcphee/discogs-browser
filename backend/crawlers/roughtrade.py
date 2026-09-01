@@ -322,6 +322,12 @@ def _product_nodes(ldjson_texts: list) -> tuple:
                 # JSON-LD permits a single node object here, not only a
                 # list -- ignoring it would drop this product's own node.
                 graph = [graph]
+            elif graph is not None and not isinstance(graph, list):
+                # A scalar @graph is as unreadable as a malformed member:
+                # whatever it was meant to hold could have been this
+                # product's node, so the page is half-parsed.
+                malformed += 1
+                graph = []
             candidates = [root] + (graph if isinstance(graph, list) else [])
             for node in candidates:
                 if not isinstance(node, dict):
@@ -1092,6 +1098,7 @@ class Crawler:
             return None if unparsed_available else []
         if states != {"available"}:
             return None
+        usable_pairs = []
         for amount_key, currency_key in _META_PAIRS:
             price = _finite_price(meta.get(amount_key))
             if price is None:
@@ -1106,11 +1113,20 @@ class Crawler:
                     # absent currency, and skip a malformed pair rather than
                     # persisting drifted data or stamping USD over it.
                     continue
-            return [{
-                "url": url,
-                "price": price,
-                "shipping": None,
-                "currency": currency,
-                "condition": None,
-            }]
-        return None
+            usable_pairs.append((price, currency))
+        if not usable_pairs:
+            return None
+        if len(set(usable_pairs)) > 1:
+            # Two complete namespaces that disagree (on amount or currency)
+            # mean at least one is stale, with nothing to say which --
+            # returning the first would persist the stale pair half the
+            # time, so the contradiction stays loud.
+            return None
+        price, currency = usable_pairs[0]
+        return [{
+            "url": url,
+            "price": price,
+            "shipping": None,
+            "currency": currency,
+            "condition": None,
+        }]
