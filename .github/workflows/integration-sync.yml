@@ -434,6 +434,22 @@ jobs:
                   --jq '[ .statusCheckRollup[]? | (.conclusion // .state // "") as $c | select($c == "FAILURE" or $c == "ERROR" or $c == "TIMED_OUT" or $c == "STARTUP_FAILURE" or $c == "CANCELLED" or $c == "STALE") | (.name // .context // "unnamed check") ] | unique | join(", ")')"
 
                 if [ "$blocked_waiting" = 0 ] && [ -n "$blocked_failures" ]; then
+                  # Re-resolve the state before reporting on it. $sync_state was
+                  # read further up, before the rollup, and GitHub recomputes
+                  # mergeable_state asynchronously -- so the two can disagree
+                  # across that gap. Required checks going green inside it leave
+                  # the board settled with only an optional failure standing,
+                  # while the state still reads `blocked` from a moment earlier,
+                  # and reporting on the stale read would call a PR stuck at the
+                  # exact moment it turns `unstable` and merges.
+                  #
+                  # Anything other than `blocked` here -- including `unknown`,
+                  # which GitHub answers while it recomputes -- means this run
+                  # cannot honestly say the PR is stuck, so it says nothing and
+                  # the next run decides on a settled read. That silence is one
+                  # run long and self-correcting, unlike a genuinely stuck PR,
+                  # which stays stuck and gets reported the next time round.
+                  blocked_now="$(gh api "repos/$REPO/pulls/$existing" --jq '.mergeable_state')"
                   # A labelled PR is someone's hand-resolved conflict. Its CI is
                   # theirs, and the label already reserves the PR from this job,
                   # so say nothing and let the re-arm guard below leave it be.
@@ -441,7 +457,8 @@ jobs:
                   # is fetched after this case has had to decide.
                   blocked_labels="$(gh pr view "$existing" --repo "$REPO" \
                     --json labels --jq '.labels[].name')"
-                  if ! printf '%s\n' "$blocked_labels" | grep -qx "$CONFLICT_LABEL"; then
+                  if [ "$blocked_now" = blocked ] \
+                     && ! printf '%s\n' "$blocked_labels" | grep -qx "$CONFLICT_LABEL"; then
                     echo "::error::sync PR #$existing cannot merge: $blocked_failures failed, and nothing in this workflow can clear it. An open sync PR is never rebuilt, so its branch keeps whatever broke it and auto-merge waits on a check that will not pass. Nothing in a sync PR is hand-authored unless it carries $CONFLICT_LABEL, so if the failure is already fixed on \`main\`: close #$existing, delete $SYNC_BRANCH, and re-run this workflow -- it rebuilds the branch from the current \`main\` and the fix comes with it. If the failure is not fixed on \`main\`, it is a real break and fixing it there is what unblocks the sync."
                     exit 1
                   fi

@@ -222,6 +222,17 @@ while something is genuinely running, and the optional-failure suppression holds
 for exactly as long as it should. A pending check carrying no timestamp counts
 as waiting — that state is transient, and the next run re-decides.
 
+The state is then re-resolved before anything is reported. `mergeable_state` is
+read before the rollup, and GitHub recomputes it asynchronously, so the two
+disagree across that gap: required checks going green inside it leave the board
+settled with only an optional failure standing, while the state still reads
+`blocked` from a moment earlier — and reporting on the stale read would call a
+PR stuck at the exact moment it turns `unstable` and merges. Anything but
+`blocked` on the second read (including `unknown`, which GitHub answers while it
+recomputes) means this run cannot honestly call the PR stuck, so it says
+nothing. That silence lasts one run and corrects itself; a genuinely stuck PR
+stays stuck and is reported next time round.
+
 `CANCELLED` and `STALE` count as failures alongside the obvious ones — nothing
 is coming for either. `ACTION_REQUIRED` counts as *waiting*: it means a person
 has been asked for a click, which is the parked "Approve and run" state this
