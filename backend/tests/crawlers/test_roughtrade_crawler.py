@@ -277,6 +277,14 @@ def test_name_matches_accepts_a_release_title_containing_the_delimiter():
     assert _name_matches(
         "Sample Artist - Sample Album - Deluxe", "Sample Artist", "Sample Album - Deluxe"
     )
+    # ... including with an edition suffix after the delimiter-bearing title.
+    assert _name_matches(
+        "Sample Album - Deluxe - Red Vinyl", "Sample Artist", "Sample Album - Deluxe"
+    )
+    assert _name_matches(
+        "Sample Artist - Sample Album - Deluxe - Red Vinyl",
+        "Sample Artist", "Sample Album - Deluxe",
+    )
 
 
 def test_title_matches_accepts_a_release_title_containing_the_delimiter():
@@ -290,6 +298,12 @@ def test_title_matches_accepts_a_release_title_containing_the_delimiter():
     assert not Crawler._title_matches(
         "Sample Artist - Sample Album - Redux on Vinyl LP | Rough Trade",
         "Sample Artist", "Sample Album - Deluxe",
+    )
+    # The cross-format guard still sees a marker placed after the release
+    # title's own delimiter.
+    assert not Crawler._title_matches(
+        "Sample Artist - Sample Album - Deluxe on CD | Rough Trade",
+        "Sample Artist", "Sample Album - Deluxe", "Vinyl",
     )
 
 

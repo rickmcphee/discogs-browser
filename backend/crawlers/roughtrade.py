@@ -123,11 +123,18 @@ def _page_format(title_rest: str) -> Optional[str]:
     guard.
     """
     signals = set()
-    core = title_rest.split(" - ")[0].split(" | ")[0]
-    marker = _FORMAT_MARKER_RE.search(core)
+    # The trailing marker is searched on the whole pre-branding chunk, not
+    # its first " - " segment: "Sample Album - Deluxe on CD" states its
+    # format after a delimiter the release title itself contains.
+    primary = title_rest.split(" | ")[0]
+    marker = _FORMAT_MARKER_RE.search(primary)
     if marker:
         signals.add("cd" if marker.group(1).lower() == "cd" else "vinyl")
-    for m in _PAREN_FORMAT_RE.finditer(title_rest[len(core):]):
+    # Parenthesised signals are read from the whole post-artist title -- the
+    # pattern is anchored to "(" plus a format token, so unlike a free-text
+    # word scan it cannot be triggered by format words inside a release
+    # title ("Live on Vinyl").
+    for m in _PAREN_FORMAT_RE.finditer(title_rest):
         signals.add("cd" if m.group(1).lower() == "cd" else "vinyl")
     return signals.pop() if len(signals) == 1 else None
 
@@ -191,20 +198,21 @@ def _name_matches(name: str, artist: str, title: str) -> bool:
     title_words = _norm_words(title)
     if not title_words:
         return False
-    # Exact whole-name forms first: a release title containing the delimiter
-    # itself ("Sample Album - Deluxe") must match its own node's name before
-    # the segment logic below cuts it short.
-    name_words = _norm_words(name)
-    if name_words == title_words or name_words == _norm_words(artist) + title_words:
-        return True
-    segments = [_norm_words(s) for s in name.split(" - ")]
-    if segments and segments[0] == title_words:
-        return True
-    return (
-        len(segments) > 1
-        and segments[0] == _norm_words(artist)
-        and segments[1] == title_words
-    )
+    # Progressive segment joins on both shapes, mirroring _title_matches: a
+    # release title containing the delimiter itself ("Sample Album - Deluxe")
+    # must match its node's name whether or not an edition suffix ("- Red
+    # Vinyl") follows it.
+    segments = name.split(" - ")
+    for end in range(1, len(segments) + 1):
+        if _norm_words(" - ".join(segments[:end])) == title_words:
+            return True
+    artist_words = _norm_words(artist)
+    if artist_words and _norm_words(segments[0]) == artist_words:
+        rest = segments[1:]
+        for end in range(1, len(rest) + 1):
+            if _norm_words(" - ".join(rest[:end])) == title_words:
+                return True
+    return False
 
 
 def _product_nodes(ldjson_texts: list) -> list:
