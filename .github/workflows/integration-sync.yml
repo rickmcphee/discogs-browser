@@ -490,8 +490,24 @@ jobs:
                   # is fetched after this case has had to decide.
                   blocked_labels="$(gh pr view "$existing" --repo "$REPO" \
                     --json labels --jq '.labels[].name')"
-                  if [ "$blocked_now" = blocked ] \
-                     && ! printf '%s\n' "$blocked_labels" | grep -qx "$CONFLICT_LABEL"; then
+                  # Stop here rather than falling through when the second read
+                  # disagrees. Every non-`blocked` value below this point would
+                  # otherwise reach the generic re-arm past `esac`, and that
+                  # undoes the fail-closed routing this case sits inside:
+                  # `unknown` would arm auto-merge on a PR whose state the top
+                  # of this state machine refuses to guess at, `dirty` would arm
+                  # it on a conflict without the label or the disable that path
+                  # applies, and `behind` would arm it without `update-branch`.
+                  # Each is the failure its own branch exists to prevent,
+                  # reached sideways through a read added for a different
+                  # purpose. Exiting leaves the PR untouched for one run; the
+                  # next decides on a settled read.
+                  if [ "$blocked_now" != blocked ]; then
+                    echo "Sync PR #$existing has a failed check, but its state now reads ${blocked_now:-unknown} rather than blocked. Not reporting and not re-arming on a state this run cannot resolve; the next run decides."
+                    exit 0
+                  fi
+
+                  if ! printf '%s\n' "$blocked_labels" | grep -qx "$CONFLICT_LABEL"; then
                     stalled_note=""
                     if [ -n "$blocked_stalled" ]; then
                       stalled_note=" Also stuck, and possibly the real blocker: $blocked_stalled, still pending well past the grace period. The rollup does not mark which checks are required, so this cannot say which of the two is holding the PR -- check both."

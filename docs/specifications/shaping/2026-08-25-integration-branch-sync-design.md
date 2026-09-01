@@ -233,6 +233,14 @@ recomputes) means this run cannot honestly call the PR stuck, so it says
 nothing. That silence lasts one run and corrects itself; a genuinely stuck PR
 stays stuck and is reported next time round.
 
+It also stops there rather than continuing. Falling through would carry every
+non-`blocked` value into the generic re-arm below, which is where each of them
+does the damage its own branch exists to prevent: `unknown` arms auto-merge on a
+state the top of this routing refuses to guess at, `dirty` arms it on a conflict
+without the label or the disable, and `behind` arms it without `update-branch`.
+A read added to avoid one false report must not become a side entrance past the
+fail-closed handling it sits inside.
+
 The report names the checks the grace period stopped shielding, alongside the
 failed ones. Because the rollup does not mark required checks, one visible
 consequence of inferring remains, and it runs both ways: a required check hung
