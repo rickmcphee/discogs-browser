@@ -558,24 +558,24 @@ def _recognized_non_match(page_title: str) -> bool:
     Either a not-found page, or a structurally valid Rough Trade *product*
     page for some other product -- the "{Artist} - {Name}" shape plus a
     format marker, so a generic site page ("Access Denied - Rough Trade")
-    never qualifies. Anything else -- a maintenance page, a consent wall, an
-    unrecognised layout -- is unclassifiable, and the caller raises instead
-    of recording a miss that would clear a stored price.
+    never qualifies. Branding is deliberately *not* required: the confirmed
+    title shapes include unbranded ones ("Ramones - Greatest Hits -
+    (Vinyl LP)"), and demanding "Rough Trade" would misread such a
+    wrong-product landing as breakage. Anything else -- a maintenance
+    page, a consent wall, an unrecognised layout -- is unclassifiable, and
+    the caller raises instead of recording a miss that would clear a
+    stored price.
     """
     lower = page_title.lower()
     if "not found" in lower or "404" in lower:
         return True
     # The format marker must sit after the first " - ", where a product
     # title's name/format segment lives -- scanning the whole title would
-    # let a branded site page whose *leading* segment happens to carry a
-    # marker word ("News on Vinyl - Rough Trade") classify as a confirmed
+    # let a site page whose *leading* segment happens to carry a marker
+    # word ("News on Vinyl - Rough Trade") classify as a confirmed
     # different-product miss and clear a stored price.
     _, sep, rest = page_title.partition(" - ")
-    return (
-        bool(sep)
-        and "rough trade" in lower
-        and bool(_PRODUCT_TITLE_SHAPE_RE.search(rest))
-    )
+    return bool(sep) and bool(_PRODUCT_TITLE_SHAPE_RE.search(rest))
 
 
 class Crawler:

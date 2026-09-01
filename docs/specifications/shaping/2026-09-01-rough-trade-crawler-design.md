@@ -237,11 +237,13 @@ is exactly what the caller does with it.
    is a miss — never a parse attempt against
    the wrong page — but only with positive evidence of what was landed on: a
    not-found page, or a structurally valid Rough Trade *product* page for
-   some other product (the delimiter, the branding, and a format marker
-   *after* the first delimiter, where a product title's name/format segment
-   lives — "Access Denied - Rough Trade" has no marker at all, and "News on
+   some other product (the delimiter plus a format marker *after* the
+   first delimiter, where a product title's name/format segment lives —
+   branding is deliberately not required, since the confirmed shapes
+   include unbranded titles like "Ramones - Greatest Hits - (Vinyl LP)";
+   "Access Denied - Rough Trade" has no marker at all, and "News on
    Vinyl - Rough Trade" carries one only in the segment where a product
-   title keeps its artist; neither qualifies). A 200 whose title is neither (a maintenance page, a consent
+   title keeps its artist, so neither qualifies). A 200 whose title is neither (a maintenance page, a consent
    wall) is unclassifiable and raises: a miss there would clear a stored
    price with no site-health signal recorded, since this crawler's empty
    results bypass the breaker.

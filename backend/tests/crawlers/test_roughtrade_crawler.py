@@ -876,6 +876,17 @@ async def test_search_raises_on_a_branded_site_page_without_a_product_shape(brow
         await Crawler().search(RELEASE, page)
 
 
+async def test_search_treats_an_unbranded_product_title_as_a_miss(browser_page):
+    # The confirmed title shapes include unbranded ones ("Ramones -
+    # Greatest Hits - (Vinyl LP)"); requiring "Rough Trade" would misread
+    # such a wrong-product landing as breakage and raise instead of
+    # recording the miss.
+    html = ("<html><head><title>Unrelated Band - Something Else - (Vinyl LP)"
+            "</title></head><body></body></html>")
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    assert await Crawler().search(RELEASE, page) == []
+
+
 async def test_search_raises_on_a_marker_word_in_a_site_pages_leading_segment(browser_page):
     # "News on Vinyl - Rough Trade" carries a format-marker word, but only
     # in the segment where a product title keeps its artist -- it is a site
