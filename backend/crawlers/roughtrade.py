@@ -6,6 +6,7 @@ import time
 import unicodedata
 from asyncio import sleep
 from typing import Optional
+from urllib.parse import urlparse
 
 from crawler import BotDetectedError, clean_search_text
 from logging_config import get_logger
@@ -258,30 +259,55 @@ def _node_scope(node: dict, product_path: str) -> str:
     """
     for key in ("url", "@id"):
         value = node.get(key)
-        if isinstance(value, str) and value.strip():
-            clean = value.split("?", 1)[0].split("#", 1)[0].rstrip("/")
-            if not clean:
-                # A fragment- or query-only identifier ("#product") is
-                # document-relative -- it carries no cross-product evidence,
-                # so it must not classify the node as another product's.
-                continue
-            return "match" if clean.endswith(product_path) else "other"
+        if not (isinstance(value, str) and value.strip()):
+            continue
+        clean = value.split("?", 1)[0].split("#", 1)[0].rstrip("/")
+        if not clean:
+            # A fragment- or query-only identifier ("#product") is
+            # document-relative -- it carries no cross-product evidence,
+            # so it must not classify the node as another product's.
+            continue
+        parsed = urlparse(clean)
+        if parsed.scheme or parsed.netloc:
+            # A suffix match alone would accept another origin, or another
+            # storefront locale whose same-slug product prices in a
+            # different currency; the host and the exact locale path both
+            # have to agree.
+            if parsed.netloc.lower() not in ("www.roughtrade.com", "roughtrade.com"):
+                return "other"
+            path = parsed.path
+        else:
+            path = clean
+        path = "/" + path.strip("/")
+        if path in (product_path, "/en-us" + product_path):
+            return "match"
+        return "other"
     return "unknown"
 
 
+def _is_offer_shaped(member) -> bool:
+    """A dict with no @type, or one whose @type names an Offer kind
+    (Offer, AggregateOffer, OfferForPurchase, ...). An explicit non-Offer
+    node ("Demand") must not have its price fields trusted."""
+    if not isinstance(member, dict):
+        return False
+    node_type = member.get("@type")
+    if node_type is None:
+        return True
+    types = node_type if isinstance(node_type, list) else [node_type]
+    return any(isinstance(t, str) and "Offer" in t for t in types)
+
+
 def _iter_offers(offers) -> tuple:
-    """(offer dicts, dropped count) -- a non-dict offers payload or member is
-    counted, not silently discarded: an offer shape this parser cannot read
-    is a half-parsed page, and swallowing it would let an out-of-stock
-    sibling offer turn the page into a confirmed miss."""
+    """(offer dicts, dropped count) -- a payload or member this parser
+    cannot read as an offer is counted, not silently discarded: it is a
+    half-parsed page, and swallowing it would let an out-of-stock sibling
+    offer turn the page into a confirmed miss."""
     if offers is None:
         return [], 0
-    if isinstance(offers, dict):
-        return [offers], 0
-    if isinstance(offers, list):
-        usable = [o for o in offers if isinstance(o, dict)]
-        return usable, len(offers) - len(usable)
-    return [], 1
+    members = offers if isinstance(offers, list) else [offers]
+    usable = [o for o in members if _is_offer_shaped(o)]
+    return usable, len(members) - len(usable)
 
 
 def _offer_availability(offer: dict) -> str:

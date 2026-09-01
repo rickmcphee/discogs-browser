@@ -766,6 +766,44 @@ async def test_search_scopes_nodes_by_the_landed_url_after_a_redirect(browser_pa
     assert [(r["price"], r["url"]) for r in results] == [(27.99, canonical)]
 
 
+async def test_search_ignores_nodes_from_other_locales_or_origins(browser_page):
+    # A same-slug en-gb node prices in GBP, and a foreign-origin node is not
+    # this store's at all -- a suffix match alone would admit both.
+    html = (
+        _PAGE_HEAD
+        + _ld('{"@type": "Product", "name": "Sample Album",'
+              ' "url": "https://www.roughtrade.com/en-gb/product/sample-artist/sample-album",'
+              ' "offers": {"@type": "Offer", "price": "5.99", "priceCurrency": "GBP",'
+              ' "availability": "https://schema.org/InStock"}}')
+        + _ld('{"@type": "Product", "name": "Sample Album",'
+              ' "url": "https://evil.example/en-us/product/sample-artist/sample-album",'
+              ' "offers": {"@type": "Offer", "price": "3.99", "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/InStock"}}')
+        + _ld('{"@type": "Product", "name": "Sample Album",'
+              ' "offers": {"@type": "Offer", "price": "31.99", "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/InStock"}}')
+        + "</head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    results = await Crawler().search(RELEASE, page)
+    assert [r["price"] for r in results] == [31.99]
+
+
+async def test_search_raises_on_an_explicitly_non_offer_payload(browser_page):
+    # A "Demand" node's price fields must not be trusted; with nothing else
+    # readable the page is half-parsed and raises.
+    html = (
+        _PAGE_HEAD
+        + _ld('{"@type": "Product", "name": "Sample Album",'
+              ' "offers": {"@type": "Demand", "price": "5.99", "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/InStock"}}')
+        + "</head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    with pytest.raises(RuntimeError, match="price signals"):
+        await Crawler().search(RELEASE, page)
+
+
 async def test_search_treats_a_fragment_only_id_as_no_scoping_evidence(browser_page):
     # "#product" is document-relative: it must not classify the node as
     # another product's; the matching name decides instead.
