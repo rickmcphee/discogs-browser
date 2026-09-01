@@ -195,11 +195,24 @@ respx/authlib break whose fix landed on `main` hours after its branch was cut,
 so the branch could never carry that fix. It sat red for two days, holding
 `integration` at `5adef80` and stranding promotion PR #278 behind it — with
 green runs of this workflow throughout — until someone read the two PRs side by
-side and closed it by hand. The routing is gated on a check having genuinely
-concluded in failure precisely so it does not cry wolf on a sync PR whose checks
-are merely still running, which is the same "a job that is red for a benign
-reason is one nobody reads" concern that keeps `refresh` from erroring on the
-promotion PR.
+side and closed it by hand.
+
+Nothing is decided until the check board settles, and that one condition carries
+the whole guard. `statusCheckRollup` reports every check on the PR rather than
+just the branch's required ones, so a failed *optional* check sitting beside a
+required one that is merely pending would fire this every run for a PR that goes
+on to merge perfectly well — the same "a job that is red for a benign reason is
+one nobody reads" concern that keeps `refresh` from erroring on the promotion PR.
+Waiting for pending to empty also removes any need to ask which checks are
+required: with nothing left running, an optional-only failure leaves the PR
+`unstable` rather than `blocked`, so it never reaches this routing at all. That
+is why no `isRequired` field is read.
+
+`CANCELLED` and `STALE` count as failures alongside the obvious ones — nothing
+is coming for either. `ACTION_REQUIRED` counts as *waiting*: it means a person
+has been asked for a click, which is the parked "Approve and run" state this
+design already documents and tolerates under the token fallback, and erroring on
+it would turn a run red every week for a condition deliberately accepted.
 
 The failure is reported rather than repaired. Rebuilding the branch
 automatically would be safe by this workflow's own logic — nothing in a sync PR

@@ -376,16 +376,39 @@ jobs:
                 # behind it, while this workflow ran green throughout -- until
                 # someone read the two PRs side by side and closed it by hand.
                 #
-                # An assignment, not a call inside an `if`: there `set -e` is
+                # Assignments, not calls inside `if` tests: there `set -e` is
                 # suspended and a failing gh reads as "nothing failed", which
                 # restores the very silence this branch exists to end. Both
-                # rollup shapes are covered -- a CheckRun carries .conclusion
-                # and .name, a StatusContext .state and .context.
+                # rollup shapes are covered -- a CheckRun carries .status,
+                # .conclusion and .name, a StatusContext .state and .context.
+                #
+                # Nothing is decided until the board settles, and that single
+                # condition is what keeps this honest. `statusCheckRollup`
+                # carries every check on the PR rather than just the branch's
+                # required ones, so a failed *optional* check sitting beside a
+                # required one that is merely pending would otherwise fire this
+                # every run for a PR that goes on to merge perfectly well.
+                # Waiting for pending to empty also removes any need to ask
+                # which checks are required: with nothing left running, an
+                # optional-only failure leaves the PR `unstable`, not `blocked`,
+                # so it never reaches this case at all. That is why this reads
+                # no `isRequired` field.
+                #
+                # ACTION_REQUIRED counts as waiting rather than failing. It
+                # means a person has been asked for a click -- the parked
+                # "Approve and run" state this workflow already documents and
+                # tolerates when the token fallback is in play -- and erroring
+                # on it would put a run red every week for a condition the
+                # design deliberately accepts. CANCELLED and STALE get no such
+                # excuse: nothing is coming for them.
+                blocked_waiting="$(gh pr view "$existing" --repo "$REPO" \
+                  --json statusCheckRollup \
+                  --jq '[ .statusCheckRollup[]? | select(((.status // "") | . == "QUEUED" or . == "IN_PROGRESS" or . == "WAITING" or . == "PENDING" or . == "REQUESTED") or ((.conclusion // "") == "ACTION_REQUIRED") or ((.state // "") | . == "PENDING" or . == "EXPECTED")) ] | length')"
                 blocked_failures="$(gh pr view "$existing" --repo "$REPO" \
                   --json statusCheckRollup \
-                  --jq '[ .statusCheckRollup[]? | (.conclusion // .state // "") as $c | select($c == "FAILURE" or $c == "ERROR" or $c == "TIMED_OUT" or $c == "STARTUP_FAILURE") | (.name // .context // "unnamed check") ] | unique | join(", ")')"
+                  --jq '[ .statusCheckRollup[]? | (.conclusion // .state // "") as $c | select($c == "FAILURE" or $c == "ERROR" or $c == "TIMED_OUT" or $c == "STARTUP_FAILURE" or $c == "CANCELLED" or $c == "STALE") | (.name // .context // "unnamed check") ] | unique | join(", ")')"
 
-                if [ -n "$blocked_failures" ]; then
+                if [ "$blocked_waiting" = 0 ] && [ -n "$blocked_failures" ]; then
                   # A labelled PR is someone's hand-resolved conflict. Its CI is
                   # theirs, and the label already reserves the PR from this job,
                   # so say nothing and let the re-arm guard below leave it be.
