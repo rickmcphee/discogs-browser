@@ -459,18 +459,20 @@ def _offer_availability(offer: dict) -> str:
     routes to the unparsed/loud path. An absent field stays available.
 
     An AggregateOffer's offerCount is availability evidence too: zero means
-    nothing is for sale, and a malformed count is ambiguous.
+    nothing is for sale, and a malformed count is ambiguous -- but a zero
+    count next to an explicit *available* state is a contradiction, not a
+    confirmed miss, so it goes ambiguous rather than clearing a price.
     """
+    zero_count = False
     if _is_aggregate_offer(offer):
         count = offer.get("offerCount")
         if count is not None:
             if isinstance(count, bool) or not isinstance(count, int) or count < 0:
                 return "ambiguous"
-            if count == 0:
-                return "unavailable"
+            zero_count = count == 0
     value = offer.get("availability")
     if value is None:
-        return "available"
+        return "unavailable" if zero_count else "available"
     values = value if isinstance(value, list) else [value]
     flags = set()
     for item in values:
@@ -479,7 +481,9 @@ def _offer_availability(offer: dict) -> str:
         if not isinstance(item, str) or not item.strip():
             flags.add("junk")
             continue
-        tail = re.sub(r"[^a-z]", "", item.rsplit("/", 1)[-1].lower())
+        # _type_tail also strips a compact prefix ("schema:InStock") --
+        # rsplit on "/" alone leaves the colon in and junks a valid state.
+        tail = re.sub(r"[^a-z]", "", _type_tail(item).lower())
         if _UNAVAILABLE_RE.search(item):
             flags.add("unavailable")
         elif tail in _AVAILABLE_TAILS:
@@ -491,7 +495,7 @@ def _offer_availability(offer: dict) -> str:
     if flags == {"unavailable"}:
         return "unavailable"
     if flags == {"available"}:
-        return "available"
+        return "ambiguous" if zero_count else "available"
     return "ambiguous"
 
 

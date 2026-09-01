@@ -277,7 +277,12 @@ is exactly what the caller does with it.
      `AggregateOffer` (`lowPrice`).
    - Offers whose `availability` says `OutOfStock`/`SoldOut`/`Discontinued`
      are counted as confirmed-unpurchasable; `InStock`/`PreOrder`/absent are
-     kept (Rough Trade trades heavily in pre-orders).
+     kept (Rough Trade trades heavily in pre-orders). States are read by
+     IRI tail, so the bare, compact (`schema:InStock`) and expanded
+     encodings behave alike. An `AggregateOffer`'s `offerCount: 0` is
+     unpurchasable evidence too — but only when nothing contradicts it: a
+     zero count beside an explicit available state is ambiguous, routed to
+     the loud path rather than clearing a price.
    - Prices must be finite and positive (`discogs_marketplace._finite_price`
      rationale — `float()` accepts NaN/inf text).
    - Fallback when the JSON-LD produced no answer: the OG price metas,

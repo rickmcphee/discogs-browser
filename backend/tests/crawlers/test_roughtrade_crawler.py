@@ -475,11 +475,33 @@ def test_offer_listing_skips_unavailable():
 
 
 def test_offer_listing_keeps_preorder_and_unstated_availability():
-    for availability in ("https://schema.org/PreOrder", "https://schema.org/InStock", None):
+    for availability in (
+        "https://schema.org/PreOrder", "https://schema.org/InStock",
+        # Compact IRI encoding is valid JSON-LD for the same states.
+        "schema:InStock",
+        None,
+    ):
         offer = {"price": "31.99", "priceCurrency": "USD"}
         if availability:
             offer["availability"] = availability
         assert _offer_listing(offer, PRODUCT_URL)["price"] == 31.99
+
+
+def test_offer_availability_treats_zero_count_against_instock_as_contradiction():
+    # offerCount 0 confirms a miss only when nothing contradicts it; next to
+    # an explicit InStock the node is ambiguous, so the caller goes loud
+    # instead of clearing a price on the zero count alone.
+    assert roughtrade._offer_availability(
+        {"@type": "AggregateOffer", "offerCount": 0,
+         "availability": "https://schema.org/InStock"}
+    ) == "ambiguous"
+    assert roughtrade._offer_availability(
+        {"@type": "AggregateOffer", "offerCount": 0}
+    ) == "unavailable"
+    assert roughtrade._offer_availability(
+        {"@type": "AggregateOffer", "offerCount": 0,
+         "availability": "https://schema.org/OutOfStock"}
+    ) == "unavailable"
 
 
 def test_offer_listing_uses_low_price_for_aggregate_offers():
@@ -1057,6 +1079,23 @@ async def test_search_reads_iri_encoded_types(browser_page):
     page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
     results = await Crawler().search(RELEASE, page)
     assert [r["price"] for r in results] == [24.50]
+
+
+async def test_search_raises_on_a_zero_count_instock_contradiction(browser_page):
+    # offerCount 0 beside an explicit InStock is a contradiction, not a
+    # confirmed miss -- the page must go loud, never [] (which would clear
+    # the stored price on the zero count alone).
+    html = (
+        _PAGE_HEAD
+        + _ld('{"@type": "Product", "name": "Sample Album",'
+              ' "offers": {"@type": "AggregateOffer", "lowPrice": "24.50",'
+              ' "offerCount": 0, "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/InStock"}}')
+        + "</head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    with pytest.raises(RuntimeError, match="price signals"):
+        await Crawler().search(RELEASE, page)
 
 
 async def test_search_raises_when_a_stale_unavailable_meta_meets_half_parsed_jsonld(browser_page):
