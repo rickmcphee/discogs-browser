@@ -224,6 +224,28 @@ def test_title_matches_does_not_read_the_format_suffix_as_a_truncation():
     )
 
 
+def test_title_matches_rejects_a_cross_format_landing():
+    # A vinyl release's slug resolving to the CD product (or vice versa) is a
+    # different product; its price must not be persisted.
+    assert not Crawler._title_matches(
+        "Sample Artist - Sample Album on CD | Rough Trade",
+        "Sample Artist", "Sample Album", "Vinyl",
+    )
+    assert not Crawler._title_matches(
+        "Sample Artist - Sample Album on Vinyl LP | Rough Trade",
+        "Sample Artist", "Sample Album", "CD",
+    )
+    assert Crawler._title_matches(
+        "Sample Artist - Sample Album on CD | Rough Trade",
+        "Sample Artist", "Sample Album", "CD",
+    )
+    # An absent or unknown format on either side stays accepted.
+    assert Crawler._title_matches(
+        "Sample Artist - Sample Album on Vinyl LP | Rough Trade",
+        "Sample Artist", "Sample Album",
+    )
+
+
 def test_name_matches_accepts_bare_title_and_artist_title_shapes():
     assert _name_matches("Sample Album", "Sample Artist", "Sample Album")
     assert _name_matches("Sample Album - Deluxe Edition", "Sample Artist", "Sample Album")
@@ -493,6 +515,95 @@ async def test_search_raises_when_every_available_offer_is_priceless(browser_pag
     page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
     with pytest.raises(RuntimeError, match="price signals"):
         await Crawler().search(RELEASE, page)
+
+
+_PAGE_HEAD = (
+    "<html><head>"
+    "<title>Sample Artist - Sample Album on Vinyl LP | Rough Trade</title>"
+)
+
+
+def _ld(script: str) -> str:
+    return f'<script type="application/ld+json">{script}</script>'
+
+
+async def test_search_ignores_a_node_whose_url_names_another_product(browser_page):
+    # A carousel node for a same-titled album by another artist carries a
+    # matching bare-title name -- its url is what gives it away.
+    html = (
+        _PAGE_HEAD
+        + _ld('{"@type": "Product", "name": "Sample Album",'
+              ' "url": "https://www.roughtrade.com/en-us/product/other-artist/sample-album",'
+              ' "offers": {"@type": "Offer", "price": "5.99", "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/InStock"}}')
+        + _ld('{"@type": "Product", "name": "Sample Album",'
+              ' "offers": {"@type": "Offer", "price": "31.99", "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/InStock"}}')
+        + "</head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    results = await Crawler().search(RELEASE, page)
+    assert [r["price"] for r in results] == [31.99]
+
+
+async def test_search_accepts_a_nameless_node_with_a_matching_url(browser_page):
+    html = (
+        _PAGE_HEAD
+        + _ld('{"@type": "Product",'
+              ' "@id": "https://www.roughtrade.com/product/sample-artist/sample-album",'
+              ' "offers": {"@type": "Offer", "price": "27.99", "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/InStock"}}')
+        + "</head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    results = await Crawler().search(RELEASE, page)
+    assert [r["price"] for r in results] == [27.99]
+
+
+async def test_search_accepts_a_nameless_urlless_node_only_when_sole(browser_page):
+    html = (
+        _PAGE_HEAD
+        + _ld('{"@type": "Product",'
+              ' "offers": {"@type": "Offer", "price": "27.99", "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/InStock"}}')
+        + "</head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    results = await Crawler().search(RELEASE, page)
+    assert [r["price"] for r in results] == [27.99]
+
+
+async def test_search_raises_when_an_unattributable_node_sits_beside_others(browser_page):
+    # A nameless, url-less node next to other Product nodes cannot be
+    # attributed to this page or a carousel -- it poisons the read like an
+    # unparsable offer rather than being merged or silently dropped.
+    html = (
+        _PAGE_HEAD
+        + _ld('{"@type": "Product", "name": "Sample Album",'
+              ' "offers": {"@type": "Offer", "price": "31.99", "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/InStock"}}')
+        + _ld('{"@type": "Product",'
+              ' "offers": {"@type": "Offer", "price": "5.99", "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/InStock"}}')
+        + "</head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    with pytest.raises(RuntimeError, match="price signals"):
+        await Crawler().search(RELEASE, page)
+
+
+async def test_search_treats_a_cross_format_landing_as_a_miss(browser_page):
+    html = (
+        "<html><head>"
+        "<title>Sample Artist - Sample Album on CD | Rough Trade</title>"
+        + _ld('{"@type": "Product", "name": "Sample Album",'
+              ' "offers": {"@type": "Offer", "price": "12.99", "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/InStock"}}')
+        + "</head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    # The release dict carries no format, so search() defaults it to vinyl.
+    assert await Crawler().search(RELEASE, page) == []
 
 
 async def test_search_raises_when_a_priced_page_also_half_parses(browser_page):

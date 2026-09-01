@@ -97,6 +97,29 @@ _TRUNCATION_MIN_CHARS = 30
 _FORMAT_MARKER_RE = re.compile(r"\s+on\s+(vinyl(\s+lp)?|lp|cd)\s*$", re.IGNORECASE)
 
 
+def _format_conflicts(page_marker: Optional[str], release_format: str) -> bool:
+    """Does the page title's format marker contradict the release's format?
+
+    Only a *known* contradiction rejects -- vinyl release on a CD page or
+    vice versa. An absent marker (the "- (Vinyl LP)" title shape carries its
+    format in a later segment the core check discards) or an unrecognised
+    format string on either side stays accepted.
+    """
+    if not page_marker:
+        return False
+    marker = page_marker.lower()
+    fmt = (release_format or "").lower()
+    page_is_cd = marker == "cd"
+    page_is_vinyl = not page_is_cd
+    release_is_cd = "cd" in fmt
+    release_is_vinyl = any(t in fmt for t in ("vinyl", "lp", '12"', '10"', '7"'))
+    if page_is_cd and release_is_vinyl and not release_is_cd:
+        return True
+    if page_is_vinyl and release_is_cd and not release_is_vinyl:
+        return True
+    return False
+
+
 def _title_core_matches(expected: list, got: list) -> bool:
     """Does a page's product-name core name exactly this release?
 
@@ -170,6 +193,21 @@ def _product_nodes(ldjson_texts: list) -> list:
                 if any(t == "Product" for t in types if isinstance(t, str)):
                     nodes.append(node)
     return nodes
+
+
+def _node_scope(node: dict, product_path: str) -> str:
+    """Where a Product node's own url/@id says it belongs.
+
+    "match": it names this product's path (locale-full or locale-less);
+    "other": it names some other path -- a recommendation node, whatever its
+    name claims; "unknown": it carries neither field.
+    """
+    for key in ("url", "@id"):
+        value = node.get(key)
+        if isinstance(value, str) and value.strip():
+            clean = value.split("?", 1)[0].split("#", 1)[0].rstrip("/")
+            return "match" if clean.endswith(product_path) else "other"
+    return "unknown"
 
 
 def _iter_offers(offers) -> list:
@@ -286,7 +324,8 @@ class Crawler:
         return candidates[0] if candidates else f"{cls.base_url}/en-us"
 
     @staticmethod
-    def _title_matches(page_title: str, artist: str, title: str) -> bool:
+    def _title_matches(page_title: str, artist: str, title: str,
+                       release_format: str = "") -> bool:
         """Did the slug land on this release's product page?
 
         Confirmed page titles are "{Artist} - {Title}[ format marker][ -
@@ -311,6 +350,12 @@ class Crawler:
         if not title_words:
             return False
         name_core = rest.split(" - ")[0].split(" | ")[0]
+        marker_match = _FORMAT_MARKER_RE.search(name_core)
+        # A known cross-format landing -- a vinyl release's slug resolving to
+        # the CD product, or vice versa -- is a different product, whatever
+        # the name says: its price must not be persisted for this release.
+        if marker_match and _format_conflicts(marker_match.group(1), release_format):
+            return False
         name_core = _FORMAT_MARKER_RE.sub("", name_core)
         return _title_core_matches(title_words, _norm_words(name_core))
 
@@ -350,7 +395,8 @@ class Crawler:
                     log.debug("[Rough Trade] 404 for %s", url)
                     continue
 
-                if not self._title_matches(page_title, artist, title):
+                if not self._title_matches(page_title, artist, title,
+                                           release.get("format", "vinyl") or "vinyl"):
                     if status is not None and status >= 400:
                         # An error status whose settled page is neither a
                         # challenge nor this product is the Cloudflare wall
@@ -419,27 +465,55 @@ class Crawler:
 
         # A recommendation carousel can emit Product JSON-LD of its own, and
         # an unscoped read would let its cheapest offer become this release's
-        # price -- the exact trap this crawler exists to avoid. A node with a
-        # name is read only when that name describes this release; a nameless
-        # node is kept (carousel entries carry names, the page's own product
-        # node is the plausible nameless one).
+        # price -- the exact trap this crawler exists to avoid. Scoping, in
+        # order of evidence: a node whose url/@id names this product path is
+        # this page's product whatever it is called; one naming another path
+        # is not, whatever it is called (the guard against a carousel node
+        # for a same-titled album by someone else); a url-less node is read
+        # only when its name matches the release. A nameless, url-less node
+        # is unattributable -- used only as the page's sole Product node,
+        # and *poisoning* the read otherwise, exactly like an unparsable
+        # offer, rather than being merged in or silently dropped.
+        product_path = "/" + "/".join(url.rstrip("/").split("/")[-3:])
         listings = []
-        unavailable = 0
-        unparsed_available = 0
-        for node in _product_nodes(signals.get("ldjson") or []):
-            name = node.get("name")
-            if isinstance(name, str) and name.strip() and not _name_matches(name, artist, title):
-                continue
+        tallies = {"unavailable": 0, "unparsed_available": 0}
+
+        def read_node(node):
             for offer in _iter_offers(node.get("offers")):
                 availability = offer.get("availability")
                 if isinstance(availability, str) and _UNAVAILABLE_RE.search(availability):
-                    unavailable += 1
+                    tallies["unavailable"] += 1
                     continue
                 listing = _offer_listing(offer, url)
                 if listing:
                     listings.append(listing)
                 else:
-                    unparsed_available += 1
+                    tallies["unparsed_available"] += 1
+
+        anonymous_nodes = []
+        accepted_any = False
+        all_nodes = _product_nodes(signals.get("ldjson") or [])
+        for node in all_nodes:
+            scope = _node_scope(node, product_path)
+            if scope == "other":
+                continue
+            name = node.get("name")
+            if scope == "unknown":
+                if not (isinstance(name, str) and name.strip()):
+                    anonymous_nodes.append(node)
+                    continue
+                if not _name_matches(name, artist, title):
+                    continue
+            accepted_any = True
+            read_node(node)
+
+        if anonymous_nodes:
+            if not accepted_any and len(all_nodes) == 1:
+                read_node(anonymous_nodes[0])
+            else:
+                tallies["unparsed_available"] += len(anonymous_nodes)
+        unavailable = tallies["unavailable"]
+        unparsed_available = tallies["unparsed_available"]
 
         # An unparseable available offer poisons the whole JSON-LD read, not
         # just the empty case: returning the offers that *did* parse would

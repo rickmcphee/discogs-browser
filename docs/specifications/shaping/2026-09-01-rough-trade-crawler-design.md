@@ -206,8 +206,13 @@ is exactly what the caller does with it.
    final word may be a leading fragment of the title's final word, once
    the matched span has reached the length live titles truncate at (~30+
    characters — "International Super" must not pass for "International
-   Superhits …"). A mismatch is a miss — never a parse attempt against the
-   wrong page — but only with positive evidence of what was landed on: a
+   Superhits …"). The core's format marker is also compared against the
+   release's own format before being stripped: a vinyl release's slug
+   resolving to the CD product (or vice versa) is a different product and a
+   miss, while an absent or unrecognised marker stays accepted (the
+   "- (Vinyl LP)" title shape carries its format in a segment the core
+   check discards). A mismatch is a miss — never a parse attempt against
+   the wrong page — but only with positive evidence of what was landed on: a
    not-found page, or a structurally valid Rough Trade *product* page for
    some other product (the delimiter, the branding, and a format marker —
    "Access Denied - Rough Trade" has no format marker and does not
@@ -219,15 +224,21 @@ is exactly what the caller does with it.
    `script[type="application/ld+json"]` text plus the OG price metas.
    Parsing happens in Python:
    - JSON-LD nodes of `@type` `Product` (top-level, in lists, or under
-     `@graph`), **scoped to this release**: a named node is read only when
-     a `" - "`-delimited segment of its name equals the release title
+     `@graph`), **scoped to this release** in order of evidence: a node
+     whose `url`/`@id` names this product's path is this page's product
+     whatever it is called, one naming another path is not whatever it is
+     called (the guard against a carousel node for a same-titled album by
+     another artist), and a url-less node is read only when a
+     `" - "`-delimited segment of its name equals the release title
      exactly (the bare title with any edition suffix after the delimiter,
      or the "Artist - Title" shape) — stricter than the identity check,
      because every accepted node contributes offers and a name merely
      *starting* with the title would let a sibling product ("… Volume
-     Two") supply the price; a nameless node is kept. A recommendation
-     carousel emitting Product JSON-LD of its own must never supply the
-     cheapest listing.
+     Two") supply the price. A nameless, url-less node is unattributable:
+     it is used only as the page's sole Product node, and otherwise
+     poisons the read like an unparsable offer — never merged in, never
+     silently dropped. A recommendation carousel emitting Product JSON-LD
+     of its own must never supply the cheapest listing.
    - Accepted nodes' `offers` normalized across `Offer`, offer lists, and
      `AggregateOffer` (`lowPrice`).
    - Offers whose `availability` says `OutOfStock`/`SoldOut`/`Discontinued`
