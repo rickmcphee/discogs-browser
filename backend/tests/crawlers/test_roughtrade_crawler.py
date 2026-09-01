@@ -424,14 +424,17 @@ class _FakePage:
     Without it, title() reads the loaded fixture's real <title>.
     """
 
-    def __init__(self, real_page, routes, titles=None):
+    def __init__(self, real_page, routes, titles=None, redirects=None):
         self._real = real_page
         self._routes = routes
         self._titles = list(titles) if titles is not None else None
+        self._redirects = redirects or {}
         self.visited = []
+        self.url = ""
 
     async def goto(self, url, wait_until=None):
         self.visited.append(url)
+        self.url = self._redirects.get(url, url)
         if url == "about:blank":
             return None
         html, status = self._routes[url]
@@ -624,6 +627,28 @@ async def test_search_accepts_a_nameless_node_with_a_matching_url(browser_page):
     page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
     results = await Crawler().search(RELEASE, page)
     assert [r["price"] for r in results] == [27.99]
+
+
+async def test_search_scopes_nodes_by_the_landed_url_after_a_redirect(browser_page):
+    # The slug guess redirects to the canonical suffixed product URL; the
+    # node's @id names the canonical path and must still classify as this
+    # page's product, and the persisted listing carries the landed URL.
+    canonical = "https://www.roughtrade.com/en-us/product/sample-artist/sample-album-155"
+    html = (
+        _PAGE_HEAD
+        + _ld('{"@type": "Product",'
+              ' "@id": "https://www.roughtrade.com/product/sample-artist/sample-album-155",'
+              ' "offers": {"@type": "Offer", "price": "27.99", "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/InStock"}}')
+        + "</head><body></body></html>"
+    )
+    page = _FakePage(
+        browser_page,
+        {PRODUCT_URL: (html, 200)},
+        redirects={PRODUCT_URL: canonical},
+    )
+    results = await Crawler().search(RELEASE, page)
+    assert [(r["price"], r["url"]) for r in results] == [(27.99, canonical)]
 
 
 async def test_search_accepts_a_nameless_urlless_node_only_when_sole(browser_page):

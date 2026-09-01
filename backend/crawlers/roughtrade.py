@@ -506,7 +506,15 @@ class Crawler:
                 # challenge reloads the real page while goto's response object
                 # still holds the interstitial's 403.
 
-                listings = await self._read_listings_when_ready(page, url, artist, title)
+                # The slug guess can redirect to the canonical, suffixed
+                # product URL ("/sample-album" -> "/sample-album-155"); node
+                # scoping and the persisted listing must use where the page
+                # actually landed, or the real product's url/@id classifies
+                # as "other" and the valid page raises.
+                landed_url = getattr(page, "url", "") or url
+                listings = await self._read_listings_when_ready(
+                    page, landed_url, artist, title
+                )
                 if listings is None:
                     raise RuntimeError(
                         f"no complete, attributable machine-readable price "
