@@ -181,6 +181,15 @@ share one), so keying off it collided. The comparison query also carries
 an `ORDER BY l.item_key, cr.site_name` for deterministic multi-crawler
 ordering, omitted above.
 
+**Amendment (2026-08-30):** that `ORDER BY l.item_key, cr.site_name` held
+for every sort, including Cost — so sorting the Store/Track `Cost` column
+put each item's own row in numeric price order while its comparison rows
+underneath stayed alphabetical by source, making the visible column look
+unsorted whenever an item had more than one comparison. The comparison
+query now orders by `l.price {order}, cr.site_name` when `sort == "price"`,
+matching the requested direction, and falls back to `cr.site_name` alone
+for every other sort.
+
 `l.price IS NOT NULL` mirrors the existing defensive filter in
 `get_missing_releases` — under the current invariant `upsert_listing`/
 `upsert_stock_item_listing` only ever write a row on a match, so this is

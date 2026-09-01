@@ -251,7 +251,11 @@ convention:
   raise it is indistinguishable from real breakage and counts against
   `consecutive_failure_limit`. Only 404 is special-cased; 5xx, connection
   failures, and every other status still raise via `raise_for_status()`,
-  so genuine breakage still trips the circuit breaker.
+  so genuine breakage still trips the circuit breaker. *(2026-09-01: those
+  raises now happen after `catalog_http.get_with_retry()`'s paced
+  `consecutive_failure_limit` retry budget rather than on the first
+  occurrence, and the 404 special case is its `allow_404` flag — see
+  [`2026-09-01-stock-crawl-timeout-retry-design.md`](2026-09-01-stock-crawl-timeout-retry-design.md).)*
 
   **How this stays inside `CLAUDE.md`'s "any failure must raise" rule.**
   That rule exists so the breaker can tell "the site answered and has
@@ -300,7 +304,9 @@ responses built from confirmed-live HTML fragments, no live site, no
 bot-detection risk (`tmp_config_dir` + `save_config({"crawl_delay_seconds":
 0})`, no conftest.py sleep-patch changes needed since this crawler paces
 itself directly via `config.load_config()`, the same mechanism
-`darkdescentrecords.py` uses). Cases:
+`darkdescentrecords.py` uses — *2026-09-01: the pacing sleep itself now
+lives in `catalog_http.get_with_retry()`, which the conftest fixture fakes
+for every `*_crawler` test module*). Cases:
 
 - release-link extraction from a listing page, deduped across the
   image-link/title-link pair per row

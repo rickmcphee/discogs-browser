@@ -1,11 +1,10 @@
 import html
-import random
 import re
-from asyncio import sleep
 from typing import AsyncIterator
 
 import httpx
 
+from catalog_http import get_with_retry
 from config import load_config
 from crawl_progress import report_page
 
@@ -44,10 +43,12 @@ class Crawler:
         # every sibling crawler.
         cfg = load_config()
         delay = float(cfg.get("crawl_delay_seconds", 30))
-        await sleep(random.uniform(delay * 0.5, delay))
+        failure_limit = int(cfg.get("consecutive_failure_limit", 10))
         async with httpx.AsyncClient() as client:
-            r = await client.get(f"{self.base_url}/products.json")
-            r.raise_for_status()
+            r = await get_with_retry(
+                client, f"{self.base_url}/products.json",
+                delay=delay, failure_limit=failure_limit,
+            )
         products = r.json()
 
         items = [item for product in products for item in self._items(product)]
