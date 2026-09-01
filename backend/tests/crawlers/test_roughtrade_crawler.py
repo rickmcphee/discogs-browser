@@ -1159,6 +1159,46 @@ async def test_search_raises_when_same_named_urlless_nodes_disagree(browser_page
         await Crawler().search(RELEASE, page)
 
 
+async def test_search_raises_when_a_name_only_node_disagrees_with_a_scoped_one(browser_page):
+    # With a url-scoped node already identifying this page's product, a
+    # url-less same-named node with a different offers payload could be a
+    # recommendation for someone else's same-titled record -- merging it
+    # would sort its cheaper carousel price first.
+    html = (
+        _PAGE_HEAD
+        + _ld('{"@type": "Product",'
+              ' "url": "https://www.roughtrade.com/en-us/product/sample-artist/sample-album",'
+              ' "offers": {"@type": "Offer", "price": "27.99", "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/InStock"}}')
+        + _ld('{"@type": "Product", "name": "Sample Album",'
+              ' "offers": {"@type": "Offer", "price": "5.99", "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/InStock"}}')
+        + "</head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    with pytest.raises(RuntimeError, match="price signals"):
+        await Crawler().search(RELEASE, page)
+
+
+async def test_search_skips_a_name_only_mirror_of_the_scoped_node(browser_page):
+    # A name-only node whose offers mirror the scoped node's is duplicate
+    # markup for the same product, not a stranger -- the page stays
+    # parseable and the price is read once.
+    offers = ('{"@type": "Offer", "price": "27.99", "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/InStock"}')
+    html = (
+        _PAGE_HEAD
+        + _ld('{"@type": "Product",'
+              ' "url": "https://www.roughtrade.com/en-us/product/sample-artist/sample-album",'
+              ' "offers": ' + offers + '}')
+        + _ld('{"@type": "Product", "name": "Sample Album", "offers": ' + offers + '}')
+        + "</head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    results = await Crawler().search(RELEASE, page)
+    assert [r["price"] for r in results] == [27.99]
+
+
 async def test_search_reads_duplicated_identical_nodes_once(browser_page):
     # The same Product markup emitted twice (head and body) is duplicate
     # markup for one product, not two indistinguishable products.

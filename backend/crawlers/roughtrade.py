@@ -931,6 +931,7 @@ class Crawler:
 
         anonymous_nodes = []
         name_matched_unknown = []
+        scoped_payloads = set()
         accepted_any = False
         all_nodes, malformed_scripts = _product_nodes(signals.get("ldjson") or [])
         tallies["unparsed_available"] += malformed_scripts
@@ -952,21 +953,27 @@ class Crawler:
                     name_matched_unknown.append(node)
                 continue
             accepted_any = True
+            scoped_payloads.add(json.dumps(node.get("offers"), sort_keys=True))
             read_node(node)
 
         if name_matched_unknown:
-            # More than one url-less node matching by name cannot be told
-            # apart: one is this page's product, but another could be a
-            # recommendation for someone else's same-titled record.
-            # Identical offers payloads are duplicate markup for one
-            # product and read once; differing payloads are
-            # indistinguishable different products, which poisons the read
-            # rather than letting the cheaper stranger win.
+            # Url-less nodes matching by name cannot be told apart from a
+            # recommendation for someone else's same-titled record riding
+            # the bare name. Identical offers payloads are duplicate markup
+            # and read (or skipped) as one; anything else is
+            # indistinguishable and poisons the read rather than letting
+            # the cheaper stranger win. When a url-scoped node has already
+            # identified this page's product, a name-only node must mirror
+            # one of the scoped payloads -- a differing one merged in could
+            # sort its carousel price first.
             payloads = {
                 json.dumps(n.get("offers"), sort_keys=True)
                 for n in name_matched_unknown
             }
-            if len(payloads) > 1:
+            if scoped_payloads:
+                if not payloads <= scoped_payloads:
+                    tallies["ambiguous"] += 1
+            elif len(payloads) > 1:
                 tallies["ambiguous"] += 1
             else:
                 accepted_any = True
