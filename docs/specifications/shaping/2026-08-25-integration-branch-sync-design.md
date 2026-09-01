@@ -177,8 +177,37 @@ alone.
 1. Does `integration` already contain `main`? Exit if so (above).
 2. A sync PR already open? Resolve its own `mergeable_state`: `behind` gets
    `update-branch` before auto-merge is re-armed; `dirty` fails loudly and
-   leaves auto-merge off. Do not rebuild its branch — it may carry a
+   leaves auto-merge off; `blocked` fails loudly *only* when a required check
+   has actually failed. Do not rebuild its branch — it may carry a
    hand-resolved conflict.
+
+**Amended 2026-09-01: `blocked` is routed rather than falling through.**
+`integration` requires no approving review, so a sync PR is `blocked` for one of
+two unrelated reasons: its required checks have not finished — the normal first
+minutes of every sync PR's life — or one of them failed. Only the second is a
+problem, and it used to be an invisible one. Nothing in the job can clear it:
+step 2 never rebuilds an open sync PR, so the branch keeps whatever broke it,
+and re-arming auto-merge is a no-op on a PR already armed. The run then exits 0,
+and every later run reports success while nothing moves.
+
+Sync PR #259 is the case that exposed it. It failed on 2026-08-30 against a
+respx/authlib break whose fix landed on `main` hours after its branch was cut,
+so the branch could never carry that fix. It sat red for two days, holding
+`integration` at `5adef80` and stranding promotion PR #278 behind it — with
+green runs of this workflow throughout — until someone read the two PRs side by
+side and closed it by hand. The routing is gated on a check having genuinely
+concluded in failure precisely so it does not cry wolf on a sync PR whose checks
+are merely still running, which is the same "a job that is red for a benign
+reason is one nobody reads" concern that keeps `refresh` from erroring on the
+promotion PR.
+
+The failure is reported rather than repaired. Rebuilding the branch
+automatically would be safe by this workflow's own logic — nothing in a sync PR
+is hand-authored unless it carries `CONFLICT_LABEL` — but it means force-pushing
+over a branch a person may have pushed a CI fix onto, and only the *conflict*
+path applies that label, so a hand-pushed test fix carries nothing to protect
+it. The error names the remedy instead: close the PR, delete the branch, re-run,
+and step 3 rebuilds from the current `main`.
 3. Otherwise branch from `integration`, `git merge origin/main`, and open a PR
    that auto-merges **with a merge commit**.
 
@@ -472,6 +501,7 @@ guard that failed open.
 | Unrelated PRs blocked by someone else's conflict | A conflicted sync PR reported a pending sync, suppressing `refresh`, though auto-merge was off and nothing was about to move | Superseded: the pending guard is gone entirely |
 | Refresh silently doing nothing | `for n in $(gh pr list …)` is a word expansion, so `set -e` never saw the command fail | Assign first |
 | Fork PR handed auto-merge | `--head` matches branch *name* only | `isCrossRepository == false` |
+| **A red sync PR stalling both branches, silently** | `blocked` fell through to the re-arm, which is a no-op on an already-armed PR; the job exited 0 while the branch kept the failure it could never shed | `blocked` is routed, and fails the run when a required check has actually concluded in failure |
 
 ## Simplifications available
 
