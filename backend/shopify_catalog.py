@@ -1,7 +1,6 @@
-import random
-from asyncio import sleep
 from typing import AsyncIterator, Optional
 import httpx
+from catalog_http import get_with_retry
 from config import load_config
 from crawl_progress import report_page
 from logging_config import get_logger
@@ -22,10 +21,10 @@ _MAX_PAGE = 100
 async def iter_products(base_url: str, collection_slug: str) -> AsyncIterator[dict]:
     """Paginate a Shopify collection's public products.json endpoint until exhausted.
 
-    Reuses the crawl_delay_seconds / consecutive_failure_limit settings crawl_releases()
-    applies to release search requests, extended here with retry-on-failure: unlike
-    crawl_releases(), which just moves on to the next release/crawler pair, pagination
-    has no next item to fall through to, so a non-429 failed page is retried instead.
+    Each page is fetched through catalog_http.get_with_retry(), which paces the
+    request and retries a non-429 failed page up to consecutive_failure_limit
+    attempts: unlike crawl_releases(), which just moves on to the next
+    release/crawler pair, pagination has no next item to fall through to.
 
     Pagination has a hard ceiling: Shopify refuses `page` past _MAX_PAGE with an
     HTTP 400, so a collection larger than _MAX_PAGE * _PAGE_LIMIT can only be walked
@@ -33,7 +32,7 @@ async def iter_products(base_url: str, collection_slug: str) -> AsyncIterator[di
     pages that did answer survive -- _sync_stock discards a catalog crawl's entire
     result when it raises, and the ceiling is not a failure.
 
-    A 400 anywhere below the ceiling is left to the retry budget below and
+    A 400 anywhere below the ceiling is left to the retry budget and
     ultimately raises, deliberately. It is unexplained rather than expected there,
     and raising is the fail-safe outcome: _sync_stock skips replace_stock_items()
     on a raise, leaving the previous snapshot intact, where returning a partial
@@ -50,31 +49,16 @@ async def iter_products(base_url: str, collection_slug: str) -> AsyncIterator[di
     cfg = load_config()
     delay = float(cfg.get("crawl_delay_seconds", 30))
     failure_limit = int(cfg.get("consecutive_failure_limit", 10))
-    consecutive_failures = 0
 
     page = 1
     async with httpx.AsyncClient() as client:
         while True:
             url = f"{base_url}/collections/{collection_slug}/products.json"
-            await sleep(random.uniform(delay * 0.5, delay))
-            try:
-                r = await client.get(url, params={"limit": _PAGE_LIMIT, "page": page})
-                r.raise_for_status()
-            except httpx.HTTPError as e:
-                if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 429:
-                    # Full header dump -- Shopify's shared platform-edge IP throttle is
-                    # not publicly documented, so this is the only way to see what
-                    # signal (if any) accompanies it. Not acted on: see docstring above.
-                    log.debug("[%s] 429 response headers: %s", base_url, dict(e.response.headers))
-                    raise
-                consecutive_failures += 1
-                # A limit of 0 means "disabled" elsewhere, but disabled must mean
-                # fail fast here, not unlimited retries — this loop has no next
-                # item to move on to like crawl_releases() does.
-                if failure_limit <= 0 or consecutive_failures >= failure_limit:
-                    raise
-                continue
-            consecutive_failures = 0
+            r = await get_with_retry(
+                client, url,
+                params={"limit": _PAGE_LIMIT, "page": page},
+                delay=delay, failure_limit=failure_limit,
+            )
             products = r.json().get("products", [])
             if not products:
                 break
