@@ -424,8 +424,20 @@ jobs:
                 # in minutes, so the grace period never expires mid-run and the
                 # optional-failure noise stays suppressed exactly as long as it
                 # should be. A pending check carrying no usable timestamp counts
-                # as waiting: that state is transient by nature, and the next
-                # run re-decides.
+                # as waiting, which fails towards silence rather than towards a
+                # red run.
+                #
+                # KNOWN HOLE, and the only one left in this routing: that
+                # fallback is unbounded. A CheckRun that stays queued keeps
+                # exporting no usable startedAt, so it reads as freshly pending
+                # on every run rather than ageing out, and a queue entry that
+                # never starts would shield an already-failed required check for
+                # as long as it sits there. Bounding it needs either a real
+                # creation timestamp, which gh does not expose for a CheckRun,
+                # or the required-only snapshot that would retire this whole
+                # mechanism -- the grace period, the shielding and this hole
+                # together. See the design doc; it is deliberately documented
+                # rather than patched around.
                 #
                 # "No usable timestamp" is doing more work than it looks. A
                 # CheckRun's startedAt is nullable, but gh serialises it from a

@@ -219,8 +219,25 @@ So a pending check only shields a failure while it is plausibly still running.
 Past `PENDING_CHECK_GRACE` (six hours) it is hung rather than slow, and stops
 shielding anything. Checks here finish in minutes, so the bound never expires
 while something is genuinely running, and the optional-failure suppression holds
-for exactly as long as it should. A pending check carrying no timestamp counts
-as waiting — that state is transient, and the next run re-decides.
+for exactly as long as it should. A pending check carrying no usable timestamp
+counts as waiting, which fails towards silence rather than towards a red run.
+
+**That last fallback is unbounded, and it is the one hole left in this routing.**
+A CheckRun that stays queued keeps exporting no usable `startedAt`, so it reads
+as freshly pending on every run rather than ageing out — and a queue entry that
+never starts would shield an already-failed required check for as long as it
+sits there. "The next run re-decides" is true of the *state* reads above it; it
+is not true here, and an earlier draft of this section wrongly said it was.
+
+The hole is narrow on this repository — a sync PR's checks are Backend and
+Frontend tests, which start promptly — and the parked "Approve and run" case that
+would most plausibly trigger it is inactive while the sync app is configured. It
+is documented rather than patched because there is no correct small fix for it:
+bounding it needs either a real creation timestamp, which `gh` does not expose
+for a CheckRun, or the required-only snapshot below, which removes the need for
+optional-check shielding altogether and with it the grace period, this fallback,
+and this hole. That upgrade is the fix; further patching around the missing
+required-ness is not.
 
 The state is then re-resolved before anything is reported. `mergeable_state` is
 read before the rollup, and GitHub recomputes it asynchronously, so the two
