@@ -97,25 +97,40 @@ _TRUNCATION_MIN_CHARS = 30
 _FORMAT_MARKER_RE = re.compile(r"\s+on\s+(vinyl(\s+lp)?|lp|cd)\s*$", re.IGNORECASE)
 
 
-def _format_conflicts(page_marker: Optional[str], release_format: str) -> bool:
-    """Does the page title's format marker contradict the release's format?
+# Both confirmed places a page title states its format: the name core's
+# trailing marker ("on Vinyl LP", "on CD") and the parenthesised later
+# segments ("- (Vinyl LP)", "- (CD)", "- (LP - Rainbow Road)").
+_TITLE_FORMAT_SIGNALS_RE = re.compile(
+    r"\bon\s+(vinyl(?:\s+lp)?|lp|cd)\b|\(\s*(vinyl(?:\s+lp)?|lp|cd)\b",
+    re.IGNORECASE,
+)
+
+
+def _page_format(title_rest: str) -> Optional[str]:
+    """"vinyl", "cd", or None when the title's format signals are absent or
+    contradict each other (unknown stays accepted downstream)."""
+    signals = set()
+    for m in _TITLE_FORMAT_SIGNALS_RE.finditer(title_rest):
+        token = (m.group(1) or m.group(2)).lower()
+        signals.add("cd" if token == "cd" else "vinyl")
+    return signals.pop() if len(signals) == 1 else None
+
+
+def _format_conflicts(page_format: Optional[str], release_format: str) -> bool:
+    """Does the page title's format contradict the release's format?
 
     Only a *known* contradiction rejects -- vinyl release on a CD page or
-    vice versa. An absent marker (the "- (Vinyl LP)" title shape carries its
-    format in a later segment the core check discards) or an unrecognised
-    format string on either side stays accepted.
+    vice versa. An absent page format or an unrecognised release format
+    string stays accepted.
     """
-    if not page_marker:
+    if not page_format:
         return False
-    marker = page_marker.lower()
     fmt = (release_format or "").lower()
-    page_is_cd = marker == "cd"
-    page_is_vinyl = not page_is_cd
     release_is_cd = "cd" in fmt
     release_is_vinyl = any(t in fmt for t in ("vinyl", "lp", '12"', '10"', '7"'))
-    if page_is_cd and release_is_vinyl and not release_is_cd:
+    if page_format == "cd" and release_is_vinyl and not release_is_cd:
         return True
-    if page_is_vinyl and release_is_cd and not release_is_vinyl:
+    if page_format == "vinyl" and release_is_cd and not release_is_vinyl:
         return True
     return False
 
@@ -349,13 +364,14 @@ class Crawler:
         title_words = _norm_words(title)
         if not title_words:
             return False
-        name_core = rest.split(" - ")[0].split(" | ")[0]
-        marker_match = _FORMAT_MARKER_RE.search(name_core)
         # A known cross-format landing -- a vinyl release's slug resolving to
         # the CD product, or vice versa -- is a different product, whatever
         # the name says: its price must not be persisted for this release.
-        if marker_match and _format_conflicts(marker_match.group(1), release_format):
+        # Read from the whole post-artist title, since the format can sit in
+        # the name core ("on CD") or a later segment ("- (CD)").
+        if _format_conflicts(_page_format(rest), release_format):
             return False
+        name_core = rest.split(" - ")[0].split(" | ")[0]
         name_core = _FORMAT_MARKER_RE.sub("", name_core)
         return _title_core_matches(title_words, _norm_words(name_core))
 

@@ -239,6 +239,15 @@ def test_title_matches_rejects_a_cross_format_landing():
         "Sample Artist - Sample Album on CD | Rough Trade",
         "Sample Artist", "Sample Album", "CD",
     )
+    # The format can also sit in a later parenthesised segment.
+    assert not Crawler._title_matches(
+        "Sample Artist - Sample Album - (CD) | Rough Trade",
+        "Sample Artist", "Sample Album", "Vinyl",
+    )
+    assert Crawler._title_matches(
+        "Sample Artist - Sample Album - (LP - Rainbow Road) | Rough Trade",
+        "Sample Artist", "Sample Album", "Vinyl",
+    )
     # An absent or unknown format on either side stays accepted.
     assert Crawler._title_matches(
         "Sample Artist - Sample Album on Vinyl LP | Rough Trade",

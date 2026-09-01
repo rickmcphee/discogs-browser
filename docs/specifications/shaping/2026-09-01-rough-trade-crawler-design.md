@@ -206,12 +206,13 @@ is exactly what the caller does with it.
    final word may be a leading fragment of the title's final word, once
    the matched span has reached the length live titles truncate at (~30+
    characters — "International Super" must not pass for "International
-   Superhits …"). The core's format marker is also compared against the
-   release's own format before being stripped: a vinyl release's slug
-   resolving to the CD product (or vice versa) is a different product and a
-   miss, while an absent or unrecognised marker stays accepted (the
-   "- (Vinyl LP)" title shape carries its format in a segment the core
-   check discards). A mismatch is a miss — never a parse attempt against
+   Superhits …"). The title's format signals — the core's trailing marker
+   ("on CD") and the parenthesised later segments ("- (CD)", "- (LP -
+   Rainbow Road)") — are also compared against the release's own format: a
+   vinyl release's slug resolving to the CD product (or vice versa) is a
+   different product and a miss, while absent or self-contradictory
+   signals, or an unrecognised release format, stay accepted. A mismatch
+   is a miss — never a parse attempt against
    the wrong page — but only with positive evidence of what was landed on: a
    not-found page, or a structurally valid Rough Trade *product* page for
    some other product (the delimiter, the branding, and a format marker —
