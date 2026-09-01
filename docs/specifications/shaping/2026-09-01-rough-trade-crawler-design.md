@@ -167,7 +167,9 @@ candidate product URLs from the release's own fields:
 `slug()` is NFKD-folded ASCII, lowercased, non-alphanumeric runs collapsed to
 single hyphens. Artist and title both pass through `clean_search_text()`
 first to shed Discogs `(2)` disambiguators. Candidates are tried in order,
-each a paced `page.goto`; the first non-404 stops the probing. Two candidates
+each a paced `page.goto`; probing stops at the first candidate that yields
+this release's own product page — a 404 *or* a wrong-product landing (the
+identity check below failing) moves on to the next candidate. Two candidates
 is the cap — this crawler's whole footprint is at most two product-page
 requests per release, quieter than one human click on the site's search box.
 
@@ -182,31 +184,47 @@ is exactly what the caller does with it.
    candidate (or a confirmed miss when it was the last).
 2. Wait out Cloudflare's interstitial by polling the title
    (`discogs_marketplace._await_settled_title` pattern); a challenge title
-   that never settles raises `BotDetectedError`. Any other ≥400 status also
-   raises `BotDetectedError` — on this site a non-404 error page is the
-   Cloudflare wall, not a product answer.
+   that never settles raises `BotDetectedError`. Any other ≥400 status
+   whose settled page fails the identity check also raises
+   `BotDetectedError` — on this site a non-404 error page is the Cloudflare
+   wall, not a product answer. A page that *passes* the identity check is
+   parsed whatever the status says: a cleared challenge reloads the real
+   page while `goto()`'s response object still holds the interstitial's 403.
 3. Identity check: the settled `<title>` must start with the release's
-   artist and then the leading words of its title (both sides normalized).
-   A mismatch means the slug resolved to some other product — a miss, never
-   a parse attempt against the wrong page.
+   artist and then *every* word of its title, in order (both sides
+   normalized). Wrong-product landings are an expected case, so a bounded
+   prefix is not enough — "Greatest Hits Volume One" must not pass on a
+   "Volume Two" page; the one relaxation is the documented mid-word
+   truncation of live page titles, which may shorten the final compared
+   word — except when the fragment is a word the format suffix itself
+   starts with ("on", "vinyl"), which is what a page for a *shorter*,
+   different title looks like. A mismatch means the slug resolved to some
+   other product — a miss, never a parse attempt against the wrong page.
 4. Extract price signals in one `page.evaluate` round trip: every
    `script[type="application/ld+json"]` text plus the OG price metas.
    Parsing happens in Python:
    - JSON-LD nodes of `@type` `Product` (top-level, in lists, or under
-     `@graph`), their `offers` normalized across `Offer`, offer lists, and
+     `@graph`), **scoped to this release**: a named node is read only when
+     its name describes the release (bare title or "Artist - Title", same
+     all-words rule as the identity check); a nameless node is kept. A
+     recommendation carousel emitting Product JSON-LD of its own must never
+     supply the cheapest listing.
+   - Accepted nodes' `offers` normalized across `Offer`, offer lists, and
      `AggregateOffer` (`lowPrice`).
    - Offers whose `availability` says `OutOfStock`/`SoldOut`/`Discontinued`
-     are dropped; `InStock`/`PreOrder`/absent are kept (Rough Trade trades
-     heavily in pre-orders).
+     are counted as confirmed-unpurchasable; `InStock`/`PreOrder`/absent are
+     kept (Rough Trade trades heavily in pre-orders).
    - Prices must be finite and positive (`discogs_marketplace._finite_price`
      rationale — `float()` accepts NaN/inf text).
-   - Fallback when no Product JSON-LD parses: the OG meta pair alone.
+   - Fallback when the JSON-LD produced no answer: the OG meta pair alone.
 5. Outcomes, in the caller's terms:
    - usable offers → listings sorted cheapest-first, each
      `{url, price, shipping: None, currency, condition: None}`;
      currency from the signal, defaulting to USD on the `en-us` storefront.
-   - signals present but every offer out of stock → `[]` (the site answered:
-     nothing purchasable).
+   - every observed offer confirmed unpurchasable, none half-parsed → `[]`
+     (the site answered: nothing purchasable). An *available* offer whose
+     price could not be read is a half-parsed page, not a confirmed miss —
+     with no OG rescue it raises rather than clearing a stored price.
    - identity check passed but no price signal at all → `RuntimeError`
      naming the URL and title (markup/assumption drift, must stay loud).
 

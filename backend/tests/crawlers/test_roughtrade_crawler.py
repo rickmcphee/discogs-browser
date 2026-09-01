@@ -28,6 +28,7 @@ import roughtrade
 from roughtrade import (
     Crawler,
     _finite_price,
+    _name_matches,
     _offer_listing,
     _product_nodes,
     _slugify,
@@ -146,6 +147,39 @@ def test_title_matches_rejects_other_title():
 
 def test_title_matches_rejects_blank_page_title():
     assert not Crawler._title_matches("", "Sample Artist", "Sample Album")
+
+
+def test_title_matches_requires_every_title_word():
+    # Wrong-product landings are an expected case, so a bounded prefix is not
+    # enough -- sibling releases share their leading words.
+    assert not Crawler._title_matches(
+        "Sample Artist - Greatest Hits Volume Two on Vinyl LP | Rough Trade",
+        "Sample Artist", "Greatest Hits Volume One",
+    )
+    assert Crawler._title_matches(
+        "Sample Artist - Greatest Hits Volume One on Vinyl LP | Rough Trade",
+        "Sample Artist", "Greatest Hits Volume One",
+    )
+
+
+def test_title_matches_does_not_read_the_format_suffix_as_a_truncation():
+    # "one".startswith("on") -- but that "on" is the format suffix of a page
+    # for the *shorter* title "Greatest Hits", a different release.
+    assert not Crawler._title_matches(
+        "Sample Artist - Greatest Hits on Vinyl LP | Rough Trade",
+        "Sample Artist", "Greatest Hits One",
+    )
+
+
+def test_name_matches_accepts_bare_title_and_artist_title_shapes():
+    assert _name_matches("Sample Album", "Sample Artist", "Sample Album")
+    assert _name_matches("Sample Album - Deluxe Edition", "Sample Artist", "Sample Album")
+    assert _name_matches("Sample Artist - Sample Album", "Sample Artist", "Sample Album")
+
+
+def test_name_matches_rejects_other_products():
+    assert not _name_matches("Other Album", "Sample Artist", "Sample Album")
+    assert not _name_matches("Sample Artist - Other Album", "Sample Artist", "Sample Album")
 
 
 def test_finite_price_parses_strings_and_numbers():
@@ -273,7 +307,9 @@ async def test_search_returns_offers_cheapest_first(browser_page):
     results = await Crawler().search(RELEASE, page)
 
     # The $49.99 signed edition is out of stock and dropped; the carousel's
-    # $9.99 must never appear -- visible text is not a price source.
+    # $9.99 text and its "Other Album" Product JSON-LD node at $5.99 must
+    # never appear -- visible text is not a price source, and a Product node
+    # named for a different release is not this product's.
     assert [r["price"] for r in results] == [27.99, 31.99]
     assert results[0] == {
         "url": PRODUCT_URL,
@@ -351,6 +387,26 @@ async def test_search_raises_when_every_available_offer_is_priceless(browser_pag
         '<script type="application/ld+json">'
         '{"@type": "Product", "name": "Sample Album",'
         ' "offers": [{"@type": "Offer", "price": "TBC", "priceCurrency": "USD",'
+        ' "availability": "https://schema.org/InStock"}]}'
+        "</script></head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    with pytest.raises(RuntimeError, match="price signals"):
+        await Crawler().search(RELEASE, page)
+
+
+async def test_search_raises_when_an_out_of_stock_page_also_half_parses(browser_page):
+    # An out-of-stock offer next to an available-but-unpriceable one is not a
+    # confirmed miss: [] here would clear a stored price off a page that was
+    # only half-parsed, without recording a site failure.
+    html = (
+        "<html><head>"
+        "<title>Sample Artist - Sample Album on Vinyl LP | Rough Trade</title>"
+        '<script type="application/ld+json">'
+        '{"@type": "Product", "name": "Sample Album", "offers": ['
+        '{"@type": "Offer", "price": "27.99", "priceCurrency": "USD",'
+        ' "availability": "https://schema.org/OutOfStock"},'
+        '{"@type": "Offer", "price": "TBC", "priceCurrency": "USD",'
         ' "availability": "https://schema.org/InStock"}]}'
         "</script></head><body></body></html>"
     )

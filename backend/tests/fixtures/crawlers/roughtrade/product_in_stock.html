@@ -22,6 +22,19 @@
     {
       "@context": "https://schema.org",
       "@type": "Product",
+      "name": "Other Album",
+      "offers": {
+        "@type": "Offer",
+        "price": "5.99",
+        "priceCurrency": "USD",
+        "availability": "https://schema.org/InStock"
+      }
+    }
+  </script>
+  <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "Product",
       "name": "Sample Album",
       "image": "https://static.roughtrade.com/sample-album.jpg",
       "offers": [
@@ -56,7 +69,8 @@
     <p class="price">$31.99</p>
   </main>
   <!-- Recommendation carousel: visible dollar amounts, including one cheaper
-       than every real offer. The crawler must never read these. -->
+       than every real offer, and (above) its own Product JSON-LD node named
+       "Other Album" at $5.99. The crawler must never read either. -->
   <aside class="recommendations">
     <div class="card">Other Artist - Other Album <span>$9.99</span></div>
     <div class="card">Boxset Artist - Big Box <span>$1,499.00</span></div>

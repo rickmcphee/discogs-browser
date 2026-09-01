@@ -73,6 +73,58 @@ def _norm_words(text: str) -> list:
     return _slugify(text).split("-") if text else []
 
 
+# Words the page-title format suffix ("on Vinyl LP | Rough Trade",
+# "- (Vinyl LP)", "on CD") begins with after normalization. They must never
+# pass as a mid-word truncation fragment: the name ending cleanly right where
+# the suffix starts is exactly what a *shorter* product name looks like, so
+# "Greatest Hits One" would otherwise match a "Greatest Hits on Vinyl LP"
+# page ("one".startswith("on")) -- a different release.
+_SUFFIX_FRAGMENT_STOP = frozenset({"on", "vinyl", "lp", "cd"})
+
+
+def _words_match_prefix(expected: list, got: list) -> bool:
+    """Every expected word, in order, at the start of `got`.
+
+    All of them, not a fixed-length prefix -- "Greatest Hits Volume One" must
+    not match a page for "Greatest Hits Volume Two". The one relaxation is
+    the documented mid-word truncation of live page titles and product names
+    ("...Start Your Ear Off R on Vinyl LP"): a compared word may be a leading
+    fragment of the expected word, and that ends the comparison as a match --
+    unless the fragment is a word the format suffix itself starts with, which
+    is what a shorter, different product name looks like.
+    """
+    if not expected or not got:
+        return False
+    for i, word in enumerate(expected):
+        if i >= len(got):
+            return False
+        if got[i] == word:
+            continue
+        return (
+            bool(got[i])
+            and got[i] not in _SUFFIX_FRAGMENT_STOP
+            and word.startswith(got[i])
+        )
+    return True
+
+
+def _name_matches(name: str, artist: str, title: str) -> bool:
+    """Does a Product node's name describe this release?
+
+    Accepts the two shapes a product name plausibly takes -- the bare title,
+    or "{Artist} - {Title}" -- under the same all-words-prefix rule as the
+    page title check.
+    """
+    name_words = _norm_words(name)
+    title_words = _norm_words(title)
+    if _words_match_prefix(title_words, name_words):
+        return True
+    artist_words = _norm_words(artist)
+    if artist_words and name_words[: len(artist_words)] == artist_words:
+        return _words_match_prefix(title_words, name_words[len(artist_words):])
+    return False
+
+
 def _product_nodes(ldjson_texts: list) -> list:
     """Every schema.org Product node across the page's JSON-LD scripts --
     top-level objects, list roots, and @graph members alike."""
@@ -188,20 +240,20 @@ class Crawler:
         """Did the slug land on this release's product page?
 
         Confirmed page titles start "{Artist} - {Title}..." with the product
-        name sometimes truncated mid-word, so the check is: artist words as a
-        prefix, then the leading title words (up to three -- enough to reject
-        a different product, short enough to survive both the page title's own
-        truncation and Rough Trade suffixing edition text onto the name).
+        name sometimes truncated mid-word, so the check is: artist words as an
+        exact prefix, then *every* release-title word in order (see
+        _words_match_prefix -- wrong-product landings are an expected case
+        here, so "Volume One" must not pass on a "Volume Two" page; only the
+        documented mid-word truncation relaxes the final word).
         """
         page_words = _norm_words(page_title)
         artist_words = _norm_words(artist)
-        title_words = _norm_words(title)[:3]
+        title_words = _norm_words(title)
         if not page_words or not artist_words or not title_words:
             return False
         if page_words[: len(artist_words)] != artist_words:
             return False
-        rest = page_words[len(artist_words):]
-        return rest[: len(title_words)] == title_words
+        return _words_match_prefix(title_words, page_words[len(artist_words):])
 
     async def _settled_title(self, page) -> str:
         # Cloudflare's interstitial always renders first, so a title read at
@@ -255,7 +307,7 @@ class Crawler:
                 # challenge reloads the real page while goto's response object
                 # still holds the interstitial's 403.
 
-                listings = await self._read_listings(page, url)
+                listings = await self._read_listings(page, url, artist, title)
                 if listings is None:
                     raise RuntimeError(
                         f"no Product JSON-LD or price meta recognised on {url} "
@@ -282,54 +334,66 @@ class Crawler:
             except Exception:
                 pass
 
-    async def _read_listings(self, page, url: str) -> Optional[list]:
+    async def _read_listings(self, page, url: str, artist: str, title: str) -> Optional[list]:
         """Listings from the page's machine-readable signals, cheapest first.
 
-        None means no signal was recognised at all (the caller raises);
-        [] means signals were read and nothing is purchasable. Visible price
-        text is never scraped -- a free-text amount on a product page is as
-        likely to belong to a recommendation carousel as to the product
+        None means no confirmed answer was read (the caller raises);
+        [] means every observed offer is confirmed unpurchasable. Visible
+        price text is never scraped -- a free-text amount on a product page
+        is as likely to belong to a recommendation carousel as to the product
         (amazon.py's buybox scoping exists for exactly that reason).
         """
         signals = await page.evaluate(_EXTRACT_SIGNALS_JS)
+
+        # A recommendation carousel can emit Product JSON-LD of its own, and
+        # an unscoped read would let its cheapest offer become this release's
+        # price -- the exact trap this crawler exists to avoid. A node with a
+        # name is read only when that name describes this release; a nameless
+        # node is kept (carousel entries carry names, the page's own product
+        # node is the plausible nameless one).
         listings = []
-        saw_signal = False
+        unavailable = 0
+        unparsed_available = 0
         for node in _product_nodes(signals.get("ldjson") or []):
+            name = node.get("name")
+            if isinstance(name, str) and name.strip() and not _name_matches(name, artist, title):
+                continue
             for offer in _iter_offers(node.get("offers")):
-                # A signal is an offer actually *understood* -- priced, or
-                # deliberately marked unpurchasable. An available offer whose
-                # price cannot be read counts as neither: if no offer on the
-                # page does better, the crawl raises rather than reporting a
-                # confirmed miss off a page it only half-parsed.
                 availability = offer.get("availability")
                 if isinstance(availability, str) and _UNAVAILABLE_RE.search(availability):
-                    saw_signal = True
+                    unavailable += 1
                     continue
                 listing = _offer_listing(offer, url)
                 if listing:
-                    saw_signal = True
                     listings.append(listing)
+                else:
+                    unparsed_available += 1
 
-        if not listings and not saw_signal:
-            meta = signals.get("meta") or {}
-            price = next(
-                (p for p in (_finite_price(meta.get(k)) for k in _META_PRICE_PROPS) if p),
-                None,
+        if listings:
+            listings.sort(key=lambda x: x["price"])
+            return listings
+
+        # No priced offer. [] is only a confirmed miss when every observed
+        # offer was deliberately unpurchasable -- an available offer whose
+        # price could not be read means the page was only half-parsed, and
+        # that must reach the caller as a failure, not clear a stored price.
+        if unavailable and not unparsed_available:
+            return []
+
+        meta = signals.get("meta") or {}
+        price = next(
+            (p for p in (_finite_price(meta.get(k)) for k in _META_PRICE_PROPS) if p),
+            None,
+        )
+        if price is not None:
+            currency = next(
+                (meta.get(k) for k in _META_CURRENCY_PROPS if meta.get(k)), None
             )
-            if price is not None:
-                saw_signal = True
-                currency = next(
-                    (meta.get(k) for k in _META_CURRENCY_PROPS if meta.get(k)), None
-                )
-                listings.append({
-                    "url": url,
-                    "price": price,
-                    "shipping": None,
-                    "currency": currency or "USD",
-                    "condition": None,
-                })
-
-        if not saw_signal:
-            return None
-        listings.sort(key=lambda x: x["price"])
-        return listings
+            return [{
+                "url": url,
+                "price": price,
+                "shipping": None,
+                "currency": currency or "USD",
+                "condition": None,
+            }]
+        return None
