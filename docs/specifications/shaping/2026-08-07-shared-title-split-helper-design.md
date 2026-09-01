@@ -265,6 +265,27 @@ flag for each, which is the relocate-the-divergence outcome this doc's own
 Records `onetwothreefourgo.py` as a documented exception, not a bug to fix
 into conformance — the same framing the earlier amendments use.
 
+**Ninth amendment (2026-08-30, branch
+`claude/hammerheart-indiem-crawler-tzlrd0`):** `backend/crawlers/hammerheart.py`
+is not an exception to the split contract — like `numerogroup.py` and
+`realgonemusic.py` it never purports to split, trusting `vendor` (which on
+this store is always the artist, in clean mixed case) unconditionally. What
+it diverges from is the *other* helper this doc scopes out:
+`strip_vendor_prefix`, the exact-case exact-`" - "` strip its Non-goals
+section leaves untouched. Hammerheart's store re-writes the artist into most
+titles in ALL CAPS (`TROUBLE - Psalm 9 / Black Vinyl LP` against vendor
+`Trouble`), puts a tab before the dash on two products, and separates with
+`" / "` on one — so the exact-case helper strips only a fraction of the
+titles that need it, and the crawler carries a local case-insensitive
+per-product regex (`^{re.escape(vendor)}\s*[-/]\s+`) instead. That variant is
+deliberately not folded into the shared helper: exact-case, exact-separator
+is the right conservative default for `strip_vendor_prefix`'s wide caller
+set, where `vendor` is not always an artist and a looser match could eat a
+title that merely begins with the vendor's name — a case-insensitive strip
+with a separator class is only safe where a store's `vendor` is verified to
+be the artist on every product, which is a per-site finding, not a property
+of the helper.
+
 
 ## Problem
 
@@ -411,8 +432,8 @@ Press) crawlers onto the shared helper in one pass.
 ## Non-goals
 
 - Not touching `strip_vendor_prefix` — different contract (trust vendor,
-  strip an exact known prefix), different caller set (~30 exact-prefix
-  callers per the existing crawler survey), unrelated to this change.
+  strip an exact known prefix), different caller set (the exact-prefix
+  callers in the existing crawler survey), unrelated to this change.
 - Not centralizing variant filtering or pre-order detection — those still
   genuinely diverge per site; see the design doc's existing reasoning.
 - Not adding a generic config-driven crawler (already tracked as a separate,
