@@ -1027,6 +1027,57 @@ async def test_search_raises_on_an_explicitly_non_offer_payload(browser_page):
         await Crawler().search(RELEASE, page)
 
 
+async def test_search_reads_a_single_object_graph(browser_page):
+    # JSON-LD permits @graph to hold one node object, not only an array;
+    # ignoring it would drop this product's own node.
+    html = (
+        _PAGE_HEAD
+        + _ld('{"@graph": {"@type": "Product", "name": "Sample Album",'
+              ' "offers": {"@type": "Offer", "price": "27.99", "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/InStock"}}}')
+        + "</head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    results = await Crawler().search(RELEASE, page)
+    assert [r["price"] for r in results] == [27.99]
+
+
+async def test_search_reads_iri_encoded_types(browser_page):
+    # @type is an IRI: the expanded and compact encodings are valid ways to
+    # spell Product and AggregateOffer, and the compact AggregateOffer must
+    # still unlock the lowPrice reading.
+    html = (
+        _PAGE_HEAD
+        + _ld('{"@type": "https://schema.org/Product", "name": "Sample Album",'
+              ' "offers": {"@type": "schema:AggregateOffer", "lowPrice": "24.50",'
+              ' "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/InStock"}}')
+        + "</head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    results = await Crawler().search(RELEASE, page)
+    assert [r["price"] for r in results] == [24.50]
+
+
+async def test_search_raises_when_a_stale_unavailable_meta_meets_half_parsed_jsonld(browser_page):
+    # An in-stock JSON-LD offer whose price could not be read is contrary
+    # evidence: a stale unavailable meta must not turn the page into a
+    # confirmed miss that clears the stored price.
+    html = (
+        _PAGE_HEAD
+        + _ld('{"@type": "Product", "name": "Sample Album",'
+              ' "offers": {"@type": "Offer", "price": "TBC", "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/InStock"}}')
+        + '<meta property="og:price:amount" content="24.99" />'
+        + '<meta property="og:price:currency" content="USD" />'
+        + '<meta property="og:availability" content="outofstock" />'
+        + "</head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    with pytest.raises(RuntimeError, match="price signals"):
+        await Crawler().search(RELEASE, page)
+
+
 async def test_search_reads_array_valued_node_urls(browser_page):
     # A carousel node hiding its url in an array must still be rejected; a
     # node whose array names this product's path is accepted.

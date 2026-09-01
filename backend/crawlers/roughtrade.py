@@ -281,6 +281,14 @@ def _name_matches(name: str, artist: str, title: str) -> bool:
     return False
 
 
+def _type_tail(t: str) -> str:
+    """The bare type name of a JSON-LD @type value -- "Product" from
+    "Product", "schema:Product", or "https://schema.org/Product" alike:
+    @type is an IRI, and the compact and expanded encodings are all valid
+    ways for the live markup to spell the same type."""
+    return t.rsplit("/", 1)[-1].rsplit(":", 1)[-1]
+
+
 def _product_nodes(ldjson_texts: list) -> tuple:
     """(Product nodes, malformed script count) across the page's JSON-LD --
     top-level objects, list roots, and @graph members alike. A script that
@@ -300,13 +308,18 @@ def _product_nodes(ldjson_texts: list) -> tuple:
             if not isinstance(root, dict):
                 continue
             graph = root.get("@graph")
+            if isinstance(graph, dict):
+                # JSON-LD permits a single node object here, not only a
+                # list -- ignoring it would drop this product's own node.
+                graph = [graph]
             candidates = [root] + (graph if isinstance(graph, list) else [])
             for node in candidates:
                 if not isinstance(node, dict):
                     continue
                 node_type = node.get("@type")
                 types = node_type if isinstance(node_type, list) else [node_type]
-                if any(t == "Product" for t in types if isinstance(t, str)):
+                if any(_type_tail(t) == "Product"
+                       for t in types if isinstance(t, str)):
                     nodes.append(node)
     return nodes, malformed
 
@@ -410,7 +423,7 @@ def _is_aggregate_offer(offer: dict) -> bool:
     node_type = offer.get("@type")
     types = node_type if isinstance(node_type, list) else [node_type]
     return any(
-        isinstance(t, str) and t.split("/")[-1] == "AggregateOffer" for t in types
+        isinstance(t, str) and _type_tail(t) == "AggregateOffer" for t in types
     )
 
 
@@ -931,7 +944,11 @@ class Crawler:
         # Both namespaces are read: a conflicting or unrecognised pair must
         # neither clear a price nor persist one -- it stays loud.
         if states == {"unavailable"}:
-            return []
+            # A confirmed miss only when the JSON-LD read was complete: a
+            # half-parsed *available* offer is contrary evidence, and a
+            # stale unavailable meta must not clear a price the JSON-LD
+            # says the page still sells for.
+            return None if unparsed_available else []
         if states != {"available"}:
             return None
         for amount_key, currency_key in _META_PAIRS:

@@ -249,7 +249,10 @@ is exactly what the caller does with it.
    `script[type="application/ld+json"]` text plus the OG price metas.
    Parsing happens in Python:
    - JSON-LD nodes of `@type` `Product` (top-level, in lists, or under
-     `@graph`), **scoped to this release** in order of evidence: a node
+     `@graph` — including the single-object `@graph` form, and with the
+     compact/expanded IRI encodings `schema:Product` /
+     `https://schema.org/Product` read as the same type),
+     **scoped to this release** in order of evidence: a node
      whose `url`/`@id` names this product's path is this page's product
      whatever it is called, one naming another path is not whatever it is
      called (the guard against a carousel node for a same-titled album by
@@ -280,7 +283,11 @@ is exactly what the caller does with it.
    - Fallback when the JSON-LD produced no answer: the OG price metas,
      read as namespace pairs (`product:price:*`, then `og:price:*`) so a
      stale currency from one namespace never attaches to the other's
-     amount.
+     amount. The fallback needs an availability meta to answer at all, and
+     an *unavailable* one confirms a miss only when the JSON-LD read was
+     complete — a half-parsed in-stock offer is contrary evidence, and a
+     stale unavailable meta must not clear a price the JSON-LD says the
+     page still sells for (the crawl raises instead).
 5. Outcomes, in the caller's terms:
    - usable offers → listings sorted cheapest-first, each
      `{url, price, shipping: None, currency, condition: None}`;
