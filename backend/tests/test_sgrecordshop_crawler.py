@@ -233,7 +233,7 @@ async def test_crawl_catalog_sleeps_between_requests_using_configured_delay(monk
     async def fake_sleep(seconds):
         sleep_calls.append(seconds)
 
-    monkeypatch.setattr("crawlers.sgrecordshop.sleep", fake_sleep)
+    monkeypatch.setattr("catalog_http.sleep", fake_sleep)
     respx.get("https://www.sgrecordshop.com/c/2728/record-shop-metal", params={"so": "9", "af": "-10|-2003|-2", "page": "1"}).mock(
         return_value=httpx.Response(200, text=_METAL_HTML)
     )

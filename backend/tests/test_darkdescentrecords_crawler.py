@@ -95,7 +95,7 @@ def _variation_page_html(variations=_VARIATIONS_PAYLOAD):
 
 
 async def test_items_yields_single_row_for_simple_product():
-    items = await Crawler._items(_SIMPLE_PRODUCT, client=None, delay=0)
+    items = await Crawler._items(_SIMPLE_PRODUCT, client=None, delay=0, failure_limit=1)
     assert items == [{
         "artist": "Eldfödd",
         "title": "Risen from the Flames LP",
@@ -109,12 +109,12 @@ async def test_items_yields_single_row_for_simple_product():
 
 async def test_items_skips_unpurchasable_or_out_of_stock_simple_product():
     product = {**_SIMPLE_PRODUCT, "is_in_stock": False}
-    assert await Crawler._items(product, client=None, delay=0) == []
+    assert await Crawler._items(product, client=None, delay=0, failure_limit=1) == []
 
 
 async def test_items_skips_product_with_no_artist_source():
     product = {**_SIMPLE_PRODUCT, "name": "No Separator Here LP"}
-    assert await Crawler._items(product, client=None, delay=0) == []
+    assert await Crawler._items(product, client=None, delay=0, failure_limit=1) == []
 
 
 @respx.mock
@@ -123,7 +123,7 @@ async def test_items_fetches_variation_detail_for_variable_product():
         return_value=httpx.Response(200, text=_variation_page_html()))
 
     async with httpx.AsyncClient() as client:
-        items = await Crawler._items(_VARIABLE_PRODUCT, client=client, delay=0)
+        items = await Crawler._items(_VARIABLE_PRODUCT, client=client, delay=0, failure_limit=1)
 
     assert [i["title"] for i in items] == [
         "Trepanacion LP — Black",

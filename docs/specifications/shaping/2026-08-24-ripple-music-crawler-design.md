@@ -169,6 +169,10 @@ Registration is automatic via `main.py`'s `seed_bundled_crawlers()` glob over
 because this crawler paces its own request with a module-local `sleep`
 rather than going through `shopify_catalog.iter_products()`, so without that
 entry its tests would sleep `crawl_delay_seconds` (default 30s) for real.
+*(2026-09-01: pacing and retries now come from
+`catalog_http.get_with_retry()` — the conftest entry survives only for its
+`load_config` patch; the module-local `sleep` binding is gone. See
+[`2026-09-01-stock-crawl-timeout-retry-design.md`](2026-09-01-stock-crawl-timeout-retry-design.md).)*
 
 **Still no `bigcartel_catalog.py` helper.** The Asbestos doc's 2026-08-23
 amendment argued the abstraction stays premature because the crawlers

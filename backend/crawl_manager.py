@@ -817,7 +817,7 @@ class CrawlManager:
             if scope != "wishlist":
                 try:
                     fields = discogs.fetch_collection_fields(oauth_token, oauth_secret, username)
-                except httpx.HTTPStatusError:
+                except discogs.HTTPStatusError:
                     broadcast({"status": "sync_error", "error": "Discogs request failed"})
                     return
                 price_field_id = next((fid for fid, name in fields.items() if name.lower() == "price"), None)
@@ -1264,6 +1264,15 @@ class CrawlManager:
                 await self._record_site_result(crawler._db_id, succeeded=True)
                 with get_app_pool().connection() as conn:
                     item_keys = replace_stock_items(conn, crawler._db_id, items)
+                    if item_keys is None:
+                        # The kind gate inside replace_stock_items() dropped
+                        # this write -- register_crawler() converted the
+                        # crawler to `release` mid-crawl -- and already
+                        # logged why. Counting these items toward
+                        # total_synced or broadcasting progress for them
+                        # would report a snapshot that was never persisted.
+                        conn.rollback()
+                        continue
                     update_crawler_last_run(conn, crawler._db_id)
                     for item_key in item_keys:
                         enqueue_crawl_queue_for_stock_item(conn, item_key)

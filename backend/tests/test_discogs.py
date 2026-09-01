@@ -4,6 +4,7 @@ import httpx
 import config
 from authlib.oauth1.rfc5849 import client_auth as oauth1_client_auth
 from discogs import (
+    HTTPStatusError,
     get_identity,
     fetch_collection_fields,
     iter_collection_pages,
@@ -93,7 +94,7 @@ def test_get_identity_raises_on_bad_token():
     respx.get("https://api.discogs.com/oauth/identity").mock(
         return_value=httpx.Response(401, json={"message": "Invalid token."})
     )
-    with pytest.raises(httpx.HTTPStatusError):
+    with pytest.raises(HTTPStatusError):
         get_identity("badtoken", "badtoken-secret")
 
 

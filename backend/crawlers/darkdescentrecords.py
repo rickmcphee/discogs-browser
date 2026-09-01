@@ -1,12 +1,11 @@
 import html
 import json
-import random
 import re
-from asyncio import sleep
 from typing import AsyncIterator, Optional
 
 import httpx
 
+from catalog_http import get_with_retry
 from config import load_config
 from crawl_progress import report_detail, report_page
 
@@ -34,16 +33,16 @@ class Crawler:
     async def crawl_catalog(self) -> AsyncIterator[dict]:
         cfg = load_config()
         delay = float(cfg.get("crawl_delay_seconds", 30))
+        failure_limit = int(cfg.get("consecutive_failure_limit", 10))
 
         async with httpx.AsyncClient(base_url=self.base_url, follow_redirects=True) as client:
             page = 1
             while True:
-                await sleep(random.uniform(delay * 0.5, delay))
-                r = await client.get(
-                    "/wp-json/wc/store/v1/products",
+                r = await get_with_retry(
+                    client, "/wp-json/wc/store/v1/products",
                     params={"category": _CATEGORY_SLUG, "per_page": _PER_PAGE, "page": page},
+                    delay=delay, failure_limit=failure_limit,
                 )
-                r.raise_for_status()
                 products = r.json()
                 if not products:
                     break
@@ -66,7 +65,7 @@ class Crawler:
                 fetched = 0
                 for product in products:
                     will_fetch = self._needs_detail_fetch(product)
-                    page_items.extend(await self._items(product, client, delay))
+                    page_items.extend(await self._items(product, client, delay, failure_limit))
                     if will_fetch:
                         fetched += 1
                         await report_detail(fetched, to_fetch, label)
@@ -79,7 +78,8 @@ class Crawler:
                 page += 1
 
     @classmethod
-    async def _items(cls, product: dict, client: httpx.AsyncClient, delay: float) -> list:
+    async def _items(cls, product: dict, client: httpx.AsyncClient, delay: float,
+                     failure_limit: int) -> list:
         if not (product.get("is_purchasable") and product.get("is_in_stock")):
             return []
 
@@ -91,9 +91,7 @@ class Crawler:
         currency = (product.get("prices") or {}).get("currency_code", "USD")
 
         if cls._needs_detail_fetch(product):
-            await sleep(random.uniform(delay * 0.5, delay))
-            r = await client.get(url)
-            r.raise_for_status()
+            r = await get_with_retry(client, url, delay=delay, failure_limit=failure_limit)
             return cls._variable_items(r.text, product, artist, album, url, currency)
 
         return [{

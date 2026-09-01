@@ -1,11 +1,10 @@
 import html
-import random
 import re
-from asyncio import sleep
 from typing import AsyncIterator
 
 import httpx
 
+from catalog_http import get_with_retry
 from config import load_config
 from crawl_progress import report_page
 from logging_config import get_logger
@@ -58,15 +57,17 @@ class Crawler:
     async def crawl_catalog(self) -> AsyncIterator[dict]:
         cfg = load_config()
         delay = float(cfg.get("crawl_delay_seconds", 30))
+        failure_limit = int(cfg.get("consecutive_failure_limit", 10))
         seen_pids = set()
         pages_fetched = 0
 
         async with httpx.AsyncClient(base_url=self.base_url, follow_redirects=True) as client:
             for category_qs in self._CATEGORIES:
                 category_path, qs = category_qs.split("?", 1)
-                await sleep(random.uniform(delay * 0.5, delay))
-                r = await client.get(f"{category_path}?{qs}&page=1")
-                r.raise_for_status()
+                r = await get_with_retry(
+                    client, f"{category_path}?{qs}&page=1",
+                    delay=delay, failure_limit=failure_limit,
+                )
                 m = _SEARCH_ID_RE.search(r.text)
                 if not m:
                     log.warning("[sgrecordshop] no SearchId on %s, skipping category", category_path)
@@ -75,12 +76,11 @@ class Crawler:
 
                 page, total_pages = 1, 1
                 while page <= total_pages:
-                    await sleep(random.uniform(delay * 0.5, delay))
-                    r = await client.get(
-                        f"/gsrp/{page}?{qs}&page={page}",
+                    r = await get_with_retry(
+                        client, f"/gsrp/{page}?{qs}&page={page}",
                         headers={"X-Search-Guid": search_id},
+                        delay=delay, failure_limit=failure_limit,
                     )
-                    r.raise_for_status()
                     payload = r.json()["data"]
                     total_pages = int(payload["totalPages"])
                     items = self._parse_items(payload["data"])
