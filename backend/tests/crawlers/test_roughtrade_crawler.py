@@ -466,6 +466,9 @@ def test_offer_listing_skips_unavailable():
         {},
         "",
         [],
+        # A present but unrecognised state must not pass as purchasable.
+        "unknown",
+        "https://schema.org/InStoreOnly",
     ):
         offer = {"price": "31.99", "priceCurrency": "USD", "availability": availability}
         assert _offer_listing(offer, PRODUCT_URL) is None
@@ -644,6 +647,17 @@ async def test_search_meta_fallback_requires_an_availability_signal(browser_page
     oos = base + '<meta property="og:availability" content="oos" /></head><body></body></html>'
     page = _FakePage(browser_page, {PRODUCT_URL: (oos, 200)})
     assert await Crawler().search(RELEASE, page) == []
+
+    # Conflicting namespaces must neither clear a price nor persist one.
+    conflicted = (
+        base
+        + '<meta property="product:availability" content="outofstock" />'
+        + '<meta property="og:availability" content="instock" />'
+        + "</head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (conflicted, 200)})
+    with pytest.raises(RuntimeError, match="price signals"):
+        await Crawler().search(RELEASE, page)
 
 
 async def test_search_raises_when_a_jsonld_script_is_malformed(browser_page):

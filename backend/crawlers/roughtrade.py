@@ -33,6 +33,13 @@ _SIGNALS_TIMEOUT_MS = 5_000
 # what a wantlist watcher wants to see.
 _UNAVAILABLE_RE = re.compile(r"(outofstock|soldout|discontinued)\s*$", re.IGNORECASE)
 
+# The purchasable schema.org availability states, as normalized IRI tails.
+# Anything present that is neither here nor unavailable is ambiguous.
+_AVAILABLE_TAILS = frozenset({
+    "instock", "preorder", "presale", "backorder", "limitedavailability",
+    "onlineonly",
+})
+
 # Amount and currency read as namespace pairs, never mixed across them: a
 # valid og: amount next to a stale product: currency must not combine into a
 # price in the wrong currency.
@@ -354,7 +361,15 @@ def _offer_availability(offer: dict) -> str:
         if not isinstance(item, str) or not item.strip():
             flags.add("junk")
             continue
-        flags.add("unavailable" if _UNAVAILABLE_RE.search(item) else "available")
+        tail = re.sub(r"[^a-z]", "", item.rsplit("/", 1)[-1].lower())
+        if _UNAVAILABLE_RE.search(item):
+            flags.add("unavailable")
+        elif tail in _AVAILABLE_TAILS:
+            flags.add("available")
+        else:
+            # A present but unrecognised state ("unknown", "InStoreOnly")
+            # must not pass as purchasable -- only whitelisted states do.
+            flags.add("junk")
     if flags == {"unavailable"}:
         return "unavailable"
     if flags == {"available"}:
@@ -753,20 +768,23 @@ class Crawler:
         # requires a machine-readable availability meta too: unavailable is a
         # confirmed miss, available unlocks the price pairs, and absent or
         # unrecognised means the metas cannot answer (the caller raises).
-        meta_availability = None
+        states = set()
         for key in ("product:availability", "og:availability"):
             value = meta.get(key)
-            if not (isinstance(value, str) and value.strip()):
+            if value is None:
                 continue
-            token = re.sub(r"[^a-z]", "", value.lower())
+            token = re.sub(r"[^a-z]", "", value.lower()) if isinstance(value, str) else ""
             if token in ("instock", "available", "preorder", "presale", "backorder"):
-                meta_availability = "available"
+                states.add("available")
             elif token in ("oos", "outofstock", "soldout", "discontinued", "unavailable"):
-                meta_availability = "unavailable"
-            break
-        if meta_availability == "unavailable":
+                states.add("unavailable")
+            else:
+                states.add("ambiguous")
+        # Both namespaces are read: a conflicting or unrecognised pair must
+        # neither clear a price nor persist one -- it stays loud.
+        if states == {"unavailable"}:
             return []
-        if meta_availability != "available":
+        if states != {"available"}:
             return None
         for amount_key, currency_key in _META_PAIRS:
             price = _finite_price(meta.get(amount_key))
