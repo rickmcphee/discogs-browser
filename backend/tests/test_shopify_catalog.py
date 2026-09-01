@@ -40,7 +40,7 @@ async def test_iter_products_uses_configured_crawl_delay_seconds(tmp_config_dir,
     async def fake_sleep(seconds):
         sleep_calls.append(seconds)
 
-    monkeypatch.setattr("shopify_catalog.sleep", fake_sleep)
+    monkeypatch.setattr("catalog_http.sleep", fake_sleep)
     respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(return_value=_page_response([]))
     [p async for p in iter_products("https://example.myshopify.test", "vinyl")]
     assert sleep_calls
@@ -200,7 +200,7 @@ async def test_iter_products_logs_429_response_headers_at_debug_level(tmp_config
     respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(
         return_value=httpx.Response(429, headers={"Retry-After": "5", "X-Shopify-Shop-Api-Call-Limit": "1/40"})
     )
-    with caplog.at_level("DEBUG", logger="shopify_catalog"):
+    with caplog.at_level("DEBUG", logger="catalog_http"):
         with pytest.raises(httpx.HTTPStatusError):
             [p async for p in iter_products("https://example.myshopify.test", "vinyl")]
     debug_records = [r for r in caplog.records if r.levelname == "DEBUG" and "429" in r.message]
