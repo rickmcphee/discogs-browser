@@ -1139,6 +1139,17 @@ async def test_search_raises_when_an_available_meta_contradicts_sold_out_jsonld(
     with pytest.raises(RuntimeError, match="price signals"):
         await Crawler().search(RELEASE, page)
 
+    # One namespace agreeing with the offers does not neutralise the other
+    # namespace's explicit available -- any available signal keeps it loud.
+    split = contradicted.replace(
+        '<meta property="og:availability" content="instock" />',
+        '<meta property="product:availability" content="instock" />'
+        '<meta property="og:availability" content="oos" />',
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (split, 200)})
+    with pytest.raises(RuntimeError, match="price signals"):
+        await Crawler().search(RELEASE, page)
+
     agreeing = contradicted.replace(
         '<meta property="og:availability" content="instock" />',
         '<meta property="og:availability" content="oos" />',

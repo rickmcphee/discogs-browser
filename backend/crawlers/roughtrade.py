@@ -951,12 +951,14 @@ class Crawler:
                 return listings
             # [] is only a confirmed miss when every observed offer was
             # deliberately unpurchasable -- and no other machine signal
-            # contradicts it. Metas explicitly saying available beside
-            # all-unavailable offers must stay loud, not clear a stored
-            # price; an absent, unavailable, or unrecognised meta leaves
-            # the complete JSON-LD answer standing.
+            # contradicts it. *Any* meta explicitly saying available
+            # beside all-unavailable offers must stay loud, not clear a
+            # stored price -- including one namespace saying available
+            # while the other agrees with the offers; absent, unavailable,
+            # or unrecognised metas leave the complete JSON-LD answer
+            # standing.
             if unavailable:
-                return None if states == {"available"} else []
+                return None if "available" in states else []
 
         # An OG amount alone does not establish purchasability -- sold-out
         # pages commonly retain their price metadata -- so the fallback
