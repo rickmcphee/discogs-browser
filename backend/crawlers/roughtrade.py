@@ -143,14 +143,17 @@ _PAREN_FORMAT_RE = re.compile(
 
 
 def _page_format_after_core(candidate_raw: str, title_rest: str) -> Optional[str]:
-    """"vinyl", "cd", or None when the title's format signals are absent or
-    contradict each other (unknown stays accepted downstream).
+    """"vinyl", "cd", "conflict" when the signals contradict each other, or
+    None when they are absent (unknown stays accepted downstream).
 
     Read only from the positions *outside the matched product-name core* --
     its trailing marker and the parenthesised segments after it. Text inside
     the core is the release's own name, where "Live on Vinyl" or a title's
     literal "(Vinyl)" would put a spurious signal on its own CD page and
-    neutralise the guard.
+    neutralise the guard. Contradiction is kept distinct from absence: a
+    title claiming both formats gives no clean evidence of what was landed
+    on, and folding it into "no signal" would parse it for either release
+    format.
     """
     signals = set()
     # Trailing markers can end the matched core itself ("{Title} on CD") or
@@ -163,7 +166,9 @@ def _page_format_after_core(candidate_raw: str, title_rest: str) -> Optional[str
             signals.add("cd" if marker.group(1).lower() == "cd" else "vinyl")
     for m in _PAREN_FORMAT_RE.finditer(title_rest[len(candidate_raw):]):
         signals.add("cd" if m.group(1).lower() == "cd" else "vinyl")
-    return signals.pop() if len(signals) == 1 else None
+    if len(signals) == 1:
+        return signals.pop()
+    return "conflict" if signals else None
 
 
 def _format_conflicts(page_format: Optional[str], release_format: str) -> bool:
@@ -320,6 +325,10 @@ def _product_nodes(ldjson_texts: list) -> tuple:
             candidates = [root] + (graph if isinstance(graph, list) else [])
             for node in candidates:
                 if not isinstance(node, dict):
+                    # A malformed @graph member is as unreadable as a
+                    # malformed root -- it could have been this product's
+                    # node, so the page is half-parsed, not confirmable.
+                    malformed += 1
                     continue
                 node_type = node.get("@type")
                 types = node_type if isinstance(node_type, list) else [node_type]
@@ -668,11 +677,24 @@ class Crawler:
         candidates = cls._candidate_urls(release)
         return candidates[0] if candidates else f"{cls.base_url}/en-us"
 
-    @staticmethod
-    def _title_matches(page_title: str, artist: str, title: str,
+    @classmethod
+    def _title_matches(cls, page_title: str, artist: str, title: str,
                        release_format: str = "",
                        allow_truncation: bool = True) -> bool:
+        return cls._title_verdict(page_title, artist, title, release_format,
+                                  allow_truncation) == "match"
+
+    @staticmethod
+    def _title_verdict(page_title: str, artist: str, title: str,
+                       release_format: str = "",
+                       allow_truncation: bool = True) -> str:
         """Did the slug land on this release's product page?
+
+        "match", "no", or "ambiguous" -- the last when the name matched but
+        the title's format signals contradict each other, which gives no
+        clean evidence of what was landed on: parsing could persist a
+        cross-format price and a miss would clear one, so the caller goes
+        loud instead.
 
         Confirmed page titles are "{Artist} - {Title}[ format marker][ -
         edition/format segments]..." with literal " - " delimiters, so the
@@ -688,13 +710,13 @@ class Crawler:
         """
         artist_seg, sep, rest = page_title.partition(" - ")
         if not sep:
-            return False
+            return "no"
         artist_words = _norm_words(artist)
         if not artist_words or _norm_words(artist_seg) != artist_words:
-            return False
+            return "no"
         title_words = _norm_words(title)
         if not title_words:
-            return False
+            return "no"
         # The product name may itself contain the delimiter ("Sample Album -
         # Deluxe"), so every progressive join of the primary chunk's " - "
         # segments is a candidate core -- cutting at the first delimiter
@@ -710,10 +732,13 @@ class Crawler:
             candidate = _FORMAT_MARKER_RE.sub("", candidate_raw)
             if _title_core_matches(title_words, _norm_words(candidate),
                                    allow_truncation):
-                return not _format_conflicts(
-                    _page_format_after_core(candidate_raw, rest), release_format
-                )
-        return False
+                page_format = _page_format_after_core(candidate_raw, rest)
+                if page_format == "conflict":
+                    return "ambiguous"
+                if _format_conflicts(page_format, release_format):
+                    return "no"
+                return "match"
+        return "no"
 
     async def _settled_title(self, page) -> str:
         # Cloudflare's interstitial always renders first, so a title read at
@@ -786,10 +811,20 @@ class Crawler:
                 # spells out the full release title: a redirect anywhere
                 # else could be a sibling product whose full title *is* the
                 # cut prefix, which must read as a mismatch, not a cut.
-                if not self._title_matches(
+                verdict = self._title_verdict(
                     page_title, artist, title, release.get("format") or "",
                     allow_truncation=_landed_slug_is_full_title(landed_url, title),
-                ):
+                )
+                if verdict == "ambiguous":
+                    # The name matched but the title claims both formats:
+                    # parsing could persist a cross-format price and a miss
+                    # would clear one, so neither happens.
+                    raise RuntimeError(
+                        f"contradictory format signals in page title "
+                        f"{page_title!r} at {url} -- neither parseable nor "
+                        f"a recordable miss"
+                    )
+                if verdict != "match":
                     if status == 403:
                         # The known WAF status: Cloudflare's block page
                         # ("Attention Required") arrives as a 403, and a

@@ -239,8 +239,11 @@ is exactly what the caller does with it.
    ("on CD") and the parenthesised later segments ("- (CD)", "- (LP -
    Rainbow Road)") — are also compared against the release's own format: a
    vinyl release's slug resolving to the CD product (or vice versa) is a
-   different product and a miss, while absent or self-contradictory
-   signals, or an unrecognised release format, stay accepted. A mismatch
+   different product and a miss, while absent signals, or an unrecognised
+   release format, stay accepted. Signals that contradict *each other*
+   ("on CD" beside "(LP)") give no clean evidence of what was landed on —
+   parsing could persist a cross-format price and a miss would clear one —
+   so the crawl goes loud instead of either. A mismatch
    is a miss — never a parse attempt against
    the wrong page — but only with positive evidence of what was landed on: a
    not-found page, or a structurally valid Rough Trade *product* page for

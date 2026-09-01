@@ -1233,6 +1233,40 @@ async def test_read_listings_when_ready_polls_an_early_empty_result(browser_page
     assert [l["price"] for l in listings] == [31.99]
 
 
+async def test_search_raises_on_contradictory_title_format_signals(browser_page):
+    # A matched name whose title claims both formats ("on CD" beside
+    # "(LP)") gives no clean evidence of what was landed on: parsing could
+    # persist a cross-format price and a miss would clear one, so the page
+    # goes loud instead of either.
+    html = (
+        "<html><head>"
+        "<title>Sample Artist - Sample Album on CD - (LP) | Rough Trade</title>"
+        + _ld('{"@type": "Product", "name": "Sample Album",'
+              ' "offers": {"@type": "Offer", "price": "27.99", "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/InStock"}}')
+        + "</head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    with pytest.raises(RuntimeError, match="contradictory format"):
+        await Crawler().search(RELEASE, page)
+
+
+async def test_search_raises_on_a_malformed_graph_member(browser_page):
+    # A non-object member inside @graph is as unreadable as one at the
+    # root: it could have been this product's node, so an out-of-stock
+    # sibling in the same graph must not confirm a miss.
+    html = (
+        _PAGE_HEAD
+        + _ld('{"@graph": [null, {"@type": "Product", "name": "Sample Album",'
+              ' "offers": {"@type": "Offer", "price": "31.99", "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/OutOfStock"}}]}')
+        + "</head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    with pytest.raises(RuntimeError, match="price signals"):
+        await Crawler().search(RELEASE, page)
+
+
 async def test_search_raises_on_a_null_jsonld_beside_a_sold_out_product(browser_page):
     # A script parsing to null (or any non-object) is as unreadable as one
     # that does not parse: it could have been this product's node, so the
