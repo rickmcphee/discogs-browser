@@ -1140,6 +1140,62 @@ async def test_search_raises_on_a_zero_count_instock_contradiction(browser_page)
         await Crawler().search(RELEASE, page)
 
 
+async def test_search_raises_on_a_null_jsonld_beside_a_sold_out_product(browser_page):
+    # A script parsing to null (or any non-object) is as unreadable as one
+    # that does not parse: it could have been this product's node, so the
+    # page is half-parsed and must not become a confirmed miss.
+    html = (
+        _PAGE_HEAD
+        + _ld("null")
+        + _ld('{"@type": "Product", "name": "Sample Album",'
+              ' "offers": {"@type": "Offer", "price": "31.99", "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/OutOfStock"}}')
+        + "</head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    with pytest.raises(RuntimeError, match="price signals"):
+        await Crawler().search(RELEASE, page)
+
+
+async def test_search_never_reads_an_offer_catalog_as_an_offer(browser_page):
+    # "OfferCatalog" is not an Offer kind; a substring test would let its
+    # price-like fields through. With nothing else readable the page is
+    # half-parsed and raises.
+    html = (
+        _PAGE_HEAD
+        + _ld('{"@type": "Product", "name": "Sample Album",'
+              ' "offers": {"@type": "OfferCatalog", "price": "5.99",'
+              ' "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/InStock"}}')
+        + "</head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    with pytest.raises(RuntimeError, match="price signals"):
+        await Crawler().search(RELEASE, page)
+
+
+async def test_search_raises_when_an_unavailable_meta_contradicts_in_stock_jsonld(browser_page):
+    # The mirror of the sold-out-plus-available-meta case: complete,
+    # purchasable JSON-LD beside a meta explicitly saying unavailable is
+    # self-contradictory -- persisting the price could sell a sold-out
+    # page. An agreeing (or absent) meta leaves the listing standing.
+    base = (
+        _PAGE_HEAD
+        + _ld('{"@type": "Product", "name": "Sample Album",'
+              ' "offers": {"@type": "Offer", "price": "31.99", "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/InStock"}}')
+    )
+    contradicted = base + '<meta property="og:availability" content="oos" /></head><body></body></html>'
+    page = _FakePage(browser_page, {PRODUCT_URL: (contradicted, 200)})
+    with pytest.raises(RuntimeError, match="price signals"):
+        await Crawler().search(RELEASE, page)
+
+    agreeing = base + '<meta property="og:availability" content="instock" /></head><body></body></html>'
+    page = _FakePage(browser_page, {PRODUCT_URL: (agreeing, 200)})
+    results = await Crawler().search(RELEASE, page)
+    assert [r["price"] for r in results] == [31.99]
+
+
 async def test_search_raises_when_an_available_meta_contradicts_sold_out_jsonld(browser_page):
     # The mirror of the stale-unavailable-meta case: a complete JSON-LD
     # read saying sold out beside metas explicitly saying available is a

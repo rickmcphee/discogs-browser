@@ -299,7 +299,11 @@ is exactly what the caller does with it.
      stale unavailable meta must not clear a price the JSON-LD says the
      page still sells for (the crawl raises instead).
 5. Outcomes, in the caller's terms:
-   - usable offers → listings sorted cheapest-first, each
+   - usable offers → listings sorted cheapest-first — unless a meta
+     explicitly says unavailable, the mirror of the miss-side
+     contradiction: persisting a price the metas say is not for sale
+     could sell a sold-out page, so a self-contradictory page stays loud
+     in both directions. Each listing is
      `{url, price, shipping: None, currency, condition: None}`;
      currency from the signal, defaulting to USD on the `en-us` storefront.
      A present currency is trimmed and uppercased and must be a

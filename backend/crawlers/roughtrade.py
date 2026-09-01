@@ -306,6 +306,11 @@ def _product_nodes(ldjson_texts: list) -> tuple:
         roots = data if isinstance(data, list) else [data]
         for root in roots:
             if not isinstance(root, dict):
+                # Parsing to null/a string/a number is as unreadable as not
+                # parsing: it could have been this product's node, and
+                # silently dropping it would let an out-of-stock sibling
+                # turn a half-parsed page into a confirmed miss.
+                malformed += 1
                 continue
             graph = root.get("@graph")
             if isinstance(graph, dict):
@@ -394,17 +399,24 @@ def _node_scope(node: dict, product_path: str) -> str:
     return field_verdicts[0]
 
 
+_OFFER_TYPE_TAILS = frozenset({"Offer", "AggregateOffer", "OfferForPurchase",
+                               "OfferForLease"})
+
+
 def _is_offer_shaped(member) -> bool:
-    """A dict with no @type, or one whose @type names an Offer kind
-    (Offer, AggregateOffer, OfferForPurchase, ...). An explicit non-Offer
-    node ("Demand") must not have its price fields trusted."""
+    """A dict with no @type, or one whose @type names a supported Offer
+    kind by IRI tail. An explicit non-Offer node ("Demand") must not have
+    its price fields trusted -- and a substring test would let
+    "OfferCatalog" (or any drifted "...Offer..." coinage) pass as one."""
     if not isinstance(member, dict):
         return False
     node_type = member.get("@type")
     if node_type is None:
         return True
     types = node_type if isinstance(node_type, list) else [node_type]
-    return any(isinstance(t, str) and "Offer" in t for t in types)
+    return any(
+        isinstance(t, str) and _type_tail(t) in _OFFER_TYPE_TAILS for t in types
+    )
 
 
 def _iter_offers(offers) -> tuple:
@@ -954,6 +966,13 @@ class Crawler:
         # the page or the caller raises -- never a partial answer.
         if not unparsed_available:
             if listings:
+                if "unavailable" in states:
+                    # The mirror of the miss-side contradiction: a meta
+                    # explicitly saying unavailable beside complete,
+                    # purchasable JSON-LD makes the page self-contradictory
+                    # -- persisting the price could sell a sold-out page,
+                    # so it stays loud rather than listed.
+                    return None
                 listings.sort(key=lambda x: x["price"])
                 return listings
             # [] is only a confirmed miss when every observed offer was
