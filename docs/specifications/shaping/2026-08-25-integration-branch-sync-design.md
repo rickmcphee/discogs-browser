@@ -235,12 +235,18 @@ stays stuck and is reported next time round.
 
 The report names the checks the grace period stopped shielding, alongside the
 failed ones. Because the rollup does not mark required checks, one visible
-consequence of inferring remains: a required check hung past the grace period
-with an optional one failed beside it satisfies the condition on the optional
-failure's name alone. The PR really is stalled then, so reporting is right — but
-pointing only at the optional check sends the reader somewhere that is not the
-blocker. Naming both puts the likelier culprit in front of them, which is what
-the gap actually costs once nothing silent is left in it.
+consequence of inferring remains, and it runs both ways: a required check hung
+past the grace period with an optional one failed beside it fires on the
+optional failure's name, while a required check that failed beside a hung
+optional one fires on the right name but sits next to an irrelevant stalled one.
+Either way the PR really is stalled, so reporting is right — but which of the two
+is holding it cannot be known from here.
+
+So both sets are reported and neither is ranked. Ranking them would assert
+exactly the required-ness this routing is otherwise careful never to infer, and
+would be wrong in one of the two directions every time. Naming both, and saying
+plainly that the rollup cannot tell them apart, is what the gap costs once
+nothing silent is left in it.
 
 `CANCELLED` and `STALE` count as failures alongside the obvious ones — nothing
 is coming for either. `ACTION_REQUIRED` counts as *waiting*: it means a person

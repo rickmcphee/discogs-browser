@@ -448,13 +448,20 @@ jobs:
                 # The checks the grace period just stopped shielding: pending,
                 # but pending for longer than anything here runs. They are named
                 # in the report because the rollup does not say which checks are
-                # required, and that gap has one visible consequence left. A
-                # required check hung past the grace period, with an optional
-                # one failed beside it, satisfies the condition below on the
-                # optional failure's name alone -- and the PR really is stalled,
-                # so reporting is right, but pointing at the optional check
-                # sends the reader to the wrong place. Naming both puts the
-                # likelier culprit in front of them.
+                # required, and that gap has one visible consequence left: the
+                # report can name a check that is not the blocker. It runs both
+                # ways. A required check hung past the grace period with an
+                # optional one failed beside it fires on the optional failure's
+                # name; a required check that failed beside a hung optional one
+                # fires on the right name but sits next to an irrelevant stalled
+                # one. Either way the PR really is stalled, so reporting is
+                # right -- but which of the two is holding it cannot be known
+                # from here.
+                #
+                # So both sets are reported and neither is ranked. Asserting a
+                # priority would be claiming exactly the required-ness this
+                # whole branch is careful never to infer, and it would be wrong
+                # in one of the two directions every time.
                 blocked_stalled="$(gh pr view "$existing" --repo "$REPO" \
                   --json statusCheckRollup \
                   --jq '[ .statusCheckRollup[]? | select((((.status // "") | . == "QUEUED" or . == "IN_PROGRESS" or . == "WAITING" or . == "PENDING" or . == "REQUESTED") or ((.conclusion // "") == "ACTION_REQUIRED") or ((.state // "") | . == "PENDING" or . == "EXPECTED")) and ((.startedAt // .createdAt // "") | if . == "" then false else ((try fromdateiso8601 catch 0) as $t | if $t <= 0 then false else ($t <= (now - '"$PENDING_CHECK_GRACE"')) end) end)) | (.name // .context // "unnamed check") ] | unique | join(", ")')"
@@ -487,7 +494,7 @@ jobs:
                      && ! printf '%s\n' "$blocked_labels" | grep -qx "$CONFLICT_LABEL"; then
                     stalled_note=""
                     if [ -n "$blocked_stalled" ]; then
-                      stalled_note=" Look at $blocked_stalled first: still pending well past the grace period, so a hung required check is the likelier blocker here, and $blocked_failures may be an optional check that is not what is holding the PR."
+                      stalled_note=" Also stuck, and possibly the real blocker: $blocked_stalled, still pending well past the grace period. The rollup does not mark which checks are required, so this cannot say which of the two is holding the PR -- check both."
                     fi
                     echo "::error::sync PR #$existing cannot merge: $blocked_failures failed, and nothing in this workflow can clear it.$stalled_note An open sync PR is never rebuilt, so its branch keeps whatever broke it and auto-merge waits on a check that will not pass. Nothing in a sync PR is hand-authored unless it carries $CONFLICT_LABEL, so if the failure is already fixed on \`main\`: close #$existing, delete $SYNC_BRANCH, and re-run this workflow -- it rebuilds the branch from the current \`main\` and the fix comes with it. If the failure is not fixed on \`main\`, it is a real break and fixing it there is what unblocks the sync."
                     exit 1
