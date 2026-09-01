@@ -274,7 +274,10 @@ is exactly what the caller does with it.
      silently dropped. A recommendation carousel emitting Product JSON-LD
      of its own must never supply the cheapest listing.
    - Accepted nodes' `offers` normalized across `Offer`, offer lists, and
-     `AggregateOffer` (`lowPrice`).
+     `AggregateOffer` (`lowPrice` — preferred over a `price` beside it,
+     which has no defined "cheapest" meaning on an aggregate; a present
+     but unreadable `lowPrice` leaves the cheapest unknown and stays on
+     the unparsed path rather than reporting the possibly-higher `price`).
    - Offers whose `availability` says `OutOfStock`/`SoldOut`/`Discontinued`
      are counted as confirmed-unpurchasable; `InStock`/`PreOrder`/absent are
      kept (Rough Trade trades heavily in pre-orders). States are read by

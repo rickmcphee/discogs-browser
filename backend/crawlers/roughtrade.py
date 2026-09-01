@@ -504,10 +504,19 @@ def _offer_listing(offer: dict, url: str) -> Optional[dict]:
         return None
     # lowPrice is only meaningful on a confirmed AggregateOffer -- a stale
     # lowPrice on a plain Offer must not stand in for its missing price.
-    # When both somehow exist, price is the offer's own and wins.
-    price = _finite_price(offer.get("price"))
-    if price is None and _is_aggregate_offer(offer):
-        price = _finite_price(offer.get("lowPrice"))
+    # On an aggregate the preference reverses: lowPrice *is* the cheapest
+    # constituent, and a price beside it has no defined "cheapest" meaning,
+    # so reading price first would report 39.99 over a 24.50 lowPrice
+    # against the cheapest-price contract. A present but unreadable
+    # lowPrice means the cheapest is unknown -- unparsed, never the
+    # possibly-higher price instead.
+    if _is_aggregate_offer(offer):
+        if offer.get("lowPrice") is not None:
+            price = _finite_price(offer.get("lowPrice"))
+        else:
+            price = _finite_price(offer.get("price"))
+    else:
+        price = _finite_price(offer.get("price"))
     if price is None:
         return None
     # Defaulting is only for an *absent* currency; a present value that

@@ -511,6 +511,29 @@ def test_offer_listing_uses_low_price_for_aggregate_offers():
     assert listing["currency"] == "GBP"
 
 
+def test_offer_listing_prefers_low_price_on_an_aggregate_offer():
+    # lowPrice is the aggregate's cheapest constituent; a price beside it
+    # has no defined "cheapest" meaning and must not overstate the report.
+    listing = _offer_listing(
+        {"@type": "AggregateOffer", "price": "39.99", "lowPrice": "24.50",
+         "priceCurrency": "USD"},
+        PRODUCT_URL,
+    )
+    assert listing["price"] == 24.50
+    # A present but unreadable lowPrice means the cheapest is unknown --
+    # unparsed, never the possibly-higher price instead.
+    assert _offer_listing(
+        {"@type": "AggregateOffer", "price": "39.99", "lowPrice": "TBC",
+         "priceCurrency": "USD"},
+        PRODUCT_URL,
+    ) is None
+    # With no lowPrice at all, the aggregate's own price is the only signal.
+    assert _offer_listing(
+        {"@type": "AggregateOffer", "price": "39.99", "priceCurrency": "USD"},
+        PRODUCT_URL,
+    )["price"] == 39.99
+
+
 def test_offer_listing_ignores_low_price_on_a_plain_offer():
     # A stale lowPrice on a plain Offer must not stand in for its price.
     assert _offer_listing(
