@@ -305,7 +305,11 @@ is exactly what the caller does with it.
      `" USD "` or `"usd"` would open its own price bucket; anything else
      is schema drift and stays on the unparsed path.
    - every observed offer confirmed unpurchasable, none half-parsed → `[]`
-     (the site answered: nothing purchasable). An *available* offer whose
+     (the site answered: nothing purchasable) — unless the availability
+     metas explicitly say available, which makes the page
+     self-contradictory and loud instead of a price-clearing miss; an
+     absent, agreeing, or unrecognised meta leaves the complete JSON-LD
+     answer standing. An *available* offer whose
      price could not be read poisons the whole JSON-LD read — even
      alongside offers that did parse, since the unparsed variant could
      undercut the "cheapest" reported: with no OG rescue the crawl raises

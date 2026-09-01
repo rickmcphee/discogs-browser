@@ -1121,6 +1121,32 @@ async def test_search_raises_on_a_zero_count_instock_contradiction(browser_page)
         await Crawler().search(RELEASE, page)
 
 
+async def test_search_raises_when_an_available_meta_contradicts_sold_out_jsonld(browser_page):
+    # The mirror of the stale-unavailable-meta case: a complete JSON-LD
+    # read saying sold out beside metas explicitly saying available is a
+    # self-contradictory page -- loud, never a confirmed miss that clears
+    # the stored price. When the metas agree (or are absent), the complete
+    # JSON-LD answer stands as [].
+    contradicted = (
+        _PAGE_HEAD
+        + _ld('{"@type": "Product", "name": "Sample Album",'
+              ' "offers": {"@type": "Offer", "price": "31.99", "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/OutOfStock"}}')
+        + '<meta property="og:availability" content="instock" />'
+        + "</head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (contradicted, 200)})
+    with pytest.raises(RuntimeError, match="price signals"):
+        await Crawler().search(RELEASE, page)
+
+    agreeing = contradicted.replace(
+        '<meta property="og:availability" content="instock" />',
+        '<meta property="og:availability" content="oos" />',
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (agreeing, 200)})
+    assert await Crawler().search(RELEASE, page) == []
+
+
 async def test_search_raises_when_a_stale_unavailable_meta_meets_half_parsed_jsonld(browser_page):
     # An in-stock JSON-LD offer whose price could not be read is contrary
     # evidence: a stale unavailable meta must not turn the page into a

@@ -922,26 +922,11 @@ class Crawler:
             unparsed_available += len(listings)
             listings = []
 
-        # An unparseable available offer poisons the whole JSON-LD read, not
-        # just the empty case: returning the offers that *did* parse would
-        # report their cheapest as the store's price while the unparsed
-        # variant could undercut it. Half-parsed means the OG metas rescue
-        # the page or the caller raises -- never a partial answer.
-        if not unparsed_available:
-            if listings:
-                listings.sort(key=lambda x: x["price"])
-                return listings
-            # [] is only a confirmed miss when every observed offer was
-            # deliberately unpurchasable.
-            if unavailable:
-                return []
-
         meta = signals.get("meta") or {}
-        # An OG amount alone does not establish purchasability -- sold-out
-        # pages commonly retain their price metadata -- so the fallback
-        # requires a machine-readable availability meta too: unavailable is a
-        # confirmed miss, available unlocks the price pairs, and absent or
-        # unrecognised means the metas cannot answer (the caller raises).
+        # The availability metas are read up front: they gate the OG
+        # fallback below, and they are contrary evidence the confirmed-miss
+        # branch has to see -- an explicitly available meta beside
+        # all-unavailable JSON-LD makes the page self-contradictory.
         states = set()
         for key in ("product:availability", "og:availability"):
             value = meta.get(key)
@@ -954,6 +939,30 @@ class Crawler:
                 states.add("unavailable")
             else:
                 states.add("ambiguous")
+
+        # An unparseable available offer poisons the whole JSON-LD read, not
+        # just the empty case: returning the offers that *did* parse would
+        # report their cheapest as the store's price while the unparsed
+        # variant could undercut it. Half-parsed means the OG metas rescue
+        # the page or the caller raises -- never a partial answer.
+        if not unparsed_available:
+            if listings:
+                listings.sort(key=lambda x: x["price"])
+                return listings
+            # [] is only a confirmed miss when every observed offer was
+            # deliberately unpurchasable -- and no other machine signal
+            # contradicts it. Metas explicitly saying available beside
+            # all-unavailable offers must stay loud, not clear a stored
+            # price; an absent, unavailable, or unrecognised meta leaves
+            # the complete JSON-LD answer standing.
+            if unavailable:
+                return None if states == {"available"} else []
+
+        # An OG amount alone does not establish purchasability -- sold-out
+        # pages commonly retain their price metadata -- so the fallback
+        # requires a machine-readable availability meta too: unavailable is a
+        # confirmed miss, available unlocks the price pairs, and absent or
+        # unrecognised means the metas cannot answer (the caller raises).
         # Both namespaces are read: a conflicting or unrecognised pair must
         # neither clear a price nor persist one -- it stays loud.
         if states == {"unavailable"}:
