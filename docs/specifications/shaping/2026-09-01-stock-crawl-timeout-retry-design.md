@@ -22,8 +22,8 @@ the first 429) precisely because catalog pagination has no next item to fall
 through to — but that budget only protects the Shopify-backed crawlers that
 call it. The catalog crawlers that hand-roll their own httpx pagination
 (Dark Descent's WooCommerce Store API, The Sound Garden's category search,
-Dischord's Rails storefront, and the Big Cartel trio: Ripple Music, Asbestos
-Records, Jetglow Recordings) issue bare `client.get()` calls: no retry, and
+Dischord's Rails storefront, and the Big Cartel sources: Ripple Music,
+Asbestos Records, Jetglow Recordings) issue bare `client.get()` calls: no retry, and
 httpx's default 5s connect timeout, which one slow handshake exceeds.
 
 ## Design
