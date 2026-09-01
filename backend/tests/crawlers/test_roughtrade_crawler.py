@@ -552,6 +552,14 @@ def test_offer_listing_reads_offer_count_as_availability():
     assert _offer_listing(
         {"@type": "AggregateOffer", "lowPrice": "24.50", "offerCount": 3}, PRODUCT_URL
     )["price"] == 24.50
+    # schema.org commonly serializes the count as a digit string, the same
+    # way prices arrive as strings.
+    assert _offer_listing(
+        {"@type": "AggregateOffer", "lowPrice": "24.50", "offerCount": "3"}, PRODUCT_URL
+    )["price"] == 24.50
+    assert _offer_listing(
+        {"@type": "AggregateOffer", "lowPrice": "24.50", "offerCount": "0"}, PRODUCT_URL
+    ) is None
 
 
 def test_offer_listing_defaults_currency_to_usd():

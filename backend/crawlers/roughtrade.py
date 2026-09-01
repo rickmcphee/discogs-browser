@@ -467,7 +467,14 @@ def _offer_availability(offer: dict) -> str:
     if _is_aggregate_offer(offer):
         count = offer.get("offerCount")
         if count is not None:
-            if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            if isinstance(count, bool):
+                return "ambiguous"
+            # schema.org commonly serializes counts as digit strings ("3"),
+            # the same way prices arrive as strings; junking those would
+            # make every such AggregateOffer raise instead of listing.
+            if isinstance(count, str) and count.strip().isdigit():
+                count = int(count.strip())
+            if not isinstance(count, int) or count < 0:
                 return "ambiguous"
             zero_count = count == 0
     value = offer.get("availability")
