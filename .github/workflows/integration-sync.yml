@@ -423,12 +423,25 @@ jobs:
                 # running, and stops shielding anything. Real checks here finish
                 # in minutes, so the grace period never expires mid-run and the
                 # optional-failure noise stays suppressed exactly as long as it
-                # should be. A pending check carrying no timestamp counts as
-                # waiting: that state is transient by nature, and the next run
-                # re-decides.
+                # should be. A pending check carrying no usable timestamp counts
+                # as waiting: that state is transient by nature, and the next
+                # run re-decides.
+                #
+                # "No usable timestamp" is doing more work than it looks. A
+                # CheckRun's startedAt is nullable, but gh serialises it from a
+                # non-pointer time.Time, so a freshly queued check arrives as
+                # Go's zero value, "0001-01-01T00:00:00Z", rather than as null.
+                # That is a *string*, so `//` accepts it, and parsing it lands
+                # in year 1 -- older than any grace period. Left alone, the
+                # newest queued check on the PR would read as the most hung
+                # thing on it and stop shielding immediately, which is exactly
+                # the false positive the grace period exists to prevent. So a
+                # timestamp at or before the epoch is treated as absent, and an
+                # unparseable one likewise: both filters fail towards "still
+                # running" rather than towards reporting.
                 blocked_waiting="$(gh pr view "$existing" --repo "$REPO" \
                   --json statusCheckRollup \
-                  --jq '[ .statusCheckRollup[]? | select((((.status // "") | . == "QUEUED" or . == "IN_PROGRESS" or . == "WAITING" or . == "PENDING" or . == "REQUESTED") or ((.conclusion // "") == "ACTION_REQUIRED") or ((.state // "") | . == "PENDING" or . == "EXPECTED")) and ((.startedAt // .createdAt // "") | if . == "" then true else (fromdateiso8601 > (now - '"$PENDING_CHECK_GRACE"')) end)) ] | length')"
+                  --jq '[ .statusCheckRollup[]? | select((((.status // "") | . == "QUEUED" or . == "IN_PROGRESS" or . == "WAITING" or . == "PENDING" or . == "REQUESTED") or ((.conclusion // "") == "ACTION_REQUIRED") or ((.state // "") | . == "PENDING" or . == "EXPECTED")) and ((.startedAt // .createdAt // "") | if . == "" then true else ((try fromdateiso8601 catch 0) as $t | if $t <= 0 then true else ($t > (now - '"$PENDING_CHECK_GRACE"')) end) end)) ] | length')"
                 blocked_failures="$(gh pr view "$existing" --repo "$REPO" \
                   --json statusCheckRollup \
                   --jq '[ .statusCheckRollup[]? | (.conclusion // .state // "") as $c | select($c == "FAILURE" or $c == "ERROR" or $c == "TIMED_OUT" or $c == "STARTUP_FAILURE" or $c == "CANCELLED" or $c == "STALE") | (.name // .context // "unnamed check") ] | unique | join(", ")')"
@@ -444,7 +457,7 @@ jobs:
                 # likelier culprit in front of them.
                 blocked_stalled="$(gh pr view "$existing" --repo "$REPO" \
                   --json statusCheckRollup \
-                  --jq '[ .statusCheckRollup[]? | select((((.status // "") | . == "QUEUED" or . == "IN_PROGRESS" or . == "WAITING" or . == "PENDING" or . == "REQUESTED") or ((.conclusion // "") == "ACTION_REQUIRED") or ((.state // "") | . == "PENDING" or . == "EXPECTED")) and ((.startedAt // .createdAt // "") | if . == "" then false else (fromdateiso8601 <= (now - '"$PENDING_CHECK_GRACE"')) end)) | (.name // .context // "unnamed check") ] | unique | join(", ")')"
+                  --jq '[ .statusCheckRollup[]? | select((((.status // "") | . == "QUEUED" or . == "IN_PROGRESS" or . == "WAITING" or . == "PENDING" or . == "REQUESTED") or ((.conclusion // "") == "ACTION_REQUIRED") or ((.state // "") | . == "PENDING" or . == "EXPECTED")) and ((.startedAt // .createdAt // "") | if . == "" then false else ((try fromdateiso8601 catch 0) as $t | if $t <= 0 then false else ($t <= (now - '"$PENDING_CHECK_GRACE"')) end) end)) | (.name // .context // "unnamed check") ] | unique | join(", ")')"
 
                 if [ "$blocked_waiting" = 0 ] && [ -n "$blocked_failures" ]; then
                   # Re-resolve the state before reporting on it. $sync_state was
