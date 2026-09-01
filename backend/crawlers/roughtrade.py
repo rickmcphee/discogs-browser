@@ -284,26 +284,39 @@ def _iter_offers(offers) -> tuple:
     return [], 1
 
 
-def _offer_unavailable(offer: dict) -> bool:
-    """Is the offer deliberately marked unpurchasable?
+def _offer_availability(offer: dict) -> str:
+    """"available", "unavailable", or "ambiguous".
 
     JSON-LD encodes availability as a string IRI, a node reference
     ({"@id": "https://schema.org/OutOfStock"}), or an array of either; every
     form must be read, or an out-of-stock offer with a price passes as
-    purchasable.
+    purchasable. Only a *consistent* signal counts: a contradictory array
+    ([InStock, OutOfStock]) must not become a confirmed miss that clears a
+    stored price, and a malformed member (an object without @id, a blank)
+    must not pass as available -- both are ambiguous, which the caller
+    routes to the unparsed/loud path. An absent field stays available.
     """
     value = offer.get("availability")
+    if value is None:
+        return "available"
     values = value if isinstance(value, list) else [value]
+    flags = set()
     for item in values:
         if isinstance(item, dict):
             item = item.get("@id")
-        if isinstance(item, str) and _UNAVAILABLE_RE.search(item):
-            return True
-    return False
+        if not isinstance(item, str) or not item.strip():
+            flags.add("junk")
+            continue
+        flags.add("unavailable" if _UNAVAILABLE_RE.search(item) else "available")
+    if flags == {"unavailable"}:
+        return "unavailable"
+    if flags == {"available"}:
+        return "available"
+    return "ambiguous"
 
 
 def _offer_listing(offer: dict, url: str) -> Optional[dict]:
-    if _offer_unavailable(offer):
+    if _offer_availability(offer) != "available":
         return None
     # AggregateOffer carries lowPrice instead of price; when both somehow
     # exist, price is the offer's own and wins.
@@ -613,8 +626,12 @@ class Crawler:
             offers, dropped = _iter_offers(node.get("offers"))
             tallies["unparsed_available"] += dropped
             for offer in offers:
-                if _offer_unavailable(offer):
+                availability = _offer_availability(offer)
+                if availability == "unavailable":
                     tallies["unavailable"] += 1
+                    continue
+                if availability == "ambiguous":
+                    tallies["unparsed_available"] += 1
                     continue
                 listing = _offer_listing(offer, url)
                 if listing:

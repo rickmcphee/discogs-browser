@@ -417,7 +417,12 @@ def test_offer_listing_skips_unavailable():
         {"@id": "https://schema.org/OutOfStock"},
         ["https://schema.org/OutOfStock"],
         [{"@id": "https://schema.org/OutOfStock"}],
+        # Ambiguous values are not purchasable either -- a contradictory
+        # array or a malformed member never yields a listing.
         ["https://schema.org/InStock", "https://schema.org/OutOfStock"],
+        {},
+        "",
+        [],
     ):
         offer = {"price": "31.99", "priceCurrency": "USD", "availability": availability}
         assert _offer_listing(offer, PRODUCT_URL) is None
@@ -843,6 +848,22 @@ async def test_search_raises_on_mixed_currency_offers(browser_page):
               ' "availability": "https://schema.org/InStock"},'
               '{"@type": "Offer", "price": "31.99", "priceCurrency": "USD",'
               ' "availability": "https://schema.org/InStock"}]}')
+        + "</head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    with pytest.raises(RuntimeError, match="price signals"):
+        await Crawler().search(RELEASE, page)
+
+
+async def test_search_raises_on_contradictory_availability(browser_page):
+    # [InStock, OutOfStock] is ambiguous, not a confirmed miss: [] here
+    # would clear a stored price despite the positive in-stock signal.
+    html = (
+        _PAGE_HEAD
+        + _ld('{"@type": "Product", "name": "Sample Album",'
+              ' "offers": {"@type": "Offer", "price": "27.99", "priceCurrency": "USD",'
+              ' "availability": ["https://schema.org/InStock",'
+              ' "https://schema.org/OutOfStock"]}}')
         + "</head><body></body></html>"
     )
     page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
