@@ -307,7 +307,10 @@ A single `httpx.AsyncClient().get(f"{base_url}/products.json")` (no
 per-request headers needed — confirmed live with a plain `python-httpx`
 user agent), `r.raise_for_status()`, then filter/parse/yield from the parsed
 JSON array in-process. `report_page(1, len(items))` once, since there is
-exactly one page.
+exactly one page. *(2026-09-01: the GET now goes through
+`catalog_http.get_with_retry()`, which owns the pacing sleep and retries a
+transient failure up to `consecutive_failure_limit` attempts — see
+[`2026-09-01-stock-crawl-timeout-retry-design.md`](2026-09-01-stock-crawl-timeout-retry-design.md).)*
 
 ## Crawl citizenship and `robots.txt` compliance
 

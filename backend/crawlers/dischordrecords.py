@@ -1,11 +1,10 @@
 import html
-import random
 import re
-from asyncio import sleep
 from typing import AsyncIterator, Optional
 
 import httpx
 
+from catalog_http import get_with_retry
 from config import load_config
 from crawl_progress import report_detail, report_page
 
@@ -58,12 +57,15 @@ class Crawler:
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:
-        delay = float(load_config().get("crawl_delay_seconds", 30))
+        cfg = load_config()
+        delay = float(cfg.get("crawl_delay_seconds", 30))
+        failure_limit = int(cfg.get("consecutive_failure_limit", 10))
 
         async with httpx.AsyncClient(base_url=self.base_url, follow_redirects=True) as client:
-            await sleep(random.uniform(delay * 0.5, delay))
-            r = await client.get(_LABEL_PATH, params={"page": 1})
-            r.raise_for_status()
+            r = await get_with_retry(
+                client, _LABEL_PATH, params={"page": 1},
+                delay=delay, failure_limit=failure_limit,
+            )
             page_html = r.text
             total_pages = self._max_page(page_html)
 
@@ -72,9 +74,10 @@ class Crawler:
             page = 1
             while page <= total_pages:
                 if page > 1:
-                    await sleep(random.uniform(delay * 0.5, delay))
-                    r = await client.get(_LABEL_PATH, params={"page": page})
-                    r.raise_for_status()
+                    r = await get_with_retry(
+                        client, _LABEL_PATH, params={"page": page},
+                        delay=delay, failure_limit=failure_limit,
+                    )
                     page_html = r.text
                     total_pages = max(total_pages, self._max_page(page_html))
 
@@ -100,10 +103,11 @@ class Crawler:
                     await report_detail(0, len(new_hrefs), label)
                 page_items = []
                 for done, href in enumerate(new_hrefs, start=1):
-                    await sleep(random.uniform(delay * 0.5, delay))
-                    r = await client.get(href)
+                    r = await get_with_retry(
+                        client, href, allow_404=True,
+                        delay=delay, failure_limit=failure_limit,
+                    )
                     if r.status_code != 404:
-                        r.raise_for_status()
                         page_items.extend(self._parse_release(r.text, href))
                     await report_detail(done, len(new_hrefs), label)
 
