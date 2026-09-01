@@ -279,13 +279,22 @@ has been asked for a click, which is the parked "Approve and run" state this
 design already documents and tolerates under the token fallback, and erroring on
 it would turn a run red every week for a condition deliberately accepted.
 
-The failure is reported rather than repaired. Rebuilding the branch
-automatically would be safe by this workflow's own logic — nothing in a sync PR
-is hand-authored unless it carries `CONFLICT_LABEL` — but it means force-pushing
-over a branch a person may have pushed a CI fix onto, and only the *conflict*
-path applies that label, so a hand-pushed test fix carries nothing to protect
-it. The error names the remedy instead: close the PR, delete the branch, re-run,
-and step 3 rebuilds from the current `main`.
+The failure is reported rather than repaired, and the reason is narrower than
+"a sync PR contains nothing hand-authored". `CONFLICT_LABEL` marks one thing
+only: a branch handed to a person because the merge conflicted. It says nothing
+about a branch someone pushed a CI fix onto to unstick a red sync PR, which is
+both a plausible response to this very error and entirely unlabelled. So an
+unlabelled sync branch is *not* provably machine-only, and force-pushing over it
+can destroy the only copy of that work.
+
+That applies to the person as much as to the job, so the error does not simply
+tell them to delete the branch. It tells them to re-run the failed check first,
+since a transient Actions failure clears with nothing changed anywhere; then, if
+it reproduces and the cause is already fixed on `main`, to check the branch for
+commits this job did not create; and only then to close the PR, delete the
+branch and re-run, so step 3 rebuilds from the current `main`. An earlier draft
+of this section asserted the machine-only premise and the deletion advice
+together, which was both wrong and, in the advice, potentially destructive.
 3. Otherwise branch from `integration`, `git merge origin/main`, and open a PR
    that auto-merges **with a merge commit**.
 
@@ -579,7 +588,21 @@ guard that failed open.
 | Unrelated PRs blocked by someone else's conflict | A conflicted sync PR reported a pending sync, suppressing `refresh`, though auto-merge was off and nothing was about to move | Superseded: the pending guard is gone entirely |
 | Refresh silently doing nothing | `for n in $(gh pr list …)` is a word expansion, so `set -e` never saw the command fail | Assign first |
 | Fork PR handed auto-merge | `--head` matches branch *name* only | `isCrossRepository == false` |
-| **A red sync PR stalling both branches, silently** | `blocked` fell through to the re-arm, which is a no-op on an already-armed PR; the job exited 0 while the branch kept the failure it could never shed | `blocked` is routed, and fails the run once a failed check stands with nothing still running that could clear it |
+
+### One after the marker
+
+Kept out of the table above, which is scoped to the recorded marker and would
+stop being readable as history if later failures were filed into it. This one
+belongs to the routing that replaced it, and it is here because it shares the
+table's moral exactly:
+
+**A red sync PR stalling both branches, silently.** `blocked` fell through to
+the re-arm, which is a no-op on an already-armed PR, so the job exited 0 while
+the branch kept a failure it could never shed. Closed by routing `blocked`, and
+failing the run once a failed check stands with nothing still running that could
+clear it. Its cost was a silent one too — an `integration` frozen for two days
+and a promotion PR stranded behind it, with every run of this workflow green
+throughout.
 
 ## Simplifications available
 
