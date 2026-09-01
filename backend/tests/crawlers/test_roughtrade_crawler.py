@@ -921,9 +921,13 @@ async def test_search_raises_on_mixed_currency_offers(browser_page):
 
 async def test_search_raises_on_contradictory_availability(browser_page):
     # [InStock, OutOfStock] is ambiguous, not a confirmed miss: [] here
-    # would clear a stored price despite the positive in-stock signal.
+    # would clear a stored price despite the positive in-stock signal. And
+    # it stays fatal even with OG price metas on the page -- an amount says
+    # nothing about the offer's purchasability.
     html = (
         _PAGE_HEAD
+        + '<meta property="og:price:amount" content="24.99" />'
+        + '<meta property="og:price:currency" content="USD" />'
         + _ld('{"@type": "Product", "name": "Sample Album",'
               ' "offers": {"@type": "Offer", "price": "27.99", "priceCurrency": "USD",'
               ' "availability": ["https://schema.org/InStock",'

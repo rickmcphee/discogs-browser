@@ -654,7 +654,7 @@ class Crawler:
         # offer, rather than being merged in or silently dropped.
         product_path = "/" + "/".join(url.rstrip("/").split("/")[-3:])
         listings = []
-        tallies = {"unavailable": 0, "unparsed_available": 0}
+        tallies = {"unavailable": 0, "unparsed_available": 0, "ambiguous": 0}
 
         def read_node(node):
             offers, dropped = _iter_offers(node.get("offers"))
@@ -665,7 +665,10 @@ class Crawler:
                     tallies["unavailable"] += 1
                     continue
                 if availability == "ambiguous":
-                    tallies["unparsed_available"] += 1
+                    # Fatal, not merely unparsed: the OG metas carry a price
+                    # but no availability, so they cannot rescue an offer
+                    # whose purchasability is itself in question.
+                    tallies["ambiguous"] += 1
                     continue
                 listing = _offer_listing(offer, url)
                 if listing:
@@ -695,6 +698,8 @@ class Crawler:
                 read_node(anonymous_nodes[0])
             else:
                 tallies["unparsed_available"] += len(anonymous_nodes)
+        if tallies["ambiguous"]:
+            return None
         unavailable = tallies["unavailable"]
         unparsed_available = tallies["unparsed_available"]
 
