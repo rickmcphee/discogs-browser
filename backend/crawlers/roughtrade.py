@@ -846,15 +846,18 @@ class Crawler:
 
     async def _read_listings_when_ready(self, page, url: str, artist: str,
                                         title: str) -> Optional[list]:
-        # A first read finding no signal is retried briefly before being
-        # declared drift: a cleared challenge's replacement document can
-        # carry its <title> before the head's JSON-LD/metas have loaded
-        # (discogs_marketplace._read_when_ready's rationale). None is the
-        # only retried outcome -- [] and listings are real answers.
+        # A read finding no signal -- or only a destructive one -- is
+        # retried briefly before being believed: a cleared challenge's
+        # replacement document can carry its <title> before the head's
+        # JSON-LD/metas have loaded (discogs_marketplace._read_when_ready's
+        # rationale), and pre-hydration state can render an out-of-stock
+        # signal that a later node replaces, so an early [] must not escape
+        # and clear a stored price. Listings are the only immediate answer;
+        # [] and None poll to the deadline and the latest state wins.
         deadline = time.monotonic() + _SIGNALS_TIMEOUT_MS / 1000
         while True:
             listings = await self._read_listings(page, url, artist, title)
-            if listings is not None or time.monotonic() >= deadline:
+            if listings or time.monotonic() >= deadline:
                 return listings
             await page.wait_for_timeout(500)
 
@@ -909,6 +912,7 @@ class Crawler:
                     tallies["unparsed_available"] += 1
 
         anonymous_nodes = []
+        name_matched_unknown = []
         accepted_any = False
         all_nodes, malformed_scripts = _product_nodes(signals.get("ldjson") or [])
         tallies["unparsed_available"] += malformed_scripts
@@ -926,10 +930,29 @@ class Crawler:
                 if not (isinstance(name, str) and name.strip()):
                     anonymous_nodes.append(node)
                     continue
-                if not _name_matches(name, artist, title):
-                    continue
+                if _name_matches(name, artist, title):
+                    name_matched_unknown.append(node)
+                continue
             accepted_any = True
             read_node(node)
+
+        if name_matched_unknown:
+            # More than one url-less node matching by name cannot be told
+            # apart: one is this page's product, but another could be a
+            # recommendation for someone else's same-titled record.
+            # Identical offers payloads are duplicate markup for one
+            # product and read once; differing payloads are
+            # indistinguishable different products, which poisons the read
+            # rather than letting the cheaper stranger win.
+            payloads = {
+                json.dumps(n.get("offers"), sort_keys=True)
+                for n in name_matched_unknown
+            }
+            if len(payloads) > 1:
+                tallies["ambiguous"] += 1
+            else:
+                accepted_any = True
+                read_node(name_matched_unknown[0])
 
         if anonymous_nodes:
             if not accepted_any and len(all_nodes) == 1:

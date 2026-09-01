@@ -273,7 +273,12 @@ is exactly what the caller does with it.
      with the first segment anchored to this release's artist — stricter
      than the identity check, because every accepted node contributes
      offers and a name merely *starting* with the title would let a
-     sibling product ("… Volume Two") supply the price. A nameless, url-less node is unattributable:
+     sibling product ("… Volume Two") supply the price. When more than
+     one url-less node matches by name, they cannot be told apart — one
+     is this page's product, another could be a recommendation for
+     someone else's same-titled record — so identical `offers` payloads
+     read once as duplicate markup, and differing payloads poison the
+     read rather than letting the cheaper stranger win. A nameless, url-less node is unattributable:
      it is used only as the page's sole Product node, and otherwise
      poisons the read like an unparsable offer — never merged in, never
      silently dropped. A recommendation carousel emitting Product JSON-LD

@@ -1140,6 +1140,59 @@ async def test_search_raises_on_a_zero_count_instock_contradiction(browser_page)
         await Crawler().search(RELEASE, page)
 
 
+async def test_search_raises_when_same_named_urlless_nodes_disagree(browser_page):
+    # Two url-less nodes matching by name cannot be told apart: one is this
+    # page's product, the other could be a recommendation for someone
+    # else's same-titled record, and the cheaper stranger must not win.
+    html = (
+        _PAGE_HEAD
+        + _ld('{"@type": "Product", "name": "Sample Album",'
+              ' "offers": {"@type": "Offer", "price": "31.99", "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/InStock"}}')
+        + _ld('{"@type": "Product", "name": "Sample Album",'
+              ' "offers": {"@type": "Offer", "price": "5.99", "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/InStock"}}')
+        + "</head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    with pytest.raises(RuntimeError, match="price signals"):
+        await Crawler().search(RELEASE, page)
+
+
+async def test_search_reads_duplicated_identical_nodes_once(browser_page):
+    # The same Product markup emitted twice (head and body) is duplicate
+    # markup for one product, not two indistinguishable products.
+    node = ('{"@type": "Product", "name": "Sample Album",'
+            ' "offers": {"@type": "Offer", "price": "31.99", "priceCurrency": "USD",'
+            ' "availability": "https://schema.org/InStock"}}')
+    html = _PAGE_HEAD + _ld(node) + _ld(node) + "</head><body></body></html>"
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    results = await Crawler().search(RELEASE, page)
+    assert [r["price"] for r in results] == [31.99]
+
+
+async def test_read_listings_when_ready_polls_an_early_empty_result(browser_page, monkeypatch):
+    # Pre-hydration state can render an out-of-stock signal that a later
+    # node replaces: an early [] must poll through the window and the
+    # latest state wins, not escape and clear a stored price.
+    states = [[], [], [{"url": PRODUCT_URL, "price": 31.99, "shipping": None,
+                        "currency": "USD", "condition": None}]]
+
+    async def fake_read(self, page, url, artist, title):
+        return states.pop(0) if len(states) > 1 else states[0]
+
+    monkeypatch.setattr(Crawler, "_read_listings", fake_read)
+
+    class _StubPage:
+        async def wait_for_timeout(self, ms):
+            await asyncio.sleep(0)
+
+    listings = await Crawler()._read_listings_when_ready(
+        _StubPage(), PRODUCT_URL, "Sample Artist", "Sample Album"
+    )
+    assert [l["price"] for l in listings] == [31.99]
+
+
 async def test_search_raises_on_a_null_jsonld_beside_a_sold_out_product(browser_page):
     # A script parsing to null (or any non-object) is as unreadable as one
     # that does not parse: it could have been this product's node, so the
