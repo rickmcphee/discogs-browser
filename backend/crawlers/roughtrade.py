@@ -772,11 +772,17 @@ class Crawler:
                     page_title, artist, title, release.get("format") or "",
                     allow_truncation=_landed_slug_is_full_title(landed_url, title),
                 ):
-                    if status is not None and status >= 400:
-                        # An error status whose settled page is neither a
-                        # challenge nor this product is the Cloudflare wall
-                        # (or an outage), never a product answer.
+                    if status == 403:
+                        # The known WAF status: Cloudflare's block page
+                        # ("Attention Required") arrives as a 403, and a
+                        # fresh browser context genuinely can help.
                         raise BotDetectedError(f"HTTP {status} on {url}")
+                    if status is not None and status >= 400:
+                        # Any other error status (a 5xx outage, ...) is not
+                        # bot evidence: a fresh context cannot help, and the
+                        # bot-retry would fire a second request into the
+                        # outage. A plain failure the breaker counts.
+                        raise RuntimeError(f"HTTP {status} on {url}")
                     if not _recognized_non_match(page_title):
                         # A 200 whose title is neither this product, a
                         # not-found page, nor another Rough Trade product
@@ -800,10 +806,12 @@ class Crawler:
                 # cleared challenge is known to leave behind: the real page
                 # reloads while goto's response object still holds the
                 # interstitial's 403. Any other error status under a matching
-                # title is a combination this crawler has no account of, and
-                # parsing it would trust a body served with a server error.
+                # title is a combination this crawler has no account of --
+                # parsing it would trust a body served with a server error,
+                # and bot-retrying it would fire a second request into what
+                # is most plausibly an outage. A plain failure instead.
                 if status is not None and status >= 400 and status != 403:
-                    raise BotDetectedError(f"HTTP {status} on {url}")
+                    raise RuntimeError(f"HTTP {status} on {url}")
 
                 listings = await self._read_listings_when_ready(
                     page, landed_url, artist, title

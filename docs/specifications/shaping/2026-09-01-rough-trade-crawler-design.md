@@ -195,15 +195,18 @@ is exactly what the caller does with it.
    confirmed miss when it was the last).
 2. Wait out Cloudflare's interstitial by polling the title
    (`discogs_marketplace._await_settled_title` pattern); a challenge title
-   that never settles raises `BotDetectedError`. Any other ≥400 status
-   whose settled page fails the identity check also raises
-   `BotDetectedError` — on this site a non-404 error page is the Cloudflare
-   wall, not a product answer. A page that *passes* the identity check is
-   parsed past exactly one error status, the 403 a cleared challenge is
-   known to leave behind in `goto()`'s response object while the real page
-   reloads; a matching page under any other error status is a combination
-   the crawler has no account of and raises `BotDetectedError` rather than
-   trusting an error response's body.
+   that never settles raises `BotDetectedError`. `BotDetectedError` is
+   otherwise reserved for the one known WAF status — a 403 whose settled
+   page is not this product is Cloudflare's block page, where a fresh
+   browser context genuinely can help. Any other ≥400 status (a 5xx
+   outage) raises a plain failure instead: a fresh context cannot help an
+   outage, and the bot-retry would fire a second request into it. A page
+   that *passes* the identity check is parsed past exactly one error
+   status, the 403 a cleared challenge is known to leave behind in
+   `goto()`'s response object while the real page reloads; a matching page
+   under any other error status is a combination the crawler has no
+   account of and raises the same plain failure rather than trusting an
+   error response's body.
 3. Identity check: the settled `<title>` is split on its first literal
    `" - "` delimiter; the segment before it must equal the release's artist
    exactly (normalized) — comparing normalized whole titles instead would

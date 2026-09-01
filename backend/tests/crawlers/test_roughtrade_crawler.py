@@ -1515,11 +1515,28 @@ async def test_search_never_bot_retries_a_rate_limited_challenge(browser_page):
 async def test_search_raises_on_a_matching_body_with_an_unexplained_error_status(browser_page):
     # The matching-title exception covers only the cleared challenge's known
     # 403; a product body served with a 500 is a combination this crawler
-    # has no account of, and parsing it would trust an error response.
+    # has no account of. A plain failure, not BotDetectedError -- a fresh
+    # context cannot help an outage, and the bot-retry would fire a second
+    # request into it.
     page = _FakePage(
         browser_page, {PRODUCT_URL: (_fixture("product_in_stock.html"), 500)}
     )
-    with pytest.raises(BotDetectedError):
+    with pytest.raises(RuntimeError, match="500"):
+        await Crawler().search(RELEASE, page)
+
+
+async def test_search_never_bot_retries_an_outage(browser_page):
+    # A 503 whose settled page is neither a challenge nor this product is
+    # most plausibly an outage; BotDetectedError's fresh-context retry
+    # would fire a second request into it and record it as anti-bot
+    # activity. (BotDetectedError subclasses Exception, not RuntimeError,
+    # so this asserts the plain-failure path.)
+    outage = (
+        "<html><head><title>Service Unavailable</title></head><body></body></html>",
+        503,
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: outage})
+    with pytest.raises(RuntimeError, match="503"):
         await Crawler().search(RELEASE, page)
 
 
