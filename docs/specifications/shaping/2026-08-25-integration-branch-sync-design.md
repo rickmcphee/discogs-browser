@@ -233,6 +233,15 @@ recomputes) means this run cannot honestly call the PR stuck, so it says
 nothing. That silence lasts one run and corrects itself; a genuinely stuck PR
 stays stuck and is reported next time round.
 
+The report names the checks the grace period stopped shielding, alongside the
+failed ones. Because the rollup does not mark required checks, one visible
+consequence of inferring remains: a required check hung past the grace period
+with an optional one failed beside it satisfies the condition on the optional
+failure's name alone. The PR really is stalled then, so reporting is right — but
+pointing only at the optional check sends the reader somewhere that is not the
+blocker. Naming both puts the likelier culprit in front of them, which is what
+the gap actually costs once nothing silent is left in it.
+
 `CANCELLED` and `STALE` count as failures alongside the obvious ones — nothing
 is coming for either. `ACTION_REQUIRED` counts as *waiting*: it means a person
 has been asked for a click, which is the parked "Approve and run" state this
