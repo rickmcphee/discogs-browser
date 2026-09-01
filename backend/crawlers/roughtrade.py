@@ -53,7 +53,11 @@ _EXTRACT_SIGNALS_JS = """
 def _finite_price(value) -> Optional[float]:
     # float() accepts "nan"/"inf" text without raising, and neither is a
     # price; a NaN would sort first and reach the DOUBLE PRECISION column
-    # (same rationale as discogs_marketplace._finite_price).
+    # (same rationale as discogs_marketplace._finite_price). Booleans are
+    # rejected before coercion -- float(True) is 1.0, and a malformed
+    # JSON-LD price of `true` must not persist as a real $1.
+    if isinstance(value, bool):
+        return None
     try:
         price = float(value)
     except (TypeError, ValueError):
@@ -97,22 +101,28 @@ _TRUNCATION_MIN_CHARS = 30
 _FORMAT_MARKER_RE = re.compile(r"\s+on\s+(vinyl(\s+lp)?|lp|cd)\s*$", re.IGNORECASE)
 
 
-# Both confirmed places a page title states its format: the name core's
-# trailing marker ("on Vinyl LP", "on CD") and the parenthesised later
-# segments ("- (Vinyl LP)", "- (CD)", "- (LP - Rainbow Road)").
-_TITLE_FORMAT_SIGNALS_RE = re.compile(
-    r"\bon\s+(vinyl(?:\s+lp)?|lp|cd)\b|\(\s*(vinyl(?:\s+lp)?|lp|cd)\b",
-    re.IGNORECASE,
-)
+# The parenthesised format shape of the later title segments ("- (Vinyl
+# LP)", "- (CD)", "- (LP - Rainbow Road)").
+_PAREN_FORMAT_RE = re.compile(r"\(\s*(vinyl(?:\s+lp)?|lp|cd)\b", re.IGNORECASE)
 
 
 def _page_format(title_rest: str) -> Optional[str]:
     """"vinyl", "cd", or None when the title's format signals are absent or
-    contradict each other (unknown stays accepted downstream)."""
+    contradict each other (unknown stays accepted downstream).
+
+    Read only from the two confirmed *positions* a format is stated in --
+    the name core's trailing marker and the parenthesised segments after the
+    core -- never from free text, where a release titled "Live on Vinyl"
+    would put a spurious vinyl signal on its own CD page and neutralise the
+    guard.
+    """
     signals = set()
-    for m in _TITLE_FORMAT_SIGNALS_RE.finditer(title_rest):
-        token = (m.group(1) or m.group(2)).lower()
-        signals.add("cd" if token == "cd" else "vinyl")
+    core = title_rest.split(" - ")[0].split(" | ")[0]
+    marker = _FORMAT_MARKER_RE.search(core)
+    if marker:
+        signals.add("cd" if marker.group(1).lower() == "cd" else "vinyl")
+    for m in _PAREN_FORMAT_RE.finditer(title_rest[len(core):]):
+        signals.add("cd" if m.group(1).lower() == "cd" else "vinyl")
     return signals.pop() if len(signals) == 1 else None
 
 
@@ -225,12 +235,19 @@ def _node_scope(node: dict, product_path: str) -> str:
     return "unknown"
 
 
-def _iter_offers(offers) -> list:
-    if isinstance(offers, list):
-        return [o for o in offers if isinstance(o, dict)]
+def _iter_offers(offers) -> tuple:
+    """(offer dicts, dropped count) -- a non-dict offers payload or member is
+    counted, not silently discarded: an offer shape this parser cannot read
+    is a half-parsed page, and swallowing it would let an out-of-stock
+    sibling offer turn the page into a confirmed miss."""
+    if offers is None:
+        return [], 0
     if isinstance(offers, dict):
-        return [offers]
-    return []
+        return [offers], 0
+    if isinstance(offers, list):
+        usable = [o for o in offers if isinstance(o, dict)]
+        return usable, len(offers) - len(usable)
+    return [], 1
 
 
 def _offer_unavailable(offer: dict) -> bool:
@@ -515,7 +532,9 @@ class Crawler:
         tallies = {"unavailable": 0, "unparsed_available": 0}
 
         def read_node(node):
-            for offer in _iter_offers(node.get("offers")):
+            offers, dropped = _iter_offers(node.get("offers"))
+            tallies["unparsed_available"] += dropped
+            for offer in offers:
                 if _offer_unavailable(offer):
                     tallies["unavailable"] += 1
                     continue

@@ -255,6 +255,15 @@ def test_title_matches_rejects_a_cross_format_landing():
     )
 
 
+def test_title_matches_ignores_format_words_inside_the_release_title():
+    # "Live on Vinyl" contributes no vinyl signal from the title text itself,
+    # so its CD page's trailing "on CD" marker still rejects a Vinyl release.
+    assert not Crawler._title_matches(
+        "Sample Artist - Live on Vinyl on CD | Rough Trade",
+        "Sample Artist", "Live on Vinyl", "Vinyl",
+    )
+
+
 def test_name_matches_accepts_bare_title_and_artist_title_shapes():
     assert _name_matches("Sample Album", "Sample Artist", "Sample Album")
     assert _name_matches("Sample Album - Deluxe Edition", "Sample Artist", "Sample Album")
@@ -289,6 +298,10 @@ def test_finite_price_rejects_unusable_values():
     assert _finite_price("-3.00") is None
     assert _finite_price("0") is None
     assert _finite_price("$31.99") is None
+    # float(True) is 1.0 -- a malformed JSON-LD price of `true` must not
+    # persist as a real $1.
+    assert _finite_price(True) is None
+    assert _finite_price(False) is None
 
 
 def test_product_nodes_reads_top_level_lists_and_graph():
@@ -629,6 +642,24 @@ async def test_search_accepts_a_cd_page_for_a_formatless_release(browser_page):
     page = _FakePage(browser_page, {PRODUCT_URL: (_CD_PAGE, 200)})
     results = await Crawler().search(RELEASE, page)
     assert [r["price"] for r in results] == [12.99]
+
+
+async def test_search_raises_when_an_offer_payload_is_unreadable(browser_page):
+    # One node's out-of-stock offer next to another node whose offers payload
+    # is a bare string must not add up to a confirmed miss -- the dropped
+    # payload is a half-parsed page.
+    html = (
+        _PAGE_HEAD
+        + _ld('{"@type": "Product", "name": "Sample Album",'
+              ' "offers": {"@type": "Offer", "price": "31.99", "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/OutOfStock"}}')
+        + _ld('{"@type": "Product", "name": "Sample Album",'
+              ' "offers": "coming soon"}')
+        + "</head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    with pytest.raises(RuntimeError, match="price signals"):
+        await Crawler().search(RELEASE, page)
 
 
 async def test_search_raises_when_a_priced_page_also_half_parses(browser_page):
