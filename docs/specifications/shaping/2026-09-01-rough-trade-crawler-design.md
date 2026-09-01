@@ -185,16 +185,25 @@ is exactly what the caller does with it.
 
 ### Reading a product page
 
-1. `goto(candidate, wait_until="domcontentloaded")`; HTTP 404 → next
-   candidate (or a confirmed miss when it was the last).
+1. `goto(candidate, wait_until="domcontentloaded")`. A 429 is read off the
+   response *before* any challenge or title handling and raises a plain
+   `RuntimeError` — never `BotDetectedError`, whose fresh-context retry
+   would repeat the probe within seconds, and never a parse, whatever the
+   body settled into: Cloudflare's rate-limit interstitial pairs a
+   challenge title with a 429, and this repo's policy is to never retry
+   while a site is rate-limiting. An HTTP 404 → next candidate (or a
+   confirmed miss when it was the last).
 2. Wait out Cloudflare's interstitial by polling the title
    (`discogs_marketplace._await_settled_title` pattern); a challenge title
    that never settles raises `BotDetectedError`. Any other ≥400 status
    whose settled page fails the identity check also raises
    `BotDetectedError` — on this site a non-404 error page is the Cloudflare
    wall, not a product answer. A page that *passes* the identity check is
-   parsed whatever the status says: a cleared challenge reloads the real
-   page while `goto()`'s response object still holds the interstitial's 403.
+   parsed past exactly one error status, the 403 a cleared challenge is
+   known to leave behind in `goto()`'s response object while the real page
+   reloads; a matching page under any other error status is a combination
+   the crawler has no account of and raises `BotDetectedError` rather than
+   trusting an error response's body.
 3. Identity check: the settled `<title>` is split on its first literal
    `" - "` delimiter; the segment before it must equal the release's artist
    exactly (normalized) — comparing normalized whole titles instead would
@@ -222,9 +231,11 @@ is exactly what the caller does with it.
    is a miss — never a parse attempt against
    the wrong page — but only with positive evidence of what was landed on: a
    not-found page, or a structurally valid Rough Trade *product* page for
-   some other product (the delimiter, the branding, and a format marker —
-   "Access Denied - Rough Trade" has no format marker and does not
-   qualify). A 200 whose title is neither (a maintenance page, a consent
+   some other product (the delimiter, the branding, and a format marker
+   *after* the first delimiter, where a product title's name/format segment
+   lives — "Access Denied - Rough Trade" has no marker at all, and "News on
+   Vinyl - Rough Trade" carries one only in the segment where a product
+   title keeps its artist; neither qualifies). A 200 whose title is neither (a maintenance page, a consent
    wall) is unclassifiable and raises: a miss there would clear a stored
    price with no site-health signal recorded, since this crawler's empty
    results bypass the breaker.
@@ -236,7 +247,12 @@ is exactly what the caller does with it.
      whose `url`/`@id` names this product's path is this page's product
      whatever it is called, one naming another path is not whatever it is
      called (the guard against a carousel node for a same-titled album by
-     another artist), and a url-less node is read only when its name is
+     another artist). Both fields are read when both exist — returning on
+     the first would let a carousel node ride a matching `url` past an
+     `@id` naming its real product — and a node whose two fields contradict
+     each other (one matching, one naming another product) has no identity
+     the parser can trust, so it poisons the read like an unparsable offer.
+     A url-less node is read only when its name is
      the bare release title as the *whole* name (no suffix tolerance — a
      bare "{title} - {anything}" also reads as someone else's
      "Artist - Title"), or the "Artist - Title[ - edition suffix]" shape

@@ -795,6 +795,16 @@ async def test_search_raises_on_a_branded_site_page_without_a_product_shape(brow
         await Crawler().search(RELEASE, page)
 
 
+async def test_search_raises_on_a_marker_word_in_a_site_pages_leading_segment(browser_page):
+    # "News on Vinyl - Rough Trade" carries a format-marker word, but only
+    # in the segment where a product title keeps its artist -- it is a site
+    # page, and a confirmed-miss reading here would clear a stored price.
+    html = "<html><head><title>News on Vinyl - Rough Trade</title></head><body></body></html>"
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    with pytest.raises(RuntimeError, match="unrecognised page"):
+        await Crawler().search(RELEASE, page)
+
+
 async def test_search_treats_a_wrong_product_landing_as_a_miss(browser_page):
     page = _FakePage(browser_page, {PRODUCT_URL: (_fixture("different_product.html"), 200)})
     assert await Crawler().search(RELEASE, page) == []
@@ -943,6 +953,24 @@ async def test_search_reads_array_valued_node_urls(browser_page):
     page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
     results = await Crawler().search(RELEASE, page)
     assert [r["price"] for r in results] == [31.99]
+
+
+async def test_search_raises_when_a_nodes_url_and_id_contradict(browser_page):
+    # A node whose url claims this page while its @id names another product
+    # has no identity the parser can trust -- it must poison the read, not
+    # ride the matching url in as this page's price.
+    html = (
+        _PAGE_HEAD
+        + _ld('{"@type": "Product", "name": "Sample Album",'
+              ' "url": "https://www.roughtrade.com/en-us/product/sample-artist/sample-album",'
+              ' "@id": "https://www.roughtrade.com/en-us/product/other-artist/other-album",'
+              ' "offers": {"@type": "Offer", "price": "5.99", "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/InStock"}}')
+        + "</head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    with pytest.raises(RuntimeError, match="price signals"):
+        await Crawler().search(RELEASE, page)
 
 
 async def test_search_raises_on_an_unreadable_node_url(browser_page):
@@ -1139,6 +1167,42 @@ async def test_search_never_bot_retries_a_429(browser_page):
     limited = ("<html><head><title>Rate limited</title></head><body></body></html>", 429)
     page = _FakePage(browser_page, {PRODUCT_URL: limited})
     with pytest.raises(RuntimeError, match="429"):
+        await Crawler().search(RELEASE, page)
+
+
+async def test_search_never_parses_a_matching_body_served_with_a_429(browser_page):
+    # The 429 must be read before the title: a matching product body served
+    # with a rate-limit status must not be parsed as success while the site
+    # is asking for backoff.
+    page = _FakePage(
+        browser_page, {PRODUCT_URL: (_fixture("product_in_stock.html"), 429)}
+    )
+    with pytest.raises(RuntimeError, match="429"):
+        await Crawler().search(RELEASE, page)
+
+
+async def test_search_never_bot_retries_a_rate_limited_challenge(browser_page):
+    # Cloudflare's rate-limit interstitial pairs a challenge title with a
+    # 429; the challenge path's BotDetectedError would retry the whole probe
+    # within seconds, so the status has to win. (BotDetectedError subclasses
+    # Exception, not RuntimeError, so this asserts the plain-failure path.)
+    limited = (
+        "<html><head><title>Just a moment...</title></head><body></body></html>",
+        429,
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: limited})
+    with pytest.raises(RuntimeError, match="429"):
+        await Crawler().search(RELEASE, page)
+
+
+async def test_search_raises_on_a_matching_body_with_an_unexplained_error_status(browser_page):
+    # The matching-title exception covers only the cleared challenge's known
+    # 403; a product body served with a 500 is a combination this crawler
+    # has no account of, and parsing it would trust an error response.
+    page = _FakePage(
+        browser_page, {PRODUCT_URL: (_fixture("product_in_stock.html"), 500)}
+    )
+    with pytest.raises(BotDetectedError):
         await Crawler().search(RELEASE, page)
 
 

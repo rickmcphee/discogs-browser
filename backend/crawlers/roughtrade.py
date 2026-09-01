@@ -281,10 +281,16 @@ def _product_nodes(ldjson_texts: list) -> tuple:
 def _node_scope(node: dict, product_path: str) -> str:
     """Where a Product node's own url/@id says it belongs.
 
-    "match": it names this product's path (locale-full or locale-less);
-    "other": it names some other path -- a recommendation node, whatever its
-    name claims; "unknown": it carries neither field.
+    "match": its identifiers name this product's path (locale-full or
+    locale-less); "other": they name some other path -- a recommendation
+    node, whatever its name claims; "ambiguous": an identifier is present
+    but unreadable, or url and @id contradict each other -- a node whose url
+    claims this page while its @id names another product has no identity
+    this parser can trust; "unknown": it carries neither field. Both fields
+    are read when both exist: returning on the first would let a carousel
+    node ride a matching url past an @id naming its real product.
     """
+    field_verdicts = []
     for key in ("url", "@id"):
         value = node.get(key)
         if value is None:
@@ -319,15 +325,27 @@ def _node_scope(node: dict, product_path: str) -> str:
             verdicts.add(
                 "match" if path in (product_path, "/en-us" + product_path) else "other"
             )
-        # A member explicitly naming this product's path outweighs aliases; a
-        # carousel node for another product never lists this product's path.
+        # Within one field a member explicitly naming this product's path
+        # outweighs aliases; a carousel node for another product never lists
+        # this product's path among its own aliases.
         if "match" in verdicts:
-            return "match"
-        if "other" in verdicts:
-            return "other"
-        if "unreadable" in verdicts:
-            return "ambiguous"
-    return "unknown"
+            field_verdicts.append("match")
+        elif "other" in verdicts:
+            field_verdicts.append("other")
+        elif "unreadable" in verdicts:
+            field_verdicts.append("ambiguous")
+        # else: every member was fragment/query-only -- no evidence.
+    if not field_verdicts:
+        return "unknown"
+    if "ambiguous" in field_verdicts:
+        return "ambiguous"
+    if "match" in field_verdicts and "other" in field_verdicts:
+        # url and @id disagree about which product this node is. The alias
+        # argument does not span fields: these are two declarations of the
+        # node's identity, and a contradiction between them is exactly the
+        # shape a mislabelled carousel node would take.
+        return "ambiguous"
+    return field_verdicts[0]
 
 
 def _is_offer_shaped(member) -> bool:
@@ -460,10 +478,16 @@ def _recognized_non_match(page_title: str) -> bool:
     lower = page_title.lower()
     if "not found" in lower or "404" in lower:
         return True
+    # The format marker must sit after the first " - ", where a product
+    # title's name/format segment lives -- scanning the whole title would
+    # let a branded site page whose *leading* segment happens to carry a
+    # marker word ("News on Vinyl - Rough Trade") classify as a confirmed
+    # different-product miss and clear a stored price.
+    _, sep, rest = page_title.partition(" - ")
     return (
-        " - " in page_title
+        bool(sep)
         and "rough trade" in lower
-        and bool(_PRODUCT_TITLE_SHAPE_RE.search(page_title))
+        and bool(_PRODUCT_TITLE_SHAPE_RE.search(rest))
     )
 
 
@@ -603,13 +627,28 @@ class Crawler:
         try:
             for url in candidates:
                 response = await page.goto(url, wait_until="domcontentloaded")
+
+                status = response.status if response else None
+                if status == 429:
+                    # Read before challenge or title handling, because both
+                    # of those paths retry: the challenge check raises
+                    # BotDetectedError (fresh-context retry within seconds)
+                    # and a matching title would parse the page as success.
+                    # A rate-limited site gets neither -- this repo's 429
+                    # policy is to never retry while a site is rate-limiting
+                    # (shopify_catalog.iter_products records why), so a
+                    # plain failure the breaker counts, whatever the body
+                    # settled into.
+                    raise RuntimeError(
+                        f"HTTP 429 (rate limited) on {url} -- not retried"
+                    )
+
                 await sleep(random.uniform(1, 2))
 
                 page_title = await self._settled_title(page)
                 if any(c in page_title.lower() for c in _CHALLENGE_TITLES):
                     raise BotDetectedError(f"challenge did not clear on {url}")
 
-                status = response.status if response else None
                 if status == 404:
                     log.debug("[Rough Trade] 404 for %s", url)
                     continue
@@ -619,15 +658,6 @@ class Crawler:
                 # own (say) CD page into a price-clearing miss.
                 if not self._title_matches(page_title, artist, title,
                                            release.get("format") or ""):
-                    if status == 429:
-                        # A plain failure, never BotDetectedError: the
-                        # bot-retry path would repeat the whole probe within
-                        # seconds, and this repo's 429 policy is to never
-                        # retry while a site is rate-limiting
-                        # (shopify_catalog.iter_products records why).
-                        raise RuntimeError(
-                            f"HTTP 429 (rate limited) on {url} -- not retried"
-                        )
                     if status is not None and status >= 400:
                         # An error status whose settled page is neither a
                         # challenge nor this product is the Cloudflare wall
@@ -652,9 +682,14 @@ class Crawler:
                     log.debug("[Rough Trade] title %r does not match %s - %s",
                               page_title, artist, title)
                     continue
-                # A matching product title trumps the status: a cleared
-                # challenge reloads the real page while goto's response object
-                # still holds the interstitial's 403.
+                # A matching product title trumps only the one error status a
+                # cleared challenge is known to leave behind: the real page
+                # reloads while goto's response object still holds the
+                # interstitial's 403. Any other error status under a matching
+                # title is a combination this crawler has no account of, and
+                # parsing it would trust a body served with a server error.
+                if status is not None and status >= 400 and status != 403:
+                    raise BotDetectedError(f"HTTP {status} on {url}")
 
                 # The slug guess can redirect to the canonical, suffixed
                 # product URL ("/sample-album" -> "/sample-album-155"); node
