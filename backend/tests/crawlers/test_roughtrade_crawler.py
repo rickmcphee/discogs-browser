@@ -925,6 +925,70 @@ async def test_search_scopes_nodes_by_the_landed_url_after_a_redirect(browser_pa
     assert [(r["price"], r["url"]) for r in results] == [(27.99, canonical)]
 
 
+def test_landed_slug_confirms_full_title():
+    t = "International Superhits And More Anthology"
+    base = "https://www.roughtrade.com/en-us/product/sample-artist/"
+    assert roughtrade._landed_slug_is_full_title(
+        base + "international-superhits-and-more-anthology", t)
+    assert roughtrade._landed_slug_is_full_title(
+        base + "international-superhits-and-more-anthology-155", t)
+    assert not roughtrade._landed_slug_is_full_title(
+        base + "international-superhits-and-more-anthol", t)
+    assert not roughtrade._landed_slug_is_full_title(
+        base + "international-super", t)
+
+
+_LONG_RELEASE = {"artist": "Sample Artist",
+                 "title": "International Superhits And More Anthology"}
+_LONG_URL = ("https://www.roughtrade.com/en-us/product/sample-artist/"
+             "international-superhits-and-more-anthology")
+
+
+async def test_search_rejects_a_sibling_whose_full_title_reads_as_a_cut(browser_page):
+    # A fuzzy redirect lands on a real sibling product whose full title is a
+    # leading fragment of this release's ("... And More Anthol"): the span
+    # is past the truncation length, but the landed slug is not the full
+    # title's, so no truncation reading applies -- the page is a
+    # different-product miss and its price must not be persisted.
+    sibling = ("https://www.roughtrade.com/en-us/product/sample-artist/"
+               "international-superhits-and-more-anthol")
+    html = (
+        "<html><head>"
+        "<title>Sample Artist - International Superhits And More Anthol"
+        " on Vinyl LP | Rough Trade</title>"
+        + _ld('{"@type": "Product",'
+              ' "url": "' + sibling + '",'
+              ' "offers": {"@type": "Offer", "price": "19.99", "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/InStock"}}')
+        + "</head><body></body></html>"
+    )
+    page = _FakePage(
+        browser_page, {_LONG_URL: (html, 200)}, redirects={_LONG_URL: sibling}
+    )
+    assert await Crawler().search(_LONG_RELEASE, page) == []
+
+
+async def test_search_still_reads_a_truncated_title_on_the_full_title_slug(browser_page):
+    # The canonical-suffix redirect keeps the full title's slug, so the cut
+    # <title> is genuinely display truncation and the page still parses.
+    canonical = _LONG_URL + "-155"
+    html = (
+        "<html><head>"
+        "<title>Sample Artist - International Superhits And More Anthol"
+        " on Vinyl LP | Rough Trade</title>"
+        + _ld('{"@type": "Product",'
+              ' "url": "' + canonical + '",'
+              ' "offers": {"@type": "Offer", "price": "27.99", "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/InStock"}}')
+        + "</head><body></body></html>"
+    )
+    page = _FakePage(
+        browser_page, {_LONG_URL: (html, 200)}, redirects={_LONG_URL: canonical}
+    )
+    results = await Crawler().search(_LONG_RELEASE, page)
+    assert [(r["price"], r["url"]) for r in results] == [(27.99, canonical)]
+
+
 async def test_search_ignores_nodes_from_other_locales_or_origins(browser_page):
     # A same-slug en-gb node prices in GBP, and a foreign-origin node is not
     # this store's at all -- a suffix match alone would admit both.

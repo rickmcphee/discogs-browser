@@ -185,7 +185,8 @@ def _format_conflicts(page_format: Optional[str], release_format: str) -> bool:
     return False
 
 
-def _title_core_matches(expected: list, got: list) -> bool:
+def _title_core_matches(expected: list, got: list,
+                        allow_truncation: bool = True) -> bool:
     """Does a page's product-name core name exactly this release?
 
     `got` is the name core -- delimiter/branding/format-marker segments
@@ -194,12 +195,18 @@ def _title_core_matches(expected: list, got: list) -> bool:
     required, word for word. The one relaxation is the documented mid-word
     truncation of live page titles ("...Start Your Ear Off R"): the final
     word may be a leading fragment of the final expected word, once the
-    matched span has reached the length live titles truncate at.
+    matched span has reached the length live titles truncate at. Length
+    alone cannot prove a cut, though -- a real sibling product whose full
+    title *is* that leading fragment reads identically -- so the caller
+    only allows it with independent evidence that the full title names the
+    landed page (search() requires the landed slug to be the full title's).
     """
     if not expected or not got:
         return False
     if got == expected:
         return True
+    if not allow_truncation:
+        return False
     if len(got) != len(expected) or got[:-1] != expected[:-1]:
         return False
     fragment = got[-1]
@@ -208,6 +215,32 @@ def _title_core_matches(expected: list, got: list) -> bool:
     if not expected[-1].startswith(fragment):
         return False
     return len(" ".join(got)) >= _TRUNCATION_MIN_CHARS
+
+
+_CANONICAL_SLUG_SUFFIX_RE = re.compile(r"-\d+$")
+
+
+def _landed_slug_is_full_title(landed_url: str, title: str) -> bool:
+    """Does the landed URL's product slug spell out the full release title?
+
+    The independent evidence the truncation relaxation needs: candidate
+    URLs are built from the full title's slug, so a page still sitting at
+    that slug (or at it plus the canonical numeric suffix a redirect
+    appends -- "/sample-album" -> "/sample-album-155") is the full-title
+    product, and a cut <title> is genuinely display truncation. A redirect
+    that lands anywhere else -- say a platform fuzzy-matching the unknown
+    slug "/international-superhits" to a real sibling product at
+    "/international-super" -- offers no such proof, and there the cut
+    reading would persist the sibling's price.
+    """
+    slug = _slugify(title)
+    if not slug:
+        return False
+    last = urlparse(landed_url).path.rstrip("/").rsplit("/", 1)[-1].lower()
+    if last == slug:
+        return True
+    return (bool(_CANONICAL_SLUG_SUFFIX_RE.search(last))
+            and _CANONICAL_SLUG_SUFFIX_RE.sub("", last) == slug)
 
 
 def _name_matches(name: str, artist: str, title: str) -> bool:
@@ -574,7 +607,8 @@ class Crawler:
 
     @staticmethod
     def _title_matches(page_title: str, artist: str, title: str,
-                       release_format: str = "") -> bool:
+                       release_format: str = "",
+                       allow_truncation: bool = True) -> bool:
         """Did the slug land on this release's product page?
 
         Confirmed page titles are "{Artist} - {Title}[ format marker][ -
@@ -611,7 +645,8 @@ class Crawler:
         for end in range(1, len(segments) + 1):
             candidate_raw = " - ".join(segments[:end])
             candidate = _FORMAT_MARKER_RE.sub("", candidate_raw)
-            if _title_core_matches(title_words, _norm_words(candidate)):
+            if _title_core_matches(title_words, _norm_words(candidate),
+                                   allow_truncation):
                 return not _format_conflicts(
                     _page_format_after_core(candidate_raw, rest), release_format
                 )
@@ -674,11 +709,24 @@ class Crawler:
                     log.debug("[Rough Trade] 404 for %s", url)
                     continue
 
+                # The slug guess can redirect to the canonical, suffixed
+                # product URL ("/sample-album" -> "/sample-album-155"); node
+                # scoping and the persisted listing must use where the page
+                # actually landed, or the real product's url/@id classifies
+                # as "other" and the valid page raises.
+                landed_url = getattr(page, "url", "") or url
+
                 # An absent format passes through as unknown -- forcing a
                 # default would turn a formatless release's landing on its
-                # own (say) CD page into a price-clearing miss.
-                if not self._title_matches(page_title, artist, title,
-                                           release.get("format") or ""):
+                # own (say) CD page into a price-clearing miss. The mid-word
+                # truncation relaxation is allowed only when the landed slug
+                # spells out the full release title: a redirect anywhere
+                # else could be a sibling product whose full title *is* the
+                # cut prefix, which must read as a mismatch, not a cut.
+                if not self._title_matches(
+                    page_title, artist, title, release.get("format") or "",
+                    allow_truncation=_landed_slug_is_full_title(landed_url, title),
+                ):
                     if status is not None and status >= 400:
                         # An error status whose settled page is neither a
                         # challenge nor this product is the Cloudflare wall
@@ -712,12 +760,6 @@ class Crawler:
                 if status is not None and status >= 400 and status != 403:
                     raise BotDetectedError(f"HTTP {status} on {url}")
 
-                # The slug guess can redirect to the canonical, suffixed
-                # product URL ("/sample-album" -> "/sample-album-155"); node
-                # scoping and the persisted listing must use where the page
-                # actually landed, or the real product's url/@id classifies
-                # as "other" and the valid page raises.
-                landed_url = getattr(page, "url", "") or url
                 listings = await self._read_listings_when_ready(
                     page, landed_url, artist, title
                 )

@@ -222,7 +222,13 @@ is exactly what the caller does with it.
    final word may be a leading fragment of the title's final word, once
    the matched span has reached the length live titles truncate at (~30+
    characters — "International Super" must not pass for "International
-   Superhits …"). The title's format signals — the core's trailing marker
+   Superhits …") — and only when the landed URL's product slug spells out
+   the *full* release title (as built, or with the canonical numeric
+   suffix a redirect appends). Length alone cannot prove a cut: a real
+   sibling product whose full title *is* the leading fragment reads
+   identically, and a redirect landing anywhere but the full-title slug
+   could be exactly that sibling, so there the cut reading is a mismatch,
+   not a truncation. The title's format signals — the core's trailing marker
    ("on CD") and the parenthesised later segments ("- (CD)", "- (LP -
    Rainbow Road)") — are also compared against the release's own format: a
    vinyl release's slug resolving to the CD product (or vice versa) is a
