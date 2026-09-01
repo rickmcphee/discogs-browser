@@ -240,6 +240,37 @@ async def test_sync_collection_enqueues_crawl_queue_for_missing_listings(pg_sche
 
 
 @respx.mock
+async def test_sync_broadcasts_sanitized_error_when_fields_fetch_fails(pg_schema, monkeypatch):
+    # Pins the guard around discogs.fetch_collection_fields to the exception
+    # type the client actually raises. authlib >=1.8 raises
+    # httpx2.HTTPStatusError, so an `except httpx.HTTPStatusError` there stops
+    # matching and the raw exception escapes to the generic sync-failure path
+    # instead of this sanitized broadcast.
+    import config
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(403, json={"message": "You don't have permission"})
+    )
+
+    manager = CrawlManager()
+    await manager._sync_collection(user["id"], "all")
+
+    errors = [e for e in manager.recent_events() if e["status"] == "sync_error"]
+    assert [e["error"] for e in errors] == ["Discogs request failed"]
+
+
+@respx.mock
 async def test_sync_collection_captures_date_added(pg_schema, monkeypatch):
     import config
     monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
@@ -3492,6 +3523,54 @@ async def test_sync_stock_does_not_count_a_429_toward_the_cooloff(pg_schema):
 
     assert manager._site_consecutive_failures.get(throttled_id, 0) == 0
     assert manager._site_cooldown_until.get(throttled_id, 0) == 0
+
+
+async def test_sync_stock_does_not_count_a_kind_changed_snapshot_toward_synced(pg_schema, caplog):
+    """The forward half of the rolling-deploy kind-change race: the crawler
+    converts to `release` mid-crawl, so replace_stock_items() returns None
+    instead of writing the stale snapshot -- and returns None rather than []
+    precisely so this caller can tell a dropped write apart from a genuinely
+    empty one. Counting the dropped items toward total_synced or broadcasting
+    stock_sync_progress for them would report a snapshot that was never
+    persisted."""
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Converting Site", "/x.py", crawler_type="catalog")
+        conn.commit()
+        crawler_id = conn.execute(
+            "SELECT id FROM crawlers WHERE site_name = 'Converting Site'"
+        ).fetchone()["id"]
+
+    async def _items():
+        with db.get_admin_pool().connection() as conn:
+            db.register_crawler(conn, "Converting Site", "/x.py", crawler_type="release")
+            conn.commit()
+        yield {"artist": "A", "title": "T", "url": "https://x/1", "price": 5.0, "currency": "USD"}
+
+    plugin = AsyncMock()
+    plugin.crawl_catalog = lambda: _items()
+    plugin._db_id = crawler_id
+    plugin._db_site_name = "Converting Site"
+
+    manager = CrawlManager()
+    with patch("crawler.load_enabled_crawlers", return_value=[plugin]), \
+         caplog.at_level(logging.WARNING, logger="db"):
+        await manager._sync_stock()
+
+    with db.get_admin_pool().connection() as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM stock_items WHERE crawler_id = %s", [crawler_id]
+        ).fetchone()["count"]
+        last_run = conn.execute(
+            "SELECT last_run FROM crawlers WHERE id = %s", [crawler_id]
+        ).fetchone()["last_run"]
+    assert count == 0
+    assert last_run is None
+
+    events = manager.recent_events()
+    assert "stock_sync_progress" not in [e["status"] for e in events]
+    complete = [e for e in events if e["status"] == "stock_sync_complete"]
+    assert complete[0]["synced"] == 0
+    assert any("no longer a catalog kind" in r.getMessage() for r in caplog.records)
 
 
 async def test_sync_stock_completion_log_names_failed_and_skipped_sources(pg_schema, caplog):

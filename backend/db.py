@@ -1408,6 +1408,46 @@ def crawler_is_release(conn, crawler_id: int) -> bool:
     return bool(row) and row["crawler_type"] == "release"
 
 
+def crawler_is_catalog(conn, crawler_id: int) -> bool:
+    """Whether the crawler is still a catalog kind, read at write time.
+
+    The forward twin of crawler_is_release(): _sync_stock snapshots the
+    enabled catalog crawlers before crawling, and a kind change can land
+    while a source's crawl is in flight -- register_crawler() on a newer
+    deploy flipping the crawler to `release` and deleting its catalog-era
+    snapshot (stock_items with release_id IS NULL). A replace_stock_items()
+    call after that rewrites the whole snapshot for a crawler that is no
+    longer a catalog kind, and nothing ever deletes it again: that function
+    only runs for catalog kinds, and the conversion cleanup only fires on a
+    kind change that has already happened.
+
+    Locked for the same reason as crawler_is_release(): under READ COMMITTED
+    a plain read neither waits for an in-flight conversion nor keeps one out
+    until this transaction commits. Taken first, it holds register_crawler()'s
+    UPDATE off until this transaction's snapshot write is committed and the
+    conversion's DELETE can see it; taken second, it waits the conversion out
+    and reads the new kind.
+
+    FOR NO KEY UPDATE here, not FOR SHARE: _sync_stock calls
+    update_crawler_last_run() -- an UPDATE on this same row -- in the same
+    transaction right after the snapshot write. Under FOR SHARE that second
+    statement is a lock upgrade: safe while this transaction is the row's
+    only locker (a sole holder's upgrade proceeds even past a queued
+    register_crawler() UPDATE), but FOR SHARE admits other share lockers
+    concurrently, and an upgrade attempted with another share holder
+    present and an UPDATE queued behind them is Postgres's classic row-lock
+    deadlock. FOR NO KEY UPDATE is already as strong as what
+    update_crawler_last_run() needs -- no upgrade ever happens -- and
+    admits no second locker in the first place. Lock order stays consistent
+    with the conversion side regardless: both transactions lock the
+    crawlers row before touching stock_items.
+    """
+    row = conn.execute(
+        "SELECT crawler_type FROM crawlers WHERE id = %s FOR NO KEY UPDATE", [crawler_id]
+    ).fetchone()
+    return bool(row) and row["crawler_type"] in ("catalog", "catalog_browser")
+
+
 def get_eligible_crawlers(conn, is_release: bool, pending_crawler_ids: Optional[list] = None) -> list[dict]:
     return conn.execute(
         """
@@ -2642,7 +2682,25 @@ def _apply_canonical_artists(conn, rows: list[dict]) -> None:
         row["artist"] = labels.get(row["artist"], row["artist"])
 
 
-def replace_stock_items(conn, crawler_id: int, items: list[dict]) -> list[str]:
+def replace_stock_items(conn, crawler_id: int, items: list[dict]) -> Optional[list[str]]:
+    # Checked inside the write transaction, before the DELETE below, so the
+    # kind recheck and the snapshot write commit or skip together -- see
+    # crawler_is_catalog's docstring for the mid-sync conversion race this
+    # closes.
+    #
+    # Returns None on this branch, not [] -- [] is also the correct result of
+    # replacing a catalog with a genuinely empty snapshot, and a caller that
+    # can't tell the two apart would count a dropped write as a successful
+    # empty one. _sync_stock relies on that distinction to skip its own
+    # success-reporting (total_synced, the "found N items" log line, and the
+    # stock_sync_progress broadcast) for a write that never happened.
+    if not crawler_is_catalog(conn, crawler_id):
+        log.warning(
+            "Dropping a stock snapshot of %d items for crawler %d: "
+            "it is no longer a catalog kind",
+            len(items), crawler_id,
+        )
+        return None
     rows = []
     identity_rows = []
     item_keys = []
@@ -2915,7 +2973,14 @@ def get_stock_items(
     if exclude_crawler_ids:
         comparison_sql += " AND cr.id != ALL(%(exclude_crawler_ids)s)"
         comparison_params["exclude_crawler_ids"] = exclude_crawler_ids
-    comparison_sql += " ORDER BY l.item_key, cr.site_name"
+    # A "Cost" sort otherwise looked broken: the own row landed in numeric
+    # price order, but its comparison rows -- shown right beneath it in the
+    # same Cost column -- were always alphabetical by source regardless of
+    # `sort`, so the visible column jumped around whenever an item had more
+    # than one comparison. Only `price` gets a numeric sub-order; every other
+    # sort keeps the site-name order the comparisons have always had.
+    comparison_order = f"l.price {order_sql}, cr.site_name" if sort == "price" else "cr.site_name"
+    comparison_sql += f" ORDER BY l.item_key, {comparison_order}"
     comparisons_by_item: dict[str, list[dict]] = {}
     for c in conn.execute(comparison_sql, comparison_params).fetchall():
         comparisons_by_item.setdefault(c["item_key"], []).append(c)

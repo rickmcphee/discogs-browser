@@ -22,7 +22,13 @@ dependencies = [
     "psycopg[binary]>=3.3.4,<4.0",
     "psycopg-pool>=3.2,<4.0",
     "cryptography>=50.0.0,<51",
-    "authlib>=1.7.2,<2.0",
+    # >=1.8: from 1.8 authlib's httpx_client transports over httpx2 whenever
+    # it is importable, and the tests mock through a transport injected into
+    # the OAuth1 clients (conftest.py's bridge fixture) whose module selection
+    # mirrors that same rule. 1.7.x always transports over httpx regardless,
+    # which would put the bridge's httpx2 responses inside an httpx client --
+    # the floor keeps both sides choosing identically.
+    "authlib>=1.8,<2.0",
 ]
 
 [project.optional-dependencies]

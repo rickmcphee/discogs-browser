@@ -3,6 +3,17 @@ from logging_config import get_logger
 import config
 from oauth_discogs import _require_consumer_credentials
 
+# authlib >=1.8 builds its clients on httpx2 when importable, httpx otherwise;
+# raise_for_status() therefore raises that module's HTTPStatusError. Mirror the
+# selection and re-export the type so callers can catch it without caring which
+# transport authlib picked.
+try:
+    import httpx2 as _transport_httpx
+except ImportError:
+    import httpx as _transport_httpx
+
+HTTPStatusError = _transport_httpx.HTTPStatusError
+
 log = get_logger("discogs")
 DISCOGS_API = "https://api.discogs.com"
 _USER_AGENT = "DiscogsCollectionBrowser/1.0 +https://github.com/local/discogs-browser"
@@ -14,6 +25,11 @@ _USER_AGENT = "DiscogsCollectionBrowser/1.0 +https://github.com/local/discogs-br
 # user's requests) indefinitely rather than failing after a bounded wait.
 _TIMEOUT = 30.0
 
+# Tests inject an in-memory transport here (see conftest.py's bridge fixture):
+# authlib >=1.8 transports over httpx2, which respx cannot patch, so mocking
+# has to enter through the client itself rather than the httpx module.
+_transport = None
+
 
 def _client(oauth_token: str, oauth_token_secret: str) -> OAuth1Client:
     _require_consumer_credentials()
@@ -24,6 +40,7 @@ def _client(oauth_token: str, oauth_token_secret: str) -> OAuth1Client:
         token_secret=oauth_token_secret,
         headers={"User-Agent": _USER_AGENT},
         timeout=_TIMEOUT,
+        transport=_transport,
     )
 
 
