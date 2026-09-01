@@ -363,9 +363,10 @@ def fast_search(monkeypatch):
         pass
 
     monkeypatch.setattr(roughtrade, "sleep", instant_sleep)
-    # The settle loop polls to a deadline; the challenge cases would each wait
-    # out the real 15s otherwise.
+    # The settle and signal-readiness loops poll to deadlines; the challenge
+    # and no-signal cases would each wait out the real 15s/5s otherwise.
     monkeypatch.setattr(roughtrade, "_SETTLE_TIMEOUT_MS", 300)
+    monkeypatch.setattr(roughtrade, "_SIGNALS_TIMEOUT_MS", 300)
 
 
 @pytest.fixture
@@ -642,6 +643,24 @@ async def test_search_accepts_a_cd_page_for_a_formatless_release(browser_page):
     page = _FakePage(browser_page, {PRODUCT_URL: (_CD_PAGE, 200)})
     results = await Crawler().search(RELEASE, page)
     assert [r["price"] for r in results] == [12.99]
+
+
+async def test_search_raises_on_mixed_currency_offers(browser_page):
+    # The worker persists matches[0] as the cheapest; sorting raw amounts
+    # across currencies would let the numerically smallest masquerade as
+    # cheapest with no exchange-rate comparison.
+    html = (
+        _PAGE_HEAD
+        + _ld('{"@type": "Product", "name": "Sample Album", "offers": ['
+              '{"@type": "Offer", "price": "24.50", "priceCurrency": "GBP",'
+              ' "availability": "https://schema.org/InStock"},'
+              '{"@type": "Offer", "price": "31.99", "priceCurrency": "USD",'
+              ' "availability": "https://schema.org/InStock"}]}')
+        + "</head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    with pytest.raises(RuntimeError, match="price signals"):
+        await Crawler().search(RELEASE, page)
 
 
 async def test_search_raises_when_an_offer_payload_is_unreadable(browser_page):

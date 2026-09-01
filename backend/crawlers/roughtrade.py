@@ -16,6 +16,12 @@ _CHALLENGE_TITLES = ("just a moment", "attention required", "checking your brows
 
 _SETTLE_TIMEOUT_MS = 15_000
 
+# How long to keep re-reading a page whose machine-readable signals have not
+# appeared yet before declaring drift: a cleared Cloudflare challenge (and any
+# late-hydrated markup) can update <title> before the replacement document's
+# head has finished loading.
+_SIGNALS_TIMEOUT_MS = 5_000
+
 # schema.org availability can arrive as a full URL ("https://schema.org/OutOfStock")
 # or a bare token; only the tail is meaningful. PreOrder/BackOrder stay purchasable
 # -- Rough Trade trades heavily in pre-orders, and a pre-order price is exactly
@@ -478,13 +484,15 @@ class Crawler:
                 # challenge reloads the real page while goto's response object
                 # still holds the interstitial's 403.
 
-                listings = await self._read_listings(page, url, artist, title)
+                listings = await self._read_listings_when_ready(page, url, artist, title)
                 if listings is None:
                     raise RuntimeError(
-                        f"no Product JSON-LD or price meta recognised on {url} "
-                        f"(page title {page_title!r}) -- the machine-readable "
-                        f"price signals this crawler depends on have drifted; "
-                        f"re-check {__name__} against the live page"
+                        f"no complete, attributable machine-readable price "
+                        f"signal on {url} (page title {page_title!r}) -- "
+                        f"Product JSON-LD / price metas absent, malformed, "
+                        f"half-parsed, mixed-currency, or unattributable; the "
+                        f"price signals this crawler depends on have drifted "
+                        f"-- re-check {__name__} against the live page"
                     )
                 if listings:
                     log.info("[Rough Trade] %d offer(s) for %s - %s, cheapest %s %s",
@@ -504,6 +512,20 @@ class Crawler:
                 await page.goto("about:blank")
             except Exception:
                 pass
+
+    async def _read_listings_when_ready(self, page, url: str, artist: str,
+                                        title: str) -> Optional[list]:
+        # A first read finding no signal is retried briefly before being
+        # declared drift: a cleared challenge's replacement document can
+        # carry its <title> before the head's JSON-LD/metas have loaded
+        # (discogs_marketplace._read_when_ready's rationale). None is the
+        # only retried outcome -- [] and listings are real answers.
+        deadline = time.monotonic() + _SIGNALS_TIMEOUT_MS / 1000
+        while True:
+            listings = await self._read_listings(page, url, artist, title)
+            if listings is not None or time.monotonic() >= deadline:
+                return listings
+            await page.wait_for_timeout(500)
 
     async def _read_listings(self, page, url: str, artist: str, title: str) -> Optional[list]:
         """Listings from the page's machine-readable signals, cheapest first.
@@ -568,6 +590,14 @@ class Crawler:
                 tallies["unparsed_available"] += len(anonymous_nodes)
         unavailable = tallies["unavailable"]
         unparsed_available = tallies["unparsed_available"]
+
+        # The en-us storefront prices in one currency; offers in mixed
+        # currencies would let the numerically smallest amount masquerade as
+        # cheapest with no exchange-rate comparison. Poisoned like an
+        # unparsable offer rather than sorted.
+        if len({listing["currency"] for listing in listings}) > 1:
+            unparsed_available += len(listings)
+            listings = []
 
         # An unparseable available offer poisons the whole JSON-LD read, not
         # just the empty case: returning the offers that *did* parse would
