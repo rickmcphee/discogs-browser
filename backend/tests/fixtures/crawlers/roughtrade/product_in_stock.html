@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<!-- Constructed to the schema.org/OpenGraph contract the crawler consumes,
+     not a capture of the live page: roughtrade.com's Cloudflare bot
+     management blocks every non-browser client reachable from the authoring
+     sandbox. See 2026-09-01-rough-trade-crawler-design.md, "Technical
+     grounding, and its limits". -->
+<html>
+<head>
+  <title>Sample Artist - Sample Album on Vinyl LP | Rough Trade - (LP) | Rough Trade</title>
+  <meta property="product:price:amount" content="31.99" />
+  <meta property="product:price:currency" content="USD" />
+  <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "BreadcrumbList",
+      "itemListElement": [
+        {"@type": "ListItem", "position": 1, "name": "Music", "item": "https://www.roughtrade.com/en-us"}
+      ]
+    }
+  </script>
+  <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "Product",
+      "name": "Sample Album",
+      "image": "https://static.roughtrade.com/sample-album.jpg",
+      "offers": [
+        {
+          "@type": "Offer",
+          "sku": "RT-LP-STD",
+          "price": "31.99",
+          "priceCurrency": "USD",
+          "availability": "https://schema.org/InStock"
+        },
+        {
+          "@type": "Offer",
+          "sku": "RT-LP-EXCL",
+          "price": "27.99",
+          "priceCurrency": "USD",
+          "availability": "https://schema.org/InStock"
+        },
+        {
+          "@type": "Offer",
+          "sku": "RT-LP-SIGNED",
+          "price": "49.99",
+          "priceCurrency": "USD",
+          "availability": "https://schema.org/OutOfStock"
+        }
+      ]
+    }
+  </script>
+</head>
+<body>
+  <main>
+    <h1>Sample Album</h1>
+    <p class="price">$31.99</p>
+  </main>
+  <!-- Recommendation carousel: visible dollar amounts, including one cheaper
+       than every real offer. The crawler must never read these. -->
+  <aside class="recommendations">
+    <div class="card">Other Artist - Other Album <span>$9.99</span></div>
+    <div class="card">Boxset Artist - Big Box <span>$1,499.00</span></div>
+  </aside>
+</body>
+</html>
