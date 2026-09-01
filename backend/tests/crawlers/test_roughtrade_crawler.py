@@ -307,8 +307,12 @@ def test_offer_listing_skips_unavailable():
     for availability in (
         "https://schema.org/OutOfStock", "http://schema.org/SoldOut",
         "OutOfStock", "Discontinued",
-        # JSON-LD also encodes the IRI as a node reference.
+        # JSON-LD also encodes the IRI as a node reference, or an array of
+        # either form.
         {"@id": "https://schema.org/OutOfStock"},
+        ["https://schema.org/OutOfStock"],
+        [{"@id": "https://schema.org/OutOfStock"}],
+        ["https://schema.org/InStock", "https://schema.org/OutOfStock"],
     ):
         offer = {"price": "31.99", "priceCurrency": "USD", "availability": availability}
         assert _offer_listing(offer, PRODUCT_URL) is None

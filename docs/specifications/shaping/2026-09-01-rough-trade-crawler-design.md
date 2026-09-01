@@ -170,8 +170,10 @@ first to shed Discogs `(2)` disambiguators. Candidates are tried in order,
 each a paced `page.goto`; probing stops at the first candidate that yields
 this release's own product page — a 404 *or* a wrong-product landing (the
 identity check below failing) moves on to the next candidate. Two candidates
-is the cap — this crawler's whole footprint is at most two product-page
-requests per release, quieter than one human click on the site's search box.
+is the cap per `search()` attempt — at most two product-page requests, and
+since `_paced_search()` retries the whole attempt once with a fresh context
+after a `BotDetectedError`, a challenged pass tops out at four. Either way,
+quieter than one human click on the site's search box.
 
 A release whose Rough Trade slug carries a numeric or edition suffix is
 simply missed. That trades recall for compliance and is accepted: `[]` from
@@ -301,10 +303,11 @@ sandbox could not perform.
 
 ## Load discipline
 
-- At most two product-page requests per release per pass, paced by the
-  manager's existing delays plus short in-search sleeps; no search-page
-  fan-out, no enumeration, no retry storms (`BotDetectedError` gets the
-  existing one-retry-with-fresh-context, then waits for the next pass).
+- At most two product-page requests per `search()` attempt — four per pass
+  on the challenged path, since `BotDetectedError` gets the existing
+  one-retry-with-fresh-context and then waits for the next pass — paced by
+  the manager's existing delays plus short in-search sleeps; no search-page
+  fan-out, no enumeration, no retry storms.
 - The crawler requests only paths `robots.txt` allows for general-purpose
   clients, and honours `Content-Signal: ai-train=no` — nothing crawled is
   training data.

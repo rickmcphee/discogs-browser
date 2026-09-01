@@ -236,14 +236,19 @@ def _iter_offers(offers) -> list:
 def _offer_unavailable(offer: dict) -> bool:
     """Is the offer deliberately marked unpurchasable?
 
-    JSON-LD encodes availability as a string IRI or as a node reference
-    ({"@id": "https://schema.org/OutOfStock"}); both forms must be read, or
-    an out-of-stock offer with a price passes as purchasable.
+    JSON-LD encodes availability as a string IRI, a node reference
+    ({"@id": "https://schema.org/OutOfStock"}), or an array of either; every
+    form must be read, or an out-of-stock offer with a price passes as
+    purchasable.
     """
     value = offer.get("availability")
-    if isinstance(value, dict):
-        value = value.get("@id")
-    return isinstance(value, str) and bool(_UNAVAILABLE_RE.search(value))
+    values = value if isinstance(value, list) else [value]
+    for item in values:
+        if isinstance(item, dict):
+            item = item.get("@id")
+        if isinstance(item, str) and _UNAVAILABLE_RE.search(item):
+            return True
+    return False
 
 
 def _offer_listing(offer: dict, url: str) -> Optional[dict]:
