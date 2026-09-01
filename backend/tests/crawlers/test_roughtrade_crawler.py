@@ -593,6 +593,36 @@ async def test_search_never_mixes_meta_namespaces(browser_page):
     assert [(r["price"], r["currency"]) for r in results] == [(24.99, "GBP")]
 
 
+async def test_search_waits_for_late_arriving_signals(browser_page, monkeypatch):
+    # A cleared challenge's replacement document (or hydration) can deliver
+    # its <title> before the head's JSON-LD exists; the readiness retry must
+    # pick the signal up once it lands instead of declaring drift. The
+    # fixture injects the Product node 400ms after load -- past the first
+    # read, inside the (re-raised) readiness deadline.
+    monkeypatch.setattr(roughtrade, "_SIGNALS_TIMEOUT_MS", 3000)
+    html = (
+        "<html><head>"
+        "<title>Sample Artist - Sample Album on Vinyl LP | Rough Trade</title>"
+        "<script>"
+        "setTimeout(function () {"
+        "  var s = document.createElement('script');"
+        "  s.type = 'application/ld+json';"
+        "  s.textContent = JSON.stringify({"
+        "    '@type': 'Product', 'name': 'Sample Album',"
+        "    'offers': {'@type': 'Offer', 'price': '27.99',"
+        "               'priceCurrency': 'USD',"
+        "               'availability': 'https://schema.org/InStock'}"
+        "  });"
+        "  document.head.appendChild(s);"
+        "}, 400);"
+        "</script>"
+        "</head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    results = await Crawler().search(RELEASE, page)
+    assert [r["price"] for r in results] == [27.99]
+
+
 async def test_search_raises_rather_than_scraping_visible_prices(browser_page):
     # The page shows $31.99 in plain text twice; without a machine-readable
     # signal the crawl must raise, not guess -- a free-text amount is as
