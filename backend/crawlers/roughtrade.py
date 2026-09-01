@@ -17,6 +17,10 @@ _CHALLENGE_TITLES = ("just a moment", "attention required", "checking your brows
 
 _SETTLE_TIMEOUT_MS = 15_000
 
+# The Discogs artist-name disambiguator ("Nirvana (2)"). Stripped for
+# identity comparison without clean_search_text()'s other removals.
+_ARTIST_DISAMBIGUATOR_RE = re.compile(r"\s*\(\d+\)\s*$")
+
 # How long to keep re-reading a page whose machine-readable signals have not
 # appeared yet before declaring drift: a cleared Cloudflare challenge (and any
 # late-hydrated markup) can update <title> before the replacement document's
@@ -96,7 +100,10 @@ def _norm_words(text: str) -> list:
     # into the same identity as "Were", and with the guessed slugs also
     # colliding, a wrong-product landing would pass both identity checks.
     # Both comparison sides render the apostrophe, so they split alike.
-    return [w for w in re.split(r"[^\w]+", text) if w]
+    # '&' survives as its own token for the same reason: "Sam & Dave" and a
+    # different artist "Sam Dave" collide on the guessed slug, and identity
+    # is what has to tell them apart.
+    return [w for w in re.split(r"[^\w&]+", text) if w]
 
 
 # Words that must never stand as a mid-word truncation fragment -- an
@@ -522,9 +529,13 @@ class Crawler:
         return title
 
     async def search(self, release: dict, page) -> list[dict]:
-        artist = clean_search_text(release.get("artist", ""))
-        # The raw title, for the same reason as _candidate_urls: stripping a
-        # trailing "(2)" would let a sibling page pass identity.
+        # For identity only the Discogs "(2)" disambiguator is stripped from
+        # the artist -- clean_search_text() would also drop '&', collapsing
+        # "Sam & Dave" into the same identity as a different artist named
+        # "Sam Dave" on the very slug the two collide on. The raw title, for
+        # the same reason as _candidate_urls: stripping a trailing "(2)"
+        # would let a sibling page pass identity.
+        artist = _ARTIST_DISAMBIGUATOR_RE.sub("", release.get("artist") or "").strip()
         title = (release.get("title") or "").strip()
         candidates = self._candidate_urls(release)
         if not candidates:
@@ -652,7 +663,11 @@ class Crawler:
         # is unattributable -- used only as the page's sole Product node,
         # and *poisoning* the read otherwise, exactly like an unparsable
         # offer, rather than being merged in or silently dropped.
-        product_path = "/" + "/".join(url.rstrip("/").split("/")[-3:])
+        # Built from the parsed path: a canonical redirect can append a query
+        # string, which _node_scope() strips from node identifiers -- left in
+        # product_path it would classify the valid canonical node as "other".
+        landed_path = urlparse(url).path.rstrip("/")
+        product_path = "/" + "/".join(landed_path.split("/")[-3:]).lstrip("/")
         listings = []
         tallies = {"unavailable": 0, "unparsed_available": 0, "ambiguous": 0}
 

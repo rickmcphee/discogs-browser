@@ -126,6 +126,19 @@ def test_title_matches_sees_a_marker_after_an_edition_suffix():
     )
 
 
+def test_title_matches_keeps_the_ampersand_as_an_identity_token():
+    # "Sam & Dave" and a different artist "Sam Dave" collide on the guessed
+    # slug; the identity check is what has to tell them apart.
+    assert not Crawler._title_matches(
+        "Sam Dave - Sample Album on Vinyl LP | Rough Trade",
+        "Sam & Dave", "Sample Album",
+    )
+    assert Crawler._title_matches(
+        "Sam & Dave - Sample Album on Vinyl LP | Rough Trade",
+        "Sam & Dave", "Sample Album",
+    )
+
+
 def test_title_matches_preserves_non_latin_characters():
     # ASCII slugification would equate same-artist titles that differ only
     # in non-Latin characters, letting a sibling page pass identity.
@@ -774,7 +787,12 @@ async def test_search_scopes_nodes_by_the_landed_url_after_a_redirect(browser_pa
     # The slug guess redirects to the canonical suffixed product URL; the
     # node's @id names the canonical path and must still classify as this
     # page's product, and the persisted listing carries the landed URL.
-    canonical = "https://www.roughtrade.com/en-us/product/sample-artist/sample-album-155"
+    # The redirect also appends a query string, which must not leak into the
+    # scoped product path.
+    canonical = (
+        "https://www.roughtrade.com/en-us/product/sample-artist/sample-album-155"
+        "?channable=abc123"
+    )
     html = (
         _PAGE_HEAD
         + _ld('{"@type": "Product",'
