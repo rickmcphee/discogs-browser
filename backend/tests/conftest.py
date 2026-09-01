@@ -310,16 +310,22 @@ def _fast_catalog_crawl_sleep(request, monkeypatch):
         # delay fake_sleep has already made irrelevant. Patched per module for
         # the same reason `sleep` is: each did `from config import load_config`
         # at import, so patching config.load_config wouldn't reach them.
-        monkeypatch.setattr("shopify_catalog.sleep", fake_sleep)
+        # catalog_http.get_with_retry() owns the pacing sleep for every
+        # httpx-based catalog crawler, shopify_catalog.iter_products()
+        # included.
+        monkeypatch.setattr("catalog_http.sleep", fake_sleep)
         monkeypatch.setattr("shopify_catalog.load_config", lambda: {})
-        # angryyoungandpoor.py, amoeba.py, asbestosrecords.py,
-        # jetglowrecordings.py, ripplemusic.py, and sideonedummyrecords.py
-        # pace their own request directly rather than going through
-        # shopify_catalog.iter_products() -- patch their module-local `sleep`
-        # bindings too, when importable. asbestosrecords, jetglowrecordings,
-        # and ripplemusic are imported as "crawlers.<name>" (package
-        # submodules), not bare top-level names like the others, which is why
-        # their tuple entries carry the "crawlers." prefix.
+        # The Playwright-driven crawlers (angryyoungandpoor.py, amoeba.py,
+        # sideonedummyrecords.py) pace their own page.goto() directly rather
+        # than going through catalog_http -- patch their module-local `sleep`
+        # bindings too, when importable. Every module here also did
+        # `from config import load_config` at import, so patching
+        # config.load_config wouldn't reach them -- their local bindings are
+        # patched instead, including the httpx-based crawlers.
+        # asbestosrecords, jetglowrecordings, and ripplemusic are imported as
+        # "crawlers.<name>" (package submodules), not bare top-level names
+        # like the others, which is why their tuple entries carry the
+        # "crawlers." prefix.
         for module_name in ("angryyoungandpoor", "amoeba", "crawlers.asbestosrecords",
                             "crawlers.jetglowrecordings", "crawlers.ripplemusic",
                             "sideonedummyrecords"):

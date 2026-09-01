@@ -2,6 +2,18 @@
 
 _2026-08-02_
 
+**Amendment (2026-09-01, branch `claude/stock-crawl-timeout-j15zt4`):** the
+retry loop this spec describes inside `iter_products()`'s except block —
+paced non-429 retries bounded by `consecutive_failure_limit`, immediate raise
+on the first 429 with the response headers dumped at DEBUG — now lives in
+`catalog_http.get_with_retry()`, which `iter_products()` and every other
+httpx-based catalog crawler call per request. Semantics are unchanged; the
+move extends the same budget to the catalog crawlers that hand-rolled their
+own pagination (a transient `ConnectTimeout` had cost Dark Descent an entire
+crawl), and stamps an explicit 30s request timeout in place of httpx's 5s
+default. See
+[`../../specifications/shaping/2026-09-01-stock-crawl-timeout-retry-design.md`](../../specifications/shaping/2026-09-01-stock-crawl-timeout-retry-design.md).
+
 **Amendment (2026-08-28, branch `claude/store-crawler-activity-missing-1tybli`):** the non-429 retry rule described below — "Any other failure (timeout, DNS, non-429 HTTP status, etc.)" enters the `consecutive_failure_limit` budget — is **unchanged**, but `iter_products()` no longer reaches it at the one place it used to fire pointlessly. Shopify's storefront `products.json` refuses `page` past 100 with an HTTP 400 regardless of `limit`, so the endpoint reaches 25,000 products and no further, and there is no cursor alternative — it sends no `Link` header, unlike the Admin API. That ceiling used to be indistinguishable from a transient fault: the 400 was retried the full budget (10 paced requests, ~4 minutes, against a deterministic error) and then raised, and because `_sync_stock` skips `replace_stock_items()` entirely when a catalog crawl raises, **every product already fetched in that run was discarded**. A store larger than the ceiling therefore logged a full run of healthy page-fetch lines at INFO and then wrote no rows at all, with the explanatory line at ERROR — which `routers/logs.py`'s exact-level filter (`level = ANY(...)`, not level-and-above) hides from an INFO view. Waterloo Records hit this on every sync.
 
 `iter_products()` now stops before requesting page `_MAX_PAGE + 1` at all, so the ceiling is never a request and never an error, and logs that it stopped there at INFO (not WARNING) for the same log-filter reason `_sync_stock`'s swept-rows line does. That message says only that the ceiling was reached and that anything beyond it is unreachable — a collection of exactly `_MAX_PAGE * _PAGE_LIMIT` products also ends on a full page and is complete, so it does not claim products were left behind.
