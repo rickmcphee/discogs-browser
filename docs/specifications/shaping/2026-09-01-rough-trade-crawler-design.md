@@ -279,6 +279,10 @@ is exactly what the caller does with it.
    - usable offers → listings sorted cheapest-first, each
      `{url, price, shipping: None, currency, condition: None}`;
      currency from the signal, defaulting to USD on the `en-us` storefront.
+     A present currency is trimmed and uppercased and must be a
+     three-letter code — downstream only uppercases, so a verbatim
+     `" USD "` or `"usd"` would open its own price bucket; anything else
+     is schema drift and stays on the unparsed path.
    - every observed offer confirmed unpurchasable, none half-parsed → `[]`
      (the site answered: nothing purchasable). An *available* offer whose
      price could not be read poisons the whole JSON-LD read — even

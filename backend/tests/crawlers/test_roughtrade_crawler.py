@@ -515,10 +515,21 @@ def test_offer_listing_defaults_currency_to_usd():
 
 def test_offer_listing_rejects_a_present_but_malformed_currency():
     # Defaulting is only for an absent field: stamping USD over drifted data
-    # could persist the right amount in the wrong currency.
-    for currency in (True, {}, "", "   "):
+    # could persist the right amount in the wrong currency. Non-three-letter
+    # strings are drift too -- downstream only uppercases, so "US Dollars"
+    # or "$" would open its own price bucket.
+    for currency in (True, {}, "", "   ", "$", "US Dollars", "usd4"):
         offer = {"price": "31.99", "priceCurrency": currency}
         assert _offer_listing(offer, PRODUCT_URL) is None
+
+
+def test_offer_listing_normalizes_a_padded_or_lowercased_currency():
+    # db._normalized_currency and the frontend's formatPrice only uppercase,
+    # so " USD " or "usd" persisted verbatim becomes a separate bucket that
+    # renders without its symbol.
+    for currency in (" USD ", "usd", "Usd"):
+        offer = {"price": "31.99", "priceCurrency": currency}
+        assert _offer_listing(offer, PRODUCT_URL)["currency"] == "USD"
 
 
 def test_offer_listing_rejects_priceless_offer():
@@ -641,6 +652,23 @@ async def test_search_skips_a_meta_pair_with_a_blank_currency(browser_page):
         '<meta property="product:price:currency" content="   " />'
         '<meta property="og:price:amount" content="24.99" />'
         '<meta property="og:price:currency" content="GBP" />'
+        '<meta property="og:availability" content="instock" />'
+        "</head><body></body></html>"
+    )
+    page = _FakePage(browser_page, {PRODUCT_URL: (html, 200)})
+    results = await Crawler().search(RELEASE, page)
+    assert [(r["price"], r["currency"]) for r in results] == [(24.99, "GBP")]
+
+
+async def test_search_normalizes_a_padded_meta_currency(browser_page):
+    # The meta path cleans currencies like the JSON-LD path: " gbp "
+    # persisted verbatim would open its own price bucket downstream, where
+    # only uppercasing happens.
+    html = (
+        "<html><head>"
+        "<title>Sample Artist - Sample Album on Vinyl LP | Rough Trade</title>"
+        '<meta property="og:price:amount" content="24.99" />'
+        '<meta property="og:price:currency" content=" gbp " />'
         '<meta property="og:availability" content="instock" />'
         "</head><body></body></html>"
     )

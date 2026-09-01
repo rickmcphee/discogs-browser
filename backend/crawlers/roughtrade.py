@@ -381,6 +381,25 @@ def _is_aggregate_offer(offer: dict) -> bool:
     )
 
 
+_CURRENCY_CODE_RE = re.compile(r"^[A-Za-z]{3}$")
+
+
+def _clean_currency(value) -> Optional[str]:
+    """A trimmed, uppercased ISO-4217-shaped code, or None.
+
+    Downstream only uppercases (db._normalized_currency, the frontend's
+    formatPrice), so a verbatim " USD " or "usd" would open a separate
+    price bucket and render without its symbol. Anything that is not three
+    letters after trimming is schema drift, not a code to persist.
+    """
+    if not isinstance(value, str):
+        return None
+    code = value.strip()
+    if not _CURRENCY_CODE_RE.match(code):
+        return None
+    return code.upper()
+
+
 def _offer_availability(offer: dict) -> str:
     """"available", "unavailable", or "ambiguous".
 
@@ -441,12 +460,14 @@ def _offer_listing(offer: dict, url: str) -> Optional[dict]:
         price = _finite_price(offer.get("lowPrice"))
     if price is None:
         return None
-    # Defaulting is only for an *absent* currency; a present non-string or
-    # blank value is schema drift, and this crawler accepts non-USD offers,
-    # so silently stamping USD could persist the right amount in the wrong
-    # currency. Unparseable instead -- the loud path.
-    currency = offer.get("priceCurrency", "USD")
-    if not isinstance(currency, str) or not currency.strip():
+    # Defaulting is only for an *absent* currency; a present value that
+    # does not clean up to a three-letter code is schema drift, and this
+    # crawler accepts non-USD offers, so silently stamping USD could
+    # persist the right amount in the wrong currency. Unparseable instead
+    # -- the loud path.
+    raw_currency = offer.get("priceCurrency")
+    currency = "USD" if raw_currency is None else _clean_currency(raw_currency)
+    if currency is None:
         return None
     return {
         "url": url,
@@ -875,14 +896,16 @@ class Crawler:
             price = _finite_price(meta.get(amount_key))
             if price is None:
                 continue
-            currency = meta.get(currency_key)
-            if currency is None:
+            raw_currency = meta.get(currency_key)
+            if raw_currency is None:
                 currency = "USD"
-            elif not isinstance(currency, str) or not currency.strip():
-                # Same rule as the JSON-LD path: default only for an absent
-                # currency, and skip a malformed pair rather than persisting
-                # a blank or stamping USD over drifted data.
-                continue
+            else:
+                currency = _clean_currency(raw_currency)
+                if currency is None:
+                    # Same rule as the JSON-LD path: default only for an
+                    # absent currency, and skip a malformed pair rather than
+                    # persisting drifted data or stamping USD over it.
+                    continue
             return [{
                 "url": url,
                 "price": price,
