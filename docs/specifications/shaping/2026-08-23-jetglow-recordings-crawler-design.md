@@ -214,3 +214,7 @@ feed. `respx` mocks the one HTTP call.
 module-local `sleep` rather than going through
 `shopify_catalog.iter_products()`, so without that entry its tests would
 sleep `crawl_delay_seconds` (default 30s) for real.
+*(2026-09-01: pacing and retries now come from
+`catalog_http.get_with_retry()` — the conftest entry survives only for its
+`load_config` patch; the module-local `sleep` binding is gone. See
+[`2026-09-01-stock-crawl-timeout-retry-design.md`](2026-09-01-stock-crawl-timeout-retry-design.md).)*
