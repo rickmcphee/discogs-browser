@@ -262,12 +262,30 @@ def test_title_matches_ignores_format_words_inside_the_release_title():
         "Sample Artist - Live on Vinyl on CD | Rough Trade",
         "Sample Artist", "Live on Vinyl", "Vinyl",
     )
+    # The same holds for a parenthesised format token inside the title.
+    assert not Crawler._title_matches(
+        "Sample Artist - Album (Vinyl) on CD | Rough Trade",
+        "Sample Artist", "Album (Vinyl)", "Vinyl",
+    )
 
 
 def test_name_matches_accepts_bare_title_and_artist_title_shapes():
     assert _name_matches("Sample Album", "Sample Artist", "Sample Album")
-    assert _name_matches("Sample Album - Deluxe Edition", "Sample Artist", "Sample Album")
     assert _name_matches("Sample Artist - Sample Album", "Sample Artist", "Sample Album")
+    # Edition suffixes are tolerated only behind the artist anchor: a bare
+    # "{title} - {something}" also reads as someone else's "Artist - Title".
+    assert not _name_matches("Sample Album - Deluxe Edition", "Sample Artist", "Sample Album")
+    assert _name_matches(
+        "Sample Artist - Sample Album - Deluxe Edition", "Sample Artist", "Sample Album"
+    )
+
+
+def test_name_matches_rejects_a_title_that_reads_as_another_artists_name():
+    # Release *titled* "Other Artist" must not claim a carousel node whose
+    # name is that artist's different record.
+    assert not _name_matches(
+        "Other Artist - Different Album", "Sample Artist", "Other Artist"
+    )
 
 
 def test_name_matches_accepts_a_release_title_containing_the_delimiter():
@@ -277,8 +295,9 @@ def test_name_matches_accepts_a_release_title_containing_the_delimiter():
     assert _name_matches(
         "Sample Artist - Sample Album - Deluxe", "Sample Artist", "Sample Album - Deluxe"
     )
-    # ... including with an edition suffix after the delimiter-bearing title.
-    assert _name_matches(
+    # An edition suffix after the delimiter-bearing title needs the artist
+    # anchor.
+    assert not _name_matches(
         "Sample Album - Deluxe - Red Vinyl", "Sample Artist", "Sample Album - Deluxe"
     )
     assert _name_matches(
@@ -385,6 +404,14 @@ def test_offer_listing_uses_low_price_for_aggregate_offers():
 
 def test_offer_listing_defaults_currency_to_usd():
     assert _offer_listing({"price": "31.99"}, PRODUCT_URL)["currency"] == "USD"
+
+
+def test_offer_listing_rejects_a_present_but_malformed_currency():
+    # Defaulting is only for an absent field: stamping USD over drifted data
+    # could persist the right amount in the wrong currency.
+    for currency in (True, {}, "", "   "):
+        offer = {"price": "31.99", "priceCurrency": currency}
+        assert _offer_listing(offer, PRODUCT_URL) is None
 
 
 def test_offer_listing_rejects_priceless_offer():

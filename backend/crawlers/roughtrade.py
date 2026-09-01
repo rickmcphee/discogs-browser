@@ -112,29 +112,21 @@ _FORMAT_MARKER_RE = re.compile(r"\s+on\s+(vinyl(\s+lp)?|lp|cd)\s*$", re.IGNORECA
 _PAREN_FORMAT_RE = re.compile(r"\(\s*(vinyl(?:\s+lp)?|lp|cd)\b", re.IGNORECASE)
 
 
-def _page_format(title_rest: str) -> Optional[str]:
+def _page_format_after_core(candidate_raw: str, title_rest: str) -> Optional[str]:
     """"vinyl", "cd", or None when the title's format signals are absent or
     contradict each other (unknown stays accepted downstream).
 
-    Read only from the two confirmed *positions* a format is stated in --
-    the name core's trailing marker and the parenthesised segments after the
-    core -- never from free text, where a release titled "Live on Vinyl"
-    would put a spurious vinyl signal on its own CD page and neutralise the
-    guard.
+    Read only from the positions *outside the matched product-name core* --
+    its trailing marker and the parenthesised segments after it. Text inside
+    the core is the release's own name, where "Live on Vinyl" or a title's
+    literal "(Vinyl)" would put a spurious signal on its own CD page and
+    neutralise the guard.
     """
     signals = set()
-    # The trailing marker is searched on the whole pre-branding chunk, not
-    # its first " - " segment: "Sample Album - Deluxe on CD" states its
-    # format after a delimiter the release title itself contains.
-    primary = title_rest.split(" | ")[0]
-    marker = _FORMAT_MARKER_RE.search(primary)
+    marker = _FORMAT_MARKER_RE.search(candidate_raw)
     if marker:
         signals.add("cd" if marker.group(1).lower() == "cd" else "vinyl")
-    # Parenthesised signals are read from the whole post-artist title -- the
-    # pattern is anchored to "(" plus a format token, so unlike a free-text
-    # word scan it cannot be triggered by format words inside a release
-    # title ("Live on Vinyl").
-    for m in _PAREN_FORMAT_RE.finditer(title_rest):
+    for m in _PAREN_FORMAT_RE.finditer(title_rest[len(candidate_raw):]):
         signals.add("cd" if m.group(1).lower() == "cd" else "vinyl")
     return signals.pop() if len(signals) == 1 else None
 
@@ -198,20 +190,24 @@ def _name_matches(name: str, artist: str, title: str) -> bool:
     title_words = _norm_words(title)
     if not title_words:
         return False
-    # Progressive segment joins on both shapes, mirroring _title_matches: a
-    # release title containing the delimiter itself ("Sample Album - Deluxe")
-    # must match its node's name whether or not an edition suffix ("- Red
-    # Vinyl") follows it.
+    # The bare-title shape requires the *whole* name to equal the title: a
+    # release titled with someone else's artist name ("Other Artist") must
+    # not claim a carousel node named "Other Artist - Different Album", so a
+    # trailing segment after a bare-title match is never edition tolerance.
+    if _norm_words(name) == title_words:
+        return True
+    # Edition suffixes are tolerated only in the artist-qualified shape,
+    # where the first segment anchoring to this release's artist rules the
+    # someone-else's-record reading out. Progressive joins let the title
+    # carry its own delimiter ("Sample Album - Deluxe" + "- Red Vinyl").
     segments = name.split(" - ")
-    for end in range(1, len(segments) + 1):
-        if _norm_words(" - ".join(segments[:end])) == title_words:
-            return True
     artist_words = _norm_words(artist)
-    if artist_words and _norm_words(segments[0]) == artist_words:
-        rest = segments[1:]
-        for end in range(1, len(rest) + 1):
-            if _norm_words(" - ".join(rest[:end])) == title_words:
-                return True
+    if not artist_words or _norm_words(segments[0]) != artist_words:
+        return False
+    rest = segments[1:]
+    for end in range(1, len(rest) + 1):
+        if _norm_words(" - ".join(rest[:end])) == title_words:
+            return True
     return False
 
 
@@ -298,12 +294,18 @@ def _offer_listing(offer: dict, url: str) -> Optional[dict]:
         price = _finite_price(offer.get("lowPrice"))
     if price is None:
         return None
-    currency = offer.get("priceCurrency")
+    # Defaulting is only for an *absent* currency; a present non-string or
+    # blank value is schema drift, and this crawler accepts non-USD offers,
+    # so silently stamping USD could persist the right amount in the wrong
+    # currency. Unparseable instead -- the loud path.
+    currency = offer.get("priceCurrency", "USD")
+    if not isinstance(currency, str) or not currency.strip():
+        return None
     return {
         "url": url,
         "price": price,
         "shipping": None,
-        "currency": currency if isinstance(currency, str) and currency else "USD",
+        "currency": currency,
         "condition": None,
     }
 
@@ -418,23 +420,23 @@ class Crawler:
         title_words = _norm_words(title)
         if not title_words:
             return False
-        # A known cross-format landing -- a vinyl release's slug resolving to
-        # the CD product, or vice versa -- is a different product, whatever
-        # the name says: its price must not be persisted for this release.
-        # Read from the whole post-artist title, since the format can sit in
-        # the name core ("on CD") or a later segment ("- (CD)").
-        if _format_conflicts(_page_format(rest), release_format):
-            return False
         # The product name may itself contain the delimiter ("Sample Album -
         # Deluxe"), so every progressive join of the primary chunk's " - "
         # segments is a candidate core -- cutting at the first delimiter
         # unconditionally would classify such a release's own page as a miss
-        # and clear its stored price.
+        # and clear its stored price. Once a candidate matches, the format
+        # signals are read from *outside* that core -- a known cross-format
+        # landing (a vinyl release's slug resolving to the CD product, or
+        # vice versa) is a different product whatever the name says, and its
+        # price must not be persisted for this release.
         segments = rest.split(" | ")[0].split(" - ")
         for end in range(1, len(segments) + 1):
-            candidate = _FORMAT_MARKER_RE.sub("", " - ".join(segments[:end]))
+            candidate_raw = " - ".join(segments[:end])
+            candidate = _FORMAT_MARKER_RE.sub("", candidate_raw)
             if _title_core_matches(title_words, _norm_words(candidate)):
-                return True
+                return not _format_conflicts(
+                    _page_format_after_core(candidate_raw, rest), release_format
+                )
         return False
 
     async def _settled_title(self, page) -> str:
