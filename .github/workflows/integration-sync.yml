@@ -427,7 +427,10 @@ jobs:
                 # as waiting, which fails towards silence rather than towards a
                 # red run.
                 #
-                # KNOWN HOLE, and the only one left in this routing: that
+                # KNOWN HOLE, the remaining *silent* one in this routing -- not
+                # the only known limitation, since the rerun race below fails
+                # the other way, towards a red run on a recovering PR. Do not
+                # read the surrounding logic as race-complete. This one: that
                 # fallback is unbounded. A CheckRun that stays queued keeps
                 # exporting no usable startedAt, so it reads as freshly pending
                 # on every run rather than ageing out, and a queue entry that

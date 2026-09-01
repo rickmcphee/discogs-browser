@@ -270,8 +270,25 @@ is holding it cannot be known from here.
 So both sets are reported and neither is ranked. Ranking them would assert
 exactly the required-ness this routing is otherwise careful never to infer, and
 would be wrong in one of the two directions every time. Naming both, and saying
-plainly that the rollup cannot tell them apart, is what the gap costs once
-nothing silent is left in it.
+plainly that the rollup cannot tell them apart, is what the gap costs in the
+report itself. It is not the whole cost: the unbounded fallback above is still
+a silent path, and the rerun race below is a noisy one.
+
+### The rerun race
+
+The second known limitation, alongside the unbounded no-timestamp fallback. The
+rollup reads and the `mergeable_state` re-read are not one snapshot, so a check
+rerun starting between them leaves the failure set describing an attempt that is
+already being retried, while the state stays `blocked` on the newly pending one —
+and the run reports a PR that is in the middle of recovering.
+
+Accepted rather than fixed. Re-reading the rollup after the state read narrows
+the window without closing it; across non-atomic reads there is no point where
+this class ends, only a point where it stops mattering. It is already sub-second,
+and it fails towards a red run on a PR that genuinely is blocked at that instant
+— diagnosable in the time it takes to look at the checks, and a different cost
+entirely from the silent stall this routing removes. The required-only snapshot
+closes it properly, as it does the fallback above.
 
 `CANCELLED` and `STALE` count as failures alongside the obvious ones — nothing
 is coming for either. `ACTION_REQUIRED` counts as *waiting*: it means a person
