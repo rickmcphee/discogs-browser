@@ -43,7 +43,11 @@ _H1_RE = re.compile(r"<h1\b[^>]*>(.*?)</h1>", re.DOTALL)
 _PRICE_RE = re.compile(
     r'<div\b[^>]*\bclass="[^"]*\bitem-price\b[^"]*"[^>]*>(.*?)</div>', re.DOTALL
 )
-_PRICE_TEXT_RE = re.compile(r"^\$(\d[\d,]*(?:\.\d{1,2})?)$")
+# Comma groups are exactly three digits, or there are none at all. A bare
+# `[\d,]*` accepts a comma anywhere, so `$1,2,3.00` matched and was stored as
+# 123.0 -- a wrong figure published by a crawl that reported success, which is
+# the one outcome the raise below exists to prevent.
+_PRICE_TEXT_RE = re.compile(r"^\$(\d{1,3}(?:,\d{3})*|\d+)(?:\.\d{1,2})?$")
 _SHARE_URL_RE = re.compile(r'\bdata-share-dialog-url-value="([^"]*)"')
 _MAIN_IMAGE_RE = re.compile(r'<a\b[^>]*\bclass="[^"]*\bmain-image\b[^"]*"[^>]*>')
 _HREF_RE = re.compile(r'\bhref="([^"]*)"')
@@ -310,7 +314,7 @@ class Crawler:
         title = _WS_RE.sub(" ", html.unescape(heading.group(1))).strip()
         if not title:
             return None
-        if not cls._is_vinyl(title, cls._description(head)):
+        if not cls._is_vinyl(title, cls._description(head, item_id)):
             return None
 
         m = _TITLE_RE.match(title)
@@ -375,7 +379,7 @@ class Crawler:
         )
 
     @staticmethod
-    def _description(head: str) -> str:
+    def _description(head: str, item_id: str) -> str:
         """The item's blurb, cut to its own block and reduced to plain text.
 
         Both halves of that guard the same failure from two directions: markup
@@ -386,10 +390,21 @@ class Crawler:
         filename. Tags are then stripped because the blurb itself is
         author-written HTML, so a link pasted into it can carry the same
         vocabulary inside the block.
+
+        An *absent* block raises rather than reading as an empty blurb. Every
+        live item has one, so its absence is a theme change rather than a
+        quiet listing -- and reading it as silence would drop every record
+        whose title names no format while the crawl still reported success,
+        which is the shape that deletes stock instead of merely under-reporting
+        it. An empty but present block still returns an empty string.
         """
         m = _DESCRIPTION_RE.search(head)
         if not m:
-            return ""
+            raise RuntimeError(
+                f"M-Theory Audio store item {item_id} has no description block -- markup "
+                "drift, and treating that as an empty blurb would silently drop every "
+                "record whose title names no format and delete its stock"
+            )
         return _WS_RE.sub(" ", html.unescape(_TAG_RE.sub(" ", m.group(1)))).strip()
 
     @staticmethod

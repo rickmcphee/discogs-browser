@@ -181,10 +181,15 @@ platform ever renamed `StoreItem` wholesale the zero-rows guard turns that
 into a raise rather than an empty snapshot.
 
 **Price** is the displayed `item-price` text, required to be a plain US dollar
-amount. Anything else raises, a re-denominated store included: this platform
-publishes no currency code anywhere on the page — the symbol is the whole
-signal — so recording a euro price as USD would be a silent corruption of the
-snapshot rather than a visible failure. More than one price inside the item
+amount: optional thousands separators in groups of exactly three digits, and
+at most two decimal places. Anything else raises, a re-denominated store
+included: this platform publishes no currency code anywhere on the page — the
+symbol is the whole signal — so recording a euro price as USD would be a silent
+corruption of the snapshot rather than a visible failure. The grouping is
+exact for the same reason: the commas are stripped before `float()`, so a
+permissive `[\d,]*` accepted `$1,2,3.00` and published it as `123.0` from a
+crawl that reported success (found in review; live prices carry no separator
+at all, topping out at $62). More than one price inside the item
 itself raises for the same reason: picking one would publish the wrong figure.
 An item showing no price yields `price`/`currency` of `None` (the Store tab
 renders "View" for those), but a whole catalog of them raises — a store-wide
@@ -289,6 +294,15 @@ article would let a cover *filename* decide — the live pre-order's cover is
 `7mtp-lp-mockup.png`, and `\bLP\b` matches inside it — and keeping the tags
 inside the block would let a link the label pasted into its own blurb decide.
 
+An **absent** block raises, rather than reading as an empty blurb (found in
+review). Every live item has the wrapper, blank copy included, so its absence
+is a theme change — and step 5 is the only thing keeping the format-silent
+records, so reading drift as silence would drop them while the crawl still
+reported success. Measured against the cached live catalog: a store-wide
+rename of that wrapper takes the yield from 109 rows to 100, and
+`replace_stock_items()` would delete the other nine. Neither whole-catalog
+guard catches it, because a hundred rows still come back.
+
 ### Accepted scope loss
 
 Replaying the shipped crawler over the fully-cached live catalog: 252 items →
@@ -365,10 +379,12 @@ Cases: every title-split shape including the doubled separator, the doubled
 spaces, the unspaced-hyphen artist and the unsplittable title; each arm of
 each format pattern, with the live records that a wider merch or format
 vocabulary would have dropped; the blurb fallback, its refusal of pressing
-vocabulary, the cover-filename near-miss and the pasted-link near-miss;
+vocabulary, the cover-filename near-miss, the pasted-link near-miss, the
+missing-block raise and the empty-block non-raise;
 sold-out skip, pre-order keep, the `in-stock` trap, the no-availability raise
 and the raises for a missing heading or cart form; bundle skip; price parsing, the upsell-price trap, the two-price raise,
-the non-dollar raise and the priceless row; URL ownership and its raises;
+the non-dollar and malformed-grouping raises, the ungrouped four-digit price
+and the priceless row; URL ownership and its raises;
 cover absolutisation; the multi-page walk, its terminator, dedupe, the short-
 and long-page raises, the stalled-offset raise, the unusable-flag and
 unusable-offset raises, the missing-wrapper and missing-store-id raises, the

@@ -376,6 +376,25 @@ def test_raises_when_the_form_declares_no_availability_at_all():
         _parse("ANUBIS - Dark Paradise vinyl", form_classes="store_item salable-item not-in-cart with-quantity")
 
 
+def test_raises_when_the_description_block_is_gone():
+    # Format-silent records are decided by their blurb alone, so a theme that
+    # renamed this wrapper would drop them while the crawl still reported
+    # success -- and a successful crawl deletes the stock it did not re-find.
+    # Confirmed against the cached live catalog: a store-wide rename of this
+    # wrapper takes the yield from 109 rows to 100.
+    block = _article(title="THE ABSENCE - From Your Grave",
+                     description="On 300 limited sapphire colored vinyl.")
+    with pytest.raises(RuntimeError, match="no description block"):
+        Crawler._parse_item("1352431", block.replace('class="description"', 'class="product-blurb"'))
+
+
+def test_an_empty_description_block_is_not_drift():
+    # Roughly a third of the live catalog has a blank blurb. Present and empty
+    # is a listing the label did not write copy for; absent is markup drift.
+    assert _parse("ANUBIS - Anthromorphicide CD", description="") is None
+    assert _parse("ANUBIS - Dark Paradise vinyl", description="") is not None
+
+
 def test_raises_when_the_item_has_no_heading():
     block = _article(title="ANUBIS - Dark Paradise vinyl").replace("<h1 ", "<h2 ").replace("</h1>", "</h2>")
     with pytest.raises(RuntimeError, match="has no heading"):
@@ -426,6 +445,21 @@ def test_raises_on_a_second_price_inside_the_item_itself():
         '<div class="product-price text-main"><div class="item-price">$99.00</div>')
     with pytest.raises(RuntimeError, match="shows 2 prices"):
         Crawler._parse_item("1352431", block)
+
+
+@pytest.mark.parametrize("price", ["$1,2,3.00", "$12,34.00", "$,250.00", "$1,25.00"])
+def test_raises_on_a_malformed_thousands_grouping(price):
+    # A comma group that is not exactly three digits is not a price this store
+    # could ever have displayed. Accepting one is worse than failing: the
+    # commas are stripped before float(), so `$1,2,3.00` would have been
+    # published as 123.0 by a crawl that reported success.
+    with pytest.raises(RuntimeError, match="not a plain US dollar amount"):
+        _parse("ANUBIS - Dark Paradise vinyl", price=price)
+
+
+def test_reads_an_ungrouped_four_digit_price():
+    # A store that simply does not write separators is not malformed.
+    assert _parse("ANUBIS - Dark Paradise vinyl", price="$1234.00")["price"] == 1234.0
 
 
 def test_raises_on_a_price_that_is_not_us_dollars():
