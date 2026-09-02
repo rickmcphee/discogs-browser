@@ -109,6 +109,63 @@ async def test_every_attempt_is_paced_with_the_jittered_delay(monkeypatch):
 
 
 @respx.mock
+async def test_min_delay_floors_both_ends_of_the_jitter_window(monkeypatch):
+    """A site whose robots.txt names a Crawl-delay gets it honoured whatever
+    `crawl_delay_seconds` is set to. Flooring only the top of the window would
+    still permit a sleep of half the minimum."""
+    sleep_calls = []
+
+    async def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+
+    monkeypatch.setattr("catalog_http.sleep", fake_sleep)
+    respx.get(_URL).mock(return_value=httpx.Response(200))
+
+    async with httpx.AsyncClient() as client:
+        await get_with_retry(client, _URL, delay=0, failure_limit=3, min_delay=10)
+        await get_with_retry(client, _URL, delay=12, failure_limit=3, min_delay=10)
+
+    assert sleep_calls[0] == 10
+    assert 10 <= sleep_calls[1] <= 12
+
+
+@respx.mock
+async def test_min_delay_defaults_to_no_floor(monkeypatch):
+    """Every caller that does not set it is byte-for-byte unchanged, including
+    the tests across this repo that pace with delay=0."""
+    sleep_calls = []
+
+    async def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+
+    monkeypatch.setattr("catalog_http.sleep", fake_sleep)
+    respx.get(_URL).mock(return_value=httpx.Response(200))
+
+    async with httpx.AsyncClient() as client:
+        await get_with_retry(client, _URL, delay=0, failure_limit=3)
+        await get_with_retry(client, _URL, delay=30, failure_limit=3)
+
+    assert sleep_calls[0] == 0
+    assert 15 <= sleep_calls[1] <= 30
+
+
+@respx.mock
+async def test_a_delay_above_the_minimum_is_left_alone(monkeypatch):
+    sleep_calls = []
+
+    async def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+
+    monkeypatch.setattr("catalog_http.sleep", fake_sleep)
+    respx.get(_URL).mock(return_value=httpx.Response(200))
+
+    async with httpx.AsyncClient() as client:
+        await get_with_retry(client, _URL, delay=30, failure_limit=3, min_delay=10)
+
+    assert 15 <= sleep_calls[0] <= 30
+
+
+@respx.mock
 async def test_request_carries_the_explicit_timeout():
     # httpx's default 5s connect budget is what one slow TLS handshake blew
     # through; the helper must stamp its own generous bound on every request.

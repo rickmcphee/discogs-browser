@@ -15,6 +15,15 @@ from crawl_progress import report_page
 _STORE_PATH = "/store"
 _ITEMS_PATH = "/go/stores/{store_id}/store_items"
 
+# The `Crawl-delay` this store's robots.txt asks for. Passed to every request
+# as a floor rather than left to `crawl_delay_seconds`, which is admin-editable
+# with no lower bound: at its default of 30 the jitter gives 15-30s and honours
+# this comfortably, but a setting below 20 would not, and 0 would send requests
+# back-to-back. This repo's crawl-citizenship spec is normative and says
+# citizenship is enforced by the design rather than asserted -- a compliance
+# claim that holds only while nobody edits a setting is the asserted kind.
+_SITE_CRAWL_DELAY = 10.0
+
 # The walk is already bounded by the pager's own `data-load-more` flag and by
 # a strictly-increasing offset, so this only bounds a storefront that answers
 # `true` forever. At the store's stride of 20 it allows roughly 4,000 items,
@@ -162,7 +171,8 @@ class Crawler:
 
         async with httpx.AsyncClient(base_url=self.base_url, follow_redirects=True) as client:
             r = await get_with_retry(
-                client, _STORE_PATH, delay=delay, failure_limit=failure_limit
+                client, _STORE_PATH, delay=delay, failure_limit=failure_limit,
+                min_delay=_SITE_CRAWL_DELAY,
             )
             doc = r.text
             store_id = None
@@ -234,6 +244,7 @@ class Crawler:
                     client, _ITEMS_PATH.format(store_id=store_id),
                     params={"offset": offset},
                     delay=delay, failure_limit=failure_limit,
+                    min_delay=_SITE_CRAWL_DELAY,
                 )
                 doc = r.text
 

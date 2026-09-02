@@ -4,6 +4,19 @@ import respx
 from config import save_config
 from crawlers.mtheoryaudio import Crawler
 
+@pytest.fixture(autouse=True)
+def _no_real_pacing(monkeypatch):
+    """This crawler floors every request at the store's own `Crawl-delay: 10`,
+    which the fleet's usual `save_config({"crawl_delay_seconds": 0})` can no
+    longer bypass -- that is the point of the floor. The sleep is mocked here
+    instead, following `test_catalog_http.py`'s existing pattern, so the walk
+    tests stay fast without weakening the production constraint."""
+    async def fake_sleep(seconds):
+        pass
+
+    monkeypatch.setattr("catalog_http.sleep", fake_sleep)
+
+
 _BASE = "https://m-theoryaudio.com"
 _STORE_URL = f"{_BASE}/store"
 _STORE_ID = "120037"
@@ -758,6 +771,29 @@ async def test_crawl_catalog_raises_when_no_row_carries_a_price(tmp_config_dir):
 
     with pytest.raises(RuntimeError, match="carries a price"):
         await _crawl()
+
+
+@respx.mock
+async def test_crawl_catalog_paces_every_request_at_the_sites_crawl_delay(tmp_config_dir, monkeypatch):
+    """robots.txt asks for `Crawl-delay: 10`, and `crawl_delay_seconds` is
+    admin-editable with no lower bound -- so the floor is what makes the
+    compliance claim hold rather than depend on a setting nobody bounds."""
+    save_config({"crawl_delay_seconds": 0})
+    slept = []
+
+    async def fake_sleep(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr("catalog_http.sleep", fake_sleep)
+    first = [_article(item_id=str(i), title=f"BAND {i} - Album {i} vinyl") for i in range(_PAGE_SIZE)]
+    respx.get(_STORE_URL).mock(return_value=httpx.Response(200, text=_page(first, offset=20, load_more="true")))
+    respx.get(_ITEMS_URL).mock(return_value=httpx.Response(
+        200, text=_page([_article(item_id="900", title="LAST BAND - Last Album vinyl")],
+                        offset=40, load_more="false")))
+
+    await _crawl()
+    assert len(slept) == 2
+    assert all(s >= 10 for s in slept)
 
 
 @respx.mock
