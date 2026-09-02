@@ -320,7 +320,7 @@ async def test_crawl_catalog_dedupes_a_product_that_resurfaces_on_a_later_page(t
         return_value=httpx.Response(200, json=_payload(page1, page=1, pages=2, count=101)))
     respx.get(_page_url(2)).mock(return_value=httpx.Response(
         200, json=_payload([page1[99], _product(id=900, url="p900.html", title="New - Row")],
-                           page=2, pages=2, count=101)))
+                           page=2, pages=2, count=102)))
 
     items = [item async for item in Crawler().crawl_catalog()]
     assert len(items) == 101
@@ -335,18 +335,21 @@ async def test_crawl_catalog_follows_a_page_count_that_grows_mid_walk(tmp_config
     newly reported final page unfetched."""
     save_config({"crawl_delay_seconds": 0})
     page1 = [_product(id=i, url=f"p{i}.html", title=f"Artist {i} - Album {i}") for i in range(100)]
+    page2 = [_product(id=200 + i, url=f"q{i}.html", title=f"Second {i} - Album {i}") for i in range(100)]
+    # The catalog grows past a page boundary while page 2 is being served, so
+    # page 3 exists only because the bound was re-read rather than sampled.
+    page3 = [_product(id=400 + i, url=f"r{i}.html", title=f"Grew {i} - Album {i}") for i in range(50)]
     respx.get(_page_url(1)).mock(
         return_value=httpx.Response(200, json=_payload(page1, page=1, pages=2, count=200)))
-    respx.get(_page_url(2)).mock(return_value=httpx.Response(
-        200, json=_payload([_product(id=900, url="p900.html", title="Mid - Walk")],
-                           page=2, pages=3, count=250)))
-    route3 = respx.get(_page_url(3)).mock(return_value=httpx.Response(
-        200, json=_payload([_product(id=901, url="p901.html", title="Grew - Late")],
-                           page=3, pages=3, count=250)))
+    respx.get(_page_url(2)).mock(
+        return_value=httpx.Response(200, json=_payload(page2, page=2, pages=3, count=250)))
+    route3 = respx.get(_page_url(3)).mock(
+        return_value=httpx.Response(200, json=_payload(page3, page=3, pages=3, count=250)))
 
     items = [item async for item in Crawler().crawl_catalog()]
     assert route3.call_count == 1
-    assert items[-1]["artist"] == "Grew"
+    assert len(items) == 250
+    assert items[-1]["artist"] == "Grew 49"
 
 
 @respx.mock
@@ -382,11 +385,12 @@ async def test_crawl_catalog_tolerates_a_catalog_that_grows_mid_walk(tmp_config_
     respx.get(_page_url(1)).mock(
         return_value=httpx.Response(200, json=_payload(page1, page=1, pages=2, count=101)))
     respx.get(_page_url(2)).mock(return_value=httpx.Response(
-        200, json=_payload([_product(id=900, url="p900.html", title="New - Arrival")],
+        200, json=_payload([_product(id=900, url="p900.html", title="New - Arrival"),
+                            _product(id=901, url="p901.html", title="Also - New")],
                            page=2, pages=2, count=102)))
 
     items = [item async for item in Crawler().crawl_catalog()]
-    assert len(items) == 101
+    assert len(items) == 102
 
 
 @respx.mock
@@ -421,6 +425,36 @@ async def test_crawl_catalog_raises_when_the_paging_metadata_is_inconsistent(tmp
         return_value=httpx.Response(200, json=_payload(page1, page=1, pages=1, count=3312)))
 
     with pytest.raises(RuntimeError, match="reports 1 pages for 3312 items"):
+        [item async for item in Crawler().crawl_catalog()]
+
+
+@respx.mock
+async def test_crawl_catalog_raises_when_a_page_is_short_of_its_own_metadata(tmp_config_dir):
+    """Every other guard checks the store's claims *about* the payload; this
+    checks the payload against them. A response reporting count=150 over two
+    pages of 100 while serving one product per page satisfies all of them, and
+    the walk would hand replace_stock_items() two rows to replace 150 with."""
+    save_config({"crawl_delay_seconds": 0})
+    respx.get(_page_url(1)).mock(return_value=httpx.Response(
+        200, json=_payload([_CAPTURED_PRODUCT], page=1, pages=2, count=150)))
+
+    with pytest.raises(RuntimeError, match="returned 1 products, expected 100"):
+        [item async for item in Crawler().crawl_catalog()]
+
+
+@respx.mock
+async def test_crawl_catalog_raises_when_the_final_page_is_short(tmp_config_dir):
+    """The last page is the remainder, not a full one, so it needs its own
+    arm of the same check."""
+    save_config({"crawl_delay_seconds": 0})
+    page1 = [_product(id=i, url=f"p{i}.html", title=f"Artist {i} - Album {i}") for i in range(100)]
+    respx.get(_page_url(1)).mock(
+        return_value=httpx.Response(200, json=_payload(page1, page=1, pages=2, count=130)))
+    respx.get(_page_url(2)).mock(return_value=httpx.Response(
+        200, json=_payload([_product(id=900, url="p900.html", title="Short - Tail")],
+                           page=2, pages=2, count=130)))
+
+    with pytest.raises(RuntimeError, match="returned 1 products, expected 30"):
         [item async for item in Crawler().crawl_catalog()]
 
 

@@ -148,7 +148,7 @@ class Crawler:
                 # itself, which no snapshot held yet and the next run picks up.
                 # A removal ahead of the cursor is likewise harmless. So a
                 # falling `count` is the one signal worth aborting on.
-                count, reported_pages = self._pagination(collection, page)
+                count, limit, reported_pages = self._pagination(collection, page)
 
                 # Against the running high-water mark, not page 1's count. A
                 # walk that grows 200 -> 250 and then falls to 220 never dips
@@ -164,6 +164,8 @@ class Crawler:
                 # The guard above is what makes this the high-water mark:
                 # execution only reaches here when count >= the previous one.
                 high_water_count = count
+
+                self._assert_page_rows(len(products), page, count, limit, reported_pages)
 
                 # Safe as a maximum precisely because a shrink aborts above:
                 # `pages` is ceil(count / limit), so it cannot fall on any walk
@@ -239,7 +241,7 @@ class Crawler:
                 f"per page, expected {expected} -- inconsistent paging metadata, so the "
                 "walk's bound cannot be trusted"
             )
-        return count, pages
+        return count, limit, pages
 
     @staticmethod
     def _shop_identity(payload: dict, page: int):
@@ -259,6 +261,25 @@ class Crawler:
                 f"(id={shop_id!r}, currency={currency!r}) -- payload shape drift"
             )
         return shop_id, currency.upper()
+
+    @staticmethod
+    def _assert_page_rows(rows: int, page: int, count: int, limit: int, pages: int) -> None:
+        """Raise unless the page carries as many products as its own metadata implies.
+
+        Every other guard here checks the store's *claims about* the payload;
+        this is the one that checks the payload against them. Without it a walk
+        that fetched one product per page would satisfy all of them and finish
+        "successfully" -- and replace_stock_items() would swap a full snapshot
+        for that handful. A full page holds `limit` rows and the last one the
+        remainder, which held on every live page.
+        """
+        expected = limit if page < pages else count - (pages - 1) * limit
+        if rows != expected:
+            raise RuntimeError(
+                f"{_page_path(page)} returned {rows} products, expected {expected} "
+                f"({count} items across {pages} pages of {limit}) -- the page is short of "
+                "its own metadata, so the walk would replace the snapshot with a fraction of it"
+            )
 
     @staticmethod
     def _assert_page_echo(collection: dict, requested: int) -> None:

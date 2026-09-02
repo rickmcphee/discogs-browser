@@ -156,6 +156,16 @@ honour by quietly substituting its own value. A page size cut back to the
 default would not look like an error — it would look like a much longer
 catalog.
 
+Finally, and separately from all of the above: every guard so far checks the
+store's *claims about* the payload, and one checks the payload against them.
+A response reporting `count` 150 over two pages of 100 while serving a single
+product on each satisfies every metadata check there is, and the walk would
+hand `replace_stock_items()` two rows to replace a hundred and fifty with. So
+each page's actual product count is checked too — a full page holds `limit`
+rows and the final one the remainder, which held on every live page. That
+check runs *after* the shrink guard, so a walk racing a shrinking catalog
+reports the shrink rather than the short page it causes.
+
 ### Page size: `limit=100`
 
 100 is the largest size the storefront honours. Larger values are not clamped
@@ -285,6 +295,9 @@ the site as healthy. These conditions therefore raise:
 - a `count` below the highest yet observed, which means the catalog shrank
   mid-walk and offset pagination has silently skipped a row (see the
   mutable-walk section above);
+- a page holding fewer products than its own metadata implies — `limit` rows
+  on a full page, the remainder on the last — which is the one check that
+  tests the payload rather than the claims made about it;
 - a response carrying no `shop` id or currency, which would otherwise invent
   a currency and strip every cover URL;
 - a product with no `url`, whose row would otherwise carry the store root as
