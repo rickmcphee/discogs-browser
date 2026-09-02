@@ -112,6 +112,13 @@ env:
   # what stops the next run re-arming auto-merge underneath them; see the
   # `dirty` branch and the re-arm guard.
   CONFLICT_LABEL: sync-conflict-needs-hand-merge
+  # How long a pending check on a sync PR goes on shielding a failed one, in
+  # seconds. Six hours: this repository's checks finish in minutes, so the grace
+  # period never expires while anything is genuinely running, and a check still
+  # pending after it is hung rather than slow. See the `blocked` branch, where
+  # the alternative to a bound is a failed required check staying unreported for
+  # as long as some optional check sits queued.
+  PENDING_CHECK_GRACE: 21600
 
 jobs:
   sync:
@@ -219,6 +226,58 @@ jobs:
             fi
           }
 
+          secure_conflicted_pr() {  # $1 = PR number
+            # Two independent defences, and both are attempted before anything
+            # is reported: the label is durable (it survives to the next run and
+            # is what blocks the re-arm), disabling is immediate (it clears the
+            # request that would otherwise take a resolution straight in).
+            # Neither substitutes for the other, so a failure in one must not
+            # skip the other.
+            #
+            # A function rather than just the `dirty` case body, because the
+            # `blocked` branch can discover a conflict too -- it re-reads
+            # mergeable_state after the rollup, and that read can come back
+            # `dirty`. Declining to re-arm there is not safety: a sync PR is
+            # armed at creation, so an untouched conflicted PR still carries a
+            # live auto-merge request and no label, and whoever resolves it has
+            # their resolution merged unreviewed into a branch that requires no
+            # approving review. Both discoveries need the same two defences.
+            label_ok=yes
+            # `|| true` only because --force already makes this a no-op when the
+            # label exists; the attach below is what has to work.
+            gh label create "$CONFLICT_LABEL" --repo "$REPO" --color B60205 \
+              --description "Sync PR whose conflict needs resolving and merging by hand -- with a merge commit, never a squash" \
+              --force >/dev/null 2>&1 || true
+            gh pr edit "$1" --repo "$REPO" --add-label "$CONFLICT_LABEL" \
+              || label_ok=no
+
+            # `--disable-auto` fails when there is no auto-merge request, so read
+            # first and only call it when something is armed -- treating "nothing
+            # to disable" as a failure aborted the job with auto-merge already
+            # safely off. If the read itself fails we cannot tell, so try anyway
+            # and let the result decide.
+            disable_ok=yes
+            if dirty_automerge="$(gh pr view "$1" --repo "$REPO" \
+                 --json autoMergeRequest --jq '.autoMergeRequest.mergeMethod // empty')"; then
+              if [ -n "$dirty_automerge" ]; then
+                gh pr merge "$1" --repo "$REPO" --disable-auto || disable_ok=no
+              fi
+            else
+              gh pr merge "$1" --repo "$REPO" --disable-auto || disable_ok=no
+            fi
+
+            if [ "$label_ok" = no ] || [ "$disable_ok" = no ]; then
+              # Stop *before* printing the resolve-and-push instructions below.
+              # Those invite exactly the push that an un-labelled, still-armed
+              # PR would merge unreviewed.
+              echo "::error::Sync PR #$1 conflicts with integration and this job could not secure it (label applied: $label_ok, auto-merge cleared: $disable_ok). Do NOT resolve the conflict yet -- a resolution could merge itself, unreviewed, into a branch that requires no approving review. Apply $CONFLICT_LABEL and turn auto-merge off by hand first; if labelling failed, check the token has Issues: write."
+              exit 1
+            fi
+
+            echo "::error::Sync PR #$1 conflicts with integration. Auto-merge is off and $CONFLICT_LABEL is applied: resolve $SYNC_BRANCH by hand, push it, and merge it deliberately -- WITH A MERGE COMMIT, not a squash. This is the one path where nothing here can enforce that, and a squash re-freezes git's merge base between main and integration for good. Setting allowed_merge_methods to merge only on integration-branch-protection removes the choice."
+            exit 1
+          }
+
 
           # git's own merge base is authoritative, and that is a recent
           # property of this repository rather than a given. Both directions
@@ -313,47 +372,188 @@ jobs:
                 fi
                 ;;
               dirty)
-                # Two independent defences, and both are attempted before
-                # anything is reported: the label is durable (it survives to
-                # the next run and is what blocks the re-arm), disabling is
-                # immediate (it clears the request that would otherwise take a
-                # resolution straight in). Neither substitutes for the other,
-                # so a failure in one must not skip the other -- which is what
-                # ordering them as a fail-fast chain used to do.
-                label_ok=yes
-                # `|| true` only because --force already makes this a no-op
-                # when the label exists; the attach below is what has to work.
-                gh label create "$CONFLICT_LABEL" --repo "$REPO" --color B60205 \
-                  --description "Sync PR whose conflict needs resolving and merging by hand -- with a merge commit, never a squash" \
-                  --force >/dev/null 2>&1 || true
-                gh pr edit "$existing" --repo "$REPO" --add-label "$CONFLICT_LABEL" \
-                  || label_ok=no
+                secure_conflicted_pr "$existing"
+                ;;
+              blocked)
+                # `blocked` is two unrelated states, and only one of them is a
+                # problem. integration-branch-protection requires no approving
+                # review, so a sync PR is blocked either because its required
+                # checks have not finished -- the normal first minutes of every
+                # sync PR's life -- or because one of them FAILED.
+                #
+                # A failure is terminal without a person, and silent. Nothing
+                # below clears it: the early-exit above never rebuilds an open
+                # sync PR, so the branch keeps whatever broke it, and the re-arm
+                # is a no-op on a PR already armed. The job then exits 0 and
+                # every later run reports success while nothing moves.
+                #
+                # That is not hypothetical. Sync PR #259 failed on 2026-08-30
+                # against a respx/authlib break whose fix (994487b) landed on
+                # `main` hours after its branch was cut. Nothing here could ever
+                # pick that fix up. It sat red for two days, holding
+                # `integration` at 5adef80 and stranding promotion PR #278
+                # behind it, while this workflow ran green throughout -- until
+                # someone read the two PRs side by side and closed it by hand.
+                #
+                # Assignments, not calls inside `if` tests: there `set -e` is
+                # suspended and a failing gh reads as "nothing failed", which
+                # restores the very silence this branch exists to end. Both
+                # rollup shapes are covered -- a CheckRun carries .status,
+                # .conclusion and .name, a StatusContext .state and .context.
+                #
+                # Nothing is decided until the board settles, and that single
+                # condition is what keeps this honest. `statusCheckRollup`
+                # carries every check on the PR rather than just the branch's
+                # required ones, so a failed *optional* check sitting beside a
+                # required one that is merely pending would otherwise fire this
+                # every run for a PR that goes on to merge perfectly well.
+                # Waiting for pending to empty also removes any need to ask
+                # which checks are required: with nothing left running, an
+                # optional-only failure leaves the PR `unstable`, not `blocked`,
+                # so it never reaches this case at all. That is why this reads
+                # no `isRequired` field.
+                #
+                # ACTION_REQUIRED counts as waiting rather than failing. It
+                # means a person has been asked for a click -- the parked
+                # "Approve and run" state this workflow already documents and
+                # tolerates when the token fallback is in play -- and erroring
+                # on it would put a run red every week for a condition the
+                # design deliberately accepts. CANCELLED and STALE get no such
+                # excuse: nothing is coming for them.
+                # A pending check only shields a failure while it is plausibly
+                # still running. `statusCheckRollup` does not say which checks
+                # are *required*, so waiting on the whole board is what keeps an
+                # optional failure from firing this while a required check is
+                # still going -- but read naively that same rule inverts into
+                # something worse: a required check that has conclusively failed
+                # would stay unreported for as long as any optional check sat
+                # queued, and an optional check that hangs would bury it for
+                # good. Silence is this branch's own failure mode, so it must
+                # not be reachable by waiting.
+                #
+                # A check pending longer than PENDING_CHECK_GRACE is hung, not
+                # running, and stops shielding anything. Real checks here finish
+                # in minutes, so the grace period never expires mid-run and the
+                # optional-failure noise stays suppressed exactly as long as it
+                # should be. A pending check carrying no usable timestamp counts
+                # as waiting, which fails towards silence rather than towards a
+                # red run.
+                #
+                # KNOWN HOLE, the remaining *silent* one in this routing -- not
+                # the only known limitation, since the rerun race below fails
+                # the other way, towards a red run on a recovering PR. Do not
+                # read the surrounding logic as race-complete. This one: that
+                # fallback is unbounded. A CheckRun that stays queued keeps
+                # exporting no usable startedAt, so it reads as freshly pending
+                # on every run rather than ageing out, and a queue entry that
+                # never starts would shield an already-failed required check for
+                # as long as it sits there. Bounding it needs either a real
+                # creation timestamp, which gh does not expose for a CheckRun,
+                # or the required-only snapshot that would retire this whole
+                # mechanism -- the grace period, the shielding and this hole
+                # together. See the design doc; it is deliberately documented
+                # rather than patched around.
+                #
+                # "No usable timestamp" is doing more work than it looks. A
+                # CheckRun's startedAt is nullable, but gh serialises it from a
+                # non-pointer time.Time, so a freshly queued check arrives as
+                # Go's zero value, "0001-01-01T00:00:00Z", rather than as null.
+                # That is a *string*, so `//` accepts it, and parsing it lands
+                # in year 1 -- older than any grace period. Left alone, the
+                # newest queued check on the PR would read as the most hung
+                # thing on it and stop shielding immediately, which is exactly
+                # the false positive the grace period exists to prevent. So a
+                # timestamp at or before the epoch is treated as absent, and an
+                # unparseable one likewise: both filters fail towards "still
+                # running" rather than towards reporting.
+                blocked_waiting="$(gh pr view "$existing" --repo "$REPO" \
+                  --json statusCheckRollup \
+                  --jq '[ .statusCheckRollup[]? | select((((.status // "") | . == "QUEUED" or . == "IN_PROGRESS" or . == "WAITING" or . == "PENDING" or . == "REQUESTED") or ((.conclusion // "") == "ACTION_REQUIRED") or ((.state // "") | . == "PENDING" or . == "EXPECTED")) and ((.startedAt // .createdAt // "") | if . == "" then true else ((try fromdateiso8601 catch 0) as $t | if $t <= 0 then true else ($t > (now - '"$PENDING_CHECK_GRACE"')) end) end)) ] | length')"
+                blocked_failures="$(gh pr view "$existing" --repo "$REPO" \
+                  --json statusCheckRollup \
+                  --jq '[ .statusCheckRollup[]? | (.conclusion // .state // "") as $c | select($c == "FAILURE" or $c == "ERROR" or $c == "TIMED_OUT" or $c == "STARTUP_FAILURE" or $c == "CANCELLED" or $c == "STALE") | (.name // .context // "unnamed check") ] | unique | join(", ")')"
+                # The checks the grace period just stopped shielding: pending,
+                # but pending for longer than anything here runs. They are named
+                # in the report because the rollup does not say which checks are
+                # required, and that gap has one visible consequence left: the
+                # report can name a check that is not the blocker. It runs both
+                # ways. A required check hung past the grace period with an
+                # optional one failed beside it fires on the optional failure's
+                # name; a required check that failed beside a hung optional one
+                # fires on the right name but sits next to an irrelevant stalled
+                # one. Either way the PR really is stalled, so reporting is
+                # right -- but which of the two is holding it cannot be known
+                # from here.
+                #
+                # So both sets are reported and neither is ranked. Asserting a
+                # priority would be claiming exactly the required-ness this
+                # whole branch is careful never to infer, and it would be wrong
+                # in one of the two directions every time.
+                blocked_stalled="$(gh pr view "$existing" --repo "$REPO" \
+                  --json statusCheckRollup \
+                  --jq '[ .statusCheckRollup[]? | select((((.status // "") | . == "QUEUED" or . == "IN_PROGRESS" or . == "WAITING" or . == "PENDING" or . == "REQUESTED") or ((.conclusion // "") == "ACTION_REQUIRED") or ((.state // "") | . == "PENDING" or . == "EXPECTED")) and ((.startedAt // .createdAt // "") | if . == "" then false else ((try fromdateiso8601 catch 0) as $t | if $t <= 0 then false else ($t <= (now - '"$PENDING_CHECK_GRACE"')) end) end)) | (.name // .context // "unnamed check") ] | unique | join(", ")')"
 
-                # `--disable-auto` fails when there is no auto-merge request,
-                # so read first and only call it when something is armed --
-                # treating "nothing to disable" as a failure aborted the job
-                # with auto-merge already safely off. If the read itself fails
-                # we cannot tell, so try anyway and let the result decide.
-                disable_ok=yes
-                if dirty_automerge="$(gh pr view "$existing" --repo "$REPO" \
-                     --json autoMergeRequest --jq '.autoMergeRequest.mergeMethod // empty')"; then
-                  if [ -n "$dirty_automerge" ]; then
-                    gh pr merge "$existing" --repo "$REPO" --disable-auto || disable_ok=no
+                if [ "$blocked_waiting" = 0 ] && [ -n "$blocked_failures" ]; then
+                  # Re-resolve the state before reporting on it. $sync_state was
+                  # read further up, before the rollup, and GitHub recomputes
+                  # mergeable_state asynchronously -- so the two can disagree
+                  # across that gap. Required checks going green inside it leave
+                  # the board settled with only an optional failure standing,
+                  # while the state still reads `blocked` from a moment earlier,
+                  # and reporting on the stale read would call a PR stuck at the
+                  # exact moment it turns `unstable` and merges.
+                  #
+                  # Anything other than `blocked` here -- including `unknown`,
+                  # which GitHub answers while it recomputes -- means this run
+                  # cannot honestly say the PR is stuck, so it says nothing and
+                  # the next run decides on a settled read. That silence is one
+                  # run long and self-correcting, unlike a genuinely stuck PR,
+                  # which stays stuck and gets reported the next time round.
+                  blocked_now="$(gh api "repos/$REPO/pulls/$existing" --jq '.mergeable_state')"
+                  # A labelled PR is someone's hand-resolved conflict. Its CI is
+                  # theirs, and the label already reserves the PR from this job,
+                  # so say nothing and let the re-arm guard below leave it be.
+                  # Read here rather than reusing the copy further down, which
+                  # is fetched after this case has had to decide.
+                  blocked_labels="$(gh pr view "$existing" --repo "$REPO" \
+                    --json labels --jq '.labels[].name')"
+                  # Stop here rather than falling through when the second read
+                  # disagrees. Every non-`blocked` value below this point would
+                  # otherwise reach the generic re-arm past `esac`, and that
+                  # undoes the fail-closed routing this case sits inside:
+                  # `unknown` would arm auto-merge on a PR whose state the top
+                  # of this state machine refuses to guess at, `dirty` would arm
+                  # it on a conflict without the label or the disable that path
+                  # applies, and `behind` would arm it without `update-branch`.
+                  # Each is the failure its own branch exists to prevent,
+                  # reached sideways through a read added for a different
+                  # purpose. Exiting leaves the PR untouched for one run; the
+                  # next decides on a settled read.
+                  # A conflict discovered here is not a state to walk away from.
+                  # Declining to re-arm is not the same as leaving the PR safe:
+                  # a sync PR is armed at creation, so an untouched `dirty` one
+                  # still carries a live auto-merge request and no label, and
+                  # whoever resolves the conflict has their resolution merged
+                  # unreviewed into a branch that requires no approving review.
+                  # Route it through the same defences the `dirty` case applies.
+                  if [ "$blocked_now" = dirty ]; then
+                    secure_conflicted_pr "$existing"
                   fi
-                else
-                  gh pr merge "$existing" --repo "$REPO" --disable-auto || disable_ok=no
-                fi
 
-                if [ "$label_ok" = no ] || [ "$disable_ok" = no ]; then
-                  # Stop *before* printing the resolve-and-push instructions
-                  # below. Those invite exactly the push that an un-labelled,
-                  # still-armed PR would merge unreviewed.
-                  echo "::error::Sync PR #$existing conflicts with integration and this job could not secure it (label applied: $label_ok, auto-merge cleared: $disable_ok). Do NOT resolve the conflict yet -- a resolution could merge itself, unreviewed, into a branch that requires no approving review. Apply $CONFLICT_LABEL and turn auto-merge off by hand first; if labelling failed, check the token has Issues: write."
-                  exit 1
-                fi
+                  if [ "$blocked_now" != blocked ]; then
+                    echo "Sync PR #$existing has a failed check, but its state now reads ${blocked_now:-unknown} rather than blocked. Not reporting and not re-arming on a state this run cannot resolve; the next run decides."
+                    exit 0
+                  fi
 
-                echo "::error::Sync PR #$existing conflicts with integration. Auto-merge is off and $CONFLICT_LABEL is applied: resolve $SYNC_BRANCH by hand, push it, and merge it deliberately -- WITH A MERGE COMMIT, not a squash. This is the one path where nothing here can enforce that, and a squash re-freezes git's merge base between main and integration for good. Setting allowed_merge_methods to merge only on integration-branch-protection removes the choice."
-                exit 1
+                  if ! printf '%s\n' "$blocked_labels" | grep -qx "$CONFLICT_LABEL"; then
+                    stalled_note=""
+                    if [ -n "$blocked_stalled" ]; then
+                      stalled_note=" Also stuck, and possibly the real blocker: $blocked_stalled, still pending well past the grace period. The rollup does not mark which checks are required, so this cannot say which of the two is holding the PR -- check both."
+                    fi
+                    echo "::error::sync PR #$existing cannot merge: $blocked_failures failed, and nothing in this workflow can clear it.$stalled_note An open sync PR is never rebuilt, so its branch keeps whatever broke it and auto-merge waits on a check that will not pass. Re-run the failed check first: a transient Actions failure clears on a re-run with nothing changed anywhere. If it reproduces and the cause is already fixed on \`main\`, then check $SYNC_BRANCH for commits this job did not create before discarding it -- only the conflict path applies $CONFLICT_LABEL, so a CI fix pushed by hand carries no label to mark it -- and once you have confirmed the branch holds no unique work, close #$existing, delete it, and re-run this workflow to rebuild from the current \`main\`. If the cause is not fixed on \`main\`, fixing it there is what unblocks the sync."
+                    exit 1
+                  fi
+                fi
                 ;;
             esac
             echo "Sync PR #$existing is already open; leaving its branch as-is."
