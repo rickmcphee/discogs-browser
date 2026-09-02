@@ -499,7 +499,8 @@ async def test_crawl_catalog_raises_when_the_page_count_is_missing(tmp_config_di
 
 # True is in here on purpose: bool is an int subclass, so `isinstance(pages,
 # int)` alone accepts it and `True >= 1`, which would bound the whole catalog
-# to a single page. `_page_count` rejects it explicitly and this pins that.
+# to a single page. `_require_int`, via `_pagination`, rejects it explicitly
+# and this pins that.
 @pytest.mark.parametrize("bad_pages", [0, -1, "34", 3.5, True, None])
 @respx.mock
 async def test_crawl_catalog_raises_on_a_non_positive_or_non_integer_page_count(

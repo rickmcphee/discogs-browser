@@ -340,8 +340,8 @@ counted forms, the `NOT VINYL` negation, and the three false-positive guards
 (`Tape`, `Book`, `Magazine`); the vinyl-plus-DVD override; field mapping,
 zero-price, and missing-cover handling; path-based pagination and the
 `format`/`limit` params; stopping at the last page without requesting past it;
-the page-echo raise; cross-page de-duplication; all three drift guards;
-payload-derived shop id and currency; and per-page progress reporting.
+the page-echo raise; cross-page de-duplication; every drift guard listed
+above; payload-derived shop id and currency; and per-page progress reporting.
 
 The crawler was additionally replayed over the fully-cached live catalog:
 3,312 products → 3,125 rows, no `(artist, title, url)` collisions, no blank

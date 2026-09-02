@@ -96,8 +96,8 @@ class Crawler:
         db.replace_stock_items() DELETEs this source's rows before inserting
         and _sync_stock only skips it when the crawl *raised*, so a generator
         that completes with nothing to show wipes the store's whole snapshot
-        and records the site as healthy. Both drift guards below therefore
-        raise rather than return empty.
+        and records the site as healthy. Every drift guard below therefore
+        raises rather than returning empty.
         """
         cfg = load_config()
         delay = float(cfg.get("crawl_delay_seconds", 30))
