@@ -156,11 +156,15 @@ non-product it is.
 
 ### Reading one item
 
-Each item is an `<article>` matched by its `data-store-item-id` attribute
-rather than by its class list, which is theme-driven (`single-image`,
-`multiple-images`, `has-upsell-products` all appear live). Anchoring on the
-attribute also excludes the `<select>` and `<div>` elements that carry the
-same attribute inside bundle forms and upsell blocks.
+Each item is an `<article>` — matched as that element rather than by its class
+list, which is theme-driven (`single-image`, `multiple-images`,
+`has-upsell-products` all appear live), and rather than by its
+`data-store-item-id`, for the reason given under "The stride check is the
+central guard" above: an
+article matched *by* its id is not matched at all when the id is malformed,
+which the short final page cannot detect. Reading the id from the matched
+`<article>` tag alone is also what keeps out the `<select>` and `<div>`
+elements carrying the same attribute inside bundle forms and upsell blocks.
 
 Everything is then read from the part of the article *before* the
 `upsell-products` block, because that block renders whole sibling products —
@@ -171,6 +175,11 @@ and the upsell's price would be the only one left. Confirmed live: with the
 block cut off, every one of the 252 articles carries exactly one `<h1>`, one
 description block, one cart form, one share URL, one main-image anchor, and
 at most one `item-price`.
+
+A heading that is missing *or blank* raises. A store item this platform will
+sell always has a name — no live heading is blank — so a blank one is drift,
+and skipping it would vanish on the short final page for the same reason a
+malformed id did (found in review).
 
 **Availability** comes off the item's own cart form, matched by
 `data-cart--salable-item-id`. The class list carries `available` or
@@ -399,7 +408,8 @@ vocabulary would have dropped; the blurb fallback, its refusal of pressing
 vocabulary, the cover-filename near-miss, the pasted-link near-miss, the
 missing-block raise and the empty-block non-raise;
 sold-out skip, pre-order keep, the `in-stock` trap, the no-availability raise
-and the raises for a missing heading or cart form; bundle skip; price parsing, the upsell-price trap, the two-price raise,
+and the raises for a missing or blank heading and a missing cart form; bundle
+skip; price parsing, the upsell-price trap, the two-price raise,
 the non-dollar and malformed-grouping raises, the ungrouped four-digit price
 and the priceless row; URL ownership and its raises;
 cover absolutisation; the multi-page walk, its terminator, dedupe, the short-

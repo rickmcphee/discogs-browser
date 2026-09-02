@@ -398,8 +398,18 @@ def test_an_empty_description_block_is_not_drift():
 
 def test_raises_when_the_item_has_no_heading():
     block = _article(title="ANUBIS - Dark Paradise vinyl").replace("<h1 ", "<h2 ").replace("</h1>", "</h2>")
-    with pytest.raises(RuntimeError, match="has no heading"):
+    with pytest.raises(RuntimeError, match="no readable heading"):
         Crawler._parse_item("1352431", block)
+
+
+@pytest.mark.parametrize("title", ["", "   ", "\t\n "])
+def test_raises_when_the_heading_is_empty(title):
+    # Empty reads the same as absent: a store item this platform will sell
+    # always has a name (no live heading is blank), so a blank one is drift --
+    # and skipping it would vanish on the short final page, where the stride
+    # check permits a short result.
+    with pytest.raises(RuntimeError, match="no readable heading"):
+        _parse(title)
 
 
 def test_raises_when_the_item_has_no_typed_cart_form():

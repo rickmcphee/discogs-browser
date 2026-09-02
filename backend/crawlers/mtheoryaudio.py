@@ -336,14 +336,18 @@ class Crawler:
             return None
 
         heading = _H1_RE.search(head)
-        if not heading:
-            raise RuntimeError(
-                f"M-Theory Audio store item {item_id} has no heading -- markup drift, and "
-                "the heading is this store's only artist and format source"
-            )
-        title = _WS_RE.sub(" ", html.unescape(heading.group(1))).strip()
+        title = _WS_RE.sub(" ", html.unescape(heading.group(1))).strip() if heading else ""
         if not title:
-            return None
+            # Empty reads the same as absent, deliberately. A store item this
+            # platform will sell always has a name, so a blank one is drift --
+            # and skipping it would be invisible on the short final page, where
+            # the stride check permits a short result, leaving the crawl to
+            # delete a product whose name it could not even read.
+            raise RuntimeError(
+                f"M-Theory Audio store item {item_id} has no readable heading "
+                f"({heading and heading.group(1)!r}) -- markup drift, and the heading is this "
+                "store's only artist and format source"
+            )
         if not cls._is_vinyl(title, cls._description(head, item_id)):
             return None
 
