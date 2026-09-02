@@ -226,9 +226,10 @@ render more than 250 table rows, and that's fine, since pagination is about
 **Amendment (2026-09-02):** that holds for the grouped sorts only. `total` is
 still this same `COUNT(*) FROM stock_items` on every path — which is what
 keeps it equal to `/stock/stats`' `total`, whose per-source counts sum to it
-— but a `Cost` sort paginates over the flat offer set, so the response also
-carries `row_total`, the count of rows in that set, and that is what divides
-into pages. On the grouped sorts the two are the same number.
+— but a `Cost` sort with comparisons included paginates over the flat offer
+set, so the response also carries `row_total`, the count of rows in that set,
+and that is what divides into pages. Everywhere else — every other sort, and a
+`Cost` request that omits comparisons — the two are the same number.
 
 `get_distinct_stock_artists` is unchanged — the artist sidebar lists
 distinct `stock_items.artist` values regardless of comparison data.

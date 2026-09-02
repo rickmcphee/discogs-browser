@@ -3029,7 +3029,8 @@ def get_stock_items(
 
     # `total` counts stock items under every path, so it keeps agreeing with
     # /stock/stats, whose per-source counts sum to it. `row_total` is the
-    # pagination unit, which the flat path below makes a different number.
+    # pagination unit: the flat path below is the only one that can make the
+    # two differ, and only when the rows it draws have comparisons to add.
     if sort == "price" and include_comparisons:
         return _get_stock_offers(
             conn, where, params, order_sql, exclude_crawler_ids, total, page, per_page,

@@ -1431,8 +1431,10 @@ def test_get_stock_items_sort_by_price_puts_unpriced_rows_last_in_both_direction
         asc = db.get_stock_items(conn, alice["id"], sort="price", order="asc")
         desc = db.get_stock_items(conn, alice["id"], sort="price", order="desc")
 
-    # The unpriced listing is not in `listings` at all -- upsert writes it, but
-    # the flat set only draws priced ones, same as the grouped path.
+    # The unpriced listing is written to `listings`; the CTE's
+    # `l.price IS NOT NULL` is what keeps it out of the offer set, the same
+    # filter the grouped path's comparison query applies. So the only NULL
+    # below is Album B's own row, whose price was nulled above.
     assert [r["price"] for r in asc["items"]] == [9.0, 10.0, 20.0, 25.0, None]
     assert [r["price"] for r in desc["items"]] == [25.0, 20.0, 10.0, 9.0, None]
 

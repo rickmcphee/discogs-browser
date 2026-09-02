@@ -55,9 +55,10 @@ function StockBrowser({
   const isMobile = useIsMobile()
   const [items, setItems] = useState<StockItem[]>([])
   const [total, setTotal] = useState(0)
-  // Rows in the paginated set, which the Cost sort makes larger than `total`
-  // -- it flattens each item's comparison rows into one ordering, so a page
-  // holds PER_PAGE rows rather than PER_PAGE items. `total` still drives the
+  // Rows in the paginated set -- what pages divide by. A Cost sort in list
+  // view flattens each item's comparison rows into one ordering, so a page
+  // there holds PER_PAGE rows rather than PER_PAGE items; every other request
+  // pages by item, where this just matches `total`. `total` still drives the
   // "N items" label, which has to keep agreeing with the Stats breakdown.
   const [rowTotal, setRowTotal] = useState(0)
   const [page, setPage] = useState(1)
