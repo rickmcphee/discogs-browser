@@ -1,3 +1,4 @@
+import math
 import re
 from typing import AsyncIterator, Optional
 
@@ -130,8 +131,20 @@ class Crawler:
                         f"no products on {_page_path(page)} -- the Vinyl category is empty "
                         "or the JSON shape drifted"
                     )
-                if page == 1:
-                    total_pages = max(1, int(collection.get("pages") or 1))
+                # Re-read on every response, not sampled once on page 1. The
+                # walk is explicitly mutable -- the listing is newest-first and
+                # the store keeps selling during it -- so a product added
+                # mid-walk can push `count` over a page boundary and grow
+                # `pages` after page 1 has already answered.
+                #
+                # The latest value wins rather than the largest, because
+                # over-shooting is fatal here in a way it is not for a crawler
+                # over an ordinary pager: a page past the end wraps to page 1,
+                # so carrying a stale-high bound through a mid-walk *shrink*
+                # (stock selling out) would trip _assert_page_echo and fail an
+                # otherwise healthy crawl. Trusting the newest answer follows
+                # growth and shrink alike.
+                total_pages = self._page_count(collection, page)
 
                 shop_id, currency = self._shop_identity(payload, page)
 
@@ -156,6 +169,22 @@ class Crawler:
             raise RuntimeError(
                 "parsed 0 vinyl items across the entire Byrdland Records catalog -- title format drift"
             )
+
+    @staticmethod
+    def _page_count(collection: dict, page: int) -> int:
+        """Read the page total the response reports, or raise.
+
+        Treating it as optional and defaulting to 1 would turn a whole
+        multi-page catalog into a successful single-page snapshot -- the walk
+        would report success having fetched a fraction of the stock, and
+        replace_stock_items() would delete the rest.
+        """
+        pages = collection.get("pages")
+        if not isinstance(pages, int) or isinstance(pages, bool) or pages < 1:
+            raise RuntimeError(
+                f"{_page_path(page)} reports no usable page count ({pages!r}) -- payload shape drift"
+            )
+        return pages
 
     @staticmethod
     def _shop_identity(payload: dict, page: int):
@@ -231,12 +260,21 @@ class Crawler:
     @staticmethod
     def _price(product: dict) -> Optional[float]:
         raw = (product.get("price") or {}).get("price")
+        # bool is an int subclass, so True would otherwise price a record at 1.
+        if isinstance(raw, bool):
+            return None
         try:
             price = float(raw)
         except (TypeError, ValueError):
             return None
-        # One live product is listed at 0. That is "call us", not free.
-        return price or None
+        # One live product is listed at 0. That is "call us", not free. nan and
+        # inf are payload corruption; nan is the one a bare falsiness check
+        # cannot catch, since it is truthy and would reach the stock row and
+        # break JSON serialisation downstream. Same guard shape as
+        # discogs_marketplace.py, roughtrade.py and sideonedummyrecords.py.
+        if not math.isfinite(price) or price <= 0:
+            return None
+        return price
 
     @staticmethod
     def _cover_image(product: dict, shop_id, handle: str) -> Optional[str]:

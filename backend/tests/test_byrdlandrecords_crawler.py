@@ -223,6 +223,18 @@ def test_price_is_none_when_the_field_is_missing_or_unparsable():
     assert _parse("A - B", price={"price": "n/a"})["price"] is None
 
 
+def test_price_rejects_non_finite_and_negative_values():
+    # nan is the dangerous one: it is truthy, so a bare falsiness check lets
+    # it reach the stock row, where it breaks JSON serialisation downstream.
+    for bad in ("nan", "inf", "-inf", -5, "-12.50"):
+        assert _parse("A - B", price={"price": bad})["price"] is None, bad
+
+
+def test_price_rejects_a_boolean():
+    # bool is an int subclass, so float(True) would price a record at 1.
+    assert _parse("A - B", price={"price": True})["price"] is None
+
+
 # --- pagination ------------------------------------------------------------
 
 @respx.mock
@@ -293,7 +305,7 @@ async def test_crawl_catalog_raises_when_the_store_serves_a_page_it_was_not_aske
 
 
 @respx.mock
-async def test_crawl_catalog_dedupes_a_product_reserved_on_a_later_page(tmp_config_dir):
+async def test_crawl_catalog_dedupes_a_product_that_resurfaces_on_a_later_page(tmp_config_dir):
     """Newest-first ordering means a product added mid-walk shifts every later
     page down by one and re-serves a row already yielded."""
     save_config({"crawl_delay_seconds": 0})
@@ -306,6 +318,68 @@ async def test_crawl_catalog_dedupes_a_product_reserved_on_a_later_page(tmp_conf
     items = [item async for item in Crawler().crawl_catalog()]
     assert len(items) == 101
     assert sum(1 for i in items if i["url"].endswith("p99.html")) == 1
+
+
+@respx.mock
+async def test_crawl_catalog_follows_a_page_count_that_grows_mid_walk(tmp_config_dir):
+    """The listing is newest-first and the store keeps selling during the walk,
+    so an insertion can push `count` over a page boundary and grow `pages`
+    after page 1 has already answered. Sampling the bound once would leave the
+    newly reported final page unfetched."""
+    save_config({"crawl_delay_seconds": 0})
+    page1 = [_product(id=i, url=f"p{i}.html", title=f"Artist {i} - Album {i}") for i in range(100)]
+    respx.get(_page_url(1)).mock(return_value=httpx.Response(200, json=_payload(page1, page=1, pages=2)))
+    respx.get(_page_url(2)).mock(return_value=httpx.Response(
+        200, json=_payload([_product(id=900, url="p900.html", title="Mid - Walk")], page=2, pages=3)))
+    route3 = respx.get(_page_url(3)).mock(return_value=httpx.Response(
+        200, json=_payload([_product(id=901, url="p901.html", title="Grew - Late")], page=3, pages=3)))
+
+    items = [item async for item in Crawler().crawl_catalog()]
+    assert route3.call_count == 1
+    assert items[-1]["artist"] == "Grew"
+
+
+@respx.mock
+async def test_crawl_catalog_follows_a_page_count_that_shrinks_mid_walk(tmp_config_dir):
+    """The latest count wins rather than the largest seen. Carrying a
+    stale-high bound through a mid-walk shrink would request a page past the
+    end, which this store answers by wrapping to page 1 -- failing an
+    otherwise healthy crawl on the page-echo check."""
+    save_config({"crawl_delay_seconds": 0})
+    page1 = [_product(id=i, url=f"p{i}.html", title=f"Artist {i} - Album {i}") for i in range(100)]
+    respx.get(_page_url(1)).mock(return_value=httpx.Response(200, json=_payload(page1, page=1, pages=3)))
+    respx.get(_page_url(2)).mock(return_value=httpx.Response(
+        200, json=_payload([_product(id=900, url="p900.html", title="Last - Row")], page=2, pages=2)))
+    route3 = respx.get(_page_url(3)).mock(return_value=httpx.Response(
+        200, json=_payload(page1, page=1, pages=2)))
+
+    items = [item async for item in Crawler().crawl_catalog()]
+    assert route3.call_count == 0
+    assert len(items) == 101
+
+
+@respx.mock
+async def test_crawl_catalog_raises_when_the_page_count_is_missing(tmp_config_dir):
+    """Defaulting to 1 would turn a whole multi-page catalog into a successful
+    single-page snapshot, and replace_stock_items() would delete the rest."""
+    save_config({"crawl_delay_seconds": 0})
+    body = _payload([_CAPTURED_PRODUCT], page=1, pages=1)
+    del body["collection"]["pages"]
+    respx.get(_page_url(1)).mock(return_value=httpx.Response(200, json=body))
+
+    with pytest.raises(RuntimeError, match="reports no usable page count"):
+        [item async for item in Crawler().crawl_catalog()]
+
+
+@respx.mock
+async def test_crawl_catalog_raises_on_a_non_positive_or_non_integer_page_count(tmp_config_dir):
+    save_config({"crawl_delay_seconds": 0})
+    body = _payload([_CAPTURED_PRODUCT], page=1, pages=1)
+    body["collection"]["pages"] = 0
+    respx.get(_page_url(1)).mock(return_value=httpx.Response(200, json=body))
+
+    with pytest.raises(RuntimeError, match="reports no usable page count"):
+        [item async for item in Crawler().crawl_catalog()]
 
 
 # --- drift guards ----------------------------------------------------------

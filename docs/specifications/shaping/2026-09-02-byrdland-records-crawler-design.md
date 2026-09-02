@@ -17,9 +17,12 @@ comment). The crawler targets the shop host; the brochure host has nothing to
 crawl.
 
 Lightspeed is a platform this repo has not crawled before — every existing
-`catalog` plugin is Shopify (`products.json`), WooCommerce
-(`/wp-json/wc/store/v1/products`), or bespoke HTML. So this crawler cannot
-reuse `shopify_catalog.iter_products()` and carries its own paging loop.
+`catalog` plugin reads some other platform's contract — Shopify
+(`products.json`), WooCommerce (`/wp-json/wc/store/v1/products`), Big Cartel
+(`ripplemusic.py`), a store's own private endpoint (`sgrecordshop.py`'s
+`/gsrp/`), or bespoke HTML. No existing helper implements Lightspeed's, so
+this crawler cannot reuse `shopify_catalog.iter_products()` and carries its
+own paging loop.
 
 ## Scope
 
@@ -85,6 +88,14 @@ invisible: any regression to a pager the store ignores raises on page 2.
 Products are also de-duplicated by product id across pages. The listing is
 sorted newest-first, so a product added mid-walk shifts every later page down
 by one and re-serves a row already yielded.
+
+Because that walk is mutable, the `pages` bound is re-read from every
+response rather than sampled once: an insertion can push `count` over a page
+boundary and grow `pages` after page 1 has answered. The **latest** value
+wins rather than the largest, which is the opposite of what an ordinary pager
+would do and is forced by the wrap above — carrying a stale-high bound
+through a mid-walk *shrink* would request a page past the end, wrap to page
+1, and fail an otherwise healthy crawl on the page-echo check.
 
 ### Page size: `limit=100`
 
@@ -200,11 +211,19 @@ rather than hardcoded, so neither is a magic number in the plugin.
 `db.replace_stock_items()` DELETEs this source's rows before inserting, and
 `_sync_stock` only skips it when the crawl *raised* — so a generator that
 completes with nothing to show wipes the store's whole snapshot and records
-the site as healthy. Three conditions therefore raise:
+the site as healthy. These conditions therefore raise:
 
-- an empty first page (the category is gone, or the JSON shape drifted);
+- an empty `products` object on **any** page inside the reported range, not
+  just the first (the category is gone, or the JSON shape drifted). The store
+  derives `pages` from `count`, so every page in range has rows;
 - a response whose `page` is not the page requested (pagination contract
   drift, including a regression to the ignored `?page=` form);
+- a response carrying no usable `pages` count, which would otherwise default
+  a whole multi-page catalog down to a one-page snapshot;
+- a response carrying no `shop` id or currency, which would otherwise invent
+  a currency and strip every cover URL;
+- a product with no `url`, whose row would otherwise carry the store root as
+  its identity;
 - zero parsed rows across the whole walk (title format drift).
 
 A mid-walk HTTP failure raises through `catalog_http.get_with_retry()` after
