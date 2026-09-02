@@ -101,7 +101,7 @@ beforeEach(() => {
   getJudgmentStatus.mockResolvedValue({ any_judged: false })
   getPriceStatus.mockResolvedValue({ any_price_paid: false })
   getCrawlers.mockResolvedValue([])
-  getStock.mockResolvedValue({ total: 0, page: 1, per_page: 250, items: [] })
+  getStock.mockResolvedValue({ total: 0, row_total: 0, page: 1, per_page: 250, items: [] })
   postUserHiddenCrawlers.mockResolvedValue(undefined)
   getUserHiddenCrawlers.mockResolvedValue([])
 })

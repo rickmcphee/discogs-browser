@@ -13,7 +13,7 @@ const { getStock, getStockArtists, getReleases, getArtists } = vi.hoisted(() => 
 
 vi.mock('../api/client', () => ({ getStock, getStockArtists, getReleases, getArtists }))
 
-const NO_STOCK = { total: 0, page: 1, per_page: 250, items: [] }
+const NO_STOCK = { total: 0, row_total: 0, page: 1, per_page: 250, items: [] }
 const NO_RELEASES = { total: 0, page: 1, per_page: 250, releases: [] }
 
 beforeEach(() => {

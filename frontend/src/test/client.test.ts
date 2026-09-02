@@ -90,13 +90,13 @@ describe('crawl/user-settings client functions', () => {
   })
 
   it('getStock includes hidden_crawler_ids when provided', async () => {
-    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ total: 0, page: 1, per_page: 250, items: [] }) })
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ total: 0, row_total: 0, page: 1, per_page: 250, items: [] }) })
     await getStock({ hiddenCrawlerIds: [3, 7] })
     expect(fetchMock.mock.calls[0][0]).toContain('hidden_crawler_ids=3%2C7')
   })
 
   it('getStock omits hidden_crawler_ids when the list is empty', async () => {
-    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ total: 0, page: 1, per_page: 250, items: [] }) })
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ total: 0, row_total: 0, page: 1, per_page: 250, items: [] }) })
     await getStock({ hiddenCrawlerIds: [] })
     expect(fetchMock.mock.calls[0][0]).not.toContain('hidden_crawler_ids')
   })
@@ -108,7 +108,7 @@ describe('crawl/user-settings client functions', () => {
   })
 
   it('maps libraryScope to the backend library_scope value', async () => {
-    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ total: 0, page: 1, per_page: 250, items: [] }) })
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ total: 0, row_total: 0, page: 1, per_page: 250, items: [] }) })
     await getStock({ libraryScope: 'wantlist' })
     expect(fetchMock.mock.calls[0][0]).toContain('library_scope=wishlist')
 
@@ -302,13 +302,13 @@ describe('crawl/user-settings client functions', () => {
   })
 
   it('getStock forwards saved=true when saved is set', async () => {
-    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ total: 0, page: 1, per_page: 250, items: [] }) })
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ total: 0, row_total: 0, page: 1, per_page: 250, items: [] }) })
     await getStock({ saved: true })
     expect(fetchMock.mock.calls[0][0]).toContain('saved=true')
   })
 
   it('getStock omits saved when unset', async () => {
-    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ total: 0, page: 1, per_page: 250, items: [] }) })
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ total: 0, row_total: 0, page: 1, per_page: 250, items: [] }) })
     await getStock({})
     expect(fetchMock.mock.calls[0][0]).not.toContain('saved=')
   })
@@ -320,13 +320,13 @@ describe('crawl/user-settings client functions', () => {
   })
 
   it('getStock forwards overlapped=true when overlapped is set', async () => {
-    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ total: 0, page: 1, per_page: 250, items: [] }) })
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ total: 0, row_total: 0, page: 1, per_page: 250, items: [] }) })
     await getStock({ overlapped: true })
     expect(fetchMock.mock.calls[0][0]).toContain('overlapped=true')
   })
 
   it('getStock omits overlapped when unset', async () => {
-    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ total: 0, page: 1, per_page: 250, items: [] }) })
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ total: 0, row_total: 0, page: 1, per_page: 250, items: [] }) })
     await getStock({})
     expect(fetchMock.mock.calls[0][0]).not.toContain('overlapped=')
   })

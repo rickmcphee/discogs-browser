@@ -55,6 +55,11 @@ function StockBrowser({
   const isMobile = useIsMobile()
   const [items, setItems] = useState<StockItem[]>([])
   const [total, setTotal] = useState(0)
+  // Rows in the paginated set, which the Cost sort makes larger than `total`
+  // -- it flattens each item's comparison rows into one ordering, so a page
+  // holds PER_PAGE rows rather than PER_PAGE items. `total` still drives the
+  // "N items" label, which has to keep agreeing with the Stats breakdown.
+  const [rowTotal, setRowTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
   const [selectedArtist, setSelectedArtist] = useState('')
@@ -89,6 +94,16 @@ function StockBrowser({
     setPage(1)
   }
 
+  // The two views don't page over the same thing under a Cost sort: list gets
+  // the flattened offer rows, tiles only the items. Switching while deep in
+  // one can land past the end of the other, so both start over -- the same
+  // reset the hidden-crawler change above does, for the same reason.
+  const [prevViewMode, setPrevViewMode] = useState(viewMode)
+  if (viewMode !== prevViewMode) {
+    setPrevViewMode(viewMode)
+    setPage(1)
+  }
+
   // isLatest gates the commit rather than the request: reconciliation can clear
   // or re-case the selection while a request started under the old one is still
   // in flight, and that older filtered response arriving last would leave the
@@ -110,12 +125,18 @@ function StockBrowser({
       saved: scope === 'store' && filter === 'saved',
       overlapped: scope === 'store' && filter === 'overlapped',
       hiddenCrawlerIds,
+      // Tiles render own rows only, so asking for comparison rows there would
+      // spend a whole page of the flattened Cost ordering on rows the grid
+      // then drops -- leaving it near-empty. Grouped sorts are unaffected
+      // either way; this just stops fetching what tiles never show.
+      includeComparisons: viewMode === 'list',
     })
     if (!isLatest()) return
     setItems(result.items)
     setTotal(result.total)
+    setRowTotal(result.row_total)
     setHasLoaded(true)
-  }, [search, selectedArtist, sort, order, page, filter, hiddenCrawlerIds, scope, hiddenCrawlerIdsLoaded])
+  }, [search, selectedArtist, sort, order, page, filter, hiddenCrawlerIds, scope, hiddenCrawlerIdsLoaded, viewMode])
 
   // syncGeneration ticks on every stock_sync_progress/stock_sync_complete SSE
   // event so the store/track tabs repaint as crawlers add items, same as
@@ -259,7 +280,7 @@ function StockBrowser({
     setPage(1)
   }
 
-  const totalPages = Math.ceil(total / PER_PAGE)
+  const totalPages = Math.ceil(rowTotal / PER_PAGE)
   const colCount = scope === 'track' ? (hasPriceField ? 7 : 6) : 7
   const priceSortable = scope === 'track' && filter !== 'wantlist'
   const emptyMessage =
