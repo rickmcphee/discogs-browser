@@ -301,6 +301,22 @@ describe('crawl/user-settings client functions', () => {
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ note: null })
   })
 
+  it('getStock sends include_comparisons=false only when asked to omit them', async () => {
+    // Tile view is the only caller that passes false, and this serialization is
+    // what keeps a Cost-sorted tile page from coming back mostly comparison
+    // rows the grid discards. Absent and true must both stay off the URL, so
+    // the backend default (include them) is what every other caller gets.
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ total: 0, row_total: 0, page: 1, per_page: 250, items: [] }) })
+    await getStock({ includeComparisons: false })
+    expect(fetchMock.mock.calls[0][0]).toContain('include_comparisons=false')
+
+    await getStock({ includeComparisons: true })
+    expect(fetchMock.mock.calls[1][0]).not.toContain('include_comparisons')
+
+    await getStock({})
+    expect(fetchMock.mock.calls[2][0]).not.toContain('include_comparisons')
+  })
+
   it('getStock forwards saved=true when saved is set', async () => {
     fetchMock.mockResolvedValue({ ok: true, json: async () => ({ total: 0, row_total: 0, page: 1, per_page: 250, items: [] }) })
     await getStock({ saved: true })

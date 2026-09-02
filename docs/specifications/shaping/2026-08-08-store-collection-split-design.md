@@ -223,6 +223,13 @@ belt-and-suspenders, not load-bearing.
 render more than 250 table rows, and that's fine, since pagination is about
 "how many items have you paged through," not "how many rows rendered."
 
+**Amendment (2026-09-02):** that holds for the grouped sorts only. `total` is
+still this same `COUNT(*) FROM stock_items` on every path — which is what
+keeps it equal to `/stock/stats`' `total`, whose per-source counts sum to it
+— but a `Cost` sort paginates over the flat offer set, so the response also
+carries `row_total`, the count of rows in that set, and that is what divides
+into pages. On the grouped sorts the two are the same number.
+
 `get_distinct_stock_artists` is unchanged — the artist sidebar lists
 distinct `stock_items.artist` values regardless of comparison data.
 
@@ -231,6 +238,11 @@ No API/router changes: `routers/stock.py`'s `list_stock`/
 already accept. The Collection tab is purely a new *caller* (`overlapping=
 true`, `recommended` never sent) of the existing `/api/stock`/`/api/stock/
 artists` endpoints — no new query param, no new endpoint.
+
+**Amendment (2026-09-02):** `/api/stock` does take a new query param now:
+`include_comparisons` (default true). Tile view sends `false`, since it
+renders own rows only and a page of the flat `Cost` ordering would otherwise
+be mostly rows it discards. Still no new endpoint.
 
 ## Frontend design
 
@@ -320,7 +332,11 @@ export interface StockItem {
 - `backend/tests/test_stock_router.py` — `GET /stock` response shape
   includes comparison rows for an item with `listings`; no new query
   params are introduced, so no new router-level param-parsing tests are
-  needed beyond confirming existing ones still pass unchanged.
+  needed beyond confirming existing ones still pass unchanged. *(Amended
+  2026-09-02: `include_comparisons` is a new query param, so it does need
+  router-level coverage —* `test_list_stock_include_comparisons_false_omits_them`
+  *asserts it parses and forwards, under both the grouped and the flat
+  `Cost` shape.)*
 - Frontend: new `frontend/src/test/stockBrowserScope.test.tsx` (or added
   to an existing `StockBrowser` test file if one exists) —
   `scope="collection"` sends `overlapping: true` to `getStock`/
