@@ -189,7 +189,12 @@ corruption of the snapshot rather than a visible failure. The grouping is
 exact for the same reason: the commas are stripped before `float()`, so a
 permissive `[\d,]*` accepted `$1,2,3.00` and published it as `123.0` from a
 crawl that reported success (found in review; live prices carry no separator
-at all, topping out at $62). More than one price inside the item
+at all, topping out at $62). The captured group spans the cents as well as the
+dollars — tightening the grouping first left the decimals outside it and
+truncated every price with non-zero cents to whole dollars (also found in
+review). No *yielded* row carries cents today, so a replay over the live
+catalog cannot see that; the two live listings that do are CDs. The tests pin
+the cents directly for that reason. More than one price inside the item
 itself raises for the same reason: picking one would publish the wrong figure.
 An item showing no price yields `price`/`currency` of `None` (the Store tab
 renders "View" for those), but a whole catalog of them raises — a store-wide

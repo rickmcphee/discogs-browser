@@ -221,7 +221,8 @@ def test_keeps_a_title_naming_a_vinyl_format(title):
 
 @pytest.mark.parametrize("title", [
     # CAPTURED: each is a live listing whose only vinyl evidence is the store's
-    # own pressing vocabulary. Together they are a third of this store's records.
+    # own pressing vocabulary. Together they are 16 of the 109 rows the crawler
+    # yields, so the store's records cannot be found without them.
     "EXMORTUS - Legions of the Undead - Special 5 Year Anniversary Orange Repress (ltd to 100 copies)",
     "CHROME WAVES - Earth Will Shed Its Skin Ltd Clear & Silver color-in-color EU pressing (250)",
     "IMMORTAL GUARDIAN - Unite and Conquer (250 Insomnia black/red splatter)",
@@ -389,8 +390,8 @@ def test_raises_when_the_description_block_is_gone():
 
 
 def test_an_empty_description_block_is_not_drift():
-    # Roughly a third of the live catalog has a blank blurb. Present and empty
-    # is a listing the label did not write copy for; absent is markup drift.
+    # One live listing has a blank blurb. Present and empty is a listing the
+    # label did not write copy for; absent is markup drift.
     assert _parse("ANUBIS - Anthromorphicide CD", description="") is None
     assert _parse("ANUBIS - Dark Paradise vinyl", description="") is not None
 
@@ -425,9 +426,23 @@ def test_reads_the_displayed_price_and_currency():
     assert item["currency"] == "USD"
 
 
-def test_reads_a_thousands_separated_price():
-    # INVENTED: the live catalog tops out at $62.
-    assert _parse("ANUBIS - Dark Paradise vinyl", price="$1,250.00")["price"] == 1250.0
+@pytest.mark.parametrize("price,expected", [
+    # CAPTURED: two live listings are priced in non-round cents ($6.66,
+    # $12.92). Both are CDs, so no *yielded* row carries cents today and a
+    # replay over the live catalog cannot see this -- which is how a earlier
+    # tightening of the pattern silently truncated every price with cents to
+    # whole dollars. Pinned here directly for that reason.
+    ("$28.99", 28.99),
+    ("$6.66", 6.66),
+    ("$12.92", 12.92),
+    ("$28.5", 28.5),
+    # INVENTED: the live catalog tops out at $62 and carries no separator.
+    ("$1,250.00", 1250.0),
+    ("$1,250.75", 1250.75),
+    ("$28", 28.0),
+])
+def test_reads_the_whole_displayed_amount(price, expected):
+    assert _parse("ANUBIS - Dark Paradise vinyl", price=price)["price"] == expected
 
 
 def test_ignores_an_upsell_products_price():

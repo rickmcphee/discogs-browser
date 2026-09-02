@@ -47,7 +47,13 @@ _PRICE_RE = re.compile(
 # `[\d,]*` accepts a comma anywhere, so `$1,2,3.00` matched and was stored as
 # 123.0 -- a wrong figure published by a crawl that reported success, which is
 # the one outcome the raise below exists to prevent.
-_PRICE_TEXT_RE = re.compile(r"^\$(\d{1,3}(?:,\d{3})*|\d+)(?:\.\d{1,2})?$")
+#
+# The group spans the cents as well as the dollars. Tightening the grouping
+# first left the decimals *outside* it, which `_price` then dropped: every
+# price with non-zero cents was truncated to whole dollars. No live vinyl row
+# carries cents today, which is exactly why a replay over the live catalog did
+# not catch it -- so the tests pin the cents directly.
+_PRICE_TEXT_RE = re.compile(r"^\$((?:\d{1,3}(?:,\d{3})*|\d+)(?:\.\d{1,2})?)$")
 _SHARE_URL_RE = re.compile(r'\bdata-share-dialog-url-value="([^"]*)"')
 _MAIN_IMAGE_RE = re.compile(r'<a\b[^>]*\bclass="[^"]*\bmain-image\b[^"]*"[^>]*>')
 _HREF_RE = re.compile(r'\bhref="([^"]*)"')
@@ -106,7 +112,7 @@ _VINYL_FORMAT_RE = re.compile(
 )
 # Pressing vocabulary: vinyl-specific in a *title*, which names one edition
 # ("Orange Repress", "EU pressing (250)", "black/red splatter"), and the only
-# thing that identifies a third of this store's records. Not trusted in a
+# thing that identifies 16 of the 109 rows this crawler yields. Not trusted in a
 # description, which talks about the release rather than the edition on sale --
 # live proof: a $12 CD whose blurb says "from the 2023 repressing by Via
 # Nocturna". Bare "press" is excluded so a label name cannot vote.
