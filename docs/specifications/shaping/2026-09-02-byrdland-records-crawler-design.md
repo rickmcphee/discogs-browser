@@ -196,9 +196,11 @@ separator is skipped, the fleet's "no artist source -> skip" convention.
 
 The separator class is `[-–—]` with whitespace required on at least one side,
 the same widened class `cleorecs.py` and `jackpotrecords.py` use. Of the 3,125
-titles that split, 3,055 separate on a plain hyphen and 126 on an en dash; no
-live title separates on an em dash, which is carried only because the class is
-shared with those two crawlers. The asymmetric forms
+rows the walk yields, 2,999 separate on a plain hyphen and 126 on an en dash;
+no live title separates on an em dash, which is carried only because the class
+is shared with those two crawlers. (Counting every title the regex splits,
+before the format filter drops the mis-filed CDs and cassettes, gives 3,181 —
+a different population, not a different result.) The asymmetric forms
 (`Watchhouse -\tThis Side of Jordan`, `Gracie\tAbrams- Daughter from Hell`) are
 both live and both handled.
 

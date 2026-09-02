@@ -304,10 +304,10 @@ regex would match happily and hand back an artist containing a literal tab.
 It is the same *shape* of problem `cleorecs.py`'s `_strip_trailing_parens`
 pass solves and, like it, sits before the split rather than inside it. The
 running conclusion is unchanged and reinforced: `split_artist_title` remains
-unimplemented, the exceptions now outnumber the convergence this doc
-originally described, and any future implementation should treat the
-preprocessing pass — not just the separator class — as the part that does not
-generalise.
+unimplemented, this doc's exception list keeps growing rather than the
+convergence it originally described, and any future implementation should
+treat the preprocessing pass — not just the separator class — as the part that
+does not generalise.
 
 
 ## Problem
