@@ -60,7 +60,7 @@ the minority of titles with no quoted album at all (8/149 gated products).
 Neither prior exception has this two-stage primary/fallback structure — each
 has exactly one parser.
 
-None of this retracts the doc's original convergence argument for the eight
+None of this retracts the doc's original convergence argument for the
 crawlers it still describes correctly, nor the earlier amendments' verdicts
 on `cleorecs.py` and `jackpotrecords.py` — it records that
 `asianmanrecords.py` is a documented exception to the converging
@@ -86,12 +86,12 @@ separator is found — on this one axis it actually matches the original
 convergence this doc describes, not the exceptions. But
 the mandatory catalog-code strip still means it can't be expressed as a
 plain call to `split_artist_title(title)` plus a one-line vendor-fallback
-wrapper, this design's proposed pattern for the original eight — the
+wrapper, this design's proposed pattern for the original converging set — the
 code-prefix strip has to happen inside the same function, before the split
 is even attempted, exactly the same structural reason `cleorecs.py`'s
 paren-strip is inexpressible that way.
 
-None of this retracts the doc's original convergence argument for the eight
+None of this retracts the doc's original convergence argument for the
 crawlers it still describes correctly, nor the earlier amendments'
 verdicts on `cleorecs.py`, `jackpotrecords.py`, and `asianmanrecords.py` —
 it records that `carparkrecords.py` is a documented exception to the
@@ -342,11 +342,11 @@ gets back.
 
 ## Problem
 
-Nine Shopify-storefront catalog crawlers each need to split a product's
-`title` field into artist/album because `vendor` isn't a reliable artist
-source on any of them (it's a label, a distributor placeholder, or simply
-wrong). Eight of the nine implement `_parse_artist_title(title, vendor)` as a
-**byte-identical** function body (comments aside):
+The Shopify-storefront catalog crawlers enumerated below each need to split
+a product's `title` field into artist/album because `vendor` isn't a reliable
+artist source on any of them (it's a label, a distributor placeholder, or
+simply wrong). All but one of them implement `_parse_artist_title(title,
+vendor)` as a **byte-identical** function body (comments aside):
 
 ```python
 m = _TITLE_RE.match(title)
@@ -355,7 +355,7 @@ if m:
 return (vendor or "").strip(), title.strip()
 ```
 
-`_TITLE_RE` itself is byte-identical across seven of those eight
+`_TITLE_RE` itself is byte-identical across all of those but one
 (`seasonofmist.py`*, `fatherdaughterrecords.py`, `closedcasketactivities.py`,
 `triplebrecords.py`, `runforcoverrecords.py`, `polyvinylrecords.py`,
 `twentybuckspin.py`):
@@ -371,7 +371,7 @@ support: `r'^(?P<artist>.+?)\s*[-–]\s*(?P<album>.+)$'`.
 (see below) — its `_TITLE_RE` will read
 `r'^(?P<artist>.+?)(?:\s+-\s*|\s*-\s+)(?P<album>.+)$'` once that branch lands.
 
-The ninth, `piratespressrecords.py`†, has a related but distinct contract:
+The remaining one, `piratespressrecords.py`†, has a related but distinct contract:
 `vendor` **is** trusted there, so it only needs the album half of the split,
 not an artist capture group. Its regex is already the whitespace-anchored,
 bug-fixed shape:
@@ -385,7 +385,7 @@ _TITLE_RE = re.compile(r'^.+?(?:\s+-\s*|\s*-\s+)(?P<album>.+)$')
 underlying regex bug and this design covers it too (see Task 4 of the plan),
 not because it's already part of the codebase today.
 
-**This is the same regex bug in eight places, not eight independent design
+**This is the same regex bug repeated, not a set of independent design
 choices.** The plain `\s*-\s*` form splits on the *first hyphen anywhere*,
 including one inside an artist's own name with no surrounding space
 ("Cro-Mags" → "Cro", "Vio-lence" → "Vio"). `piratespressrecords.py` was fixed
@@ -408,10 +408,10 @@ match vs. regex, positive vs. negative variant filters. Forcing those into
 one shared function would mean the function grows a flag per site, which
 just relocates the divergence instead of removing it.
 
-Title-splitting is different: the eight non-Pirates-Press crawlers don't
+Title-splitting is different: the non-Pirates-Press crawlers don't
 diverge at all in the *mechanics* of the split — same regex (mod the
 en-dash character, which is a strict widening, not a behavior change for
-the other seven), same fallback rule ("no separator found → trust vendor
+the rest), same fallback rule ("no separator found → trust vendor
 instead"). What differs between sites is *why* vendor can't be trusted (a
 label name, a distributor tag, a stylized store name) — that's exactly the
 kind of per-site domain knowledge the design doc says should stay local, and
@@ -479,8 +479,8 @@ follow-ups). Adopting `split_artist_title` retires that whole category of
 follow-up: every crawler that switches to the shared, already-fixed regex is
 fixed by construction, with no per-file patch and no live-data check needed.
 This plan doesn't touch `fix-hyphenated-artist-title-split` itself — it lands
-after that branch merges, then migrates all eight (nine, counting Pirates
-Press) crawlers onto the shared helper in one pass.
+after that branch merges, then migrates every one of those crawlers, Pirates
+Press included, onto the shared helper in one pass.
 
 ## Non-goals
 

@@ -142,6 +142,18 @@ Rows are de-duplicated by `data-store-item-id`: this is offset pagination over
 a store that keeps selling, so a product added mid-walk shifts the later pages
 along and re-serves a row already yielded.
 
+Articles are matched as *elements* and their id read from the matched tag, so
+an article whose id is missing or non-numeric is seen and rejected rather than
+passed over. Anchoring the match on the id attribute instead hid exactly one
+case, and it was the destructive one: the stride check would catch a skipped
+article on a full page, but the final page is allowed to be short, so one
+malformed article there left a live record out of a crawl that still reported
+success. Measured against the cached live catalog by corrupting one final-page
+id: the yield went from 109 rows to 108, silently (found in review). The
+platform's own `article.empty` placeholder — which its lazy-load controller
+strips out of every batch it fetches — carries no id and is skipped as the
+non-product it is.
+
 ### Reading one item
 
 Each item is an `<article>` matched by its `data-store-item-id` attribute
@@ -393,7 +405,9 @@ and the priceless row; URL ownership and its raises;
 cover absolutisation; the multi-page walk, its terminator, dedupe, the short-
 and long-page raises, the stalled-offset raise, the unusable-flag and
 unusable-offset raises, the missing-wrapper and missing-store-id raises, the
-store-id-changed raise, and both whole-catalog raises; and progress reporting.
+store-id-changed raise, the malformed-article raise on a short final page
+alongside the placeholder it must not be confused with, and both whole-catalog
+raises; and progress reporting.
 
 Every guard above was confirmed to *bite* rather than assumed: each was
 reverted in turn and the suite re-run, and each failed only the cases written

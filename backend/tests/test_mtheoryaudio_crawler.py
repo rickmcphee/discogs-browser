@@ -429,7 +429,7 @@ def test_reads_the_displayed_price_and_currency():
 @pytest.mark.parametrize("price,expected", [
     # CAPTURED: two live listings are priced in non-round cents ($6.66,
     # $12.92). Both are CDs, so no *yielded* row carries cents today and a
-    # replay over the live catalog cannot see this -- which is how a earlier
+    # replay over the live catalog cannot see this -- which is how an earlier
     # tightening of the pattern silently truncated every price with cents to
     # whole dollars. Pinned here directly for that reason.
     ("$28.99", 28.99),
@@ -610,6 +610,40 @@ async def test_crawl_catalog_raises_on_a_page_longer_than_the_pager_stride(tmp_c
 
     with pytest.raises(RuntimeError, match="the walk would skip rows"):
         await _crawl()
+
+
+@respx.mock
+async def test_crawl_catalog_raises_on_a_malformed_article_on_the_short_final_page(tmp_config_dir):
+    """The stride check permits the final page to be short, so an article
+    skipped there leaves a crawl that reports success one record lighter --
+    and replace_stock_items() deletes that record. Confirmed against the
+    cached live catalog: corrupting one final-page id took the yield from 109
+    rows to 108 without raising."""
+    save_config({"crawl_delay_seconds": 0})
+    first = [_article(item_id=str(i), title=f"BAND {i} - Album {i} vinyl") for i in range(_PAGE_SIZE)]
+    final = [_article(item_id="900", title="LAST BAND - Last Album vinyl").replace(
+        'data-store-item-id="900"', 'data-store-item-id="9-00"')]
+    respx.get(_STORE_URL).mock(return_value=httpx.Response(200, text=_page(first, offset=20, load_more="true")))
+    respx.get(_ITEMS_URL).mock(
+        return_value=httpx.Response(200, text=_page(final, offset=40, load_more="false")))
+
+    with pytest.raises(RuntimeError, match="carries no numeric item id"):
+        await _crawl()
+
+
+@respx.mock
+async def test_crawl_catalog_ignores_the_platforms_empty_placeholder(tmp_config_dir):
+    """The lazy-load controller strips `article.empty` out of every batch it
+    fetches, so the server does emit it. It carries no item id and is not a
+    product, and must not be mistaken for a malformed one."""
+    save_config({"crawl_delay_seconds": 0})
+    placeholder = '<article class="store store-item empty"></article>'
+    respx.get(_STORE_URL).mock(
+        return_value=httpx.Response(200, text=_page([placeholder, _article()], offset=20)))
+
+    items = await _crawl()
+    assert len(items) == 1
+    assert items[0]["artist"] == "BLACK ROYAL"
 
 
 @respx.mock

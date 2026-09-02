@@ -17,17 +17,28 @@ _ITEMS_PATH = "/go/stores/{store_id}/store_items"
 
 # The walk is already bounded by the pager's own `data-load-more` flag and by
 # a strictly-increasing offset, so this only bounds a storefront that answers
-# `true` forever. Generous against a catalog of a few hundred items: the cap
-# is reached only after tens of thousands.
+# `true` forever. At the store's stride of 20 it allows roughly 4,000 items,
+# an order of magnitude above the live catalog.
 _MAX_PAGES = 200
 
 _WRAPPER_RE = re.compile(r'<div\b[^>]*\bclass="[^"]*\bstore-wrapper\b[^"]*"[^>]*>')
-# Anchored on the attribute rather than on `class="store store-item …"`: the
-# class list is theme-driven (`single-image`, `multiple-images`,
-# `has-upsell-products` all appear live) while the id attribute is what makes
-# it an item. It also excludes the `<select>` and `<div>` elements that carry
-# the same attribute inside bundle forms and upsell blocks.
-_ARTICLE_RE = re.compile(r'<article\b[^>]*\bdata-store-item-id="(\d+)"')
+# Matched as an element rather than by the id attribute, so an article whose id
+# is missing or non-numeric is *seen and rejected* instead of skipped. Skipping
+# was invisible on the short final page, which the stride check permits to be
+# short: one malformed article there dropped a live record from an otherwise
+# successful crawl, and replace_stock_items() then deleted its row.
+#
+# `<article>` rather than `class="store store-item …"` because the class list
+# is theme-driven (`single-image`, `multiple-images`, `has-upsell-products` all
+# appear live). Reading the id from the matched tag alone also keeps out the
+# `<select>` and `<div>` elements carrying the same attribute inside bundle
+# forms and upsell blocks.
+_ARTICLE_RE = re.compile(r"<article\b[^>]*>")
+_ARTICLE_ID_RE = re.compile(r'\bdata-store-item-id="(\d+)"')
+# The platform's own placeholder, which its lazy-load controller strips out of
+# every fetched batch before appending it. It carries no item id and is not a
+# product; nothing else in an `<article>` position may lack one.
+_PLACEHOLDER_ARTICLE_RE = re.compile(r'\bclass="[^"]*\bempty\b[^"]*"')
 
 # "Frequently purchased together" renders whole sibling products -- title,
 # price and product link -- *inside* the article. Everything below is read
@@ -170,7 +181,7 @@ class Crawler:
                     )
                 next_offset, load_more = self._pager(wrapper, page, offset)
 
-                blocks = self._articles(doc)
+                blocks = self._articles(doc, page)
                 if not blocks:
                     raise RuntimeError(
                         f"no store items on page {page} of the M-Theory Audio store "
@@ -290,16 +301,29 @@ class Crawler:
         return next_offset, raw_more.group(1) == "true"
 
     @staticmethod
-    def _articles(doc: str):
-        """Split the document into (item id, markup) for each store item, in page order."""
+    def _articles(doc: str, page: int):
+        """Split the document into (item id, markup) for each store item, in page order.
+
+        A product article with no usable id raises rather than being passed
+        over. The stride check would catch a dropped article on a full page,
+        but the final page is allowed to be short — so there, skipping one
+        would take a live record out of a crawl that still reported success.
+        """
         matches = list(_ARTICLE_RE.finditer(doc))
-        return [
-            (
-                m.group(1),
-                doc[m.start(): matches[i + 1].start() if i + 1 < len(matches) else len(doc)],
-            )
-            for i, m in enumerate(matches)
-        ]
+        items = []
+        for i, m in enumerate(matches):
+            block = doc[m.start(): matches[i + 1].start() if i + 1 < len(matches) else len(doc)]
+            if _PLACEHOLDER_ARTICLE_RE.search(m.group(0)):
+                continue
+            item_id = _ARTICLE_ID_RE.search(m.group(0))
+            if not item_id:
+                raise RuntimeError(
+                    f"an article on page {page} of the M-Theory Audio store carries no numeric "
+                    f"item id ({m.group(0)[:120]!r}) -- markup drift, and passing over it would "
+                    "drop a record from a crawl that still reported success"
+                )
+            items.append((item_id.group(1), block))
+        return items
 
     @classmethod
     def _parse_item(cls, item_id: str, block: str) -> Optional[dict]:
