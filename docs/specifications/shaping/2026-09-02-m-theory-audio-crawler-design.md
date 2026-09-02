@@ -41,8 +41,17 @@ page inside the walk is invisible unless it is checked for.
 
 Add `backend/crawlers/mtheoryaudio.py` as a `crawler_type="catalog"` plugin
 that walks the store feature's paged item list with plain `httpx` and yields
-one `stock_items` row per in-stock vinyl product. No shared code changes;
-registration is automatic via `main.py`'s `seed_bundled_crawlers()`.
+one `stock_items` row per in-stock vinyl product. Registration is automatic
+via `main.py`'s `seed_bundled_crawlers()`.
+
+One shared file changes: `catalog_http.get_with_retry()` gains an opt-in
+`min_delay`, so this crawler can enforce the `Crawl-delay` its store's
+`robots.txt` asks for rather than inherit it from an unbounded setting — see
+"Crawl citizenship and `robots.txt` compliance" below for why that is not
+left to configuration. It defaults to `0`, so no other caller's behaviour
+changes and no existing test does either. No new shared module: `shopify_catalog.py`
+does not apply to this platform, and progress reporting is
+`crawl_progress.report_page` unchanged.
 
 **Non-goals**
 
@@ -417,7 +426,13 @@ and long-page raises, the stalled-offset raise, the unusable-flag and
 unusable-offset raises, the missing-wrapper and missing-store-id raises, the
 store-id-changed raise, the malformed-article raise on a short final page
 alongside the placeholder it must not be confused with, and both whole-catalog
-raises; and progress reporting.
+raises; progress reporting; and the pacing floor reaching the helper on every
+request of a real walk.
+
+`backend/tests/test_catalog_http.py` covers the helper's half: that `min_delay`
+floors both ends of the jitter window, that a delay already above it is left
+alone, and that omitting it leaves the existing behaviour — including the
+`delay=0` every other crawler test in this repo uses — exactly as it was.
 
 Every guard above was confirmed to *bite* rather than assumed: each was
 reverted in turn and the suite re-run, and each failed only the cases written
