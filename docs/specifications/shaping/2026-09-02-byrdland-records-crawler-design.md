@@ -302,6 +302,12 @@ the site as healthy. These conditions therefore raise:
   tests the payload rather than the claims made about it;
 - a response carrying no `shop` id or currency, which would otherwise invent
   a currency and strip every cover URL;
+- a response whose `shop` id or currency differs from page 1's. Read per page
+  and trusted per page, a store that switched identity mid-walk would price
+  the early rows in one currency and the rest in another, with the later CDN
+  URLs pointing at a different shop — a snapshot that is *corrupt* rather than
+  merely short, and one that would replace a consistent one having reported
+  success;
 - a product with no `url`, whose row would otherwise carry the store root as
   its identity;
 - zero parsed rows across the whole walk (title format drift).

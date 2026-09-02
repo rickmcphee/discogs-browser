@@ -569,6 +569,41 @@ async def test_crawl_catalog_raises_when_the_payload_carries_no_shop_identity(tm
 
 
 @respx.mock
+async def test_crawl_catalog_raises_when_the_shop_identity_changes_mid_walk(tmp_config_dir):
+    """Read per page and trusted per page, a store that switched identity
+    would price the first rows in one currency and the rest in another, with
+    the later CDN URLs pointing at a different shop -- a corrupt snapshot
+    rather than a short one, replacing a consistent one having reported
+    success."""
+    save_config({"crawl_delay_seconds": 0})
+    page1 = [_product(id=i, url=f"p{i}.html", title=f"Artist {i} - Album {i}") for i in range(100)]
+    respx.get(_page_url(1)).mock(
+        return_value=httpx.Response(200, json=_payload(page1, page=1, pages=2, count=101)))
+    respx.get(_page_url(2)).mock(return_value=httpx.Response(
+        200, json=_payload([_product(id=900, url="p900.html", title="Other - Store")],
+                           page=2, pages=2, count=101, shop_id=999999, currency="cad")))
+
+    with pytest.raises(RuntimeError, match="changed identity mid-walk"):
+        [item async for item in Crawler().crawl_catalog()]
+
+
+@respx.mock
+async def test_crawl_catalog_raises_when_only_the_currency_changes_mid_walk(tmp_config_dir):
+    """The shop id alone matching is not enough — a re-denominated store keeps
+    its id and would still split the snapshot across two currencies."""
+    save_config({"crawl_delay_seconds": 0})
+    page1 = [_product(id=i, url=f"p{i}.html", title=f"Artist {i} - Album {i}") for i in range(100)]
+    respx.get(_page_url(1)).mock(
+        return_value=httpx.Response(200, json=_payload(page1, page=1, pages=2, count=101)))
+    respx.get(_page_url(2)).mock(return_value=httpx.Response(
+        200, json=_payload([_product(id=900, url="p900.html", title="Same - Shop")],
+                           page=2, pages=2, count=101, currency="gbp")))
+
+    with pytest.raises(RuntimeError, match="changed identity mid-walk"):
+        [item async for item in Crawler().crawl_catalog()]
+
+
+@respx.mock
 async def test_crawl_catalog_raises_when_the_currency_alone_is_missing(tmp_config_dir):
     save_config({"crawl_delay_seconds": 0})
     body = _payload([_CAPTURED_PRODUCT])

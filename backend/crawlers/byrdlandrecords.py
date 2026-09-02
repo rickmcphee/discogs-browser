@@ -110,6 +110,7 @@ class Crawler:
             page = 1
             total_pages = 1
             high_water_count = None
+            shop_identity = None
             while page <= total_pages:
                 r = await get_with_retry(
                     client, _page_path(page),
@@ -174,7 +175,23 @@ class Crawler:
                 # page-echo check rather than truncating the walk in silence.
                 total_pages = max(total_pages, reported_pages)
 
-                shop_id, currency = self._shop_identity(payload, page)
+                # Pinned from page 1 and required to hold for the rest of the
+                # walk. Read per page and trusted per page, a store that
+                # switched identity mid-walk would price the first rows in one
+                # currency and the rest in another, with the later CDN URLs
+                # pointing at a different shop -- a snapshot that is *corrupt*
+                # rather than merely short, and one that would replace a
+                # consistent one having reported success.
+                page_shop = self._shop_identity(payload, page)
+                if shop_identity is None:
+                    shop_identity = page_shop
+                elif page_shop != shop_identity:
+                    raise RuntimeError(
+                        f"{_page_path(page)} reports shop {page_shop}, not the {shop_identity} "
+                        "page 1 reported -- the store changed identity mid-walk, so the rows "
+                        "already yielded and the rows still to come do not belong to one snapshot"
+                    )
+                shop_id, currency = shop_identity
 
                 # Sorted newest-first, so a product added mid-walk shifts every
                 # later page down by one and re-serves a row already yielded.
