@@ -47,14 +47,17 @@ def _product(**overrides):
     return {**_CAPTURED_PRODUCT, **overrides}
 
 
-def _payload(products, page=1, pages=1, shop_id=_SHOP_ID, currency="usd"):
+def _payload(products, page=1, pages=1, shop_id=_SHOP_ID, currency="usd", count=None):
     """ALTERED: the live response envelope, trimmed to the keys the crawler
     reads. The live payload also carries `theme`, `request`, `layout`,
     `template`, `renderer` and `datadog_browser` blocks, none of which this
     crawler touches."""
     return {
         "collection": {
-            "count": len(products),
+            # Collection-wide total, not this page's size. Defaults to the page
+            # length so single-page payloads stay terse; multi-page tests pass
+            # it explicitly, because a falling count now aborts the walk.
+            "count": len(products) if count is None else count,
             "page": page,
             "pages": pages,
             "limit": 100,
@@ -266,9 +269,10 @@ async def test_crawl_catalog_paginates_by_path_up_to_the_reported_page_count(tmp
     save_config({"crawl_delay_seconds": 0})
     page1 = [_product(id=i, url=f"p{i}.html", title=f"Artist {i} - Album {i}") for i in range(100)]
     page2 = [_product(id=900, url="p900.html", title="Last Artist - Last Album")]
-    respx.get(_page_url(1)).mock(return_value=httpx.Response(200, json=_payload(page1, page=1, pages=2)))
+    respx.get(_page_url(1)).mock(
+        return_value=httpx.Response(200, json=_payload(page1, page=1, pages=2, count=101)))
     route2 = respx.get(_page_url(2)).mock(
-        return_value=httpx.Response(200, json=_payload(page2, page=2, pages=2)))
+        return_value=httpx.Response(200, json=_payload(page2, page=2, pages=2, count=101)))
 
     items = [item async for item in Crawler().crawl_catalog()]
     assert route2.call_count == 1
@@ -297,8 +301,10 @@ async def test_crawl_catalog_raises_when_the_store_serves_a_page_it_was_not_aske
     would answer page 1 for every request with HTTP 200 and look healthy."""
     save_config({"crawl_delay_seconds": 0})
     page1 = [_product(id=i, url=f"p{i}.html", title=f"Artist {i} - Album {i}") for i in range(100)]
-    respx.get(_page_url(1)).mock(return_value=httpx.Response(200, json=_payload(page1, page=1, pages=3)))
-    respx.get(_page_url(2)).mock(return_value=httpx.Response(200, json=_payload(page1, page=1, pages=3)))
+    respx.get(_page_url(1)).mock(
+        return_value=httpx.Response(200, json=_payload(page1, page=1, pages=3, count=250)))
+    respx.get(_page_url(2)).mock(
+        return_value=httpx.Response(200, json=_payload(page1, page=1, pages=3, count=250)))
 
     with pytest.raises(RuntimeError, match="pagination contract drift"):
         [item async for item in Crawler().crawl_catalog()]
@@ -310,10 +316,11 @@ async def test_crawl_catalog_dedupes_a_product_that_resurfaces_on_a_later_page(t
     page down by one and re-serves a row already yielded."""
     save_config({"crawl_delay_seconds": 0})
     page1 = [_product(id=i, url=f"p{i}.html", title=f"Artist {i} - Album {i}") for i in range(100)]
-    respx.get(_page_url(1)).mock(return_value=httpx.Response(200, json=_payload(page1, page=1, pages=2)))
+    respx.get(_page_url(1)).mock(
+        return_value=httpx.Response(200, json=_payload(page1, page=1, pages=2, count=101)))
     respx.get(_page_url(2)).mock(return_value=httpx.Response(
         200, json=_payload([page1[99], _product(id=900, url="p900.html", title="New - Row")],
-                           page=2, pages=2)))
+                           page=2, pages=2, count=101)))
 
     items = [item async for item in Crawler().crawl_catalog()]
     assert len(items) == 101
@@ -328,11 +335,14 @@ async def test_crawl_catalog_follows_a_page_count_that_grows_mid_walk(tmp_config
     newly reported final page unfetched."""
     save_config({"crawl_delay_seconds": 0})
     page1 = [_product(id=i, url=f"p{i}.html", title=f"Artist {i} - Album {i}") for i in range(100)]
-    respx.get(_page_url(1)).mock(return_value=httpx.Response(200, json=_payload(page1, page=1, pages=2)))
+    respx.get(_page_url(1)).mock(
+        return_value=httpx.Response(200, json=_payload(page1, page=1, pages=2, count=200)))
     respx.get(_page_url(2)).mock(return_value=httpx.Response(
-        200, json=_payload([_product(id=900, url="p900.html", title="Mid - Walk")], page=2, pages=3)))
+        200, json=_payload([_product(id=900, url="p900.html", title="Mid - Walk")],
+                           page=2, pages=3, count=250)))
     route3 = respx.get(_page_url(3)).mock(return_value=httpx.Response(
-        200, json=_payload([_product(id=901, url="p901.html", title="Grew - Late")], page=3, pages=3)))
+        200, json=_payload([_product(id=901, url="p901.html", title="Grew - Late")],
+                           page=3, pages=3, count=250)))
 
     items = [item async for item in Crawler().crawl_catalog()]
     assert route3.call_count == 1
@@ -340,22 +350,54 @@ async def test_crawl_catalog_follows_a_page_count_that_grows_mid_walk(tmp_config
 
 
 @respx.mock
-async def test_crawl_catalog_follows_a_page_count_that_shrinks_mid_walk(tmp_config_dir):
-    """The latest count wins rather than the largest seen. Carrying a
-    stale-high bound through a mid-walk shrink would request a page past the
-    end, which this store answers by wrapping to page 1 -- failing an
-    otherwise healthy crawl on the page-echo check."""
+async def test_crawl_catalog_raises_when_the_catalog_shrinks_mid_walk(tmp_config_dir):
+    """A product sold from a page the walk has already passed shifts every
+    later product back one offset, sliding the next page's first row onto the
+    page just read -- so it is never fetched, the crawl succeeds anyway, and
+    replace_stock_items() deletes that still-in-stock row. Dedupe cannot see
+    it: an insertion surfaces as a duplicate, a deletion as nothing at all.
+    A falling `count` is the signal, so the walk aborts and keeps the previous
+    snapshot."""
     save_config({"crawl_delay_seconds": 0})
     page1 = [_product(id=i, url=f"p{i}.html", title=f"Artist {i} - Album {i}") for i in range(100)]
-    respx.get(_page_url(1)).mock(return_value=httpx.Response(200, json=_payload(page1, page=1, pages=3)))
+    respx.get(_page_url(1)).mock(
+        return_value=httpx.Response(200, json=_payload(page1, page=1, pages=2, count=150)))
+    # One row from page 1 has sold by the time page 2 is asked for.
     respx.get(_page_url(2)).mock(return_value=httpx.Response(
-        200, json=_payload([_product(id=900, url="p900.html", title="Last - Row")], page=2, pages=2)))
-    route3 = respx.get(_page_url(3)).mock(return_value=httpx.Response(
-        200, json=_payload(page1, page=1, pages=2)))
+        200, json=_payload([_product(id=900, url="p900.html", title="Shifted - Row")],
+                           page=2, pages=2, count=149)))
+
+    with pytest.raises(RuntimeError, match="catalog shrank from 150 to 149"):
+        [item async for item in Crawler().crawl_catalog()]
+
+
+@respx.mock
+async def test_crawl_catalog_tolerates_a_catalog_that_grows_mid_walk(tmp_config_dir):
+    """Growth is the safe direction and must not abort: an insertion shifts
+    rows forward, so the next page re-serves one already yielded (deduped) and
+    skips nothing. The only row it can cost is the new arrival itself, which
+    no snapshot held yet and the next run picks up."""
+    save_config({"crawl_delay_seconds": 0})
+    page1 = [_product(id=i, url=f"p{i}.html", title=f"Artist {i} - Album {i}") for i in range(100)]
+    respx.get(_page_url(1)).mock(
+        return_value=httpx.Response(200, json=_payload(page1, page=1, pages=2, count=101)))
+    respx.get(_page_url(2)).mock(return_value=httpx.Response(
+        200, json=_payload([_product(id=900, url="p900.html", title="New - Arrival")],
+                           page=2, pages=2, count=102)))
 
     items = [item async for item in Crawler().crawl_catalog()]
-    assert route3.call_count == 0
     assert len(items) == 101
+
+
+@respx.mock
+async def test_crawl_catalog_raises_when_the_item_count_is_unusable(tmp_config_dir):
+    save_config({"crawl_delay_seconds": 0})
+    body = _payload([_CAPTURED_PRODUCT], page=1, pages=1)
+    body["collection"]["count"] = "3312"
+    respx.get(_page_url(1)).mock(return_value=httpx.Response(200, json=body))
+
+    with pytest.raises(RuntimeError, match="reports no usable item count"):
+        [item async for item in Crawler().crawl_catalog()]
 
 
 @respx.mock
@@ -419,8 +461,10 @@ async def test_crawl_catalog_raises_when_a_page_inside_the_range_is_empty(tmp_co
     which replace_stock_items() then deletes."""
     save_config({"crawl_delay_seconds": 0})
     page1 = [_product(id=i, url=f"p{i}.html", title=f"Artist {i} - Album {i}") for i in range(100)]
-    respx.get(_page_url(1)).mock(return_value=httpx.Response(200, json=_payload(page1, page=1, pages=2)))
-    respx.get(_page_url(2)).mock(return_value=httpx.Response(200, json=_payload([], page=2, pages=2)))
+    respx.get(_page_url(1)).mock(
+        return_value=httpx.Response(200, json=_payload(page1, page=1, pages=2, count=150)))
+    respx.get(_page_url(2)).mock(
+        return_value=httpx.Response(200, json=_payload([], page=2, pages=2, count=150)))
 
     with pytest.raises(RuntimeError, match="no products on /vinyl/page2.html"):
         [item async for item in Crawler().crawl_catalog()]
@@ -497,9 +541,10 @@ async def test_crawl_catalog_reports_each_page_it_fetches(tmp_config_dir):
     token = crawl_progress.set_page_reporter(
         lambda page, count: _record(reported, page, count))
     page1 = [_product(id=i, url=f"p{i}.html", title=f"Artist {i} - Album {i}") for i in range(100)]
-    respx.get(_page_url(1)).mock(return_value=httpx.Response(200, json=_payload(page1, page=1, pages=2)))
+    respx.get(_page_url(1)).mock(
+        return_value=httpx.Response(200, json=_payload(page1, page=1, pages=2, count=101)))
     respx.get(_page_url(2)).mock(return_value=httpx.Response(
-        200, json=_payload([_CAPTURED_PRODUCT], page=2, pages=2)))
+        200, json=_payload([_CAPTURED_PRODUCT], page=2, pages=2, count=101)))
     try:
         [item async for item in Crawler().crawl_catalog()]
     finally:

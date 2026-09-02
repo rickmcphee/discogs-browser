@@ -109,6 +109,7 @@ class Crawler:
         async with httpx.AsyncClient(base_url=self.base_url, follow_redirects=True) as client:
             page = 1
             total_pages = 1
+            first_count = None
             while page <= total_pages:
                 r = await get_with_retry(
                     client, _page_path(page),
@@ -131,20 +132,38 @@ class Crawler:
                         f"no products on {_page_path(page)} -- the Vinyl category is empty "
                         "or the JSON shape drifted"
                     )
-                # Re-read on every response, not sampled once on page 1. The
-                # walk is explicitly mutable -- the listing is newest-first and
-                # the store keeps selling during it -- so a product added
-                # mid-walk can push `count` over a page boundary and grow
-                # `pages` after page 1 has already answered.
+                # Offset pagination over a collection the store keeps
+                # selling from. A product removed from a page this walk has
+                # ALREADY passed shifts every later product back one offset,
+                # so the first row of the next page slides onto the previous
+                # one and is never fetched -- and because the crawl then
+                # succeeds, replace_stock_items() deletes that still-in-stock
+                # row. Dedupe cannot see it: an insertion shows up as a
+                # duplicate, but a deletion shows up as nothing at all.
                 #
-                # The latest value wins rather than the largest, because
-                # over-shooting is fatal here in a way it is not for a crawler
-                # over an ordinary pager: a page past the end wraps to page 1,
-                # so carrying a stale-high bound through a mid-walk *shrink*
-                # (stock selling out) would trip _assert_page_echo and fail an
-                # otherwise healthy crawl. Trusting the newest answer follows
-                # growth and shrink alike.
-                total_pages = self._page_count(collection, page)
+                # Only a *shrink* does this, and the asymmetry is what makes a
+                # cheap guard sufficient. An insertion shifts rows forward, so
+                # the next page re-serves one already yielded (deduped) and
+                # skips nothing; the only row it can cost is the new arrival
+                # itself, which no snapshot held yet and the next run picks up.
+                # A removal ahead of the cursor is likewise harmless. So a
+                # falling `count` is the one signal worth aborting on.
+                count = self._item_count(collection, page)
+                if first_count is None:
+                    first_count = count
+                elif count < first_count:
+                    raise RuntimeError(
+                        f"catalog shrank from {first_count} to {count} items during the walk "
+                        f"(at {_page_path(page)}) -- offset pagination would silently skip rows, "
+                        "so the previous snapshot is kept instead"
+                    )
+
+                # Safe as a maximum precisely because a shrink aborts above:
+                # `pages` is ceil(count / limit), so it cannot fall on any walk
+                # that survives, and the two readings agree. Taking the maximum
+                # additionally makes a transient low `pages` fail loudly on the
+                # page-echo check rather than truncating the walk in silence.
+                total_pages = max(total_pages, self._page_count(collection, page))
 
                 shop_id, currency = self._shop_identity(payload, page)
 
@@ -185,6 +204,16 @@ class Crawler:
                 f"{_page_path(page)} reports no usable page count ({pages!r}) -- payload shape drift"
             )
         return pages
+
+    @staticmethod
+    def _item_count(collection: dict, page: int) -> int:
+        """Read the collection-wide item total the response reports, or raise."""
+        count = collection.get("count")
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+            raise RuntimeError(
+                f"{_page_path(page)} reports no usable item count ({count!r}) -- payload shape drift"
+            )
+        return count
 
     @staticmethod
     def _shop_identity(payload: dict, page: int):

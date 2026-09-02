@@ -81,23 +81,52 @@ with `"page": 1` and a full 100 rows. So the usual `while True: … if not
 products: break` shape never terminates here.
 
 The loop is therefore bounded by the `pages` count the responses report —
-re-read from each one rather than sampled on the first, for the reason given
-two paragraphs below — and every response is checked against the page that
-was requested (`_assert_page_echo`). The echo check is what makes trap 1 loud
-rather than invisible: any regression to a pager the store ignores raises on
-page 2.
+re-read from each one rather than sampled on the first, for the reasons in
+"The mutable walk" below — and every response is checked against the page
+that was requested (`_assert_page_echo`). The echo check is what makes trap 1
+loud rather than invisible: any regression to a pager the store ignores
+raises on page 2.
 
-Products are also de-duplicated by product id across pages. The listing is
-sorted newest-first, so a product added mid-walk shifts every later page down
-by one and re-serves a row already yielded.
+Products are also de-duplicated by product id across pages, because the
+newest-first listing re-serves a row already yielded when the catalog grows
+under the walk. That handles duplicates only; the section below covers what
+dedupe cannot see.
 
-Because that walk is mutable, the `pages` bound is re-read from every
-response rather than sampled once: an insertion can push `count` over a page
-boundary and grow `pages` after page 1 has answered. The **latest** value
-wins rather than the largest, which is the opposite of what an ordinary pager
-would do and is forced by the wrap above — carrying a stale-high bound
-through a mid-walk *shrink* would request a page past the end, wrap to page
-1, and fail an otherwise healthy crawl on the page-echo check.
+### The mutable walk: dedupe is not enough, and the bound was never the fix
+
+This is offset pagination over a collection the store keeps selling from, so
+the walk races the catalog. De-duplication covers only half of that, and the
+half it misses is the destructive one.
+
+**An insertion is safe.** A new arrival lands at offset 0 under newest-first
+and shifts every row forward, so the next page re-serves a row already
+yielded — a duplicate, which dedupe drops. The only row that can be missed is
+the new arrival itself, which no snapshot held yet and the next run picks up.
+Nothing existing is lost.
+
+**A removal behind the cursor is not.** A product sold from a page the walk
+has already passed shifts every later row *back* one offset, sliding the next
+page's first row onto the page just read. That row is never fetched; the
+crawl completes successfully without it; and `replace_stock_items()` then
+deletes a record that is still in stock. Dedupe cannot see this — an
+insertion surfaces as a duplicate, a deletion as nothing at all. (A removal
+*ahead* of the cursor is harmless: those rows have not been read yet.)
+
+Simulated over a mutating list to confirm the asymmetry rather than assume
+it: an insertion loses only the inserted row, a removal ahead of the cursor
+loses nothing, and a removal behind it silently drops one live row.
+
+So the guard is on `count`, not on `pages`: the collection-wide total is read
+from every response, and a **fall** aborts the walk, leaving the previous
+snapshot intact. Growth is deliberately tolerated, because it cannot cost an
+existing row.
+
+The `pages` bound is likewise re-read from every response, and takes the
+**maximum** seen. That is safe precisely because a shrink aborts — `pages` is
+`ceil(count / limit)`, so it cannot fall on any walk that survives, and the
+maximum and the latest reading agree. Taking the maximum additionally makes a
+transient low `pages` fail loudly on the page-echo check rather than
+truncating the walk in silence.
 
 ### Page size: `limit=100`
 
@@ -222,6 +251,9 @@ the site as healthy. These conditions therefore raise:
   drift, including a regression to the ignored `?page=` form);
 - a response carrying no usable `pages` count, which would otherwise default
   a whole multi-page catalog down to a one-page snapshot;
+- a response carrying no usable collection `count`, or a `count` below the
+  first page's, which means the catalog shrank mid-walk and offset pagination
+  has silently skipped a row (see the mutable-walk section above);
 - a response carrying no `shop` id or currency, which would otherwise invent
   a currency and strip every cover URL;
 - a product with no `url`, whose row would otherwise carry the store root as
