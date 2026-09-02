@@ -445,6 +445,20 @@ This site's findings, confirmed live 2026-09-02:
   `crawl_delay_seconds` defaulting to 30s, so 15–30s between requests against
   a requested 10. No detail-page fan-out. `get_with_retry` fails fast on 429
   and gives up after `consecutive_failure_limit` on anything else.
+- **That compliance rests on the global setting, which nothing bounds.**
+  `crawl_delay_seconds` is an admin-editable app setting with no floor
+  anywhere — not in `SettingsUpdate`, not in the Settings UI, not in
+  `get_with_retry` — and the helper sleeps 50–100% of it, so any value below
+  20 can pace this site faster than the 10s it asks for, and 0 sends requests
+  back-to-back. This is a property of the app's shared pacing, not of this
+  crawler: every `catalog` plugin reads the same setting through the same
+  helper, and Byrdland Records' storefront publishes a `Crawl-delay: 2` that
+  the same misconfiguration would undercut. Recorded here rather than fixed
+  here — a per-crawler floor would leave every sibling uncovered and fork this
+  fleet's test convention (`save_config({"crawl_delay_seconds": 0})`) in one
+  file; the fix belongs at the app boundary, as a floor in `SettingsUpdate`
+  and/or a `min_delay` in `get_with_retry`, with its own spec. Raised in
+  review on 2026-09-02 and tracked as follow-up work.
 - The platform's own no-`IntersectionObserver` fallback fetches the entire
   catalog in one request (`&amount=1000`), which would be one GET instead of
   thirteen. It is deliberately not used: it gives the sync no progress to
