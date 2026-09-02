@@ -310,6 +310,36 @@ treat the preprocessing pass — not just the separator class — as the part th
 does not generalise.
 
 
+**Eleventh amendment (2026-09-02, branch
+`claude/m-theoryaudio-store-crawler-wq4bf0`):**
+`backend/crawlers/mtheoryaudio.py` is another documented exception from
+outside Shopify — the store runs Bandzoogle, so this doc's "the
+Shopify crawlers" framing does not reach it either. It repeats three
+divergences already recorded above: the wider `[-–—]` separator class
+(`cleorecs.py`'s (1)); no vendor fallback, and for
+`byrdlandrecords.py`'s reason rather than `cleorecs.py`'s — this platform
+publishes no vendor or brand field at all, so the no-separator case is a skip,
+not a fallback; and `byrdlandrecords.py`'s whitespace-collapsing preprocessing
+pass, needed here because the store writes doubled spaces both beside the
+separator (`BLACK ROYAL  - Earthbound`) and inside the album
+(`Earth Will Shed Its Skin  Ltd Clear & Silver`).
+
+Its own divergence is on the other side of the match: a **post-processing pass
+over the album half**. One live title doubles the separator
+(`HATCHET - - Awaiting Evil (reissue on blue smoke vinyl …)`), which the shared
+regex splits happily — the non-greedy artist stops at the first separator — and
+hands back an album beginning `- Awaiting Evil`, so the crawler strips a
+leading run of separator characters and whitespace off it afterwards. Every
+extra pass the earlier exceptions carry (`cleorecs.py`'s paren strip,
+`byrdlandrecords.py`'s whitespace collapse) runs *before* the match and
+rewrites the input; this one runs after it and rewrites an output, which
+`split_artist_title`'s `(artist, album)` return contract has no place for at
+all. The running conclusion is unchanged: `split_artist_title` remains
+unimplemented, and the parts that do not generalise are now the separator
+class, the preprocessing pass, *and* what a caller does with the halves it
+gets back.
+
+
 ## Problem
 
 Nine Shopify-storefront catalog crawlers each need to split a product's
