@@ -80,10 +80,12 @@ for the whole walk and look perfectly healthy doing it.
 with `"page": 1` and a full 100 rows. So the usual `while True: … if not
 products: break` shape never terminates here.
 
-The loop is therefore bounded by the `pages` count the first page reports,
-and every response is checked against the page that was requested
-(`_assert_page_echo`). The echo check is what makes trap 1 loud rather than
-invisible: any regression to a pager the store ignores raises on page 2.
+The loop is therefore bounded by the `pages` count the responses report —
+re-read from each one rather than sampled on the first, for the reason given
+two paragraphs below — and every response is checked against the page that
+was requested (`_assert_page_echo`). The echo check is what makes trap 1 loud
+rather than invisible: any regression to a pager the store ignores raises on
+page 2.
 
 Products are also de-duplicated by product id across pages. The listing is
 sorted newest-first, so a product added mid-walk shifts every later page down

@@ -371,11 +371,17 @@ async def test_crawl_catalog_raises_when_the_page_count_is_missing(tmp_config_di
         [item async for item in Crawler().crawl_catalog()]
 
 
+# True is in here on purpose: bool is an int subclass, so `isinstance(pages,
+# int)` alone accepts it and `True >= 1`, which would bound the whole catalog
+# to a single page. `_page_count` rejects it explicitly and this pins that.
+@pytest.mark.parametrize("bad_pages", [0, -1, "34", 3.5, True, None])
 @respx.mock
-async def test_crawl_catalog_raises_on_a_non_positive_or_non_integer_page_count(tmp_config_dir):
+async def test_crawl_catalog_raises_on_a_non_positive_or_non_integer_page_count(
+    tmp_config_dir, bad_pages
+):
     save_config({"crawl_delay_seconds": 0})
     body = _payload([_CAPTURED_PRODUCT], page=1, pages=1)
-    body["collection"]["pages"] = 0
+    body["collection"]["pages"] = bad_pages
     respx.get(_page_url(1)).mock(return_value=httpx.Response(200, json=body))
 
     with pytest.raises(RuntimeError, match="reports no usable page count"):
