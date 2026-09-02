@@ -390,6 +390,56 @@ async def test_crawl_catalog_tolerates_a_catalog_that_grows_mid_walk(tmp_config_
 
 
 @respx.mock
+async def test_crawl_catalog_raises_when_the_catalog_shrinks_after_growing(tmp_config_dir):
+    """The comparison is against the running high-water mark, not page 1. A
+    walk that grows 200 -> 250 and then falls to 220 never dips below its
+    opening count, but those 30 removals shift rows back just the same."""
+    save_config({"crawl_delay_seconds": 0})
+    full = [_product(id=i, url=f"p{i}.html", title=f"Artist {i} - Album {i}") for i in range(100)]
+    later = [_product(id=800 + i, url=f"q{i}.html", title=f"Later {i} - Album {i}") for i in range(100)]
+    respx.get(_page_url(1)).mock(
+        return_value=httpx.Response(200, json=_payload(full, page=1, pages=2, count=200)))
+    respx.get(_page_url(2)).mock(
+        return_value=httpx.Response(200, json=_payload(later, page=2, pages=3, count=250)))
+    respx.get(_page_url(3)).mock(return_value=httpx.Response(
+        200, json=_payload([_product(id=900, url="p900.html", title="Third - Page")],
+                           page=3, pages=3, count=220)))
+
+    with pytest.raises(RuntimeError, match="catalog shrank from 250 to 220"):
+        [item async for item in Crawler().crawl_catalog()]
+
+
+@respx.mock
+async def test_crawl_catalog_raises_when_the_paging_metadata_is_inconsistent(tmp_config_dir):
+    """Per-field checks are not enough: `count` 3312 with `pages` 1 passes
+    every one of them, stops the walk after a single page, and hands
+    replace_stock_items() a hundred rows to replace three thousand with. The
+    storefront's published contract is pages == ceil(count / limit)."""
+    save_config({"crawl_delay_seconds": 0})
+    page1 = [_product(id=i, url=f"p{i}.html", title=f"Artist {i} - Album {i}") for i in range(100)]
+    respx.get(_page_url(1)).mock(
+        return_value=httpx.Response(200, json=_payload(page1, page=1, pages=1, count=3312)))
+
+    with pytest.raises(RuntimeError, match="reports 1 pages for 3312 items"):
+        [item async for item in Crawler().crawl_catalog()]
+
+
+@respx.mock
+async def test_crawl_catalog_raises_when_the_store_ignores_the_requested_page_size(tmp_config_dir):
+    """This storefront answers a parameter it will not honour by quietly
+    substituting its own value -- the same shape as the ignored `?page=`. A
+    page size cut to the default would otherwise just look like a much longer
+    catalog."""
+    save_config({"crawl_delay_seconds": 0})
+    body = _payload([_CAPTURED_PRODUCT], page=1, pages=1)
+    body["collection"]["limit"] = 12
+    respx.get(_page_url(1)).mock(return_value=httpx.Response(200, json=body))
+
+    with pytest.raises(RuntimeError, match="page size of 12, not the 100 requested"):
+        [item async for item in Crawler().crawl_catalog()]
+
+
+@respx.mock
 async def test_crawl_catalog_raises_when_the_item_count_is_unusable(tmp_config_dir):
     save_config({"crawl_delay_seconds": 0})
     body = _payload([_CAPTURED_PRODUCT], page=1, pages=1)

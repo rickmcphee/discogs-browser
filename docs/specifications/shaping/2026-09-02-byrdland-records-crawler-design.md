@@ -121,12 +121,40 @@ from every response, and a **fall** aborts the walk, leaving the previous
 snapshot intact. Growth is deliberately tolerated, because it cannot cost an
 existing row.
 
+The comparison is against a running **high-water mark**, not against page 1's
+reading. A walk that grows 200 → 250 and then falls to 220 never dips below
+its opening count, but those thirty removals shift rows back exactly as a
+fall below 200 would — anchoring to the first reading waves that through. So
+every *observed* decrease aborts. (Because the first decrease aborts, the
+sequence up to that point is non-decreasing and the high-water mark is
+simply the previous reading.)
+
 The `pages` bound is likewise re-read from every response, and takes the
 **maximum** seen. That is safe precisely because a shrink aborts — `pages` is
 `ceil(count / limit)`, so it cannot fall on any walk that survives, and the
 maximum and the latest reading agree. Taking the maximum additionally makes a
 transient low `pages` fail loudly on the page-echo check rather than
 truncating the walk in silence.
+
+### The paging metadata is cross-checked, not just range-checked
+
+Each of `count`, `limit` and `pages` being individually plausible is not
+enough, because the walk's entire bound rests on one relationship *between*
+them. A drifted response carrying `count` 3312 with `pages` 1 satisfies every
+per-field check, stops the walk after a single page, and hands
+`replace_stock_items()` a hundred rows to replace three thousand with — the
+same destructive shape as a silently-short walk, arrived at from the other
+direction.
+
+The storefront publishes `pages == ceil(count / limit)`, confirmed to hold on
+every live page including the short final one, so that relationship is
+enforced on every response rather than assumed by the reasoning above.
+
+The echoed `limit` is checked against the one requested for the reason
+`_assert_page_echo` exists: this storefront answers a parameter it will not
+honour by quietly substituting its own value. A page size cut back to the
+default would not look like an error — it would look like a much longer
+catalog.
 
 ### Page size: `limit=100`
 
@@ -249,11 +277,14 @@ the site as healthy. These conditions therefore raise:
   derives `pages` from `count`, so every page in range has rows;
 - a response whose `page` is not the page requested (pagination contract
   drift, including a regression to the ignored `?page=` form);
-- a response carrying no usable `pages` count, which would otherwise default
-  a whole multi-page catalog down to a one-page snapshot;
-- a response carrying no usable collection `count`, or a `count` below the
-  first page's, which means the catalog shrank mid-walk and offset pagination
-  has silently skipped a row (see the mutable-walk section above);
+- a response carrying no usable `count`, `limit` or `pages`, or whose
+  `pages` disagrees with `ceil(count / limit)`, or whose `limit` is not the
+  one requested — any of which leaves the walk's bound untrustworthy, and the
+  first of them would default a whole multi-page catalog down to a one-page
+  snapshot;
+- a `count` below the highest yet observed, which means the catalog shrank
+  mid-walk and offset pagination has silently skipped a row (see the
+  mutable-walk section above);
 - a response carrying no `shop` id or currency, which would otherwise invent
   a currency and strip every cover URL;
 - a product with no `url`, whose row would otherwise carry the store root as

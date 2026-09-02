@@ -109,7 +109,7 @@ class Crawler:
         async with httpx.AsyncClient(base_url=self.base_url, follow_redirects=True) as client:
             page = 1
             total_pages = 1
-            first_count = None
+            high_water_count = None
             while page <= total_pages:
                 r = await get_with_retry(
                     client, _page_path(page),
@@ -148,22 +148,29 @@ class Crawler:
                 # itself, which no snapshot held yet and the next run picks up.
                 # A removal ahead of the cursor is likewise harmless. So a
                 # falling `count` is the one signal worth aborting on.
-                count = self._item_count(collection, page)
-                if first_count is None:
-                    first_count = count
-                elif count < first_count:
+                count, reported_pages = self._pagination(collection, page)
+
+                # Against the running high-water mark, not page 1's count. A
+                # walk that grows 200 -> 250 and then falls to 220 never dips
+                # below its opening count, but those 30 removals shift rows
+                # back just the same -- anchoring to the first reading would
+                # wave that through. Every observed decrease aborts.
+                if high_water_count is not None and count < high_water_count:
                     raise RuntimeError(
-                        f"catalog shrank from {first_count} to {count} items during the walk "
+                        f"catalog shrank from {high_water_count} to {count} items during the walk "
                         f"(at {_page_path(page)}) -- offset pagination would silently skip rows, "
                         "so the previous snapshot is kept instead"
                     )
+                # The guard above is what makes this the high-water mark:
+                # execution only reaches here when count >= the previous one.
+                high_water_count = count
 
                 # Safe as a maximum precisely because a shrink aborts above:
                 # `pages` is ceil(count / limit), so it cannot fall on any walk
                 # that survives, and the two readings agree. Taking the maximum
                 # additionally makes a transient low `pages` fail loudly on the
                 # page-echo check rather than truncating the walk in silence.
-                total_pages = max(total_pages, self._page_count(collection, page))
+                total_pages = max(total_pages, reported_pages)
 
                 shop_id, currency = self._shop_identity(payload, page)
 
@@ -190,30 +197,49 @@ class Crawler:
             )
 
     @staticmethod
-    def _page_count(collection: dict, page: int) -> int:
-        """Read the page total the response reports, or raise.
+    def _require_int(value, what: str, page: int, minimum: int) -> int:
+        # bool is an int subclass, so True would pass every check below it.
+        if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
+            raise RuntimeError(
+                f"{_page_path(page)} reports no usable {what} ({value!r}) -- payload shape drift"
+            )
+        return value
 
-        Treating it as optional and defaulting to 1 would turn a whole
-        multi-page catalog into a successful single-page snapshot -- the walk
-        would report success having fetched a fraction of the stock, and
-        replace_stock_items() would delete the rest.
+    @classmethod
+    def _pagination(cls, collection: dict, page: int):
+        """Read the response's paging metadata and cross-check it, or raise.
+
+        Individually plausible fields are not enough, because the walk's whole
+        bound rests on one relationship between them. A drifted response
+        carrying `count` 3312 with `pages` 1 satisfies every per-field check,
+        stops the walk after one page, and hands replace_stock_items() a
+        hundred rows to replace three thousand with. The contract this
+        storefront actually publishes is `pages == ceil(count / limit)` --
+        confirmed on every live page -- so it is enforced rather than assumed.
+
+        The echoed `limit` is checked against the one requested for the same
+        reason `_assert_page_echo` exists: this storefront answers a parameter
+        it will not honour by quietly substituting its own value, and a page
+        size silently cut to the default would otherwise just look like a
+        much longer catalog.
         """
-        pages = collection.get("pages")
-        if not isinstance(pages, int) or isinstance(pages, bool) or pages < 1:
-            raise RuntimeError(
-                f"{_page_path(page)} reports no usable page count ({pages!r}) -- payload shape drift"
-            )
-        return pages
+        count = cls._require_int(collection.get("count"), "item count", page, 0)
+        limit = cls._require_int(collection.get("limit"), "page size", page, 1)
+        pages = cls._require_int(collection.get("pages"), "page count", page, 1)
 
-    @staticmethod
-    def _item_count(collection: dict, page: int) -> int:
-        """Read the collection-wide item total the response reports, or raise."""
-        count = collection.get("count")
-        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+        if limit != _PER_PAGE:
             raise RuntimeError(
-                f"{_page_path(page)} reports no usable item count ({count!r}) -- payload shape drift"
+                f"{_page_path(page)} was served with a page size of {limit}, not the "
+                f"{_PER_PAGE} requested -- the store stopped honouring `limit`"
             )
-        return count
+        expected = max(1, -(-count // limit))
+        if pages != expected:
+            raise RuntimeError(
+                f"{_page_path(page)} reports {pages} pages for {count} items at {limit} "
+                f"per page, expected {expected} -- inconsistent paging metadata, so the "
+                "walk's bound cannot be trusted"
+            )
+        return count, pages
 
     @staticmethod
     def _shop_identity(payload: dict, page: int):
