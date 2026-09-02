@@ -332,6 +332,59 @@ async def test_crawl_catalog_raises_when_no_product_parses(tmp_config_dir):
 
 
 @respx.mock
+async def test_crawl_catalog_raises_when_a_page_inside_the_range_is_empty(tmp_config_dir):
+    """The store derives `pages` from `count`, so a page within the reported
+    range always has rows. Guarding only page 1 would let a later empty page
+    complete the walk successfully having silently dropped that page's stock,
+    which replace_stock_items() then deletes."""
+    save_config({"crawl_delay_seconds": 0})
+    page1 = [_product(id=i, url=f"p{i}.html", title=f"Artist {i} - Album {i}") for i in range(100)]
+    respx.get(_page_url(1)).mock(return_value=httpx.Response(200, json=_payload(page1, page=1, pages=2)))
+    respx.get(_page_url(2)).mock(return_value=httpx.Response(200, json=_payload([], page=2, pages=2)))
+
+    with pytest.raises(RuntimeError, match="no products on /vinyl/page2.html"):
+        [item async for item in Crawler().crawl_catalog()]
+
+
+@respx.mock
+async def test_crawl_catalog_raises_when_the_payload_carries_no_shop_identity(tmp_config_dir):
+    """Defaulting the currency would record a crawl of a re-denominated store
+    as healthy; a missing shop id would quietly strip every cover URL."""
+    save_config({"crawl_delay_seconds": 0})
+    body = _payload([_CAPTURED_PRODUCT])
+    body["shop"] = {}
+    respx.get(_page_url(1)).mock(return_value=httpx.Response(200, json=body))
+
+    with pytest.raises(RuntimeError, match="carries no shop id/currency"):
+        [item async for item in Crawler().crawl_catalog()]
+
+
+@respx.mock
+async def test_crawl_catalog_raises_when_the_currency_alone_is_missing(tmp_config_dir):
+    save_config({"crawl_delay_seconds": 0})
+    body = _payload([_CAPTURED_PRODUCT])
+    body["shop"] = {"id": _SHOP_ID}
+    respx.get(_page_url(1)).mock(return_value=httpx.Response(200, json=body))
+
+    with pytest.raises(RuntimeError, match="carries no shop id/currency"):
+        [item async for item in Crawler().crawl_catalog()]
+
+
+def test_parse_product_raises_when_a_product_carries_no_url():
+    """The url is the row's identity. Emitting the store root instead would
+    publish a bogus one, and the crawl would still count as healthy."""
+    with pytest.raises(RuntimeError, match="carries no url"):
+        Crawler._parse_product(_product(title="A - B", url=""), _SHOP_ID, "USD")
+
+
+def test_parse_product_does_not_raise_for_a_url_less_product_it_would_skip_anyway():
+    """The url check sits after the filters, so a mis-filed CD with a broken
+    payload doesn't fail the whole crawl over a row that is discarded."""
+    assert Crawler._parse_product(_product(title="Watusi - Cult Flu (CD)", url=""), _SHOP_ID, "USD") is None
+    assert Crawler._parse_product(_product(title="No Separator", url=""), _SHOP_ID, "USD") is None
+
+
+@respx.mock
 async def test_crawl_catalog_raises_on_http_error(tmp_config_dir):
     save_config({"crawl_delay_seconds": 0})
     respx.get(_page_url(1)).mock(return_value=httpx.Response(500))

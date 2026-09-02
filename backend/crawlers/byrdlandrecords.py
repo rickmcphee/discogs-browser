@@ -120,15 +120,20 @@ class Crawler:
 
                 self._assert_page_echo(collection, page)
 
+                # Every page inside the reported range, not just the first.
+                # The store derives `pages` from `count`, so a page within it
+                # always has rows; one that comes back empty is drift, and
+                # letting it pass would complete the walk successfully having
+                # silently dropped that page's stock.
+                if not products:
+                    raise RuntimeError(
+                        f"no products on {_page_path(page)} -- the Vinyl category is empty "
+                        "or the JSON shape drifted"
+                    )
                 if page == 1:
-                    if not products:
-                        raise RuntimeError(
-                            f"no products on {_page_path(1)} -- the Vinyl category is empty or the JSON shape drifted"
-                        )
                     total_pages = max(1, int(collection.get("pages") or 1))
 
-                shop_id = (payload.get("shop") or {}).get("id")
-                currency = ((payload.get("shop") or {}).get("currency") or "usd").upper()
+                shop_id, currency = self._shop_identity(payload, page)
 
                 # Sorted newest-first, so a product added mid-walk shifts every
                 # later page down by one and re-serves a row already yielded.
@@ -151,6 +156,25 @@ class Crawler:
             raise RuntimeError(
                 "parsed 0 vinyl items across the entire Byrdland Records catalog -- title format drift"
             )
+
+    @staticmethod
+    def _shop_identity(payload: dict, page: int):
+        """Read the shop id and currency the response echoes, or raise.
+
+        Both are present on every page, so a missing one is shape drift. There
+        is deliberately no default: falling back to USD would record a crawl
+        of a re-denominated store as healthy, and a missing shop id would
+        quietly strip every cover URL -- each replacing good rows with
+        degraded ones rather than leaving the previous snapshot alone.
+        """
+        shop = payload.get("shop") or {}
+        shop_id, currency = shop.get("id"), shop.get("currency")
+        if not shop_id or not currency:
+            raise RuntimeError(
+                f"{_page_path(page)} carries no shop id/currency "
+                f"(id={shop_id!r}, currency={currency!r}) -- payload shape drift"
+            )
+        return shop_id, currency.upper()
 
     @staticmethod
     def _assert_page_echo(collection: dict, requested: int) -> None:
@@ -185,14 +209,22 @@ class Crawler:
             # the fleet's "no artist source -> skip" convention.
             return None
 
-        handle = (product.get("url") or "").rsplit(".html", 1)[0]
+        handle_url = product.get("url") or ""
+        if not handle_url:
+            # The url *is* the row's identity. Emitting the store root instead
+            # would publish a bogus one and, because the crawl still counts as
+            # healthy, replace the real row with it.
+            raise RuntimeError(
+                f"product {product.get('id')!r} carries no url -- payload shape drift"
+            )
+        handle = handle_url.rsplit(".html", 1)[0]
         return {
             "artist": m.group("artist").strip(),
             "title": m.group("album").strip(),
             "format": "Vinyl",
             "price": cls._price(product),
             "currency": currency,
-            "url": f"{cls.base_url}/{product.get('url') or ''}",
+            "url": f"{cls.base_url}/{handle_url}",
             "cover_image_url": cls._cover_image(product, shop_id, handle),
         }
 
@@ -209,7 +241,7 @@ class Crawler:
     @staticmethod
     def _cover_image(product: dict, shop_id, handle: str) -> Optional[str]:
         image_id = product.get("image")
-        if not image_id or not shop_id:
+        if not image_id:
             return None
         # The CDN ignores the trailing filename segment entirely -- it keys on
         # the image id alone, and serves the same bytes for any slug

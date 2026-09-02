@@ -34,8 +34,11 @@ plugin, walking the storefront's `Vinyl` category over Lightspeed's public
 - **No genre-tree walk.** `/vinyl/` is a strict superset of its subcategories
   (proof below), so the tree beneath it adds requests and no rows.
 - **No CD/cassette coverage.** The store's CDs and cassettes are out of
-  scope; this app's stock pipeline is vinyl-only by convention
-  (`format: "Vinyl"` hardcoded across every sibling catalog crawler).
+  scope; this app's stock pipeline is vinyl-only by convention. Sibling
+  catalog crawlers hardcode `format: "Vinyl"` except where a store publishes
+  a real per-item format — `amoeba.py` derives it from the title's trailing
+  format token and `sgrecordshop.py` uses the listing's own when present —
+  and even those publish only records.
 - **No merch, turntables, or gift cards.** Those are separate top-level
   categories, outside the Vinyl category this crawler walks.
 - **No `brand`/vendor artist source.** There isn't one — see below.
