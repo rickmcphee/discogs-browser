@@ -286,6 +286,29 @@ with a separator class is only safe where a store's `vendor` is verified to
 be the artist on every product, which is a per-site finding, not a property
 of the helper.
 
+**Tenth amendment (2026-09-02, branch
+`claude/byrdland-records-crawler-phb7s6`):**
+`backend/crawlers/byrdlandrecords.py` is another documented exception, and
+the first from outside Shopify — the store runs Lightspeed eCom, so none of
+this doc's "the Shopify crawlers" framing reaches it at all. It repeats
+`cleorecs.py`'s divergences (1) and (3): the wider `[-–—]` separator class,
+and no vendor fallback — not because vendor is untrustworthy here, but
+because there is no vendor field to fall back on (`brand` is `false` on all
+3,312 live products), which makes the no-separator case a skip rather than a
+fallback of any kind. It adds a divergence none of the earlier exceptions
+has: a whitespace-collapsing **preprocessing pass** over the title before
+matching. That is not cosmetic and not expressible by calling
+`split_artist_title(title)` — this store's spreadsheet imports leave raw tabs
+inside the artist itself (`Chuck\tProphet - Wake The Dead`), where the shared
+regex would match happily and hand back an artist containing a literal tab.
+It is the same *shape* of problem `cleorecs.py`'s `_strip_trailing_parens`
+pass solves and, like it, sits before the split rather than inside it. The
+running conclusion is unchanged and reinforced: `split_artist_title` remains
+unimplemented, the exceptions now outnumber the convergence this doc
+originally described, and any future implementation should treat the
+preprocessing pass — not just the separator class — as the part that does not
+generalise.
+
 
 ## Problem
 
