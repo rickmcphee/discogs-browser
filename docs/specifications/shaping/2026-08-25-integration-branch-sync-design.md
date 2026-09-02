@@ -177,8 +177,154 @@ alone.
 1. Does `integration` already contain `main`? Exit if so (above).
 2. A sync PR already open? Resolve its own `mergeable_state`: `behind` gets
    `update-branch` before auto-merge is re-armed; `dirty` fails loudly and
-   leaves auto-merge off. Do not rebuild its branch — it may carry a
-   hand-resolved conflict.
+   leaves auto-merge off; `blocked` fails loudly once a failed check is left
+   standing with nothing still running that could clear it. Do not rebuild its
+   branch — it may carry a hand-resolved conflict.
+
+**Amended 2026-09-01: `blocked` is routed rather than falling through.**
+`integration` requires no approving review, so a sync PR is `blocked` for one of
+two unrelated reasons: its required checks have not finished — the normal first
+minutes of every sync PR's life — or one of them failed. Only the second is a
+problem, and it used to be an invisible one. Nothing in the job can clear it:
+step 2 never rebuilds an open sync PR, so the branch keeps whatever broke it,
+and re-arming auto-merge is a no-op on a PR already armed. The run then exits 0,
+and every later run reports success while nothing moves.
+
+Sync PR #259 is the case that exposed it. It failed on 2026-08-30 against a
+respx/authlib break whose fix landed on `main` hours after its branch was cut,
+so the branch could never carry that fix. It sat red for two days, holding
+`integration` at `5adef80` and stranding promotion PR #278 behind it — with
+green runs of this workflow throughout — until someone read the two PRs side by
+side and closed it by hand.
+
+Nothing is decided until the check board settles, and that one condition carries
+the whole guard. `statusCheckRollup` reports every check on the PR rather than
+just the branch's required ones, so a failed *optional* check sitting beside a
+required one that is merely pending would fire this every run for a PR that goes
+on to merge perfectly well — the same "a job that is red for a benign reason is
+one nobody reads" concern that keeps `refresh` from erroring on the promotion PR.
+Waiting for pending to empty also removes any need to ask which checks are
+required: with nothing left running, an optional-only failure leaves the PR
+`unstable` rather than `blocked`, so it never reaches this routing at all. That
+is why no `isRequired` field is read.
+
+Read naively, though, that same rule inverts into something worse than the noise
+it prevents. Because the rollup does not mark required checks, waiting on the
+whole board means a required check that has *conclusively failed* goes
+unreported for as long as any optional check sits queued beside it — and an
+optional check that hangs buries it for good, restoring the exact silence this
+routing exists to end. Failing loud is recoverable; failing open is the bug.
+
+So a pending check only shields a failure while it is plausibly still running.
+Past `PENDING_CHECK_GRACE` (six hours) it is hung rather than slow, and stops
+shielding anything. Checks here finish in minutes, so the bound never expires
+while something is genuinely running, and the optional-failure suppression holds
+for exactly as long as it should. A pending check carrying no usable timestamp
+counts as waiting, which fails towards silence rather than towards a red run.
+
+**That last fallback is unbounded, and it is the one hole left in this routing.**
+A CheckRun that stays queued keeps exporting no usable `startedAt`, so it reads
+as freshly pending on every run rather than ageing out — and a queue entry that
+never starts would shield an already-failed required check for as long as it
+sits there. "The next run re-decides" is true of the *state* reads above it; it
+is not true here, and an earlier draft of this section wrongly said it was.
+
+The hole is narrow on this repository — a sync PR's checks are Backend and
+Frontend tests, which start promptly — and the parked "Approve and run" case that
+would most plausibly trigger it is inactive while the sync app is configured. It
+is documented rather than patched because there is no correct small fix for it:
+bounding it needs either a real creation timestamp, which `gh` does not expose
+for a CheckRun, or the required-only snapshot below, which removes the need for
+optional-check shielding altogether and with it the grace period, this fallback,
+and this hole. That upgrade is the fix; further patching around the missing
+required-ness is not.
+
+The state is then re-resolved before anything is reported. `mergeable_state` is
+read before the rollup, and GitHub recomputes it asynchronously, so the two
+disagree across that gap: required checks going green inside it leave the board
+settled with only an optional failure standing, while the state still reads
+`blocked` from a moment earlier — and reporting on the stale read would call a
+PR stuck at the exact moment it turns `unstable` and merges. Anything but
+`blocked` on the second read (including `unknown`, which GitHub answers while it
+recomputes) means this run cannot honestly call the PR stuck, so it says
+nothing. That silence lasts one run and corrects itself; a genuinely stuck PR
+stays stuck and is reported next time round.
+
+It does not fall through. Carrying a non-`blocked` value into the generic re-arm
+below is where each of them does the damage its own branch exists to prevent:
+`unknown` arms auto-merge on a state the top of this routing refuses to guess
+at, and `behind` arms it without `update-branch`. A read added to avoid one
+false report must not become a side entrance past the fail-closed handling it
+sits inside.
+
+But stopping is not by itself the protection, and `dirty` is where that
+distinction bites. A sync PR is armed at creation, so a PR that has turned
+`dirty` in this window already carries a live auto-merge request and no label —
+declining to *re-arm* leaves it exactly as dangerous as arming it would, and
+whoever resolves the conflict has their resolution merged unreviewed into a
+branch that requires no approving review. Only the `dirty` case's two defences
+address that: the label, durable and blocking the next run's re-arm, and the
+disable, which clears the request already outstanding.
+
+So a refreshed `dirty` is routed through those defences rather than exited past,
+and they live in a function both callers share, so the two paths cannot drift
+apart — which is precisely how this divergence arose. Every other non-`blocked`
+value still stops and leaves the next run to decide on a settled read.
+
+The report names the checks the grace period stopped shielding, alongside the
+failed ones. Because the rollup does not mark required checks, one visible
+consequence of inferring remains, and it runs both ways: a required check hung
+past the grace period with an optional one failed beside it fires on the
+optional failure's name, while a required check that failed beside a hung
+optional one fires on the right name but sits next to an irrelevant stalled one.
+Either way the PR really is stalled, so reporting is right — but which of the two
+is holding it cannot be known from here.
+
+So both sets are reported and neither is ranked. Ranking them would assert
+exactly the required-ness this routing is otherwise careful never to infer, and
+would be wrong in one of the two directions every time. Naming both, and saying
+plainly that the rollup cannot tell them apart, is what the gap costs in the
+report itself. It is not the whole cost: the unbounded fallback above is still
+a silent path, and the rerun race below is a noisy one.
+
+### The rerun race
+
+The second known limitation, alongside the unbounded no-timestamp fallback. The
+rollup reads and the `mergeable_state` re-read are not one snapshot, so a check
+rerun starting between them leaves the failure set describing an attempt that is
+already being retried, while the state stays `blocked` on the newly pending one —
+and the run reports a PR that is in the middle of recovering.
+
+Accepted rather than fixed. Re-reading the rollup after the state read narrows
+the window without closing it; across non-atomic reads there is no point where
+this class ends, only a point where it stops mattering. It is already sub-second,
+and it fails towards a red run on a PR that genuinely is blocked at that instant
+— diagnosable in the time it takes to look at the checks, and a different cost
+entirely from the silent stall this routing removes. The required-only snapshot
+closes it properly, as it does the fallback above.
+
+`CANCELLED` and `STALE` count as failures alongside the obvious ones — nothing
+is coming for either. `ACTION_REQUIRED` counts as *waiting*: it means a person
+has been asked for a click, which is the parked "Approve and run" state this
+design already documents and tolerates under the token fallback, and erroring on
+it would turn a run red every week for a condition deliberately accepted.
+
+The failure is reported rather than repaired, and the reason is narrower than
+"a sync PR contains nothing hand-authored". `CONFLICT_LABEL` marks one thing
+only: a branch handed to a person because the merge conflicted. It says nothing
+about a branch someone pushed a CI fix onto to unstick a red sync PR, which is
+both a plausible response to this very error and entirely unlabelled. So an
+unlabelled sync branch is *not* provably machine-only, and force-pushing over it
+can destroy the only copy of that work.
+
+That applies to the person as much as to the job, so the error does not simply
+tell them to delete the branch. It tells them to re-run the failed check first,
+since a transient Actions failure clears with nothing changed anywhere; then, if
+it reproduces and the cause is already fixed on `main`, to check the branch for
+commits this job did not create; and only then to close the PR, delete the
+branch and re-run, so step 3 rebuilds from the current `main`. An earlier draft
+of this section asserted the machine-only premise and the deletion advice
+together, which was both wrong and, in the advice, potentially destructive.
 3. Otherwise branch from `integration`, `git merge origin/main`, and open a PR
    that auto-merges **with a merge commit**.
 
@@ -472,6 +618,21 @@ guard that failed open.
 | Unrelated PRs blocked by someone else's conflict | A conflicted sync PR reported a pending sync, suppressing `refresh`, though auto-merge was off and nothing was about to move | Superseded: the pending guard is gone entirely |
 | Refresh silently doing nothing | `for n in $(gh pr list …)` is a word expansion, so `set -e` never saw the command fail | Assign first |
 | Fork PR handed auto-merge | `--head` matches branch *name* only | `isCrossRepository == false` |
+
+### One after the marker
+
+Kept out of the table above, which is scoped to the recorded marker and would
+stop being readable as history if later failures were filed into it. This one
+belongs to the routing that replaced it, and it is here because it shares the
+table's moral exactly:
+
+**A red sync PR stalling both branches, silently.** `blocked` fell through to
+the re-arm, which is a no-op on an already-armed PR, so the job exited 0 while
+the branch kept a failure it could never shed. Closed by routing `blocked`, and
+failing the run once a failed check stands with nothing still running that could
+clear it. Its cost was a silent one too — an `integration` frozen for two days
+and a promotion PR stranded behind it, with every run of this workflow green
+throughout.
 
 ## Simplifications available
 
