@@ -22,7 +22,12 @@ Lightspeed is a platform this repo has not crawled before — every existing
 (`ripplemusic.py`), a store's own private endpoint (`sgrecordshop.py`'s
 `/gsrp/`), or bespoke HTML. No existing helper implements Lightspeed's, so
 this crawler cannot reuse `shopify_catalog.iter_products()` and carries its
-own paging loop.
+own paging loop. (**2026-09-02, branch
+`claude/m-theoryaudio-store-crawler-wq4bf0`:** that platform list has since
+gained Bandzoogle, whose storefront `mtheoryaudio.py` reads as server-rendered
+HTML — it publishes no machine-readable view at all. The claim above is
+unaffected: it is about Lightspeed, and Bandzoogle has no shared helper
+either.)
 
 ## Scope
 
