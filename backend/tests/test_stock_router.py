@@ -333,6 +333,44 @@ def test_list_stock_includes_comparison_rows(pg_test_db, authed_client_factory):
     assert body["items"][1]["is_own"] is False
 
 
+def test_list_stock_include_comparisons_false_omits_them(pg_test_db, authed_client_factory):
+    """The tile-view request path. Covered here and not only at the db layer
+    because the failure this guards is a parsing/forwarding one: a bool query
+    param that never reaches get_stock_items looks identical to a working one
+    from the db tests."""
+    store_id = _make_crawler("Nuclear Blast")
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/y.py", crawler_type="release")
+        conn.commit()
+        amazon_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        item_key = db.replace_stock_items(conn, store_id, [
+            {"artist": "Rob Zombie", "title": "The Great Satan", "price": 31.99, "currency": "USD", "url": "https://x/1"},
+        ])[0]
+        db.upsert_stock_item_listing(conn, item_key, amazon_id, "https://amazon/1", 29.99, None, "USD", "New")
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.commit()
+
+    client = authed_client_factory(user["id"])
+    r = client.get("/api/stock", params={"include_comparisons": "false"})
+    assert r.status_code == 200
+    body = r.json()
+    assert [row["source"] for row in body["items"]] == ["Nuclear Blast"]
+    assert body["total"] == 1
+    assert body["row_total"] == 1
+
+    # Same request under the Cost sort, where the parameter actually decides
+    # between the two shapes: without it the flat set carries both rows.
+    r = client.get("/api/stock", params={"sort": "price", "order": "asc"})
+    body = r.json()
+    assert [row["source"] for row in body["items"]] == ["Amazon", "Nuclear Blast"]
+    assert (body["total"], body["row_total"]) == (1, 2)
+
+    r = client.get("/api/stock", params={"sort": "price", "order": "asc", "include_comparisons": "false"})
+    body = r.json()
+    assert [row["source"] for row in body["items"]] == ["Nuclear Blast"]
+    assert (body["total"], body["row_total"]) == (1, 1)
+
+
 def test_list_stock_includes_discogs_price_for_matched_collection_item(pg_test_db, authed_client_factory):
     store_id = _make_crawler("Nuclear Blast")
     with db.get_admin_pool().connection() as conn:

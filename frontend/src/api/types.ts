@@ -149,7 +149,14 @@ export interface StockItem {
 }
 
 export interface StockResponse {
+  // Stock items matching the filters -- the number the browser prints as
+  // "N items", and the one /stock/stats' per-source counts sum to.
   total: number
+  // Rows in the paginated set -- what pages divide by. A Cost sort flattens
+  // each item's comparison rows into the same ordering, so it is the only
+  // case where this can exceed `total`, and not always: a Cost request that
+  // omits comparisons, or whose items have none, still matches `total`.
+  row_total: number
   page: number
   per_page: number
   items: StockItem[]

@@ -37,7 +37,12 @@ Touches:
   step that flattens each stock item's own row plus its comparison rows
   into the returned list; `exclude_crawler_ids` applies to both. No
   signature, filter, sort, or pagination-math changes — `total`/`page`/
-  `per_page` stay item-counted, exactly as today.
+  `per_page` stay item-counted, exactly as today. *(Amended 2026-09-02: a
+  `Cost` sort now paginates over the flat offer set instead — see the
+  amendment below. `total` is still item-counted on every path, so it keeps
+  agreeing with `/stock/stats`; the new `row_total` carries the row count
+  pagination needs. `get_stock_items` also gained `include_comparisons`,
+  which tile view sets false.)*
 - `frontend/src/views/StockBrowser.tsx` — gains a `scope: 'store' |
   'collection'` prop (default `'store'`); list-view table body renders the
   new flattened multi-row shape; tile view keeps rendering one tile per
@@ -119,7 +124,9 @@ excluded via `requires_discogs_release`).
   per item, "sort by price" is ambiguous (own price vs. cheapest
   comparison). Sorting stays keyed on `stock_items.price` exactly as today;
   comparison rows simply follow their item wherever it lands. No new sort
-  fields.
+  fields. *(Amended 2026-09-02: reversed for `Cost`. The ambiguity was
+  resolved the other way — every row, own and comparison alike, is one
+  offer sorted on its own price. Still no new sort fields.)*
 - **No placeholder rows for pending comparisons.** A crawler that hasn't
   found a match yet (no `listings` row) contributes nothing — matching the
   existing repo-wide invariant ("no row means not yet crawled, not a
@@ -190,6 +197,22 @@ query now orders by `l.price {order}, cr.site_name` when `sort == "price"`,
 matching the requested direction, and falls back to `cr.site_name` alone
 for every other sort.
 
+**Amendment (2026-09-02):** that sub-ordering was half the fix, not
+the whole one. Ordering comparisons *within* a group still leaves
+them welded under their own row, so a cheap comparison lands under a dear
+own row and the visible `Cost` column is still not monotonic — the ordering
+only reads correctly if you skip every row between the own rows. Sorting by
+`Cost` now dissolves the grouping instead: `get_stock_items` takes a
+`WITH own … comparisons … offers` CTE that unions the stock rows and their
+comparison listings into one flat set of "offers", ordered and paginated
+together, so every rendered row is in price order regardless of which item
+or site it came from. `DISTINCT ON (l.item_key, l.crawler_id)` keeps a
+listing that several stores share from entering the set once per store.
+Only `Cost` flattens — every other sort keeps the grouped shape, where "the
+item, and what other sites charge for it" is the useful reading — so the
+comparison query above now orders by `cr.site_name` unconditionally, its
+`sort == "price"` branch being unreachable.
+
 `l.price IS NOT NULL` mirrors the existing defensive filter in
 `get_missing_releases` — under the current invariant `upsert_listing`/
 `upsert_stock_item_listing` only ever write a row on a match, so this is
@@ -200,6 +223,14 @@ belt-and-suspenders, not load-bearing.
 render more than 250 table rows, and that's fine, since pagination is about
 "how many items have you paged through," not "how many rows rendered."
 
+**Amendment (2026-09-02):** that holds for the grouped sorts only. `total` is
+still this same `COUNT(*) FROM stock_items` on every path — which is what
+keeps it equal to `/stock/stats`' `total`, whose per-source counts sum to it
+— but a `Cost` sort with comparisons included paginates over the flat offer
+set, so the response also carries `row_total`, the count of rows in that set,
+and that is what divides into pages. Everywhere else — every other sort, and a
+`Cost` request that omits comparisons — the two are the same number.
+
 `get_distinct_stock_artists` is unchanged — the artist sidebar lists
 distinct `stock_items.artist` values regardless of comparison data.
 
@@ -208,6 +239,11 @@ No API/router changes: `routers/stock.py`'s `list_stock`/
 already accept. The Collection tab is purely a new *caller* (`overlapping=
 true`, `recommended` never sent) of the existing `/api/stock`/`/api/stock/
 artists` endpoints — no new query param, no new endpoint.
+
+**Amendment (2026-09-02):** `/api/stock` does take a new query param now:
+`include_comparisons` (default true). Tile view sends `false`, since it
+renders own rows only and a page of the flat `Cost` ordering would otherwise
+be mostly rows it discards. Still no new endpoint.
 
 ## Frontend design
 
@@ -291,11 +327,17 @@ export interface StockItem {
   still returns just the owned-intersection, now including each returned
   item's comparison rows; pagination `total` stays item-counted when items
   have comparison rows (a page can render more table rows than
-  `per_page`).
+  `per_page`) — *amended 2026-09-02: still true for the grouped sorts, but
+  a `Cost` sort paginates on `row_total`, so a page there holds `per_page`
+  rows rather than `per_page` items.*
 - `backend/tests/test_stock_router.py` — `GET /stock` response shape
   includes comparison rows for an item with `listings`; no new query
   params are introduced, so no new router-level param-parsing tests are
-  needed beyond confirming existing ones still pass unchanged.
+  needed beyond confirming existing ones still pass unchanged. *(Amended
+  2026-09-02: `include_comparisons` is a new query param, so it does need
+  router-level coverage —* `test_list_stock_include_comparisons_false_omits_them`
+  *asserts it parses and forwards, under both the grouped and the flat
+  `Cost` shape.)*
 - Frontend: new `frontend/src/test/stockBrowserScope.test.tsx` (or added
   to an existing `StockBrowser` test file if one exists) —
   `scope="collection"` sends `overlapping: true` to `getStock`/
