@@ -29,7 +29,7 @@ beforeEach(() => {
   unsaveStockItem.mockReset()
   getStockStats.mockReset()
   getStockStats.mockResolvedValue({ total: 2, sources: [{ crawler_id: 4, site_name: 'Nuclear Blast', count: 2 }] })
-  getStock.mockResolvedValue({ total: 2, page: 1, per_page: 250, items })
+  getStock.mockResolvedValue({ total: 2, row_total: 2, page: 1, per_page: 250, items })
   getStockArtists.mockResolvedValue(['NAILS', 'Rob Zombie'])
   localStorage.clear()
 })
@@ -65,13 +65,13 @@ describe('StockBrowser', () => {
   })
 
   it('shows an empty state when there are no items', async () => {
-    getStock.mockResolvedValue({ total: 0, page: 1, per_page: 250, items: [] })
+    getStock.mockResolvedValue({ total: 0, row_total: 0, page: 1, per_page: 250, items: [] })
     render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText(/No in-stock items yet/)).toBeTruthy())
   })
 
   it('points a non-admin to a store sync, not the admin-only Refresh button', async () => {
-    getStock.mockResolvedValue({ total: 0, page: 1, per_page: 250, items: [] })
+    getStock.mockResolvedValue({ total: 0, row_total: 0, page: 1, per_page: 250, items: [] })
     render(<StockBrowser />)
     await waitFor(() => expect(
       screen.getByText('No in-stock items yet. Check back after the next store sync.')
@@ -79,7 +79,7 @@ describe('StockBrowser', () => {
   })
 
   it('points an admin to the Store Management Refresh button', async () => {
-    getStock.mockResolvedValue({ total: 0, page: 1, per_page: 250, items: [] })
+    getStock.mockResolvedValue({ total: 0, row_total: 0, page: 1, per_page: 250, items: [] })
     render(<StockBrowser isAdmin />)
     await waitFor(() => expect(
       screen.getByText('No in-stock items yet. Click Refresh under Store Management in Settings.')
@@ -91,7 +91,7 @@ describe('StockBrowser', () => {
     getStock.mockReturnValue(new Promise((resolve) => { resolveFetch = resolve }))
     render(<StockBrowser />)
     expect(screen.queryByText(/No in-stock items yet/)).toBeNull()
-    resolveFetch({ total: 0, page: 1, per_page: 250, items: [] })
+    resolveFetch({ total: 0, row_total: 0, page: 1, per_page: 250, items: [] })
     await screen.findByText(/No in-stock items yet/)
   })
 
@@ -139,7 +139,7 @@ describe('StockBrowser', () => {
     const { container } = render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
 
-    getStock.mockResolvedValue({ total: 2, page: 1, per_page: 250, items: [zombie, nails] })
+    getStock.mockResolvedValue({ total: 2, row_total: 2, page: 1, per_page: 250, items: [zombie, nails] })
     fireEvent.change(screen.getByPlaceholderText('Search artist or title…'), { target: { value: 'e' } })
     await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ search: 'e' })))
     await waitFor(() => expect(screen.getAllByRole('row').length).toBe(3)) // header + 2 items
@@ -147,7 +147,7 @@ describe('StockBrowser', () => {
     // The server's price-ascending response for the same search: the cheaper
     // NAILS item first, the pricier Rob Zombie item second -- reversed from
     // both the pre-sort order above and the default fixture order.
-    getStock.mockResolvedValue({ total: 2, page: 1, per_page: 250, items: [nails, zombie] })
+    getStock.mockResolvedValue({ total: 2, row_total: 2, page: 1, per_page: 250, items: [nails, zombie] })
     fireEvent.click(screen.getByText(/Cost/))
     await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(
       expect.objectContaining({ search: 'e', sort: 'price', order: 'asc' })
@@ -271,7 +271,7 @@ describe('StockBrowser', () => {
   })
 
   it('shows saved-specific empty-state copy under the Saved filter with no results', async () => {
-    getStock.mockResolvedValue({ total: 0, page: 1, per_page: 250, items: [] })
+    getStock.mockResolvedValue({ total: 0, row_total: 0, page: 1, per_page: 250, items: [] })
     render(<StockBrowser scope="store" />)
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'saved' } })
     await waitFor(() => expect(screen.getByText("You haven't saved anything yet.")).toBeTruthy())
@@ -300,7 +300,7 @@ describe('StockBrowser', () => {
   })
 
   it('shows overlapped-specific empty-state copy under the Overlapped filter with no results', async () => {
-    getStock.mockResolvedValue({ total: 0, page: 1, per_page: 250, items: [] })
+    getStock.mockResolvedValue({ total: 0, row_total: 0, page: 1, per_page: 250, items: [] })
     render(<StockBrowser scope="store" />)
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'overlapped' } })
     await waitFor(() => expect(screen.getByText('Nothing by an artist in your collection is in stock right now.')).toBeTruthy())
@@ -315,7 +315,7 @@ describe('StockBrowser', () => {
 
   it('shows a recommendation reason as a tooltip on the artist and title cells', async () => {
     getStock.mockResolvedValue({
-      total: 1, page: 1, per_page: 250,
+      total: 1, row_total: 1, page: 1, per_page: 250,
       items: [{ ...items[0], reason: 'Similar to your hardcore collection' }],
     })
     render(<StockBrowser recommendedAvailable />)
@@ -327,7 +327,7 @@ describe('StockBrowser', () => {
 
   it('shows a recommendation reason as a tooltip on the tile-view artist and title text', async () => {
     getStock.mockResolvedValue({
-      total: 1, page: 1, per_page: 250,
+      total: 1, row_total: 1, page: 1, per_page: 250,
       items: [{ ...items[0], reason: 'Similar to your hardcore collection' }],
     })
     render(<StockBrowser recommendedAvailable />)
@@ -355,7 +355,7 @@ describe('StockBrowser', () => {
   })
 
   it('resets to page 1 when hiddenCrawlerIds changes, with a single fetch (not stale-page-then-corrected)', async () => {
-    getStock.mockResolvedValue({ total: 500, page: 1, per_page: 250, items })
+    getStock.mockResolvedValue({ total: 500, row_total: 500, page: 1, per_page: 250, items })
     const { rerender } = render(<StockBrowser hiddenCrawlerIds={[]} />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     fireEvent.click(screen.getByText('Next →'))
@@ -432,7 +432,7 @@ describe('StockBrowser', () => {
   })
 
   it('resets to page 1 when the Track filter changes', async () => {
-    getStock.mockResolvedValue({ total: 500, page: 1, per_page: 250, items })
+    getStock.mockResolvedValue({ total: 500, row_total: 500, page: 1, per_page: 250, items })
     render(<StockBrowser scope="track" />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     fireEvent.click(screen.getByText('Next →'))
@@ -502,7 +502,7 @@ describe('StockBrowser', () => {
   })
 
   it('shows a filter-specific empty state on the Track tab', async () => {
-    getStock.mockResolvedValue({ total: 0, page: 1, per_page: 250, items: [] })
+    getStock.mockResolvedValue({ total: 0, row_total: 0, page: 1, per_page: 250, items: [] })
     render(<StockBrowser scope="track" />)
     await waitFor(() => expect(screen.getByText(/Nothing you're tracking is in stock/)).toBeTruthy())
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'wantlist' } })
@@ -512,7 +512,7 @@ describe('StockBrowser', () => {
   })
 
   it('shows a Recommended-specific empty state on the Store tab', async () => {
-    getStock.mockResolvedValue({ total: 0, page: 1, per_page: 250, items: [] })
+    getStock.mockResolvedValue({ total: 0, row_total: 0, page: 1, per_page: 250, items: [] })
     render(<StockBrowser recommendedAvailable />)
     await waitFor(() => expect(screen.getByText(/No in-stock items yet/)).toBeTruthy())
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'recommended' } })
@@ -520,7 +520,7 @@ describe('StockBrowser', () => {
   })
 
   it('shows the filter-specific Track empty state in tile view too', async () => {
-    getStock.mockResolvedValue({ total: 0, page: 1, per_page: 250, items: [] })
+    getStock.mockResolvedValue({ total: 0, row_total: 0, page: 1, per_page: 250, items: [] })
     render(<StockBrowser scope="track" />)
     await waitFor(() => expect(screen.getByText(/Nothing you're tracking is in stock/)).toBeTruthy())
     fireEvent.click(screen.getByTitle('Tile view'))
@@ -597,7 +597,7 @@ describe('StockBrowser', () => {
   })
 
   it('narrows the empty-state colSpan in Track scope when hasPriceField is false', async () => {
-    getStock.mockResolvedValue({ total: 0, page: 1, per_page: 250, items: [] })
+    getStock.mockResolvedValue({ total: 0, row_total: 0, page: 1, per_page: 250, items: [] })
     render(<StockBrowser scope="track" hasPriceField={false} />)
     const emptyRow = await screen.findByText(/Nothing you're tracking is in stock/)
     expect(emptyRow.closest('td')).toHaveAttribute('colSpan', '6')
@@ -667,9 +667,59 @@ describe('StockBrowser', () => {
     expect(localStorage.getItem('stockFilter_track')).toBe('all')
   })
 
+  it('paginates on row_total, not the item count, so a flattened Cost sort reaches its later pages', async () => {
+    // Under a Cost sort the response carries every comparison row in the same
+    // ordering, so there are more rows than items. Paginating on the item
+    // count would strand the rows past the first page with no way to reach
+    // them -- the browser would render one page and hide the Next button.
+    getStock.mockResolvedValue({ total: 2, row_total: 500, page: 1, per_page: 250, items })
+    // Track scope because it is the one that prints the count; Store surfaces
+    // the same number through the Stats panel instead. The paging itself is
+    // scope-independent.
+    render(<StockBrowser scope="track" />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+
+    expect(screen.getByText('Page 1 of 2')).toBeTruthy()
+    // The label keeps counting items, so it still agrees with the Stats
+    // breakdown, whose per-source counts sum to that same number.
+    expect(screen.getByText('2 items')).toBeTruthy()
+
+    fireEvent.click(screen.getByText('Next →'))
+    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ page: 2 })))
+  })
+
+  it('asks for comparison rows in list view and not in tile view', async () => {
+    // Tiles drop comparison rows on the floor, and under a Cost sort a page of
+    // the flattened set is mostly comparison rows -- fetching them would leave
+    // the grid near-empty.
+    render(<StockBrowser />)
+    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ includeComparisons: true })))
+
+    fireEvent.click(screen.getByTitle('Tile view'))
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ includeComparisons: false })))
+
+    fireEvent.click(screen.getByTitle('List view'))
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ includeComparisons: true })))
+  })
+
+  it('returns to page 1 when the view mode changes', async () => {
+    // List pages over the flattened offer rows under a Cost sort, tiles only
+    // over the items, so a page deep in one can be past the end of the other.
+    getStock.mockResolvedValue({ total: 2, row_total: 500, page: 1, per_page: 250, items })
+    render(<StockBrowser />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByText('Next →'))
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2 })))
+
+    fireEvent.click(screen.getByTitle('Tile view'))
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ page: 1, includeComparisons: false }),
+    ))
+  })
+
   it('renders a row for every item, including comparison rows, in list view', async () => {
     getStock.mockResolvedValue({
-      total: 1, page: 1, per_page: 250,
+      total: 1, row_total: 1, page: 1, per_page: 250,
       items: [
         items[0],
         { id: 'k1:Amazon', item_key: 'k1', is_own: false, artist: 'Rob Zombie', title: 'The Great Satan — Ghostly Black Vinyl', format: 'Vinyl', price: 29.99, currency: 'USD', url: 'https://amazon/x', cover_image_url: 'https://cdn.shopify.com/rz-black.png', source: 'Amazon', last_seen: '2026-07-05T00:00:00Z', reason: null },
@@ -683,7 +733,7 @@ describe('StockBrowser', () => {
 
   it('shows only the own row per item in tile view, even when comparison rows are present', async () => {
     getStock.mockResolvedValue({
-      total: 1, page: 1, per_page: 250,
+      total: 1, row_total: 1, page: 1, per_page: 250,
       items: [
         items[0],
         { id: 'k1:Amazon', item_key: 'k1', is_own: false, artist: 'Rob Zombie', title: 'The Great Satan — Ghostly Black Vinyl', format: 'Vinyl', price: 29.99, currency: 'USD', url: 'https://amazon/x', cover_image_url: null, source: 'Amazon', last_seen: '2026-07-05T00:00:00Z', reason: null },
@@ -736,9 +786,9 @@ describe('StockBrowser', () => {
     // call -- keep that response consistent with the optimistic "saved"
     // state so the reload doesn't itself overwrite the row back to unsaved
     // and confound the assertions below with an unrelated effect.
-    getStock.mockResolvedValueOnce({ total: 2, page: 1, per_page: 250, items })
+    getStock.mockResolvedValueOnce({ total: 2, row_total: 2, page: 1, per_page: 250, items })
     getStock.mockResolvedValue({
-      total: 2, page: 1, per_page: 250,
+      total: 2, row_total: 2, page: 1, per_page: 250,
       items: [{ ...items[0], saved: true }, items[1]],
     })
     render(<StockBrowser scope="store" />)
@@ -804,7 +854,7 @@ describe('StockBrowser', () => {
 
   it('unsaving under the Saved filter removes the row', async () => {
     getStock.mockResolvedValue({
-      total: 1, page: 1, per_page: 250,
+      total: 1, row_total: 1, page: 1, per_page: 250,
       items: [{ ...items[0], saved: true }],
     })
     unsaveStockItem.mockResolvedValue({ saved: false })
@@ -819,7 +869,7 @@ describe('StockBrowser', () => {
   it('re-fetches from the server when a toggle fails, undoing the optimistic removal under the Saved filter', async () => {
     unsaveStockItem.mockRejectedValue(new Error('boom'))
     getStock.mockResolvedValue({
-      total: 1, page: 1, per_page: 250,
+      total: 1, row_total: 1, page: 1, per_page: 250,
       items: [{ ...items[0], saved: true }],
     })
     render(<StockBrowser scope="store" />)
@@ -845,7 +895,7 @@ describe('StockBrowser', () => {
     // That refresh only happens if toggleSaved's success path also bumps
     // retryTick (not just its failure path) -- see StockBrowser.tsx.
     getStock.mockResolvedValue({
-      total: 1, page: 1, per_page: 250,
+      total: 1, row_total: 1, page: 1, per_page: 250,
       items: [{ ...items[0], saved: true }],
     })
     unsaveStockItem.mockResolvedValue({ saved: false })
@@ -874,7 +924,7 @@ describe('StockBrowser', () => {
     getStock.mockImplementation(() => {
       callCount += 1
       if (callCount === 1) {
-        return Promise.resolve({ total: 2, page: 1, per_page: 250, items: bothItems })
+        return Promise.resolve({ total: 2, row_total: 2, page: 1, per_page: 250, items: bothItems })
       }
       if (callCount === 2) {
         // The retry load triggered by the failed toggle.
@@ -899,11 +949,11 @@ describe('StockBrowser', () => {
 
     // Resolve the newer (search) request first, then let the stale retry
     // request resolve after it.
-    resolveSearchCall({ total: 1, page: 1, per_page: 250, items: [items[1]] })
+    resolveSearchCall({ total: 1, row_total: 1, page: 1, per_page: 250, items: [items[1]] })
     await waitFor(() => expect(screen.getByText('Every Bridge Burning — Forest Green LP')).toBeTruthy())
     expect(screen.queryByText('The Great Satan — Ghostly Black Vinyl')).toBeNull()
 
-    resolveRetryCall({ total: 2, page: 1, per_page: 250, items: bothItems })
+    resolveRetryCall({ total: 2, row_total: 2, page: 1, per_page: 250, items: bothItems })
     // Give the stale retry's resolution a chance to (wrongly) commit if the
     // race guard were broken.
     await new Promise((r) => setTimeout(r, 0))
