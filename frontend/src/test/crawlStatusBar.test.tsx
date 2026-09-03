@@ -65,7 +65,7 @@ vi.mock('../api/client', () => ({
   openLogsStream: vi.fn(() => new MockEventSource()),
   screenshotUrl: vi.fn((path: string) => `/api/screenshots/${path}`),
   clearLogs: vi.fn(),
-  getStock: vi.fn().mockResolvedValue({ total: 0, page: 1, per_page: 250, items: [] }),
+  getStock: vi.fn().mockResolvedValue({ total: 0, row_total: 0, page: 1, per_page: 250, items: [] }),
   getStockArtists: vi.fn().mockResolvedValue([]),
   postStockSyncStart: vi.fn().mockResolvedValue({ started: true, running: true }),
   postJudgmentStart: vi.fn().mockResolvedValue({ started: true, running: true }),

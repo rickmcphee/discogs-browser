@@ -142,7 +142,7 @@ beforeEach(() => {
   getAuthStatus.mockResolvedValue({ state: 'authenticated', user: { discogs_username: 'test', is_admin: true } })
   getReleases.mockResolvedValue({ total: 0, page: 1, per_page: 250, releases: [] })
   getArtists.mockResolvedValue([])
-  getStock.mockResolvedValue({ total: 0, page: 1, per_page: 250, items: [] })
+  getStock.mockResolvedValue({ total: 0, row_total: 0, page: 1, per_page: 250, items: [] })
   getStockArtists.mockResolvedValue([])
   saveStockItem.mockResolvedValue(undefined)
   setViewportWidth(PHONE_WIDTH)
@@ -401,7 +401,7 @@ describe('mobile touch targets', () => {
 
   it('sizes the tile bookmark for touch', async () => {
     localStorage.setItem('collectionViewMode_store', 'tiles')
-    getStock.mockResolvedValue({ total: 1, page: 1, per_page: 250, items: [stockItem] })
+    getStock.mockResolvedValue({ total: 1, row_total: 1, page: 1, per_page: 250, items: [stockItem] })
     render(<StockBrowser />)
     const bookmark = await screen.findByRole('button', { name: 'Save for later' })
     expect(bookmark).toHaveClass('h-11', 'w-11')
@@ -445,7 +445,7 @@ describe('mobile touch targets', () => {
 describe('mobile StockBrowser', () => {
   it('renders the recommendation reason, which on touch has no hover to reveal it', async () => {
     getStock.mockResolvedValue({
-      total: 1, page: 1, per_page: 250,
+      total: 1, row_total: 1, page: 1, per_page: 250,
       items: [{ ...stockItem, reason: 'Shares a label and era with three records you own.' }],
     })
     render(<StockBrowser />)
@@ -454,7 +454,7 @@ describe('mobile StockBrowser', () => {
   })
 
   it('renders cards keeping the cost link and the save button as the row actions', async () => {
-    getStock.mockResolvedValue({ total: 1, page: 1, per_page: 250, items: [stockItem] })
+    getStock.mockResolvedValue({ total: 1, row_total: 1, page: 1, per_page: 250, items: [stockItem] })
     render(<StockBrowser />)
     await screen.findByText('The Great Satan')
     expect(screen.queryByRole('table')).not.toBeInTheDocument()
@@ -467,7 +467,7 @@ describe('mobile StockBrowser', () => {
 
   it('does not repeat the title as the card thumbnail\'s alt text', async () => {
     getStock.mockResolvedValue({
-      total: 1, page: 1, per_page: 250,
+      total: 1, row_total: 1, page: 1, per_page: 250,
       items: [{ ...stockItem, cover_image_url: 'https://cdn.example/cover.png' }],
     })
     const { container } = render(<StockBrowser />)
@@ -481,7 +481,7 @@ describe('mobile StockBrowser', () => {
 
   it('labels the discogs price in the meta line, where the Cost link would otherwise be ambiguous', async () => {
     getStock.mockResolvedValue({
-      total: 1, page: 1, per_page: 250,
+      total: 1, row_total: 1, page: 1, per_page: 250,
       items: [{ ...stockItem, discogs_price: '42.50' }],
     })
     render(<StockBrowser scope="track" />)

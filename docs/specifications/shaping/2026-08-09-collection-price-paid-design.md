@@ -234,6 +234,14 @@ The flatten step (comparison-row synthesis, `backend/db.py:964-976`) copies
 exactly like `cover_image_url` already is — added to the dict literal at
 line 971 alongside `"format": r["format"], "cover_image_url": r["cover_image_url"]`.
 
+*Amended 2026-09-02:* that describes the grouped sorts. A `Cost` sort no
+longer groups (see
+[`2026-08-08-store-collection-split-design.md`](2026-08-08-store-collection-split-design.md)),
+so each row resolves `discogs_price` through the same correlated subquery
+itself rather than inheriting it — the CTE carries the stock row's
+`artist`/`title` forward, which is what that subquery matches on, so the
+value is unchanged either way.
+
 No API/router signature changes — `discogs_price` rides along as a new
 field on the existing `/api/stock` response shape; `sort` already accepts
 arbitrary strings validated server-side.
