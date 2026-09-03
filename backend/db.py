@@ -2894,6 +2894,98 @@ def _stock_filter_sql(
     return where, params
 
 
+# A Cost sort is the one sort whose column has to read monotonically down the
+# whole pane, and the grouped shape get_stock_items returns cannot deliver
+# that. Comparison rows are spliced in under the own row they price, so a
+# cheap comparison always lands under an expensive own row: the ordering is
+# only intact if you read the own rows and skip everything between them. This
+# dissolves the grouping instead -- a stock row and a comparison listing are
+# both just "an offer" -- so the whole set sorts and paginates as one.
+#
+# Only Cost gets this. On artist/title/format/source the grouped shape is the
+# useful reading ("here is the item, here is what other sites charge for it"),
+# and dissolving it there would scatter one record across three screens.
+_STOCK_OFFERS_CTE = """
+    WITH own AS (
+        SELECT s.id AS stock_id, s.item_key, s.artist, s.title, s.format,
+               s.cover_image_url, s.price, s.currency, s.url, s.last_seen,
+               s.crawler_id, TRUE AS is_own
+        FROM stock_items s
+        {where}
+    ), comparisons AS (
+        -- DISTINCT ON because stock_items.item_key is not unique: several
+        -- stores can stock one record, and each of their rows joins the same
+        -- listing. The grouped path's copies are invisible, one under each
+        -- parent row; flattened they would be adjacent identical rows.
+        SELECT DISTINCT ON (l.item_key, l.crawler_id)
+               s.id AS stock_id, s.item_key, s.artist, s.title, s.format,
+               s.cover_image_url, l.price, l.currency, l.url,
+               l.last_checked AS last_seen, l.crawler_id, FALSE AS is_own
+        FROM stock_items s
+        JOIN listings l
+          ON l.item_key = s.item_key AND l.price IS NOT NULL{listing_exclude}
+        {where}
+        ORDER BY l.item_key, l.crawler_id, s.id
+    ), offers AS (
+        SELECT * FROM own UNION ALL SELECT * FROM comparisons
+    )
+"""
+
+
+def _get_stock_offers(
+    conn, where: str, params: dict, order_sql: str,
+    exclude_crawler_ids: Optional[list[int]], total: int, page: int, per_page: int,
+) -> dict:
+    """The flat, price-ordered form of get_stock_items -- see _STOCK_OFFERS_CTE.
+
+    `offers` is aliased `s` in the outer query on purpose:
+    _library_match_fragment correlates on `s.artist`/`s.title`, and the CTE
+    carries both forward from the stock row, so the fragment works unchanged
+    for a comparison row and answers exactly what it answered for the own row
+    that comparison used to hang under.
+    """
+    # The listing exclusion rides in the JOIN rather than the WHERE so it
+    # composes with a `where` that may be empty -- there is no clause to
+    # append an AND to when no filter is active.
+    listing_exclude = (
+        "\n         AND l.crawler_id != ALL(%(exclude_crawler_ids)s)"
+        if exclude_crawler_ids else ""
+    )
+    cte = _STOCK_OFFERS_CTE.format(where=where, listing_exclude=listing_exclude)
+
+    row_total = conn.execute(f"{cte} SELECT COUNT(*) FROM offers", params).fetchone()["count"]
+
+    params["limit"] = per_page
+    params["offset"] = (page - 1) * per_page
+    rows = conn.execute(
+        f"""
+        {cte}
+        SELECT s.stock_id, s.item_key, s.artist, s.title, s.format, s.cover_image_url,
+               s.price, s.currency, s.url, s.last_seen, s.is_own,
+               cr.site_name AS source, j.reason AS reason,
+               (sv.item_key IS NOT NULL) AS saved,
+               (SELECT li.price_paid {_library_match_fragment('%(user_id)s', 'collection')} LIMIT 1) AS discogs_price
+        FROM offers s
+        JOIN crawlers cr ON cr.id = s.crawler_id
+        LEFT JOIN stock_item_judgments j ON j.item_key = s.item_key AND j.user_id = %(user_id)s
+        LEFT JOIN stock_item_saves sv ON sv.item_key = s.item_key AND sv.user_id = %(user_id)s
+        ORDER BY CASE WHEN s.price IS NULL THEN 1 ELSE 0 END ASC, s.price {order_sql},
+                 s.stock_id, cr.site_name, s.is_own
+        LIMIT %(limit)s OFFSET %(offset)s
+        """,
+        params,
+    ).fetchall()
+
+    items = [dict(row) for row in rows]
+    _apply_canonical_artists(conn, items)
+    for item in items:
+        stock_id = item.pop("stock_id")
+        # The id shape the grouped path emits, kept identical so a React key
+        # stays stable when the user toggles between Cost and another sort.
+        item["id"] = stock_id if item["is_own"] else f"{stock_id}:{item['source']}"
+    return {"total": total, "row_total": row_total, "page": page, "per_page": per_page, "items": items}
+
+
 def get_stock_items(
     conn,
     user_id: int,
@@ -2908,6 +3000,7 @@ def get_stock_items(
     saved_only: bool = False,
     overlapped_artists: bool = False,
     exclude_crawler_ids: Optional[list[int]] = None,
+    include_comparisons: bool = True,
 ) -> dict:
     order_sql = "DESC" if order.lower() == "desc" else "ASC"
     # The sort expression is collection-pinned, so it only applies to a scope
@@ -2933,6 +3026,15 @@ def get_stock_items(
     )
 
     total = conn.execute(f"SELECT COUNT(*) FROM stock_items s {where}", params).fetchone()["count"]
+
+    # `total` counts stock items under every path, so it keeps agreeing with
+    # /stock/stats, whose per-source counts sum to it. `row_total` is the
+    # pagination unit: the flat path below is the only one that can make the
+    # two differ, and only when the rows it draws have comparisons to add.
+    if sort == "price" and include_comparisons:
+        return _get_stock_offers(
+            conn, where, params, order_sql, exclude_crawler_ids, total, page, per_page,
+        )
 
     offset = (page - 1) * per_page
     params["limit"] = per_page
@@ -2962,28 +3064,24 @@ def get_stock_items(
         params,
     ).fetchall()
 
-    item_keys = [r["item_key"] for r in rows]
-    comparison_sql = """
-        SELECT l.item_key, l.price, l.currency, l.url, l.condition, l.last_checked, cr.site_name AS source
-        FROM listings l
-        JOIN crawlers cr ON cr.id = l.crawler_id
-        WHERE l.item_key = ANY(%(item_keys)s) AND l.price IS NOT NULL
-    """
-    comparison_params = {"item_keys": item_keys}
-    if exclude_crawler_ids:
-        comparison_sql += " AND cr.id != ALL(%(exclude_crawler_ids)s)"
-        comparison_params["exclude_crawler_ids"] = exclude_crawler_ids
-    # A "Cost" sort otherwise looked broken: the own row landed in numeric
-    # price order, but its comparison rows -- shown right beneath it in the
-    # same Cost column -- were always alphabetical by source regardless of
-    # `sort`, so the visible column jumped around whenever an item had more
-    # than one comparison. Only `price` gets a numeric sub-order; every other
-    # sort keeps the site-name order the comparisons have always had.
-    comparison_order = f"l.price {order_sql}, cr.site_name" if sort == "price" else "cr.site_name"
-    comparison_sql += f" ORDER BY l.item_key, {comparison_order}"
     comparisons_by_item: dict[str, list[dict]] = {}
-    for c in conn.execute(comparison_sql, comparison_params).fetchall():
-        comparisons_by_item.setdefault(c["item_key"], []).append(c)
+    if include_comparisons:
+        comparison_sql = """
+            SELECT l.item_key, l.price, l.currency, l.url, l.condition, l.last_checked, cr.site_name AS source
+            FROM listings l
+            JOIN crawlers cr ON cr.id = l.crawler_id
+            WHERE l.item_key = ANY(%(item_keys)s) AND l.price IS NOT NULL
+        """
+        comparison_params = {"item_keys": [r["item_key"] for r in rows]}
+        if exclude_crawler_ids:
+            comparison_sql += " AND cr.id != ALL(%(exclude_crawler_ids)s)"
+            comparison_params["exclude_crawler_ids"] = exclude_crawler_ids
+        # Site-name order unconditionally: the one sort that wanted a numeric
+        # sub-order here was `price`, and it no longer reaches this path --
+        # it flattens the grouping outright rather than ordering within it.
+        comparison_sql += " ORDER BY l.item_key, cr.site_name"
+        for c in conn.execute(comparison_sql, comparison_params).fetchall():
+            comparisons_by_item.setdefault(c["item_key"], []).append(c)
 
     items = []
     own_rows = [dict(row) for row in rows]
@@ -3003,7 +3101,9 @@ def get_stock_items(
                 "is_own": False,
             })
 
-    return {"total": total, "page": page, "per_page": per_page, "items": items}
+    # Grouped: one page is one page of stock rows, whatever the comparisons
+    # add underneath them, so the two totals agree.
+    return {"total": total, "row_total": total, "page": page, "per_page": per_page, "items": items}
 
 
 def get_distinct_stock_artists(conn, user_id: int, library_scope: Optional[str] = None, recommended: bool = False,
