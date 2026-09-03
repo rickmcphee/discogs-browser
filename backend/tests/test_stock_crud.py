@@ -1312,37 +1312,213 @@ def test_get_stock_items_comparison_rows_ordered_by_site_name(admin_conn):
     assert [c["source"] for c in comparisons] == ["Amazon", "eBay"]
 
 
-def test_get_stock_items_sort_by_price_orders_comparison_rows_numerically(admin_conn):
-    # Sorting the Cost column used to only reorder the own row -- its
-    # comparison rows stayed pinned to alphabetical-by-source, so the visible
-    # Cost column wasn't actually in numeric order once an item had more than
-    # one comparison. Amazon/eBay are deliberately priced so alphabetical and
-    # numeric order disagree in both directions: alphabetical is [Amazon,
-    # eBay], numeric ascending is [eBay, Amazon].
-    db.register_crawler(admin_conn, "Nuclear Blast", "/x.py", crawler_type="catalog")
-    db.register_crawler(admin_conn, "eBay", "/y.py", crawler_type="release")
-    db.register_crawler(admin_conn, "Amazon", "/z.py", crawler_type="release")
+def _price_sort_fixture(admin_conn):
+    """Two store items, each with comparison listings priced so that a correct
+    flat ordering has to interleave them.
+
+    Album A's dearest comparison (Amazon, 20) sits below Album B's own row
+    (30), and Album B's comparison (Discogs, 25) falls between them -- so any
+    ordering that keeps an item's comparisons welded to it fails, whichever
+    order the groups themselves are put in.
+    """
+    store_id = _register(admin_conn, "Nuclear Blast")
+    for site in ("eBay", "Amazon", "Discogs"):
+        db.register_crawler(admin_conn, site, f"/{site}.py", crawler_type="release")
     admin_conn.commit()
-    store_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()["id"]
-    ebay_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'eBay'").fetchone()["id"]
-    amazon_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
-    item_key = db.replace_stock_items(admin_conn, store_id, [
+    ids = {
+        r["site_name"]: r["id"]
+        for r in admin_conn.execute("SELECT id, site_name FROM crawlers").fetchall()
+    }
+    key_a, key_b = db.replace_stock_items(admin_conn, store_id, [
         {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
-    ])[0]
-    db.upsert_stock_item_listing(admin_conn, item_key, ebay_id, "https://ebay/1", 9.0, None, "USD", "Used")
-    db.upsert_stock_item_listing(admin_conn, item_key, amazon_id, "https://amazon/1", 20.0, None, "USD", "New")
-    admin_conn.commit()
+        {"artist": "Artist B", "title": "Album B", "url": "https://x/2", "price": 30.0, "currency": "USD"},
+    ])
+    db.upsert_stock_item_listing(admin_conn, key_a, ids["eBay"], "https://ebay/1", 9.0, None, "USD", "Used")
+    db.upsert_stock_item_listing(admin_conn, key_a, ids["Amazon"], "https://amazon/1", 20.0, None, "USD", "New")
+    db.upsert_stock_item_listing(admin_conn, key_b, ids["Discogs"], "https://discogs/1", 25.0, None, "USD", "New")
     alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+    return alice, ids, (key_a, key_b)
+
+
+def test_get_stock_items_sort_by_price_orders_every_visible_row(admin_conn):
+    # The Cost column is rendered from every row the response carries, own and
+    # comparison alike (StockBrowser's table maps `items` straight through), so
+    # "sorted by cost" has to mean the whole flat sequence is monotonic. The
+    # grouped shape could never say that: comparisons are spliced in under the
+    # own row they price, so a cheap comparison always lands under a dear own
+    # row. Sorting by price dissolves the grouping instead.
+    alice, _ids, _keys = _price_sort_fixture(admin_conn)
+
+    with db.user_scope(alice["id"]) as conn:
+        asc = db.get_stock_items(conn, alice["id"], sort="price", order="asc")
+        desc = db.get_stock_items(conn, alice["id"], sort="price", order="desc")
+
+    assert [r["price"] for r in asc["items"]] == [9.0, 10.0, 20.0, 25.0, 30.0]
+    assert [r["source"] for r in asc["items"]] == [
+        "eBay", "Nuclear Blast", "Amazon", "Discogs", "Nuclear Blast",
+    ]
+    # Album A's own row and its dearest comparison end up on opposite sides of
+    # Album B's rows -- the grouping really is gone, not just reordered.
+    assert [r["title"] for r in asc["items"]] == [
+        "Album A", "Album A", "Album A", "Album B", "Album B",
+    ]
+    assert [r["price"] for r in desc["items"]] == [30.0, 25.0, 20.0, 10.0, 9.0]
+
+
+def test_get_stock_items_sort_by_price_separates_the_item_count_from_the_row_count(admin_conn):
+    # `total` has to keep counting stock items whatever the sort, because
+    # /stock/stats' per-source counts are documented to sum to it (and the
+    # browser prints it as "N items" beside them). The flat set is longer than
+    # that, so pagination needs its own number rather than reusing this one.
+    alice, _ids, _keys = _price_sort_fixture(admin_conn)
+
+    with db.user_scope(alice["id"]) as conn:
+        flat = db.get_stock_items(conn, alice["id"], sort="price")
+        grouped = db.get_stock_items(conn, alice["id"], sort="artist")
+
+    assert flat["total"] == 2
+    assert flat["row_total"] == 5
+    assert len(flat["items"]) == 5
+    # Grouped pages are still paginated by stock row, so the two agree there.
+    assert (grouped["total"], grouped["row_total"]) == (2, 2)
+
+
+def test_get_stock_items_sort_by_price_paginates_the_flat_set(admin_conn):
+    # Pagination has to walk the flat set, not the stock rows: a page boundary
+    # drawn on stock rows would drop comparison rows off the end of one page
+    # without ever showing them on the next.
+    alice, _ids, _keys = _price_sort_fixture(admin_conn)
+
+    pages = []
+    with db.user_scope(alice["id"]) as conn:
+        for page in (1, 2, 3):
+            result = db.get_stock_items(conn, alice["id"], sort="price", order="asc", page=page, per_page=2)
+            assert result["row_total"] == 5
+            pages.append([r["price"] for r in result["items"]])
+
+    assert pages == [[9.0, 10.0], [20.0, 25.0], [30.0]]
+
+
+def test_get_stock_items_sort_by_price_without_comparisons_returns_stock_rows_only(admin_conn):
+    # Tile view renders own rows only, so it asks for them only -- otherwise a
+    # page of the flat set would be mostly comparison rows it throws away, and
+    # the grid would come back near-empty.
+    alice, _ids, _keys = _price_sort_fixture(admin_conn)
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(
+            conn, alice["id"], sort="price", order="asc", include_comparisons=False
+        )
+
+    assert all(r["is_own"] for r in result["items"])
+    assert [r["price"] for r in result["items"]] == [10.0, 30.0]
+    assert (result["total"], result["row_total"]) == (2, 2)
+
+
+def test_get_stock_items_sort_by_price_puts_unpriced_rows_last_in_both_directions(admin_conn):
+    # Matches the grouped path's null_order: NULLs last ascending *and*
+    # descending, so a store row with no price never leads the table.
+    alice, ids, (key_a, _key_b) = _price_sort_fixture(admin_conn)
+    store_id = ids["Nuclear Blast"]
+    admin_conn.execute(
+        "UPDATE stock_items SET price = NULL WHERE crawler_id = %s AND title = 'Album B'", [store_id]
+    )
+    db.upsert_stock_item_listing(admin_conn, key_a, ids["Discogs"], "https://discogs/2", None, None, "USD", "New")
     admin_conn.commit()
 
     with db.user_scope(alice["id"]) as conn:
         asc = db.get_stock_items(conn, alice["id"], sort="price", order="asc")
         desc = db.get_stock_items(conn, alice["id"], sort="price", order="desc")
 
-    asc_comparisons = [r for r in asc["items"] if not r["is_own"]]
-    assert [c["source"] for c in asc_comparisons] == ["eBay", "Amazon"]
-    desc_comparisons = [r for r in desc["items"] if not r["is_own"]]
-    assert [c["source"] for c in desc_comparisons] == ["Amazon", "eBay"]
+    # The unpriced listing is written to `listings`; the CTE's
+    # `l.price IS NOT NULL` is what keeps it out of the offer set, the same
+    # filter the grouped path's comparison query applies. So the only NULL
+    # below is Album B's own row, whose price was nulled above.
+    assert [r["price"] for r in asc["items"]] == [9.0, 10.0, 20.0, 25.0, None]
+    assert [r["price"] for r in desc["items"]] == [25.0, 20.0, 10.0, 9.0, None]
+
+
+def test_get_stock_items_sort_by_price_lists_a_shared_listing_once(admin_conn):
+    # stock_items.item_key is not unique: two stores that surface the same
+    # product URL get one item_key between them, and both their rows join the
+    # same listing. Grouped, those copies are invisible -- one under each
+    # parent. Flattened they would be two identical adjacent rows.
+    first = _register(admin_conn, "Store One")
+    second = _register(admin_conn, "Store Two")
+    db.register_crawler(admin_conn, "Amazon", "/amazon.py", crawler_type="release")
+    admin_conn.commit()
+    amazon_id = admin_conn.execute(
+        "SELECT id FROM crawlers WHERE site_name = 'Amazon'"
+    ).fetchone()["id"]
+    item = {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"}
+    key = db.replace_stock_items(admin_conn, first, [item])[0]
+    assert db.replace_stock_items(admin_conn, second, [item])[0] == key
+    db.upsert_stock_item_listing(admin_conn, key, amazon_id, "https://amazon/1", 5.0, None, "USD", "New")
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], sort="price", order="asc")
+
+    assert [r["source"] for r in result["items"]] == ["Amazon", "Store One", "Store Two"]
+    assert result["row_total"] == 3
+    # Distinct React keys, so the deduped comparison still renders once.
+    assert len({r["id"] for r in result["items"]}) == 3
+
+
+def test_get_stock_items_sort_by_price_drops_hidden_crawlers_listings(admin_conn):
+    # A hidden source has to disappear from the flat set on both sides: its own
+    # stock rows (the shared WHERE) and its comparison listings (which the
+    # grouped path filtered in a separate query this path no longer runs).
+    alice, ids, _keys = _price_sort_fixture(admin_conn)
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(
+            conn, alice["id"], sort="price", order="asc", exclude_crawler_ids=[ids["Amazon"]]
+        )
+
+    assert [r["source"] for r in result["items"]] == [
+        "eBay", "Nuclear Blast", "Discogs", "Nuclear Blast",
+    ]
+    assert result["row_total"] == 4
+
+
+def test_get_stock_items_sort_by_price_comparison_rows_carry_the_items_user_state(admin_conn):
+    # Comparison rows used to inherit saved/reason from the own row they hung
+    # under. Detached, they resolve the same per-item state themselves -- the
+    # bookmark button and the judgment tooltip render off these fields on every
+    # row, comparison rows included.
+    alice, ids, (key_a, _key_b) = _price_sort_fixture(admin_conn)
+    db.upsert_stock_judgments(admin_conn, alice["id"], [{"item_key": key_a, "recommended": True, "reason": "great"}])
+    db.save_stock_item(admin_conn, alice["id"], key_a)
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], sort="price", order="asc")
+
+    album_a = [r for r in result["items"] if r["item_key"] == key_a]
+    assert len(album_a) == 3
+    assert all(r["saved"] and r["reason"] == "great" for r in album_a)
+    album_b = [r for r in result["items"] if r["item_key"] != key_a]
+    assert not any(r["saved"] or r["reason"] for r in album_b)
+
+
+def test_get_stock_items_sort_by_artist_still_groups_comparisons_under_their_item(admin_conn):
+    # Only Cost flattens. On every other sort "the item, and what other sites
+    # charge for it" is the useful reading, so the grouped shape stays.
+    alice, _ids, _keys = _price_sort_fixture(admin_conn)
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], sort="artist", order="asc")
+
+    assert [(r["title"], r["source"]) for r in result["items"]] == [
+        ("Album A", "Nuclear Blast"),
+        ("Album A", "Amazon"),
+        ("Album A", "eBay"),
+        ("Album B", "Nuclear Blast"),
+        ("Album B", "Discogs"),
+    ]
 
 
 def test_get_distinct_stock_artists_plain_browse(admin_conn):
