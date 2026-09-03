@@ -189,6 +189,7 @@ export async function getStock(params: {
   saved?: boolean
   overlapped?: boolean
   hiddenCrawlerIds?: number[]
+  includeComparisons?: boolean
 }): Promise<StockResponse> {
   const q = new URLSearchParams()
   if (params.search) q.set('search', params.search)
@@ -202,6 +203,7 @@ export async function getStock(params: {
   if (params.saved) q.set('saved', 'true')
   if (params.overlapped) q.set('overlapped', 'true')
   if (params.hiddenCrawlerIds?.length) q.set('hidden_crawler_ids', params.hiddenCrawlerIds.join(','))
+  if (params.includeComparisons === false) q.set('include_comparisons', 'false')
   const r = await apiFetch(`/stock?${q}`)
   if (!r.ok) throw new Error(await r.text())
   return r.json()
