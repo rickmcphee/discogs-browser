@@ -3,7 +3,7 @@ import { render, waitFor } from '@testing-library/react'
 import StockBrowser from '../views/StockBrowser'
 
 const { getStock, getStockArtists } = vi.hoisted(() => ({
-  getStock: vi.fn().mockResolvedValue({ total: 0, page: 1, per_page: 250, items: [] }),
+  getStock: vi.fn().mockResolvedValue({ total: 0, row_total: 0, page: 1, per_page: 250, items: [] }),
   getStockArtists: vi.fn().mockResolvedValue([]),
 }))
 
@@ -14,7 +14,7 @@ vi.mock('../api/client', () => ({
 
 beforeEach(() => {
   vi.clearAllMocks()
-  getStock.mockResolvedValue({ total: 0, page: 1, per_page: 250, items: [] })
+  getStock.mockResolvedValue({ total: 0, row_total: 0, page: 1, per_page: 250, items: [] })
   getStockArtists.mockResolvedValue([])
   localStorage.clear()
 })
