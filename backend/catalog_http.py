@@ -22,6 +22,7 @@ async def get_with_retry(
     params=None,
     headers=None,
     allow_404: bool = False,
+    min_delay: float = 0.0,
 ) -> httpx.Response:
     """Paced GET with the catalog-crawl retry budget, shared by every
     httpx-based catalog crawler.
@@ -42,10 +43,20 @@ async def get_with_retry(
 
     `allow_404=True` returns the 404 response instead of raising, for sites
     where a dead detail link is expected and skipped rather than an error.
+
+    `min_delay` is a floor a crawler sets for a site whose `robots.txt` names
+    a `Crawl-delay`, so that honouring it is enforced by the design rather
+    than asserted — `crawl_delay_seconds` is admin-editable with no bound,
+    and the jitter below sleeps as little as half of it, so a low setting
+    would otherwise crawl such a site faster than it asked. It floors both
+    ends of the jitter window rather than only the value, since flooring the
+    value alone still permits a sleep of `min_delay / 2`. Defaulting to 0
+    leaves every caller that does not set it byte-for-byte unchanged,
+    including the tests across this repo that pace with `delay=0`.
     """
     consecutive_failures = 0
     while True:
-        await sleep(random.uniform(delay * 0.5, delay))
+        await sleep(random.uniform(max(delay * 0.5, min_delay), max(delay, min_delay)))
         try:
             r = await client.get(url, params=params, headers=headers, timeout=REQUEST_TIMEOUT)
             if allow_404 and r.status_code == 404:
