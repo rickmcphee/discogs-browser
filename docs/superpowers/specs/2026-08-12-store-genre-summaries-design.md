@@ -6,6 +6,8 @@ The Store Management section (Settings tab) lists the catalog-crawler stores by 
 
 ## Scope
 
+**Amendment (2026-09-04, branch `claude/rhino-store-crawler-t46fel`):** the `crawler_type` restriction below is historical too, and describes the batch this spec shipped rather than a gate anything enforces. Nothing in the implementation is scoped by kind: `db.py`'s crawler listing reads `genre_summary` off every plugin with a plain `getattr`, and `Settings.tsx` renders the tooltip from whatever that returns, with no `crawler_type` check on either side. The paragraph below is therefore true of which crawlers *carry* a summary, not of which ones *may*. The attribute belongs to any crawler that is a describable store, however it happens to be crawled — which is what `CLAUDE.md` already states.
+
 Applies only to `catalog`/`catalog_browser` crawlers (the Store Management / Stores table — "Stores" was "Store Catalog Sources" as of a later, separately-documented rename). The `release`-type crawlers (Amazon, eBay, eBay/CCmusic, Discogs Marketplace) are general marketplaces with no coherent genre focus and get no summary — their tooltip stays absent, same as today.
 
 ## Design

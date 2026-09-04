@@ -250,27 +250,39 @@ the same destructive shape the other guards exist to prevent, reached through
 the one field none of them touches.
 
 It tests the value's **type**, not merely the key's presence, and the difference
-is not pedantry. The filter reads truthiness, so `available` arriving as the
-string `"false"` would not simply be unreadable — it would *invert* the filter
-and publish every sold-out record as in stock. An int `1`/`0` would filter
-correctly and is refused anyway: over-strictness costs a raise, which leaves the
-previous snapshot intact, while under-strictness costs a corrupted one.
+is not pedantry: `available` arriving as the string `"false"` is truthy, so a
+filter reading truthiness would not simply fail to read it — it would *invert*
+it and offer a sold-out record for sale. An int `1`/`0` is refused on the same
+terms: over-strictness costs a raise, which leaves the previous snapshot intact,
+while under-strictness costs a corrupted one.
+
+**The guard alone is not sufficient, and the per-variant filter carries the
+other half.** The guard establishes only that the field is readable
+*somewhere* in the catalog, so on a mixed payload one healthy product satisfies
+it while a sibling's `"false"` still reaches the filter and is published as in
+stock. The filter therefore admits a variant only on the literal `True` —
+`False`, `"false"`, `"true"`, `1`, `0`, `None`, an absent key and a variant that
+is not a mapping are all skipped. Losing a row is the safe direction here;
+offering a record that is not for sale is not. Both halves read the same field
+the same way, so a payload the guard would refuse wholesale is also one the
+filter refuses row by row.
 
 The guard tallies products rather than short-circuiting, so an isolated
 malformed product is skipped by `_items` without failing an otherwise healthy
-crawl. `_items` skips a variant that is not a mapping for the same reason —
-without that check a non-dict variant raises `AttributeError` from inside the
-yield loop, which preserves the snapshot but reports the drift as a mid-walk
-crash instead of the named failure, and fails a whole crawl over one bad row.
+crawl, and the skip is per-variant, so one bad variant does not take a healthy
+sibling down with it. The non-mapping case is part of that same skip: without it
+a non-dict variant raises `AttributeError` from inside the yield loop, which
+preserves the snapshot but reports the drift as a mid-walk crash instead of the
+named failure, and fails a whole crawl over one bad row.
 
 **Not guarded, deliberately:** `title` and `handle`. If either vanished the walk
 would still yield rows — blank titles, or URLs pointing at the store root — which
 is degraded data rather than a deleted snapshot, a strictly lesser failure than
 the class above and one a reader can see on the Store tab. Guarding them is a
-reasonable follow-up, not part of the destructive-emptiness problem these four
-address.
+reasonable follow-up, not part of the destructive-emptiness problem the guards
+above address.
 
-Three scoping decisions inside those guards matter:
+Some scoping decisions inside those guards matter:
 
 - The vinyl-taxonomy guard is one `udiscovermusic.py` deliberately omits,
   because its collection is a genre shelf where an all-CD run is

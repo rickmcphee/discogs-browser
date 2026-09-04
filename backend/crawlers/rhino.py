@@ -129,14 +129,19 @@ class Crawler:
             # hammerheart.py: every live pre-order here reports available=True,
             # so an unavailable product is gone allocation whether or not it is
             # tagged.
-            # isinstance before .get(): a variant that is not a mapping at all
-            # would otherwise raise AttributeError from inside the yield loop.
-            # That does at least leave the snapshot intact, but it reports the
-            # drift as a crash halfway through a walk rather than as the named
-            # stock-source failure the guard below exists to give it -- and it
-            # fails the whole crawl over one malformed row, where every other
-            # unusable variant here is simply skipped.
-            if not isinstance(variant, dict) or not variant.get("available"):
+            # `is not True`, not falsiness. The catalog-wide guard below only
+            # establishes that the field is readable *somewhere*, so on a mixed
+            # payload it is satisfied by one healthy product while a sibling
+            # carrying the string "false" sails through a truthiness test and
+            # gets published as in stock -- a sold-out record offered for sale,
+            # which is worse than losing the row. Demanding the literal True
+            # here is what actually closes that, and it keeps the filter and the
+            # guard reading the same field the same way. Anything else --
+            # False, "false", 1, None, absent, or a variant that is not a
+            # mapping at all -- is skipped rather than guessed at; the last of
+            # those would otherwise raise AttributeError from inside the yield
+            # loop, failing a whole crawl over one malformed row.
+            if not isinstance(variant, dict) or variant.get("available") is not True:
                 continue
             price = cls._price(variant)
             display_title = f"{title} (Pre-Order)" if is_preorder else title

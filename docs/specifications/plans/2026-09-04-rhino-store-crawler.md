@@ -49,7 +49,7 @@ cd backend && TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/di
 - Produces: a `Crawler` class with the standard `catalog` plugin surface (`site_name`, `base_url`, `genre_summary`, `genre`, `crawler_type`, `async def crawl_catalog()`), yielding `{"artist", "title", "format": "Vinyl", "price", "currency": "USD", "url", "cover_image_url"}`.
 
 - [x] **Step 1: Ground the design against the live store** — identify the platform, compare candidate collections by product count and membership, histogram `product_type`, and check `vendor`, `tags`, variant counts, availability, prices and `robots.txt`.
-- [x] **Step 2: Write the crawler** — `all` collection, `Vinyl`-family + `Boxset - Vinyl Only` gate, vendor artist, exact-case vendor-prefix strip, no pre-order bypass, guarded price parse, three drift guards, multi-variant disambiguation chain.
+- [x] **Step 2: Write the crawler** — `all` collection, `Vinyl`-family + `Boxset - Vinyl Only` gate, vendor artist, exact-case vendor-prefix strip, no pre-order bypass, guarded price parse, the drift guards, multi-variant disambiguation chain.
 - [x] **Step 3: Write the test file** — fixtures distinguish captured / altered / invented provenance, each marked at its definition; cases per the design spec's Verification section.
 - [x] **Step 4: Replay over the fully-cached live catalog** — 1,522 products walked → 840 pass the gate → 663 rows, no `item_key` collisions, no blank artist or title, no whitespace contamination, no malformed URL, no missing cover, no null price.
 - [x] **Step 5: Run the test file** — all tests in it pass.

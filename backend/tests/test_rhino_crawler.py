@@ -542,6 +542,37 @@ async def test_non_boolean_availability_raises(crawler, raw):
 
 
 @respx.mock
+@pytest.mark.parametrize("raw", ["false", "true", "", "0", 1, 0, None])
+async def test_a_non_boolean_flag_is_never_emitted_as_in_stock(crawler, raw):
+    # The catalog-wide guard only establishes that the field is readable
+    # *somewhere*, so on a mixed payload a healthy product satisfies it while a
+    # sibling's malformed flag still reaches the filter. The string "false" is
+    # the case that matters: truthy, so a falsiness test would publish a
+    # sold-out record as in stock -- worse than dropping the row. Only the
+    # literal True admits a variant, so every one of these is skipped.
+    healthy = _EAGLES_PRODUCT
+    malformed = {**_VAN_HALEN_PRODUCT, "variants": [
+        {**_VAN_HALEN_PRODUCT["variants"][0], "available": raw},
+    ]}
+    _mock_pages(healthy, malformed)
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["artist"] for i in items] == ["Eagles"], raw
+
+
+@respx.mock
+async def test_a_malformed_variant_does_not_hide_its_healthy_sibling(crawler):
+    # The skip is per-variant, so one bad variant on a multi-variant product
+    # must not take the good one down with it.
+    product = {**_VAN_HALEN_PRODUCT, "variants": [
+        {"id": 1, "title": "Black", "price": "34.98", "available": True},
+        {"id": 2, "title": "Clear", "price": "39.98", "available": "false"},
+    ]}
+    _mock_pages(product)
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["title"] for i in items] == ["A Different Kind of Truth (2LP) — Black"]
+
+
+@respx.mock
 async def test_one_malformed_product_does_not_trip_the_stock_guard(crawler):
     # The guard tallies products rather than short-circuiting on the first, so
     # an isolated malformed product is skipped by _items without failing an
