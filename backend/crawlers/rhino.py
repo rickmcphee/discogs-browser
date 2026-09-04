@@ -45,13 +45,15 @@ class Crawler:
         products_seen = 0
         vinyl_seen = 0
         vendor_ok = 0
+        stock_flag_ok = 0
         async for product in iter_products(self.base_url, _COLLECTION_SLUG):
             products_seen += 1
-            is_vinyl = _VINYL_TYPE_RE.match((product.get("product_type") or "").strip())
-            if is_vinyl:
+            if _VINYL_TYPE_RE.match((product.get("product_type") or "").strip()):
                 vinyl_seen += 1
                 if (product.get("vendor") or "").strip():
                     vendor_ok += 1
+                if self._has_readable_stock_flag(product):
+                    stock_flag_ok += 1
             for item in self._items(product):
                 yield item
         # db.replace_stock_items() DELETEs this crawler's previous snapshot
@@ -59,8 +61,8 @@ class Crawler:
         # raised -- so a completed-but-empty walk is destructive where a raise
         # is inert. Each guard names a distinct way the payload can stop
         # carrying what this crawler reads, and none of them can fire on a
-        # merely quiet catalog: sold-out products still count toward all three
-        # tallies, because every tally is taken before the availability filter.
+        # merely quiet catalog: sold-out products still count toward every
+        # tally, because each one is taken before the availability filter.
         if products_seen == 0:
             raise RuntimeError(f"{_COLLECTION_SLUG} collection returned no products -- renamed, removed, or markup drift")
         if vinyl_seen == 0:
@@ -76,6 +78,17 @@ class Crawler:
             raise RuntimeError(f"no product in the {_COLLECTION_SLUG} collection carries a vinyl product_type -- format-taxonomy drift")
         if vendor_ok == 0:
             raise RuntimeError(f"no vinyl product in the {_COLLECTION_SLUG} collection carries a vendor -- artist-source drift")
+        if stock_flag_ok == 0:
+            # The availability filter reads a field that can vanish, and a
+            # vanished one is silently indistinguishable from "everything is
+            # sold out": `variants` gone, or `available` gone from every
+            # variant, makes each product yield nothing while the three guards
+            # above all still pass, so the walk completes empty and deletes the
+            # snapshot. This tally is what separates the two, and it counts
+            # products rather than short-circuiting on the first, so an
+            # isolated malformed product is skipped by _items without failing
+            # the crawl.
+            raise RuntimeError(f"no vinyl product in the {_COLLECTION_SLUG} collection carries a readable availability flag -- stock-source drift")
 
     @classmethod
     def _items(cls, product: dict) -> list[dict]:
@@ -116,7 +129,14 @@ class Crawler:
             # hammerheart.py: every live pre-order here reports available=True,
             # so an unavailable product is gone allocation whether or not it is
             # tagged.
-            if not variant.get("available"):
+            # isinstance before .get(): a variant that is not a mapping at all
+            # would otherwise raise AttributeError from inside the yield loop.
+            # That does at least leave the snapshot intact, but it reports the
+            # drift as a crash halfway through a walk rather than as the named
+            # stock-source failure the guard below exists to give it -- and it
+            # fails the whole crawl over one malformed row, where every other
+            # unusable variant here is simply skipped.
+            if not isinstance(variant, dict) or not variant.get("available"):
                 continue
             price = cls._price(variant)
             display_title = f"{title} (Pre-Order)" if is_preorder else title
@@ -132,6 +152,20 @@ class Crawler:
                 "cover_image_url": resolve_cover_image(product, variant),
             })
         return items
+
+    @staticmethod
+    def _has_readable_stock_flag(product: dict) -> bool:
+        # A literal bool, not merely a present key. Shopify sends JSON
+        # true/false here, and the filter below reads the value's truthiness --
+        # so `available` arriving as the string "false" would not just be drift,
+        # it would invert the filter and publish every sold-out record as in
+        # stock. Requiring the type refuses that payload instead of trusting it.
+        # An int 1/0 would filter correctly and is refused anyway: the cost of
+        # over-strictness is a raise, which leaves the previous snapshot intact.
+        for variant in product.get("variants") or []:
+            if isinstance(variant, dict) and isinstance(variant.get("available"), bool):
+                return True
+        return False
 
     @staticmethod
     def _price(variant: dict) -> Optional[float]:

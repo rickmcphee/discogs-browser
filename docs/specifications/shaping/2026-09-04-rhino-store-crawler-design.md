@@ -235,12 +235,42 @@ each name a distinct way the payload can stop carrying what this crawler reads:
 | `products_seen == 0` | the collection returns nothing | `all` renamed or removed, or the endpoint changed shape |
 | `vinyl_seen == 0` | no product carries a vinyl `product_type` | the format taxonomy was renamed wholesale |
 | `vendor_ok == 0` | no *vinyl* product carries a `vendor` | the artist source moved out of `vendor` |
+| `stock_flag_ok == 0` | no *vinyl* product carries a variant with a boolean `available` | the availability field vanished, was renamed, or changed type |
 
 Every tally is taken **before** the availability filter, so a shelf that has
 simply sold out completes empty rather than raising — the one case where an
 empty result is the truth.
 
-Two scoping decisions inside those guards matter:
+The last guard covers the field the availability filter itself reads, which the
+other three are blind to by construction. If `variants` disappeared, or
+`available` disappeared from every variant, each product would yield nothing
+while `products_seen`, `vinyl_seen` and `vendor_ok` all stayed non-zero — so the
+walk would complete "successfully" with no rows and delete the snapshot. That is
+the same destructive shape the other guards exist to prevent, reached through
+the one field none of them touches.
+
+It tests the value's **type**, not merely the key's presence, and the difference
+is not pedantry. The filter reads truthiness, so `available` arriving as the
+string `"false"` would not simply be unreadable — it would *invert* the filter
+and publish every sold-out record as in stock. An int `1`/`0` would filter
+correctly and is refused anyway: over-strictness costs a raise, which leaves the
+previous snapshot intact, while under-strictness costs a corrupted one.
+
+The guard tallies products rather than short-circuiting, so an isolated
+malformed product is skipped by `_items` without failing an otherwise healthy
+crawl. `_items` skips a variant that is not a mapping for the same reason —
+without that check a non-dict variant raises `AttributeError` from inside the
+yield loop, which preserves the snapshot but reports the drift as a mid-walk
+crash instead of the named failure, and fails a whole crawl over one bad row.
+
+**Not guarded, deliberately:** `title` and `handle`. If either vanished the walk
+would still yield rows — blank titles, or URLs pointing at the store root — which
+is degraded data rather than a deleted snapshot, a strictly lesser failure than
+the class above and one a reader can see on the Store tab. Guarding them is a
+reasonable follow-up, not part of the destructive-emptiness problem these four
+address.
+
+Three scoping decisions inside those guards matter:
 
 - The vinyl-taxonomy guard is one `udiscovermusic.py` deliberately omits,
   because its collection is a genre shelf where an all-CD run is
@@ -255,6 +285,9 @@ Two scoping decisions inside those guards matter:
   CDs must not vouch for vinyl that has lost its artist source — that would let
   the walk complete empty and delete the snapshot instead of raising and
   keeping it.
+- The stock-flag guard is scoped the same way and for the same reason: the
+  store's CDs must not vouch for vinyl whose availability has become
+  unreadable.
 
 ### Fields
 
@@ -277,13 +310,25 @@ missing covers and zero null prices. 8 rows carry the pre-order suffix; none
 carries a variant descriptor, as expected on a single-variant catalog. The five
 vendor-prefix strips listed above are the only title transformations that fire.
 
+All 840 vinyl products carry a variant with a boolean `available`, so the
+stock-flag guard does not fire on live data.
+
 Unit tests are respx-mocked against captured products, following the sibling
 crawler test files. Each guard was confirmed to **bite** rather than assumed, by
 mutating the crawler and checking that only the intended tests fail: dropping
 the vinyl-taxonomy guard, widening the vendor strip to a colon, replacing the
 price guard with a naive `float()`, dropping the `Boxset - Vinyl Only`
-alternative, loosening the gate to any `vinyl` substring, and counting vendors
-over all products instead of vinyl ones.
+alternative, loosening the gate to any `vinyl` substring, counting vendors over
+all products instead of vinyl ones, dropping the stock-flag guard, weakening its
+type check to a presence check, tallying stock flags over all products instead
+of vinyl ones, and dropping the non-mapping variant skip.
+
+Two of those mutations found a test that did not discriminate, and both tests
+were rewritten rather than left: the vendor-scoping one passed under its own
+mutation until it was given a catalog whose only vendor sits on a non-vinyl
+product, and the non-mapping variant case was written expecting a named raise
+and instead exposed an `AttributeError` from inside the yield loop, which is
+what added that skip.
 
 ## Crawl citizenship and `robots.txt` compliance
 

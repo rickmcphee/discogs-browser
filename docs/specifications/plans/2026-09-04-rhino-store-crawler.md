@@ -21,7 +21,8 @@
 - **Availability comes from `variant.available`, not the store's tags.** Its `out_of_stock` tag is stale and contradicts the flag on a third of the products carrying it; its `exclude` tag hides nothing.
 - **No pre-order availability bypass.** Every live pre-order-tagged vinyl product reports `available: true`; an unavailable product here is gone allocation. A test pins the absence; see the design spec before "fixing" this to match `napalmrecords.py`.
 - Multi-variant products (none live among vinyl) append a variant descriptor to the title, falling back to the immutable variant id, and raise when a variant has neither — identity over cosmetics: `stock_items.item_key` is deliberately non-unique, so colliding rows insert fine and then share identity, crawl results, judgments and saved state downstream.
-- The vendor drift guard counts **vinyl** products only, in both directions — a vendor-less CD must not fail a healthy walk, and the store's CDs must not vouch for vinyl that has lost its artist source.
+- The vendor drift guard counts **vinyl** products only, in both directions — a vendor-less CD must not fail a healthy walk, and the store's CDs must not vouch for vinyl that has lost its artist source. The stock-flag guard is scoped identically.
+- **A guard must cover the availability field itself.** `variants` vanishing, or `available` vanishing from every variant, makes every product yield nothing while the other tallies stay non-zero — a successful empty walk that deletes the snapshot. The guard tests for a literal boolean, not a present key: `available` as the string `"false"` is truthy and would invert the filter rather than merely break it.
 - No comments except where the WHY is non-obvious.
 - Registration is automatic via `main.py`'s bundled-crawler startup loop — no wiring changes anywhere else.
 - Every commit carries the AI-attribution trailer block required by this repo's `CLAUDE.md`, created via `git commit -F <message-file>`, not `-m`.
@@ -52,7 +53,7 @@ cd backend && TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/di
 - [x] **Step 3: Write the test file** — fixtures distinguish captured / altered / invented provenance, each marked at its definition; cases per the design spec's Verification section.
 - [x] **Step 4: Replay over the fully-cached live catalog** — 1,522 products walked → 840 pass the gate → 663 rows, no `item_key` collisions, no blank artist or title, no whitespace contamination, no malformed URL, no missing cover, no null price.
 - [x] **Step 5: Run the test file** — all tests in it pass.
-- [x] **Step 6: Mutation-check that each guard bites** — mutate the crawler once per guard and confirm only the intended tests fail; fix any test that passes under its own mutation.
+- [x] **Step 6: Mutation-check that each guard bites** — mutate the crawler once per guard and confirm only the intended tests fail; fix any test that passes under its own mutation, and treat a test that fails for the wrong reason as a finding about the code rather than the test.
 - [x] **Step 7: Run the wider crawler test selection for regressions** (`pytest tests/ -k crawler` with the three test env vars set — the plugin loader imports every module in `backend/crawlers/`, so a syntax error in the new file breaks unrelated tests). Compare against a stashed baseline.
 - [x] **Step 8: Commit** via `git commit -F`, with trailers.
 

@@ -502,6 +502,76 @@ async def test_a_vendor_on_a_non_vinyl_product_does_not_satisfy_the_guard(crawle
 
 
 @respx.mock
+@pytest.mark.parametrize("mutate", [
+    pytest.param(lambda p: {k: v for k, v in p.items() if k != "variants"}, id="variants-key-gone"),
+    pytest.param(lambda p: {**p, "variants": None}, id="variants-null"),
+    pytest.param(lambda p: {**p, "variants": []}, id="variants-empty"),
+    pytest.param(lambda p: {**p, "variants": [{"id": 1, "title": "Default Title", "price": "34.98"}]},
+                 id="available-key-gone"),
+    pytest.param(lambda p: {**p, "variants": [{"id": 1, "title": "Default Title", "price": "34.98",
+                                               "stock_status": "in_stock"}]}, id="available-renamed"),
+    pytest.param(lambda p: {**p, "variants": ["not-a-dict"]}, id="variant-not-a-mapping"),
+])
+async def test_catalog_without_a_readable_availability_flag_raises(crawler, mutate):
+    # Altered: the field the availability filter reads, removed or renamed
+    # across the whole catalog. Without this guard every product yields nothing
+    # while the three tallies above it all stay non-zero, so the walk completes
+    # "successfully" empty and replace_stock_items() deletes the snapshot --
+    # the same destructive shape the other guards exist to prevent, reached
+    # through the one field none of them reads.
+    _mock_pages(mutate(_VAN_HALEN_PRODUCT))
+    with pytest.raises(RuntimeError, match="stock-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+@pytest.mark.parametrize("raw", ["false", "true", "", 0, 1, None])
+async def test_non_boolean_availability_raises(crawler, raw):
+    # Altered: `available` arriving as something other than a JSON boolean.
+    # The string "false" is why this demands the type rather than the key's
+    # presence: it is truthy, so the filter would read a sold-out record as in
+    # stock and publish it. The ints would filter correctly and are refused
+    # anyway -- over-strictness costs a raise, which leaves the previous
+    # snapshot intact, while under-strictness costs a corrupted one.
+    product = {**_VAN_HALEN_PRODUCT, "variants": [
+        {**_VAN_HALEN_PRODUCT["variants"][0], "available": raw},
+    ]}
+    _mock_pages(product)
+    with pytest.raises(RuntimeError, match="stock-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_one_malformed_product_does_not_trip_the_stock_guard(crawler):
+    # The guard tallies products rather than short-circuiting on the first, so
+    # an isolated malformed product is skipped by _items without failing an
+    # otherwise healthy crawl.
+    _mock_pages({**_VAN_HALEN_PRODUCT, "variants": None}, _EAGLES_PRODUCT)
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["artist"] for i in items] == ["Eagles"]
+
+
+@respx.mock
+async def test_a_readable_flag_on_a_non_vinyl_product_does_not_satisfy_the_guard(crawler):
+    # Same scoping as the vendor guard, and the same destructive direction: the
+    # store's CDs must not vouch for vinyl whose availability has become
+    # unreadable, or the walk completes empty and deletes the snapshot.
+    _mock_pages({**_VAN_HALEN_PRODUCT, "variants": None}, _CD_PRODUCT)
+    with pytest.raises(RuntimeError, match="stock-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_a_sold_out_catalog_satisfies_the_stock_guard(crawler):
+    # available=False is a readable flag, so a shelf that has genuinely sold out
+    # still completes empty rather than raising. This is the case the guard must
+    # not swallow, and the reason it tests the field's type rather than its value.
+    _mock_pages(_SOLD_OUT_PRODUCT)
+    items = [item async for item in crawler.crawl_catalog()]
+    assert items == []
+
+
+@respx.mock
 async def test_crawl_catalog_paginates_until_empty(crawler):
     respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(
         return_value=_page_response([_VAN_HALEN_PRODUCT]))
