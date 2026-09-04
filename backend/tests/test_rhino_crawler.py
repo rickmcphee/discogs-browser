@@ -526,9 +526,11 @@ async def test_all_blank_vendors_raises(crawler):
 
 @respx.mock
 async def test_a_sold_out_vinyl_catalog_does_not_trip_the_drift_guards(crawler):
-    # Every tally is taken before the availability filter, so a shelf that has
-    # simply sold out completes empty instead of raising -- the one case where
-    # an empty result is the truth.
+    # The field tallies are taken before the availability filter, so a sold-out
+    # product still counts toward every one of them -- and the guard that reads
+    # emptiness is conditioned on an unreadable product existing too, which none
+    # here is. A shelf that has simply sold out is the one case where an empty
+    # result is the truth.
     _mock_pages(_SOLD_OUT_PRODUCT)
     items = [item async for item in crawler.crawl_catalog()]
     assert items == []
@@ -599,12 +601,12 @@ async def test_non_boolean_availability_raises(crawler, raw):
 @respx.mock
 @pytest.mark.parametrize("raw", ["false", "true", "", "0", 1, 0, None])
 async def test_a_non_boolean_flag_is_never_emitted_as_in_stock(crawler, raw):
-    # The catalog-wide guard only establishes that the field is readable
-    # *somewhere*, so on a mixed payload a healthy product satisfies it while a
-    # sibling's malformed flag still reaches the filter. The string "false" is
-    # the case that matters: truthy, so a falsiness test would publish a
-    # sold-out record as in stock -- worse than dropping the row. Only the
-    # literal True admits a variant, so every one of these is skipped.
+    # No guard is involved here: the healthy row makes `yielded` non-zero, so
+    # the outcome guard is skipped entirely, and this is the per-variant filter
+    # rejecting the malformed sibling on its own. The string "false" is the case
+    # that matters: truthy, so a falsiness test would publish a sold-out record
+    # as in stock -- worse than dropping the row. Only the literal True admits a
+    # variant, so every one of these is skipped.
     healthy = _EAGLES_PRODUCT
     malformed = {**_VAN_HALEN_PRODUCT, "variants": [
         {**_VAN_HALEN_PRODUCT["variants"][0], "available": raw},

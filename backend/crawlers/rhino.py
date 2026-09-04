@@ -71,9 +71,17 @@ class Crawler:
         # before inserting, and _sync_stock only skips that call when the crawl
         # raised -- so a completed-but-empty walk is destructive where a raise
         # is inert. Each guard names a distinct way the payload can stop
-        # carrying what this crawler reads, and none of them can fire on a
-        # merely quiet catalog: sold-out products still count toward every
-        # tally, because each one is taken before the availability filter.
+        # carrying what this crawler reads.
+        #
+        # The tallies split in two, and the split is what keeps a genuinely
+        # sold-out catalog from raising. The field tallies -- products_seen,
+        # vinyl_seen, vendor_ok, unreadable_stock -- are taken before the
+        # availability filter, so a sold-out product still counts toward every
+        # one of them. `yielded` and `priced` are necessarily counted after it,
+        # being properties of the rows that survived; that is why the guards
+        # reading them are conditioned on each other (empty-and-unreadable,
+        # or yielded-and-unpriced) rather than on emptiness alone, which a
+        # sold-out shelf produces legitimately.
         if products_seen == 0:
             raise RuntimeError(f"{_COLLECTION_SLUG} collection returned no products -- renamed, removed, or markup drift")
         if vinyl_seen == 0:

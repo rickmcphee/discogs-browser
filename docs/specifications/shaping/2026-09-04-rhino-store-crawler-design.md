@@ -238,12 +238,18 @@ names a distinct way the payload can stop carrying what this crawler reads:
 | `not yielded and unreadable_stock` | the walk produced no rows *and* some vinyl product with a vendor had no readable `available` | the availability field vanished, was renamed, or changed type |
 | `yielded and not priced` | rows came through and *none* of them carries a price | the `price` field vanished or changed type store-wide |
 
-Every tally is taken **before** the availability filter, so a shelf that has
-simply sold out completes empty rather than raising — the one case where an
-empty result is the truth.
+The tallies split in two, and the split is what keeps a genuinely sold-out
+catalog from raising. The field tallies — `products_seen`, `vinyl_seen`,
+`vendor_ok`, `unreadable_stock` — are taken **before** the availability filter,
+so a sold-out product still counts toward every one of them. `yielded` and
+`priced` are necessarily counted **after** it, being properties of the rows that
+survived, which is why the two guards reading them are each conditioned on a
+second tally rather than on emptiness alone — a shelf that has simply sold out
+produces emptiness legitimately, and that is the one case where an empty result
+is the truth.
 
-That last guard reads the walk's **outcome** rather than a field, and it states
-the invariant the field checks cannot express:
+Those two guards read the walk's **outcome** rather than a field, and state the
+invariants the field checks cannot express. Taking the availability one first:
 *an empty result is only trustworthy when every product that could have yielded a
 row was readable and simply out of stock.*
 
@@ -286,8 +292,8 @@ terms: over-strictness costs a raise, which leaves the previous snapshot intact,
 while under-strictness costs a corrupted one.
 
 **The filter's own strictness is independent of the guards, not a consequence
-of them.** The guards below are about an empty result; the filter is about the
-rows that *do* come through, and no guard can substitute for it. It admits a
+of them.** The availability guard above is about an empty result; the filter is
+about the rows that *do* come through, and no guard can substitute for it. It admits a
 variant only on the literal `True` — `False`, `"false"`, `"true"`, `1`, `0`,
 `None`, an absent key and a non-mapping entry are all skipped — because a
 variant carrying the string `"false"` is truthy, so a falsiness test would
