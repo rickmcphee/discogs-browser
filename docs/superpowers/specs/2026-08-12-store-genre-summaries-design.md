@@ -6,6 +6,8 @@ The Store Management section (Settings tab) lists the catalog-crawler stores by 
 
 ## Scope
 
+**Amendment (2026-09-04, branch `claude/rhino-store-crawler-t46fel`):** the `crawler_type` restriction below is historical too, and describes the batch this spec shipped rather than a gate anything enforces. Nothing in the implementation is scoped by kind: `db.py`'s crawler listing reads `genre_summary` off every plugin with a plain `getattr`, and `Settings.tsx` renders the tooltip from whatever that returns, with no `crawler_type` check on either side. The paragraph below is therefore true of which crawlers *carry* a summary, not of which ones *may*. The attribute belongs to any crawler that is a describable store, however it happens to be crawled — which is what `CLAUDE.md` already states.
+
 Applies only to `catalog`/`catalog_browser` crawlers (the Store Management / Stores table — "Stores" was "Store Catalog Sources" as of a later, separately-documented rename). The `release`-type crawlers (Amazon, eBay, eBay/CCmusic, Discogs Marketplace) are general marketplaces with no coherent genre focus and get no summary — their tooltip stays absent, same as today.
 
 ## Design
@@ -21,6 +23,17 @@ Applies only to `catalog`/`catalog_browser` crawlers (the Store Management / Sto
 **Testing:** extend `test_crawler_crud.py`'s `get_all_crawlers` test with a `genre_summary` assertion. Add `genre_summary` to the mock crawlers in `settings.test.tsx` and assert the `title` attribute renders.
 
 ## Content
+
+**Amendment (2026-09-04, branch `claude/rhino-store-crawler-t46fel`):** the
+table below is the design-time content proposal it was written as, and is a
+snapshot of the stores that existed when this spec was drafted. It has not been
+backported for any store crawler shipped since, and it should not be — the
+mechanism this spec designs puts the sentence on the plugin's own
+`genre_summary` attribute, so `backend/crawlers/*.py` is the live record and
+this table is the record of how the first batch was worded. Read a missing
+store here as "shipped later", not as "has no summary", and add a new store's
+sentence to its plugin rather than to this table. Per `CLAUDE.md`, this
+amendment deliberately states no total.
 
 One sentence per store, written from general knowledge of each label/shop. Confidence is high for well-known labels; a handful of smaller/regional shops are flagged **(verify)** below — please correct any that are wrong before implementation.
 
