@@ -199,10 +199,23 @@ class Crawler:
         # would let it vouch for an emptiness it is itself the cause of. An int
         # 1/0 is refused on the same terms -- the filter would skip it too, so
         # calling it readable would be a lie the guard then relies on.
-        for variant in product.get("variants") or []:
-            if isinstance(variant, dict) and isinstance(variant.get("available"), bool):
-                return True
-        return False
+        #
+        # every(), not any(): one readable variant does not make the product
+        # readable. A product whose first variant is a readable False and whose
+        # second is malformed yields nothing, and under an any() test is counted
+        # readable while doing so -- so it vouches for an emptiness that is half
+        # its own doing, and the second variant's real stock state was never
+        # determinable. The same quantifier mistake as counting readable
+        # products instead of unreadable ones, one level down.
+        #
+        # Non-mapping entries are excluded rather than failing the check, to
+        # stay consistent with _items(), which drops them before it counts or
+        # iterates. A product left with no mapping variants at all is
+        # unreadable, not vacuously readable: it yields nothing and there is
+        # nothing in it to say why.
+        variants = [v for v in (product.get("variants") or []) if isinstance(v, dict)]
+        return bool(variants) and all(
+            isinstance(v.get("available"), bool) for v in variants)
 
     @staticmethod
     def _price(variant: dict) -> Optional[float]:

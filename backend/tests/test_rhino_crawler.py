@@ -603,6 +603,48 @@ async def test_one_readable_sold_out_product_cannot_vouch_for_an_unreadable_cata
 
 
 @respx.mock
+async def test_a_readable_sold_out_variant_does_not_vouch_for_a_malformed_sibling(crawler):
+    # The product-level guard's quantifier mistake one level down. One variant
+    # is a readable False and its sibling is malformed, so the product yields
+    # nothing -- and under an "any variant is readable" test it is counted
+    # readable while doing so, vouching for an emptiness that is half its own
+    # doing. The sibling's real stock state was never determinable.
+    product = {**_VAN_HALEN_PRODUCT, "variants": [
+        {"id": 1, "title": "Black", "price": "34.98", "available": False},
+        {"id": 2, "title": "Clear", "price": "39.98", "available": "false"},
+    ]}
+    _mock_pages(product)
+    with pytest.raises(RuntimeError, match="stock-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_a_product_whose_variants_are_all_junk_is_unreadable(crawler):
+    # Non-mapping entries are excluded from the readability check rather than
+    # failing it, matching _items(). A product left with no mapping variant at
+    # all must not come out vacuously readable: it yields nothing and carries
+    # nothing that says why.
+    product = {**_VAN_HALEN_PRODUCT, "variants": ["junk", 7]}
+    _mock_pages(product)
+    with pytest.raises(RuntimeError, match="stock-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_a_fully_readable_multi_variant_sold_out_product_completes_empty(crawler):
+    # Both variants readable and both sold out: emptiness is the truth here, so
+    # the every()-based check must not turn a legitimate sold-out multi-variant
+    # product into drift.
+    product = {**_VAN_HALEN_PRODUCT, "variants": [
+        {"id": 1, "title": "Black", "price": "34.98", "available": False},
+        {"id": 2, "title": "Clear", "price": "39.98", "available": False},
+    ]}
+    _mock_pages(product)
+    items = [item async for item in crawler.crawl_catalog()]
+    assert items == []
+
+
+@respx.mock
 async def test_an_unreadable_product_among_yielded_rows_does_not_raise(crawler):
     # The other side of the same gate. An unreadable product is an ordinary
     # skipped row while the walk is still producing rows; failing the whole

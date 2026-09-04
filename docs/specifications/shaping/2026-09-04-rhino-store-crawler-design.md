@@ -259,6 +259,18 @@ product on behalf of a whole catalog that has gone unreadable behind it: the
 walk yields nothing, the guard passes, and the snapshot is deleted as though the
 store had cleanly sold out.
 
+The same quantifier decides readability *within* a product, and getting it wrong
+there reproduces the bug one level down. A product counts as readable only when
+**every** one of its mapping variants carries a boolean `available` — one
+readable variant is not enough, because a product whose first variant is a
+readable `False` and whose second is malformed yields nothing while being
+counted readable as it does so, vouching for an emptiness half its own doing and
+leaving the second variant's real stock state undetermined. Non-mapping entries
+are excluded rather than failing the check, matching `_items()`, which drops
+them before it counts or iterates; a product left with no mapping variant at all
+is unreadable rather than vacuously readable, since it yields nothing and
+carries nothing that says why.
+
 It is gated on having yielded nothing, deliberately. An unreadable product among
 rows that did come through is an ordinary skipped row, and failing the whole
 crawl over it would freeze the snapshot for one bad product. Only when the
