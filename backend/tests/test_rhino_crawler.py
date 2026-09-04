@@ -515,7 +515,7 @@ async def test_a_vendor_on_a_non_vinyl_product_does_not_satisfy_the_guard(crawle
 async def test_catalog_without_a_readable_availability_flag_raises(crawler, mutate):
     # Altered: the field the availability filter reads, removed or renamed
     # across the whole catalog. Without this guard every product yields nothing
-    # while the three tallies above it all stay non-zero, so the walk completes
+    # while every tally above it stays non-zero, so the walk completes
     # "successfully" empty and replace_stock_items() deletes the snapshot --
     # the same destructive shape the other guards exist to prevent, reached
     # through the one field none of them reads.
@@ -580,6 +580,54 @@ async def test_one_malformed_product_does_not_trip_the_stock_guard(crawler):
     _mock_pages({**_VAN_HALEN_PRODUCT, "variants": None}, _EAGLES_PRODUCT)
     items = [item async for item in crawler.crawl_catalog()]
     assert [i["artist"] for i in items] == ["Eagles"]
+
+
+@respx.mock
+async def test_two_products_cannot_each_satisfy_half_of_the_yield_guards(crawler):
+    # A row needs the vinyl type, a vendor and a readable flag on ONE product.
+    # Tallied independently, these two each satisfy a different guard while
+    # neither can yield: the first has a vendor but no readable flag, the second
+    # a readable flag but no vendor. Both guards pass, the walk completes empty,
+    # and replace_stock_items() deletes the snapshot -- so the stock tally is
+    # nested inside the vendor one.
+    vendor_no_flag = {**_VAN_HALEN_PRODUCT, "handle": "vendor-no-flag", "variants": [
+        {**_VAN_HALEN_PRODUCT["variants"][0], "available": "false"},
+    ]}
+    flag_no_vendor = {**_VAN_HALEN_PRODUCT, "handle": "flag-no-vendor", "vendor": "  "}
+    _mock_pages(vendor_no_flag, flag_no_vendor)
+    with pytest.raises(RuntimeError, match="stock-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_a_junk_variant_entry_does_not_change_a_healthy_row_identity(crawler):
+    # len(variants) decides whether a descriptor is appended, and the descriptor
+    # is part of item_key. Counting a non-mapping entry re-titled this row from
+    # "A Different Kind of Truth (2LP)" to "... — 51568458563830", orphaning the
+    # listings, judgments and saves keyed on the old identity -- over an entry
+    # the filter ignores anyway.
+    product = {**_VAN_HALEN_PRODUCT,
+               "variants": _VAN_HALEN_PRODUCT["variants"] + ["not-a-variant"]}
+    _mock_pages(product)
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["title"] for i in items] == ["A Different Kind of Truth (2LP)"]
+
+
+@respx.mock
+async def test_variant_count_ignores_stock_state_but_not_real_siblings(crawler):
+    # The descriptor disambiguates pressings, a structural property, so a real
+    # sibling keeps it on the count whether that sibling is sold out or carries
+    # a malformed flag. Keying identity on stock state would re-title a row
+    # every time its sibling sold out.
+    for sibling in ({"id": 2, "title": "Clear", "price": "39.98", "available": False},
+                    {"id": 2, "title": "Clear", "price": "39.98", "available": "false"}):
+        respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(
+            return_value=_page_response([{**_VAN_HALEN_PRODUCT, "variants": [
+                {"id": 1, "title": "Black", "price": "34.98", "available": True}, sibling]}]))
+        respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "2"}).mock(
+            return_value=_page_response([]))
+        items = [item async for item in crawler.crawl_catalog()]
+        assert [i["title"] for i in items] == ["A Different Kind of Truth (2LP) — Black"], sibling
 
 
 @respx.mock

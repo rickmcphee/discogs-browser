@@ -52,8 +52,17 @@ class Crawler:
                 vinyl_seen += 1
                 if (product.get("vendor") or "").strip():
                     vendor_ok += 1
-                if self._has_readable_stock_flag(product):
-                    stock_flag_ok += 1
+                    # Nested, not a sibling: a row needs the vinyl type, a
+                    # vendor and a readable flag on *one* product, so two
+                    # independent tallies can each be satisfied by a different
+                    # product that cannot yield on its own -- one with a vendor
+                    # but no readable flag, one with a readable flag but no
+                    # vendor -- and the walk then completes empty with both
+                    # passing. The conjunction is what makes a non-zero tally
+                    # mean "some product would have yielded a row if it were in
+                    # stock".
+                    if self._has_readable_stock_flag(product):
+                        stock_flag_ok += 1
             for item in self._items(product):
                 yield item
         # db.replace_stock_items() DELETEs this crawler's previous snapshot
@@ -82,8 +91,8 @@ class Crawler:
             # The availability filter reads a field that can vanish, and a
             # vanished one is silently indistinguishable from "everything is
             # sold out": `variants` gone, or `available` gone from every
-            # variant, makes each product yield nothing while the three guards
-            # above all still pass, so the walk completes empty and deletes the
+            # variant, makes each product yield nothing while every guard above
+            # still passes, so the walk completes empty and deletes the
             # snapshot. This tally is what separates the two, and it counts
             # products rather than short-circuiting on the first, so an
             # isolated malformed product is skipped by _items without failing
@@ -114,7 +123,19 @@ class Crawler:
         url = f"{cls.base_url}/products/{handle}"
         is_preorder = has_tag(product, _PREORDER_TAG)
 
-        variants = product.get("variants") or []
+        # Non-mapping entries are dropped *before* the count, because
+        # len(variants) decides whether a per-variant descriptor is appended and
+        # that descriptor is part of item_key. Leaving them in meant a single
+        # -variant product acquiring one junk sibling silently re-titled its
+        # healthy row from "Album" to "Album - 11", changing the identity that
+        # listings, judgments and saves are keyed on and orphaning all of them
+        # -- over an entry the filter then ignored anyway.
+        #
+        # Mapping entries stay in the count whatever their availability says,
+        # including malformed and sold-out ones. The descriptor disambiguates
+        # pressings, which is a structural property of the product; keying it on
+        # stock state would make item_key change every time a variant sold out.
+        variants = [v for v in (product.get("variants") or []) if isinstance(v, dict)]
         items = []
         for variant in variants:
             # `available` decides, not the store's own `out_of_stock` tag: the
@@ -129,7 +150,7 @@ class Crawler:
             # hammerheart.py: every live pre-order here reports available=True,
             # so an unavailable product is gone allocation whether or not it is
             # tagged.
-            # `is not True`, not falsiness. The catalog-wide guard below only
+            # `is not True`, not falsiness. The catalog-wide guard above only
             # establishes that the field is readable *somewhere*, so on a mixed
             # payload it is satisfied by one healthy product while a sibling
             # carrying the string "false" sails through a truthiness test and
@@ -137,11 +158,9 @@ class Crawler:
             # which is worse than losing the row. Demanding the literal True
             # here is what actually closes that, and it keeps the filter and the
             # guard reading the same field the same way. Anything else --
-            # False, "false", 1, None, absent, or a variant that is not a
-            # mapping at all -- is skipped rather than guessed at; the last of
-            # those would otherwise raise AttributeError from inside the yield
-            # loop, failing a whole crawl over one malformed row.
-            if not isinstance(variant, dict) or variant.get("available") is not True:
+            # False, "false", 1, None, absent -- is skipped rather than guessed
+            # at. Non-mapping entries are already gone, filtered out above.
+            if variant.get("available") is not True:
                 continue
             price = cls._price(variant)
             display_title = f"{title} (Pre-Order)" if is_preorder else title

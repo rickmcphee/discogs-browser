@@ -227,8 +227,8 @@ break JSON serialisation downstream.
 
 `db.replace_stock_items()` DELETEs this crawler's previous snapshot before
 inserting, and `_sync_stock` only skips that call when the crawl **raised** — a
-completed-but-empty walk is destructive where a raise is inert. Three guards
-each name a distinct way the payload can stop carrying what this crawler reads:
+completed-but-empty walk is destructive where a raise is inert. Each guard below
+names a distinct way the payload can stop carrying what this crawler reads:
 
 | Guard | Fires when | Drift it names |
 | --- | --- | --- |
