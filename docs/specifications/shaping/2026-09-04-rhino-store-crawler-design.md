@@ -99,19 +99,31 @@ because its siblings must not come with it:
   separating them. Admitting the type would file CD box sets as vinyl.
 - `Boxset - CD Only` (57) is self-evidently out.
 
-**Known false positives, quantified and accepted.** The store mistypes four
-products of the 840 (0.5%): `1984 CD`, `These Are The Good Old Days: … (CD)`
-and `Inflammable Material (4CD/1DVD)` are typed `Vinyl - LP`;
-`The Studio Albums: 1992-2016 (14CD)` is typed `Boxset - Vinyl Only`. A
-fifth, `The Doors - Immersed (1967-1971) (6BR)`, is six Blu-rays typed
-`Vinyl - LP`. A title-based veto of the kind `byrdlandrecords.py` uses is
-deliberately **not** added: that store fuses format into the title because it
-has no format field, whereas here `product_type` is the store's own structured
-field and is right 99.5% of the time. A veto reading titles would reject
-genuine hybrid records — `Movement (1LP/2CD/1DVD)`,
-`Everything Is Now … [6CD+BR+2LP Box]`, `Heartbeat City (Deluxe Edition)
-(4CD/1LP)` all contain vinyl — trading four bad rows for a larger number of
-missing good ones.
+**Known false positives, quantified and accepted.** The store mistypes five
+products of the 840 (0.6%), so its own format field is right on 99.4% of what
+the gate admits. Four are typed `Vinyl - LP` — `1984 CD`,
+`These Are The Good Old Days: … (CD)`, `Inflammable Material (4CD/1DVD)`, and
+`The Doors - Immersed (1967-1971) (6BR)`, which is six Blu-rays — and one,
+`The Studio Albums: 1992-2016 (14CD)`, is typed `Boxset - Vinyl Only`.
+
+A title-based veto of the kind `byrdlandrecords.py` uses is deliberately **not**
+added. That store fuses format into the title because it has no format field;
+here `product_type` is the store's own structured field, and a veto reading
+titles instead would reject genuine hybrid records. Six admitted products name
+both vinyl and another medium in their titles — `Movement (1LP/2CD/1DVD)`,
+`Heartbeat City (Deluxe Edition) (4CD/1LP)`,
+`Everything Is Now … [6CD+BR+2LP Box]`, `Seal:Deluxe Edition (4CD/2LP)`,
+`Sorry, Ma Forgot To Take Out The Trash (Deluxe Edition) (4CD/1LP)` and
+`The Breathtaking Blue 1LP/DVD` — and every one of them is a real record. So the
+trade is not merely unfavourable in kind, it is unfavourable in count: a veto
+would have to distinguish those six from the five mistypes on title text alone,
+and the naive version of it loses more good rows than it removes bad ones.
+
+The counts above were re-derived after an initial draft of this section
+reported four mistypes and then named a fifth: the sweep's regex used a `\b`
+boundary before the format token, which never matches a digit-glued one like
+`6BR`. The corrected sweep allows a leading digit run, and is what both figures
+here come from.
 
 ### Artist: `vendor`, always
 
