@@ -22,6 +22,17 @@ Applies only to `catalog`/`catalog_browser` crawlers (the Store Management / Sto
 
 ## Content
 
+**Amendment (2026-09-04, branch `claude/rhino-store-crawler-t46fel`):** the
+table below is the design-time content proposal it was written as, and is a
+snapshot of the stores that existed when this spec was drafted. It has not been
+backported for any store crawler shipped since, and it should not be — the
+mechanism this spec designs puts the sentence on the plugin's own
+`genre_summary` attribute, so `backend/crawlers/*.py` is the live record and
+this table is the record of how the first batch was worded. Read a missing
+store here as "shipped later", not as "has no summary", and add a new store's
+sentence to its plugin rather than to this table. Per `CLAUDE.md`, this
+amendment deliberately states no total.
+
 One sentence per store, written from general knowledge of each label/shop. Confidence is high for well-known labels; a handful of smaller/regional shops are flagged **(verify)** below — please correct any that are wrong before implementation.
 
 | Site | Summary |
