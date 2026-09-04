@@ -346,11 +346,66 @@ def test_usable_price_is_parsed(raw, expected):
 
 @respx.mock
 async def test_missing_price_key_yields_none(crawler):
-    # Altered: price key removed entirely.
+    # Altered: price key removed entirely, alongside a healthy priced product.
+    # An isolated null is tolerated -- it is a few bad rows, not drift -- which
+    # is what the sibling establishes; a catalog with no price anywhere is a
+    # different thing and raises (below).
     variant = {k: v for k, v in _VAN_HALEN_PRODUCT["variants"][0].items() if k != "price"}
-    _mock_pages({**_VAN_HALEN_PRODUCT, "variants": [variant]})
+    _mock_pages({**_VAN_HALEN_PRODUCT, "variants": [variant]}, _EAGLES_PRODUCT)
     items = [item async for item in crawler.crawl_catalog()]
-    assert items[0]["price"] is None
+    assert [i["price"] for i in items] == [None, 33.98]
+
+
+@respx.mock
+@pytest.mark.parametrize("mutate", [
+    pytest.param(lambda v: {k: x for k, x in v.items() if k != "price"}, id="price-key-gone"),
+    pytest.param(lambda v: {**v, "price": None}, id="price-null"),
+    pytest.param(lambda v: {**v, "price": "n/a"}, id="price-unparseable"),
+    pytest.param(lambda v: {**v, "price": "0"}, id="price-zero"),
+    pytest.param(lambda v: {**v, "amount": v["price"], "price": None}, id="price-renamed"),
+])
+async def test_a_catalog_that_yielded_rows_but_no_prices_raises(crawler, mutate):
+    # Rows without the emptiness, so the outcome guard never looks: `_price`
+    # answers None for a value it cannot use, so a price field removed or
+    # retyped store-wide produces a full set of rows carrying no price at all.
+    # The snapshot replacing the previous one then has every item and none of
+    # the prices the Track tab compares on.
+    products = [
+        {**_VAN_HALEN_PRODUCT, "handle": f"unpriced-{i}", "variants": [
+            mutate(_VAN_HALEN_PRODUCT["variants"][0]),
+        ]}
+        for i in range(2)
+    ]
+    _mock_pages(*products)
+    with pytest.raises(RuntimeError, match="price-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_one_priced_row_is_enough_to_satisfy_the_price_guard(crawler):
+    # The guard names a catalog that has lost every price, not one that has lost
+    # most of them -- there is no threshold here, deliberately, because any
+    # threshold would be arbitrary and would fail healthy crawls.
+    unpriced = [
+        {**_VAN_HALEN_PRODUCT, "handle": f"unpriced-{i}", "variants": [
+            {**_VAN_HALEN_PRODUCT["variants"][0], "price": "n/a"},
+        ]}
+        for i in range(5)
+    ]
+    _mock_pages(_EAGLES_PRODUCT, *unpriced)
+    items = [item async for item in crawler.crawl_catalog()]
+    assert len(items) == 6
+    assert [i["price"] for i in items].count(None) == 5
+
+
+@respx.mock
+async def test_an_empty_catalog_does_not_trip_the_price_guard(crawler):
+    # The price guard is gated on having yielded rows, so a cleanly sold-out
+    # catalog reaches the outcome guard rather than being reported as price
+    # drift it has no rows to exhibit.
+    _mock_pages(_SOLD_OUT_PRODUCT)
+    items = [item async for item in crawler.crawl_catalog()]
+    assert items == []
 
 
 @respx.mock

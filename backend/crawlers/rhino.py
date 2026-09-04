@@ -46,7 +46,8 @@ class Crawler:
         vinyl_seen = 0
         vendor_ok = 0
         unreadable_stock = 0
-        yielded = False
+        yielded = 0
+        priced = 0
         async for product in iter_products(self.base_url, _COLLECTION_SLUG):
             products_seen += 1
             if _VINYL_TYPE_RE.match((product.get("product_type") or "").strip()):
@@ -62,7 +63,9 @@ class Crawler:
                     if not self._has_readable_stock_flag(product):
                         unreadable_stock += 1
             for item in self._items(product):
-                yielded = True
+                yielded += 1
+                if item["price"] is not None:
+                    priced += 1
                 yield item
         # db.replace_stock_items() DELETEs this crawler's previous snapshot
         # before inserting, and _sync_stock only skips that call when the crawl
@@ -86,6 +89,20 @@ class Crawler:
             raise RuntimeError(f"no product in the {_COLLECTION_SLUG} collection carries a vinyl product_type -- format-taxonomy drift")
         if vendor_ok == 0:
             raise RuntimeError(f"no vinyl product in the {_COLLECTION_SLUG} collection carries a vendor -- artist-source drift")
+        if yielded and not priced:
+            # Rows without the emptiness. `_price` answers None for a value it
+            # cannot use, so a `price` field removed or retyped store-wide
+            # produces a full set of rows carrying no price at all -- `yielded`
+            # is non-zero throughout, and the guard below never looks. The
+            # snapshot that replaces the previous one then has every item and
+            # none of their prices, which is what the Track tab compares on.
+            # Isolated nulls stay tolerated: only a catalog that has lost every
+            # price is drift rather than a few bad rows. Same guard, and
+            # substantially the same reasoning, as mtheoryaudio.py's.
+            raise RuntimeError(
+                f"none of the {yielded} rows from the {_COLLECTION_SLUG} collection carries a "
+                "price -- price-source drift, and a whole catalog re-listed without prices is "
+                "worse than the snapshot it would replace")
         if not yielded and unreadable_stock:
             # This guard reads the walk's *outcome* rather than a field, and
             # states the invariant the field checks cannot express: an
@@ -163,16 +180,17 @@ class Crawler:
             # hammerheart.py: every live pre-order here reports available=True,
             # so an unavailable product is gone allocation whether or not it is
             # tagged.
-            # `is not True`, not falsiness. The catalog-wide guard above only
-            # establishes that the field is readable *somewhere*, so on a mixed
-            # payload it is satisfied by one healthy product while a sibling
-            # carrying the string "false" sails through a truthiness test and
-            # gets published as in stock -- a sold-out record offered for sale,
-            # which is worse than losing the row. Demanding the literal True
-            # here is what actually closes that, and it keeps the filter and the
-            # guard reading the same field the same way. Anything else --
-            # False, "false", 1, None, absent -- is skipped rather than guessed
-            # at. Non-mapping entries are already gone, filtered out above.
+            # `is not True`, not falsiness, and this is independent of the
+            # guards below rather than a consequence of them: a variant carrying
+            # the string "false" is truthy, so a falsiness test would publish a
+            # sold-out record as in stock -- offering for sale something that
+            # is not, which is worse than losing the row. No catalog-wide guard
+            # can substitute, because this one is about the rows that *do* come
+            # through. Anything but the literal True -- False, "false", 1, None,
+            # absent -- is skipped rather than guessed at, which is also what
+            # keeps the filter and _has_readable_stock_flag agreeing on what
+            # "readable" means. Non-mapping entries are already gone, filtered
+            # out above.
             if variant.get("available") is not True:
                 continue
             price = cls._price(variant)

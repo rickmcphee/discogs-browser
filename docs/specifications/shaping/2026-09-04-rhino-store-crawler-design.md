@@ -236,6 +236,7 @@ names a distinct way the payload can stop carrying what this crawler reads:
 | `vinyl_seen == 0` | no product carries a vinyl `product_type` | the format taxonomy was renamed wholesale |
 | `vendor_ok == 0` | no *vinyl* product carries a `vendor` | the artist source moved out of `vendor` |
 | `not yielded and unreadable_stock` | the walk produced no rows *and* some vinyl product with a vendor had no readable `available` | the availability field vanished, was renamed, or changed type |
+| `yielded and not priced` | rows came through and *none* of them carries a price | the `price` field vanished or changed type store-wide |
 
 Every tally is taken **before** the availability filter, so a shelf that has
 simply sold out completes empty rather than raising — the one case where an
@@ -284,16 +285,17 @@ it and offer a sold-out record for sale. An int `1`/`0` is refused on the same
 terms: over-strictness costs a raise, which leaves the previous snapshot intact,
 while under-strictness costs a corrupted one.
 
-**The guard alone is not sufficient, and the per-variant filter carries the
-other half.** The guard establishes only that the field is readable
-*somewhere* in the catalog, so on a mixed payload one healthy product satisfies
-it while a sibling's `"false"` still reaches the filter and is published as in
-stock. The filter therefore admits a variant only on the literal `True` —
-`False`, `"false"`, `"true"`, `1`, `0`, `None`, an absent key and a variant that
-is not a mapping are all skipped. Losing a row is the safe direction here;
-offering a record that is not for sale is not. Both halves read the same field
-the same way, so a payload the guard would refuse wholesale is also one the
-filter refuses row by row.
+**The filter's own strictness is independent of the guards, not a consequence
+of them.** The guards below are about an empty result; the filter is about the
+rows that *do* come through, and no guard can substitute for it. It admits a
+variant only on the literal `True` — `False`, `"false"`, `"true"`, `1`, `0`,
+`None`, an absent key and a non-mapping entry are all skipped — because a
+variant carrying the string `"false"` is truthy, so a falsiness test would
+publish a sold-out record as in stock. Losing a row is the safe direction here;
+offering for sale a record that is not for sale is not. Reading the field the
+same way as `_has_readable_stock_flag` is also what keeps the two agreeing on
+what "readable" means, so nothing the filter skips can be counted as readable on
+its behalf.
 
 The guard tallies products rather than short-circuiting, so an isolated
 malformed product is skipped by `_items` without failing an otherwise healthy
@@ -302,6 +304,15 @@ sibling down with it. The non-mapping case is part of that same skip: without it
 a non-dict variant raises `AttributeError` from inside the yield loop, which
 preserves the snapshot but reports the drift as a mid-walk crash instead of the
 named failure, and fails a whole crawl over one bad row.
+
+The price guard covers the other way a walk can be destructive without being
+empty. `_price` answers `None` for a value it cannot use, so a `price` field
+removed or retyped store-wide yields a *full* set of rows carrying no price at
+all — the outcome guard never looks, because rows did come through, and the
+snapshot that replaces the previous one has every item and none of the prices
+the Track tab compares on. Isolated nulls stay tolerated; only a catalog that
+has lost every price is drift rather than a few bad rows. `mtheoryaudio.py`
+carries the same guard on the same reasoning.
 
 **Not guarded, deliberately:** `title` and `handle`. If either vanished the walk
 would still yield rows — blank titles, or URLs pointing at the store root — which
