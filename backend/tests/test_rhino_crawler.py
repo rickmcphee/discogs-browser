@@ -583,6 +583,50 @@ async def test_one_malformed_product_does_not_trip_the_stock_guard(crawler):
 
 
 @respx.mock
+async def test_one_readable_sold_out_product_cannot_vouch_for_an_unreadable_catalog(crawler):
+    # The case that defeats an "at least one product has a readable flag" test,
+    # and the reason the guard counts UNREADABLE products instead. A single
+    # genuinely sold-out product satisfies such a test on behalf of a whole
+    # catalog that has gone unreadable behind it: the walk yields nothing, the
+    # guard passes, and replace_stock_items() deletes the snapshot as though the
+    # store had cleanly sold out.
+    sold_out = {**_SOLD_OUT_PRODUCT, "handle": "readable-sold-out"}
+    unreadable = [
+        {**_VAN_HALEN_PRODUCT, "handle": f"unreadable-{i}", "variants": [
+            {**_VAN_HALEN_PRODUCT["variants"][0], "available": "false"},
+        ]}
+        for i in range(3)
+    ]
+    _mock_pages(sold_out, *unreadable)
+    with pytest.raises(RuntimeError, match="stock-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_an_unreadable_product_among_yielded_rows_does_not_raise(crawler):
+    # The other side of the same gate. An unreadable product is an ordinary
+    # skipped row while the walk is still producing rows; failing the whole
+    # crawl over one bad product would freeze the snapshot for everyone else.
+    # Only an *empty* result -- the outcome that deletes the snapshot -- makes
+    # an unreadable product mean the emptiness cannot be trusted.
+    unreadable = {**_VAN_HALEN_PRODUCT, "handle": "unreadable", "variants": [
+        {**_VAN_HALEN_PRODUCT["variants"][0], "available": "false"},
+    ]}
+    _mock_pages(_EAGLES_PRODUCT, unreadable)
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["artist"] for i in items] == ["Eagles"]
+
+
+@respx.mock
+async def test_a_cleanly_sold_out_catalog_still_completes_empty(crawler):
+    # The guard must not swallow the one case where emptiness is the truth:
+    # every qualifying product readable, every one of them out of stock.
+    _mock_pages(_SOLD_OUT_PRODUCT, {**_SOLD_OUT_PRODUCT, "handle": "second-sold-out"})
+    items = [item async for item in crawler.crawl_catalog()]
+    assert items == []
+
+
+@respx.mock
 async def test_two_products_cannot_each_satisfy_half_of_the_yield_guards(crawler):
     # A row needs the vinyl type, a vendor and a readable flag on ONE product.
     # Tallied independently, these two each satisfy a different guard while

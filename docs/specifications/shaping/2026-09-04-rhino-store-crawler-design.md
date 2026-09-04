@@ -235,19 +235,35 @@ names a distinct way the payload can stop carrying what this crawler reads:
 | `products_seen == 0` | the collection returns nothing | `all` renamed or removed, or the endpoint changed shape |
 | `vinyl_seen == 0` | no product carries a vinyl `product_type` | the format taxonomy was renamed wholesale |
 | `vendor_ok == 0` | no *vinyl* product carries a `vendor` | the artist source moved out of `vendor` |
-| `stock_flag_ok == 0` | no *vinyl* product carries a variant with a boolean `available` | the availability field vanished, was renamed, or changed type |
+| `not yielded and unreadable_stock` | the walk produced no rows *and* some vinyl product with a vendor had no readable `available` | the availability field vanished, was renamed, or changed type |
 
 Every tally is taken **before** the availability filter, so a shelf that has
 simply sold out completes empty rather than raising — the one case where an
 empty result is the truth.
 
-The last guard covers the field the availability filter itself reads, which the
-other three are blind to by construction. If `variants` disappeared, or
-`available` disappeared from every variant, each product would yield nothing
-while `products_seen`, `vinyl_seen` and `vendor_ok` all stayed non-zero — so the
-walk would complete "successfully" with no rows and delete the snapshot. That is
-the same destructive shape the other guards exist to prevent, reached through
-the one field none of them touches.
+That last guard reads the walk's **outcome** rather than a field, and it states
+the invariant the field checks cannot express:
+*an empty result is only trustworthy when every product that could have yielded a
+row was readable and simply out of stock.*
+
+Availability is the field with no innocent empty reading. If `variants`
+disappeared, or `available` disappeared from every variant, each product would
+yield nothing in exactly the way a sold-out one does, while the field-presence
+tallies above stayed non-zero throughout — so the walk would complete
+"successfully" with no rows and delete the snapshot.
+
+It counts **unreadable** products rather than readable ones, which is what
+catches the partial case that defeats the obvious formulation. An "at least one
+product has a readable flag" test is satisfied by a single genuinely sold-out
+product on behalf of a whole catalog that has gone unreadable behind it: the
+walk yields nothing, the guard passes, and the snapshot is deleted as though the
+store had cleanly sold out.
+
+It is gated on having yielded nothing, deliberately. An unreadable product among
+rows that did come through is an ordinary skipped row, and failing the whole
+crawl over it would freeze the snapshot for one bad product. Only when the
+result is empty — the outcome that deletes the snapshot — does an unreadable
+product mean the emptiness cannot be trusted.
 
 It tests the value's **type**, not merely the key's presence, and the difference
 is not pedantry: `available` arriving as the string `"false"` is truthy, so a
@@ -297,9 +313,11 @@ Some scoping decisions inside those guards matter:
   CDs must not vouch for vinyl that has lost its artist source — that would let
   the walk complete empty and delete the snapshot instead of raising and
   keeping it.
-- The stock-flag guard is scoped the same way and for the same reason: the
-  store's CDs must not vouch for vinyl whose availability has become
-  unreadable.
+- The stock guard counts only products that have **both** the vinyl type and a
+  vendor, because only those could have yielded a row at all. Tallied against a
+  looser population it is satisfied by products that cannot yield — the store's
+  CDs, or a vinyl product whose vendor has gone — each vouching for an emptiness
+  it is itself part of the cause of.
 
 ### Fields
 
@@ -322,8 +340,9 @@ missing covers and zero null prices. 8 rows carry the pre-order suffix; none
 carries a variant descriptor, as expected on a single-variant catalog. The five
 vendor-prefix strips listed above are the only title transformations that fire.
 
-All 840 vinyl products carry a variant with a boolean `available`, so the
-stock-flag guard does not fire on live data.
+All 840 vinyl products qualify (vinyl type plus a vendor) and every one carries
+a variant with a boolean `available`, so no product is unreadable and the stock
+guard cannot fire on live data.
 
 Unit tests are respx-mocked against captured products, following the sibling
 crawler test files. Each guard was confirmed to **bite** rather than assumed, by

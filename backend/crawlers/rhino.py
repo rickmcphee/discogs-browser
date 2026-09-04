@@ -45,25 +45,24 @@ class Crawler:
         products_seen = 0
         vinyl_seen = 0
         vendor_ok = 0
-        stock_flag_ok = 0
+        unreadable_stock = 0
+        yielded = False
         async for product in iter_products(self.base_url, _COLLECTION_SLUG):
             products_seen += 1
             if _VINYL_TYPE_RE.match((product.get("product_type") or "").strip()):
                 vinyl_seen += 1
+                # Nested, not a sibling: only a product with both the vinyl type
+                # and a vendor is one that could have yielded a row at all, so
+                # its readability is the only readability that means anything.
+                # Tallied independently, a product with a vendor but no readable
+                # flag and another with a readable flag but no vendor each
+                # satisfy half the condition while neither can yield.
                 if (product.get("vendor") or "").strip():
                     vendor_ok += 1
-                    # Nested, not a sibling: a row needs the vinyl type, a
-                    # vendor and a readable flag on *one* product, so two
-                    # independent tallies can each be satisfied by a different
-                    # product that cannot yield on its own -- one with a vendor
-                    # but no readable flag, one with a readable flag but no
-                    # vendor -- and the walk then completes empty with both
-                    # passing. The conjunction is what makes a non-zero tally
-                    # mean "some product would have yielded a row if it were in
-                    # stock".
-                    if self._has_readable_stock_flag(product):
-                        stock_flag_ok += 1
+                    if not self._has_readable_stock_flag(product):
+                        unreadable_stock += 1
             for item in self._items(product):
+                yielded = True
                 yield item
         # db.replace_stock_items() DELETEs this crawler's previous snapshot
         # before inserting, and _sync_stock only skips that call when the crawl
@@ -87,17 +86,31 @@ class Crawler:
             raise RuntimeError(f"no product in the {_COLLECTION_SLUG} collection carries a vinyl product_type -- format-taxonomy drift")
         if vendor_ok == 0:
             raise RuntimeError(f"no vinyl product in the {_COLLECTION_SLUG} collection carries a vendor -- artist-source drift")
-        if stock_flag_ok == 0:
-            # The availability filter reads a field that can vanish, and a
-            # vanished one is silently indistinguishable from "everything is
-            # sold out": `variants` gone, or `available` gone from every
-            # variant, makes each product yield nothing while every guard above
-            # still passes, so the walk completes empty and deletes the
-            # snapshot. This tally is what separates the two, and it counts
-            # products rather than short-circuiting on the first, so an
-            # isolated malformed product is skipped by _items without failing
-            # the crawl.
-            raise RuntimeError(f"no vinyl product in the {_COLLECTION_SLUG} collection carries a readable availability flag -- stock-source drift")
+        if not yielded and unreadable_stock:
+            # This guard reads the walk's *outcome* rather than a field, and
+            # states the invariant the field checks cannot express: an
+            # empty result is only trustworthy when every product that could
+            # have yielded a row was readable and simply out of stock.
+            #
+            # Availability is the field this crawler reads that has no innocent
+            # empty reading -- `variants` gone, or `available` gone, renamed or
+            # retyped, makes a product yield nothing in exactly the way a
+            # sold-out one does, and the field-presence tallies above stay
+            # non-zero throughout. Counting *unreadable* products instead of
+            # readable ones is what catches the partial case that defeats the
+            # obvious formulation: one genuinely sold-out product with a
+            # readable False satisfies an "at least one readable" test on
+            # behalf of a whole catalog that has gone unreadable behind it.
+            #
+            # Gated on having yielded nothing, deliberately. An isolated
+            # unreadable product among rows that did come through is an
+            # ordinary skipped row, and failing the whole crawl over it would
+            # freeze the snapshot for a single bad product. It is only when the
+            # result is empty -- the outcome that deletes the snapshot -- that
+            # an unreadable product means the emptiness cannot be trusted.
+            raise RuntimeError(
+                f"{_COLLECTION_SLUG} collection yielded no rows while "
+                f"{unreadable_stock} vinyl product(s) carry no readable availability flag -- stock-source drift")
 
     @classmethod
     def _items(cls, product: dict) -> list[dict]:
@@ -179,13 +192,13 @@ class Crawler:
 
     @staticmethod
     def _has_readable_stock_flag(product: dict) -> bool:
-        # A literal bool, not merely a present key. Shopify sends JSON
-        # true/false here, and the filter below reads the value's truthiness --
-        # so `available` arriving as the string "false" would not just be drift,
-        # it would invert the filter and publish every sold-out record as in
-        # stock. Requiring the type refuses that payload instead of trusting it.
-        # An int 1/0 would filter correctly and is refused anyway: the cost of
-        # over-strictness is a raise, which leaves the previous snapshot intact.
+        # A literal bool, not merely a present key, and matching the filter's
+        # own `is True` exactly. "Readable" has to mean "this product's stock
+        # state is something we can actually determine": a variant carrying the
+        # string "false" is skipped by the filter, so counting it as readable
+        # would let it vouch for an emptiness it is itself the cause of. An int
+        # 1/0 is refused on the same terms -- the filter would skip it too, so
+        # calling it readable would be a lie the guard then relies on.
         for variant in product.get("variants") or []:
             if isinstance(variant, dict) and isinstance(variant.get("available"), bool):
                 return True
