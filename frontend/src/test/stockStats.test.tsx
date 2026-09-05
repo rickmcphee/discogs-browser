@@ -118,6 +118,15 @@ describe('StockStats', () => {
     }))
   })
 
+  it('passes Cheapest through, and refetches when it changes with the panel open', async () => {
+    const { rerender } = renderStats({ cheapest: true })
+    openPanel()
+    await waitFor(() => expect(getStockStats).toHaveBeenCalledWith(expect.objectContaining({ cheapest: true })))
+    rerender(<StockStats hiddenCrawlerIds={[]} cheapest={false} />)
+    await waitFor(() => expect(getStockStats).toHaveBeenCalledTimes(2))
+    expect(getStockStats).toHaveBeenLastCalledWith(expect.objectContaining({ cheapest: false }))
+  })
+
   it('refetches when a filter changes while the panel is open', async () => {
     const { rerender } = renderStats({ search: 'zombie' })
     openPanel()

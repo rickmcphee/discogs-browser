@@ -1147,7 +1147,7 @@ class CrawlManager:
         # the life of the process.
         try:
             import httpx
-            from db import get_app_pool, get_enabled_crawlers, replace_stock_items, update_crawler_last_run, enqueue_crawl_queue_for_stock_item, delete_dead_stock_crawl_queue_rows
+            from db import get_app_pool, get_enabled_crawlers, replace_stock_items, update_crawler_last_run, enqueue_crawl_queue_for_stock_item, delete_dead_stock_crawl_queue_rows, backfill_title_keys
             from crawler import load_enabled_crawlers
 
             # Also held locally: the completion line below reads it after
@@ -1289,7 +1289,12 @@ class CrawlManager:
 
             with get_app_pool().connection() as conn:
                 swept = delete_dead_stock_crawl_queue_rows(conn)
+                # Normally zero; non-zero only for rows an older binary
+                # wrote during a rolling deploy. See backfill_title_keys.
+                keyed = backfill_title_keys(conn)
                 conn.commit()
+            if keyed:
+                log.info("Keyed %d stock rows written without a title key", keyed)
             if swept:
                 # INFO, not WARNING: routers/logs.py filters in SQL by exact
                 # level membership (WHERE level = ANY(...)), not
