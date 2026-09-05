@@ -1820,6 +1820,42 @@ async def test_sync_stock_broadcasts_the_store_name_before_crawling_it(pg_schema
     assert [e["source"] for e in started] == ["Stock Site"]
 
 
+async def test_sync_stock_keys_rows_an_older_binary_left_without_a_title_key(pg_schema):
+    # A rolling deploy lets an old binary write stock rows after the new
+    # one's boot backfill has run; the sync-end sweep is what catches them.
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Stock Site", "/x.py", crawler_type="catalog")
+        db.register_crawler(conn, "Old Site", "/old.py", crawler_type="catalog")
+        conn.commit()
+        old_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Old Site'").fetchone()["id"]
+        conn.execute(
+            """
+            INSERT INTO stock_items (crawler_id, artist, title, url, item_key)
+            VALUES (%s, 'Radiohead', 'Kid A - LP Black', 'https://old/1', 'k-old')
+            """,
+            [old_id],
+        )
+        conn.commit()
+
+    fake_plugin = AsyncMock()
+
+    async def _items():
+        yield {"artist": "A", "title": "T", "url": "https://x/1", "price": 5.0, "currency": "USD"}
+
+    fake_plugin.crawl_catalog = lambda: _items()
+    fake_plugin._db_site_name = "Stock Site"
+    with db.get_admin_pool().connection() as conn:
+        fake_plugin._db_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Stock Site'").fetchone()["id"]
+
+    manager = CrawlManager()
+    with patch("crawler.load_enabled_crawlers", return_value=[fake_plugin]):
+        await manager._sync_stock()
+
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute("SELECT title_key FROM stock_items WHERE crawler_id = %s", [old_id]).fetchone()
+    assert row["title_key"] == "a black kid"
+
+
 async def test_run_catalog_crawler_opens_a_page_and_closes_it_for_catalog_browser_type(manager):
     manager._browser = MagicMock()
     manager._stealth = MagicMock()
