@@ -367,7 +367,7 @@ class CrawlManager:
                 self._site_next_allowed_at[crawler_id] = time.monotonic() + random.uniform(0.5, 1.0) * delay
 
     async def _drain_one_batch(self, worker_id: str, plugins_by_crawler_id: dict, pages: dict, batch_size: Optional[int] = None) -> int:
-        from config import load_config
+        from config import load_config, crawl_library_only
         from db import get_app_pool, claim_crawl_queue_batch, revert_crawl_queue_claim, reclaim_stranded_crawl_queue_rows, QUEUE_CLAIM_BATCH_SIZE
 
         # Resolved from db rather than defaulted in the signature: the stranded
@@ -391,10 +391,12 @@ class CrawlManager:
             # deliberately outside this borrow -- holding the pool the workers
             # claim through while doing unrelated I/O on another one is the
             # shape routers/queue.py just had removed.
-            crawl_delay_seconds = float(load_config().get("crawl_delay_seconds", 30))
+            config = load_config()
+            crawl_delay_seconds = float(config.get("crawl_delay_seconds", 30))
+            library_only = crawl_library_only(config)
             with get_app_pool().connection() as conn:
                 reclaimed = reclaim_stranded_crawl_queue_rows(conn, crawl_delay_seconds)
-                rows = claim_crawl_queue_batch(conn, worker_id, limit=batch_size)
+                rows = claim_crawl_queue_batch(conn, worker_id, limit=batch_size, library_only=library_only)
                 conn.commit()
                 return rows, reclaimed
         # Claiming and processing are two different cancellation boundaries.
@@ -794,10 +796,32 @@ class CrawlManager:
         from db import (
             get_identity_pool, user_scope, upsert_catalog_release, upsert_library_item,
             clear_wishlist_flags_not_in, delete_orphaned_releases, enqueue_crawl_queue,
+            enqueue_crawl_queue_for_library_stock_items,
         )
+        from config import crawl_library_only
         import httpx
 
         broadcast = lambda event: self._broadcast_threadsafe({**event, "user_id": user_id}, loop)
+
+        # The records a sync commits may match store items whose queue rows
+        # the library-only sweep deleted, or that _sync_stock never inserted,
+        # while nobody wanted them. Insert-if-absent, and only under the
+        # setting: with it off every live item already has a row, so the
+        # statement would scan the whole stock inventory against this
+        # library, under the reconciliation lock, to insert nothing. Read at
+        # restoration time, not at sync start, so a long sync sees the
+        # setting as it stands when it finishes. Defined ahead of the try
+        # because it runs on both exits: a sync that fails on a later page
+        # has still committed the earlier ones, and those records are owed
+        # their rows just the same.
+        def restore_library_stock_rows():
+            if not crawl_library_only():
+                return
+            with user_scope(user_id) as conn:
+                restored = enqueue_crawl_queue_for_library_stock_items(conn, user_id)
+                conn.commit()
+            if restored:
+                log.info("Queued %d store items matching user %d's library for marketplace prices", restored, user_id)
 
         broadcast({"status": "sync_started", "scope": scope})
         try:
@@ -928,6 +952,8 @@ class CrawlManager:
                     username, wishlist_count, cleared, len(deleted),
                 )
 
+            restore_library_stock_rows()
+
             broadcast({
                 "status": "sync_complete",
                 "synced": count,
@@ -950,6 +976,12 @@ class CrawlManager:
         except Exception as e:
             log.error("Collection sync failed: %s", e, exc_info=True)
             broadcast({"status": "sync_error", "error": str(e)})
+            # Best effort: a second failure here must not replace the one
+            # already reported.
+            try:
+                restore_library_stock_rows()
+            except Exception as restore_error:
+                log.warning("Could not queue store items for user %d's library after the failed sync: %s", user_id, restore_error)
             return None
 
     async def sweep_enqueue(self, mode: str = "missing"):
@@ -1149,6 +1181,7 @@ class CrawlManager:
             import httpx
             from db import get_app_pool, get_enabled_crawlers, replace_stock_items, update_crawler_last_run, enqueue_crawl_queue_for_stock_item, delete_dead_stock_crawl_queue_rows, backfill_title_keys
             from crawler import load_enabled_crawlers
+            from config import crawl_library_only
 
             # Also held locally: the completion line below reads it after
             # the loop, and reading it back off self would depend on nothing
@@ -1264,6 +1297,12 @@ class CrawlManager:
 
                 consecutive_429_sites = []
                 await self._record_site_result(crawler._db_id, succeeded=True)
+                # Per source, not once per run, for the same reason the
+                # enabled list is re-read per source: a run spans many sites,
+                # and a setting flipped mid-run should govern the sites still
+                # to come. Read before borrowing the app connection -- it goes
+                # through the admin pool (see _drain_one_batch).
+                library_only = crawl_library_only()
                 with get_app_pool().connection() as conn:
                     item_keys = replace_stock_items(conn, crawler._db_id, items)
                     if item_keys is None:
@@ -1277,7 +1316,7 @@ class CrawlManager:
                         continue
                     update_crawler_last_run(conn, crawler._db_id)
                     for item_key in item_keys:
-                        enqueue_crawl_queue_for_stock_item(conn, item_key)
+                        enqueue_crawl_queue_for_stock_item(conn, item_key, library_only)
                     conn.commit()
                 total_synced += len(items)
                 log.info(
@@ -1287,8 +1326,9 @@ class CrawlManager:
                 )
                 await self._broadcast({"status": "stock_sync_progress", "synced": total_synced, "source": crawler._db_site_name})
 
+            library_only = crawl_library_only()
             with get_app_pool().connection() as conn:
-                swept = delete_dead_stock_crawl_queue_rows(conn)
+                swept = delete_dead_stock_crawl_queue_rows(conn, library_only)
                 # Normally zero; non-zero only for rows an older binary
                 # wrote during a rolling deploy. See backfill_title_keys.
                 keyed = backfill_title_keys(conn)
@@ -1301,7 +1341,12 @@ class CrawlManager:
                 # level-and-above, so at WARNING this would be invisible
                 # to anyone watching the INFO stream carrying the rest of the
                 # crawl narrative.
-                log.info("Discarded %d queued price lookups with no enabled source", swept)
+                # Two causes, one sweep: rows no enabled store still stocks,
+                # and -- under library-only crawling -- rows nobody wants.
+                log.info(
+                    "Discarded %d queued price lookups nothing still stocks%s",
+                    swept, " or nobody wants" if library_only else "",
+                )
 
             await self._broadcast({"status": "stock_sync_complete", "synced": total_synced, "crawler_id": crawler_id})
             # The failed/skipped tail is why "complete: 0 items" alone was

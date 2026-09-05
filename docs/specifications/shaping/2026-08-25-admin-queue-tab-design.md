@@ -96,7 +96,9 @@ requires_discogs_release`, and `pending_crawler_ids IS NULL OR id = ANY(...)`.
 The claim-side gates from `claim_crawl_queue_batch` apply too: a stock row
 counts only while `_enabled_stock_source_exists`' predicate still holds for
 its `item_key` (the totals query now evaluates that predicate set-based rather
-than calling the helper per row — see the amendment below), and `available_at >
+than calling the helper per row — see the amendment below; since 2026-09-05
+the predicate is `_stock_item_crawlable`, which adds the library-interest
+condition when `crawl_library_only` is on), and `available_at >
 CURRENT_TIMESTAMP` marks a row held rather than claimable. Any divergence
 between this resolution and dispatch's is a bug in this feature, not a
 difference of opinion.
@@ -240,6 +242,15 @@ while long-running rows were finishing.
 crawler resolves for, and a stock row whose last enabled source stopped listing
 it — so the tile names both. Naming only the crawler case would send an operator
 to the wrong setting.
+
+*Amended 2026-09-05: a third cause when the admin's `crawl_library_only`
+setting is on — a stock row nobody has saved or holds a matching record for.
+`_queue_row_state_sql` folds it into `live` through a second hoisted `LEFT
+JOIN`, on the `library_stock_item_keys` view, written only when the setting is
+on so the off case is the statement the plan test below pins. `_queue_fanout`
+and `next` apply the same composed predicate (`_stock_item_crawlable`) the
+claim does. See
+[`2026-09-05-library-only-marketplace-crawl-design.md`](2026-09-05-library-only-marketplace-crawl-design.md).*
 
 **Stranded is derived, not a constant.** A claimed row runs one sequential
 search per eligible crawler, each preceded by a wait of 50–100% of

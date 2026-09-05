@@ -43,6 +43,7 @@ export interface Settings {
   ebay_app_id?: string
   ebay_cert_id?: string
   stock_schedule?: string
+  crawl_library_only?: boolean
 }
 
 export interface UserSettings {

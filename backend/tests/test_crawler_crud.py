@@ -684,7 +684,11 @@ def test_register_crawler_sweeps_queue_rows_orphaned_by_the_reversion(admin_conn
     item_key = admin_conn.execute(
         "SELECT item_key FROM stock_items WHERE crawler_id = %s", [crawler_id]
     ).fetchone()["item_key"]
-    db.enqueue_crawl_queue_for_stock_item(admin_conn, item_key)
+    # Inserted directly: the enqueue's source gate now requires a *store*
+    # crawler, so a release-written row can no longer earn a queue row that
+    # way. A row like this one predates that rule; the sweep still owes it
+    # the same removal.
+    admin_conn.execute("INSERT INTO crawl_queue (item_key) VALUES (%s)", [item_key])
     admin_conn.commit()
     assert admin_conn.execute(
         "SELECT COUNT(*) FROM crawl_queue WHERE item_key = %s", [item_key]
