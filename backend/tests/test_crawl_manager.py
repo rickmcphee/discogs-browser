@@ -2561,10 +2561,10 @@ async def test_drain_one_batch_reverts_a_cancelled_claim_instead_of_orphaning_it
     real_claim = db.claim_crawl_queue_batch
     started = threading.Event()
 
-    def slow_claim(conn, worker_id, limit):
+    def slow_claim(conn, worker_id, limit, library_only=False):
         started.set()
         time.sleep(0.05)
-        return real_claim(conn, worker_id, limit)
+        return real_claim(conn, worker_id, limit, library_only)
 
     with patch("db.claim_crawl_queue_batch", side_effect=slow_claim):
         task = asyncio.ensure_future(manager._drain_one_batch("worker-test", {}, pages={}))
@@ -4892,10 +4892,10 @@ async def test_sync_stock_sweeps_dead_stock_jobs_at_end_of_run(pg_schema):
     real_delete = db.delete_dead_stock_crawl_queue_rows
     call_count = 0
 
-    def _counting_delete(conn):
+    def _counting_delete(conn, library_only=False):
         nonlocal call_count
         call_count += 1
-        return real_delete(conn)
+        return real_delete(conn, library_only)
 
     manager = CrawlManager()
     with patch("crawler.load_enabled_crawlers", return_value=[fake_plugin, fake_plugin_b]), \
