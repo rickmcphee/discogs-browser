@@ -118,6 +118,14 @@ Store and Track tabs can apply: `search`, `artist`, `library_scope`,
 The body is the conditions list previously written out inside
 `get_stock_items`, verbatim, comments included.
 
+**Amendment (2026-09-05, branch `claude/store-cheapest-filter-x4tdwl`):**
+the list gains `cheapest`, which appends `_cheapest_clause` — a window over
+the *other* conditions that keeps only the lowest-priced store row per
+record. `get_stock_items` and `get_stock_source_counts` pass it through;
+`get_distinct_stock_artists` does not take it, since every record keeps at
+least one row and the sidebar cannot change. See
+[`2026-09-05-store-cheapest-filter-design.md`](2026-09-05-store-cheapest-filter-design.md).
+
 `get_distinct_stock_artists` passes no `search`/`artist` — it never did, and
 the sidebar deliberately lists what the *unsearched* view holds, so typing in
 the search box never removes an artist from it. That omission is now an

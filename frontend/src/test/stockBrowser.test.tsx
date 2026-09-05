@@ -981,6 +981,65 @@ const CRAWLERS: Crawler[] = [
   { id: 5, site_name: 'Epitaph', module_path: '', crawler_type: 'catalog', enabled: true, last_run: null, base_url: null, genre: 'punk' },
 ]
 
+describe('StockBrowser Cheapest filter', () => {
+  it('renders an unchecked Cheapest checkbox on Store and fetches without it', async () => {
+    render(<StockBrowser />)
+    await waitFor(() => expect(getStock).toHaveBeenCalled())
+    const box = screen.getByRole('checkbox', { name: 'Cheapest' }) as HTMLInputElement
+    expect(box.checked).toBe(false)
+    expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ cheapest: false }))
+  })
+
+  it('does not render the Cheapest checkbox on Track', async () => {
+    render(<StockBrowser scope="track" />)
+    await waitFor(() => expect(getStock).toHaveBeenCalled())
+    expect(screen.queryByRole('checkbox', { name: 'Cheapest' })).toBeNull()
+    expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ cheapest: false }))
+  })
+
+  it('ticking Cheapest refetches from page 1 with cheapest set, and stacks on the current filter', async () => {
+    render(<StockBrowser />)
+    await waitFor(() => expect(getStock).toHaveBeenCalled())
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'saved' } })
+    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ saved: true })))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Cheapest' }))
+    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({
+      cheapest: true, saved: true, page: 1,
+    })))
+    // The sidebar never takes the flag: every record keeps at least one row,
+    // so no artist can drop out of it.
+    expect(getStockArtists).not.toHaveBeenCalledWith(expect.objectContaining({ cheapest: true }))
+  })
+
+  it('persists the Cheapest choice and restores it on mount', async () => {
+    const { unmount } = render(<StockBrowser />)
+    await waitFor(() => expect(getStock).toHaveBeenCalled())
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Cheapest' }))
+    await waitFor(() => expect(localStorage.getItem('stockCheapest')).toBe('true'))
+    unmount()
+
+    getStock.mockClear()
+    render(<StockBrowser />)
+    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ cheapest: true })))
+    expect((screen.getByRole('checkbox', { name: 'Cheapest' }) as HTMLInputElement).checked).toBe(true)
+  })
+
+  it('does not let a stored Cheapest choice leak into Track', async () => {
+    localStorage.setItem('stockCheapest', 'true')
+    render(<StockBrowser scope="track" />)
+    await waitFor(() => expect(getStock).toHaveBeenCalled())
+    expect(getStock).not.toHaveBeenCalledWith(expect.objectContaining({ cheapest: true }))
+  })
+
+  it('passes Cheapest through to the Stats panel', async () => {
+    render(<StockBrowser />)
+    await waitFor(() => expect(getStock).toHaveBeenCalled())
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Cheapest' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Stats' }))
+    await waitFor(() => expect(getStockStats).toHaveBeenCalledWith(expect.objectContaining({ cheapest: true })))
+  })
+})
+
 describe('StockBrowser Source filter', () => {
   it('renders the Source button in the header', async () => {
     render(<StockBrowser crawlers={CRAWLERS} />)

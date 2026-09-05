@@ -14,6 +14,7 @@ interface Props {
   recommended?: boolean
   saved?: boolean
   overlapped?: boolean
+  cheapest?: boolean
   hiddenCrawlerIds: number[]
   /** Ticks when the underlying rows may have changed (a stock sync, a save). */
   refreshKey?: number
@@ -35,7 +36,7 @@ function share(value: number, total: number): string {
 
 function StockStats({
   search, artist, libraryScope, recommended = false, saved = false, overlapped = false,
-  hiddenCrawlerIds, refreshKey, disabled = false,
+  cheapest = false, hiddenCrawlerIds, refreshKey, disabled = false,
 }: Props) {
   const isMobile = useIsMobile()
   const [open, setOpen] = useState(false)
@@ -75,7 +76,7 @@ function StockStats({
   // not by describing something else, and the next response replaces them.
   const viewKey = JSON.stringify([
     open, search ?? '', artist ?? '', libraryScope ?? '',
-    recommended, saved, overlapped, hiddenCrawlerIds,
+    recommended, saved, overlapped, cheapest, hiddenCrawlerIds,
   ])
   const [prevViewKey, setPrevViewKey] = useState(viewKey)
   if (viewKey !== prevViewKey) {
@@ -92,7 +93,7 @@ function StockStats({
   useEffect(() => {
     if (!open) return
     let latest = true
-    getStockStats({ search, artist, libraryScope, recommended, saved, overlapped, hiddenCrawlerIds })
+    getStockStats({ search, artist, libraryScope, recommended, saved, overlapped, cheapest, hiddenCrawlerIds })
       .then((next) => {
         if (!latest) return
         setStats(next)
@@ -100,7 +101,7 @@ function StockStats({
       })
       .catch(() => { if (latest) setError(true) })
     return () => { latest = false }
-  }, [open, search, artist, libraryScope, recommended, saved, overlapped, hiddenCrawlerIds, refreshKey])
+  }, [open, search, artist, libraryScope, recommended, saved, overlapped, cheapest, hiddenCrawlerIds, refreshKey])
 
   const sources = stats?.sources ?? null
   const total = stats?.total ?? 0
