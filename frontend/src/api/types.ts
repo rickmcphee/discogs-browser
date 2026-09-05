@@ -135,6 +135,10 @@ export interface StockItem {
   item_key: string
   artist: string
   title: string
+  // The name the source itself gave the matched item, when the crawler
+  // reported one; null means the target's own title stands. Display-only:
+  // matching, sorting and search all still run on `title`.
+  listing_title: string | null
   format: string | null
   price: number | null
   currency: string | null
