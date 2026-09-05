@@ -183,8 +183,13 @@ rows for the records it brought in. Both keep the enabled-store gate.
 Insert-if-absent, not the revive `enqueue_crawl_queue_for_stock_item` does: a
 `done` row is the record that the item was already priced, reviving it would
 make every save a marketplace re-crawl, and the next stock sync revives it
-with everything else. Neither asks the setting: with it off every live item
-already has a row, so both are no-ops rather than something to switch off.
+with everything else. The save helper does not ask the setting: it is one
+key, and with the setting off it is a no-op. The sync's restoration does,
+and skips itself when the setting is off — the statement would otherwise
+scan the whole stock inventory against the user's library, under the
+reconciliation lock, to insert nothing. It reads the setting when it runs,
+not when the sync starts, so a long sync honours the setting as it stands at
+the end.
 
 The sync runs its restoration on both exits. Each page commits as it lands,
 so a sync that fails on a later page has already made the earlier pages real

@@ -798,18 +798,25 @@ class CrawlManager:
             clear_wishlist_flags_not_in, delete_orphaned_releases, enqueue_crawl_queue,
             enqueue_crawl_queue_for_library_stock_items,
         )
+        from config import crawl_library_only
         import httpx
 
         broadcast = lambda event: self._broadcast_threadsafe({**event, "user_id": user_id}, loop)
 
         # The records a sync commits may match store items whose queue rows
         # the library-only sweep deleted, or that _sync_stock never inserted,
-        # while nobody wanted them. Insert-if-absent, so with the setting off
-        # (every live item already has a row) this is a no-op rather than a
-        # re-crawl. Defined ahead of the try because it runs on both exits:
-        # a sync that fails on a later page has still committed the earlier
-        # ones, and those records are owed their rows just the same.
+        # while nobody wanted them. Insert-if-absent, and only under the
+        # setting: with it off every live item already has a row, so the
+        # statement would scan the whole stock inventory against this
+        # library, under the reconciliation lock, to insert nothing. Read at
+        # restoration time, not at sync start, so a long sync sees the
+        # setting as it stands when it finishes. Defined ahead of the try
+        # because it runs on both exits: a sync that fails on a later page
+        # has still committed the earlier ones, and those records are owed
+        # their rows just the same.
         def restore_library_stock_rows():
+            if not crawl_library_only():
+                return
             with user_scope(user_id) as conn:
                 restored = enqueue_crawl_queue_for_library_stock_items(conn, user_id)
                 conn.commit()

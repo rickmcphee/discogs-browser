@@ -239,8 +239,64 @@ async def test_sync_collection_enqueues_crawl_queue_for_missing_listings(pg_sche
     assert [(q["discogs_id"], q["status"]) for q in queued] == [("r111", "pending"), ("r222", "pending")]
 
 
+@pytest.fixture
+def library_only_on(pg_schema):
+    """The sync's restoration of store-item rows runs only under
+    crawl_library_only; with it off every live item already has a row."""
+    import config
+    config.save_config({"crawl_library_only": True})
+    yield
+    config.save_config({})
+
+
 @respx.mock
-async def test_sync_collection_queues_store_items_even_when_a_later_page_fails(pg_schema, monkeypatch):
+async def test_sync_collection_leaves_store_items_alone_when_library_only_is_off(pg_schema, monkeypatch):
+    """Off, the restoration is skipped outright rather than run to insert
+    nothing: it would scan the whole stock inventory against this library
+    under the reconciliation lock for no row."""
+    import config
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        db.register_crawler(conn, "Stock Site", "/src.py", crawler_type="catalog")
+        store_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Stock Site'").fetchone()["id"]
+        db.replace_stock_items(conn, store_id, [
+            {"artist": "Artist", "title": "Album (Deluxe)", "url": "https://x/1", "price": 5.0, "currency": "USD"},
+        ])
+        conn.execute("DELETE FROM crawl_queue")
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        return_value=_collection_page(111, total_pages=1)
+    )
+    respx.get(url__regex=r"https://api\.discogs\.com/releases/\d+").mock(
+        return_value=httpx.Response(200, json={"identifiers": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    with patch("db.enqueue_crawl_queue_for_library_stock_items") as restore:
+        manager = CrawlManager()
+        await manager._sync_collection(user["id"], "all")
+    assert "sync_error" not in [e["status"] for e in manager.recent_events()]
+    restore.assert_not_called()
+    with db.get_admin_pool().connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM crawl_queue WHERE item_key IS NOT NULL").fetchone()["count"] == 0
+
+
+@respx.mock
+async def test_sync_collection_queues_store_items_even_when_a_later_page_fails(pg_schema, monkeypatch, library_only_on):
     """Every collection page commits as it lands, so a sync that then fails on
     the wantlist has still made those records real library membership -- and
     the matching store items are owed their queue rows on that exit too."""
@@ -288,7 +344,7 @@ async def test_sync_collection_queues_store_items_even_when_a_later_page_fails(p
 
 
 @respx.mock
-async def test_sync_collection_queues_store_items_matching_the_synced_records(pg_schema, monkeypatch):
+async def test_sync_collection_queues_store_items_matching_the_synced_records(pg_schema, monkeypatch, library_only_on):
     """A record arriving in the library makes matching store items wanted, and
     under library-only crawling their queue rows may have been swept while
     nobody wanted them -- so the sync restores the missing ones. Only the
