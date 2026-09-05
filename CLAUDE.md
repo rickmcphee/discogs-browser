@@ -89,10 +89,13 @@ class Crawler:
     async def search(self, release: dict, page: Page) -> list[dict]:
         # returns [] if not found, or list of:
         # {"url": str, "price": float|None, "shipping": float|None,
-        #  "currency": str|None, "condition": str|None}
+        #  "currency": str|None, "condition": str|None,
+        #  "title": str|None}  # optional; see below
 ```
 
 The backend owns the Playwright browser. Plugins receive a live `Page` and must raise `BotDetectedError` on bot interstitials.
+
+`title` is optional: the name the site itself gives the matched item, as the user would read it there. A release crawler matches by artist and title, so what it finds can be a different pressing than the target (a black vinyl for a coloured-variant release, say); the Store/Track row shows this name in place of the target's when present, with the target's own title as hover text, and stores it as `listing_title` on `stock_items`/`listings`. Absent or empty means "the target's name stands" — a crawler that answers a page built around the exact release (`discogs_marketplace`) has nothing to add and omits it. Display-only: `stock_items.title` keeps the target's name because `item_key`, title sort/search and the Track tab's library match all hang off it. See [`docs/specifications/shaping/2026-09-05-marketplace-listing-title-design.md`](docs/specifications/shaping/2026-09-05-marketplace-listing-title-design.md).
 
 Any crawler for a named storefront may additionally declare an optional `genre_summary: str` attribute — a one-sentence description read by Settings to show as a hover tooltip on the store link. Not scoped to the catalog kinds: Settings renders the tooltip for any crawler carrying one, with no `crawler_type` gate — the attribute belongs to any crawler that *is* a describable store, however it is crawled.
 
