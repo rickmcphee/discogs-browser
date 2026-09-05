@@ -490,6 +490,17 @@ ALTER TABLE stock_item_price_drops
 ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS release_id TEXT REFERENCES catalog(discogs_id);
 CREATE UNIQUE INDEX IF NOT EXISTS stock_items_crawler_release_idx ON stock_items (crawler_id, release_id) WHERE release_id IS NOT NULL;
 
+-- The name the source itself gave the matched item, as distinct from the name
+-- of the target it was searched for. A release crawler matches by artist and
+-- title, so what it finds can be a different pressing of the record (a black
+-- vinyl for a coloured-variant release, say), and the row otherwise displays
+-- the catalog title as if the match were exact. NULL means the crawler
+-- reported no name of its own, and the target's title stands. Display-only:
+-- `title` keeps carrying the target's name because item_key and the library
+-- match in _library_match_fragment both hang off it.
+ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS listing_title TEXT;
+ALTER TABLE listings ADD COLUMN IF NOT EXISTS listing_title TEXT;
+
 -- Expression indexes, because every artist read path case-folds now: the
 -- artist filters in get_library_releases/get_stock_items, and
 -- canonical_artist_labels, which runs per page of either. Without these both
@@ -1012,16 +1023,18 @@ def upsert_listing(
     shipping: Optional[float],
     currency: Optional[str],
     condition: Optional[str],
+    listing_title: Optional[str] = None,
 ):
     conn.execute(
         """
-        INSERT INTO listings (release_id, crawler_id, url, price, shipping, currency, condition, last_checked)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+        INSERT INTO listings (release_id, crawler_id, url, price, shipping, currency, condition, listing_title, last_checked)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
         ON CONFLICT (release_id, crawler_id) DO UPDATE SET
             url = EXCLUDED.url, price = EXCLUDED.price, shipping = EXCLUDED.shipping,
-            currency = EXCLUDED.currency, condition = EXCLUDED.condition, last_checked = CURRENT_TIMESTAMP
+            currency = EXCLUDED.currency, condition = EXCLUDED.condition,
+            listing_title = EXCLUDED.listing_title, last_checked = CURRENT_TIMESTAMP
         """,
-        [release_id, crawler_id, url, price, shipping, currency, condition],
+        [release_id, crawler_id, url, price, shipping, currency, condition, listing_title or None],
     )
 
 
@@ -1034,19 +1047,21 @@ def upsert_stock_item_listing(
     shipping: Optional[float],
     currency: Optional[str],
     condition: Optional[str],
+    listing_title: Optional[str] = None,
 ):
     # Read before the upsert, not after: the floor a drop has to beat includes
     # the price this call is about to overwrite. See _record_price_drops.
     floors = _price_floors(conn, [item_key])
     conn.execute(
         """
-        INSERT INTO listings (item_key, crawler_id, url, price, shipping, currency, condition, last_checked)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+        INSERT INTO listings (item_key, crawler_id, url, price, shipping, currency, condition, listing_title, last_checked)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
         ON CONFLICT (item_key, crawler_id) DO UPDATE SET
             url = EXCLUDED.url, price = EXCLUDED.price, shipping = EXCLUDED.shipping,
-            currency = EXCLUDED.currency, condition = EXCLUDED.condition, last_checked = CURRENT_TIMESTAMP
+            currency = EXCLUDED.currency, condition = EXCLUDED.condition,
+            listing_title = EXCLUDED.listing_title, last_checked = CURRENT_TIMESTAMP
         """,
-        [item_key, crawler_id, url, price, shipping, currency, condition],
+        [item_key, crawler_id, url, price, shipping, currency, condition, listing_title or None],
     )
     _record_price_drops(conn, crawler_id, floors, [
         {"item_key": item_key, "url": url, "price": price, "currency": currency},
@@ -1078,16 +1093,21 @@ def upsert_stock_item_from_release(conn, release_id: str, crawler_id: int, catal
     conn.execute(
         """
         INSERT INTO stock_items
-            (crawler_id, release_id, artist, title, format, price, currency, url, cover_image_url, item_key, last_seen)
-        VALUES (%(crawler_id)s, %(release_id)s, %(artist)s, %(title)s, %(format)s, %(price)s, %(currency)s,
+            (crawler_id, release_id, artist, title, listing_title, format, price, currency, url, cover_image_url, item_key, last_seen)
+        VALUES (%(crawler_id)s, %(release_id)s, %(artist)s, %(title)s, %(listing_title)s, %(format)s, %(price)s, %(currency)s,
                 %(url)s, %(cover_image_url)s, %(item_key)s, CURRENT_TIMESTAMP)
         ON CONFLICT (crawler_id, release_id) WHERE release_id IS NOT NULL DO UPDATE SET
-            artist = EXCLUDED.artist, title = EXCLUDED.title, format = EXCLUDED.format,
+            artist = EXCLUDED.artist, title = EXCLUDED.title, listing_title = EXCLUDED.listing_title,
+            format = EXCLUDED.format,
             price = EXCLUDED.price, currency = EXCLUDED.currency, url = EXCLUDED.url,
             cover_image_url = EXCLUDED.cover_image_url, item_key = EXCLUDED.item_key, last_seen = CURRENT_TIMESTAMP
         """,
         {
             "crawler_id": crawler_id, "release_id": release_id, "artist": artist, "title": title,
+            # Written on every pass, absent included: a crawler that reported a
+            # name last time and none this time must not keep showing the old
+            # one against a listing it no longer describes.
+            "listing_title": listing.get("title") or None,
             "format": catalog_release["format"], "price": listing.get("price"), "currency": listing.get("currency"),
             "url": listing["url"], "cover_image_url": catalog_release["cover_image_url"], "item_key": item_key,
         },
@@ -2907,7 +2927,7 @@ def _stock_filter_sql(
 # and dissolving it there would scatter one record across three screens.
 _STOCK_OFFERS_CTE = """
     WITH own AS (
-        SELECT s.id AS stock_id, s.item_key, s.artist, s.title, s.format,
+        SELECT s.id AS stock_id, s.item_key, s.artist, s.title, s.listing_title, s.format,
                s.cover_image_url, s.price, s.currency, s.url, s.last_seen,
                s.crawler_id, TRUE AS is_own
         FROM stock_items s
@@ -2918,7 +2938,7 @@ _STOCK_OFFERS_CTE = """
         -- listing. The grouped path's copies are invisible, one under each
         -- parent row; flattened they would be adjacent identical rows.
         SELECT DISTINCT ON (l.item_key, l.crawler_id)
-               s.id AS stock_id, s.item_key, s.artist, s.title, s.format,
+               s.id AS stock_id, s.item_key, s.artist, s.title, l.listing_title, s.format,
                s.cover_image_url, l.price, l.currency, l.url,
                l.last_checked AS last_seen, l.crawler_id, FALSE AS is_own
         FROM stock_items s
@@ -2960,7 +2980,7 @@ def _get_stock_offers(
     rows = conn.execute(
         f"""
         {cte}
-        SELECT s.stock_id, s.item_key, s.artist, s.title, s.format, s.cover_image_url,
+        SELECT s.stock_id, s.item_key, s.artist, s.title, s.listing_title, s.format, s.cover_image_url,
                s.price, s.currency, s.url, s.last_seen, s.is_own,
                cr.site_name AS source, j.reason AS reason,
                (sv.item_key IS NOT NULL) AS saved,
@@ -3049,8 +3069,8 @@ def get_stock_items(
     null_order = "ASC"
     rows = conn.execute(
         f"""
-        SELECT s.id, s.artist, s.title, s.format, s.price, s.currency, s.url, s.cover_image_url, s.last_seen,
-               s.item_key, cr.site_name AS source, j.reason AS reason,
+        SELECT s.id, s.artist, s.title, s.listing_title, s.format, s.price, s.currency, s.url, s.cover_image_url,
+               s.last_seen, s.item_key, cr.site_name AS source, j.reason AS reason,
                (sv.item_key IS NOT NULL) AS saved,
                (SELECT li.price_paid {_library_match_fragment('%(user_id)s', 'collection')} LIMIT 1) AS discogs_price
         FROM stock_items s
@@ -3067,7 +3087,8 @@ def get_stock_items(
     comparisons_by_item: dict[str, list[dict]] = {}
     if include_comparisons:
         comparison_sql = """
-            SELECT l.item_key, l.price, l.currency, l.url, l.condition, l.last_checked, cr.site_name AS source
+            SELECT l.item_key, l.price, l.currency, l.url, l.condition, l.listing_title, l.last_checked,
+                   cr.site_name AS source
             FROM listings l
             JOIN crawlers cr ON cr.id = l.crawler_id
             WHERE l.item_key = ANY(%(item_keys)s) AND l.price IS NOT NULL
@@ -3094,6 +3115,7 @@ def get_stock_items(
             items.append({
                 "id": f"{r['id']}:{c['source']}",
                 "item_key": r["item_key"], "artist": r["artist"], "title": r["title"],
+                "listing_title": c["listing_title"],
                 "format": r["format"], "cover_image_url": r["cover_image_url"],
                 "discogs_price": r["discogs_price"], "saved": r["saved"],
                 "price": c["price"], "currency": c["currency"], "url": c["url"],
