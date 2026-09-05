@@ -731,6 +731,21 @@ describe('StockBrowser', () => {
     expect(screen.getByText('Amazon')).toBeTruthy()
   })
 
+  it('shows the name the source gave a match in place of the target title, keeping the target title as hover text', async () => {
+    getStock.mockResolvedValue({
+      total: 1, row_total: 1, page: 1, per_page: 250,
+      items: [
+        items[0],
+        { id: 'k1:Amazon', item_key: 'k1', is_own: false, artist: 'Rob Zombie', title: 'The Great Satan — Ghostly Black Vinyl', listing_title: 'Rob Zombie - The Great Satan [Standard Black LP]', format: 'Vinyl', price: 29.99, currency: 'USD', url: 'https://amazon/x', cover_image_url: null, source: 'Amazon', last_seen: '2026-07-05T00:00:00Z', reason: null },
+      ],
+    })
+    render(<StockBrowser />)
+    const found = await screen.findByText('Rob Zombie - The Great Satan [Standard Black LP]')
+    expect(found.getAttribute('title')).toBe('The Great Satan — Ghostly Black Vinyl')
+    // The own row, which reported no name of its own, still shows the target title.
+    expect(screen.getAllByText('The Great Satan — Ghostly Black Vinyl').length).toBe(1)
+  })
+
   it('shows only the own row per item in tile view, even when comparison rows are present', async () => {
     getStock.mockResolvedValue({
       total: 1, row_total: 1, page: 1, per_page: 250,
