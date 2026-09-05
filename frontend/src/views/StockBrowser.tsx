@@ -38,7 +38,8 @@ const TRACK_FILTERS = ['all', 'collection', 'wantlist'] as const satisfies reado
 // crawler reported one, since a release-crawler match is by artist/title and
 // can be a different pressing than the target. The target's own title moves
 // to the hover text so the substitution stays visible; a recommendation
-// reason keeps that slot when there is one.
+// reason keeps that slot when there is one. The thumbnail's alt text is not
+// substituted: the image is the target's own cover, not the listing's.
 function displayTitle(item: StockItem): string {
   return item.listing_title ?? item.title
 }
@@ -465,7 +466,7 @@ function StockBrowser({
                       {item.cover_image_url ? (
                         <img
                           src={item.cover_image_url}
-                          alt={displayTitle(item)}
+                          alt={item.title}
                           className="w-full aspect-square object-cover rounded"
                         />
                       ) : (
@@ -601,7 +602,7 @@ function StockBrowser({
                     {item.cover_image_url ? (
                       <img
                         src={item.cover_image_url}
-                        alt={displayTitle(item)}
+                        alt={item.title}
                         className="w-10 h-10 min-w-10 object-cover rounded"
                       />
                     ) : (
