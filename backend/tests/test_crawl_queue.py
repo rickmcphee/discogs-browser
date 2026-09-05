@@ -1160,12 +1160,17 @@ def test_library_stock_item_keys_matches_the_store_tabs_library_rule(admin_conn,
     _stock_item(admin_conn, "wanted", "Boards of Canada", "Geogaddi", store)
     _stock_item(admin_conn, "prefix-no-space", "Radiohead", "Kid Amnesiac", store)
     _stock_item(admin_conn, "flagless", "Autechre", "Amber", store)
+    # A catalog title is a literal prefix, not a LIKE pattern: "100% Fun" must
+    # not claim "100 Fun Things" through its '%'.
+    _stock_item(admin_conn, "percent-literal", "Sloan", "100% Fun (Reissue)", store)
+    _stock_item(admin_conn, "percent-wildcard", "Sloan", "100 Fun Things", store)
     _release_in_library(admin_conn, alice["id"], "r1", "Radiohead", "Kid A", in_collection=True)
     _release_in_library(admin_conn, alice["id"], "r2", "Boards of Canada", "Geogaddi", in_wishlist=True)
     _release_in_library(admin_conn, alice["id"], "r3", "Autechre", "Amber")
+    _release_in_library(admin_conn, alice["id"], "r4", "Sloan", "100% Fun", in_collection=True)
     admin_conn.commit()
 
-    assert _library_keys_as_app_user() == ["deluxe", "wanted"]
+    assert _library_keys_as_app_user() == ["deluxe", "percent-literal", "wanted"]
 
 
 def _wanted_and_unwanted_stock_rows(conn):

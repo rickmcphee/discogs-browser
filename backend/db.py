@@ -606,6 +606,13 @@ CREATE TABLE IF NOT EXISTS library_items (
     PRIMARY KEY (user_id, discogs_id)
 );
 
+-- The primary key leads with user_id, which serves every per-user read but
+-- not library_stock_item_keys' join, which arrives by discogs_id with no
+-- user in hand. Partial on the flags the view requires, so a row that is
+-- neither collected nor wanted costs nothing here.
+CREATE INDEX IF NOT EXISTS library_items_wanted_discogs_id_idx
+    ON library_items (discogs_id) WHERE in_collection OR in_wishlist;
+
 ALTER TABLE library_items ADD COLUMN IF NOT EXISTS collection_date_added TIMESTAMP;
 ALTER TABLE library_items ADD COLUMN IF NOT EXISTS wishlist_date_added TIMESTAMP;
 ALTER TABLE library_items ADD COLUMN IF NOT EXISTS price_paid TEXT;
@@ -1840,7 +1847,7 @@ def _library_stock_item_keys_view_sql() -> str:
         UNION
         SELECT s.item_key
         FROM stock_items s
-        JOIN catalog c ON {_library_release_match_sql(escape_percent=False)}
+        JOIN catalog c ON {_library_release_match_sql()}
         JOIN library_items li ON li.discogs_id = c.discogs_id
                              AND (li.in_collection OR li.in_wishlist)
         WHERE s.item_key IS NOT NULL
@@ -3004,7 +3011,7 @@ _LIBRARY_MEMBERSHIP = {
 }
 
 
-def _library_release_match_sql(*, escape_percent: bool = True) -> str:
+def _library_release_match_sql() -> str:
     """The one definition of "stock row `s` is catalog release `c`": same
     artist, case-folded, and an exact-or-prefix-with-space title match rather
     than exact-only, because stock listings often append edition/format
@@ -3012,14 +3019,17 @@ def _library_release_match_sql(*, escape_percent: bool = True) -> str:
     listing "Kid A (Deluxe Reissue)"), so a strict equality would treat an
     already-owned release as still unowned.
 
+    starts_with rather than LIKE: the prefix is a catalog title, and a title
+    holding '%' or '_' ("100% Fun") is a LIKE pattern, not a literal, so the
+    LIKE this replaced could match records that merely resembled it. A
+    literal test also carries no '%' at all, so the same string serves a
+    parameterised query and the no-parameter DDL that creates the view.
+
     Shared by _library_match_fragment (a user's own view of the Store tab)
     and the library_stock_item_keys view (the crawl queue's "anyone's
-    library" gate), so the two can never disagree about what counts as owned.
-    escape_percent=False for DDL, which psycopg sends with no parameters and
-    therefore no %-processing -- see _the_comma_form_sql."""
-    percent = "%%" if escape_percent else "%"
-    return f"""LOWER(c.artist) = LOWER(s.artist)
-          AND (LOWER(s.title) = LOWER(c.title) OR LOWER(s.title) LIKE LOWER(c.title) || ' {percent}')"""
+    library" gate), so the two can never disagree about what counts as owned."""
+    return """LOWER(c.artist) = LOWER(s.artist)
+          AND (LOWER(s.title) = LOWER(c.title) OR starts_with(LOWER(s.title), LOWER(c.title) || ' '))"""
 
 
 def _library_match_fragment(user_id_param: str, library_scope: str) -> str:
