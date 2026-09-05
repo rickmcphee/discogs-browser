@@ -20,7 +20,7 @@ dependencies = [
     "python-multipart>=0.0.32",
     "Pillow>=12.3.0",
     "psycopg[binary]>=3.1,<4.0",
-    "psycopg-pool>=3.2,<4.0",
+    "psycopg-pool>=3.3.1,<4.0",
     "cryptography>=50.0.0,<51",
     # >=1.8: from 1.8 authlib's httpx_client transports over httpx2 whenever
     # it is importable, and the tests mock through a transport injected into
