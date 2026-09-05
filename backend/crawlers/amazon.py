@@ -142,6 +142,7 @@ class Crawler:
         log.info("[Amazon] searching for: %s %s [format: %s]", artist, title, fmt)
 
         vinyl_url = None
+        matched_title = ""
         vinyl_price = None
 
         # Try the full title first; if nothing matched, retry with a shortened title.
@@ -179,9 +180,10 @@ class Crawler:
                         # Verify the result title matches artist or album title
                         try:
                             title_el = item.locator("h2").first
-                            item_title = (await title_el.inner_text()).lower() if await title_el.count() else ""
+                            raw_title = (await title_el.inner_text()).strip() if await title_el.count() else ""
                         except Exception:
-                            item_title = ""
+                            raw_title = ""
+                        item_title = raw_title.lower()
                         artist_match = artist.lower().split()[0] in item_title if artist else True
                         title_match = title.lower().split()[0] in item_title if title else True
                         if not (artist_match or title_match):
@@ -193,6 +195,7 @@ class Crawler:
                         if not href:
                             continue
                         vinyl_url = f"https://www.amazon.com{href}" if href.startswith("/") else href
+                        matched_title = raw_title
                         break
                     except Exception:
                         continue
@@ -252,4 +255,8 @@ class Crawler:
             "shipping": None,
             "currency": "USD",
             "condition": None,
+            # The search result's heading, not the product page's: the heading
+            # is what the artist/title check above matched, so it names the
+            # item that was actually accepted. Empty falls back to the target.
+            "title": matched_title or None,
         }]
