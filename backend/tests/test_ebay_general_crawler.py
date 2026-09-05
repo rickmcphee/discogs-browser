@@ -47,6 +47,7 @@ async def test_search_returns_lowest_price_listing(crawler):
         "shipping": 4.00,
         "currency": "USD",
         "condition": "Very Good (VG)",
+        "title": "Miles Davis Kind of Blue Vinyl LP",
     }]
 
 
