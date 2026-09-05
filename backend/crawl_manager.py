@@ -796,6 +796,7 @@ class CrawlManager:
         from db import (
             get_identity_pool, user_scope, upsert_catalog_release, upsert_library_item,
             clear_wishlist_flags_not_in, delete_orphaned_releases, enqueue_crawl_queue,
+            enqueue_crawl_queue_for_library_stock_items,
         )
         import httpx
 
@@ -929,6 +930,17 @@ class CrawlManager:
                     "Wishlist sync complete for %s: %d items, %d stale entries cleared, %d releases deleted",
                     username, wishlist_count, cleared, len(deleted),
                 )
+
+            # The records just synced may match stock items whose queue rows
+            # the library-only sweep deleted, or that _sync_stock never
+            # inserted, while nobody wanted them. Insert-if-absent, so with
+            # the setting off (every live item already has a row) this is a
+            # no-op rather than a re-crawl.
+            with user_scope(user_id) as conn:
+                restored = enqueue_crawl_queue_for_library_stock_items(conn, user_id)
+                conn.commit()
+            if restored:
+                log.info("Queued %d store items matching %s's library for marketplace prices", restored, username)
 
             broadcast({
                 "status": "sync_complete",
@@ -1311,7 +1323,12 @@ class CrawlManager:
                 # level-and-above, so at WARNING this would be invisible
                 # to anyone watching the INFO stream carrying the rest of the
                 # crawl narrative.
-                log.info("Discarded %d queued price lookups with no enabled source", swept)
+                # Two causes, one sweep: rows no enabled store still stocks,
+                # and -- under library-only crawling -- rows nobody wants.
+                log.info(
+                    "Discarded %d queued price lookups nothing still stocks%s",
+                    swept, " or nobody wants" if library_only else "",
+                )
 
             await self._broadcast({"status": "stock_sync_complete", "synced": total_synced, "crawler_id": crawler_id})
             # The failed/skipped tail is why "complete: 0 items" alone was

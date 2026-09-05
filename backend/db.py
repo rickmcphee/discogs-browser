@@ -1951,6 +1951,55 @@ def enqueue_crawl_queue_for_stock_item(conn, item_key: str, library_only: bool =
     )
 
 
+# Interest added means a queue row exists. Two ways interest arrives -- a
+# save, and a collection/wantlist sync bringing in a matching record -- and
+# neither of them enqueues stock-item work on its own: only _sync_stock does,
+# once per store refresh. Under crawl_library_only that leaves a hole: the
+# switch-on sweep deleted the item's row (or _sync_stock never inserted one)
+# while nobody wanted it, so the "next claim picks it up" promise the setting
+# makes only held while the row was still pending. These two close it.
+#
+# Insert-if-absent only, deliberately not the revive enqueue_crawl_queue_for_
+# stock_item does. A 'done' row is the record that the item was already
+# priced; reviving it here would make every save a marketplace re-crawl, and
+# the next stock sync revives it with everything else anyway. What is
+# restored is exactly the row that is missing.
+#
+# Both keep the enabled-store gate and neither asks library_only: with the
+# setting off every live item already has a row, so these are no-ops there
+# rather than something to switch off.
+def enqueue_crawl_queue_for_saved_stock_item(conn, item_key: str) -> int:
+    stock_source_gate = _enabled_stock_source_exists("%(item_key)s")
+    return conn.execute(
+        f"""
+        INSERT INTO crawl_queue (item_key)
+        SELECT %(item_key)s WHERE {stock_source_gate}
+        ON CONFLICT (item_key) DO NOTHING
+        """,
+        {"item_key": item_key},
+    ).rowcount
+
+
+# Scoped to one user's library through _library_match_fragment, which under
+# the user_scope connection a sync runs on is also what RLS allows; the
+# library_stock_item_keys view is not used here because it cannot say whose
+# interest a key is, and a sync should only restore rows for the records it
+# just brought in.
+def enqueue_crawl_queue_for_library_stock_items(conn, user_id: int) -> int:
+    stock_source_gate = _enabled_stock_source_exists("s.item_key")
+    return conn.execute(
+        f"""
+        INSERT INTO crawl_queue (item_key)
+        SELECT DISTINCT s.item_key FROM stock_items s
+        WHERE s.item_key IS NOT NULL
+          AND EXISTS (SELECT 1 {_library_match_fragment('%(user_id)s', 'all')})
+          AND {stock_source_gate}
+        ON CONFLICT (item_key) DO NOTHING
+        """,
+        {"user_id": user_id},
+    ).rowcount
+
+
 # How many rows one claim takes. Small because a batch is now batch_size x
 # eligible crawlers of sequential page loads and the whole batch stays
 # 'in_progress' for all of it. Named here rather than living only as

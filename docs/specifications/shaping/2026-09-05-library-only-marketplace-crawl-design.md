@@ -42,6 +42,9 @@ Touches:
   end-of-run sweep.
 - `backend/routers/settings.py` — the field on `GET`/`POST /api/settings`;
   the off-to-on sweep; the crawler toggle's sweeps pass the setting.
+- `backend/routers/stock.py` — the save endpoint queues the saved item if it
+  has no row; `_sync_collection_blocking` does the same for a user's matching
+  items as a sync completes.
 - `backend/routers/queue.py` — passes the setting to the Queue tab's queries.
 - `frontend/src/views/Settings.tsx`, `frontend/src/api/types.ts` — a `checkbox`
   row type and the "Library only" row.
@@ -159,6 +162,30 @@ the restore, and the Settings description says so. An immediate re-enqueue
 would be that same full re-crawl, started from a settings save instead of the
 Store Management Refresh button that already exists for it.
 
+### Interest added means a row exists
+
+The gate alone leaves a hole, found in review. A save only writes
+`stock_item_saves`; a collection or wantlist sync only enqueues release-keyed
+rows; the one producer of stock-item rows is `_sync_stock`, once per store
+refresh. So after the switch-on sweep deleted an item's row (or `_sync_stock`
+never inserted one) while nobody wanted it, saving it or syncing a matching
+record changed only the view — "picked up at the next claim" held for a row
+still pending, and for nothing else.
+
+Two insert-if-absent helpers close it. `enqueue_crawl_queue_for_saved_stock_item`
+runs from the save endpoint, in the save's own transaction, for that one key.
+`enqueue_crawl_queue_for_library_stock_items` runs at the end of a collection
+sync, under the user's `user_scope`, for the stock items matching that user's
+library by `_library_match_fragment` — the view is deliberately not used here,
+because it cannot say whose interest a key is, and a sync should only restore
+rows for the records it brought in. Both keep the enabled-store gate.
+
+Insert-if-absent, not the revive `enqueue_crawl_queue_for_stock_item` does: a
+`done` row is the record that the item was already priced, reviving it would
+make every save a marketplace re-crawl, and the next stock sync revives it
+with everything else. Neither asks the setting: with it off every live item
+already has a row, so both are no-ops rather than something to switch off.
+
 ### Boot-time callers keep the default
 
 `register_crawler`'s kind conversions call the sweep at boot with no setting
@@ -173,8 +200,9 @@ are tested doing so.
 
 - With the setting on, a record nobody wants is never priced against
   marketplaces, so the Store tab's comparison rows for it stay empty until
-  someone saves it or adds it to their library. The next claim after that
-  picks it up; no sync is needed.
+  someone saves it or adds it to their library. A save queues it in the same
+  transaction; a library sync queues its matches as it completes. Either way
+  the next claim picks it up, with no store refresh needed.
 - Un-saving an item, or a wantlist sync dropping a record, stops its crawl at
   the next claim. Its pending row stays until a sweep runs (any stock sync, any
   crawler toggle); the Queue tab reports it as unactionable meanwhile.
@@ -208,6 +236,14 @@ superuser `admin_conn` bypasses RLS and would prove nothing about the view):
   and wanted rows, deletes nothing extra with it off, and leaves `in_progress`
   rows alone.
 
+- Interest restores a missing row: a save inserts a pending row for an item
+  with none, leaves a `done` row alone, and inserts nothing for an item no
+  enabled store lists; a library sync inserts rows for that user's matching
+  items only.
+
+`backend/tests/test_stock_router.py`: saving an item queues it when it has no
+row and leaves a `done` row alone, across repeated saves.
+
 `backend/tests/test_settings_router.py`: default off; round trip; the
 off-to-on sweep with its count and log line; no sweep when already on; no
 sweep or enqueue on switching off; a saved item survives the sweep; the crawler
@@ -219,7 +255,9 @@ excludes them; the plan regression check holds with the view joined.
 
 `backend/tests/test_crawl_manager.py`: the worker leaves an unwanted stock row
 unclaimed under the setting and claims it on the very next batch once someone
-saves it; a stock sync under the setting enqueues only wanted items.
+saves it; a stock sync under the setting enqueues only wanted items; a
+collection sync queues the store items matching the records it synced, and
+only the ones with no row.
 
 `frontend/src/test/settings.test.tsx`: the checkbox renders for an admin and
 reflects the saved value, auto-saves like every other field, and is absent for

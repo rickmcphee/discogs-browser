@@ -1090,7 +1090,12 @@ def app_user_url(monkeypatch):
     )
     db._app_pool = None
     yield
-    db._app_pool = None
+    # Close before dropping the reference: pg_test_db's teardown only closes
+    # the pool it can still see, and a pool left dangling keeps its
+    # connections and worker threads until process exit.
+    if db._app_pool is not None:
+        db._app_pool.close()
+        db._app_pool = None
 
 
 def _release_in_library(conn, user_id, discogs_id, artist, title, **membership):
@@ -1293,3 +1298,67 @@ def test_sweep_under_library_only_leaves_an_in_progress_row_alone(admin_conn, ap
     with db.get_app_pool().connection() as conn:
         assert db.delete_dead_stock_crawl_queue_rows(conn, library_only=True) == 0
         conn.commit()
+
+
+# --- interest added restores a missing queue row ------------------------------
+
+def test_saving_an_item_inserts_a_missing_queue_row(admin_conn, app_user_url):
+    _wanted_and_unwanted_stock_rows(admin_conn)
+    with db.get_app_pool().connection() as conn:
+        assert db.delete_dead_stock_crawl_queue_rows(conn, library_only=True) == 1
+        conn.commit()
+
+    with db.get_app_pool().connection() as conn:
+        assert db.enqueue_crawl_queue_for_saved_stock_item(conn, "unwanted") == 1
+        conn.commit()
+    row = admin_conn.execute("SELECT status FROM crawl_queue WHERE item_key = 'unwanted'").fetchone()
+    assert row["status"] == "pending"
+
+
+def test_saving_an_item_leaves_an_existing_done_row_alone(admin_conn, app_user_url):
+    """Insert-if-absent, not a revive: a save must not turn into a re-crawl of
+    an item that was already priced."""
+    _wanted_and_unwanted_stock_rows(admin_conn)
+    admin_conn.execute("UPDATE crawl_queue SET status = 'done' WHERE item_key = 'wanted'")
+    admin_conn.commit()
+
+    with db.get_app_pool().connection() as conn:
+        assert db.enqueue_crawl_queue_for_saved_stock_item(conn, "wanted") == 0
+        conn.commit()
+    row = admin_conn.execute("SELECT status FROM crawl_queue WHERE item_key = 'wanted'").fetchone()
+    assert row["status"] == "done"
+
+
+def test_saving_an_item_with_no_enabled_source_inserts_nothing(admin_conn, app_user_url):
+    _wanted_and_unwanted_stock_rows(admin_conn)
+    admin_conn.execute("DELETE FROM crawl_queue")
+    _set_enabled_by_name(admin_conn, "Store", False)
+    admin_conn.commit()
+
+    with db.get_app_pool().connection() as conn:
+        assert db.enqueue_crawl_queue_for_saved_stock_item(conn, "wanted") == 0
+        conn.commit()
+    assert admin_conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 0
+
+
+def test_library_sync_inserts_missing_rows_for_this_users_matching_items_only(admin_conn, app_user_url):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    bob = db.create_user(admin_conn, discogs_user_id=2, discogs_username="bob")
+    db.register_crawler(admin_conn, "Store", "/src.py", crawler_type="catalog")
+    store = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Store'").fetchone()["id"]
+    _stock_item(admin_conn, "alices", "Radiohead", "Kid A (Deluxe)", store)
+    _stock_item(admin_conn, "bobs", "Autechre", "Amber", store)
+    _stock_item(admin_conn, "nobodys", "Nobody", "Nothing", store)
+    _stock_item(admin_conn, "alices-done", "Boards of Canada", "Geogaddi", store)
+    _release_in_library(admin_conn, alice["id"], "r1", "Radiohead", "Kid A", in_collection=True)
+    _release_in_library(admin_conn, alice["id"], "r2", "Boards of Canada", "Geogaddi", in_wishlist=True)
+    _release_in_library(admin_conn, bob["id"], "r3", "Autechre", "Amber", in_collection=True)
+    db.enqueue_crawl_queue_for_stock_item(admin_conn, "alices-done")
+    admin_conn.execute("UPDATE crawl_queue SET status = 'done' WHERE item_key = 'alices-done'")
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        assert db.enqueue_crawl_queue_for_library_stock_items(conn, alice["id"]) == 1
+        conn.commit()
+    rows = admin_conn.execute("SELECT item_key, status FROM crawl_queue ORDER BY item_key").fetchall()
+    assert [(r["item_key"], r["status"]) for r in rows] == [("alices", "pending"), ("alices-done", "done")]
