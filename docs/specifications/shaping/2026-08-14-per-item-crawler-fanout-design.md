@@ -138,6 +138,13 @@ in-progress target is a no-op, re-enqueuing a finished one revives it as a full 
 The `WHERE EXISTS (… crawlers … enabled)` gate in both enqueue helpers is **deleted** — with no
 crawler on the row there is nothing to gate, and eligibility is now resolved at dispatch.
 
+*Amended 2026-09-05: the stock-source gate the next paragraph keeps is now `_stock_item_crawlable`,
+which is `_enabled_stock_source_exists` alone until the admin's `crawl_library_only` setting is on,
+and then additionally requires some user
+to have saved the item or to hold a matching record in their collection or wantlist. Same three
+call sites, same claim/enqueue/sweep shape. See
+[`2026-09-05-library-only-marketplace-crawl-design.md`](2026-09-05-library-only-marketplace-crawl-design.md).*
+
 `enqueue_crawl_queue_for_stock_item(conn, item_key)` keeps the `_enabled_stock_source_exists`
 gate: that predicate is about whether any enabled *store* still stocks the item, which is
 independent of which marketplace crawler will price it.
@@ -346,6 +353,8 @@ is never displayed — so this is a backend semantics change plus comments, with
   `crawler_id` to domain peers.
 - Empty stock-item results carry no site-health signal.
 - The stock source gate: a stock item is only crawled while some enabled store still lists it.
+  *(Amended 2026-09-05: and, when `crawl_library_only` is on, only while someone wants it — see
+  the amendment under Producers.)*
 
 ## Testing
 

@@ -2,7 +2,7 @@ import psycopg
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import APIRouter, HTTPException, Request, Depends
 from pydantic import BaseModel, Field
-from config import load_config, save_config
+from config import load_config, save_config, crawl_library_only
 import db
 from admin import require_admin
 from logging_config import get_logger
@@ -21,6 +21,7 @@ class SettingsUpdate(BaseModel):
     ebay_app_id: str = ""
     ebay_cert_id: str = ""
     stock_schedule: str = ""
+    crawl_library_only: bool = False
 
 
 class CrawlerUpdate(BaseModel):
@@ -46,6 +47,7 @@ def get_settings():
         "ebay_app_id": config.get("ebay_app_id", ""),
         "ebay_cert_id": config.get("ebay_cert_id", ""),
         "stock_schedule": config.get("stock_schedule", ""),
+        "crawl_library_only": crawl_library_only(config),
     }
 
 
@@ -66,6 +68,13 @@ def update_settings(body: SettingsUpdate):
             ) from e
 
     config = load_config()
+    # Only the off->on edge sweeps. The setting rides the same debounced
+    # auto-save as every other field, so this endpoint runs on each edit to
+    # any of them; sweeping on every save would re-scan the pending stock
+    # backlog for each keystroke in the schedule box. Switching off needs no
+    # counterpart: the rows it would restore come back with the next stock
+    # sync, which re-enqueues everything every enabled store lists.
+    switched_on = body.crawl_library_only and not crawl_library_only(config)
     config["crawl_delay_seconds"] = body.crawl_delay_seconds
     config["consecutive_failure_limit"] = body.consecutive_failure_limit
     config["crawl_schedule"] = body.crawl_schedule
@@ -73,7 +82,24 @@ def update_settings(body: SettingsUpdate):
     config["ebay_app_id"] = body.ebay_app_id
     config["ebay_cert_id"] = body.ebay_cert_id
     config["stock_schedule"] = body.stock_schedule
+    config["crawl_library_only"] = body.crawl_library_only
     save_config(config)
+    discarded = 0
+    if switched_on:
+        # After the save, so a worker claiming concurrently already reads the
+        # setting as on and cannot claim a row this sweep is about to delete
+        # out from under it. Through the app pool like every other sweep: the
+        # gate reads library_stock_item_keys, which is granted to app_user
+        # precisely so this predicate runs on the same role the worker uses.
+        with db.get_app_pool().connection() as conn:
+            discarded = db.delete_dead_stock_crawl_queue_rows(conn, library_only=True)
+            conn.commit()
+        if discarded:
+            log.info(
+                "Library-only crawling switched on: %d queued stock crawl jobs "
+                "for records nobody wants discarded",
+                discarded,
+            )
     # Both expressions already parsed above, so neither call can raise here.
     # The handler is kept anyway: it costs nothing, and the alternative is a
     # 500 if the two parses ever drift apart.
@@ -82,13 +108,17 @@ def update_settings(body: SettingsUpdate):
         scheduler.configure_stock(body.stock_schedule)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    return {"ok": True}
+    return {"ok": True, "discarded": discarded}
 
 
 @router.patch("/crawlers/{crawler_id}", dependencies=[Depends(require_admin)])
 def update_crawler(crawler_id: int, body: CrawlerUpdate):
     discarded = 0
     backfilled = 0
+    # Read once, up front, outside every app-pool borrow below: load_config()
+    # goes through the admin pool (see routers/queue.py for why that must not
+    # happen while an app connection is held).
+    library_only = crawl_library_only()
     if body.enabled:
         # The toggle and the backfill run in separate transactions: committing
         # the toggle first means anything that goes wrong in the backfill
@@ -119,7 +149,7 @@ def update_crawler(crawler_id: int, body: CrawlerUpdate):
                 # same transaction as the backfill, so they don't sit pending
                 # and unclaimable in the claim index until a later stock sync
                 # happens to catch them.
-                enable_swept = db.delete_dead_stock_crawl_queue_rows(conn)
+                enable_swept = db.delete_dead_stock_crawl_queue_rows(conn, library_only)
                 conn.commit()
                 if enable_swept:
                     # Separate line from the disable path's "discarded" log
@@ -147,7 +177,7 @@ def update_crawler(crawler_id: int, body: CrawlerUpdate):
             # no crawler, and _drain_one_batch stops selecting it on the next
             # batch. This sweep is for the other case -- disabling a *store*
             # leaves stock-item rows nothing still stocks.
-            discarded = db.delete_dead_stock_crawl_queue_rows(conn)
+            discarded = db.delete_dead_stock_crawl_queue_rows(conn, library_only)
             conn.commit()
     if discarded:
         # INFO, not WARNING: routers/logs.py filters in SQL by exact level

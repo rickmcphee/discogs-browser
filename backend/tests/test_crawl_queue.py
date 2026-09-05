@@ -1070,3 +1070,226 @@ def test_stranded_threshold_accounts_for_the_claim_batch_size(admin_conn):
     threshold = db._queue_stranded_after_seconds(admin_conn, 60.0)
 
     assert threshold == db.QUEUE_CLAIM_BATCH_SIZE * 30 * 60.0 * db.QUEUE_STRANDED_SLACK
+
+
+# --- crawl_library_only: the "does anyone want this" gate ---------------------
+#
+# library_stock_item_keys is the one cross-tenant read the queue makes, and the
+# tests below exercise it through the real app_user role (not the superuser
+# admin_conn, which bypasses RLS and would prove nothing about the view).
+
+@pytest.fixture
+def app_user_url(monkeypatch):
+    import os
+    monkeypatch.setattr(
+        db.config,
+        "APP_DATABASE_URL",
+        db.config._with_userinfo(
+            os.environ["TEST_DATABASE_URL"], "app_user", os.environ["APP_DB_PASSWORD"]
+        ),
+    )
+    db._app_pool = None
+    yield
+    db._app_pool = None
+
+
+def _release_in_library(conn, user_id, discogs_id, artist, title, **membership):
+    db.upsert_catalog_release(conn, {
+        "discogs_id": discogs_id, "artist": artist, "title": title, "year": None,
+        "label": None, "format": None, "discogs_price": None, "barcode": None,
+        "cover_image_url": None, "discogs_url": None,
+    })
+    db.upsert_library_item(conn, user_id, discogs_id, **membership)
+
+
+def _stock_item(conn, item_key, artist, title, source_id):
+    conn.execute(
+        "INSERT INTO stock_item_identities (item_key, artist, title) VALUES (%s, %s, %s) "
+        "ON CONFLICT (item_key) DO NOTHING",
+        [item_key, artist, title],
+    )
+    conn.execute(
+        "INSERT INTO stock_items (crawler_id, artist, title, url, item_key) "
+        "VALUES (%s, %s, %s, %s, %s)",
+        [source_id, artist, title, f"https://x/{item_key}", item_key],
+    )
+
+
+def _library_keys_as_app_user():
+    with db.get_app_pool().connection() as conn:
+        rows = conn.execute("SELECT item_key FROM library_stock_item_keys ORDER BY 1").fetchall()
+    return [r["item_key"] for r in rows]
+
+
+def test_library_stock_item_keys_is_readable_across_users_by_the_unscoped_app_user(admin_conn, app_user_url):
+    """The worker reads the queue on an unscoped app_user connection that sees
+    no library_items or stock_item_saves rows at all. The view is owned by the
+    admin role, so the same connection sees every user's interest through it
+    -- item_key only, attributed to nobody."""
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    bob = db.create_user(admin_conn, discogs_user_id=2, discogs_username="bob")
+    db.register_crawler(admin_conn, "Store", "/src.py", crawler_type="catalog")
+    store = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Store'").fetchone()["id"]
+    _stock_item(admin_conn, "saved-by-bob", "Nobody", "Nothing", store)
+    _stock_item(admin_conn, "in-alices-collection", "Radiohead", "Kid A", store)
+    _stock_item(admin_conn, "unwanted", "Radiohead", "Amnesiac", store)
+    db.save_stock_item(admin_conn, bob["id"], "saved-by-bob")
+    _release_in_library(admin_conn, alice["id"], "r1", "Radiohead", "Kid A", in_collection=True)
+    admin_conn.commit()
+
+    with db.get_app_pool().connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM library_items").fetchone()["count"] == 0
+        assert conn.execute("SELECT COUNT(*) FROM stock_item_saves").fetchone()["count"] == 0
+    assert _library_keys_as_app_user() == ["in-alices-collection", "saved-by-bob"]
+
+
+def test_library_stock_item_keys_matches_the_store_tabs_library_rule(admin_conn, app_user_url):
+    """Same artist/title rule as _library_match_fragment: case-folded artist,
+    exact title or a title the listing extends with a space-separated
+    qualifier. A wantlist entry counts as much as a collection one; a library
+    row with neither flag set counts for nothing."""
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    db.register_crawler(admin_conn, "Store", "/src.py", crawler_type="catalog")
+    store = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Store'").fetchone()["id"]
+    _stock_item(admin_conn, "deluxe", "radiohead", "Kid A (Deluxe Reissue)", store)
+    _stock_item(admin_conn, "wanted", "Boards of Canada", "Geogaddi", store)
+    _stock_item(admin_conn, "prefix-no-space", "Radiohead", "Kid Amnesiac", store)
+    _stock_item(admin_conn, "flagless", "Autechre", "Amber", store)
+    _release_in_library(admin_conn, alice["id"], "r1", "Radiohead", "Kid A", in_collection=True)
+    _release_in_library(admin_conn, alice["id"], "r2", "Boards of Canada", "Geogaddi", in_wishlist=True)
+    _release_in_library(admin_conn, alice["id"], "r3", "Autechre", "Amber")
+    admin_conn.commit()
+
+    assert _library_keys_as_app_user() == ["deluxe", "wanted"]
+
+
+def _wanted_and_unwanted_stock_rows(conn):
+    """Two enqueued stock rows from one enabled store: one somebody saved, one
+    nobody wants. Returns (wanted_key, unwanted_key)."""
+    alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+    db.register_crawler(conn, "Store", "/src.py", crawler_type="catalog")
+    store = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Store'").fetchone()["id"]
+    db.register_crawler(conn, "Amazon", "/x.py")
+    _stock_item(conn, "wanted", "A", "T", store)
+    _stock_item(conn, "unwanted", "B", "U", store)
+    db.save_stock_item(conn, alice["id"], "wanted")
+    db.enqueue_crawl_queue_for_stock_item(conn, "wanted")
+    db.enqueue_crawl_queue_for_stock_item(conn, "unwanted")
+    conn.commit()
+    return "wanted", "unwanted"
+
+
+def test_claim_skips_a_stock_item_nobody_wants_under_library_only(admin_conn, app_user_url):
+    _wanted_and_unwanted_stock_rows(admin_conn)
+
+    with db.get_app_pool().connection() as conn:
+        claimed = db.claim_crawl_queue_batch(conn, "worker-1", limit=10, library_only=True)
+        conn.commit()
+    assert [r["item_key"] for r in claimed] == ["wanted"]
+
+
+def test_claim_takes_every_stock_item_when_library_only_is_off(admin_conn, app_user_url):
+    _wanted_and_unwanted_stock_rows(admin_conn)
+
+    with db.get_app_pool().connection() as conn:
+        claimed = db.claim_crawl_queue_batch(conn, "worker-1", limit=10, library_only=False)
+        conn.commit()
+    assert sorted(r["item_key"] for r in claimed) == ["unwanted", "wanted"]
+
+
+def test_claim_under_library_only_still_takes_release_rows(admin_conn, app_user_url):
+    """Release rows come from library_items by construction -- the gate is a
+    stock-item predicate and must never touch them."""
+    _make_catalog_and_crawler(admin_conn, "r1")
+    db.enqueue_crawl_queue(admin_conn, "r1")
+    admin_conn.commit()
+
+    with db.get_app_pool().connection() as conn:
+        claimed = db.claim_crawl_queue_batch(conn, "worker-1", limit=10, library_only=True)
+        conn.commit()
+    assert [r["discogs_id"] for r in claimed] == ["r1"]
+
+
+def test_claim_under_library_only_takes_a_stock_item_matching_someones_library(admin_conn, app_user_url):
+    """Interest by library match, not just by save: the stock row is a
+    different pressing of a record in Alice's wantlist."""
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    db.register_crawler(admin_conn, "Store", "/src.py", crawler_type="catalog")
+    store = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Store'").fetchone()["id"]
+    db.register_crawler(admin_conn, "Amazon", "/x.py")
+    _stock_item(admin_conn, "key1", "Radiohead", "Kid A (Deluxe Reissue)", store)
+    _release_in_library(admin_conn, alice["id"], "r1", "Radiohead", "Kid A", in_wishlist=True)
+    db.enqueue_crawl_queue_for_stock_item(admin_conn, "key1")
+    admin_conn.commit()
+
+    with db.get_app_pool().connection() as conn:
+        claimed = db.claim_crawl_queue_batch(conn, "worker-1", limit=10, library_only=True)
+        conn.commit()
+    assert [r["item_key"] for r in claimed] == ["key1"]
+
+
+def test_claim_under_library_only_still_honours_the_stock_source_gate(admin_conn, app_user_url):
+    """The two predicates compose: a saved item whose only store is disabled is
+    still dead."""
+    _wanted_and_unwanted_stock_rows(admin_conn)
+    _set_enabled_by_name(admin_conn, "Store", False)
+    admin_conn.commit()
+
+    with db.get_app_pool().connection() as conn:
+        assert db.claim_crawl_queue_batch(conn, "worker-1", limit=10, library_only=True) == []
+        conn.commit()
+
+
+def test_enqueue_under_library_only_inserts_nothing_for_a_stock_item_nobody_wants(admin_conn, app_user_url):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    db.register_crawler(admin_conn, "Store", "/src.py", crawler_type="catalog")
+    store = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Store'").fetchone()["id"]
+    _stock_item(admin_conn, "wanted", "A", "T", store)
+    _stock_item(admin_conn, "unwanted", "B", "U", store)
+    db.save_stock_item(admin_conn, alice["id"], "wanted")
+    admin_conn.commit()
+
+    with db.get_app_pool().connection() as conn:
+        db.enqueue_crawl_queue_for_stock_item(conn, "wanted", library_only=True)
+        db.enqueue_crawl_queue_for_stock_item(conn, "unwanted", library_only=True)
+        conn.commit()
+    keys = [r["item_key"] for r in admin_conn.execute(
+        "SELECT item_key FROM crawl_queue ORDER BY item_key"
+    ).fetchall()]
+    assert keys == ["wanted"]
+
+
+def test_sweep_under_library_only_deletes_pending_stock_rows_nobody_wants(admin_conn, app_user_url):
+    _wanted_and_unwanted_stock_rows(admin_conn)
+    _make_catalog_and_crawler(admin_conn, "r1", site_name="Discogs Marketplace")
+    db.enqueue_crawl_queue(admin_conn, "r1")
+    admin_conn.commit()
+
+    with db.get_app_pool().connection() as conn:
+        assert db.delete_dead_stock_crawl_queue_rows(conn, library_only=True) == 1
+        conn.commit()
+    rows = admin_conn.execute(
+        "SELECT discogs_id, item_key FROM crawl_queue ORDER BY discogs_id NULLS LAST, item_key"
+    ).fetchall()
+    assert [(r["discogs_id"], r["item_key"]) for r in rows] == [("r1", None), (None, "wanted")]
+
+
+def test_sweep_with_library_only_off_leaves_unwanted_stock_rows_alone(admin_conn, app_user_url):
+    _wanted_and_unwanted_stock_rows(admin_conn)
+
+    with db.get_app_pool().connection() as conn:
+        assert db.delete_dead_stock_crawl_queue_rows(conn, library_only=False) == 0
+        conn.commit()
+    assert admin_conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 2
+
+
+def test_sweep_under_library_only_leaves_an_in_progress_row_alone(admin_conn, app_user_url):
+    """Same 'pending' only rule as the source sweep: a claimed row's worker is
+    mid-crawl and owes it a terminal write."""
+    _wanted_and_unwanted_stock_rows(admin_conn)
+    admin_conn.execute("UPDATE crawl_queue SET status = 'in_progress' WHERE item_key = 'unwanted'")
+    admin_conn.commit()
+
+    with db.get_app_pool().connection() as conn:
+        assert db.delete_dead_stock_crawl_queue_rows(conn, library_only=True) == 0
+        conn.commit()

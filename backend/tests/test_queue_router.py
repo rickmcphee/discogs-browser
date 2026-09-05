@@ -696,3 +696,67 @@ def test_stock_row_listed_by_several_stores_is_counted_once(admin_conn):
     totals = db.queue_summary(admin_conn)["totals"]
     assert totals["claimable_rows"] == 1
     assert totals["unactionable_rows"] == 0
+
+
+# --- crawl_library_only -------------------------------------------------------
+
+def _wanted_and_unwanted(conn):
+    alice = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+    _crawler(conn, "Amazon")
+    db.enqueue_crawl_queue_for_stock_item(conn, _stock_identity(conn, "wanted"))
+    db.enqueue_crawl_queue_for_stock_item(conn, _stock_identity(conn, "unwanted"))
+    db.save_stock_item(conn, alice["id"], "wanted")
+    conn.commit()
+
+
+def test_stock_row_nobody_wants_is_unactionable_under_library_only(admin_conn):
+    _wanted_and_unwanted(admin_conn)
+
+    off = db.queue_summary(admin_conn)["totals"]
+    assert (off["claimable_rows"], off["unactionable_rows"]) == (2, 0)
+
+    summary = db.queue_summary(admin_conn, library_only=True)
+    assert (summary["totals"]["claimable_rows"], summary["totals"]["unactionable_rows"]) == (1, 1)
+    assert _by_name(summary)["Amazon"]["claimable_units"] == 1
+
+
+def test_next_excludes_stock_rows_nobody_wants_under_library_only(admin_conn):
+    _wanted_and_unwanted(admin_conn)
+    amazon = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+
+    assert len(db.queue_next_for_crawler(admin_conn, amazon, 10)) == 2
+    assert [i["artist"] for i in db.queue_next_for_crawler(admin_conn, amazon, 10, library_only=True)] == ["SA"]
+    assert len(db.queue_next_for_crawler(admin_conn, amazon, 10, library_only=True)) == 1
+
+
+def test_totals_under_library_only_resolve_interest_once_not_per_queue_row(admin_conn):
+    """Same plan property test_totals_resolve_eligibility_once_not_per_queue_row
+    pins, for the third gate: the library view is joined once for the report,
+    not probed per row, so switching the setting on cannot push the Queue tab
+    back over its statement budget."""
+    _crawler(admin_conn, "Amazon")
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    for i in range(40):
+        db.enqueue_crawl_queue(admin_conn, _release(admin_conn, f"r{i}"))
+        db.enqueue_crawl_queue_for_stock_item(admin_conn, _stock_identity(admin_conn, f"k{i}"))
+        if i % 2:
+            db.save_stock_item(admin_conn, alice["id"], f"k{i}")
+    admin_conn.commit()
+
+    row = admin_conn.execute(
+        f"EXPLAIN (ANALYZE, FORMAT JSON) WITH q AS ({db._queue_row_state_sql(library_only=True)}) "
+        f"SELECT count(*) FILTER (WHERE live AND actionable) FROM q"
+    ).fetchone()
+    root = list(row.values())[0][0]["Plan"]
+
+    repeated = [
+        (n.get("Relation Name"), n["Actual Loops"])
+        for n in _plan_nodes(root)
+        if n.get("Relation Name") in ("crawlers", "stock_items", "stock_item_saves", "library_items", "catalog")
+        and n.get("Actual Loops", 1) > 1
+    ]
+    assert not repeated, f"re-scanned per queue row: {repeated}"
+
+    totals = db.queue_summary(admin_conn, library_only=True)["totals"]
+    assert totals["claimable_rows"] == 40 + 20
+    assert totals["unactionable_rows"] == 20

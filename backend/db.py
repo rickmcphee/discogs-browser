@@ -686,6 +686,10 @@ CREATE TABLE IF NOT EXISTS stock_item_saves (
     saved_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (user_id, item_key)
 );
+-- The primary key leads with user_id, which serves every per-user read of
+-- this table but not library_stock_item_keys' "did anyone save this key",
+-- which the crawl queue's library-only gate probes per scanned row.
+CREATE INDEX IF NOT EXISTS stock_item_saves_item_key_idx ON stock_item_saves (item_key);
 
 CREATE TABLE IF NOT EXISTS user_notification_reads (
     user_id INTEGER PRIMARY KEY REFERENCES users(id),
@@ -862,6 +866,10 @@ def init_tenant_schema():
         )
     with get_admin_pool().connection() as conn:
         conn.execute(TENANT_SCHEMA)
+        # After TENANT_SCHEMA, because the view reads library_items and
+        # stock_item_saves, and on this connection deliberately: the view's
+        # owner is what lets app_user read through it -- see the view's comment.
+        conn.execute(_library_stock_item_keys_view_sql())
         backfill_title_keys(conn)
         _ensure_role(conn, "app_identity", config.IDENTITY_DB_PASSWORD, bypass_rls=True)
         _ensure_role(conn, "app_user", config.APP_DB_PASSWORD, bypass_rls=False)
@@ -907,6 +915,10 @@ def init_tenant_schema():
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON stock_item_judgments TO app_user")
         conn.execute("GRANT SELECT, INSERT, DELETE ON user_hidden_crawlers TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON stock_item_saves TO app_user")
+        # SELECT on the view, and nothing new on its base tables: the grants on
+        # library_items/stock_item_saves above stay RLS-scoped, and the view is
+        # the one place the crawl queue reads across every user's rows.
+        conn.execute("GRANT SELECT ON library_stock_item_keys TO app_user")
         conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON user_notification_reads TO app_user")
         # crawl_queue needs DELETE for the same reason stock_items does:
         # delete_dead_stock_crawl_queue_rows(), run through get_app_pool() from
@@ -1798,6 +1810,76 @@ def update_crawler_last_run(conn, crawler_id: int):
     conn.execute("UPDATE crawlers SET last_run = CURRENT_TIMESTAMP WHERE id = %s", [crawler_id])
 
 
+# One column, item_key, and nothing else -- deliberately. This is the crawl
+# queue's only read across tenants: "is anyone interested in this record",
+# asked for the crawl_library_only gate (see _stock_item_crawlable). It
+# answers yes for an item some user saved, or one that matches a record in some
+# user's collection or wantlist by _library_release_match_sql's artist/title
+# rule -- the same rule the Store tab's library filter uses, so what the gate
+# crawls is exactly what that filter would show. It never says *who*: no
+# user_id, no per-user column, and UNION rather than UNION ALL so an item two
+# users want is one row that cannot fan a join out.
+#
+# What makes it work is ownership. library_items and stock_item_saves are
+# FORCE ROW LEVEL SECURITY tables, and the worker pool reads the queue through
+# an unscoped app_user connection that sees no rows of either. A view is read
+# with its *owner's* identity by default (security_invoker is off), and the
+# owner here is the admin role that runs init_tenant_schema -- which already
+# has to bypass RLS, or _ensure_role's ALTER ROLE ... BYPASSRLS would fail at
+# boot. So app_user reading this view sees every user's rows, and reading the
+# tables directly it still sees none. That is the entire mechanism; there is
+# no policy change and no new grant on either base table.
+#
+# Created here rather than in TENANT_SCHEMA so the match rule is written once,
+# in Python, and shared with _library_match_fragment. It runs on every boot;
+# CREATE OR REPLACE VIEW is idempotent while the column list holds.
+def _library_stock_item_keys_view_sql() -> str:
+    return f"""
+        CREATE OR REPLACE VIEW library_stock_item_keys AS
+        SELECT sv.item_key FROM stock_item_saves sv
+        UNION
+        SELECT s.item_key
+        FROM stock_items s
+        JOIN catalog c ON {_library_release_match_sql(escape_percent=False)}
+        JOIN library_items li ON li.discogs_id = c.discogs_id
+                             AND (li.in_collection OR li.in_wishlist)
+        WHERE s.item_key IS NOT NULL
+    """
+
+
+def _library_interest_exists(item_key_expr: str) -> str:
+    """Some user saved this item, or has a matching record in their collection
+    or wantlist -- see library_stock_item_keys. Same literal-only contract for
+    item_key_expr as _enabled_stock_source_exists."""
+    return f"""
+        EXISTS (
+            SELECT 1 FROM library_stock_item_keys lk
+            WHERE lk.item_key = {item_key_expr}
+        )
+    """
+
+
+# The whole "is this stock item worth a marketplace crawl" predicate, so the
+# three places that ask it -- enqueue, claim, and the dead-row sweep -- cannot
+# drift: some enabled store still lists it, and, when the admin's
+# crawl_library_only setting is on, someone actually wants it. Composed in
+# Python from a bool rather than bound as a parameter so the off case is the
+# exact query that ran before the setting existed, with no view join for the
+# planner to consider and nothing for a generic plan to fail to prune.
+#
+# library_only is the setting's value as read by the caller (config.
+# crawl_library_only), never anything request-derived. It defaults to False so
+# the boot-time and test call sites that predate the setting keep their
+# meaning; the paths that matter -- the worker's claim, the stock sync's
+# enqueue and end-of-run sweep, the crawler toggle's sweep, the Queue tab --
+# all pass it explicitly.
+def _stock_item_crawlable(item_key_expr: str, library_only: bool) -> str:
+    gate = _enabled_stock_source_exists(item_key_expr)
+    if library_only:
+        gate = f"({gate} AND {_library_interest_exists(item_key_expr)})"
+    return gate
+
+
 def _enabled_stock_source_exists(item_key_expr: str) -> str:
     """A stock item is worth crawling only while some enabled crawler still
     lists it. One predicate covers two populations: an item whose store an
@@ -1853,8 +1935,8 @@ def enqueue_crawl_queue(conn, discogs_id: str):
 
 # Keeps the source gate: it asks whether any enabled *store* still stocks the
 # item, which is independent of which marketplace crawler will price it.
-def enqueue_crawl_queue_for_stock_item(conn, item_key: str):
-    stock_source_gate = _enabled_stock_source_exists("%(item_key)s")
+def enqueue_crawl_queue_for_stock_item(conn, item_key: str, library_only: bool = False):
+    stock_source_gate = _stock_item_crawlable("%(item_key)s", library_only)
     conn.execute(
         f"""
         INSERT INTO crawl_queue (item_key)
@@ -1902,8 +1984,8 @@ QUEUE_CLAIM_BATCH_SIZE = 2
 # threshold rather than open-ended. Nothing here distinguishes a stranded row
 # from one genuinely mid-crawl, and neither does the reclaim: age is the only
 # evidence either has.
-def claim_crawl_queue_batch(conn, worker_id: str, limit: int) -> list[dict]:
-    stock_source_gate = _enabled_stock_source_exists("crawl_queue.item_key")
+def claim_crawl_queue_batch(conn, worker_id: str, limit: int, library_only: bool = False) -> list[dict]:
+    stock_source_gate = _stock_item_crawlable("crawl_queue.item_key", library_only)
     return conn.execute(
         f"""
         UPDATE crawl_queue SET status = 'in_progress', claimed_by = %(worker_id)s, claimed_at = CURRENT_TIMESTAMP
@@ -1915,7 +1997,8 @@ def claim_crawl_queue_batch(conn, worker_id: str, limit: int) -> list[dict]:
               -- the earliest of those cooldowns expires.
               AND available_at <= CURRENT_TIMESTAMP
               -- Source-side gate: whether anything still stocks the item this
-              -- row would price. item_key IS NULL keeps release rows out of it.
+              -- row would price -- and, under crawl_library_only, whether
+              -- anyone wants it. item_key IS NULL keeps release rows out of it.
               -- There is no crawler-side gate here any more: the row names no
               -- crawler, and _drain_one_batch resolves the eligible set against
               -- live crawlers state per row instead.
@@ -2067,14 +2150,20 @@ def reclaim_stranded_crawl_queue_rows(conn, crawl_delay_seconds: float) -> int:
 # disable reports can include rows from another store's delisted items -- it
 # means "jobs that are now dead", not "jobs this store created".
 #
+# With library_only, "dead" also covers a stock row nobody wants -- the rows
+# the crawl_library_only setting exists to stop. That is what the settings
+# endpoint runs when the setting is switched on: the claim would skip those
+# rows anyway, but left in place they sit pending in the claim index and
+# report as a backlog the Queue tab has to explain away.
+#
 # 'pending' only. An in_progress row has already been claimed by a worker that
 # is mid-crawl and will mark_crawl_queue_done() when it finishes; deleting it
 # would leave that UPDATE matching nothing while the crawl still writes its
 # listing, so the pair would look never-crawled to the next sync. 'done' rows
 # are the record of past crawls and are never re-claimed -- only
 # enqueue_crawl_queue_for_stock_item resurrects one, and it now refuses to.
-def delete_dead_stock_crawl_queue_rows(conn) -> int:
-    stock_source_gate = _enabled_stock_source_exists("crawl_queue.item_key")
+def delete_dead_stock_crawl_queue_rows(conn, library_only: bool = False) -> int:
+    stock_source_gate = _stock_item_crawlable("crawl_queue.item_key", library_only)
     return conn.execute(
         f"""
         DELETE FROM crawl_queue
@@ -2228,14 +2317,26 @@ _QUEUE_LIVE_STOCK_KEYS_SQL = """
 # eligible set for this row's kind, intersected with pending_crawler_ids when
 # the row narrows it. `&&` is that intersection test, and is false against an
 # empty array on either side, matching the EXISTS it replaces.
-def _queue_row_state_sql() -> str:
+#
+# Under crawl_library_only the claim also asks whether anyone wants the item,
+# so `live` folds that in too, through the same hoisted LEFT JOIN shape: the
+# library_stock_item_keys view is already one distinct key per row, and it is
+# joined once for the whole report rather than probed per queue row. Off, the
+# join is not written at all -- the statement is exactly the one the plan
+# regression test pins, with nothing extra for the planner to weigh.
+def _queue_row_state_sql(library_only: bool = False) -> str:
     eligible = "CASE WHEN cq.discogs_id IS NOT NULL THEN cs.release_ids ELSE cs.stock_ids END"
+    live = "live.item_key IS NOT NULL"
+    wanted_join = ""
+    if library_only:
+        live = f"({live} AND wanted.item_key IS NOT NULL)"
+        wanted_join = "LEFT JOIN library_stock_item_keys wanted ON wanted.item_key = cq.item_key"
     return f"""
         SELECT cq.status,
                cq.discogs_id IS NOT NULL AS is_release,
                cq.claimed_at,
                cq.available_at > CURRENT_TIMESTAMP AS held,
-               (cq.item_key IS NULL OR live.item_key IS NOT NULL) AS live,
+               (cq.item_key IS NULL OR {live}) AS live,
                CASE WHEN cq.pending_crawler_ids IS NULL
                     THEN cardinality({eligible}) > 0
                     ELSE {eligible} && cq.pending_crawler_ids
@@ -2243,14 +2344,15 @@ def _queue_row_state_sql() -> str:
         FROM crawl_queue cq
         CROSS JOIN ({_QUEUE_CRAWLER_SETS_SQL}) cs
         LEFT JOIN ({_QUEUE_LIVE_STOCK_KEYS_SQL}) live ON live.item_key = cq.item_key
+        {wanted_join}
         WHERE cq.status <> 'done'
     """
 
 
-def _queue_totals(conn, stranded_after_seconds: float) -> dict:
+def _queue_totals(conn, stranded_after_seconds: float, library_only: bool = False) -> dict:
     row = conn.execute(
         f"""
-        WITH q AS ({_queue_row_state_sql()})
+        WITH q AS ({_queue_row_state_sql(library_only)})
         SELECT
             COUNT(*) FILTER (WHERE status = 'pending' AND live AND actionable AND NOT held) AS claimable_rows,
             COUNT(*) FILTER (WHERE status = 'pending' AND live AND actionable AND NOT held AND is_release) AS claimable_release_rows,
@@ -2305,8 +2407,8 @@ _QUEUE_FANOUT_COLUMNS = """
 # split is that only statistics which *compose* across the two halves can be
 # reported per crawler -- MIN and bucket counts do, a median does not, which is
 # why oldest-plus-buckets is what the tab shows.
-def _queue_fanout(conn) -> tuple:
-    gate = _enabled_stock_source_exists("cq.item_key")
+def _queue_fanout(conn, library_only: bool = False) -> tuple:
+    gate = _stock_item_crawlable("cq.item_key", library_only)
     broad = conn.execute(
         f"""
         SELECT cq.discogs_id IS NOT NULL AS is_release,
@@ -2395,11 +2497,11 @@ def _queue_accumulate(bucket: dict, agg, is_release: bool, held: bool):
         bucket["_oldest"] = float(oldest)
 
 
-def queue_summary(conn, crawl_delay_seconds: float = 30.0) -> dict:
+def queue_summary(conn, crawl_delay_seconds: float = 30.0, library_only: bool = False) -> dict:
     stranded_after = _queue_stranded_after_seconds(conn, crawl_delay_seconds)
-    totals = _queue_totals(conn, stranded_after)
+    totals = _queue_totals(conn, stranded_after, library_only)
     drain_per_second, rows_done = _queue_drain_rate(conn)
-    broad, narrowed = _queue_fanout(conn)
+    broad, narrowed = _queue_fanout(conn, library_only)
     activity = _queue_crawler_activity(conn)
     in_progress_units = _queue_in_progress_units(conn)
     crawlers = conn.execute(
@@ -2517,8 +2619,8 @@ def _queue_crawler_eta(bucket: dict, claimable_stock_units: int, totals: dict, d
 # tab deliberately does not expose, and only then moves available_at forward.
 # Everything this query can see says the row is claimable; whether the crawler
 # actually runs is decided by state living in a worker process.
-def queue_next_for_crawler(conn, crawler_id: int, limit: int) -> list:
-    gate = _enabled_stock_source_exists("cq.item_key")
+def queue_next_for_crawler(conn, crawler_id: int, limit: int, library_only: bool = False) -> list:
+    gate = _stock_item_crawlable("cq.item_key", library_only)
     return conn.execute(
         f"""
         SELECT COALESCE(cat.artist, sii.artist) AS artist,
@@ -2853,6 +2955,24 @@ _LIBRARY_MEMBERSHIP = {
 }
 
 
+def _library_release_match_sql(*, escape_percent: bool = True) -> str:
+    """The one definition of "stock row `s` is catalog release `c`": same
+    artist, case-folded, and an exact-or-prefix-with-space title match rather
+    than exact-only, because stock listings often append edition/format
+    qualifiers the catalog title doesn't have (catalog "Kid A" vs. stock
+    listing "Kid A (Deluxe Reissue)"), so a strict equality would treat an
+    already-owned release as still unowned.
+
+    Shared by _library_match_fragment (a user's own view of the Store tab)
+    and the library_stock_item_keys view (the crawl queue's "anyone's
+    library" gate), so the two can never disagree about what counts as owned.
+    escape_percent=False for DDL, which psycopg sends with no parameters and
+    therefore no %-processing -- see _the_comma_form_sql."""
+    percent = "%%" if escape_percent else "%"
+    return f"""LOWER(c.artist) = LOWER(s.artist)
+          AND (LOWER(s.title) = LOWER(c.title) OR LOWER(s.title) LIKE LOWER(c.title) || ' {percent}')"""
+
+
 def _library_match_fragment(user_id_param: str, library_scope: str) -> str:
     # Callers pass a literal scope; this raises KeyError on an unmapped one.
     # Request-derived scopes go through _in_library_clause instead.
@@ -2864,16 +2984,11 @@ def _library_match_fragment(user_id_param: str, library_scope: str) -> str:
     # another user's wantlist could match -- RLS on the user_scope connection
     # this always runs under is the only backstop against that.
     membership = " OR ".join(f"li.{col} = TRUE" for col in _LIBRARY_MEMBERSHIP[library_scope])
-    # Exact-or-prefix-with-space title match, not exact-only: stock listings
-    # often append edition/format qualifiers the catalog title doesn't have
-    # (e.g. catalog "Kid A" vs. stock listing "Kid A (Deluxe Reissue)"), so a
-    # strict equality would treat an already-owned release as still unowned.
     return f"""FROM library_items li
         JOIN catalog c ON c.discogs_id = li.discogs_id
         WHERE li.user_id = {user_id_param}
           AND ({membership})
-          AND LOWER(c.artist) = LOWER(s.artist)
-          AND (LOWER(s.title) = LOWER(c.title) OR LOWER(s.title) LIKE LOWER(c.title) || ' %%')"""
+          AND {_library_release_match_sql()}"""
 
 
 def _in_library_clause(user_id_param: str, library_scope: Optional[str]) -> Optional[str]:

@@ -25,6 +25,20 @@ disabling a marketplace crawler now contributes `0` to that count, while
 both disable and the end of every stock sync. See
 [`2026-08-14-per-item-crawler-fanout-design.md`](2026-08-14-per-item-crawler-fanout-design.md).
 
+**Amendment (2026-09-05, branch `claude/marketplace-crawler-filtering-gc9408`):**
+the predicate in §1 is now one half of `db._stock_item_crawlable(item_key_expr,
+library_only)`, which the claim, the enqueue guard and the sweep all call
+instead of `_enabled_stock_source_exists` directly. With the admin's
+`crawl_library_only` setting off it composes to exactly §1's `EXISTS`; on, it
+`AND`s a second `EXISTS` against the `library_stock_item_keys` view ("someone
+saved this item, or has a matching record in their collection or wantlist").
+`delete_dead_stock_crawl_queue_rows` (§4) therefore takes a `library_only`
+parameter, and "dead" under that setting also covers a stock row nobody wants.
+The "No grant work" claim in §1 holds for §1's own predicate only: the view
+needs one `GRANT SELECT`, and reads across tenants by ownership rather than by
+any change to the base tables' RLS. See
+[`2026-09-05-library-only-marketplace-crawl-design.md`](2026-09-05-library-only-marketplace-crawl-design.md).
+
 ## Problem
 
 [The 2026-08-09 disabled-stores change](2026-08-09-stop-crawling-disabled-stores-design.md)

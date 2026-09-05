@@ -9,7 +9,7 @@ interface SettingRow {
   key: keyof SettingsType
   label: string
   description: string
-  type: 'password' | 'text' | 'number'
+  type: 'password' | 'text' | 'number' | 'checkbox'
   placeholder?: string
 }
 
@@ -39,6 +39,12 @@ const CRAWLER_SETTING_ROWS: SettingRow[] = [
     label: 'Failure limit',
     description: 'Pause crawling a site for 30 minutes after this many consecutive failures (not_found or error) in a row. 0 = disabled.',
     type: 'number',
+  },
+  {
+    key: 'crawl_library_only',
+    label: 'Library only',
+    description: 'Only crawl marketplaces for records in someone\'s collection, wantlist or saved items. Off = crawl every record the enabled stores list. Turning it on discards queued crawls for other records; turning it off picks them up again on the next store refresh.',
+    type: 'checkbox',
   },
 ]
 
@@ -108,6 +114,7 @@ function Settings({
     ebay_app_id: '',
     ebay_cert_id: '',
     stock_schedule: '',
+    crawl_library_only: false,
   })
   const [settingsSaveError, setSettingsSaveError] = useState('')
   const skipNextAutoSave = useRef(true)
@@ -131,7 +138,17 @@ function Settings({
           {row.label}
         </td>
         <td className={`pb-2 text-left align-top md:py-3 md:pr-4 ${stackedCellClass}${first ? ' md:w-64' : ''}`}>
-          {row.type === 'number' ? (
+          {row.type === 'checkbox' ? (
+            <input
+              type="checkbox"
+              aria-label={row.label}
+              checked={Boolean(settings[row.key])}
+              onChange={(e) =>
+                setSettings({ ...settings, [row.key]: e.target.checked })
+              }
+              className="accent-white h-4 w-4 align-middle"
+            />
+          ) : row.type === 'number' ? (
             <input
               type="number"
               min={0}

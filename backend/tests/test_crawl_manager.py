@@ -5342,3 +5342,85 @@ async def test_worker_stock_item_match_stores_the_name_the_crawler_reported(pg_s
     with db.get_admin_pool().connection() as conn:
         listing = conn.execute("SELECT listing_title FROM listings WHERE item_key = 'key1'").fetchone()
     assert listing["listing_title"] == "The listing as Amazon names it"
+
+
+# ---------------------------------------------------------------------------
+# crawl_library_only
+# ---------------------------------------------------------------------------
+
+async def test_worker_leaves_a_stock_item_nobody_wants_unclaimed_under_library_only(pg_schema):
+    """_drain_one_batch reads the setting on every claim and passes it to
+    claim_crawl_queue_batch, so switching it on takes effect on the next batch
+    with no restart, the same way enabling or disabling a crawler does."""
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        _stock_item_with_source(conn, "key1")
+        db.enqueue_crawl_queue_for_stock_item(conn, "key1")
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(return_value=[])
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("config.load_config", return_value={"crawl_delay_seconds": 0, "crawl_library_only": True}):
+        claimed = await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    assert claimed == 0
+    fake_plugin.search.assert_not_called()
+    with db.get_admin_pool().connection() as conn:
+        assert conn.execute("SELECT status FROM crawl_queue WHERE item_key = 'key1'").fetchone()["status"] == "pending"
+
+    # Someone saves it: the very next batch picks it up, no restart, no re-sync.
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        db.save_stock_item(conn, user["id"], "key1")
+        conn.commit()
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("config.load_config", return_value={"crawl_delay_seconds": 0, "crawl_library_only": True}):
+        claimed = await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+    assert claimed == 1
+    fake_plugin.search.assert_called_once()
+
+
+async def test_sync_stock_enqueues_only_wanted_items_under_library_only(pg_schema):
+    """The stock sync reads the setting per source and passes it to the
+    enqueue, so an item nobody wants never gets a queue row while the setting
+    is on -- and the end-of-run sweep reads it too."""
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Stock Site", "/x.py", crawler_type="catalog")
+        db.register_crawler(conn, "Amazon", "/amazon.py", crawler_type="release")
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "Wanted Artist", "title": "Wanted Title", "year": None,
+            "label": None, "format": None, "discogs_price": None, "barcode": None,
+            "cover_image_url": None, "discogs_url": None,
+        })
+        db.upsert_library_item(conn, user["id"], "r1", in_collection=True)
+        conn.commit()
+
+    fake_plugin = AsyncMock()
+
+    async def _items():
+        yield {"artist": "Wanted Artist", "title": "Wanted Title", "url": "https://x/1", "price": 5.0, "currency": "USD"}
+        yield {"artist": "Unwanted Artist", "title": "Unwanted Title", "url": "https://x/2", "price": 5.0, "currency": "USD"}
+
+    fake_plugin.crawl_catalog = lambda: _items()
+    fake_plugin._db_site_name = "Stock Site"
+    with db.get_admin_pool().connection() as conn:
+        fake_plugin._db_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Stock Site'").fetchone()["id"]
+
+    manager = CrawlManager()
+    with patch("crawler.load_enabled_crawlers", return_value=[fake_plugin]), \
+         patch("config.load_config", return_value={"crawl_library_only": True}):
+        await manager._sync_stock()
+
+    with db.get_admin_pool().connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM stock_items").fetchone()["count"] == 2
+        keys = [r["item_key"] for r in conn.execute("SELECT item_key FROM crawl_queue").fetchall()]
+    assert keys == [db.compute_item_key("Wanted Artist", "Wanted Title", "https://x/1")]

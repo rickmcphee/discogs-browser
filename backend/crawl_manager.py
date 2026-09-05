@@ -367,7 +367,7 @@ class CrawlManager:
                 self._site_next_allowed_at[crawler_id] = time.monotonic() + random.uniform(0.5, 1.0) * delay
 
     async def _drain_one_batch(self, worker_id: str, plugins_by_crawler_id: dict, pages: dict, batch_size: Optional[int] = None) -> int:
-        from config import load_config
+        from config import load_config, crawl_library_only
         from db import get_app_pool, claim_crawl_queue_batch, revert_crawl_queue_claim, reclaim_stranded_crawl_queue_rows, QUEUE_CLAIM_BATCH_SIZE
 
         # Resolved from db rather than defaulted in the signature: the stranded
@@ -391,10 +391,12 @@ class CrawlManager:
             # deliberately outside this borrow -- holding the pool the workers
             # claim through while doing unrelated I/O on another one is the
             # shape routers/queue.py just had removed.
-            crawl_delay_seconds = float(load_config().get("crawl_delay_seconds", 30))
+            config = load_config()
+            crawl_delay_seconds = float(config.get("crawl_delay_seconds", 30))
+            library_only = crawl_library_only(config)
             with get_app_pool().connection() as conn:
                 reclaimed = reclaim_stranded_crawl_queue_rows(conn, crawl_delay_seconds)
-                rows = claim_crawl_queue_batch(conn, worker_id, limit=batch_size)
+                rows = claim_crawl_queue_batch(conn, worker_id, limit=batch_size, library_only=library_only)
                 conn.commit()
                 return rows, reclaimed
         # Claiming and processing are two different cancellation boundaries.
@@ -1149,6 +1151,7 @@ class CrawlManager:
             import httpx
             from db import get_app_pool, get_enabled_crawlers, replace_stock_items, update_crawler_last_run, enqueue_crawl_queue_for_stock_item, delete_dead_stock_crawl_queue_rows, backfill_title_keys
             from crawler import load_enabled_crawlers
+            from config import crawl_library_only
 
             # Also held locally: the completion line below reads it after
             # the loop, and reading it back off self would depend on nothing
@@ -1264,6 +1267,12 @@ class CrawlManager:
 
                 consecutive_429_sites = []
                 await self._record_site_result(crawler._db_id, succeeded=True)
+                # Per source, not once per run, for the same reason the
+                # enabled list is re-read per source: a run spans many sites,
+                # and a setting flipped mid-run should govern the sites still
+                # to come. Read before borrowing the app connection -- it goes
+                # through the admin pool (see _drain_one_batch).
+                library_only = crawl_library_only()
                 with get_app_pool().connection() as conn:
                     item_keys = replace_stock_items(conn, crawler._db_id, items)
                     if item_keys is None:
@@ -1277,7 +1286,7 @@ class CrawlManager:
                         continue
                     update_crawler_last_run(conn, crawler._db_id)
                     for item_key in item_keys:
-                        enqueue_crawl_queue_for_stock_item(conn, item_key)
+                        enqueue_crawl_queue_for_stock_item(conn, item_key, library_only)
                     conn.commit()
                 total_synced += len(items)
                 log.info(
@@ -1287,8 +1296,9 @@ class CrawlManager:
                 )
                 await self._broadcast({"status": "stock_sync_progress", "synced": total_synced, "source": crawler._db_site_name})
 
+            library_only = crawl_library_only()
             with get_app_pool().connection() as conn:
-                swept = delete_dead_stock_crawl_queue_rows(conn)
+                swept = delete_dead_stock_crawl_queue_rows(conn, library_only)
                 # Normally zero; non-zero only for rows an older binary
                 # wrote during a rolling deploy. See backfill_title_keys.
                 keyed = backfill_title_keys(conn)
