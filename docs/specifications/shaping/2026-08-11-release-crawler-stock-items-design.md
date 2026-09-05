@@ -164,6 +164,13 @@ index as the conflict target.
 - **Match found** (`matches` non-empty): `upsert_stock_item_from_release`
   inserts or updates a `stock_items` row keyed by `(crawler_id, release_id)`
   — `artist`/`title`/`format`/`cover_image_url` stored as-is from `target`
+  **(2026-09-05:** `title` still is, for matching and `item_key`, but the row
+  now also carries `listing_title` — the name the crawler reported for what
+  it actually found, via an optional `title` key in the `search()` result —
+  and the UI shows that in place of the catalog title when present. A match
+  by artist/title can be a different pressing than the target, and the row
+  otherwise displayed the catalog name as if it were exact. See
+  [`2026-09-05-marketplace-listing-title-design.md`](2026-09-05-marketplace-listing-title-design.md).**)**
   (the catalog row already fetched earlier in the loop; unlike
   `replace_stock_items`, no `normalize_artist_casing`/`normalize_title_casing`
   pass, since catalog data is already curated Discogs metadata, not scraped
