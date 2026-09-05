@@ -215,4 +215,5 @@ async def search_ebay(
         "shipping": shipping,
         "currency": price_val.get("currency"),
         "condition": item.get("condition"),
+        "title": item.get("title") or None,
     }]
