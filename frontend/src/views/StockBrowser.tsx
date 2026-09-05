@@ -34,6 +34,22 @@ const NOOP_HIDDEN_CRAWLER_IDS_CHANGE = () => {}
 const STORE_FILTERS = ['all', 'recommended', 'saved', 'overlapped'] as const
 const TRACK_FILTERS = ['all', 'collection', 'wantlist'] as const satisfies readonly LibraryScope[]
 
+// The name shown for a row is what the source called the item when the
+// crawler reported one, since a release-crawler match is by artist/title and
+// can be a different pressing than the target. The target's own title moves
+// to the hover text so the substitution stays visible; a recommendation
+// reason keeps that slot when there is one. The thumbnail's alt text is not
+// substituted: the image is the target's own cover, not the listing's.
+function displayTitle(item: StockItem): string {
+  return item.listing_title ?? item.title
+}
+
+function titleTooltip(item: StockItem): string | undefined {
+  if (item.reason) return item.reason
+  if (item.listing_title && item.listing_title !== item.title) return item.title
+  return undefined
+}
+
 function trackLibraryScope(value: string): LibraryScope | undefined {
   return (TRACK_FILTERS as readonly string[]).includes(value) ? (value as LibraryScope) : undefined
 }
@@ -468,7 +484,7 @@ function StockBrowser({
                       )}
                     </div>
                     <div className="mt-1.5 text-sm text-gray-200 truncate group-hover:text-white" title={item.reason ?? undefined}>{item.artist}</div>
-                    <div className="text-xs text-gray-400 truncate" title={item.reason ?? undefined}>{item.title}</div>
+                    <div className="text-xs text-gray-400 truncate" title={titleTooltip(item)}>{displayTitle(item)}</div>
                   </a>
                 ))}
               </div>
@@ -502,7 +518,7 @@ function StockBrowser({
                     )}
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-sm text-gray-200" title={item.reason ?? undefined}>{item.artist}</div>
-                      <div className="truncate text-sm text-gray-300" title={item.reason ?? undefined}>{item.title}</div>
+                      <div className="truncate text-sm text-gray-300" title={titleTooltip(item)}>{displayTitle(item)}</div>
                       {meta && <div className="truncate text-xs text-gray-500">{meta}</div>}
                       {item.reason && (
                         <div className="text-xs italic text-gray-500">{item.reason}</div>
@@ -594,7 +610,7 @@ function StockBrowser({
                     )}
                   </td>
                   <td className="px-3 py-2 text-right text-gray-200" title={item.reason ?? undefined}>{item.artist}</td>
-                  <td className="px-3 py-2 text-left text-gray-300" title={item.reason ?? undefined}>{item.title}</td>
+                  <td className="px-3 py-2 text-left text-gray-300" title={titleTooltip(item)}>{displayTitle(item)}</td>
                   <td className="px-3 py-2 text-gray-400">{item.format ?? '—'}</td>
                   {scope === 'track' && hasPriceField && (
                     <td className="px-3 py-2 text-gray-400">{item.discogs_price ?? '—'}</td>

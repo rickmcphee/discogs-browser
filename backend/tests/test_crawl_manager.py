@@ -5243,3 +5243,66 @@ async def test_drain_one_batch_counts_bot_detection_even_when_the_crawler_expect
         await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
 
     assert manager._site_consecutive_failures[crawler_id] == 1
+
+
+async def test_worker_release_match_stores_the_name_the_crawler_reported(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "A", "title": "T (Blue Vinyl)", "year": None, "label": None,
+            "format": "LP", "discogs_price": None, "barcode": None,
+            "cover_image_url": None, "discogs_url": None,
+        })
+        db.enqueue_crawl_queue(conn, "r1")
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(return_value=[{
+        "url": "https://x", "price": 9.99, "shipping": None, "currency": "USD", "condition": None,
+        "title": "A - T [Black Vinyl LP]",
+    }])
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    with db.get_admin_pool().connection() as conn:
+        stock = conn.execute(
+            "SELECT title, listing_title FROM stock_items WHERE crawler_id = %s AND release_id = 'r1'", [crawler_id],
+        ).fetchone()
+        listing = conn.execute("SELECT listing_title FROM listings WHERE release_id = 'r1'").fetchone()
+    assert stock["title"] == "T (Blue Vinyl)"
+    assert stock["listing_title"] == "A - T [Black Vinyl LP]"
+    assert listing["listing_title"] == "A - T [Black Vinyl LP]"
+
+
+async def test_worker_stock_item_match_stores_the_name_the_crawler_reported(pg_schema):
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        _stock_item_with_source(conn, "key1")
+        db.enqueue_crawl_queue_for_stock_item(conn, "key1")
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(return_value=[{
+        "url": "https://x", "price": 9.99, "shipping": None, "currency": "USD", "condition": None,
+        "title": "The listing as Amazon names it",
+    }])
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    with db.get_admin_pool().connection() as conn:
+        listing = conn.execute("SELECT listing_title FROM listings WHERE item_key = 'key1'").fetchone()
+    assert listing["listing_title"] == "The listing as Amazon names it"

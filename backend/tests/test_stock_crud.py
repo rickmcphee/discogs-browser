@@ -2182,3 +2182,147 @@ def test_get_distinct_artists_bare_in_catalog_folds_to_stock_items_variant(admin
     with db.user_scope(alice["id"]) as conn:
         artists = db.get_distinct_artists(conn, alice["id"])
     assert artists == ["Beatles, The"]
+
+
+def test_upsert_stock_item_from_release_stores_the_name_the_source_gave_the_match(admin_conn):
+    # A release crawler matches by artist and title, so what it finds can be a
+    # different pressing of the record than the catalog row names. The row
+    # keeps the catalog title for matching and item_key, and carries the
+    # source's own name alongside for display.
+    crawler_id, catalog_release = _release_crawler_and_catalog_row(admin_conn)
+
+    db.upsert_stock_item_from_release(
+        admin_conn, "r1", crawler_id, catalog_release,
+        {"url": "https://amazon/x", "price": 24.99, "currency": "USD",
+         "title": "Aphex Twin - Selected Ambient Works 85-92 [2LP Black Vinyl]"},
+    )
+    admin_conn.commit()
+
+    row = admin_conn.execute(
+        "SELECT title, listing_title, item_key FROM stock_items WHERE crawler_id = %s AND release_id = 'r1'", [crawler_id]
+    ).fetchone()
+    assert row["title"] == "Selected Ambient Works"
+    assert row["listing_title"] == "Aphex Twin - Selected Ambient Works 85-92 [2LP Black Vinyl]"
+    assert row["item_key"] == db.compute_item_key("Aphex Twin", "Selected Ambient Works", "https://amazon/x")
+    identity = admin_conn.execute(
+        "SELECT title FROM stock_item_identities WHERE item_key = %s", [row["item_key"]]
+    ).fetchone()
+    assert identity["title"] == "Selected Ambient Works"
+
+
+def test_upsert_stock_item_from_release_drops_the_name_when_a_rerun_reports_none(admin_conn):
+    crawler_id, catalog_release = _release_crawler_and_catalog_row(admin_conn)
+
+    db.upsert_stock_item_from_release(
+        admin_conn, "r1", crawler_id, catalog_release,
+        {"url": "https://amazon/x", "price": 24.99, "currency": "USD", "title": "Old name"},
+    )
+    admin_conn.commit()
+    db.upsert_stock_item_from_release(
+        admin_conn, "r1", crawler_id, catalog_release,
+        {"url": "https://amazon/y", "price": 19.99, "currency": "USD", "title": ""},
+    )
+    admin_conn.commit()
+
+    row = admin_conn.execute(
+        "SELECT listing_title FROM stock_items WHERE crawler_id = %s AND release_id = 'r1'", [crawler_id]
+    ).fetchone()
+    assert row["listing_title"] is None
+
+
+def test_upsert_stock_item_listing_stores_the_name_the_source_gave_the_match(admin_conn):
+    db.register_crawler(admin_conn, "Nuclear Blast", "/x.py", crawler_type="catalog")
+    db.register_crawler(admin_conn, "eBay", "/y.py", crawler_type="release")
+    admin_conn.commit()
+    store_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()["id"]
+    ebay_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'eBay'").fetchone()["id"]
+    item_key = db.replace_stock_items(admin_conn, store_id, [
+        {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+    ])[0]
+
+    db.upsert_stock_item_listing(
+        admin_conn, item_key, ebay_id, "https://ebay/1", 12.5, None, "USD", "New",
+        "ARTIST A Album A LP Sealed",
+    )
+    admin_conn.commit()
+    row = admin_conn.execute("SELECT listing_title FROM listings WHERE item_key = %s", [item_key]).fetchone()
+    assert row["listing_title"] == "ARTIST A Album A LP Sealed"
+
+    db.upsert_stock_item_listing(admin_conn, item_key, ebay_id, "https://ebay/2", 11.0, None, "USD", "New")
+    admin_conn.commit()
+    row = admin_conn.execute("SELECT listing_title FROM listings WHERE item_key = %s", [item_key]).fetchone()
+    assert row["listing_title"] is None
+
+    db.upsert_stock_item_listing(admin_conn, item_key, ebay_id, "https://ebay/3", 11.0, None, "USD", "New", "")
+    admin_conn.commit()
+    row = admin_conn.execute("SELECT listing_title FROM listings WHERE item_key = %s", [item_key]).fetchone()
+    assert row["listing_title"] is None
+
+
+def test_upsert_listing_stores_the_name_the_source_gave_the_match(admin_conn):
+    crawler_id, _catalog_release = _release_crawler_and_catalog_row(admin_conn)
+
+    db.upsert_listing(admin_conn, "r1", crawler_id, "https://x", 9.99, None, "USD", None, "Some listing name")
+    admin_conn.commit()
+    row = admin_conn.execute("SELECT listing_title FROM listings WHERE release_id = 'r1'").fetchone()
+    assert row["listing_title"] == "Some listing name"
+
+    db.upsert_listing(admin_conn, "r1", crawler_id, "https://x", 9.99, None, "USD", None, "")
+    admin_conn.commit()
+    row = admin_conn.execute("SELECT listing_title FROM listings WHERE release_id = 'r1'").fetchone()
+    assert row["listing_title"] is None
+
+
+def test_get_stock_items_rows_carry_the_names_their_sources_gave(admin_conn):
+    # Grouped path: the own row shows what its own crawler reported, and a
+    # comparison row shows what the listing's crawler reported -- not the own
+    # row's name, which is the one field a comparison does not inherit.
+    db.register_crawler(admin_conn, "Nuclear Blast", "/x.py", crawler_type="catalog")
+    db.register_crawler(admin_conn, "Amazon", "/y.py", crawler_type="release")
+    admin_conn.commit()
+    store_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()["id"]
+    amazon_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+    item_key = db.replace_stock_items(admin_conn, store_id, [
+        {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+    ])[0]
+    db.upsert_stock_item_listing(
+        admin_conn, item_key, amazon_id, "https://amazon/1", 12.5, None, "USD", "New", "Album A [Black Vinyl LP]",
+    )
+    admin_conn.commit()
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"])
+
+    own, comparison = result["items"]
+    assert own["title"] == "Album A" and own["listing_title"] is None
+    assert comparison["title"] == "Album A" and comparison["listing_title"] == "Album A [Black Vinyl LP]"
+
+
+def test_get_stock_items_sort_by_price_rows_carry_the_names_their_sources_gave(admin_conn):
+    # Flat path: a release-crawler own row carries its own reported name, and
+    # a comparison listing carries the listing's.
+    crawler_id, catalog_release = _release_crawler_and_catalog_row(admin_conn)
+    db.register_crawler(admin_conn, "eBay", "/y.py", crawler_type="release")
+    admin_conn.commit()
+    ebay_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'eBay'").fetchone()["id"]
+    db.upsert_stock_item_from_release(
+        admin_conn, "r1", crawler_id, catalog_release,
+        {"url": "https://amazon/x", "price": 24.99, "currency": "USD", "title": "SAW 85-92 [Amazon name]"},
+    )
+    item_key = db.compute_item_key("Aphex Twin", "Selected Ambient Works", "https://amazon/x")
+    db.upsert_stock_item_listing(
+        admin_conn, item_key, ebay_id, "https://ebay/1", 30.0, None, "USD", "Used", "SAW 85-92 [eBay name]",
+    )
+    admin_conn.commit()
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], sort="price", order="asc")
+
+    by_source = {r["source"]: r for r in result["items"]}
+    assert by_source["Amazon"]["is_own"] and by_source["Amazon"]["listing_title"] == "SAW 85-92 [Amazon name]"
+    assert not by_source["eBay"]["is_own"] and by_source["eBay"]["listing_title"] == "SAW 85-92 [eBay name]"
+    assert all(r["title"] == "Selected Ambient Works" for r in result["items"])

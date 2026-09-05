@@ -644,12 +644,14 @@ class CrawlManager:
                             upsert_listing(
                                 conn, row["discogs_id"], crawler_id, best["url"],
                                 best.get("price"), best.get("shipping"), best.get("currency"), best.get("condition"),
+                                best.get("title"),
                             )
                             upsert_stock_item_from_release(conn, row["discogs_id"], crawler_id, target, best)
                         else:
                             upsert_stock_item_listing(
                                 conn, row["item_key"], crawler_id, best["url"],
                                 best.get("price"), best.get("shipping"), best.get("currency"), best.get("condition"),
+                                best.get("title"),
                             )
                     elif is_release and not bot_detected:
                         delete_stock_item_for_release(conn, row["discogs_id"], crawler_id)
