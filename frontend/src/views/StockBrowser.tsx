@@ -91,6 +91,12 @@ function StockBrowser({
   const [viewMode, setViewMode] = useState<'list' | 'tiles'>(
     () => (localStorage.getItem(`collectionViewMode_${scope}`) === 'tiles' ? 'tiles' : 'list')
   )
+  // Store only: one record, one row, the cheapest store's. Track is left
+  // alone -- it reads as "every place this record I follow is in stock", and
+  // hiding the dearer stores there hides half the answer.
+  const [cheapest, setCheapest] = useState(
+    () => scope === 'store' && localStorage.getItem('stockCheapest') === 'true'
+  )
   const [hasLoaded, setHasLoaded] = useState(false)
   // Bumped after every toggleSaved attempt (success or failure) to trigger a
   // race-guarded refetch through the same effects load()/getStockArtists
@@ -142,6 +148,7 @@ function StockBrowser({
       saved: scope === 'store' && filter === 'saved',
       overlapped: scope === 'store' && filter === 'overlapped',
       hiddenCrawlerIds,
+      cheapest: scope === 'store' && cheapest,
       // Tiles render own rows only, so asking for comparison rows there would
       // spend a whole page of the flattened Cost ordering on rows the grid
       // then drops -- leaving it near-empty. Grouped sorts are unaffected
@@ -153,7 +160,7 @@ function StockBrowser({
     setTotal(result.total)
     setRowTotal(result.row_total)
     setHasLoaded(true)
-  }, [search, selectedArtist, sort, order, page, filter, hiddenCrawlerIds, scope, hiddenCrawlerIdsLoaded, viewMode])
+  }, [search, selectedArtist, sort, order, page, filter, hiddenCrawlerIds, scope, hiddenCrawlerIdsLoaded, viewMode, cheapest])
 
   // syncGeneration ticks on every stock_sync_progress/stock_sync_complete SSE
   // event so the store/track tabs repaint as crawlers add items, same as
@@ -213,6 +220,9 @@ function StockBrowser({
   }, [artists, selectedArtist])
   useEffect(() => { localStorage.setItem(`collectionViewMode_${scope}`, viewMode) }, [viewMode, scope])
   useEffect(() => { localStorage.setItem(`stockFilter_${scope}`, filter) }, [filter, scope])
+  useEffect(() => {
+    if (scope === 'store') localStorage.setItem('stockCheapest', String(cheapest))
+  }, [cheapest, scope])
   useEffect(() => { tableScrollRef.current?.scrollTo({ top: 0 }) }, [selectedArtist])
 
   function changeFilter(value: string) {
@@ -380,6 +390,7 @@ function StockBrowser({
                   recommended={filter === 'recommended'}
                   saved={filter === 'saved'}
                   overlapped={filter === 'overlapped'}
+                  cheapest={cheapest}
                   hiddenCrawlerIds={hiddenCrawlerIds}
                   // Deliberately narrower than the list's syncGeneration: a
                   // listing_changed writes listings, not stock_items, and is
@@ -417,6 +428,17 @@ function StockBrowser({
                   </>
                 )}
               </select>
+              {scope === 'store' && (
+                <label className="flex h-11 select-none items-center gap-1.5 px-1 text-sm text-gray-300 hover:text-white md:h-auto">
+                  <input
+                    type="checkbox"
+                    checked={cheapest}
+                    onChange={(e) => { setCheapest(e.target.checked); setPage(1) }}
+                    className="accent-white"
+                  />
+                  Cheapest
+                </label>
+              )}
               <button
                 onClick={() => setViewMode('list')}
                 title="List view"
