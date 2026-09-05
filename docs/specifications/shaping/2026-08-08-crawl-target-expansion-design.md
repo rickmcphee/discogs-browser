@@ -326,6 +326,12 @@ def replace_stock_items(conn, crawler_id: int, items: list[dict]) -> list[str]:
     return item_keys
 ```
 
+**Amendment (2026-09-05, branch `claude/store-cheapest-filter-x4tdwl`):** the
+`INSERT` above also writes `title_key`, the fold of `title` the Store tab's
+Cheapest filter groups rows by — see
+[`2026-09-05-store-cheapest-filter-design.md`](2026-09-05-store-cheapest-filter-design.md).
+Nothing about item keys or the price-drop floor read shown here changes.
+
 `claim_crawl_queue_batch`'s `RETURNING` clause changes from
 `RETURNING id, discogs_id, crawler_id` to `RETURNING id, discogs_id,
 item_key, crawler_id`.
