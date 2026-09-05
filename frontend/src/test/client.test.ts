@@ -353,6 +353,22 @@ describe('crawl/user-settings client functions', () => {
     expect(fetchMock.mock.calls[0][0]).toContain('overlapped=true')
   })
 
+  it('getStock forwards cheapest=true when cheapest is set, and omits it otherwise', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ total: 0, row_total: 0, page: 1, per_page: 250, items: [] }) })
+    await getStock({ cheapest: true })
+    expect(fetchMock.mock.calls[0][0]).toContain('cheapest=true')
+    await getStock({ cheapest: false })
+    expect(fetchMock.mock.calls[1][0]).not.toContain('cheapest=')
+  })
+
+  it('getStockStats forwards cheapest=true when cheapest is set, and omits it otherwise', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ total: 0, sources: [] }) })
+    await getStockStats({ cheapest: true })
+    expect(fetchMock.mock.calls[0][0]).toContain('cheapest=true')
+    await getStockStats({ cheapest: false })
+    expect(fetchMock.mock.calls[1][0]).not.toContain('cheapest=')
+  })
+
   it('saveStockItem PUTs to /stock/saved/:item_key', async () => {
     fetchMock.mockResolvedValue({ ok: true, json: async () => ({ saved: true }) })
     await saveStockItem('abc123')

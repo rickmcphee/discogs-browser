@@ -42,6 +42,7 @@ def list_stock(
     overlapped: bool = Query(False),
     hidden_crawler_ids: Optional[str] = Query(None),
     include_comparisons: bool = Query(True),
+    cheapest: bool = Query(False),
 ):
     user_id = request.state.user_id
     exclude_crawler_ids = _parse_crawler_ids(hidden_crawler_ids)
@@ -51,6 +52,7 @@ def list_stock(
             page=page, per_page=per_page, library_scope=library_scope, recommended=recommended,
             saved_only=saved, overlapped_artists=overlapped,
             exclude_crawler_ids=exclude_crawler_ids, include_comparisons=include_comparisons,
+            cheapest=cheapest,
         )
 
 
@@ -84,6 +86,7 @@ def stock_stats(
     saved: bool = Query(False),
     overlapped: bool = Query(False),
     hidden_crawler_ids: Optional[str] = Query(None),
+    cheapest: bool = Query(False),
 ):
     """Item count per source for the view /stock would list under the same
     filters -- so `total` here is the same number the browser shows beside the
@@ -94,7 +97,7 @@ def stock_stats(
         sources = db.get_stock_source_counts(
             conn, user_id, search=search, artist=artist, library_scope=library_scope,
             recommended=recommended, saved_only=saved, overlapped_artists=overlapped,
-            exclude_crawler_ids=exclude_crawler_ids,
+            exclude_crawler_ids=exclude_crawler_ids, cheapest=cheapest,
         )
     return {"total": sum(s["count"] for s in sources), "sources": sources}
 
