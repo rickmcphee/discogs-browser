@@ -1034,7 +1034,7 @@ def upsert_listing(
             currency = EXCLUDED.currency, condition = EXCLUDED.condition,
             listing_title = EXCLUDED.listing_title, last_checked = CURRENT_TIMESTAMP
         """,
-        [release_id, crawler_id, url, price, shipping, currency, condition, listing_title],
+        [release_id, crawler_id, url, price, shipping, currency, condition, listing_title or None],
     )
 
 
@@ -1061,7 +1061,7 @@ def upsert_stock_item_listing(
             currency = EXCLUDED.currency, condition = EXCLUDED.condition,
             listing_title = EXCLUDED.listing_title, last_checked = CURRENT_TIMESTAMP
         """,
-        [item_key, crawler_id, url, price, shipping, currency, condition, listing_title],
+        [item_key, crawler_id, url, price, shipping, currency, condition, listing_title or None],
     )
     _record_price_drops(conn, crawler_id, floors, [
         {"item_key": item_key, "url": url, "price": price, "currency": currency},

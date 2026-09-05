@@ -2253,6 +2253,11 @@ def test_upsert_stock_item_listing_stores_the_name_the_source_gave_the_match(adm
     row = admin_conn.execute("SELECT listing_title FROM listings WHERE item_key = %s", [item_key]).fetchone()
     assert row["listing_title"] is None
 
+    db.upsert_stock_item_listing(admin_conn, item_key, ebay_id, "https://ebay/3", 11.0, None, "USD", "New", "")
+    admin_conn.commit()
+    row = admin_conn.execute("SELECT listing_title FROM listings WHERE item_key = %s", [item_key]).fetchone()
+    assert row["listing_title"] is None
+
 
 def test_upsert_listing_stores_the_name_the_source_gave_the_match(admin_conn):
     crawler_id, _catalog_release = _release_crawler_and_catalog_row(admin_conn)
@@ -2261,6 +2266,11 @@ def test_upsert_listing_stores_the_name_the_source_gave_the_match(admin_conn):
     admin_conn.commit()
     row = admin_conn.execute("SELECT listing_title FROM listings WHERE release_id = 'r1'").fetchone()
     assert row["listing_title"] == "Some listing name"
+
+    db.upsert_listing(admin_conn, "r1", crawler_id, "https://x", 9.99, None, "USD", None, "")
+    admin_conn.commit()
+    row = admin_conn.execute("SELECT listing_title FROM listings WHERE release_id = 'r1'").fetchone()
+    assert row["listing_title"] is None
 
 
 def test_get_stock_items_rows_carry_the_names_their_sources_gave(admin_conn):

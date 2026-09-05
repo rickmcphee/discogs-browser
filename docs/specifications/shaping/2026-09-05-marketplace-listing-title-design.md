@@ -5,10 +5,11 @@ Branch: `claude/marketplace-search-result-names-iea0xg`
 
 ## Problem
 
-A release crawler (Amazon, eBay, eBay/CCmusic, Discogs Marketplace) searches
-a marketplace by the target's artist and title and takes the first result
-that passes a loose word-overlap check (`ebay_api.pick_matching_item`, the
-`h2` check in `amazon.py`). The match is deliberately imprecise, and it is
+A release crawler that searches by name (Amazon, eBay, eBay/CCmusic; not
+Discogs Marketplace, which opens the sell page for the exact release id)
+queries the marketplace with the target's artist and title and takes the
+first result that passes a loose word-overlap check
+(`ebay_api.pick_matching_item`, the `h2` check in `amazon.py`). The match is deliberately imprecise, and it is
 often a *different pressing* of the same record: a coloured-vinyl variant in
 the library is searched by name, the marketplace answers with the standard
 black pressing, and the row that lands in Store/Track shows the variant's
