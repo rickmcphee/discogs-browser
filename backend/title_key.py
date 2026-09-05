@@ -21,6 +21,7 @@ medium, the packaging or the marketing of what is otherwise the same item go.
 
 import re
 import unicodedata
+from typing import Optional
 
 # Phrases whose meaning spans more than one token, removed before tokenising
 # so the tokenizer never sees their parts: a disc size ("12 inch", 12"), a
@@ -49,9 +50,56 @@ _NOISE_WORDS = frozenset("""
 # Cyrillic title has to keep the words that tell it apart from another.
 _TOKEN_RE = re.compile(r"[^\W_]+")
 
+# What separates an artist from a title when a site writes both in one name
+# ("Aphex Twin - Selected Ambient Works", "Aphex Twin: ...", "Aphex Twin /
+# ..."), in the folded text.
+_ARTIST_SEP_RE = r"\s*(?:-|–|—|:|/|\|)\s*"
 
-def title_key(title: str) -> str:
+
+def _fold(text: str) -> str:
+    """Case, accent and apostrophe fold, applied identically to every input
+    so a comparison between two folded strings is a fair one.
+
+    Accents come off Latin letters only. NFKD decomposes every script, and a
+    combining mark in most of the others is a letter in its own right rather
+    than decoration -- Japanese が is か plus a dakuten, an Indic vowel sign
+    is a vowel -- so stripping them all would fold distinct titles together.
+    The rest is recomposed so a mark that stays keeps its usual code point.
+    """
+    decomposed = unicodedata.normalize("NFKD", text)
+    kept = []
+    for ch in decomposed:
+        if unicodedata.combining(ch) and kept and kept[-1].isascii() and kept[-1].isalpha():
+            continue
+        kept.append(ch)
+    folded = unicodedata.normalize("NFC", "".join(kept)).casefold()
+    # Apostrophes join rather than split ("What's" -> "whats"), because a store
+    # that drops one ("Whats") must still key the same as one that keeps it.
+    return re.sub(r"[''`’]", "", folded)
+
+
+def _artist_forms(artist: str) -> list:
+    """The spellings a site might lead a name with, folded: the artist as
+    stored, plus the article-swapped forms ("The X" / "X, The" / "X")."""
+    base = _fold(artist).strip()
+    forms = {base}
+    if base.startswith("the "):
+        forms.add(base[4:])
+    if base.endswith(", the"):
+        forms.add(base[:-5])
+        forms.add("the " + base[:-5])
+    return sorted(forms, key=len, reverse=True)
+
+
+def title_key(title: str, artist: Optional[str] = None) -> str:
     """The comparison key for `title`: never empty for a non-empty title.
+
+    `artist`, when given, is stripped from the front of the title if a site
+    wrote both in one name ("Aphex Twin - Selected Ambient Works"): a
+    marketplace's own name for an item usually does, a store's title never
+    does, and the two have to key the same for the same pressing. Stripped
+    only as a leading segment before a separator, so an artist whose name is
+    also a title word is left alone.
 
     A title made entirely of noise ("LP", "Vinyl", "2LP") keeps its own folded
     spelling rather than collapsing to "" -- an empty key would put every such
@@ -60,11 +108,13 @@ def title_key(title: str) -> str:
     since that is what emptied a title like "180g" or "7 EP" in the first
     place.
     """
-    folded = unicodedata.normalize("NFKD", title)
-    folded = "".join(ch for ch in folded if not unicodedata.combining(ch)).casefold()
-    # Apostrophes join rather than split ("What's" -> "whats"), because a store
-    # that drops one ("Whats") must still key the same as one that keeps it.
-    folded = re.sub(r"[''`’]", "", folded)
+    folded = _fold(title)
+    if artist:
+        for form in _artist_forms(artist):
+            stripped = re.sub(r"^\s*" + re.escape(form) + _ARTIST_SEP_RE, "", folded, count=1)
+            if stripped != folded and stripped.strip():
+                folded = stripped
+                break
     folded = _HYPHEN_JOIN.sub(r"\1", folded)
     words = _TOKEN_RE.findall(folded)
     for pattern in _PHRASE_NOISE:

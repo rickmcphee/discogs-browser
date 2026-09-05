@@ -817,14 +817,23 @@ def _backfill_title_keys(conn):
     NULL as one key, so they would all compete as a single record. Idempotent
     and empty after the first boot; a store's next sync rewrites its rows with
     the key regardless.
+
+    The same derivation as the two live writers: the name the site gave the
+    item when it gave one (a release-crawler row's listing_title, which can
+    name a different pressing than the target), else the title, with the
+    artist along to strip a leading "Artist - ". A backfill that keyed a
+    release row from the target's title would give it the wrong group for
+    good, since this skips the row on every later boot.
     """
-    rows = conn.execute("SELECT id, title FROM stock_items WHERE title_key IS NULL").fetchall()
+    rows = conn.execute(
+        "SELECT id, artist, title, listing_title FROM stock_items WHERE title_key IS NULL"
+    ).fetchall()
     if not rows:
         return
     with conn.cursor() as cur:
         cur.executemany(
             "UPDATE stock_items SET title_key = %s WHERE id = %s",
-            [(title_key(row["title"]), row["id"]) for row in rows],
+            [(title_key(row["listing_title"] or row["title"], row["artist"]), row["id"]) for row in rows],
         )
 
 
@@ -1153,8 +1162,9 @@ def upsert_stock_item_from_release(conn, release_id: str, crawler_id: int, catal
             # the item can be a different pressing than the target, and the
             # Cheapest filter groups by pressing. The target's title is only
             # the fallback, and only ever what a catalog store would also
-            # have written for the bare record.
-            "title_key": title_key(listing.get("title") or title),
+            # have written for the bare record. The artist goes along so a
+            # name written "Artist - Title [Variant]" keys as the title.
+            "title_key": title_key(listing.get("title") or title, artist),
             "format": catalog_release["format"], "price": listing.get("price"), "currency": listing.get("currency"),
             "url": listing["url"], "cover_image_url": catalog_release["cover_image_url"], "item_key": item_key,
         },
@@ -2785,7 +2795,7 @@ def replace_stock_items(conn, crawler_id: int, items: list[dict]) -> Optional[li
         rows.append((
             crawler_id, artist, title, item.get("format"), item.get("price"),
             item.get("currency"), item["url"], item.get("cover_image_url"), item_key,
-            title_key(title),
+            title_key(title, artist),
         ))
         candidates.append({
             "item_key": item_key, "url": item["url"],

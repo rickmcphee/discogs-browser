@@ -247,6 +247,37 @@ def test_a_release_crawler_row_is_keyed_from_the_name_the_site_gave_it(admin_con
     assert _own_rows(result) == [("A", "Kid A", 30.0), ("Discogs", "Kid A", 32.0)]
 
 
+def test_a_release_crawler_name_with_an_artist_prefix_competes_with_the_stores(admin_conn):
+    # Marketplaces write "Artist - Title [Variant]"; a store keeps the artist
+    # in its own column. Same pressing, so the marketplace's cheaper copy wins.
+    alice, _ = _seed(admin_conn, {
+        "A": [{"artist": "Aphex Twin", "title": "Selected Ambient Works 85-92 (Black)", "price": 30.0}],
+    })
+    _release_crawler_row(
+        admin_conn, "Amazon", "r1", "Aphex Twin", "Selected Ambient Works 85-92",
+        {"url": "https://amazon/x", "price": 24.99, "currency": "USD",
+         "title": "Aphex Twin - Selected Ambient Works 85-92 [2LP Black Vinyl]"},
+    )
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], cheapest=True)
+    assert _own_rows(result) == [("Amazon", "Selected Ambient Works 85-92", 24.99)]
+
+
+def test_backfill_keys_a_release_crawler_row_from_the_name_the_site_gave_it(admin_conn):
+    _seed(admin_conn, {})
+    crawler_id = _release_crawler_row(
+        admin_conn, "Discogs", "r1", "Radiohead", "Kid A",
+        {"url": "https://discogs/1", "price": 25.0, "currency": "USD", "title": "Radiohead - Kid A (Red)"},
+    )
+    admin_conn.execute("UPDATE stock_items SET title_key = NULL WHERE crawler_id = %s", [crawler_id])
+    admin_conn.commit()
+
+    db.init_tenant_schema()
+
+    row = admin_conn.execute("SELECT title_key FROM stock_items WHERE crawler_id = %s", [crawler_id]).fetchone()
+    assert row["title_key"] == "a kid red"
+
+
 def test_a_release_crawler_row_without_a_site_name_competes_as_the_bare_record(admin_conn):
     alice, _ = _seed(admin_conn, {
         "A": [{"artist": "Radiohead", "title": "Kid A (LP)", "price": 30.0}],

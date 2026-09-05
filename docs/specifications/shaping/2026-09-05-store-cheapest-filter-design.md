@@ -103,7 +103,29 @@ Out of scope:
   matched item's own name because a release crawler matches by artist and
   title, so what it found can be a different pressing than the target, and
   the row has to compete as the pressing it actually is. (Raised by Copilot
-  on PR #294: the first draft wrote the key on the catalog path only.) The backfill
+  on PR #294: the first draft wrote the key on the catalog path only.)
+  All three sites — both writers and the backfill — use one derivation,
+  `title_key(listing_title or title, artist)`, so a row keys the same
+  whichever path wrote it.
+
+- **The artist is stripped from the front of a name that carries it.** A
+  marketplace's own name for an item is usually "Artist - Title [Variant]",
+  while a store keeps the artist in its own column and titles the record
+  alone. Without the strip the two never key the same and the filter never
+  compares them, which is the false split at its most systematic. So
+  `title_key` takes the artist and removes it only as a leading segment
+  before a separator (`-`, `–`, `—`, `:`, `/`, `|`), in any of its
+  article-swapped spellings; a name with no separator after it is the title
+  ("Black Sabbath" by Black Sabbath) and is left alone. (Also raised by
+  Copilot on PR #294.)
+
+- **Accents fold on Latin letters only.** NFKD decomposes every script, and
+  in most of the others a combining mark is a letter rather than
+  decoration: Japanese が is か plus a dakuten, an Indic vowel sign is a
+  vowel. Stripping every mark folded "Album が" onto "Album か". The fold
+  now drops a mark only after an ASCII letter and recomposes the rest, so
+  "Björk" still matches "Bjork" and が stays が. Words are matched in any
+  script for the same reason. (Also raised by Copilot on PR #294.) The backfill
   matters more than it looks: the grouping treats every NULL as *one* key,
   so unkeyed rows would not sit the filter out, they would all compete as a
   single record. `COALESCE(title_key, title)` in the clause is the second
@@ -221,7 +243,10 @@ separators do not matter; each of the deliberately-kept words keeps its row
 apart; a CD does not merge with the LP; accents, case, apostrophes, `&` and
 disc-count spellings fold; an all-noise title keeps its own spelling, even
 one the phrase removal would otherwise empty ("2LP", "180g"); non-Latin
-words count as words, so "Album 日本" and "Album 中国" stay apart.
+words count as words, so "Album 日本" and "Album 中国" stay apart, and so do
+"Album が" and "Album か"; a leading "Artist - " or "ARTIST: " is stripped
+when the artist is known, in the article-swapped spellings too, while a
+title that is only the artist's name is left alone.
 
 `test_stock_cheapest.py`, on two-to-three stores stocking one record under
 different wordings: the lowest-priced store wins; variants stay apart; the

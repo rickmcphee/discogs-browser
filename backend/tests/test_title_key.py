@@ -79,3 +79,25 @@ def test_titles_that_are_only_removed_phrases_stay_apart():
 def test_non_latin_words_are_words():
     assert title_key("Album 日本") != title_key("Album 中国")
     assert title_key("Альбом (LP)") == title_key("альбом")
+
+
+def test_marks_that_are_letters_in_their_own_script_survive():
+    # NFKD writes が as か plus a combining dakuten; only Latin accents fold.
+    assert title_key("Album が") != title_key("Album か")
+    assert title_key("Album हिन्दी") != title_key("Album हनद")
+    assert title_key("Björk") == title_key("Bjork")
+
+
+def test_a_leading_artist_is_stripped_when_the_artist_is_known():
+    assert title_key("Aphex Twin - Selected Ambient Works 85-92 [2LP Black Vinyl]", "Aphex Twin") \
+        == title_key("Selected Ambient Works 85-92 (Black)")
+    assert title_key("APHEX TWIN: Selected Ambient Works 85-92", "Aphex Twin") \
+        == title_key("Selected Ambient Works 85-92")
+    assert title_key("The Beatles – Revolver", "Beatles, The") == title_key("Revolver")
+
+
+def test_an_artist_that_is_also_a_title_word_is_left_alone():
+    # No separator after the name, so it is the title, not a prefix.
+    assert title_key("Black Sabbath", "Black Sabbath") == "black sabbath"
+    assert title_key("Aphex Twin - Selected Ambient Works") == title_key("Aphex Twin: Selected Ambient Works")
+    assert title_key("Aphex Twin - Selected Ambient Works") != title_key("Selected Ambient Works")
