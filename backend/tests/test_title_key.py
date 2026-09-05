@@ -88,6 +88,22 @@ def test_marks_that_are_letters_in_their_own_script_survive():
     assert title_key("Björk") == title_key("Bjork")
 
 
+def test_a_vowel_sign_stays_with_its_consonant():
+    # Same base letter, different vowel sign: the sign is part of the word,
+    # not a separator, or both would tokenise to the bare क.
+    assert title_key("Album का") != title_key("Album कि")
+    assert title_key("Kid का") == "kid का"
+
+
+@pytest.mark.parametrize("size", ["12 inch", "12-inch", "12inch", '12"', "12 in."])
+def test_every_spelling_of_a_disc_size_is_noise(size):
+    assert title_key(f"Kid A {size}") == title_key("Kid A")
+
+
+def test_a_hyphenated_weight_is_noise_too():
+    assert title_key("Kid A 180-gram") == title_key("Kid A 180g") == title_key("Kid A")
+
+
 def test_a_leading_artist_is_stripped_when_the_artist_is_known():
     assert title_key("Aphex Twin - Selected Ambient Works 85-92 [2LP Black Vinyl]", "Aphex Twin") \
         == title_key("Selected Ambient Works 85-92 (Black)")

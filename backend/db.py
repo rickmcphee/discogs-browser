@@ -505,8 +505,8 @@ ALTER TABLE listings ADD COLUMN IF NOT EXISTS listing_title TEXT;
 -- The fold of `title` two stores' rows share when they sell the same pressing
 -- (title_key.py): what the Store tab's Cheapest filter groups rows by, with
 -- the artist's bare key and the currency. Written by replace_stock_items and
--- upsert_stock_item_from_release, and backfilled by init_tenant_schema for
--- rows that predate the column, so it is NULL only in the window between.
+-- upsert_stock_item_from_release; backfill_title_keys sweeps any NULL at boot
+-- and at the end of every stock sync.
 ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS title_key TEXT;
 
 -- Expression indexes, because every artist read path case-folds now: the
@@ -554,6 +554,11 @@ CREATE INDEX IF NOT EXISTS stock_items_artist_bare_lower_idx
 CREATE INDEX IF NOT EXISTS stock_items_cheapest_idx
     ON stock_items ({_artist_sort_sql("artist", escape_percent=False)},
                     COALESCE(title_key, title), COALESCE(UPPER(currency), 'USD'));
+
+-- backfill_title_keys runs at the end of every stock sync and is normally a
+-- no-op; this makes finding out so a lookup on an empty index, not a scan.
+CREATE INDEX IF NOT EXISTS stock_items_title_key_null_idx
+    ON stock_items (id) WHERE title_key IS NULL;
 """
 
 
@@ -808,33 +813,40 @@ def _ensure_role(conn, role_name: str, password: str, bypass_rls: bool):
     )
 
 
-def _backfill_title_keys(conn):
-    """Key the stock rows written before stock_items.title_key existed.
+def backfill_title_keys(conn) -> int:
+    """Key every stock row without stock_items.title_key; returns how many.
 
     Python-side rather than an UPDATE in TENANT_SCHEMA because the fold lives
-    in title_key.py, and one copy of it is the point. Rows still NULL here
-    would not merely sit out the Cheapest filter: the grouping treats every
-    NULL as one key, so they would all compete as a single record. Idempotent
-    and empty after the first boot; a store's next sync rewrites its rows with
-    the key regardless.
+    in title_key.py, and one copy of it is the point. Rows still NULL would
+    not merely sit out the Cheapest filter: the grouping treats every NULL as
+    one key, so they would all compete as a single record (COALESCE in
+    _cheapest_clause is the second guard).
+
+    Run at boot for the rows that predate the column, and again at the end of
+    every stock sync, because boot alone leaves a hole: the deployment is a
+    rolling one across two machines, so an old binary can still be writing
+    unkeyed rows -- a store snapshot, a marketplace match -- after a new
+    machine's boot sweep has already run, and the boot sweep never revisits
+    them. The sync-end sweep does, on the first sync any new machine runs.
+    Idempotent, and normally empty: the partial index on NULL keys makes the
+    empty case a lookup rather than a scan.
 
     The same derivation as the two live writers: the name the site gave the
     item when it gave one (a release-crawler row's listing_title, which can
     name a different pressing than the target), else the title, with the
-    artist along to strip a leading "Artist - ". A backfill that keyed a
-    release row from the target's title would give it the wrong group for
-    good, since this skips the row on every later boot.
+    artist along to strip a leading "Artist - ".
     """
     rows = conn.execute(
         "SELECT id, artist, title, listing_title FROM stock_items WHERE title_key IS NULL"
     ).fetchall()
     if not rows:
-        return
+        return 0
     with conn.cursor() as cur:
         cur.executemany(
             "UPDATE stock_items SET title_key = %s WHERE id = %s",
             [(title_key(row["listing_title"] or row["title"], row["artist"]), row["id"]) for row in rows],
         )
+    return len(rows)
 
 
 # Granting BYPASSRLS to a role requires the executing role to be a Postgres
@@ -850,7 +862,7 @@ def init_tenant_schema():
         )
     with get_admin_pool().connection() as conn:
         conn.execute(TENANT_SCHEMA)
-        _backfill_title_keys(conn)
+        backfill_title_keys(conn)
         _ensure_role(conn, "app_identity", config.IDENTITY_DB_PASSWORD, bypass_rls=True)
         _ensure_role(conn, "app_user", config.APP_DB_PASSWORD, bypass_rls=False)
 
@@ -2994,7 +3006,7 @@ def _cheapest_clause(view_conditions: list) -> str:
     correlated library fragments, is written against `s`, and the nearest
     scope wins.
 
-    COALESCE(title_key, title) is a belt beside _backfill_title_keys' braces:
+    COALESCE(title_key, title) is a belt beside backfill_title_keys' braces:
     the window would otherwise fold every NULL key into one group.
     """
     view_where = ("WHERE " + " AND ".join(view_conditions)) if view_conditions else ""

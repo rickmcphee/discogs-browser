@@ -24,11 +24,11 @@ import unicodedata
 from typing import Optional
 
 # Phrases whose meaning spans more than one token, removed before tokenising
-# so the tokenizer never sees their parts: a disc size ("12 inch", 12"), a
-# weight ("180 gram", 180g) and a disc count ("2 x LP", 2xLP, 2-LP).
+# so the tokenizer never sees their parts: a disc size ("12 inch", 12-inch,
+# 12"), a weight ("180 gram", 180g) and a disc count ("2 x LP", 2xLP, 2-LP).
 _PHRASE_NOISE = [
-    re.compile(r"\b(?:7|10|12)\s*(?:\"|''|”|inch|in\.?)(?=\s|$|\W)"),
-    re.compile(r"\b\d{2,3}\s*(?:g|gm|gr|gram|grams)\b"),
+    re.compile(r"\b(?:7|10|12)\s*-?\s*(?:\"|''|”|inch|in\.?)(?=\s|$|\W)"),
+    re.compile(r"\b\d{2,3}\s*-?\s*(?:g|gm|gr|gram|grams)\b"),
     re.compile(r"\b\d\s*-?\s*x?\s*-?\s*(?:lp|ep)s?\b"),
 ]
 
@@ -46,9 +46,26 @@ _NOISE_WORDS = frozenset("""
     gatefold sleeve jacket and
 """.split())
 
-# Runs of word characters in any script, not just ASCII: a Japanese or
-# Cyrillic title has to keep the words that tell it apart from another.
-_TOKEN_RE = re.compile(r"[^\W_]+")
+def _words(text: str) -> list:
+    """Runs of word characters in any script, with the combining marks that
+    belong to them.
+
+    Not `\\w`: Python's word class excludes the mark categories, so a
+    Devanagari vowel sign would split away from its consonant and का would
+    tokenise to the same bare क as कि. A mark is part of the word it follows,
+    so a run is letters, digits and marks together; underscores and
+    everything else separate.
+    """
+    words, current = [], []
+    for ch in text:
+        if ch.isalnum() or unicodedata.category(ch).startswith("M"):
+            current.append(ch)
+        elif current:
+            words.append("".join(current))
+            current = []
+    if current:
+        words.append("".join(current))
+    return words
 
 # What separates an artist from a title when a site writes both in one name
 # ("Aphex Twin - Selected Ambient Works", "Aphex Twin: ...", "Aphex Twin /
@@ -116,10 +133,10 @@ def title_key(title: str, artist: Optional[str] = None) -> str:
                 folded = stripped
                 break
     folded = _HYPHEN_JOIN.sub(r"\1", folded)
-    words = _TOKEN_RE.findall(folded)
+    words = _words(folded)
     for pattern in _PHRASE_NOISE:
         folded = pattern.sub(" ", folded)
-    tokens = {t for t in _TOKEN_RE.findall(folded) if t not in _NOISE_WORDS}
+    tokens = {t for t in _words(folded) if t not in _NOISE_WORDS}
     if not tokens:
         tokens = set(words) or {folded.strip() or title.strip()}
     return " ".join(sorted(tokens))

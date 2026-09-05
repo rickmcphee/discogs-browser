@@ -125,7 +125,24 @@ Out of scope:
   vowel. Stripping every mark folded "Album が" onto "Album か". The fold
   now drops a mark only after an ASCII letter and recomposes the rest, so
   "Björk" still matches "Bjork" and が stays が. Words are matched in any
-  script for the same reason. (Also raised by Copilot on PR #294.) The backfill
+  script for the same reason, and the tokenizer keeps a combining mark with
+  the word it follows rather than treating it as a separator — Python's
+  `\w` excludes the mark categories, so a regex tokenizer split a Devanagari
+  vowel sign from its consonant and का keyed the same as कि. (Both raised by
+  Copilot on PR #294.)
+
+- **The backfill is a sweep, not a one-shot migration.** The deployment is a
+  rolling one across two Fly machines, so after a new machine's boot
+  backfill has run, an old binary can still be writing unkeyed rows — a
+  store snapshot from a sync it was mid-way through, a marketplace match
+  from its worker pool — and a boot-only backfill would never revisit them.
+  `backfill_title_keys` therefore also runs at the end of every stock sync,
+  beside the dead-queue-row sweep that already lives there, so the first
+  sync any new machine completes keys whatever the old one left. It is
+  normally a no-op, and a partial index on `title_key IS NULL` makes finding
+  that out a lookup rather than a scan. `COALESCE(title_key, title)` in the
+  clause covers the window in between: an unkeyed row groups on its raw
+  title, which can only split, never merge. (Raised by Copilot on PR #294.) The backfill
   matters more than it looks: the grouping treats every NULL as *one* key,
   so unkeyed rows would not sit the filter out, they would all compete as a
   single record. `COALESCE(title_key, title)` in the clause is the second
