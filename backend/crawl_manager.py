@@ -802,6 +802,20 @@ class CrawlManager:
 
         broadcast = lambda event: self._broadcast_threadsafe({**event, "user_id": user_id}, loop)
 
+        # The records a sync commits may match store items whose queue rows
+        # the library-only sweep deleted, or that _sync_stock never inserted,
+        # while nobody wanted them. Insert-if-absent, so with the setting off
+        # (every live item already has a row) this is a no-op rather than a
+        # re-crawl. Defined ahead of the try because it runs on both exits:
+        # a sync that fails on a later page has still committed the earlier
+        # ones, and those records are owed their rows just the same.
+        def restore_library_stock_rows():
+            with user_scope(user_id) as conn:
+                restored = enqueue_crawl_queue_for_library_stock_items(conn, user_id)
+                conn.commit()
+            if restored:
+                log.info("Queued %d store items matching user %d's library for marketplace prices", restored, user_id)
+
         broadcast({"status": "sync_started", "scope": scope})
         try:
             with get_identity_pool().connection() as conn:
@@ -931,16 +945,7 @@ class CrawlManager:
                     username, wishlist_count, cleared, len(deleted),
                 )
 
-            # The records just synced may match stock items whose queue rows
-            # the library-only sweep deleted, or that _sync_stock never
-            # inserted, while nobody wanted them. Insert-if-absent, so with
-            # the setting off (every live item already has a row) this is a
-            # no-op rather than a re-crawl.
-            with user_scope(user_id) as conn:
-                restored = enqueue_crawl_queue_for_library_stock_items(conn, user_id)
-                conn.commit()
-            if restored:
-                log.info("Queued %d store items matching %s's library for marketplace prices", restored, username)
+            restore_library_stock_rows()
 
             broadcast({
                 "status": "sync_complete",
@@ -964,6 +969,12 @@ class CrawlManager:
         except Exception as e:
             log.error("Collection sync failed: %s", e, exc_info=True)
             broadcast({"status": "sync_error", "error": str(e)})
+            # Best effort: a second failure here must not replace the one
+            # already reported.
+            try:
+                restore_library_stock_rows()
+            except Exception as restore_error:
+                log.warning("Could not queue store items for user %d's library after the failed sync: %s", user_id, restore_error)
             return None
 
     async def sweep_enqueue(self, mode: str = "missing"):

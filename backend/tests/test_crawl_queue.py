@@ -1,3 +1,4 @@
+import psycopg
 import pytest
 
 import db
@@ -1367,3 +1368,53 @@ def test_library_sync_inserts_missing_rows_for_this_users_matching_items_only(ad
         conn.commit()
     rows = admin_conn.execute("SELECT item_key, status FROM crawl_queue ORDER BY item_key").fetchall()
     assert [(r["item_key"], r["status"]) for r in rows] == [("alices", "pending"), ("alices-done", "done")]
+
+
+def test_a_marketplace_result_is_never_a_stock_target(admin_conn, app_user_url):
+    """Release crawlers write stock_items rows too, with an item_key. Saving
+    one must not queue it as store inventory: the source gate requires a store
+    crawler, so neither interest path inserts a row for it and a sync's
+    restoration skips it."""
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    db.register_crawler(admin_conn, "Amazon", "/x.py")
+    amazon = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+    _release_in_library(admin_conn, alice["id"], "r1", "Radiohead", "Kid A", in_collection=True)
+    db.upsert_stock_item_from_release(
+        admin_conn, "r1", amazon,
+        {"artist": "Radiohead", "title": "Kid A", "format": None, "cover_image_url": None},
+        {"url": "https://amazon/kid-a", "price": 20.0, "currency": "USD"},
+    )
+    admin_conn.commit()
+    marketplace_key = admin_conn.execute(
+        "SELECT item_key FROM stock_items WHERE release_id = 'r1'"
+    ).fetchone()["item_key"]
+    assert marketplace_key
+
+    with db.get_app_pool().connection() as conn:
+        assert db.enqueue_crawl_queue_for_saved_stock_item(conn, marketplace_key) == 0
+        conn.commit()
+    with db.user_scope(alice["id"]) as conn:
+        assert db.enqueue_crawl_queue_for_library_stock_items(conn, alice["id"]) == 0
+        conn.commit()
+    assert admin_conn.execute("SELECT COUNT(*) FROM crawl_queue WHERE item_key IS NOT NULL").fetchone()["count"] == 0
+
+
+def test_the_sweep_waits_for_an_in_flight_save(admin_conn, app_user_url):
+    """The sweep and the interest paths serialize on one advisory lock, so a
+    sweep cannot delete, under a stale snapshot, the row a save just decided
+    it need not insert. Proven from the lock side: while a save's transaction
+    holds it, the sweep's own attempt hits lock_timeout instead of running."""
+    _wanted_and_unwanted_stock_rows(admin_conn)
+    admin_conn.commit()
+
+    with db.get_app_pool().connection() as saving, db.get_app_pool().connection() as sweeping:
+        db.enqueue_crawl_queue_for_saved_stock_item(saving, "wanted")  # holds the lock until commit
+        sweeping.execute("SET LOCAL lock_timeout = '200ms'")
+        with pytest.raises(psycopg.errors.LockNotAvailable):
+            db.delete_dead_stock_crawl_queue_rows(sweeping, library_only=True)
+        sweeping.rollback()
+        saving.commit()
+
+    with db.get_app_pool().connection() as sweeping:
+        assert db.delete_dead_stock_crawl_queue_rows(sweeping, library_only=True) == 1
+        sweeping.commit()

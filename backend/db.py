@@ -1897,8 +1897,13 @@ def _enabled_stock_source_exists(item_key_expr: str) -> str:
 
     Release-crawler-sourced stock_items rows (keyed by release_id, written by
     upsert_stock_item_from_release/delete_stock_item_for_release) are a
-    separate population this predicate doesn't apply to -- it only reasons
-    about the item_key-keyed rows above.
+    separate population this predicate must not count as a source, and the
+    crawler_type test is what keeps it out. Those rows carry an item_key too,
+    and a marketplace result is not store inventory: a queue row for one
+    would send every marketplace back out to price a marketplace listing.
+    Nothing enqueued such a key while _sync_stock was the only producer of
+    stock-item rows; the interest paths (a save, a library sync) can, so the
+    gate says so itself rather than relying on who calls it.
 
     item_key_expr is always a literal chosen at the call site -- a column
     reference or a bound-parameter placeholder, never request-derived -- the
@@ -1908,6 +1913,7 @@ def _enabled_stock_source_exists(item_key_expr: str) -> str:
             SELECT 1 FROM stock_items si
             JOIN crawlers sc ON sc.id = si.crawler_id
             WHERE si.item_key = {item_key_expr} AND sc.enabled
+              AND sc.crawler_type IN ('catalog', 'catalog_browser')
         )
     """
 
@@ -1958,6 +1964,22 @@ def enqueue_crawl_queue_for_stock_item(conn, item_key: str, library_only: bool =
     )
 
 
+# Serializes the dead-row sweep against the two interest paths below. Without
+# it a save can insert its interest, find the queue row present and take the
+# DO NOTHING branch, while a concurrent sweep -- under a snapshot from before
+# that save committed -- deletes the row as unwanted; the save then commits
+# with no row left. A transaction-scoped advisory lock taken by all three
+# closes it: whichever waits re-reads under a snapshot that includes the
+# other's commit (READ COMMITTED takes one per statement), so the sweep keeps
+# a row just saved and the save re-inserts one just swept. Date-coded, per
+# the pg_advisory_xact_lock(2026080901) convention above.
+STOCK_QUEUE_RECONCILE_LOCK_KEY = 2026090501
+
+
+def _lock_stock_queue_reconciliation(conn):
+    conn.execute("SELECT pg_advisory_xact_lock(%s)", [STOCK_QUEUE_RECONCILE_LOCK_KEY])
+
+
 # Interest added means a queue row exists. Two ways interest arrives -- a
 # save, and a collection/wantlist sync bringing in a matching record -- and
 # neither of them enqueues stock-item work on its own: only _sync_stock does,
@@ -1976,6 +1998,7 @@ def enqueue_crawl_queue_for_stock_item(conn, item_key: str, library_only: bool =
 # setting off every live item already has a row, so these are no-ops there
 # rather than something to switch off.
 def enqueue_crawl_queue_for_saved_stock_item(conn, item_key: str) -> int:
+    _lock_stock_queue_reconciliation(conn)
     stock_source_gate = _enabled_stock_source_exists("%(item_key)s")
     return conn.execute(
         f"""
@@ -1993,6 +2016,7 @@ def enqueue_crawl_queue_for_saved_stock_item(conn, item_key: str) -> int:
 # interest a key is, and a sync should only restore rows for the records it
 # just brought in.
 def enqueue_crawl_queue_for_library_stock_items(conn, user_id: int) -> int:
+    _lock_stock_queue_reconciliation(conn)
     stock_source_gate = _enabled_stock_source_exists("s.item_key")
     return conn.execute(
         f"""
@@ -2219,6 +2243,12 @@ def reclaim_stranded_crawl_queue_rows(conn, crawl_delay_seconds: float) -> int:
 # are the record of past crawls and are never re-claimed -- only
 # enqueue_crawl_queue_for_stock_item resurrects one, and it now refuses to.
 def delete_dead_stock_crawl_queue_rows(conn, library_only: bool = False) -> int:
+    # Taken for the source-only sweep too, not just the library-only one:
+    # the same race exists with a store being re-enabled while a save lands,
+    # and one rule is easier to hold than a conditional one. The lock is
+    # transaction-scoped, so update_crawler's 500ms lock_timeout bounds the
+    # wait there exactly as it bounds the backfill's row locks.
+    _lock_stock_queue_reconciliation(conn)
     stock_source_gate = _stock_item_crawlable("crawl_queue.item_key", library_only)
     return conn.execute(
         f"""
@@ -2343,7 +2373,7 @@ _QUEUE_LIVE_STOCK_KEYS_SQL = """
     SELECT DISTINCT si.item_key
     FROM stock_items si
     JOIN crawlers sc ON sc.id = si.crawler_id
-    WHERE sc.enabled
+    WHERE sc.enabled AND sc.crawler_type IN ('catalog', 'catalog_browser')
 """
 
 

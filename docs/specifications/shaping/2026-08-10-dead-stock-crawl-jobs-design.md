@@ -36,7 +36,13 @@ saved this item, or has a matching record in their collection or wantlist").
 parameter, and "dead" under that setting also covers a stock row nobody wants.
 The "No grant work" claim in §1 holds for §1's own predicate only: the view
 needs one `GRANT SELECT`, and reads across tenants by ownership rather than by
-any change to the base tables' RLS. See
+any change to the base tables' RLS. §1's predicate itself is also narrower
+now: it requires the source crawler to be a `catalog` or `catalog_browser`
+kind, because release crawlers write `stock_items` rows with an `item_key`
+too, and the interest paths that setting adds can name one — the "separate
+population this predicate doesn't apply to" is now kept out by the predicate
+rather than by which callers happen to exist. The sweep additionally takes a
+transaction advisory lock shared with those interest paths. See
 [`2026-09-05-library-only-marketplace-crawl-design.md`](2026-09-05-library-only-marketplace-crawl-design.md).
 
 ## Problem

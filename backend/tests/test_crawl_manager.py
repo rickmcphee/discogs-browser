@@ -240,6 +240,54 @@ async def test_sync_collection_enqueues_crawl_queue_for_missing_listings(pg_sche
 
 
 @respx.mock
+async def test_sync_collection_queues_store_items_even_when_a_later_page_fails(pg_schema, monkeypatch):
+    """Every collection page commits as it lands, so a sync that then fails on
+    the wantlist has still made those records real library membership -- and
+    the matching store items are owed their queue rows on that exit too."""
+    import config
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        db.register_crawler(conn, "Amazon", "/x.py")
+        db.register_crawler(conn, "Stock Site", "/src.py", crawler_type="catalog")
+        store_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Stock Site'").fetchone()["id"]
+        db.replace_stock_items(conn, store_id, [
+            {"artist": "Artist", "title": "Album (Deluxe)", "url": "https://x/1", "price": 5.0, "currency": "USD"},
+        ])
+        conn.execute("DELETE FROM crawl_queue")
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        return_value=_collection_page(111, total_pages=1)
+    )
+    respx.get(url__regex=r"https://api\.discogs\.com/releases/\d+").mock(
+        return_value=httpx.Response(200, json={"identifiers": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(500, text="boom")
+    )
+
+    manager = CrawlManager()
+    await manager._sync_collection(user["id"], "all")
+    assert "sync_error" in [e["status"] for e in manager.recent_events()]
+
+    deluxe_key = db.compute_item_key("Artist", "Album (Deluxe)", "https://x/1")
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute("SELECT status FROM crawl_queue WHERE item_key = %s", [deluxe_key]).fetchone()
+    assert row is not None and row["status"] == "pending"
+
+
+@respx.mock
 async def test_sync_collection_queues_store_items_matching_the_synced_records(pg_schema, monkeypatch):
     """A record arriving in the library makes matching store items wanted, and
     under library-only crawling their queue rows may have been swept while

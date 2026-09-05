@@ -186,6 +186,34 @@ make every save a marketplace re-crawl, and the next stock sync revives it
 with everything else. Neither asks the setting: with it off every live item
 already has a row, so both are no-ops rather than something to switch off.
 
+The sync runs its restoration on both exits. Each page commits as it lands,
+so a sync that fails on a later page has already made the earlier pages real
+library membership; the failure path restores for those too, best-effort, so
+a second failure cannot replace the one already reported.
+
+Three consequences found in review, each closed in the shared pieces rather
+than at a call site:
+
+- **Store inventory only.** Release crawlers also write `stock_items` rows
+  (`upsert_stock_item_from_release`), and those carry an `item_key`. While
+  `_sync_stock` was the only producer of stock-item queue rows no such key
+  was ever enqueued; a save can name one. `_enabled_stock_source_exists` now
+  requires the source crawler to be a `catalog` or `catalog_browser` kind, so
+  a marketplace result can never become a stock target that sends every
+  marketplace out to price a marketplace listing. The claim, the enqueue, the
+  sweep, the Queue tab's hoisted live-keys set and both interest helpers all
+  read the one predicate.
+- **The sweep and the interest paths serialize.** A save could insert its
+  interest, find the row present and take the `DO NOTHING` branch while a
+  concurrent sweep, under a snapshot from before that save committed, deleted
+  the row as unwanted. All three take one transaction-scoped advisory lock
+  (`STOCK_QUEUE_RECONCILE_LOCK_KEY`); whichever waits re-reads under a
+  snapshot that includes the other's commit. `update_crawler`'s 500ms
+  `lock_timeout` bounds the sweep's wait there exactly as it bounds the
+  backfill's row locks.
+- **Not a LIKE.** The title-prefix half of the shared library match is
+  `starts_with`, so a catalog title holding `%` or `_` is a literal prefix.
+
 ### Boot-time callers keep the default
 
 `register_crawler`'s kind conversions call the sweep at boot with no setting
@@ -209,9 +237,13 @@ are tested doing so.
 - The claim under the setting evaluates the interest `EXISTS` per scanned row.
   After the switch-on sweep and with the enqueue gate in place, the pending
   stock rows are nearly all wanted ones, so the scan does not walk far past its
-  `LIMIT`. Both arms of the view are index-served: `stock_item_saves`'s primary
-  key, and `stock_items_item_key_idx` then `catalog_artist_lower_idx` for the
-  library arm.
+  `LIMIT`. Both arms of the view are index-served, by two indexes added for
+  it: `stock_item_saves_item_key_idx` for the saves arm (the table's primary
+  key leads with `user_id`, which this lookup does not have), and
+  `library_items_wanted_discogs_id_idx`, partial over collected-or-wanted
+  rows, for the library arm's join, which reaches `library_items` by
+  `discogs_id` alone; `stock_items_item_key_idx` and `catalog_artist_lower_idx`
+  serve the rest of that arm.
 - Prices already found for unwanted items are left as they are. This design is
   about what gets crawled next, not about what was crawled.
 - `in_collection` never auto-clears (see CLAUDE.md), so a record once synced
