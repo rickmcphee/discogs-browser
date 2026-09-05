@@ -9,6 +9,7 @@ from psycopg_pool import ConnectionPool
 
 import config
 from logging_config import get_logger
+from title_key import title_key
 
 log = get_logger("db")
 
@@ -501,6 +502,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS stock_items_crawler_release_idx ON stock_items
 ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS listing_title TEXT;
 ALTER TABLE listings ADD COLUMN IF NOT EXISTS listing_title TEXT;
 
+-- The fold of `title` two stores' rows share when they sell the same pressing
+-- (title_key.py): what the Store tab's Cheapest filter groups rows by, with
+-- the artist's bare key and the currency. Written by replace_stock_items and
+-- backfilled by init_tenant_schema for rows that predate the column, so it is
+-- NULL only in the window between the two.
+ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS title_key TEXT;
+
 -- Expression indexes, because every artist read path case-folds now: the
 -- artist filters in get_library_releases/get_stock_items, and
 -- canonical_artist_labels, which runs per page of either. Without these both
@@ -537,6 +545,15 @@ CREATE INDEX IF NOT EXISTS catalog_artist_bare_lower_idx
     ON catalog ({_artist_sort_sql("artist", escape_percent=False)});
 CREATE INDEX IF NOT EXISTS stock_items_artist_bare_lower_idx
     ON stock_items ({_artist_sort_sql("artist", escape_percent=False)});
+
+-- The Cheapest filter's partition key, in the order _cheapest_clause writes
+-- it, so the window can read stock_items in key order instead of sorting
+-- the whole filtered set first. Measured on 60k synthetic rows: the
+-- unfiltered cheapest page dropped from ~440 ms to ~330 ms, and under a
+-- Cost sort from ~590 ms to ~370 ms. escape_percent=False as above.
+CREATE INDEX IF NOT EXISTS stock_items_cheapest_idx
+    ON stock_items ({_artist_sort_sql("artist", escape_percent=False)},
+                    COALESCE(title_key, title), COALESCE(UPPER(currency), 'USD'));
 """
 
 
@@ -791,6 +808,26 @@ def _ensure_role(conn, role_name: str, password: str, bypass_rls: bool):
     )
 
 
+def _backfill_title_keys(conn):
+    """Key the stock rows written before stock_items.title_key existed.
+
+    Python-side rather than an UPDATE in TENANT_SCHEMA because the fold lives
+    in title_key.py, and one copy of it is the point. Rows still NULL here
+    would not merely sit out the Cheapest filter: the grouping treats every
+    NULL as one key, so they would all compete as a single record. Idempotent
+    and empty after the first boot; a store's next sync rewrites its rows with
+    the key regardless.
+    """
+    rows = conn.execute("SELECT id, title FROM stock_items WHERE title_key IS NULL").fetchall()
+    if not rows:
+        return
+    with conn.cursor() as cur:
+        cur.executemany(
+            "UPDATE stock_items SET title_key = %s WHERE id = %s",
+            [(title_key(row["title"]), row["id"]) for row in rows],
+        )
+
+
 # Granting BYPASSRLS to a role requires the executing role to be a Postgres
 # superuser or to already have BYPASSRLS itself (see CREATE/ALTER ROLE docs).
 # The admin/DATABASE_URL role must satisfy that — true for the dev-default
@@ -804,6 +841,7 @@ def init_tenant_schema():
         )
     with get_admin_pool().connection() as conn:
         conn.execute(TENANT_SCHEMA)
+        _backfill_title_keys(conn)
         _ensure_role(conn, "app_identity", config.IDENTITY_DB_PASSWORD, bypass_rls=True)
         _ensure_role(conn, "app_user", config.APP_DB_PASSWORD, bypass_rls=False)
 
@@ -2738,6 +2776,7 @@ def replace_stock_items(conn, crawler_id: int, items: list[dict]) -> Optional[li
         rows.append((
             crawler_id, artist, title, item.get("format"), item.get("price"),
             item.get("currency"), item["url"], item.get("cover_image_url"), item_key,
+            title_key(title),
         ))
         candidates.append({
             "item_key": item_key, "url": item["url"],
@@ -2766,8 +2805,9 @@ def replace_stock_items(conn, crawler_id: int, items: list[dict]) -> Optional[li
         cur.executemany(
             """
             INSERT INTO stock_items
-                (crawler_id, artist, title, format, price, currency, url, cover_image_url, item_key, last_seen)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                (crawler_id, artist, title, format, price, currency, url, cover_image_url, item_key,
+                 title_key, last_seen)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
             """,
             rows,
         )
@@ -2864,6 +2904,7 @@ def _stock_filter_sql(
     saved_only: bool = False,
     overlapped_artists: bool = False,
     exclude_crawler_ids: Optional[list[int]] = None,
+    cheapest: bool = False,
 ) -> tuple[str, dict]:
     """The WHERE clause every stock_items query shares, as (sql, params).
 
@@ -2910,8 +2951,47 @@ def _stock_filter_sql(
     if exclude_crawler_ids:
         conditions.append("s.crawler_id != ALL(%(exclude_crawler_ids)s)")
         params["exclude_crawler_ids"] = exclude_crawler_ids
+    if cheapest:
+        conditions.append(_cheapest_clause(conditions))
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     return where, params
+
+
+def _cheapest_clause(view_conditions: list) -> str:
+    """Keep a stock row only if no other row in the same view undercuts it.
+
+    "The same record" is the artist's bare key, `title_key` (see
+    title_key.py) and the currency: this app carries no exchange rates, so a
+    EUR row and a USD row for one pressing are two floors, exactly as
+    _price_floors buckets them. Ties survive -- two stores at one price are
+    two places to buy it -- and an unpriced row goes only when a priced
+    sibling exists; alone, it is still the only row for that record.
+
+    Scoped to the view, not the table: the competitors are the rows the other
+    conditions already admit, so a store the user has hidden never wins on a
+    price they cannot see, and under Saved the cheapest *saved* copy stands
+    rather than vanishing because an unsaved one is cheaper. The inner query
+    re-aliases stock_items as `s` on purpose -- every condition, including the
+    correlated library fragments, is written against `s`, and the nearest
+    scope wins.
+
+    COALESCE(title_key, title) is a belt beside _backfill_title_keys' braces:
+    the window would otherwise fold every NULL key into one group.
+    """
+    view_where = ("WHERE " + " AND ".join(view_conditions)) if view_conditions else ""
+    return f"""s.id IN (
+            SELECT w.id FROM (
+                SELECT s.id, s.price,
+                       MIN(s.price) OVER (
+                           PARTITION BY {_artist_sort_sql('s.artist')},
+                                        COALESCE(s.title_key, s.title),
+                                        COALESCE(UPPER(s.currency), 'USD')
+                       ) AS floor
+                FROM stock_items s
+                {view_where}
+            ) w
+            WHERE w.price = w.floor OR w.floor IS NULL
+        )"""
 
 
 # A Cost sort is the one sort whose column has to read monotonically down the
@@ -3021,6 +3101,7 @@ def get_stock_items(
     overlapped_artists: bool = False,
     exclude_crawler_ids: Optional[list[int]] = None,
     include_comparisons: bool = True,
+    cheapest: bool = False,
 ) -> dict:
     order_sql = "DESC" if order.lower() == "desc" else "ASC"
     # The sort expression is collection-pinned, so it only applies to a scope
@@ -3043,6 +3124,7 @@ def get_stock_items(
         user_id, search=search, artist=artist, library_scope=library_scope,
         recommended=recommended, saved_only=saved_only,
         overlapped_artists=overlapped_artists, exclude_crawler_ids=exclude_crawler_ids,
+        cheapest=cheapest,
     )
 
     total = conn.execute(f"SELECT COUNT(*) FROM stock_items s {where}", params).fetchone()["count"]
@@ -3154,6 +3236,7 @@ def get_stock_source_counts(
     saved_only: bool = False,
     overlapped_artists: bool = False,
     exclude_crawler_ids: Optional[list[int]] = None,
+    cheapest: bool = False,
 ) -> list[dict]:
     """In-stock item count per source, for the same view get_stock_items lists.
 
@@ -3167,6 +3250,7 @@ def get_stock_source_counts(
         user_id, search=search, artist=artist, library_scope=library_scope,
         recommended=recommended, saved_only=saved_only,
         overlapped_artists=overlapped_artists, exclude_crawler_ids=exclude_crawler_ids,
+        cheapest=cheapest,
     )
     rows = conn.execute(
         f"""
