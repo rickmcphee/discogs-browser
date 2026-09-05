@@ -63,3 +63,19 @@ def test_a_title_made_only_of_noise_keeps_its_own_spelling():
 
 def test_a_disc_count_does_not_split_from_its_spelled_out_form():
     assert title_key("Kid A (2LP)") == title_key("Kid A (2 x LP)") == title_key("Kid A - 2-LP") == title_key("Kid A")
+
+
+@pytest.mark.parametrize("title", ["2LP", "7 EP", "180g", "12\""])
+def test_a_title_that_is_only_a_removed_phrase_is_never_empty(title):
+    # The phrase removal is what empties these, so the fallback has to read
+    # the words from before it ran -- an empty key would group every such row.
+    assert title_key(title) != ""
+
+
+def test_titles_that_are_only_removed_phrases_stay_apart():
+    assert title_key("2LP") != title_key("180g")
+
+
+def test_non_latin_words_are_words():
+    assert title_key("Album 日本") != title_key("Album 中国")
+    assert title_key("Альбом (LP)") == title_key("альбом")

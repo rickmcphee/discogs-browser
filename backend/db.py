@@ -505,8 +505,8 @@ ALTER TABLE listings ADD COLUMN IF NOT EXISTS listing_title TEXT;
 -- The fold of `title` two stores' rows share when they sell the same pressing
 -- (title_key.py): what the Store tab's Cheapest filter groups rows by, with
 -- the artist's bare key and the currency. Written by replace_stock_items and
--- backfilled by init_tenant_schema for rows that predate the column, so it is
--- NULL only in the window between the two.
+-- upsert_stock_item_from_release, and backfilled by init_tenant_schema for
+-- rows that predate the column, so it is NULL only in the window between.
 ALTER TABLE stock_items ADD COLUMN IF NOT EXISTS title_key TEXT;
 
 -- Expression indexes, because every artist read path case-folds now: the
@@ -1131,14 +1131,16 @@ def upsert_stock_item_from_release(conn, release_id: str, crawler_id: int, catal
     conn.execute(
         """
         INSERT INTO stock_items
-            (crawler_id, release_id, artist, title, listing_title, format, price, currency, url, cover_image_url, item_key, last_seen)
+            (crawler_id, release_id, artist, title, listing_title, format, price, currency, url, cover_image_url, item_key,
+             title_key, last_seen)
         VALUES (%(crawler_id)s, %(release_id)s, %(artist)s, %(title)s, %(listing_title)s, %(format)s, %(price)s, %(currency)s,
-                %(url)s, %(cover_image_url)s, %(item_key)s, CURRENT_TIMESTAMP)
+                %(url)s, %(cover_image_url)s, %(item_key)s, %(title_key)s, CURRENT_TIMESTAMP)
         ON CONFLICT (crawler_id, release_id) WHERE release_id IS NOT NULL DO UPDATE SET
             artist = EXCLUDED.artist, title = EXCLUDED.title, listing_title = EXCLUDED.listing_title,
             format = EXCLUDED.format,
             price = EXCLUDED.price, currency = EXCLUDED.currency, url = EXCLUDED.url,
-            cover_image_url = EXCLUDED.cover_image_url, item_key = EXCLUDED.item_key, last_seen = CURRENT_TIMESTAMP
+            cover_image_url = EXCLUDED.cover_image_url, item_key = EXCLUDED.item_key,
+            title_key = EXCLUDED.title_key, last_seen = CURRENT_TIMESTAMP
         """,
         {
             "crawler_id": crawler_id, "release_id": release_id, "artist": artist, "title": title,
@@ -1146,6 +1148,13 @@ def upsert_stock_item_from_release(conn, release_id: str, crawler_id: int, catal
             # name last time and none this time must not keep showing the old
             # one against a listing it no longer describes.
             "listing_title": listing.get("title") or None,
+            # Keyed from the name the site gave what it actually found, when
+            # it gave one: a release crawler matches by artist and title, so
+            # the item can be a different pressing than the target, and the
+            # Cheapest filter groups by pressing. The target's title is only
+            # the fallback, and only ever what a catalog store would also
+            # have written for the bare record.
+            "title_key": title_key(listing.get("title") or title),
             "format": catalog_release["format"], "price": listing.get("price"), "currency": listing.get("currency"),
             "url": listing["url"], "cover_image_url": catalog_release["cover_image_url"], "item_key": item_key,
         },

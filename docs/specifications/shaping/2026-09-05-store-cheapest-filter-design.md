@@ -28,7 +28,8 @@ Touches:
 - `backend/title_key.py` — new: `title_key(title)`, the fold of a title two
   stores' rows share when they sell the same pressing.
 - `backend/db.py` — `stock_items.title_key` column and the index behind the
-  filter; `replace_stock_items` writes the key; `_backfill_title_keys` runs
+  filter; `replace_stock_items` and `upsert_stock_item_from_release` write
+  the key; `_backfill_title_keys` runs
   from `init_tenant_schema` for rows that predate the column;
   `_stock_filter_sql` gains `cheapest` and the `_cheapest_clause` it appends;
   `get_stock_items` and `get_stock_source_counts` pass it through.
@@ -93,9 +94,16 @@ Out of scope:
   meant to be tuned from real mismatches as they turn up.
 
 - **Stored, not computed in SQL.** The fold has a word list and a handful of
-  regexes, which are testable in Python and unpleasant in SQL. So
-  `replace_stock_items` writes `title_key` beside the row, and a boot-time
-  backfill keys the rows written before the column existed. The backfill
+  regexes, which are testable in Python and unpleasant in SQL. So both
+  `stock_items` writers store `title_key` beside the row — `replace_stock_items`
+  from the store's title, `upsert_stock_item_from_release` from the
+  `listing_title` the marketplace gave the item it matched, falling back to
+  the target's title when it gave none — and a boot-time backfill keys the
+  rows written before the column existed. The release path keys from the
+  matched item's own name because a release crawler matches by artist and
+  title, so what it found can be a different pressing than the target, and
+  the row has to compete as the pressing it actually is. (Raised by Copilot
+  on PR #294: the first draft wrote the key on the catalog path only.) The backfill
   matters more than it looks: the grouping treats every NULL as *one* key,
   so unkeyed rows would not sit the filter out, they would all compete as a
   single record. `COALESCE(title_key, title)` in the clause is the second
@@ -211,7 +219,9 @@ feature that fits without it. It should be its own branch, with a look at
 apart; the bare title stays apart from a colour variant; order and
 separators do not matter; each of the deliberately-kept words keeps its row
 apart; a CD does not merge with the LP; accents, case, apostrophes, `&` and
-disc-count spellings fold; an all-noise title keeps its own spelling.
+disc-count spellings fold; an all-noise title keeps its own spelling, even
+one the phrase removal would otherwise empty ("2LP", "180g"); non-Latin
+words count as words, so "Album 日本" and "Album 中国" stay apart.
 
 `test_stock_cheapest.py`, on two-to-three stores stocking one record under
 different wordings: the lowest-priced store wins; variants stay apart; the
@@ -222,7 +232,9 @@ marketplace comparisons hang under it while the loser's cheaper comparison
 does not rescue it; the Cost sort's flat path carries the flag with
 `total == row_total`; source counts sum to the list's total; the sidebar is
 unchanged; `replace_stock_items` writes the key; `init_tenant_schema`
-backfills a NULL one. Plus `GET /stock` and `GET /stock/stats` with
+backfills a NULL one; a release-crawler row is keyed from the name the site
+gave the item (competing as that pressing), from the target's title when it
+gave none, and re-keyed on every pass. Plus `GET /stock` and `GET /stock/stats` with
 `cheapest=true`, and `hidden_crawler_ids` alongside it.
 
 Frontend: the checkbox renders unchecked on Store and not at all on Track;

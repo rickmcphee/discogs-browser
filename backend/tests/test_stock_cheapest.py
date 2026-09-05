@@ -214,6 +214,67 @@ def test_init_tenant_schema_backfills_missing_title_keys(admin_conn):
     assert row["title_key"] == "a black kid"
 
 
+def _release_crawler_row(admin_conn, site_name, discogs_id, artist, title, listing):
+    db.register_crawler(admin_conn, site_name, f"/{site_name}.py", crawler_type="release")
+    admin_conn.commit()
+    crawler_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = %s", [site_name]).fetchone()["id"]
+    release = {
+        "discogs_id": discogs_id, "artist": artist, "title": title, "year": None, "label": None,
+        "format": "Vinyl", "barcode": None, "cover_image_url": None, "discogs_url": None,
+    }
+    db.upsert_catalog_release(admin_conn, release)
+    db.upsert_stock_item_from_release(admin_conn, discogs_id, crawler_id, release, listing)
+    admin_conn.commit()
+    return crawler_id
+
+
+def test_a_release_crawler_row_is_keyed_from_the_name_the_site_gave_it(admin_conn):
+    # The target is "Kid A"; the marketplace matched a red pressing and said
+    # so. The row competes as the red one, not as the bare record.
+    alice, _ = _seed(admin_conn, {
+        "A": [{"artist": "Radiohead", "title": "Kid A", "price": 30.0}],
+        "B": [{"artist": "Radiohead", "title": "Kid A - LP Red", "price": 35.0}],
+    })
+    _release_crawler_row(
+        admin_conn, "Discogs", "r1", "Radiohead", "Kid A",
+        {"url": "https://discogs/1", "price": 32.0, "currency": "USD", "title": "Kid A (Red Vinyl)"},
+    )
+    assert admin_conn.execute(
+        "SELECT title_key FROM stock_items WHERE crawler_id = (SELECT id FROM crawlers WHERE site_name = 'Discogs')"
+    ).fetchone()["title_key"] == "a kid red"
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], cheapest=True)
+    assert _own_rows(result) == [("A", "Kid A", 30.0), ("Discogs", "Kid A", 32.0)]
+
+
+def test_a_release_crawler_row_without_a_site_name_competes_as_the_bare_record(admin_conn):
+    alice, _ = _seed(admin_conn, {
+        "A": [{"artist": "Radiohead", "title": "Kid A (LP)", "price": 30.0}],
+    })
+    _release_crawler_row(
+        admin_conn, "Discogs", "r1", "Radiohead", "Kid A",
+        {"url": "https://discogs/1", "price": 25.0, "currency": "USD"},
+    )
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"], cheapest=True)
+    assert _own_rows(result) == [("Discogs", "Kid A", 25.0)]
+
+
+def test_a_release_crawler_rows_key_follows_the_name_on_every_pass(admin_conn):
+    _seed(admin_conn, {})
+    crawler_id = _release_crawler_row(
+        admin_conn, "Discogs", "r1", "Radiohead", "Kid A",
+        {"url": "https://discogs/1", "price": 25.0, "currency": "USD", "title": "Kid A (Red)"},
+    )
+    release = db.get_catalog_release(admin_conn, "r1")
+    db.upsert_stock_item_from_release(
+        admin_conn, "r1", crawler_id, release, {"url": "https://discogs/2", "price": 26.0, "currency": "USD"},
+    )
+    admin_conn.commit()
+    row = admin_conn.execute("SELECT title_key FROM stock_items WHERE crawler_id = %s", [crawler_id]).fetchone()
+    assert row["title_key"] == "a kid"
+
+
 def test_get_stock_cheapest_keeps_one_row_per_record(admin_conn, authed_client_factory):
     alice, _ = _seed(admin_conn, {
         "Store A": [{"artist": "Radiohead", "title": "Kid A - LP Black", "price": 30.0},

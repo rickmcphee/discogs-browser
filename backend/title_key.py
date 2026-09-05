@@ -45,15 +45,20 @@ _NOISE_WORDS = frozenset("""
     gatefold sleeve jacket and
 """.split())
 
-_TOKEN_RE = re.compile(r"[a-z0-9]+")
+# Runs of word characters in any script, not just ASCII: a Japanese or
+# Cyrillic title has to keep the words that tell it apart from another.
+_TOKEN_RE = re.compile(r"[^\W_]+")
 
 
 def title_key(title: str) -> str:
     """The comparison key for `title`: never empty for a non-empty title.
 
-    A title made entirely of noise ("LP", "Vinyl") keeps its own folded
+    A title made entirely of noise ("LP", "Vinyl", "2LP") keeps its own folded
     spelling rather than collapsing to "" -- an empty key would put every such
     row in one group, and the whole point of the key is to group carefully.
+    The fallback reads the words as they stood *before* the phrase removal,
+    since that is what emptied a title like "180g" or "7 EP" in the first
+    place.
     """
     folded = unicodedata.normalize("NFKD", title)
     folded = "".join(ch for ch in folded if not unicodedata.combining(ch)).casefold()
@@ -61,9 +66,10 @@ def title_key(title: str) -> str:
     # that drops one ("Whats") must still key the same as one that keeps it.
     folded = re.sub(r"[''`’]", "", folded)
     folded = _HYPHEN_JOIN.sub(r"\1", folded)
+    words = _TOKEN_RE.findall(folded)
     for pattern in _PHRASE_NOISE:
         folded = pattern.sub(" ", folded)
     tokens = {t for t in _TOKEN_RE.findall(folded) if t not in _NOISE_WORDS}
     if not tokens:
-        tokens = set(_TOKEN_RE.findall(folded))
+        tokens = set(words) or {folded.strip() or title.strip()}
     return " ".join(sorted(tokens))
