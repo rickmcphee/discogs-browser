@@ -69,6 +69,12 @@ def _describe_stock_sync(state: dict) -> str:
     return f"on {source} for {source_elapsed}, running {elapsed} in total"
 
 
+def _is_playwright_timeout(exc: BaseException) -> bool:
+    # Lazy, like every other Playwright import in this module.
+    from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+    return isinstance(exc, PlaywrightTimeoutError)
+
+
 class CrawlManager:
     def __init__(self):
         self._sync_tasks: dict[int, asyncio.Task] = {}
@@ -366,6 +372,31 @@ class CrawlManager:
                 delay = float(site_config.get("crawl_delay_seconds", 30))
                 self._site_next_allowed_at[crawler_id] = time.monotonic() + random.uniform(0.5, 1.0) * delay
 
+    async def _discard_context(self, crawler_id: int, pages: dict):
+        """Close this worker's browser context for one crawler, so its next
+        request opens a fresh one.
+
+        Called once a Playwright timeout has escaped plugin.search(). A
+        navigation that got no response inside its whole window leaves the
+        context still holding that connection, and Chromium serves a
+        context's next request to the same host from the same socket pool
+        -- so a connection the far end has silently dropped is inherited by
+        every following crawl on that context, each burning the full window
+        in turn. Discarding the context is the cheapest thing that guarantees
+        a clean pool; it is what _reset_context already does for bot
+        detection, minus the immediate retry. A stall says nothing about
+        whether the *next* request will be answered, so nothing is retried
+        now -- the next unit for this crawler simply starts clean, on the
+        context _process_claimed_rows creates when it finds none."""
+        entry = pages.pop(crawler_id, None)
+        if entry is None:
+            return
+        context, _page = entry
+        try:
+            await context.close()
+        except Exception as e:
+            log.warning("Could not close the stalled browser context for crawler %d: %s", crawler_id, e)
+
     async def _drain_one_batch(self, worker_id: str, plugins_by_crawler_id: dict, pages: dict, batch_size: Optional[int] = None) -> int:
         from config import load_config, crawl_library_only
         from db import get_app_pool, claim_crawl_queue_batch, revert_crawl_queue_claim, reclaim_stranded_crawl_queue_rows, QUEUE_CLAIM_BATCH_SIZE
@@ -577,6 +608,8 @@ class CrawlManager:
                     plugin._db_site_name, target["artist"], target["title"], row["discogs_id"] or row["item_key"], e,
                 )
                 await self._record_site_result(crawler_id, succeeded=False)
+                if _is_playwright_timeout(e):
+                    await self._discard_context(crawler_id, pages)
                 if is_last_unit_for_row:
                     await resolve_row(row_id)
                 continue
