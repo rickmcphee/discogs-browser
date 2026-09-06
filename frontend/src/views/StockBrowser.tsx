@@ -24,10 +24,10 @@ interface Props {
    *  stock_items and takes only what can actually move that count. */
   inventoryGeneration?: number
   judgmentGeneration?: number
-  /** Ticks on collection-sync events. Only the Collection and Wantlist
-   *  filters read library_items, so it drives a refetch only while one of
-   *  them is active -- under any other filter a library sync cannot move a
-   *  row, and this pane stays mounted while hidden. */
+  /** Ticks on collection-sync events. Only the filters that read
+   *  library_items (Collection, Wantlist, Overlapped, Recommended) can have a
+   *  row moved by one, so it drives a refetch only while one of them is
+   *  active -- this pane stays mounted while hidden. */
   libraryGeneration?: number
   isAdmin?: boolean
   hasPriceField?: boolean
@@ -37,6 +37,7 @@ const NO_HIDDEN_CRAWLER_IDS: number[] = []
 const NO_CRAWLERS: Crawler[] = []
 const NOOP_HIDDEN_CRAWLER_IDS_CHANGE = () => {}
 const STORE_FILTERS = ['all', 'recommended', 'saved', 'overlapped', 'collection', 'wantlist'] as const
+const LIBRARY_DEPENDENT_FILTERS: ReadonlySet<string> = new Set(['collection', 'wantlist', 'overlapped', 'recommended'])
 
 // The name shown for a row is what the source called the item when the
 // crawler reported one, since a release-crawler match is by artist/title and
@@ -115,9 +116,12 @@ function StockBrowser({
   const [pendingSaves, setPendingSaves] = useState<Set<string>>(new Set())
   const PER_PAGE = 250
   const tableScrollRef = useRef<HTMLDivElement>(null)
-  // A collection sync only moves rows the library filters show; everywhere
-  // else the tick is pinned so it cannot cause a refetch.
-  const libraryTick = libraryScopeFor(filter) ? (libraryGeneration ?? 0) : 0
+  // A collection sync only moves rows under a filter that reads
+  // library_items -- Collection and Wantlist directly, Overlapped through the
+  // collected-artist clause, Recommended through its not-owned gate (see
+  // db._stock_filter_sql). Under All and Saved the tick is pinned so it cannot
+  // cause a refetch.
+  const libraryTick = LIBRARY_DEPENDENT_FILTERS.has(filter) ? (libraryGeneration ?? 0) : 0
 
   const [prevHiddenCrawlerIds, setPrevHiddenCrawlerIds] = useState(hiddenCrawlerIds)
   if (hiddenCrawlerIds !== prevHiddenCrawlerIds) {

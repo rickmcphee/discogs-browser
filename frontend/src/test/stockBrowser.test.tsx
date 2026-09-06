@@ -1011,6 +1011,21 @@ describe('StockBrowser Cheapest filter', () => {
     await waitFor(() => expect(getStock.mock.calls.length).toBe(listCalls + 1))
     await waitFor(() => expect(getStockArtists.mock.calls.length).toBe(artistCalls + 1))
     expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ libraryScope: 'collection' }))
+
+    // Overlapped reads the collection through its artist clause, so it moves
+    // with a sync too; Saved reads only stock_item_saves and must not.
+    chooseFilter('overlapped')
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ overlapped: true })))
+    const overlappedCalls = getStock.mock.calls.length
+    rerender(<StockBrowser libraryGeneration={3} />)
+    await waitFor(() => expect(getStock.mock.calls.length).toBe(overlappedCalls + 1))
+
+    chooseFilter('saved')
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ saved: true })))
+    const savedCalls = getStock.mock.calls.length
+    rerender(<StockBrowser libraryGeneration={4} />)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(getStock.mock.calls.length).toBe(savedCalls)
   })
 
   it('passes a library filter through to the Stats panel, so its totals narrow with the list', async () => {

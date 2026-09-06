@@ -98,9 +98,12 @@ Out of scope:
   who synced and came back to an active library filter kept stale rows,
   artists and Stats until an unrelated stock event. `StockBrowser` now
   takes `libraryGeneration` (App's collection-sync counter) and folds it
-  into the list, sidebar and Stats refetch keys only while a library
-  filter is active; under any other filter the tick is pinned to zero so a
-  sync cannot cost a request the rows could not use. That counter now also
+  into the list, sidebar and Stats refetch keys only while a filter that
+  reads `library_items` is active: Collection and Wantlist directly,
+  Overlapped through `_collection_artist_clause`, Recommended through its
+  collection-scoped not-owned gate. Under All and Saved the tick is pinned
+  to zero so a sync cannot cost a request the rows could not use. That
+  counter now also
   advances on `sync_error`: each page's writes commit before the next page
   starts, and wantlist pages commit without a `sync_progress`, so on a late
   failure the error is the only event that says the rows moved — which
