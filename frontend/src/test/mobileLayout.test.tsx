@@ -488,7 +488,7 @@ describe('mobile StockBrowser', () => {
     await screen.findByText('The Great Satan')
     // The discogs price only shows under the Collection filter, chosen here
     // through the Filter sheet.
-    fireEvent.click(screen.getByRole('button', { name: /^Filter:/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Filter' }))
     fireEvent.click(screen.getByRole('radio', { name: 'Collection' }))
     expect(await screen.findByText('Vinyl · Nuclear Blast · Price 42.50')).toBeInTheDocument()
   })
