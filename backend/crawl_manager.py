@@ -710,7 +710,7 @@ class CrawlManager:
     # 'done', so a dropped one is gone for good -- the frontend increments
     # stockSyncGeneration on listing_changed to trigger its refetch
     # (App.tsx:234-236) and its SSE onerror path only reopens the stream
-    # (App.tsx:255-262), so an open Store/Track view would sit stale until an
+    # (App.tsx:255-262), so an open Store view would sit stale until an
     # unrelated update or a reload. subscribe() creates unbounded queues, so
     # put_nowait cannot raise QueueFull; it also means a slow SSE consumer can
     # never stall a crawl worker, which an await on a bounded queue would.

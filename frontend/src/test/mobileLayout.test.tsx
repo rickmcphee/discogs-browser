@@ -173,7 +173,7 @@ describe('mobile app shell', () => {
   it('moves the library tabs into a bottom bar rather than duplicating them', async () => {
     render(<App />)
     const bar = await screen.findByRole('navigation', { name: 'Sections' })
-    for (const label of ['Collection', 'Wantlist', 'Store', 'Track']) {
+    for (const label of ['Collection', 'Wantlist', 'Store']) {
       expect(within(bar).getByRole('button', { name: label })).toBeInTheDocument()
       // One button per tab in the whole document -- a second, hidden copy in
       // the header would be announced by a screen reader and matched by find.
@@ -484,8 +484,12 @@ describe('mobile StockBrowser', () => {
       total: 1, row_total: 1, page: 1, per_page: 250,
       items: [{ ...stockItem, discogs_price: '42.50' }],
     })
-    render(<StockBrowser scope="track" />)
+    render(<StockBrowser />)
     await screen.findByText('The Great Satan')
-    expect(screen.getByText('Vinyl · Nuclear Blast · Price 42.50')).toBeInTheDocument()
+    // The discogs price only shows under the Collection filter, chosen here
+    // through the Filter sheet.
+    fireEvent.click(screen.getByRole('button', { name: /^Filter:/ }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Collection' }))
+    expect(await screen.findByText('Vinyl · Nuclear Blast · Price 42.50')).toBeInTheDocument()
   })
 })
