@@ -136,12 +136,12 @@ class Crawler:
         title = strip_vendor_prefix((product.get("title") or "").strip(), (product.get("vendor") or "").strip())
         url = f"{cls.base_url}/products/{product.get('handle', '')}"
 
-        # Non-mapping entries are dropped *before* the count, because
-        # len(variants) decides whether a per-variant descriptor is appended
-        # and that descriptor is part of item_key: a single-variant product
-        # acquiring one junk sibling must not re-title its healthy row.
+        # Non-mapping entries are dropped before anything reads them, so a
+        # junk entry is an ordinary skipped row rather than an AttributeError
+        # from inside the loop.
         variants = [v for v in (product.get("variants") or []) if isinstance(v, dict)]
         items = []
+        seen_titles = set()
         for variant in variants:
             # Only the literal True admits a variant: the string "false" is
             # truthy, so a falsiness test would publish a sold-out record as
@@ -157,9 +157,20 @@ class Crawler:
             # same identity churn darksiderecords.py declined for its store.
             if variant.get("available") is not True:
                 continue
-            display_title = title
-            if len(variants) > 1:
-                display_title = f"{display_title} — {cls._variant_descriptor(variant)}"
+            # The descriptor is the variant's own title and nothing else --
+            # never the sibling count. compute_item_key hashes the title, so
+            # a descriptor that appeared the day a sibling was listed would
+            # re-key this row over a change to a *different* variant. Under
+            # this rule the row changes only when the store renames the
+            # variant itself, which Shopify does when a product gains
+            # options. Two variants without a usable title would resolve to
+            # the same row; the second is skipped rather than emitted under
+            # a colliding key.
+            descriptor = cls._variant_descriptor(variant)
+            display_title = f"{title} — {descriptor}" if descriptor else title
+            if display_title in seen_titles:
+                continue
+            seen_titles.add(display_title)
             items.append({
                 "artist": artist,
                 "title": display_title,
@@ -200,20 +211,14 @@ class Crawler:
 
     @staticmethod
     def _variant_descriptor(variant: dict) -> str:
-        # Unreachable on the live catalog, which is single-variant
-        # throughout: every product carries one `Default Title` variant, and
-        # the store lists a coloured pressing as its own product rather than
-        # as a variant. Kept so that a product growing a second variant
-        # yields two distinct item_keys rather than collapsing them onto one.
-        # Variant id as fallback follows rhino.py/udiscovermusic.py:
-        # immutable, unique, identity over cosmetics.
-        title = (variant.get("title") or "").strip()
-        if title and title != "Default Title":
-            return title
-        variant_id = variant.get("id")
-        if variant_id is None:
-            raise RuntimeError("variant carries neither a usable title nor an id")
-        return str(variant_id)
+        # Empty on the live catalog, which is single-variant throughout:
+        # every product carries one `Default Title` variant, and the store
+        # lists a coloured pressing as its own product rather than as a
+        # variant. Shopify's placeholder is not a pressing name, so a
+        # single-variant product's row is the bare title; a variant the
+        # store has named gives that name.
+        title = " ".join((variant.get("title") or "").split())
+        return "" if title == "Default Title" else title
 
     @staticmethod
     def _price(variant: dict) -> Optional[float]:

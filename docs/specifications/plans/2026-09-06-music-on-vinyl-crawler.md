@@ -18,7 +18,7 @@
 - **`artist` is `vendor`**, with `Various Artists` rewritten to `Various` and `Original Soundtrack` left as written.
 - **`strip_vendor_prefix` is used unchanged**, against the vendor as written. No live title carries a prefix.
 - **Availability comes from `variant.available`; no pre-order bypass, no pre-order label.** Unavailable pre-orders are sold-through limited pressings, and the title feeds `item_key`.
-- **The per-variant descriptor is appended only on a multi-variant product**, on `rhino.py`'s pattern; every live product is single-variant.
+- **The per-variant descriptor is the variant's own title, when it has one** — never keyed on the sibling count, since the title feeds `item_key`; every live product is single-variant.
 - **Tallies are nested**, vinyl → vendor → identity → readable, so that a non-zero count means "some product would have yielded a row if it were in stock".
 - No comments except where the WHY is non-obvious.
 - Registration is automatic via `main.py`'s bundled-crawler startup loop — no wiring changes anywhere else.
@@ -46,7 +46,7 @@ cd backend && TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/di
 - Produces: a `Crawler` class with the standard `catalog` plugin surface (`site_name`, `base_url`, `genre_summary`, `genre`, `crawler_type`, `async def crawl_catalog()`), yielding `{"artist", "title", "format": "Vinyl", "price", "currency": "EUR", "url", "cover_image_url"}`.
 
 - [x] **Step 1: Ground the design against the live store** — identify the platform, diff `all-products` against `all`, histogram `product_type`, check `vendor`, `tags`, variants, availability, pre-orders, images, prices, `meta.json` and `robots.txt`.
-- [x] **Step 2: Write the crawler** — `all-products` collection, `Vinyl` type gate, vendor artist with the `Various` rewrite, exact-case vendor-prefix strip, no pre-order bypass, multi-variant-only descriptor, guarded price parse, nested drift guards.
+- [x] **Step 2: Write the crawler** — `all-products` collection, `Vinyl` type gate, vendor artist with the `Various` rewrite, exact-case vendor-prefix strip, no pre-order bypass, variant-title descriptor, guarded price parse, nested drift guards.
 - [x] **Step 3: Write the test file** — fixtures distinguish captured / altered provenance, each marked at its definition; cases per the design spec's Verification section.
 - [x] **Step 4: Replay over the fully-cached live catalog** — 1,095 products walked → 1,093 vinyl → 1,076 rows, no `item_key` collisions, no blank artist or title, no whitespace contamination, no malformed URL, no missing cover, no null price.
 - [x] **Step 5: Run the test file** — all tests in it pass.

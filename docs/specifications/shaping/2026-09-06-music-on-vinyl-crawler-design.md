@@ -92,10 +92,25 @@ recoverable from the handle slug or the free-text description, and neither is
 read: a handle is not a display field, and the title as the store writes it is
 the identity the row keeps.
 
-Because the catalog is single-variant throughout, the per-variant descriptor
-is never appended on live data. It is kept, on `rhino.py`'s pattern (variant
-title, falling back to the variant id), so a product growing a second variant
-yields two distinct rows rather than collapsing onto one `item_key`.
+Because the catalog is single-variant throughout, no per-variant descriptor
+is appended on live data. One is kept for a product that grows a second
+variant, so its pressings yield distinct rows rather than collapsing onto one
+`item_key`, and it is read from the **variant's own title** and nothing else:
+a variant titled `Default Title` (or nothing) yields the bare product title,
+and a variant the store has named yields `{title} — {variant title}`. Not
+from the sibling count, as `rhino.py` keys it: `item_key` hashes the title,
+so a row whose descriptor appeared the day a sibling was listed would re-key
+and orphan its listings, judgments and saves over a change to a *different*
+variant — the same identity churn the pre-order label was dropped for. Under
+this rule an existing variant's row changes only when the store renames that
+variant, which is what Shopify does when a product gains options. Two
+variants of one product that both lack a usable title would resolve to the
+same row; the second is skipped rather than emitted under a colliding key.
+
+**Amendment (2026-09-06, review round 2):** the first draft appended the
+descriptor only when the product had more than one variant, falling back to
+the variant id. Copilot's review pointed out the sibling-count dependence;
+the rule above is the correction.
 
 ### Artist: `vendor`, with `Various Artists` rewritten to `Various`
 
@@ -207,7 +222,7 @@ healthy row.
 | Field | Source |
 | --- | --- |
 | `artist` | `product.vendor`; `Various` when the vendor is `Various Artists` |
-| `title` | `strip_vendor_prefix(product.title, vendor)`, `+ " — {descriptor}"` only on a multi-variant product; never a pre-order marker |
+| `title` | `strip_vendor_prefix(product.title, vendor)`, `+ " — {variant title}"` when the variant carries one; never a pre-order marker |
 | `format` | `"Vinyl"`, hardcoded |
 | `price` | `variant.price`, guarded; `None` when unusable |
 | `currency` | `"EUR"`, hardcoded |
@@ -228,7 +243,8 @@ crawler test files, and cover the type gate, the collective-vendor rewrite,
 the same-title pressings, the exclusive suffix, the vendor strip and its
 self-titled non-case, the absence of a pre-order label and of an
 availability bypass,
-the descriptor on an altered multi-variant product, junk variant entries,
+the descriptor on an altered multi-variant product and its independence from
+the sibling count, junk variant entries,
 every price shape, cover resolution, and each drift guard on both its firing
 and its non-firing side.
 

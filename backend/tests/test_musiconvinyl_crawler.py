@@ -333,15 +333,38 @@ async def test_single_variant_product_gets_no_descriptor(crawler):
     assert items[0]["title"] == "Elegant Gypsy"
 
 
-def test_variant_descriptor_falls_back_to_id_for_default_title():
-    assert Crawler._variant_descriptor({"id": 123, "title": "Default Title"}) == "123"
-    assert Crawler._variant_descriptor({"id": 123, "title": ""}) == "123"
+def test_variant_descriptor_is_the_variant_title_or_nothing():
+    for raw in ["Default Title", "", "   ", None]:
+        assert Crawler._variant_descriptor({"id": 123, "title": raw}) == "", raw
+    assert Crawler._variant_descriptor({"id": 123}) == ""
     assert Crawler._variant_descriptor({"id": 123, "title": "Red"}) == "Red"
+    assert Crawler._variant_descriptor({"id": 123, "title": " Red  Vinyl "}) == "Red Vinyl"
 
 
-def test_variant_descriptor_raises_without_title_or_id():
-    with pytest.raises(RuntimeError, match="neither a usable title nor an id"):
-        Crawler._variant_descriptor({"title": "Default Title"})
+def test_row_identity_does_not_depend_on_the_sibling_count():
+    # The failure the title-only rule prevents: keyed on len(variants), the
+    # original variant's row would read "Elegant Gypsy" alone and carry a
+    # descriptor the day a second variant was listed, re-keying it over a
+    # change to a different variant. The fields item_key hashes must match
+    # before and after.
+    before = Crawler._items(_GYPSY_BLACK_PRODUCT)
+    grown = {**_GYPSY_BLACK_PRODUCT, "variants": _GYPSY_BLACK_PRODUCT["variants"] + [
+        {"id": 2, "title": "Red", "price": "29.99", "available": True}]}
+    after = Crawler._items(grown)
+    key = lambda i: (i["artist"], i["title"], i["url"])
+    assert key(before[0]) == key(after[0])
+    assert [i["title"] for i in after] == ["Elegant Gypsy", "Elegant Gypsy — Red"]
+
+
+def test_variants_without_a_usable_title_collapse_to_one_row():
+    # Invented: two variants with no usable title on one product would share
+    # (artist, title, url); the second is skipped rather than emitted under a
+    # colliding item_key.
+    product = {**_GYPSY_BLACK_PRODUCT, "variants": [
+        {"id": 1, "title": "Default Title", "price": "27.99", "available": True},
+        {"id": 2, "title": "", "price": "29.99", "available": True},
+    ]}
+    assert [(i["title"], i["price"]) for i in Crawler._items(product)] == [("Elegant Gypsy", 27.99)]
 
 
 @respx.mock
