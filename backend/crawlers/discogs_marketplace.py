@@ -5,6 +5,7 @@ import urllib.parse
 from typing import Optional
 
 import httpx
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from crawler import BotDetectedError
 from logging_config import get_logger
@@ -74,6 +75,17 @@ _EMPTY_STATE = tuple(
     )
 )
 
+# Navigation resolves at `commit` -- response headers received, document
+# committed -- not at `domcontentloaded`. Readiness is decided by the polls
+# below either way (the settled title, then a parsed row or a rendered empty
+# state), so DCL bought nothing; what it cost was diagnosis. DCL only fires
+# once the whole document has arrived and its synchronous scripts have run,
+# so a response that had started but not finished -- a slow origin, or an
+# edge stalling a client it has scored as a bot -- burned the entire window
+# and surfaced as a bare "Timeout 30000ms exceeded", indistinguishable from a
+# connection that was never answered at all. With `commit`, a timeout means
+# exactly one thing: no response headers within the window.
+_NAVIGATION_TIMEOUT_MS = 30_000
 _SETTLE_TIMEOUT_MS = 15_000
 _LISTINGS_TIMEOUT_MS = 15_000
 _POLL_INTERVAL_MS = 250
@@ -152,12 +164,17 @@ async def _await_settled_title(page) -> str:
     """Wait out Cloudflare's interstitial and return the page's settled title.
 
     The challenge is always what renders first, so reading the title straight
-    after domcontentloaded sees "Just a moment..." on every challenged request
-    -- including the ones that would have cleared on their own a few seconds
-    later."""
+    after navigation sees "Just a moment..." on every challenged request --
+    including the ones that would have cleared on their own a few seconds
+    later.
+
+    An empty title is unsettled too, not evidence of a real page: navigation
+    resolves at `commit`, before the parser has necessarily reached <title>,
+    and a challenge read at that instant would otherwise pass the bot check
+    and go on to be reported as unrecognised markup."""
     deadline = time.monotonic() + _SETTLE_TIMEOUT_MS / 1000
     title = await page.title()
-    while any(c in title.lower() for c in _CHALLENGE_TITLES):
+    while not title.strip() or any(c in title.lower() for c in _CHALLENGE_TITLES):
         if time.monotonic() >= deadline:
             return title
         await page.wait_for_timeout(500)
@@ -190,11 +207,40 @@ class Crawler:
         discogs_id = release["discogs_id"]
         release_id = discogs_id[1:]
         url = self.search_url(release)
-        await page.goto(url, wait_until="domcontentloaded")
+        try:
+            response = await page.goto(url, wait_until="commit", timeout=_NAVIGATION_TIMEOUT_MS)
+        except PlaywrightTimeoutError:
+            # Re-raised as it is rather than wrapped or read as bot detection.
+            # Nothing arrived, so nothing here can say why; the crawl manager
+            # discards this crawler's browser context on a Playwright timeout
+            # (keyed on the exception type) so the next request starts on a
+            # fresh connection, and the breaker counts it as the failure it
+            # is. Raising BotDetectedError instead would spend another full
+            # window on an immediate retry that a stall gives no reason to
+            # expect to fare better.
+            log.warning(
+                "[Discogs] no response from %s within %ds for release %s -- the "
+                "connection stalled before any headers arrived, so this is not a "
+                "challenge page that failed to clear",
+                url, _NAVIGATION_TIMEOUT_MS // 1000, discogs_id,
+            )
+            raise
+        # None for a same-document navigation; never expected here, but the
+        # Playwright contract allows it.
+        status = response.status if response is not None else None
+        mitigated = response.headers.get("cf-mitigated") if response is not None else None
+        if status is not None and status >= 400:
+            log.info(
+                "[Discogs] HTTP %s for release %s (cf-mitigated=%s); waiting for the page to settle",
+                status, discogs_id, mitigated,
+            )
 
         title = await _await_settled_title(page)
         if any(c in title.lower() for c in _CHALLENGE_TITLES):
-            log.warning("[Discogs] bot interstitial did not clear for release %s", discogs_id)
+            log.warning(
+                "[Discogs] bot interstitial did not clear for release %s (HTTP %s, cf-mitigated=%s)",
+                discogs_id, status, mitigated,
+            )
             raise BotDetectedError()
 
         listings, recognised = await self._read_when_ready(page, url)
@@ -223,7 +269,8 @@ class Crawler:
 
         raise RuntimeError(
             f"Discogs listings markup not recognised for release {discogs_id} "
-            f"(page title {title!r}, {num_for_sale if num_for_sale is not None else 'unknown'} "
+            f"(HTTP {status}, page title {title!r}, "
+            f"{num_for_sale if num_for_sale is not None else 'unknown'} "
             f"copies for sale per the marketplace API) -- re-check the selectors in "
             f"{__name__} against {url}"
         )

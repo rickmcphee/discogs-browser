@@ -371,6 +371,26 @@ recovered via context reset, is exactly the signal the circuit breaker should
 act on to back off that site entirely for a while, not just reset one browser
 context and immediately try again.
 
+**Amendment (2026-09-06, branch `claude/discogs-crawl-timeouts-f3p6vc`):** a
+Playwright `TimeoutError` escaping `plugin.search()` is counted as a failure
+exactly as before, and additionally makes `_process_claimed_rows` close and
+drop that worker's browser context for the crawler (`_discard_context`), so
+the crawler's next unit opens a fresh one. A navigation that got no response
+in its whole window leaves the context still holding that connection, and
+Chromium serves a context's next request to the same host from the same
+socket pool, so a connection the far end has silently dropped is inherited by
+every later crawl on that context, each burning the full window in turn. This
+is `_reset_context`'s context reset without its immediate retry — a stall says
+nothing about whether the next request will be answered, so nothing is retried
+now. It is keyed on the exception type, not on failure in general: a crawler
+raising for its own reasons (unrecognised markup, a 429) says nothing about
+the connection, and recycling on every failure would discard a healthy context
+each time. The per-site lock and pacing above are unaffected — the discard
+runs after `_paced_search` has released the lock and recorded the site's
+next-allowed time. Prompted by the Discogs crawler's navigations timing out
+wholesale; see the 2026-09-06 amendment to
+[`2026-07-08-collection-price-crawlers-design.md`](2026-07-08-collection-price-crawlers-design.md).
+
 ### Settings removal
 
 `debug_screenshot_interval` and `shuffle_crawl_order` are removed entirely:
