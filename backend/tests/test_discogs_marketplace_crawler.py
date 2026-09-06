@@ -40,13 +40,15 @@ def test_site_name_is_discogs():
 # clearing the release's stored price.
 
 import asyncio
+import logging
 import re
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
 import respx
-from playwright.async_api import async_playwright
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError, async_playwright
 
 import crawlers.discogs_marketplace as dm
 from crawler import BotDetectedError
@@ -87,9 +89,15 @@ class _FakePage:
         self._html = (FIXTURES / fixture).read_text(encoding="utf-8")
         self._titles = list(titles)
         self.waits = 0
+        self.wait_until = None
+        # What goto() answers with; None stands in for Playwright's
+        # same-document case, which the crawler has to tolerate anyway.
+        self.response = None
 
-    async def goto(self, url, wait_until=None):
+    async def goto(self, url, wait_until=None, timeout=None):
+        self.wait_until = wait_until
         await self._real.set_content(self._html, wait_until="domcontentloaded")
+        return self.response
 
     async def title(self):
         return self._titles[0] if len(self._titles) == 1 else self._titles.pop(0)
@@ -267,7 +275,7 @@ async def test_listings_that_render_after_navigation_are_waited_for(browser_page
                      re.S).group(1)
 
     class _LateRenderPage(_FakePage):
-        async def goto(self, url, wait_until=None):
+        async def goto(self, url, wait_until=None, timeout=None):
             await self._real.set_content(
                 "<html><head><title>x</title></head><body><div id='shell'></div></body></html>",
                 wait_until="domcontentloaded",
@@ -380,7 +388,7 @@ async def test_a_hidden_empty_state_does_not_end_the_wait_before_listings_render
                      re.S).group(1)
 
     class _HiddenEmptyThenListings(_FakePage):
-        async def goto(self, url, wait_until=None):
+        async def goto(self, url, wait_until=None, timeout=None):
             await self._real.set_content(
                 "<html><head><title>x</title></head><body>"
                 "<div id='pjax_container'>"
@@ -433,7 +441,7 @@ async def test_a_price_less_row_cannot_end_the_readiness_wait_early(browser_page
                      re.S).group(1)
 
     class _PlaceholderThenListings(_FakePage):
-        async def goto(self, url, wait_until=None):
+        async def goto(self, url, wait_until=None, timeout=None):
             await self._real.set_content(
                 "<html><head><title>x</title></head><body>"
                 "<div id='pjax_container'><table><tbody><tr><td>Loading&hellip;</td></tr></tbody></table></div>"
@@ -554,7 +562,7 @@ async def test_a_placeholder_row_does_not_end_readiness_before_real_listings(bro
                      re.S).group(1)
 
     class _PlaceholderPriceThenListings(_FakePage):
-        async def goto(self, url, wait_until=None):
+        async def goto(self, url, wait_until=None, timeout=None):
             await self._real.set_content(
                 "<html><head><title>x</title></head><body>"
                 "<div id='pjax_container'><table class='mpitems'><tbody><tr>"
@@ -589,3 +597,67 @@ async def test_a_non_object_stats_payload_is_unknown_not_an_exception(body):
     )
 
     assert await dm._release_num_for_sale("249504") is None
+
+
+async def test_navigation_resolves_at_commit_and_leaves_readiness_to_the_polls(browser_page):
+    """Pins the wait_until choice. domcontentloaded only fires once the whole
+    document has arrived and its synchronous scripts have run, so a response
+    that started but never finished burned the full navigation window and
+    surfaced as a bare "Timeout 30000ms exceeded" -- indistinguishable from a
+    connection that was never answered. Readiness is decided by the
+    settle-and-parse polls regardless, so navigation itself only has to
+    establish that a response arrived."""
+    page = _FakePage(browser_page, "usa_listings.html")
+
+    results = await Crawler().search(RELEASE, page)
+
+    assert page.wait_until == "commit"
+    assert results[0]["price"] == 6.50
+
+
+async def test_an_unparsed_title_is_waited_on_rather_than_read_as_a_real_page(browser_page, monkeypatch):
+    """Resolving at commit means <title> may not be parsed on the first read.
+    An empty title contains no challenge phrase, so it used to pass the bot
+    check -- and a challenge page read at that instant went on to the listings
+    poll, to be reported as unrecognised markup or, as here, to read whatever
+    rendered behind it as a real page. Empty is unsettled; the challenge that
+    follows it is still bot detection."""
+    monkeypatch.setattr(dm, "_SETTLE_TIMEOUT_MS", 1600)
+    page = _FakePage(browser_page, "usa_listings.html",
+                     titles=["", "", "Just a moment...", "Just a moment..."])
+
+    with pytest.raises(BotDetectedError):
+        await Crawler().search(RELEASE, page)
+
+
+async def test_a_navigation_that_never_gets_a_response_raises_the_playwright_timeout(browser_page, caplog):
+    """No headers inside the window is the one thing a commit timeout can
+    mean. It has to surface as the Playwright timeout itself -- the crawl
+    manager keys its context discard on that type -- never as [] (which
+    clears the stored price) nor as BotDetectedError (an immediate retry a
+    stall gives no reason to expect to fare better)."""
+    class _StalledPage(_FakePage):
+        async def goto(self, url, wait_until=None, timeout=None):
+            raise PlaywrightTimeoutError(f"Page.goto: Timeout {timeout}ms exceeded.")
+
+    with caplog.at_level(logging.WARNING, logger="crawlers.discogs_marketplace"), \
+         pytest.raises(PlaywrightTimeoutError):
+        await Crawler().search(RELEASE, _StalledPage(browser_page, "usa_listings.html"))
+
+    assert any("no response" in r.getMessage() for r in caplog.records)
+
+
+async def test_the_http_status_is_named_when_markup_is_not_recognised(browser_page, monkeypatch):
+    """The status and Cloudflare's mitigation header are the difference
+    between "Discogs restyled the page" and "the edge served a block page
+    with a title that isn't on the challenge list", and the raise is the
+    only place an operator sees either."""
+    async def _stats(release_id):
+        return 53
+
+    monkeypatch.setattr(dm, "_release_num_for_sale", _stats)
+    page = _FakePage(browser_page, "redesigned.html")
+    page.response = SimpleNamespace(status=403, headers={"cf-mitigated": "challenge"})
+
+    with pytest.raises(RuntimeError, match="HTTP 403, cf-mitigated=challenge"):
+        await Crawler().search(RELEASE, page)
