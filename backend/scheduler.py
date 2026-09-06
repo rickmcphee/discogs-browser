@@ -45,7 +45,7 @@ def configure(cron_expression: str, mode: str = "missing"):
         with _lock:
             if _scheduler.get_job("crawl"):
                 _scheduler.remove_job("crawl")
-        log.info("Crawl schedule cleared")
+        log.debug("Crawl schedule cleared")
         return
 
     try:
@@ -89,4 +89,4 @@ def configure_stock(cron_expression: str):
         if _scheduler.get_job("stock_sync"):
             _scheduler.remove_job("stock_sync")
         _scheduler.add_job(_run, trigger, id="stock_sync")
-    log.info("Stock sync scheduled: %s", cron_expression)
+    log.debug("Stock sync scheduled: %s", cron_expression)
