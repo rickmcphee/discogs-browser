@@ -103,7 +103,7 @@ class Crawler:
             # produces a full set of rows carrying no price at all -- `yielded`
             # is non-zero throughout, and the guard below never looks. The
             # snapshot that replaces the previous one then has every item and
-            # none of their prices, which is what the Track tab compares on.
+            # none of their prices, which is what the Store tab's Collection filter compares on.
             # Isolated nulls stay tolerated: only a catalog that has lost every
             # price is drift rather than a few bad rows. Same guard, and
             # substantially the same reasoning, as mtheoryaudio.py's.

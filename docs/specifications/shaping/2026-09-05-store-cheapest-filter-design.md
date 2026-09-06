@@ -3,6 +3,8 @@
 Date: 2026-09-05
 Branch: `claude/store-cheapest-filter-x4tdwl`
 
+**Amendment (2026-09-06, branch `claude/store-cheapest-filter-x4tdwl`):** the Track tab is gone, so the "Track tab" bullet under Out of scope is moot: Collection and Wantlist are Store filters now and Cheapest stacks on them, which under Wantlist reads as "the cheapest place to buy each record I want". The reasoning for leaving Track alone still describes a view someone may want, and the checkbox sits beside those filters to untick. See [`2026-09-06-track-tab-fold-design.md`](2026-09-06-track-tab-fold-design.md).
+
 ## Problem
 
 Several stores stock the same record, and the Store tab shows every one of
@@ -231,6 +233,14 @@ Not done here because it rewrites the dropdown the Store *and Track* tabs
 share, and every test that reaches for `getByRole('combobox')`, for a
 feature that fits without it. It should be its own branch, with a look at
 `RecordBrowser`'s toolbar at the same time.
+
+**Amendment (2026-09-06):** the first option shipped — see
+[`2026-09-06-store-filter-popover-design.md`](2026-09-06-store-filter-popover-design.md).
+The dropdown and this checkbox are now one `Filter: …` popover; the
+`Source` fold-in was considered there and left as this section's remaining
+option. The "A checkbox, where the filters are" decision above still holds
+for the control, which is now inside the panel rather than beside the
+dropdown.
 
 ## Known limitations
 
