@@ -4,6 +4,8 @@
 **Date:** 2026-08-23
 **Verified against:** `main` @ `6fc4684`
 
+**Amendment (2026-09-06, branch `claude/store-cheapest-filter-x4tdwl`):** the Track tab is gone; "Store/Track" below reads as the Store tab, which is still global — nothing about the event filtering changes. See [`2026-09-06-track-tab-fold-design.md`](2026-09-06-track-tab-fold-design.md).
+
 ## Problem
 
 `CrawlManager._broadcast` (`backend/crawl_manager.py`) fans every SSE event out to every
