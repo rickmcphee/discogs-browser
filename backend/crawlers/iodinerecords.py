@@ -18,7 +18,11 @@ _MUSIC_TYPES = frozenset({"records"})
 _PREORDER_TAG = "preorder"
 _VINYL_TAG = "vinyl"
 # Shopify's placeholder for a product with exactly one variant. It names no
-# pressing, so a row built on it carries the album title alone.
+# pressing, so a row built on it carries the album title alone -- and only
+# when it IS the product's sole variant: on a multi-variant product the
+# placeholder is malformed data, and a blank title is never a pressing.
+# Either would otherwise share the bare album title and the product URL,
+# and so the item_key, with every sibling built the same way.
 _PLACEHOLDER_VARIANT = "default title"
 # `vendor` is always the label (its own name or a distro label), so the
 # artist lives only in the product title, as `Artist 'Album'` -- straight
@@ -33,12 +37,13 @@ _PLACEHOLDER_VARIANT = "default title"
 # both sides though no live title uses them.
 _TITLE_RE = re.compile(r"""^(?P<artist>.+?)\s+['‘"“](?P<album>.+?)['’"”](?=\s|$)\s*(?P<extra>.*)$""")
 # The format gate has two layers. The PRODUCT layer is positive and reads
-# tags: the store tags every record `Vinyl` and every product with a
-# `format:` tag naming its media (`format:12"`, `format:7"`, `format:lp`,
+# tags, and has two alternative sources, either of which admits a product:
+# a `Vinyl` tag, which nearly every record carries, or a `format:` tag whose
+# value names a vinyl medium (`format:12"`, `format:7"`, `format:lp`,
 # `format:2xlp` against `format:cd`, `format:cassette`, `format:merch`,
-# `format:book`). Both are read because a handful of products carry only the
-# `format:` tag (the ones filed under a newer `artist:[...]`/`album:[...]`
-# taxonomy). The VARIANT layer is negative, because a variant title here is
+# `format:book`), which is the only one of the two on a handful of records
+# (the ones filed under a newer `artist:[...]`/`album:[...]` taxonomy).
+# The VARIANT layer is negative, because a variant title here is
 # the pressing's colour and often nothing else ("Coke Bottle", "Silver",
 # "Blood and Paper Stripes"): on a vinyl-tagged product a variant is a
 # record unless its title says CD, cassette, tape, DVD or digital. Vocabulary
@@ -201,8 +206,8 @@ class Crawler:
             # sibling being listed or delisted must not re-title the vinyl
             # rows and orphan the listings, judgments and saves keyed on the
             # old identity. The placeholder is the one exception, because it
-            # names nothing and Shopify only issues it for a product with
-            # exactly one variant.
+            # names nothing, and _vinyl_variants admits it only as a
+            # product's sole variant, so no sibling can share the bare title.
             items.append({
                 "artist": artist,
                 "title": f"{base} — {descriptor}" if descriptor else base,
@@ -246,13 +251,16 @@ class Crawler:
         # Non-mapping entries are dropped here, before anything reads them,
         # so a junk entry is an ordinary skipped row rather than an
         # AttributeError from inside the yield loop.
-        for variant in product.get("variants") or []:
-            if not isinstance(variant, dict):
-                continue
+        variants = [v for v in product.get("variants") or [] if isinstance(v, dict)]
+        for variant in variants:
             title = " ".join((variant.get("title") or "").split())
+            if not title:
+                continue
             if title.lower() == _PLACEHOLDER_VARIANT:
-                pairs.append((variant, ""))
-            elif cls._is_vinyl_variant(title):
+                if len(variants) == 1:
+                    pairs.append((variant, ""))
+                continue
+            if cls._is_vinyl_variant(title):
                 pairs.append((variant, title))
         return pairs
 

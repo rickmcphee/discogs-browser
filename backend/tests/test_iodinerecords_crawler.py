@@ -417,6 +417,65 @@ async def test_placeholder_variant_row_is_the_title_alone(crawler):
 
 
 @respx.mock
+async def test_placeholder_on_a_multi_variant_product_is_skipped(crawler):
+    # Invented: Shopify never issues the placeholder beside a real variant,
+    # so it is malformed data there. Stripped, it would build a row on the
+    # bare album title and the product URL -- the identity a sibling
+    # placeholder would share -- so it is skipped and the real pressing
+    # still yields.
+    product = {**_TALES_PRODUCT, "variants": [
+        {"id": 1, "title": "Default Title", "price": "24.99", "available": True, "featured_image": None},
+        _TALES_PRODUCT["variants"][2],
+    ]}
+    _mock_pages(product)
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["title"] for i in items] == ["Tales For The Rages — Sky Blue 12\" Vinyl"]
+
+
+@respx.mock
+async def test_two_placeholders_on_one_product_yield_nothing(crawler):
+    # Invented. Admitted, both would carry the same item_key.
+    product = {**_TALES_PRODUCT, "variants": [
+        {"id": 1, "title": "Default Title", "price": "24.99", "available": True},
+        {"id": 2, "title": "default title", "price": "24.99", "available": True},
+    ]}
+    _mock_pages(product, _FRIENDS_PRODUCT)
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["artist"] for i in items] == ["Gameface"]
+
+
+@respx.mock
+@pytest.mark.parametrize("blank", ["", "   ", None])
+async def test_blank_variant_title_is_never_a_pressing(crawler, blank):
+    # Altered: one pressing's title blanked beside a healthy sibling. The
+    # negative gate would otherwise admit it -- nothing in an empty string
+    # names another medium -- and the row would take the bare album title.
+    product = {**_TALES_PRODUCT, "variants": [
+        {**_TALES_PRODUCT["variants"][2], "title": blank},
+        {**_TALES_PRODUCT["variants"][2], "id": 9},
+    ]}
+    _mock_pages(product)
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["title"] for i in items] == ["Tales For The Rages — Sky Blue 12\" Vinyl"], blank
+
+
+@respx.mock
+@pytest.mark.parametrize("mutate", [
+    pytest.param(lambda v: {**v, "title": ""}, id="titles-blank"),
+    pytest.param(lambda v: {k: x for k, x in v.items() if k != "title"}, id="title-key-gone"),
+    pytest.param(lambda v: {**v, "title": "Default Title"}, id="every-variant-a-placeholder"),
+])
+async def test_catalog_whose_variant_titles_are_gone_raises(crawler, mutate):
+    # Altered: the variant title lost on every record. Each record is left
+    # with no admitted variant, so the format guard fires rather than the
+    # walk completing with every row on its bare album title.
+    _mock_pages({**_TALES_PRODUCT, "variants": [mutate(v) for v in _TALES_PRODUCT["variants"]]},
+                {**_SWORD_PRODUCT, "variants": [mutate(v) for v in _SWORD_PRODUCT["variants"]]})
+    with pytest.raises(RuntimeError, match="format-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
 async def test_pressing_is_appended_on_a_single_variant_product(crawler):
     # Always appended when the variant names a pressing, not only when the
     # product has siblings: the pressing is part of the row's identity, and

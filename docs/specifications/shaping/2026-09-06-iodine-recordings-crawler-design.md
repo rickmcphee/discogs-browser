@@ -129,8 +129,10 @@ Town'`) is credited exactly as the title writes it.
 
 ### Format gate: two layers
 
-**The product layer is positive and reads tags.** The store tags every record
-`Vinyl` and every product with a `format:` tag naming its media:
+**The product layer is positive and reads tags.** It has two alternative
+sources, either of which admits a product: a `Vinyl` tag, which nearly every
+record carries, or a `format:` tag whose value names a vinyl medium. The store
+tags every product with a `format:` tag naming its media:
 
 | Tag | Products | Reads as |
 | --- | --- | --- |
@@ -188,6 +190,22 @@ exactly one variant (`Quicksand 'Slip' (Deluxe)` and `Quicksand 'Slip' Deluxe
 Book`). It names no pressing, so a row built on it carries the album title
 alone, as `hammerheart.py` and `carparkrecords.py` do. Every other row appends
 its variant title.
+
+The placeholder is honoured **only as a product's sole variant**, and a blank
+variant title is never a pressing. Either would otherwise build a row on the
+bare album title and the product URL, which is the `item_key` every sibling
+built the same way would share: `stock_items` permits the duplicates while the
+queue and listings collapse them. A blank title is skipped, and so is a
+`Default Title` on a multi-variant product, where Shopify never issues it and
+it can only be malformed data. Both are skipped rather than admitted with a
+descriptor so that a store-wide loss of variant titles leaves every record
+with no admitted variant and trips the format guard, instead of completing a
+walk of bare-titled rows.
+
+**Amendment (2026-09-06, review round 1):** the first draft let a blank title
+through the negative gate and stripped the placeholder on any product.
+Copilot's review pointed out both collapse onto one identity; the rule above
+is the correction.
 
 ### Identity: the pressing is appended on every row that names one
 
@@ -307,7 +325,8 @@ Unit tests are respx-mocked against captured products, following the sibling
 crawler test files. Each guard and rule was confirmed to **bite** rather than
 assumed, by mutating the crawler and checking that the tests fail: dropping
 the type gate, reading the vendor as the artist, reading availability by
-truthiness, dropping the placeholder rule, dropping the tag gate, reading
+truthiness, dropping the placeholder rule, admitting a blank variant title,
+honouring the placeholder on a multi-variant product, dropping the tag gate, reading
 only the `Vinyl` tag, turning the variant gate positive, dropping the merch
 check, dropping the inch check, dropping the edition from the title, matching
 the quotes by character class instead of structurally, keying the pressing on
