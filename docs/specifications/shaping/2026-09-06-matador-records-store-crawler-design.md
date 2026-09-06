@@ -217,6 +217,19 @@ product, `Body/Head - Coming Apart`, where `strip_vendor_prefix` is a live
 transformation (`Coming Apart — Dbl LP`). Self-titled albums (`Algiers`,
 `Interpol`, `boygenius`) carry no separator and are left alone.
 
+One product title already carries its format, dash-separated
+(`I'm A Lazy Son...But I'm The Only Son - 12" EP`, whose variant title is the
+same string). Composing `{album} — {descriptor}` naively would name the format
+twice, so a terminal ` - {descriptor}` on the album is dropped before the
+descriptor is appended, and the row reads `I'm A Lazy Son...But I'm The Only
+Son — 12" EP`. Only that dash-separated terminal form is stripped: an album
+that merely ends in the same words, or is nothing but them, is left alone.
+
+**Amendment (2026-09-06, review round 2):** the first draft appended the
+descriptor unconditionally and accepted the duplicated format on that one
+sold-out product as rare; Copilot's second round pointed out it would surface
+the day the product restocks. The strip above is the correction.
+
 ### Availability: the `available` flag; no pre-order bypass
 
 Availability reads Shopify's `available` flag and nothing else. The store's

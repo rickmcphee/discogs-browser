@@ -322,6 +322,34 @@ async def test_descriptor_is_appended_on_a_single_variant_product(crawler):
 
 
 @respx.mock
+async def test_a_title_that_already_ends_in_the_descriptor_names_the_format_once(crawler):
+    # Altered: the captured product whose title already carries " - 12\" EP"
+    # flipped available. The copy inside the title goes and the appended one
+    # stands, so the row is not "... - 12\" EP — 12\" EP".
+    _mock_pages(_lp_only(_LAZY_SON_PRODUCT, available=True))
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [(i["artist"], i["title"]) for i in items] == [
+        ("Lower", "I'm A Lazy Son...But I'm The Only Son — 12\" EP")]
+
+
+@pytest.mark.parametrize("album,descriptor,expected", [
+    ("I'm A Lazy Son...But I'm The Only Son - 12\" EP", "12\" EP", "I'm A Lazy Son...But I'm The Only Son"),
+    ("Album - Black Vinyl  LP", "Black Vinyl LP", "Album"),
+    ("Album – lp", "LP", "Album"),
+    ("Album - LP", "Dbl LP", "Album - LP"),
+    ("Album LP", "LP", "Album LP"),
+    ("Black Vinyl", "Black Vinyl", "Black Vinyl"),
+    ("LP", "LP", "LP"),
+    ("Album - LP - Remastered", "LP", "Album - LP - Remastered"),
+    ("Album", "", "Album"),
+])
+def test_trailing_descriptor_strip(album, descriptor, expected):
+    # Only the dash-separated terminal form is stripped, so an album that
+    # merely ends in the same words, or is nothing but them, is left alone.
+    assert Crawler._without_trailing_descriptor(album, descriptor) == expected
+
+
+@respx.mock
 async def test_delisting_a_cd_sibling_does_not_change_the_vinyl_row_identity(crawler):
     # The failure the always-append rule prevents: keyed on the variant
     # count, this row would be "Adore Life" with the CD listed and

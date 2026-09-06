@@ -160,7 +160,12 @@ class Crawler:
             # True, so an unavailable one is gone allocation.
             if variant.get("available") is not True:
                 continue
-            title = f"{album} (Pre-Order)" if is_preorder else album
+            # A product title that already ends in the descriptor, dash-
+            # separated ("I'm A Lazy Son...But I'm The Only Son - 12\" EP"),
+            # would otherwise name the format twice; the copy inside the
+            # title goes, and the appended one stands as the identity.
+            base = cls._without_trailing_descriptor(album, descriptor)
+            title = f"{base} (Pre-Order)" if is_preorder else base
             # The descriptor is appended on every row, not only when the
             # product has more than one variant. Nearly every product here
             # is multi-variant (its CD sits beside its LP), and the
@@ -294,6 +299,21 @@ class Crawler:
             if rest:
                 return rest
         return " ".join(variant_title.split())
+
+    @staticmethod
+    def _without_trailing_descriptor(album: str, descriptor: str) -> str:
+        # Only the dash-separated form is stripped: a title that merely ends
+        # in the same words ("Black Vinyl" as an album name) is left alone,
+        # and so is a title that is nothing but the descriptor.
+        tokens = descriptor.split()
+        if not tokens:
+            return album
+        parts = [re.sub(_QUOTE_CLASS, _QUOTE_CLASS, re.escape(tok)) for tok in tokens]
+        pattern = r"\s+[-–—]\s+" + r"\s+".join(parts) + r"\s*$"
+        m = re.search(pattern, album, re.IGNORECASE)
+        if m is None or m.start() == 0:
+            return album
+        return album[:m.start()].rstrip()
 
     @staticmethod
     def _album_prefix(base: str, variant_title: str):
