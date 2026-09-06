@@ -67,10 +67,10 @@ def _events_to_replay(request: Request) -> list[dict]:
     anymore under a shared queue.
 
     listing_changed events themselves are never filtered by library
-    ownership here -- Store/Track are global (any user's tab can show any
+    ownership here -- Store is global (any user's tab can show any
     release-crawler match), so a listing_changed event for a release outside
     the calling user's own library still needs to reach them so their
-    Store/Track tab repaints.
+    Store tab repaints.
 
     sync_*/stock_judgment_*/plex_match_* events, in contrast, are tagged with
     the broadcasting user's id (see crawl_manager.py's per-job `broadcast`
