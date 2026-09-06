@@ -1802,6 +1802,81 @@ async def test_drain_one_batch_logs_readable_target_on_stock_item_crawl_failure(
     assert "A - T (key1)" in failure_logs[0]
 
 
+async def _stalled_stock_item_setup():
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        _stock_item_with_source(conn, "key1")
+        db.enqueue_crawl_queue_for_stock_item(conn, "key1")
+        conn.commit()
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+    return manager, crawler_id, fake_plugin
+
+
+async def test_drain_one_batch_discards_the_context_after_a_playwright_timeout(pg_schema):
+    """A navigation that got no response in its whole window leaves the
+    context holding that connection, and Chromium serves the context's next
+    request to the same host from the same socket pool -- so every later
+    crawl on that context inherits the dead connection and burns the full
+    window in turn. The context is closed and dropped from `pages`, so the
+    next unit for this crawler opens a fresh one. Still counted as a failure:
+    the discard is hygiene for the next request, not a retry of this one."""
+    from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+    manager, crawler_id, fake_plugin = await _stalled_stock_item_setup()
+    fake_plugin.search = AsyncMock(side_effect=PlaywrightTimeoutError("Page.goto: Timeout 30000ms exceeded."))
+    stalled_context = AsyncMock()
+    pages = {crawler_id: (stalled_context, MagicMock())}
+
+    with patch("config.load_config", return_value={"crawl_delay_seconds": 0}):
+        await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages=pages)
+
+    stalled_context.close.assert_awaited_once()
+    assert crawler_id not in pages
+    assert manager._site_consecutive_failures[crawler_id] == 1
+
+
+async def test_drain_one_batch_keeps_the_context_after_an_ordinary_crawl_failure(pg_schema):
+    """The discard is keyed on a Playwright timeout specifically. A crawler
+    raising for its own reasons -- unrecognised markup, a rate-limit status
+    -- says nothing about the connection, and recycling the context on every
+    failure would throw away a healthy one each time."""
+    manager, crawler_id, fake_plugin = await _stalled_stock_item_setup()
+    fake_plugin.search = AsyncMock(side_effect=RuntimeError("markup not recognised"))
+    healthy_context = AsyncMock()
+    pages = {crawler_id: (healthy_context, MagicMock())}
+
+    with patch("config.load_config", return_value={"crawl_delay_seconds": 0}):
+        await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages=pages)
+
+    healthy_context.close.assert_not_awaited()
+    assert crawler_id in pages
+
+
+async def test_drain_one_batch_still_drops_a_stalled_context_it_could_not_close(pg_schema, caplog):
+    """Closing a context whose browser connection is wedged can itself fail.
+    The entry still has to leave `pages` -- otherwise the next unit reuses
+    the very context the discard was meant to retire -- and the batch has to
+    finish, so the close error is logged, not raised."""
+    from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+    manager, crawler_id, fake_plugin = await _stalled_stock_item_setup()
+    fake_plugin.search = AsyncMock(side_effect=PlaywrightTimeoutError("Page.goto: Timeout 30000ms exceeded."))
+    wedged_context = AsyncMock()
+    wedged_context.close = AsyncMock(side_effect=RuntimeError("Target closed"))
+    pages = {crawler_id: (wedged_context, MagicMock())}
+
+    with patch("config.load_config", return_value={"crawl_delay_seconds": 0}), \
+         caplog.at_level(logging.WARNING, logger="crawl_manager"):
+        await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages=pages)
+
+    assert crawler_id not in pages
+    assert any("Could not close the stalled browser context" in r.getMessage() for r in caplog.records)
+
+
 async def test_run_catalog_crawler_calls_zero_arg_crawl_catalog_for_plain_catalog_type(manager):
     fake_plugin = MagicMock()
     fake_plugin.crawler_type = "catalog"
