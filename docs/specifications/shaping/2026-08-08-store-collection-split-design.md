@@ -3,7 +3,7 @@
 Date: 2026-08-08
 Branch: `worktree-store-collection-split`
 
-**Amendment (2026-09-06, branch `claude/store-cheapest-filter-x4tdwl`):** the split this design made is undone in the other direction: the Track tab (born here as the library-scoped half of the old In Stock tab) is folded back into Store as two filters, Collection and Wantlist, in the Store tab's `Filter: …` popover. The `library_scope` parameter this design introduced is unchanged and is what those filters send. See [`2026-09-06-track-tab-fold-design.md`](2026-09-06-track-tab-fold-design.md).
+**Amendment (2026-09-06, branch `claude/store-cheapest-filter-x4tdwl`):** the split this design made is undone in the other direction: the Track tab (born here as the library-scoped half of the old In Stock tab) is folded back into Store as two filters, Collection and Wantlist, in the Store tab's `Filter` popover. The `library_scope` parameter this design introduced is unchanged and is what those filters send. See [`2026-09-06-track-tab-fold-design.md`](2026-09-06-track-tab-fold-design.md).
 
 ## Problem
 
