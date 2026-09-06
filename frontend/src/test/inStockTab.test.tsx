@@ -110,6 +110,17 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
+// Recommended lives in the Store tab's Filter popover now, not a <select>:
+// open the panel (idempotently -- it stays open) and read the radio.
+function recommendedRadio(): HTMLInputElement {
+  // Store and Track are both mounted, each with a trigger; only Store's
+  // panel has a Recommended radio, so opening every trigger finds it.
+  for (const button of screen.getAllByRole('button', { name: /^Filter:/ })) {
+    if (button.getAttribute('aria-expanded') !== 'true') fireEvent.click(button)
+  }
+  return screen.getByRole('radio', { name: 'Recommended' }) as HTMLInputElement
+}
+
 describe('In Stock tab', () => {
   it('shows a Store nav button that switches views', async () => {
     render(<App />)
@@ -841,7 +852,7 @@ describe('In Stock tab', () => {
     await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Store'))
     await waitFor(() => {
-      const option = screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement
+      const option = recommendedRadio()
       expect(option.disabled).toBe(false)
     })
   })
@@ -852,11 +863,11 @@ describe('In Stock tab', () => {
     render(<App />)
     await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Store'))
-    await waitFor(() => expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(false))
+    await waitFor(() => expect(recommendedRadio().disabled).toBe(false))
     await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
     const source = getLastCrawlSource()
     source.emit({ status: 'stock_judgment_started' })
-    await waitFor(() => expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(false))
+    await waitFor(() => expect(recommendedRadio().disabled).toBe(false))
   })
 
   it('refetches stock items on a listing_changed SSE event', async () => {
@@ -876,12 +887,12 @@ describe('In Stock tab', () => {
     render(<App />)
     await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Store'))
-    await waitFor(() => expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(true))
+    await waitFor(() => expect(recommendedRadio().disabled).toBe(true))
     await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
     const source = getLastCrawlSource()
     source.emit({ status: 'stock_judgment_started' })
     source.emit({ status: 'stock_judgment_progress', judged: 40, total: 120, id: 1 })
-    await waitFor(() => expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(false))
+    await waitFor(() => expect(recommendedRadio().disabled).toBe(false))
   })
 
   it('keeps Recommended disabled when a first-ever run completes with zero judgments', async () => {
@@ -890,7 +901,7 @@ describe('In Stock tab', () => {
     render(<App />)
     await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Store'))
-    await waitFor(() => expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(true))
+    await waitFor(() => expect(recommendedRadio().disabled).toBe(true))
     await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
     const source = getLastCrawlSource()
     source.emit({ status: 'stock_judgment_started' })
@@ -899,9 +910,9 @@ describe('In Stock tab', () => {
     // event, so a regression in the progress handler's own guard is caught
     // here rather than only in the completion handler's.
     source.emit({ status: 'stock_judgment_progress', judged: 0, total: 120, id: 1 })
-    await waitFor(() => expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(true))
+    await waitFor(() => expect(recommendedRadio().disabled).toBe(true))
     source.emit({ status: 'stock_judgment_complete', judged: 0, id: 1 })
-    await waitFor(() => expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(true))
+    await waitFor(() => expect(recommendedRadio().disabled).toBe(true))
   })
 
   it('does not let a slow bootstrap judgment-status response overwrite a newer SSE-driven one', async () => {
@@ -912,18 +923,18 @@ describe('In Stock tab', () => {
     render(<App />)
     await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Store'))
-    await waitFor(() => expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(true))
+    await waitFor(() => expect(recommendedRadio().disabled).toBe(true))
     await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
     const source = getLastCrawlSource()
     source.emit({ status: 'stock_judgment_started' })
     source.emit({ status: 'stock_judgment_progress', judged: 40, total: 120, id: 1 })
-    await waitFor(() => expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(false))
+    await waitFor(() => expect(recommendedRadio().disabled).toBe(false))
 
     // The bootstrap fetch was in flight the whole time and only resolves now,
     // with a stale any_judged: false snapshot taken before the SSE event.
     resolveBootstrap({ any_judged: false })
     await new Promise((r) => setTimeout(r, 0))
-    expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(false)
+    expect(recommendedRadio().disabled).toBe(false)
   })
 
   it('does not let a slow bootstrap judgment-status response overwrite an explicit Clear', async () => {

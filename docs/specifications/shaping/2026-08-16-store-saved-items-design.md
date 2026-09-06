@@ -2,6 +2,8 @@
 
 Date: 2026-08-16
 
+**Amendment (2026-09-06, branch `claude/store-cheapest-filter-x4tdwl`, second PR):** the Store filter dropdown that the `Saved` option below joins is now a `Filter: …` popover with a radio per option (`frontend/src/components/StockFilter.tsx`); `STORE_FILTERS`, the `saved` request flag and the `stockFilter_store` persistence are unchanged. See [`2026-09-06-store-filter-popover-design.md`](2026-09-06-store-filter-popover-design.md).
+
 ## Problem
 
 The Store tab (`StockBrowser` with `scope="store"`) has no way to mark an

@@ -283,6 +283,7 @@ Out of scope:
 | Sort | Column headers | `<select>` + direction toggle in the toolbar |
 | Toolbar | One row | Search on its own row, controls below |
 | Source filter | Dropdown anchored to its trigger | Sheet |
+| Row-set filter *(added 2026-09-06)* | `Filter: …` dropdown anchored to its trigger | Sheet — see [`2026-09-06-store-filter-popover-design.md`](2026-09-06-store-filter-popover-design.md) |
 | Settings/Account rows | Three table columns | Stacked label → control → description |
 | Status bars | `fixed bottom-0` | In the flow, above the tab bar |
 | Modals | `w-96` | Full width less a gutter, buttons stacked |

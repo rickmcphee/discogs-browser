@@ -1,6 +1,8 @@
 # Track tab wantlist filter (+ tab rename) design
 
 Date: 2026-08-10
+
+**Amendment (2026-09-06, branch `claude/store-cheapest-filter-x4tdwl`, second PR):** the Track tab's `<select>` described below is now a `Filter: …` popover with All / Collection / Wantlist as radios (`frontend/src/components/StockFilter.tsx`); it still defaults to All, still sends the same `library_scope`, and the `stockFilter_track` persistence is unchanged. See [`2026-09-06-store-filter-popover-design.md`](2026-09-06-store-filter-popover-design.md).
 Branch: `worktree-collection-wishlist-filter` (stacked on
 `worktree-collection-price-paid`, PR #76, which is itself stacked on
 `worktree-store-collection-split`, PR #75 — neither merged yet)

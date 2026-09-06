@@ -3,6 +3,8 @@
 Date: 2026-08-26
 Branch: `claude/store-overlapped-artist-filter-i3cp7i`
 
+**Amendment (2026-09-06, branch `claude/store-cheapest-filter-x4tdwl`, second PR):** "the Store branch of the dropdown" below is now a `Filter: …` popover with a radio per option (`frontend/src/components/StockFilter.tsx`); `Overlapped` is still last, `STORE_FILTERS` and the `overlapped` request flag are unchanged, and the Track panel still has no `Overlapped` entry. See [`2026-09-06-store-filter-popover-design.md`](2026-09-06-store-filter-popover-design.md).
+
 ## Problem
 
 The Store tab shows everything the catalog crawlers found, which is a lot

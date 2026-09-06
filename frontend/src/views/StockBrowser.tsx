@@ -2,10 +2,11 @@ import { useState, useEffect, useCallback, useRef, memo } from 'react'
 import { getStock, getStockArtists, saveStockItem, unsaveStockItem } from '../api/client'
 import type { StockItem, StockSortField, SortOrder, StockScope, LibraryScope, Crawler } from '../api/types'
 import { navButtonClass, dismissButtonClass } from '../styles/buttons'
-import { textInputClass, selectClass } from '../styles/inputs'
+import { textInputClass } from '../styles/inputs'
 import { reconcileSelectedArtist } from './artistSelection'
 import SourceFilter from '../components/SourceFilter'
 import StockStats from '../components/StockStats'
+import StockFilter from '../components/StockFilter'
 import { formatPrice } from './formatPrice'
 import { useIsMobile } from '../hooks/useMediaQuery'
 import { ArtistSidebar, ArtistSheetButton } from '../components/ArtistFilter'
@@ -408,37 +409,14 @@ function StockBrowser({
                   disabled={!hiddenCrawlerIdsLoaded}
                 />
               )}
-              <select
-                value={filter}
-                onChange={(e) => changeFilter(e.target.value)}
-                className={`px-3 py-2 text-sm md:py-1 ${selectClass()}`}
-              >
-                {scope === 'track' ? (
-                  <>
-                    <option value="all">All</option>
-                    <option value="collection">Collection</option>
-                    <option value="wantlist">Wantlist</option>
-                  </>
-                ) : (
-                  <>
-                    <option value="all">All</option>
-                    <option value="recommended" disabled={!recommendedAvailable}>Recommended</option>
-                    <option value="saved">Saved</option>
-                    <option value="overlapped">Overlapped</option>
-                  </>
-                )}
-              </select>
-              {scope === 'store' && (
-                <label className="flex h-11 select-none items-center gap-1.5 px-1 text-sm text-gray-300 hover:text-white md:h-auto">
-                  <input
-                    type="checkbox"
-                    checked={cheapest}
-                    onChange={(e) => { setCheapest(e.target.checked); setPage(1) }}
-                    className="accent-white"
-                  />
-                  Cheapest
-                </label>
-              )}
+              <StockFilter
+                scope={scope}
+                filter={filter}
+                onFilterChange={changeFilter}
+                recommendedAvailable={recommendedAvailable}
+                cheapest={cheapest}
+                onCheapestChange={(value) => { setCheapest(value); setPage(1) }}
+              />
               <button
                 onClick={() => setViewMode('list')}
                 title="List view"
