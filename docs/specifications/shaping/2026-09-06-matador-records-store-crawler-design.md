@@ -206,6 +206,14 @@ rather than credited to the label, because a row credited to "Matador
 Records" can never match a Discogs release. The remaining label-vendored
 products are merch, which the type gate drops first.
 
+A **blank** vendor is no artist, and is not a cue to read the tags: only the
+label's own name in the field says the credit is in the tags. Every product
+carries tags, so reading them on a blank vendor would let a store-wide loss of
+`vendor` credit rows from whatever tag sorts first and slip past the
+artist-source guard; a blank-vendor product is skipped, and a catalog of them
+raises. *(Amendment, 2026-09-06, review round 4: the first draft fell through
+to the tags on a blank vendor as well.)*
+
 A tag never overrides a real vendor. Real-vendor products carry other credits
 in their tags (`Stephen Malkmus & The Jicks` on Pavement products, `Archy
 Marshall` on King Krule's), and the vendor is the right answer there.

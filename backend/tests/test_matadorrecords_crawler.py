@@ -408,11 +408,25 @@ async def test_label_vendor_without_an_artist_tag_is_skipped(crawler):
 
 
 @respx.mock
-async def test_blank_vendor_product_is_skipped(crawler):
-    # Altered: vendor blanked, no tags; no live product lacks a vendor.
-    _mock_pages({**_ADORE_LIFE_PRODUCT, "vendor": "  ", "tags": []}, _ANTICS_PRODUCT)
+@pytest.mark.parametrize("vendor", ["", "  ", None])
+async def test_blank_vendor_product_is_skipped_even_with_an_artist_tag(crawler, vendor):
+    # Altered: vendor blanked while the product's own artist tag stays; no
+    # live product lacks a vendor. A blank vendor is no artist, not a cue to
+    # read the tags -- only the label's own name in the field is that.
+    _mock_pages({**_ADORE_LIFE_PRODUCT, "vendor": vendor}, _ANTICS_PRODUCT)
     items = [item async for item in crawler.crawl_catalog()]
-    assert [i["artist"] for i in items] == ["Interpol"]
+    assert [i["artist"] for i in items] == ["Interpol"], vendor
+
+
+@respx.mock
+async def test_a_catalog_that_lost_its_vendors_raises_despite_artist_tags(crawler):
+    # Altered: vendor gone from every product while every tag remains. Every
+    # product carries tags, so reading them on a blank vendor would credit
+    # rows from whatever tag sorts first and slip past the artist guard.
+    _mock_pages({k: v for k, v in _ADORE_LIFE_PRODUCT.items() if k != "vendor"},
+                {**_ANTICS_PRODUCT, "vendor": ""})
+    with pytest.raises(RuntimeError, match="artist-source drift"):
+        [item async for item in crawler.crawl_catalog()]
 
 
 @respx.mock

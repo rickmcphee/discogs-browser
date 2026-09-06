@@ -210,7 +210,12 @@ class Crawler:
     @staticmethod
     def _artist(product: dict) -> str:
         vendor = (product.get("vendor") or "").strip()
-        if vendor and vendor.lower() not in _LABEL_VENDORS:
+        if vendor.lower() not in _LABEL_VENDORS:
+            # A blank vendor is no artist, not a cue to read the tags: every
+            # product carries tags, so a store-wide loss of `vendor` would
+            # otherwise credit rows from whatever tag sorts first and slip
+            # past the artist-source guard. Only the label's own name in the
+            # field says "the credit is in the tags".
             return vendor
         # A product carrying more than one credit is a split, and the row
         # takes the first credit only. The catalog keeps a release's primary
