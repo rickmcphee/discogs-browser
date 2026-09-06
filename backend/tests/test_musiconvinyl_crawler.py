@@ -235,7 +235,7 @@ async def test_same_title_pressings_yield_distinct_rows(crawler):
     # the handle, and so the URL, is what keeps the two item_keys apart.
     _mock_pages(_GYPSY_RED_PRODUCT, _GYPSY_BLACK_PRODUCT)
     items = [item async for item in crawler.crawl_catalog()]
-    assert [i["title"] for i in items] == ["Elegant Gypsy (Pre-Order)", "Elegant Gypsy"]
+    assert [i["title"] for i in items] == ["Elegant Gypsy", "Elegant Gypsy"]
     assert len({i["url"] for i in items}) == 2
 
 
@@ -262,7 +262,7 @@ async def test_vendor_dash_prefix_is_stripped(crawler):
 async def test_self_titled_album_is_not_stripped(crawler):
     _mock_pages(_SELF_TITLED_PRODUCT)
     items = [item async for item in crawler.crawl_catalog()]
-    assert [i["title"] for i in items] == ["The Civil Wars (Pre-Order)"]
+    assert [i["title"] for i in items] == ["The Civil Wars"]
 
 
 @respx.mock
@@ -275,19 +275,14 @@ async def test_various_prefix_is_stripped_against_the_vendor_as_written(crawler)
 
 
 @respx.mock
-async def test_preorder_tag_appends_suffix(crawler):
-    _mock_pages(_FILA_PRODUCT)
+async def test_preorder_tag_adds_no_suffix(crawler):
+    # Pinned absence, as darksiderecords.py pins it: the title feeds
+    # item_key, so a " (Pre-Order)" marker that disappears when the record
+    # ships would re-key the row and orphan everything keyed on the old one.
+    # The tagged and untagged captures of the same album must title alike.
+    _mock_pages(_FILA_PRODUCT, {**_FILA_PRODUCT, "handle": "fila-released", "tags": []})
     items = [item async for item in crawler.crawl_catalog()]
-    assert [i["title"] for i in items] == ["Black Market Gardening (Pre-Order)"]
-
-
-@respx.mock
-async def test_preorder_tag_matching_is_case_insensitive(crawler):
-    # Altered: tag re-cased. has_tag normalises, so the store re-casing its
-    # own tag must not silently stop marking pre-orders.
-    _mock_pages({**_FILA_PRODUCT, "tags": ["PRE-ORDER"]})
-    items = [item async for item in crawler.crawl_catalog()]
-    assert [i["title"] for i in items] == ["Black Market Gardening (Pre-Order)"]
+    assert [i["title"] for i in items] == ["Black Market Gardening", "Black Market Gardening"]
 
 
 @respx.mock

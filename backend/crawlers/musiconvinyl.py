@@ -1,7 +1,7 @@
 import math
 import re
 from typing import AsyncIterator, Optional
-from shopify_catalog import iter_products, has_tag, strip_vendor_prefix, resolve_cover_image
+from shopify_catalog import iter_products, strip_vendor_prefix, resolve_cover_image
 
 # The store's own "ALL VINYL" collection, at the URL the request named. It is
 # the vinyl shelf and not merely a curated subset: confirmed live (2026-09-06)
@@ -21,7 +21,6 @@ _COLLECTION_SLUG = "all-products"
 # that does not begin with it (`Music`) is not a format claim and stays out,
 # which is the safer direction for a single product.
 _VINYL_TYPE_RE = re.compile(r"^vinyl(?![a-z])", re.IGNORECASE)
-_PREORDER_TAG = "pre-order"
 # Bare "Various", not "Various Artists" -- Discogs' own entity name is
 # "Various", and two consumers compare against that exact string:
 # amazon.py's Crawler._artist() only special-cases the literal "various"
@@ -136,7 +135,6 @@ class Crawler:
         # that is the spelling a prefix would carry.
         title = strip_vendor_prefix((product.get("title") or "").strip(), (product.get("vendor") or "").strip())
         url = f"{cls.base_url}/products/{product.get('handle', '')}"
-        is_preorder = has_tag(product, _PREORDER_TAG)
 
         # Non-mapping entries are dropped *before* the count, because
         # len(variants) decides whether a per-variant descriptor is appended
@@ -152,10 +150,14 @@ class Crawler:
             # _has_readable_stock_flag agreeing on what "readable" means.
             # No pre-order bypass: the store flags a purchasable pre-order
             # available, and the few unavailable ones are gone allocation
-            # (a `Ltd. 250` pressing sold through before release).
+            # (a `Ltd. 250` pressing sold through before release). And no
+            # pre-order label either: compute_item_key hashes the title, so
+            # a marker that disappears when the record ships would re-key
+            # the row and orphan its listings, judgments and saves -- the
+            # same identity churn darksiderecords.py declined for its store.
             if variant.get("available") is not True:
                 continue
-            display_title = f"{title} (Pre-Order)" if is_preorder else title
+            display_title = title
             if len(variants) > 1:
                 display_title = f"{display_title} — {cls._variant_descriptor(variant)}"
             items.append({

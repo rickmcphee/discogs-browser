@@ -13,18 +13,14 @@ It is a Shopify storefront, the same family as the other `catalog`-kind
 plugins already in `backend/crawlers/`, most of which are Shopify stores crawled
 through `shopify_catalog.iter_products()`.
 
-Prices are EUR, not the USD every sibling *Shopify* crawler hardcodes — SPV is
-the first Shopify store in the set to price in anything else. It is not the
-first EU-domiciled source, though: `jetglowrecordings.py` (Italian, Big Cartel)
-already hardcodes EUR, and `darkdescentrecords.py` passes its feed's currency
-through. Those two are the precedent, and `currency` is a pass-through string
-end to end. (An earlier draft of this doc called SPV the first EU-domiciled
-source outright; corrected in review on PR #165.)
-
-**Amendment (2026-09-06):** no longer the only Shopify crawler pricing in
-EUR — `musiconvinyl.py` (Music On Vinyl, Dutch, Shopify) hardcodes it too,
-on the same `meta.json` grounding. SPV was the first; "every sibling Shopify
-crawler hardcodes USD" describes the set as it stood when this was written.
+Prices are EUR, not the USD the sibling *Shopify* crawlers had all hardcoded
+before this one. EU-domiciled sources were already the precedent, though:
+`jetglowrecordings.py` (Italian, Big Cartel) hardcodes EUR, and
+`darkdescentrecords.py` passes its feed's currency through; `currency` is a
+pass-through string end to end. (An earlier draft of this doc called SPV the
+first EU-domiciled source outright; corrected in review on PR #165.
+`musiconvinyl.py`, Dutch and Shopify, later joined the EUR sources on the
+same `meta.json` grounding.)
 
 Its title convention quotes the album — `Sodom "1982" LP (exclusive)`,
 `Magnum "The Monster Roars" LP (white & black marbled vinyl)` — rather than

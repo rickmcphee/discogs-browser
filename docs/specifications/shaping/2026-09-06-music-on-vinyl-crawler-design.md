@@ -133,14 +133,24 @@ pressing and separate it from the standard product, and
 `_library_release_match_sql` is exact-or-prefix-with-space, so `Elvis Now`
 still matches through its suffix.
 
-### Availability: the `available` flag; no pre-order bypass
+### Availability: the `available` flag; no pre-order bypass, no pre-order label
 
 Availability reads Shopify's `available` flag and nothing else. The store's
-`Pre-order` tag marks pre-orders and is used for the ` (Pre-Order)` title
-suffix only: 71 of the 77 tagged products report `available: true`, and the
-six that do not are limited pressings sold through before release (`Black
-Market Gardening - Ltd. 250`), so an unavailable pre-order is gone allocation.
-Same call as `rhino.py`, `udiscovermusic.py` and `hammerheart.py`.
+`Pre-order` tag is accurate — 71 of the 77 tagged products report
+`available: true`, and the six that do not are limited pressings sold through
+before release (`Black Market Gardening - Ltd. 250`), so an unavailable
+pre-order is gone allocation — but it is not read. No availability bypass,
+the same call as `rhino.py`, `udiscovermusic.py` and `hammerheart.py`; and
+no ` (Pre-Order)` title suffix either, departing from those siblings:
+`compute_item_key` hashes the title, so a marker that disappears when the
+record ships would re-key the row and orphan the listings, judgments and
+saves hanging off its old identity. `darksiderecords.py` declined the label
+on its store for the same reason, and the row's identity here depends on
+nothing but the product itself.
+
+**Amendment (2026-09-06, review round 1):** the first draft appended the
+suffix, as the sibling Shopify crawlers do. Copilot's review pointed out the
+re-keying; the rule above is the correction, and the tests pin the absence.
 
 ### Price and currency
 
@@ -197,7 +207,7 @@ healthy row.
 | Field | Source |
 | --- | --- |
 | `artist` | `product.vendor`; `Various` when the vendor is `Various Artists` |
-| `title` | `strip_vendor_prefix(product.title, vendor)`, `+ " (Pre-Order)"` when tagged, `+ " — {descriptor}"` only on a multi-variant product |
+| `title` | `strip_vendor_prefix(product.title, vendor)`, `+ " — {descriptor}"` only on a multi-variant product; never a pre-order marker |
 | `format` | `"Vinyl"`, hardcoded |
 | `price` | `variant.price`, guarded; `None` when unusable |
 | `currency` | `"EUR"`, hardcoded |
@@ -211,13 +221,13 @@ products walked, 1,093 pass the type gate, all of them carry a vendor, and
 **1,076 rows yielded** — the 17 products that yield nothing are exactly the
 ones the store flags unavailable. Zero `item_key` collisions, zero blank
 artists or titles, zero whitespace contamination, zero malformed URLs, zero
-missing covers, zero null prices. 69 rows carry the pre-order suffix and 14
-are credited to `Various`.
+missing covers, zero null prices. 14 rows are credited to `Various`.
 
 Unit tests are respx-mocked against captured products, following the sibling
 crawler test files, and cover the type gate, the collective-vendor rewrite,
 the same-title pressings, the exclusive suffix, the vendor strip and its
-self-titled non-case, pre-order suffixing without an availability bypass,
+self-titled non-case, the absence of a pre-order label and of an
+availability bypass,
 the descriptor on an altered multi-variant product, junk variant entries,
 every price shape, cover resolution, and each drift guard on both its firing
 and its non-firing side.
@@ -243,7 +253,13 @@ Each yielded row becomes a `stock_items` row and, via
 `enqueue_crawl_queue_for_stock_item`, one `crawl_queue` target that the enabled
 release crawlers then price. Nothing here selects crawlers — `crawlers.enabled`
 is resolved at dispatch by `_drain_one_batch`, per this repo's per-item fan-out
-invariant.
+invariant. One conditional applies to every catalog source alike: when the
+admin's `crawl_library_only` setting is on, `_sync_stock` still calls the
+helper for every row, but its shared crawlability gate
+(`db._stock_item_crawlable`) enqueues only an item some user has saved or
+that matches a collection or wantlist record through the
+`library_stock_item_keys` view; the rest are listed in the Store tab unpriced
+until that changes.
 
 ## Registration
 
