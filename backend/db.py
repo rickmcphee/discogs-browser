@@ -156,7 +156,7 @@ def _price_sort_sql(column: str) -> str:
     custom field, so it arrives as display text with the currency attached
     ("$30.00", "GBP 9", "1,200.00", "25,50"). Ordering that column as text is
     lexicographic -- "$100" sorts before "$9" -- so both the Collection/Wishlist
-    Price header and the Track tab's price sort pull the leading number out and
+    Price header and the Store tab's price sort pull the leading number out and
     order on that instead. Whatever leads the value is skipped, not parsed, so
     the currency never reaches the comparison.
 
@@ -3102,7 +3102,7 @@ def _collection_artist_clause(user_id_param: str) -> str:
 
     Deliberately artist-level, and deliberately not `_library_match_fragment`
     with the title half made optional: that fragment answers the release-level
-    question the Track tab's Collection filter already asks, and a flag on it
+    question the Store tab's Collection filter already asks, and a flag on it
     would read as two spellings of one idea rather than the two different
     questions they are. This one is the complement -- the rest of the shelf by
     artists already on it, most of which the user does not own.

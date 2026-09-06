@@ -3,6 +3,8 @@
 Date: 2026-08-27
 Branch: `claude/mobile-optimized-web-qmv4u4`
 
+**Amendment (2026-09-06, branch `claude/store-cheapest-filter-x4tdwl`):** the bottom tab bar has one tab fewer: Track folded into Store, whose `Filter: …` sheet now carries Collection and Wantlist. Every "Track" in the tables and text below reads as the Store tab under those filters. See [`2026-09-06-track-tab-fold-design.md`](2026-09-06-track-tab-fold-design.md).
+
 ## Problem
 
 The SPA has only ever been laid out for a desktop window. On a phone every
@@ -283,6 +285,7 @@ Out of scope:
 | Sort | Column headers | `<select>` + direction toggle in the toolbar |
 | Toolbar | One row | Search on its own row, controls below |
 | Source filter | Dropdown anchored to its trigger | Sheet |
+| Row-set filter *(added 2026-09-06)* | `Filter: …` dropdown anchored to its trigger | Sheet — see [`2026-09-06-store-filter-popover-design.md`](2026-09-06-store-filter-popover-design.md) |
 | Settings/Account rows | Three table columns | Stacked label → control → description |
 | Status bars | `fixed bottom-0` | In the flow, above the tab bar |
 | Modals | `w-96` | Full width less a gutter, buttons stacked |
