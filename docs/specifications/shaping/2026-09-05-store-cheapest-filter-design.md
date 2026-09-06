@@ -3,6 +3,8 @@
 Date: 2026-09-05
 Branch: `claude/store-cheapest-filter-x4tdwl`
 
+**Amendment (2026-09-06, branch `claude/store-cheapest-filter-x4tdwl`):** the Track tab is gone, so the "Track tab" bullet under Out of scope is moot: Collection and Wantlist are Store filters now and Cheapest stacks on them, which under Wantlist reads as "the cheapest place to buy each record I want". The reasoning for leaving Track alone still describes a view someone may want, and the checkbox sits beside those filters to untick. See [`2026-09-06-track-tab-fold-design.md`](2026-09-06-track-tab-fold-design.md).
+
 ## Problem
 
 Several stores stock the same record, and the Store tab shows every one of

@@ -1,7 +1,7 @@
 interface Tab<T extends string> {
   view: T
   label: string
-  icon: 'collection' | 'wantlist' | 'store' | 'track'
+  icon: 'collection' | 'wantlist' | 'store'
 }
 
 interface Props<T extends string> {
@@ -37,17 +37,10 @@ function TabIcon({ name }: { name: Tab<string>['icon'] }) {
           <path d="M9 8V6a3 3 0 0 1 6 0v2" />
         </svg>
       )
-    case 'track':
-      return (
-        <svg {...common} aria-hidden="true">
-          <path d="M2 12s3.6-6 10-6 10 6 10 6-3.6 6-10 6-10-6-10-6Z" />
-          <circle cx="12" cy="12" r="2.5" />
-        </svg>
-      )
   }
 }
 
-// The four library tabs, thumb-height, on every mobile screen. A flow child of
+// The library tabs, thumb-height, on every mobile screen. A flow child of
 // the shell's flex column rather than a fixed bar: the shell is already
 // viewport-height, so this shrinks <main> by exactly its own height and no
 // scroll container needs matching bottom padding.

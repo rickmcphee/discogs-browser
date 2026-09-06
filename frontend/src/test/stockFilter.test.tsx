@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import StockFilter from '../components/StockFilter'
-import type { StockScope } from '../api/types'
 
 const defaultMatchMedia = window.matchMedia
 
@@ -25,7 +24,6 @@ afterEach(() => {
 })
 
 function renderFilter(overrides: Partial<{
-  scope: StockScope
   filter: string
   onFilterChange: (value: string) => void
   recommendedAvailable: boolean
@@ -33,7 +31,6 @@ function renderFilter(overrides: Partial<{
   onCheapestChange: (value: boolean) => void
 }> = {}) {
   const props = {
-    scope: 'store' as StockScope,
     filter: 'all',
     onFilterChange: vi.fn(),
     recommendedAvailable: false,
@@ -55,25 +52,21 @@ describe('StockFilter', () => {
     expect(screen.queryByRole('radio')).toBeNull()
   })
 
-  it('opens an anchored panel listing the Store filters in order, with Cheapest beneath them', () => {
+  it('opens an anchored panel listing every filter in order, library filters last, with Cheapest beneath them', () => {
     renderFilter()
     fireEvent.click(trigger())
     expect(trigger().getAttribute('aria-expanded')).toBe('true')
     expect(screen.getAllByRole('radio').map((r) => (r as HTMLInputElement).value))
-      .toEqual(['all', 'recommended', 'saved', 'overlapped'])
+      .toEqual(['all', 'recommended', 'saved', 'overlapped', 'collection', 'wantlist'])
     expect((screen.getByRole('radio', { name: 'All' }) as HTMLInputElement).checked).toBe(true)
     expect(screen.getByRole('checkbox', { name: 'Cheapest' })).toBeInTheDocument()
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 
-  it('lists the Track filters without Cheapest, and never reads Cheapest into the Track trigger', () => {
-    renderFilter({ scope: 'track', cheapest: true })
-    expect(trigger()).toHaveTextContent('Filter: All')
-    expect(trigger()).not.toHaveTextContent('Cheapest')
-    fireEvent.click(trigger())
-    expect(screen.getAllByRole('radio').map((r) => (r as HTMLInputElement).value))
-      .toEqual(['all', 'collection', 'wantlist'])
-    expect(screen.queryByRole('checkbox', { name: 'Cheapest' })).toBeNull()
+  it('reads a library filter into the trigger like any other', () => {
+    renderFilter({ filter: 'wantlist', cheapest: true })
+    expect(trigger()).toHaveTextContent('Filter: Wantlist · Cheapest')
+    expect(trigger()).toHaveClass('bg-white')
   })
 
   it('disables Recommended until recommendations are available', () => {

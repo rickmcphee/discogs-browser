@@ -2,6 +2,8 @@
 
 Date: 2026-08-10
 
+**Amendment (2026-09-06, branch `claude/store-cheapest-filter-x4tdwl`, second note):** the Track tab this design's Wantlist filter and rename belong to is gone; Collection and Wantlist are radios in the Store tab's `Filter: …` popover, alongside All / Recommended / Saved / Overlapped, sending the same `library_scope`. Track's "All" (the union) has no Store equivalent and was not carried over. See [`2026-09-06-track-tab-fold-design.md`](2026-09-06-track-tab-fold-design.md).
+
 **Amendment (2026-09-06, branch `claude/store-cheapest-filter-x4tdwl`, second PR):** the Track tab's `<select>` described below is now a `Filter: …` popover with All / Collection / Wantlist as radios (`frontend/src/components/StockFilter.tsx`); it still defaults to All, still sends the same `library_scope`, and the `stockFilter_track` persistence is unchanged. See [`2026-09-06-store-filter-popover-design.md`](2026-09-06-store-filter-popover-design.md).
 Branch: `worktree-collection-wishlist-filter` (stacked on
 `worktree-collection-price-paid`, PR #76, which is itself stacked on

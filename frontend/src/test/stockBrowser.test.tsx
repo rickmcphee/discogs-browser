@@ -231,12 +231,12 @@ describe('StockBrowser', () => {
     })
   })
 
-  it('defaults to All, lists All/Recommended/Saved/Overlapped, and disables Recommended when unavailable', async () => {
+  it('defaults to All, lists All/Recommended/Saved/Overlapped/Collection/Wantlist, and disables Recommended when unavailable', async () => {
     render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     expect(filterValue()).toBe('all')
     openFilter()
-    expect(screen.getAllByRole('radio').map((r) => (r as HTMLInputElement).value)).toEqual(['all', 'recommended', 'saved', 'overlapped'])
+    expect(screen.getAllByRole('radio').map((r) => (r as HTMLInputElement).value)).toEqual(['all', 'recommended', 'saved', 'overlapped', 'collection', 'wantlist'])
     expect((screen.getByRole('radio', { name: 'All' }) as HTMLInputElement).disabled).toBe(false)
     expect((screen.getByRole('radio', { name: 'Recommended' }) as HTMLInputElement).disabled).toBe(true)
   })
@@ -280,21 +280,14 @@ describe('StockBrowser', () => {
   })
 
   it('renders a Saved option in the Store filter dropdown', async () => {
-    render(<StockBrowser scope="store" />)
+    render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     openFilter()
     expect(screen.getByRole('radio', { name: 'Saved' })).toBeTruthy()
   })
 
-  it('does not render a Saved option in the Track filter dropdown', async () => {
-    render(<StockBrowser scope="track" />)
-    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    openFilter()
-    expect(screen.queryByRole('radio', { name: 'Saved' })).toBeNull()
-  })
-
   it('selecting Saved sends saved=true and no recommended param', async () => {
-    render(<StockBrowser scope="store" />)
+    render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     chooseFilter('saved')
     await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ saved: true, recommended: false })))
@@ -302,20 +295,13 @@ describe('StockBrowser', () => {
 
   it('shows saved-specific empty-state copy under the Saved filter with no results', async () => {
     getStock.mockResolvedValue({ total: 0, row_total: 0, page: 1, per_page: 250, items: [] })
-    render(<StockBrowser scope="store" />)
+    render(<StockBrowser />)
     chooseFilter('saved')
     await waitFor(() => expect(screen.getByText("You haven't saved anything yet.")).toBeTruthy())
   })
 
-  it('does not render an Overlapped option in the Track filter dropdown', async () => {
-    render(<StockBrowser scope="track" />)
-    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    openFilter()
-    expect(screen.queryByRole('radio', { name: 'Overlapped' })).toBeNull()
-  })
-
   it('selecting Overlapped sends overlapped=true and no other Store filter', async () => {
-    render(<StockBrowser scope="store" />)
+    render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     chooseFilter('overlapped')
     await waitFor(() => expect(getStock).toHaveBeenCalledWith(
@@ -324,7 +310,7 @@ describe('StockBrowser', () => {
   })
 
   it('refetches the artist sidebar scoped to overlapped when Overlapped is selected', async () => {
-    render(<StockBrowser scope="store" />)
+    render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     chooseFilter('overlapped')
     await waitFor(() => expect(getStockArtists).toHaveBeenLastCalledWith({ libraryScope: undefined, recommended: false, saved: false, overlapped: true, hiddenCrawlerIds: [] }))
@@ -332,14 +318,14 @@ describe('StockBrowser', () => {
 
   it('shows overlapped-specific empty-state copy under the Overlapped filter with no results', async () => {
     getStock.mockResolvedValue({ total: 0, row_total: 0, page: 1, per_page: 250, items: [] })
-    render(<StockBrowser scope="store" />)
+    render(<StockBrowser />)
     chooseFilter('overlapped')
     await waitFor(() => expect(screen.getByText('Nothing by an artist in your collection is in stock right now.')).toBeTruthy())
   })
 
   it('restores a previously-selected Overlapped filter from localStorage', async () => {
     localStorage.setItem('stockFilter_store', 'overlapped')
-    render(<StockBrowser scope="store" />)
+    render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     expect(filterValue()).toBe('overlapped')
   })
@@ -407,23 +393,27 @@ describe('StockBrowser', () => {
     await waitFor(() => expect(filterValue()).toBe('recommended'))
   })
 
-  it('scope="track" sends libraryScope and shows an All/Collection/Wantlist dropdown', async () => {
-    render(<StockBrowser scope="track" />)
+  it('lists Collection and Wantlist after the Store filters, and sends libraryScope only for those', async () => {
+    render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     expect(filterValue()).toBe('all')
+    expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ libraryScope: undefined }))
     openFilter()
-    expect(screen.getAllByRole('radio').map((r) => (r as HTMLInputElement).value)).toEqual(['all', 'collection', 'wantlist'])
-    expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ libraryScope: 'all' }))
+    expect(screen.getAllByRole('radio').map((r) => (r as HTMLInputElement).value))
+      .toEqual(['all', 'recommended', 'saved', 'overlapped', 'collection', 'wantlist'])
+    chooseFilter('collection')
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ libraryScope: 'collection' })))
   })
 
-  it('scope="track" sends libraryScope on the artist sidebar fetch too', async () => {
-    render(<StockBrowser scope="track" />)
+  it('sends libraryScope on the artist sidebar fetch too', async () => {
+    render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    expect(getStockArtists).toHaveBeenCalledWith({ libraryScope: 'all', recommended: false, saved: false, overlapped: false, hiddenCrawlerIds: [] })
+    chooseFilter('collection')
+    await waitFor(() => expect(getStockArtists).toHaveBeenLastCalledWith({ libraryScope: 'collection', recommended: false, saved: false, overlapped: false, hiddenCrawlerIds: [] }))
   })
 
-  it('changing the Track filter refetches both the items and the artist sidebar with the new libraryScope', async () => {
-    render(<StockBrowser scope="track" />)
+  it('changing between Collection and Wantlist refetches both the items and the artist sidebar with the new libraryScope', async () => {
+    render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     chooseFilter('wantlist')
     await waitFor(() =>
@@ -436,8 +426,8 @@ describe('StockBrowser', () => {
     await waitFor(() => expect(getStockArtists).toHaveBeenLastCalledWith({ libraryScope: 'collection', recommended: false, saved: false, overlapped: false, hiddenCrawlerIds: [] }))
   })
 
-  it('clears a selected artist when the Track filter changes, and re-highlights All', async () => {
-    render(<StockBrowser scope="track" />)
+  it('clears a selected artist when a library filter is chosen, and re-highlights All', async () => {
+    render(<StockBrowser />)
     await waitFor(() => expect(screen.getByRole('button', { name: 'NAILS' })).toBeTruthy())
     fireEvent.click(screen.getByRole('button', { name: 'NAILS' }))
     await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ artist: 'NAILS' })))
@@ -462,9 +452,9 @@ describe('StockBrowser', () => {
     expect(screen.getByRole('button', { name: 'All' }).className).toContain('bg-white')
   })
 
-  it('resets to page 1 when the Track filter changes', async () => {
+  it('resets to page 1 when a library filter is chosen', async () => {
     getStock.mockResolvedValue({ total: 500, row_total: 500, page: 1, per_page: 250, items })
-    render(<StockBrowser scope="track" />)
+    render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     fireEvent.click(screen.getByText('Next →'))
     await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2 })))
@@ -474,68 +464,65 @@ describe('StockBrowser', () => {
     )
   })
 
-  it('persists the Track filter under stockFilter_track and restores it on remount', async () => {
-    const { unmount } = render(<StockBrowser scope="track" />)
+  it('persists a library filter under stockFilter_store and restores it on remount', async () => {
+    const { unmount } = render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     chooseFilter('collection')
-    await waitFor(() => expect(localStorage.getItem('stockFilter_track')).toBe('collection'))
+    await waitFor(() => expect(localStorage.getItem('stockFilter_store')).toBe('collection'))
     unmount()
-    render(<StockBrowser scope="track" />)
+    render(<StockBrowser />)
     await waitFor(() => expect(filterValue()).toBe('collection'))
+    expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ libraryScope: 'collection' }))
   })
 
   // A select whose value matches no option falls back to its first option, so
   // the rendered value alone can't tell a rejected stored value from an
   // accepted one -- the fetch and the rewritten key are what actually pin it.
-  it('ignores a stored filter value that is not valid for the scope', async () => {
+  it('ignores a stored filter value that is not a filter', async () => {
     // 'wishlist' is the backend spelling and never a valid filter value. Unlike
     // 'recommended' it isn't also swept up by the recommendedAvailable reset
     // effect, so the allow-set is the only thing that can reject it.
-    localStorage.setItem('stockFilter_track', 'wishlist')
-    render(<StockBrowser scope="track" />)
-    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    expect(filterValue()).toBe('all')
-    expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ libraryScope: 'all' }))
-    expect(getStockArtists).toHaveBeenCalledWith({ libraryScope: 'all', recommended: false, saved: false, overlapped: false, hiddenCrawlerIds: [] })
-    expect(localStorage.getItem('stockFilter_track')).toBe('all')
-  })
-
-  it('ignores a Store filter value stored under the Track key', async () => {
-    localStorage.setItem('stockFilter_track', 'recommended')
-    render(<StockBrowser scope="track" />)
-    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    expect(filterValue()).toBe('all')
-    expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ libraryScope: 'all' }))
-  })
-
-  it('ignores a stored Track filter value on the Store tab', async () => {
-    localStorage.setItem('stockFilter_store', 'wantlist')
+    localStorage.setItem('stockFilter_store', 'wishlist')
     render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     expect(filterValue()).toBe('all')
+    expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ libraryScope: undefined }))
+    expect(getStockArtists).toHaveBeenCalledWith({ libraryScope: undefined, recommended: false, saved: false, overlapped: false, hiddenCrawlerIds: [] })
     expect(localStorage.getItem('stockFilter_store')).toBe('all')
   })
 
-  it('scope="store" (default) keeps the Store dropdown and sends no libraryScope', async () => {
+  it('restores a stored Wantlist filter, which was the Track tab\'s and is now a Store filter', async () => {
+    localStorage.setItem('stockFilter_store', 'wantlist')
     render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    openFilter()
-    expect(screen.getAllByRole('radio').map((r) => (r as HTMLInputElement).value)).toEqual(['all', 'recommended', 'saved', 'overlapped'])
-    expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ libraryScope: undefined }))
+    expect(filterValue()).toBe('wantlist')
+    expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ libraryScope: 'wantlist' }))
   })
 
-  it('renders the Price column under every Track filter value', async () => {
-    render(<StockBrowser scope="track" />)
+  it('sends no libraryScope under the non-library filters', async () => {
+    render(<StockBrowser recommendedAvailable />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    expect(screen.getByText(/Price/)).toBeTruthy()
-    chooseFilter('wantlist')
-    await waitFor(() => expect(screen.getByText(/Price/)).toBeTruthy())
+    for (const value of ['recommended', 'saved', 'overlapped']) {
+      chooseFilter(value)
+      await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ [value]: true, libraryScope: undefined })))
+    }
   })
 
-  it('shows a filter-specific empty state on the Track tab', async () => {
+  it('renders the Price column under Collection only', async () => {
+    render(<StockBrowser />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    expect(screen.queryByText(/Price/)).toBeNull()
+    chooseFilter('collection')
+    await waitFor(() => expect(screen.getByText(/Price/)).toBeTruthy())
+    // A wantlist row has no paid price, so the column would be all dashes.
+    chooseFilter('wantlist')
+    await waitFor(() => expect(screen.queryByText(/Price/)).toBeNull())
+  })
+
+  it('shows a filter-specific empty state under the library filters', async () => {
     getStock.mockResolvedValue({ total: 0, row_total: 0, page: 1, per_page: 250, items: [] })
-    render(<StockBrowser scope="track" />)
-    await waitFor(() => expect(screen.getByText(/Nothing you're tracking is in stock/)).toBeTruthy())
+    render(<StockBrowser />)
+    await waitFor(() => expect(screen.getByText(/No in-stock items yet/)).toBeTruthy())
     chooseFilter('wantlist')
     await waitFor(() => expect(screen.getByText(/Nothing on your wantlist is in stock/)).toBeTruthy())
     chooseFilter('collection')
@@ -550,10 +537,10 @@ describe('StockBrowser', () => {
     await waitFor(() => expect(screen.getByText(/Nothing recommended is in stock/)).toBeTruthy())
   })
 
-  it('shows the filter-specific Track empty state in tile view too', async () => {
+  it('shows the filter-specific library empty state in tile view too', async () => {
     getStock.mockResolvedValue({ total: 0, row_total: 0, page: 1, per_page: 250, items: [] })
-    render(<StockBrowser scope="track" />)
-    await waitFor(() => expect(screen.getByText(/Nothing you're tracking is in stock/)).toBeTruthy())
+    render(<StockBrowser />)
+    await waitFor(() => expect(screen.getByText(/No in-stock items yet/)).toBeTruthy())
     fireEvent.click(screen.getByTitle('Tile view'))
     chooseFilter('wantlist')
     await waitFor(() => expect(screen.getByText(/Nothing on your wantlist is in stock/)).toBeTruthy())
@@ -562,34 +549,11 @@ describe('StockBrowser', () => {
   // The backend pins the discogs_price sort subquery to collection scope, so
   // under Wantlist the column is all — and the sort silently degrades to artist
   // order. A dead control is worse than no control, so the header goes plain.
-  it('renders the Price header as a sort control under All and Collection but plain text under Wantlist', async () => {
-    render(<StockBrowser scope="track" />)
+  it('resets a discogs_price sort to artist when leaving the Collection filter', async () => {
+    render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    const priceHeader = () => screen.getByText(/Price/).closest('th') as HTMLTableCellElement
-    expect(priceHeader().querySelector('button')).toBeTruthy()
-
-    chooseFilter('wantlist')
-    await waitFor(() => expect(priceHeader().querySelector('button')).toBeNull())
-    expect(priceHeader().getAttribute('aria-sort')).toBeNull()
-
     chooseFilter('collection')
-    await waitFor(() => expect(priceHeader().querySelector('button')).toBeTruthy())
-  })
-
-  it('does not sort by discogs_price when the plain Wantlist Price header is clicked', async () => {
-    render(<StockBrowser scope="track" />)
-    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    chooseFilter('wantlist')
-    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ libraryScope: 'wantlist' })))
-    getStock.mockClear()
-    fireEvent.click(screen.getByText(/Price/))
-    await new Promise((r) => setTimeout(r, 0))
-    expect(getStock).not.toHaveBeenCalled()
-  })
-
-  it('resets a discogs_price sort to artist when switching to the Wantlist filter', async () => {
-    render(<StockBrowser scope="track" />)
-    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    await waitFor(() => expect(screen.getByText(/Price/)).toBeTruthy())
     fireEvent.click(screen.getByText(/Price/))
     await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'discogs_price' })))
     chooseFilter('wantlist')
@@ -598,14 +562,14 @@ describe('StockBrowser', () => {
     )
     // Deliberately not restored -- the reset is a real state change, not a
     // suppressed view of a sort that survives underneath.
-    chooseFilter('all')
+    chooseFilter('collection')
     await waitFor(() =>
-      expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ libraryScope: 'all', sort: 'artist' }))
+      expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ libraryScope: 'collection', sort: 'artist' }))
     )
   })
 
   it('keeps a non-price sort intact when switching to the Wantlist filter', async () => {
-    render(<StockBrowser scope="track" />)
+    render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     fireEvent.click(screen.getByText(/^Title/))
     await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'title' })))
@@ -615,58 +579,56 @@ describe('StockBrowser', () => {
     )
   })
 
-  it('renders the Price column by default in Track scope', async () => {
-    render(<StockBrowser scope="track" />)
+  it('hides the Price column under Collection when hasPriceField is false', async () => {
+    render(<StockBrowser hasPriceField={false} />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    expect(screen.getByText(/Price/)).toBeTruthy()
-  })
-
-  it('hides the Price column in Track scope when hasPriceField is false', async () => {
-    render(<StockBrowser scope="track" hasPriceField={false} />)
-    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    chooseFilter('collection')
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ libraryScope: 'collection' })))
     expect(screen.queryByText(/Price/)).toBeNull()
   })
 
-  it('narrows the empty-state colSpan in Track scope when hasPriceField is false', async () => {
+  it('widens the empty-state colSpan by the Price column under Collection', async () => {
     getStock.mockResolvedValue({ total: 0, row_total: 0, page: 1, per_page: 250, items: [] })
-    render(<StockBrowser scope="track" hasPriceField={false} />)
-    const emptyRow = await screen.findByText(/Nothing you're tracking is in stock/)
-    expect(emptyRow.closest('td')).toHaveAttribute('colSpan', '6')
+    render(<StockBrowser />)
+    const emptyRow = await screen.findByText(/No in-stock items yet/)
+    expect(emptyRow.closest('td')).toHaveAttribute('colSpan', '7')
+    chooseFilter('collection')
+    const collectionRow = await screen.findByText(/Nothing in your collection is in stock/)
+    expect(collectionRow.closest('td')).toHaveAttribute('colSpan', '8')
   })
 
-  it('does not render a Price column in Store scope even when hasPriceField is true', async () => {
+  it('does not render a Price column under All even when hasPriceField is true', async () => {
     render(<StockBrowser hasPriceField />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     expect(screen.queryByText(/Price/)).toBeNull()
   })
 
-  it('does not render a Price column in Store scope', async () => {
+  it('renders a Price column under Collection showing the matched discogs_price, or — when missing', async () => {
     render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    expect(screen.queryByText(/Price/)).toBeNull()
-  })
-
-  it('renders a Price column in Track scope showing the matched discogs_price, or — when missing', async () => {
-    render(<StockBrowser scope="track" />)
-    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    expect(screen.getByText(/Price/)).toBeTruthy()
+    chooseFilter('collection')
+    await waitFor(() => expect(screen.getByText(/Price/)).toBeTruthy())
     expect(screen.getByText('—')).toBeTruthy()
     expect(screen.getByText('42.50')).toBeTruthy()
   })
 
-  it('sorts by discogs_price when the Price column header is clicked in Track scope', async () => {
-    render(<StockBrowser scope="track" />)
+  it('sorts by discogs_price when the Price column header is clicked under Collection', async () => {
+    render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    chooseFilter('collection')
+    await waitFor(() => expect(screen.getByText(/Price/)).toBeTruthy())
     fireEvent.click(screen.getByText(/Price/))
     await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ sort: 'discogs_price', order: 'asc' })))
   })
 
-  it('resets a discogs_price sort to artist when hasPriceField flips to false in Track scope', async () => {
-    const { rerender } = render(<StockBrowser scope="track" hasPriceField={true} />)
+  it('resets a discogs_price sort to artist when hasPriceField flips to false under Collection', async () => {
+    const { rerender } = render(<StockBrowser hasPriceField={true} />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    chooseFilter('collection')
+    await waitFor(() => expect(screen.getByText(/Price/)).toBeTruthy())
     fireEvent.click(screen.getByText(/Price/))
     await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'discogs_price' })))
-    rerender(<StockBrowser scope="track" hasPriceField={false} />)
+    rerender(<StockBrowser hasPriceField={false} />)
     await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ sort: 'artist', order: 'asc' })))
   })
 
@@ -677,43 +639,16 @@ describe('StockBrowser', () => {
     await waitFor(() => expect(localStorage.getItem('collectionViewMode_store')).toBe('tiles'))
   })
 
-  it('keeps Store and Track filter/view-mode selections independent in localStorage', async () => {
-    const { unmount: unmountStore } = render(<StockBrowser scope="store" recommendedAvailable />)
-    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    chooseFilter('recommended')
-    fireEvent.click(screen.getByTitle('Tile view'))
-    await waitFor(() => expect(localStorage.getItem('stockFilter_store')).toBe('recommended'))
-    await waitFor(() => expect(localStorage.getItem('collectionViewMode_store')).toBe('tiles'))
-    unmountStore()
-
-    render(<StockBrowser scope="track" />)
-    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    fireEvent.click(screen.getByTitle('List view'))
-    await waitFor(() => expect(localStorage.getItem('collectionViewMode_track')).toBe('list'))
-
-    // Store's keys must be untouched by anything Track did.
-    expect(localStorage.getItem('stockFilter_store')).toBe('recommended')
-    expect(localStorage.getItem('collectionViewMode_store')).toBe('tiles')
-    // Track's own key defaults to 'all' -- it never inherited Store's 'recommended'.
-    expect(localStorage.getItem('stockFilter_track')).toBe('all')
-  })
-
   it('paginates on row_total, not the item count, so a flattened Cost sort reaches its later pages', async () => {
     // Under a Cost sort the response carries every comparison row in the same
     // ordering, so there are more rows than items. Paginating on the item
     // count would strand the rows past the first page with no way to reach
     // them -- the browser would render one page and hide the Next button.
     getStock.mockResolvedValue({ total: 2, row_total: 500, page: 1, per_page: 250, items })
-    // Track scope because it is the one that prints the count; Store surfaces
-    // the same number through the Stats panel instead. The paging itself is
-    // scope-independent.
-    render(<StockBrowser scope="track" />)
+    render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
 
     expect(screen.getByText('Page 1 of 2')).toBeTruthy()
-    // The label keeps counting items, so it still agrees with the Stats
-    // breakdown, whose per-source counts sum to that same number.
-    expect(screen.getByText('2 items')).toBeTruthy()
 
     fireEvent.click(screen.getByText('Next →'))
     await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ page: 2 })))
@@ -792,21 +727,14 @@ describe('StockBrowser', () => {
   })
 
   it('renders a bookmark button per row in Store scope list view', async () => {
-    render(<StockBrowser scope="store" />)
+    render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     expect(screen.getAllByTitle('Save for later').length).toBeGreaterThanOrEqual(1)
   })
 
-  it('does not render a bookmark button in Track scope', async () => {
-    render(<StockBrowser scope="track" />)
-    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    expect(screen.queryByTitle('Save for later')).toBeNull()
-    expect(screen.queryByTitle('Remove from saved')).toBeNull()
-  })
-
   it('clicking the bookmark button calls saveStockItem with the item_key and flips the icon title', async () => {
     saveStockItem.mockResolvedValue({ saved: true })
-    render(<StockBrowser scope="store" />)
+    render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     const button = screen.getAllByTitle('Save for later')[0]
     fireEvent.click(button)
@@ -837,7 +765,7 @@ describe('StockBrowser', () => {
       total: 2, row_total: 2, page: 1, per_page: 250,
       items: [{ ...items[0], saved: true }, items[1]],
     })
-    render(<StockBrowser scope="store" />)
+    render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
 
     const button = screen.getAllByTitle('Save for later')[0]
@@ -866,7 +794,7 @@ describe('StockBrowser', () => {
   })
 
   it('renders a bookmark button on the tile in tile view', async () => {
-    render(<StockBrowser scope="store" />)
+    render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     fireEvent.click(screen.getByTitle('Tile view'))
     await waitFor(() => expect(screen.getAllByTitle('Save for later').length).toBeGreaterThanOrEqual(1))
@@ -874,7 +802,7 @@ describe('StockBrowser', () => {
 
   it('clicking the tile bookmark button calls saveStockItem and prevents the enclosing tile link from navigating', async () => {
     saveStockItem.mockResolvedValue({ saved: true })
-    render(<StockBrowser scope="store" />)
+    render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     fireEvent.click(screen.getByTitle('Tile view'))
     await waitFor(() => expect(screen.getAllByTitle('Save for later').length).toBeGreaterThanOrEqual(1))
@@ -904,7 +832,7 @@ describe('StockBrowser', () => {
       items: [{ ...items[0], saved: true }],
     })
     unsaveStockItem.mockResolvedValue({ saved: false })
-    render(<StockBrowser scope="store" />)
+    render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     chooseFilter('saved')
     const button = await screen.findByTitle('Remove from saved')
@@ -918,7 +846,7 @@ describe('StockBrowser', () => {
       total: 1, row_total: 1, page: 1, per_page: 250,
       items: [{ ...items[0], saved: true }],
     })
-    render(<StockBrowser scope="store" />)
+    render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     chooseFilter('saved')
     const button = await screen.findByTitle('Remove from saved')
@@ -945,7 +873,7 @@ describe('StockBrowser', () => {
       items: [{ ...items[0], saved: true }],
     })
     unsaveStockItem.mockResolvedValue({ saved: false })
-    render(<StockBrowser scope="store" />)
+    render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     chooseFilter('saved')
     const button = await screen.findByTitle('Remove from saved')
@@ -980,7 +908,7 @@ describe('StockBrowser', () => {
       return new Promise((resolve) => { resolveSearchCall = resolve })
     })
 
-    render(<StockBrowser scope="store" />)
+    render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
 
     const button = screen.getAllByTitle('Remove from saved')[0]
@@ -1021,12 +949,14 @@ describe('StockBrowser Cheapest filter', () => {
     expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ cheapest: false }))
   })
 
-  it('does not render the Cheapest checkbox on Track', async () => {
-    render(<StockBrowser scope="track" />)
+  it('stacks Cheapest on a library filter', async () => {
+    render(<StockBrowser />)
     await waitFor(() => expect(getStock).toHaveBeenCalled())
-    openFilter()
-    expect(screen.queryByRole('checkbox', { name: 'Cheapest' })).toBeNull()
-    expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ cheapest: false }))
+    chooseFilter('collection')
+    fireEvent.click(cheapestBox())
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({
+      libraryScope: 'collection', cheapest: true,
+    })))
   })
 
   it('ticking Cheapest refetches from page 1 with cheapest set, and stacks on the current filter', async () => {
@@ -1054,13 +984,6 @@ describe('StockBrowser Cheapest filter', () => {
     render(<StockBrowser />)
     await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ cheapest: true })))
     expect(cheapestBox().checked).toBe(true)
-  })
-
-  it('does not let a stored Cheapest choice leak into Track', async () => {
-    localStorage.setItem('stockCheapest', 'true')
-    render(<StockBrowser scope="track" />)
-    await waitFor(() => expect(getStock).toHaveBeenCalled())
-    expect(getStock).not.toHaveBeenCalledWith(expect.objectContaining({ cheapest: true }))
   })
 
   it('passes Cheapest through to the Stats panel', async () => {
@@ -1102,29 +1025,19 @@ describe('StockBrowser Source filter', () => {
     expect(getStockArtists).toHaveBeenCalled()
   })
 
-  it('offers Stats beside Source on the store tab, and not on the track tab', async () => {
-    const { unmount } = render(<StockBrowser crawlers={CRAWLERS} />)
+  it('offers Stats beside Source', async () => {
+    render(<StockBrowser crawlers={CRAWLERS} />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     const source = screen.getByRole('button', { name: 'Source' })
     const stats = screen.getByRole('button', { name: 'Stats' })
     // Each sits in its own anchor wrapper; Stats' wrapper follows Source's.
     expect(source.parentElement!.nextElementSibling).toBe(stats.parentElement)
-    unmount()
-
-    render(<StockBrowser scope="track" crawlers={CRAWLERS} />)
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Source' })).toBeInTheDocument())
-    expect(screen.queryByRole('button', { name: 'Stats' })).toBeNull()
   })
 
-  it('omits the toolbar item count on the Store tab, since Stats already shows the total, but keeps it on Track', async () => {
-    const { unmount } = render(<StockBrowser crawlers={CRAWLERS} />)
+  it('omits the toolbar item count, since Stats already shows the total', async () => {
+    render(<StockBrowser crawlers={CRAWLERS} />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     expect(screen.queryByText(/^2 items$/)).toBeNull()
-    unmount()
-
-    render(<StockBrowser scope="track" crawlers={CRAWLERS} />)
-    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    expect(screen.getByText(/^2 items$/)).toBeTruthy()
   })
 
   it('does not refetch the breakdown for a listing_changed, which cannot move a stock_items count', async () => {

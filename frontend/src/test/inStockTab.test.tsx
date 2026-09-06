@@ -113,11 +113,8 @@ afterEach(() => {
 // Recommended lives in the Store tab's Filter popover now, not a <select>:
 // open the panel (idempotently -- it stays open) and read the radio.
 function recommendedRadio(): HTMLInputElement {
-  // Store and Track are both mounted, each with a trigger; only Store's
-  // panel has a Recommended radio, so opening every trigger finds it.
-  for (const button of screen.getAllByRole('button', { name: /^Filter:/ })) {
-    if (button.getAttribute('aria-expanded') !== 'true') fireEvent.click(button)
-  }
+  const button = screen.getByRole('button', { name: /^Filter:/ })
+  if (button.getAttribute('aria-expanded') !== 'true') fireEvent.click(button)
   return screen.getByRole('radio', { name: 'Recommended' }) as HTMLInputElement
 }
 
@@ -130,33 +127,41 @@ describe('In Stock tab', () => {
     await waitFor(() => expect(storeButton.className).toContain('bg-white'))
   })
 
-  it('shows a Track nav button that switches to a track-scoped StockBrowser', async () => {
+  it('has no Track tab: the library filters live in the Store filter popover', async () => {
     render(<App />)
-    await waitFor(() => expect(screen.getByText('Track')).toBeInTheDocument())
-    const trackButton = screen.getByText('Track')
-    fireEvent.click(trackButton)
-    await waitFor(() => expect(trackButton.className).toContain('bg-white'))
-    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ libraryScope: 'all' })))
+    await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
+    expect(screen.queryByText('Track')).toBeNull()
+    fireEvent.click(screen.getByText('Store'))
+    fireEvent.click(screen.getByRole('button', { name: /^Filter:/ }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Collection' }))
+    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ libraryScope: 'collection' })))
   })
 
-  it('hides the Track Price column when the user has no collection price data', async () => {
+  // The Store table's Price column reads the same hasPriceData wiring as the
+  // Collection tab, so it only ever renders under the Collection filter and
+  // only while the user has paid-price data at all.
+  it('hides the Store Price column under Collection when the user has no collection price data', async () => {
     getPriceStatus.mockResolvedValue({ any_price_paid: false })
     render(<App />)
-    await waitFor(() => expect(screen.getByText('Track')).toBeInTheDocument())
-    fireEvent.click(screen.getByText('Track'))
-    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ libraryScope: 'all' })))
+    await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Store'))
+    fireEvent.click(screen.getByRole('button', { name: /^Filter:/ }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Collection' }))
+    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ libraryScope: 'collection' })))
     expect(screen.queryByText(/Price/)).toBeNull()
   })
 
   it('renders a Price element somewhere when the user has collection price data (paired with the hides test above, which proves it is wired everywhere)', async () => {
     getPriceStatus.mockResolvedValue({ any_price_paid: true })
     render(<App />)
-    await waitFor(() => expect(screen.getByText('Track')).toBeInTheDocument())
-    fireEvent.click(screen.getByText('Track'))
-    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ libraryScope: 'all' })))
-    // Collection/Wantlist RecordBrowser and the Store StockBrowser all stay mounted
-    // alongside Track (only CSS-hidden), and Collection/Wantlist share the same
-    // hasPriceData wiring, so "Price" legitimately matches more than once here.
+    await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Store'))
+    fireEvent.click(screen.getByRole('button', { name: /^Filter:/ }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Collection' }))
+    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ libraryScope: 'collection' })))
+    // The Collection/Wantlist RecordBrowsers stay mounted alongside Store (only
+    // CSS-hidden) and share the same hasPriceData wiring, so "Price"
+    // legitimately matches more than once here.
     expect(screen.getAllByText(/Price/).length).toBeGreaterThan(0)
   })
 
@@ -987,10 +992,9 @@ describe('Source filter save chaining', () => {
     render(<App />)
     await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Store'))
-    // Both the Store and Track panes render their own StockBrowser/SourceFilter
-    // (only one is visible via a `hidden` class, both stay mounted), so there
-    // are always two "Source" buttons in the DOM. The Store pane's div comes
-    // first in App.tsx's JSX, so index 0 is always the Store one.
+    // Store is the only pane with a SourceFilter now that Track has folded
+    // into it, so findAll is one button long; kept as a list so a second
+    // pane growing one would fail here loudly rather than silently.
     const sourceButtons = await screen.findAllByRole('button', { name: 'Source' })
     fireEvent.click(sourceButtons[0])
     return screen.findByRole('checkbox', { name: 'Epitaph' })

@@ -3,6 +3,8 @@
 Date: 2026-08-27
 Branch: `claude/mobile-optimized-web-qmv4u4`
 
+**Amendment (2026-09-06, branch `claude/store-cheapest-filter-x4tdwl`):** the bottom tab bar has one tab fewer: Track folded into Store, whose `Filter: …` sheet now carries Collection and Wantlist. Every "Track" in the tables and text below reads as the Store tab under those filters. See [`2026-09-06-track-tab-fold-design.md`](2026-09-06-track-tab-fold-design.md).
+
 ## Problem
 
 The SPA has only ever been laid out for a desktop window. On a phone every

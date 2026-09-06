@@ -19,16 +19,15 @@ import { refreshCollection, getCollectionStatus, openCrawlStream, getCrawlStatus
 import type { StockSyncStartResult } from './api/client'
 import type { CrawlEvent, CrawlStatus, CollectionStatus, Crawler, AuthStatus } from './api/types'
 
-type View = 'collection' | 'wantlist' | 'store' | 'track' | 'settings' | 'logs' | 'queue' | 'account' | 'notifications'
-type LibraryView = Extract<View, 'collection' | 'wantlist' | 'store' | 'track'>
+type View = 'collection' | 'wantlist' | 'store' | 'settings' | 'logs' | 'queue' | 'account' | 'notifications'
+type LibraryView = Extract<View, 'collection' | 'wantlist' | 'store'>
 
 // One table drives the desktop header pills and the mobile tab bar, so the two
 // cannot end up offering different sets of tabs.
-const LIBRARY_TABS: { view: LibraryView; label: string; icon: 'collection' | 'wantlist' | 'store' | 'track' }[] = [
+const LIBRARY_TABS: { view: LibraryView; label: string; icon: 'collection' | 'wantlist' | 'store' }[] = [
   { view: 'collection', label: 'Collection', icon: 'collection' },
   { view: 'wantlist', label: 'Wantlist', icon: 'wantlist' },
   { view: 'store', label: 'Store', icon: 'store' },
-  { view: 'track', label: 'Track', icon: 'track' },
 ]
 
 // Admin-only, and rarely visited -- header pills on desktop, an overflow sheet
@@ -582,8 +581,8 @@ export default function App() {
         // path, and on the release path only clears or deletes one, so neither
         // can have recorded a drop -- and most stock-item searches legitimately
         // find nothing, so counting them would fan a request out to every
-        // connected user for the majority of crawl results. The Store and Track
-        // tabs still want both: a cleared price changes what they render.
+        // connected user for the majority of crawl results. The Store tab
+        // still wants both: a cleared price changes what it renders.
         if (event.status === 'found') setPriceGeneration(g => g + 1)
         return
       }
@@ -1060,10 +1059,7 @@ export default function App() {
           />
         </div>
         <div className={view === 'store' ? 'h-full' : 'hidden'}>
-          <StockBrowser recommendedAvailable={recommendedAvailable} hiddenCrawlerIds={hiddenCrawlerIds} crawlers={crawlers} onHiddenCrawlerIdsChange={updateHiddenCrawlerIds} hiddenCrawlerIdsLoaded={hiddenCrawlerIdsLoaded} syncGeneration={stockSyncGeneration} inventoryGeneration={stockInventoryGeneration} judgmentGeneration={stockJudgmentGeneration} isAdmin={showAdminNav} />
-        </div>
-        <div className={view === 'track' ? 'h-full' : 'hidden'}>
-          <StockBrowser scope="track" hiddenCrawlerIds={hiddenCrawlerIds} crawlers={crawlers} onHiddenCrawlerIdsChange={updateHiddenCrawlerIds} hiddenCrawlerIdsLoaded={hiddenCrawlerIdsLoaded} syncGeneration={stockSyncGeneration} isAdmin={showAdminNav} hasPriceField={hasPriceData} />
+          <StockBrowser recommendedAvailable={recommendedAvailable} hiddenCrawlerIds={hiddenCrawlerIds} crawlers={crawlers} onHiddenCrawlerIdsChange={updateHiddenCrawlerIds} hiddenCrawlerIdsLoaded={hiddenCrawlerIdsLoaded} syncGeneration={stockSyncGeneration} inventoryGeneration={stockInventoryGeneration} judgmentGeneration={stockJudgmentGeneration} isAdmin={showAdminNav} hasPriceField={hasPriceData} />
         </div>
         <div className={view === 'settings' ? 'h-full overflow-y-auto' : 'hidden'}>
           <Settings

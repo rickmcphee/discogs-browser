@@ -4,6 +4,8 @@ Date: 2026-09-06
 Branch: `claude/store-cheapest-filter-x4tdwl` (second PR from this branch
 name; the first, the Cheapest filter, merged as PR #294)
 
+**Amendment (2026-09-06, same PR):** the Track option set described below lasted one commit. The Track tab folded into Store in the next, so `StockFilter` has no `scope` prop and one option set — All / Recommended / Saved / Overlapped / Collection / Wantlist — with Cheapest always present. See [`2026-09-06-track-tab-fold-design.md`](2026-09-06-track-tab-fold-design.md).
+
 ## Problem
 
 The Store toolbar's control group had grown to `Source · Stats · <select> ·
