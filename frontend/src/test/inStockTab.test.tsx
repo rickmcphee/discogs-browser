@@ -113,7 +113,7 @@ afterEach(() => {
 // Recommended lives in the Store tab's Filter popover now, not a <select>:
 // open the panel (idempotently -- it stays open) and read the radio.
 function recommendedRadio(): HTMLInputElement {
-  const button = screen.getByRole('button', { name: /^Filter:/ })
+  const button = screen.getByRole('button', { name: 'Filter' })
   if (button.getAttribute('aria-expanded') !== 'true') fireEvent.click(button)
   return screen.getByRole('radio', { name: 'Recommended' }) as HTMLInputElement
 }
@@ -132,7 +132,7 @@ describe('In Stock tab', () => {
     await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
     expect(screen.queryByText('Track')).toBeNull()
     fireEvent.click(screen.getByText('Store'))
-    fireEvent.click(screen.getByRole('button', { name: /^Filter:/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Filter' }))
     fireEvent.click(screen.getByRole('radio', { name: 'Collection' }))
     await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ libraryScope: 'collection' })))
   })
@@ -145,7 +145,7 @@ describe('In Stock tab', () => {
     render(<App />)
     await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Store'))
-    fireEvent.click(screen.getByRole('button', { name: /^Filter:/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Filter' }))
     fireEvent.click(screen.getByRole('radio', { name: 'Collection' }))
     await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ libraryScope: 'collection' })))
     expect(screen.queryByText(/Price/)).toBeNull()
@@ -156,7 +156,7 @@ describe('In Stock tab', () => {
     render(<App />)
     await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Store'))
-    fireEvent.click(screen.getByRole('button', { name: /^Filter:/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Filter' }))
     fireEvent.click(screen.getByRole('radio', { name: 'Collection' }))
     await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ libraryScope: 'collection' })))
     // The Collection/Wantlist RecordBrowsers stay mounted alongside Store (only
@@ -188,7 +188,7 @@ describe('In Stock tab', () => {
     // A Store view under a library filter reads the same rows the sync
     // rewrites, so it has to move with the Collection tab.
     fireEvent.click(screen.getByText('Store'))
-    fireEvent.click(screen.getByRole('button', { name: /^Filter:/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Filter' }))
     fireEvent.click(screen.getByRole('radio', { name: 'Wantlist' }))
     await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ libraryScope: 'wantlist' })))
     const stockCalls = getStock.mock.calls.length
