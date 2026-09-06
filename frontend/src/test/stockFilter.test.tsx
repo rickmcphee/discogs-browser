@@ -42,12 +42,12 @@ function renderFilter(overrides: Partial<{
   return props
 }
 
-const trigger = () => screen.getByRole('button', { name: /^Filter:/ })
+const trigger = () => screen.getByRole('button', { name: 'Filter' })
 
 describe('StockFilter', () => {
-  it('renders a trigger that reads the current filter, and no panel until clicked', () => {
+  it('renders a trigger called Filter, and no panel until clicked', () => {
     renderFilter()
-    expect(trigger()).toHaveTextContent('Filter: All')
+    expect(trigger()).toHaveTextContent(/^Filter$/)
     expect(trigger().getAttribute('aria-expanded')).toBe('false')
     expect(screen.queryByRole('radio')).toBeNull()
   })
@@ -63,10 +63,11 @@ describe('StockFilter', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 
-  it('reads a library filter into the trigger like any other', () => {
+  it('checks the current library filter in the panel like any other', () => {
     renderFilter({ filter: 'wantlist', cheapest: true })
-    expect(trigger()).toHaveTextContent('Filter: Wantlist · Cheapest')
-    expect(trigger()).toHaveClass('bg-white')
+    fireEvent.click(trigger())
+    expect((screen.getByRole('radio', { name: 'Wantlist' }) as HTMLInputElement).checked).toBe(true)
+    expect((screen.getByRole('checkbox', { name: 'Cheapest' }) as HTMLInputElement).checked).toBe(true)
   })
 
   it('disables Recommended until recommendations are available', () => {
@@ -96,16 +97,19 @@ describe('StockFilter', () => {
     expect(onCheapestChange).toHaveBeenCalledWith(true)
   })
 
-  it('reads a non-default state into the trigger and lights it up', () => {
+  it('keeps the trigger reading Filter, unlit, whatever the state', () => {
     renderFilter({ filter: 'saved', cheapest: true })
-    expect(trigger()).toHaveTextContent('Filter: Saved · Cheapest')
-    expect(trigger()).toHaveClass('bg-white')
+    expect(trigger()).toHaveTextContent(/^Filter$/)
+    expect(trigger()).not.toHaveClass('bg-white')
   })
 
-  it('lights the trigger for Cheapest alone', () => {
+  it('lights the trigger only while the panel is open', () => {
     renderFilter({ cheapest: true })
-    expect(trigger()).toHaveTextContent('Filter: All · Cheapest')
+    expect(trigger()).not.toHaveClass('bg-white')
+    fireEvent.click(trigger())
     expect(trigger()).toHaveClass('bg-white')
+    fireEvent.click(trigger())
+    expect(trigger()).not.toHaveClass('bg-white')
   })
 
   it('does not light the trigger in the default state', () => {

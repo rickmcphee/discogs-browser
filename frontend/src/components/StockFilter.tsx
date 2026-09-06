@@ -32,8 +32,8 @@ interface Props {
 // anchored-dropdown / sheet shape as Source and Stats beside it. The filter
 // used to be a bare <select> with the Cheapest checkbox alongside, which was
 // the toolbar's last free width; a panel has room for the next filter too.
-// The trigger reads its own state so nothing a glance at the <select> gave
-// is lost: "Filter: All", "Filter: Saved", "Filter: Saved · Cheapest".
+// The trigger is just "Filter", lit only while open, like Stats: the panel
+// is where the state lives, and it is one click away.
 function StockFilter({
   filter, onFilterChange, recommendedAvailable = false,
   cheapest = false, onCheapestChange,
@@ -60,7 +60,6 @@ function StockFilter({
   }, [open, isMobile])
 
   const current = STOCK_FILTER_OPTIONS.find((o) => o.value === filter) ?? STOCK_FILTER_OPTIONS[0]
-  const active = filter !== 'all' || cheapest
 
   const panel = (
     <>
@@ -109,9 +108,9 @@ function StockFilter({
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
-        className={`h-11 max-w-48 truncate px-3 text-sm font-medium md:h-auto md:py-1.5 ${navButtonClass(open || active)}`}
+        className={`h-11 px-3 text-sm font-medium md:h-auto md:py-1.5 ${navButtonClass(open)}`}
       >
-        Filter: {current.label}{cheapest ? ' · Cheapest' : ''}
+        Filter
       </button>
       {open && !isMobile && (
         <div className="absolute right-0 mt-2 w-56 rounded-xl border border-gray-700 bg-gray-900 shadow-xl z-50 p-3 text-sm text-left">
