@@ -345,13 +345,16 @@ def test_every_spelling_of_the_label_vendor_defers_to_tags(vendor):
 
 
 @respx.mock
-async def test_two_artist_tags_read_as_a_split(crawler):
-    # Altered: the captured split flipped available. Tags arrive
-    # alphabetically, which is also the Discogs convention for a split.
+async def test_a_split_is_credited_to_its_first_artist_tag(crawler):
+    # Altered: the captured split flipped available. The catalog keeps a
+    # release's primary artist alone and the Track tab's library match is an
+    # exact artist equality, so a joined "Jay Reatard / Sonic Youth" could
+    # never match; the first credit, in the store's alphabetical tag order,
+    # is the row's artist.
     _mock_pages(_lp_only(_SPLIT_SINGLE_PRODUCT, available=True))
     items = [item async for item in crawler.crawl_catalog()]
     assert [(i["artist"], i["title"]) for i in items] == [
-        ("Jay Reatard / Sonic Youth", "Hang Them All / No Garage — 7\"")]
+        ("Jay Reatard", "Hang Them All / No Garage — 7\"")]
 
 
 def test_housekeeping_tags_are_never_read_as_an_artist():

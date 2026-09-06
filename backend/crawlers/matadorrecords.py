@@ -190,14 +190,20 @@ class Crawler:
         vendor = (product.get("vendor") or "").strip()
         if vendor and vendor.lower() not in _LABEL_VENDORS:
             return vendor
-        # Tags arrive in the store's own order, which is alphabetical, so a
-        # split single credited to two artists reads "Jay Reatard / Sonic
-        # Youth" -- the Discogs convention for a split.
+        # A product carrying more than one credit is a split, and the row
+        # takes the first credit only. The catalog keeps a release's primary
+        # artist alone (discogs.parse_release reads artists[0]) and the Track
+        # tab's library match is an exact artist equality, so a joined
+        # "Jay Reatard / Sonic Youth" could never match anything. The store
+        # serialises tags alphabetically, which is the only order the payload
+        # offers: a split whose Discogs primary artist sorts second will not
+        # match its library record, but is still credited to an artist who is
+        # on it.
         credits = [
             (t or "").strip() for t in product.get("tags") or []
             if (t or "").strip() and (t or "").strip().lower() not in _HOUSEKEEPING_TAGS
         ]
-        return " / ".join(credits)
+        return credits[0] if credits else ""
 
     @classmethod
     def _vinyl_variants(cls, product: dict) -> list:

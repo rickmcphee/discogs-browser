@@ -180,10 +180,22 @@ exact-or-prefix-with-space, and `Adore Life — LP` starts with `Adore Life `.
 `Matador Records`, and the artist is then in `tags`, alongside the store's
 housekeeping tags. Every live tag that is not an artist credit is one of
 `migrated`, `preorder`, `sale`, `checkbox` and `Matador Merch`; those are
-excluded, and whatever remains on a label-vendored product is read as the
-credit. Shopify serialises tags alphabetically, so a split single credited to
-two artists reads `Jay Reatard / Sonic Youth`, which is also the Discogs
-convention for a split.
+excluded, and the **first** credit that remains on a label-vendored product is
+the artist. First rather than all of them joined: the catalog keeps a release's
+primary artist alone (`discogs.parse_release` reads `artists[0]`) and
+`_library_release_match_sql` is an exact artist equality, so a joined
+`Jay Reatard / Sonic Youth` could never match a library record. Shopify
+serialises tags alphabetically, which is the only order the payload offers; a
+split whose Discogs primary artist sorts second will not match its library
+record, but is still credited to an artist who is on it. One live product is a
+split (`Hang Them All / No Garage`, tagged `Jay Reatard` and `Sonic Youth`),
+and it is sold out.
+
+**Amendment (2026-09-06, review round 1):** the first draft joined every
+credit with ` / ` and called that the Discogs convention for a split. Copilot's
+review pointed out that the catalog side stores only the primary artist and
+the match is exact, so the joined value could never match; the rule above is
+the correction.
 
 This recovers real releases rather than edge cases: Gang of Four's `77-81`
 box, Majical Cloudz's `Are You Alone?` and `Impersonator`, Tobias Jesso Jr.'s
@@ -287,7 +299,7 @@ degraded data rather than a deleted snapshot.
 
 | Field | Source |
 | --- | --- |
-| `artist` | `product.vendor`, or the non-housekeeping `tags` joined with ` / ` when the vendor is the label |
+| `artist` | `product.vendor`, or the first non-housekeeping tag when the vendor is the label |
 | `title` | `strip_vendor_prefix(product.title, artist)`, `+ " (Pre-Order)"` when tagged, `+ " — {descriptor}"` always |
 | `format` | `"Vinyl"`, hardcoded |
 | `price` | `variant.price`, guarded; `None` when unusable |
