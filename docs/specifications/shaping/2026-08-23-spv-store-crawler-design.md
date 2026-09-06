@@ -21,6 +21,11 @@ through. Those two are the precedent, and `currency` is a pass-through string
 end to end. (An earlier draft of this doc called SPV the first EU-domiciled
 source outright; corrected in review on PR #165.)
 
+**Amendment (2026-09-06):** no longer the only Shopify crawler pricing in
+EUR — `musiconvinyl.py` (Music On Vinyl, Dutch, Shopify) hardcodes it too,
+on the same `meta.json` grounding. SPV was the first; "every sibling Shopify
+crawler hardcodes USD" describes the set as it stood when this was written.
+
 Its title convention quotes the album — `Sodom "1982" LP (exclusive)`,
 `Magnum "The Monster Roars" LP (white & black marbled vinyl)` — rather than
 naming the artist in `vendor` (`centurymedia.py`, `napalmrecords.py`,
