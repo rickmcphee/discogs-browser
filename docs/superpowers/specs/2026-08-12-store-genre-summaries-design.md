@@ -1,5 +1,7 @@
 # Store genre summaries (hover tooltip)
 
+**Amendment (2026-09-06, branch `claude/store-cheapest-filter-x4tdwl`):** the Track tab is gone. Its Collection and Wantlist filters are now options in the Store tab's `Filter: …` popover, sending the same `library_scope`, and every reference below to the Track tab, a Track scope, or a "Store/Track" pair reads as the Store tab under those filters. See [`2026-09-06-track-tab-fold-design.md`](../../specifications/shaping/2026-09-06-track-tab-fold-design.md).
+
 ## Problem
 
 The Store Management section (Settings tab) lists the catalog-crawler stores by name only. A user deciding whether to hide a store (the existing View toggle) has no way to tell what kind of music it carries without following the link out to the site.

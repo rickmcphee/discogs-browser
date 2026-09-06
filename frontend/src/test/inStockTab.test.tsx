@@ -110,6 +110,14 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
+// Recommended lives in the Store tab's Filter popover now, not a <select>:
+// open the panel (idempotently -- it stays open) and read the radio.
+function recommendedRadio(): HTMLInputElement {
+  const button = screen.getByRole('button', { name: /^Filter:/ })
+  if (button.getAttribute('aria-expanded') !== 'true') fireEvent.click(button)
+  return screen.getByRole('radio', { name: 'Recommended' }) as HTMLInputElement
+}
+
 describe('In Stock tab', () => {
   it('shows a Store nav button that switches views', async () => {
     render(<App />)
@@ -119,33 +127,41 @@ describe('In Stock tab', () => {
     await waitFor(() => expect(storeButton.className).toContain('bg-white'))
   })
 
-  it('shows a Track nav button that switches to a track-scoped StockBrowser', async () => {
+  it('has no Track tab: the library filters live in the Store filter popover', async () => {
     render(<App />)
-    await waitFor(() => expect(screen.getByText('Track')).toBeInTheDocument())
-    const trackButton = screen.getByText('Track')
-    fireEvent.click(trackButton)
-    await waitFor(() => expect(trackButton.className).toContain('bg-white'))
-    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ libraryScope: 'all' })))
+    await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
+    expect(screen.queryByText('Track')).toBeNull()
+    fireEvent.click(screen.getByText('Store'))
+    fireEvent.click(screen.getByRole('button', { name: /^Filter:/ }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Collection' }))
+    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ libraryScope: 'collection' })))
   })
 
-  it('hides the Track Price column when the user has no collection price data', async () => {
+  // The Store table's Price column reads the same hasPriceData wiring as the
+  // Collection tab, so it only ever renders under the Collection filter and
+  // only while the user has paid-price data at all.
+  it('hides the Store Price column under Collection when the user has no collection price data', async () => {
     getPriceStatus.mockResolvedValue({ any_price_paid: false })
     render(<App />)
-    await waitFor(() => expect(screen.getByText('Track')).toBeInTheDocument())
-    fireEvent.click(screen.getByText('Track'))
-    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ libraryScope: 'all' })))
+    await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Store'))
+    fireEvent.click(screen.getByRole('button', { name: /^Filter:/ }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Collection' }))
+    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ libraryScope: 'collection' })))
     expect(screen.queryByText(/Price/)).toBeNull()
   })
 
   it('renders a Price element somewhere when the user has collection price data (paired with the hides test above, which proves it is wired everywhere)', async () => {
     getPriceStatus.mockResolvedValue({ any_price_paid: true })
     render(<App />)
-    await waitFor(() => expect(screen.getByText('Track')).toBeInTheDocument())
-    fireEvent.click(screen.getByText('Track'))
-    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ libraryScope: 'all' })))
-    // Collection/Wantlist RecordBrowser and the Store StockBrowser all stay mounted
-    // alongside Track (only CSS-hidden), and Collection/Wantlist share the same
-    // hasPriceData wiring, so "Price" legitimately matches more than once here.
+    await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Store'))
+    fireEvent.click(screen.getByRole('button', { name: /^Filter:/ }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Collection' }))
+    await waitFor(() => expect(getStock).toHaveBeenCalledWith(expect.objectContaining({ libraryScope: 'collection' })))
+    // The Collection/Wantlist RecordBrowsers stay mounted alongside Store (only
+    // CSS-hidden) and share the same hasPriceData wiring, so "Price"
+    // legitimately matches more than once here.
     expect(screen.getAllByText(/Price/).length).toBeGreaterThan(0)
   })
 
@@ -163,6 +179,24 @@ describe('In Stock tab', () => {
     await waitFor(() => expect(getPriceStatus).toHaveBeenCalled())
     getLastCrawlSource().emit({ status: 'sync_error', error: 'boom', id: 1 })
     await waitFor(() => expect(getPriceStatus.mock.calls.length).toBeGreaterThan(1))
+  })
+
+  it('refetches the library views after a sync fails partway through, since earlier pages have committed', async () => {
+    render(<App />)
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
+    // A Store view under a library filter reads the same rows the sync
+    // rewrites, so it has to move with the Collection tab.
+    fireEvent.click(screen.getByText('Store'))
+    fireEvent.click(screen.getByRole('button', { name: /^Filter:/ }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Wantlist' }))
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ libraryScope: 'wantlist' })))
+    const stockCalls = getStock.mock.calls.length
+
+    getLastCrawlSource().emit({ status: 'sync_error', error: 'boom', id: 1 })
+
+    await waitFor(() => expect(getStock.mock.calls.length).toBeGreaterThan(stockCalls))
+    expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ libraryScope: 'wantlist' }))
   })
 
   it('does not let a slow bootstrap price-status response overwrite a newer post-sync one', async () => {
@@ -841,7 +875,7 @@ describe('In Stock tab', () => {
     await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Store'))
     await waitFor(() => {
-      const option = screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement
+      const option = recommendedRadio()
       expect(option.disabled).toBe(false)
     })
   })
@@ -852,11 +886,11 @@ describe('In Stock tab', () => {
     render(<App />)
     await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Store'))
-    await waitFor(() => expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(false))
+    await waitFor(() => expect(recommendedRadio().disabled).toBe(false))
     await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
     const source = getLastCrawlSource()
     source.emit({ status: 'stock_judgment_started' })
-    await waitFor(() => expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(false))
+    await waitFor(() => expect(recommendedRadio().disabled).toBe(false))
   })
 
   it('refetches stock items on a listing_changed SSE event', async () => {
@@ -876,12 +910,12 @@ describe('In Stock tab', () => {
     render(<App />)
     await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Store'))
-    await waitFor(() => expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(true))
+    await waitFor(() => expect(recommendedRadio().disabled).toBe(true))
     await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
     const source = getLastCrawlSource()
     source.emit({ status: 'stock_judgment_started' })
     source.emit({ status: 'stock_judgment_progress', judged: 40, total: 120, id: 1 })
-    await waitFor(() => expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(false))
+    await waitFor(() => expect(recommendedRadio().disabled).toBe(false))
   })
 
   it('keeps Recommended disabled when a first-ever run completes with zero judgments', async () => {
@@ -890,7 +924,7 @@ describe('In Stock tab', () => {
     render(<App />)
     await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Store'))
-    await waitFor(() => expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(true))
+    await waitFor(() => expect(recommendedRadio().disabled).toBe(true))
     await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
     const source = getLastCrawlSource()
     source.emit({ status: 'stock_judgment_started' })
@@ -899,9 +933,9 @@ describe('In Stock tab', () => {
     // event, so a regression in the progress handler's own guard is caught
     // here rather than only in the completion handler's.
     source.emit({ status: 'stock_judgment_progress', judged: 0, total: 120, id: 1 })
-    await waitFor(() => expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(true))
+    await waitFor(() => expect(recommendedRadio().disabled).toBe(true))
     source.emit({ status: 'stock_judgment_complete', judged: 0, id: 1 })
-    await waitFor(() => expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(true))
+    await waitFor(() => expect(recommendedRadio().disabled).toBe(true))
   })
 
   it('does not let a slow bootstrap judgment-status response overwrite a newer SSE-driven one', async () => {
@@ -912,18 +946,18 @@ describe('In Stock tab', () => {
     render(<App />)
     await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Store'))
-    await waitFor(() => expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(true))
+    await waitFor(() => expect(recommendedRadio().disabled).toBe(true))
     await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
     const source = getLastCrawlSource()
     source.emit({ status: 'stock_judgment_started' })
     source.emit({ status: 'stock_judgment_progress', judged: 40, total: 120, id: 1 })
-    await waitFor(() => expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(false))
+    await waitFor(() => expect(recommendedRadio().disabled).toBe(false))
 
     // The bootstrap fetch was in flight the whole time and only resolves now,
     // with a stale any_judged: false snapshot taken before the SSE event.
     resolveBootstrap({ any_judged: false })
     await new Promise((r) => setTimeout(r, 0))
-    expect((screen.getByRole('option', { name: 'Recommended' }) as HTMLOptionElement).disabled).toBe(false)
+    expect(recommendedRadio().disabled).toBe(false)
   })
 
   it('does not let a slow bootstrap judgment-status response overwrite an explicit Clear', async () => {
@@ -976,11 +1010,11 @@ describe('Source filter save chaining', () => {
     render(<App />)
     await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Store'))
-    // Both the Store and Track panes render their own StockBrowser/SourceFilter
-    // (only one is visible via a `hidden` class, both stay mounted), so there
-    // are always two "Source" buttons in the DOM. The Store pane's div comes
-    // first in App.tsx's JSX, so index 0 is always the Store one.
+    // Store is the only pane with a SourceFilter now that Track has folded
+    // into it, so there is exactly one Source button; a second pane growing
+    // one would fail the length check rather than silently take index 0.
     const sourceButtons = await screen.findAllByRole('button', { name: 'Source' })
+    expect(sourceButtons).toHaveLength(1)
     fireEvent.click(sourceButtons[0])
     return screen.findByRole('checkbox', { name: 'Epitaph' })
   }
