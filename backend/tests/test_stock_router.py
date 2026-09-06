@@ -1087,3 +1087,31 @@ def test_stock_stats_empty_when_nothing_matches(pg_test_db, authed_client_factor
 
     body = client.get("/api/stock/stats", params={"search": "no such record"}).json()
     assert body == {"total": 0, "sources": []}
+
+
+def test_put_stock_saved_queues_a_marketplace_crawl_for_an_item_with_no_queue_row(pg_test_db, authed_client_factory):
+    """Library-only crawling sweeps the rows of items nobody wants; saving one
+    is how it becomes wanted, so the save restores its row. Insert-if-absent:
+    a second save, or a save of an item already priced, changes nothing."""
+    crawler_id = _make_crawler()
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        db.replace_stock_items(conn, crawler_id, [
+            {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+            {"artist": "Artist B", "title": "Album B", "url": "https://x/2", "price": 10.0, "currency": "USD"},
+        ])
+        conn.execute("DELETE FROM crawl_queue")
+        db.enqueue_crawl_queue_for_stock_item(conn, db.compute_item_key("Artist B", "Album B", "https://x/2"))
+        conn.execute("UPDATE crawl_queue SET status = 'done'")
+        conn.commit()
+    absent_key = db.compute_item_key("Artist A", "Album A", "https://x/1")
+    done_key = db.compute_item_key("Artist B", "Album B", "https://x/2")
+    client = authed_client_factory(user["id"])
+
+    for key in (absent_key, absent_key, done_key):
+        r = client.put(f"/api/stock/saved/{key}", headers={"X-Requested-With": "fetch"})
+        assert r.status_code == 200
+
+    with db.get_admin_pool().connection() as conn:
+        rows = conn.execute("SELECT item_key, status FROM crawl_queue ORDER BY item_key").fetchall()
+    assert sorted((r["item_key"], r["status"]) for r in rows) == sorted([(absent_key, "pending"), (done_key, "done")])
