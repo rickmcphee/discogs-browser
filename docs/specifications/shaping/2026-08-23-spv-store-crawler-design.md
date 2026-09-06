@@ -17,10 +17,9 @@ Prices are EUR, not the USD the sibling *Shopify* crawlers had all hardcoded
 before this one. EU-domiciled sources were already the precedent, though:
 `jetglowrecordings.py` (Italian, Big Cartel) hardcodes EUR, and
 `darkdescentrecords.py` passes its feed's currency through; `currency` is a
-pass-through string end to end. (An earlier draft of this doc called SPV the
-first EU-domiciled source outright; corrected in review on PR #165.
-`musiconvinyl.py`, Dutch and Shopify, later joined the EUR sources on the
-same `meta.json` grounding.)
+pass-through string end to end. (An earlier draft of this doc overlooked
+those precedents; corrected in review on PR #165. `musiconvinyl.py`, Dutch and
+Shopify, later joined the EUR sources on the same `meta.json` grounding.)
 
 Its title convention quotes the album — `Sodom "1982" LP (exclusive)`,
 `Magnum "The Monster Roars" LP (white & black marbled vinyl)` — rather than
