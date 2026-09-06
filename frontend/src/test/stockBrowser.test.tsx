@@ -34,7 +34,7 @@ beforeEach(() => {
   localStorage.clear()
 })
 
-// The row-set filter lives behind a "Filter: …" popover now, not a <select>.
+// The row-set filter lives behind a popover now, not a <select>.
 // The trigger is a fixed "Filter" and shows nothing of the state, so reading
 // the value means opening the panel (idempotently -- it stays open across
 // choices) and finding the checked radio; choosing a value clicks one.
