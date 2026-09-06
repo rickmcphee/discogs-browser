@@ -267,6 +267,7 @@ names a distinct way the payload can stop carrying what this crawler reads:
 | `music_seen == 0` | no product carries `Album`, `EP` or `Single` | the type taxonomy was renamed wholesale |
 | `artist_ok == 0` | no music product resolves an artist from `vendor` or `tags` | the artist source moved |
 | `vinyl_seen == 0` | no music product with an artist has a variant whose title reads as vinyl | the format moved out of the variant title (into an option, a metafield) |
+| `not yielded and identity_missing` | the walk produced no rows *and* some product that could have yielded one has a blank or absent `title` or `handle` | an identity field vanished or was renamed store-wide |
 | `not yielded and unreadable_stock` | the walk produced no rows *and* some product that could have yielded one had a vinyl variant with no boolean `available` | the availability field vanished, was renamed, or changed type |
 | `yielded and not priced` | rows came through and *none* of them carries a price | the `price` field vanished or changed type store-wide |
 
@@ -304,9 +305,25 @@ variant on the literal `True` and nothing else, because `"false"` is truthy and
 a falsiness test would publish a sold-out record as in stock. Losing a row is
 the safe direction; offering for sale a record that is not for sale is not.
 
-**Not guarded, deliberately:** `title` and `handle`. If either vanished the walk
-would still yield rows — blank titles, or URLs pointing at the store root —
-degraded data rather than a deleted snapshot.
+**`title` and `handle` are identity, not display.** `item_key` is
+`sha256(artist|title|url)` and the URL is built from `handle`, so a product
+missing either would not be emitted with degraded text — it would be emitted
+under a *fresh* identity, and `replace_stock_items()` would then replace the
+old row with one that nothing saved or judged against can find. Such a product
+is skipped instead, and the skip is counted: it is nested with the stock tally
+(a product is counted as identity-less before its availability is even read),
+and the guard fires on the same empty-outcome gate as the stock guard, because
+a store-wide loss of either field leaves every product skipped and the walk
+looking sold out. An isolated identity-less product among rows that did come
+through stays a skipped row, on the same reasoning as an isolated unreadable
+one.
+
+**Amendment (2026-09-06, review round 3):** the first draft deliberately left
+`title` and `handle` unguarded as "degraded data rather than a deleted
+snapshot", following `rhino.py`'s spec. Copilot's third round pointed out both
+fields feed `compute_item_key`, so their loss is identity drift, not degraded
+presentation. The skip and the guard above are the correction; the row in the
+guard table is new.
 
 ### Fields
 

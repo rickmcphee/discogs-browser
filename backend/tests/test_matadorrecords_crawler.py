@@ -416,6 +416,68 @@ async def test_blank_vendor_product_is_skipped(crawler):
 
 
 @respx.mock
+@pytest.mark.parametrize("field", ["title", "handle"])
+async def test_product_missing_an_identity_field_is_skipped(crawler, field):
+    # Altered: title or handle blanked on one product beside a healthy one.
+    # Both feed item_key, so a row without one would be emitted under a
+    # fresh identity and orphan the judgments and saves keyed on its old
+    # one; the row is dropped instead, and the healthy sibling still yields.
+    for blank in ("", "  ", None):
+        respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(
+            return_value=_page_response([{**_ADORE_LIFE_PRODUCT, field: blank}, _ANTICS_PRODUCT]))
+        respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "2"}).mock(
+            return_value=_page_response([]))
+        items = [item async for item in crawler.crawl_catalog()]
+        assert [i["artist"] for i in items] == ["Interpol"], (field, blank)
+
+
+@respx.mock
+@pytest.mark.parametrize("mutate", [
+    pytest.param(lambda p: {k: v for k, v in p.items() if k != "title"}, id="title-key-gone"),
+    pytest.param(lambda p: {**p, "title": ""}, id="title-blank"),
+    pytest.param(lambda p: {k: v for k, v in p.items() if k != "handle"}, id="handle-key-gone"),
+    pytest.param(lambda p: {**p, "handle": None}, id="handle-null"),
+    pytest.param(lambda p: {**p, "title": "", "handle": ""}, id="both-blank"),
+])
+async def test_catalog_without_identity_fields_raises(crawler, mutate):
+    # Altered: title or handle gone from every record. Each product is
+    # skipped rather than re-keyed, so without this guard the walk would
+    # complete "successfully" empty and replace_stock_items() would delete
+    # the snapshot as though the shelf had cleared.
+    _mock_pages(mutate(_ADORE_LIFE_PRODUCT), mutate({**_ANTICS_PRODUCT, "handle": "antics-2"}))
+    with pytest.raises(RuntimeError, match="identity-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_an_identity_less_product_among_yielded_rows_does_not_raise(crawler):
+    # Same gate as the stock guard: an isolated product is a skipped row
+    # while the walk is still producing rows.
+    _mock_pages(_ANTICS_PRODUCT, {**_ADORE_LIFE_PRODUCT, "handle": ""})
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["artist"] for i in items] == ["Interpol"]
+
+
+@respx.mock
+async def test_a_sold_out_product_missing_its_identity_still_raises(crawler):
+    # The identity tally is taken before the availability filter, and the
+    # product is counted whether or not it is in stock: a title that has
+    # vanished is drift regardless of what the shelf holds.
+    _mock_pages(_lp_only({**_ADORE_LIFE_PRODUCT, "title": ""}, available=False))
+    with pytest.raises(RuntimeError, match="identity-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_identity_on_a_non_music_product_does_not_satisfy_the_guard(crawler):
+    # The merch has a title and handle; the only record has neither. Tallied
+    # against every product, the merch would vouch for it.
+    _mock_pages(_MERCH_PRODUCT, {**_ADORE_LIFE_PRODUCT, "title": "", "handle": ""})
+    with pytest.raises(RuntimeError, match="identity-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
 async def test_vendor_dash_prefix_is_stripped(crawler):
     _mock_pages(_COMING_APART_PRODUCT)
     items = [item async for item in crawler.crawl_catalog()]

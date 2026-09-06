@@ -66,6 +66,7 @@ class Crawler:
         music_seen = 0
         artist_ok = 0
         vinyl_seen = 0
+        identity_missing = 0
         unreadable_stock = 0
         yielded = 0
         priced = 0
@@ -84,7 +85,9 @@ class Crawler:
                     vinyl = self._vinyl_variants(product)
                     if vinyl:
                         vinyl_seen += 1
-                        if not self._has_readable_stock_flag(vinyl):
+                        if not self._has_identity(product):
+                            identity_missing += 1
+                        elif not self._has_readable_stock_flag(vinyl):
                             unreadable_stock += 1
             for item in self._items(product):
                 yielded += 1
@@ -124,6 +127,18 @@ class Crawler:
             raise RuntimeError(
                 f"none of the {yielded} rows from the {_COLLECTION_SLUG} collection carries a "
                 "price -- price-source drift")
+        if not yielded and identity_missing:
+            # `title` and `handle` are identity, not display: item_key hashes
+            # the row's title and URL, so a product missing either is skipped
+            # rather than emitted under a fresh identity that would orphan
+            # the judgments and saves keyed on its old one. Skipped rows
+            # leave the walk looking sold out, which is why the same
+            # empty-outcome gate as the stock guard below applies: a
+            # store-wide loss of either field must raise, not delete the
+            # snapshot as though the shelf had cleared.
+            raise RuntimeError(
+                f"{_COLLECTION_SLUG} collection yielded no rows while "
+                f"{identity_missing} vinyl product(s) carry no title or handle -- identity-source drift")
         if not yielded and unreadable_stock:
             # An empty result is only trustworthy when every product that
             # could have yielded a row was readable and simply out of stock.
@@ -142,6 +157,8 @@ class Crawler:
             return []
         artist = cls._artist(product)
         if not artist:
+            return []
+        if not cls._has_identity(product):
             return []
         # A live transformation on exactly one product ("Body/Head - Coming
         # Apart"); everywhere else the store keeps the artist out of the
@@ -224,6 +241,10 @@ class Crawler:
             if cls._is_vinyl(descriptor):
                 pairs.append((variant, descriptor))
         return pairs
+
+    @staticmethod
+    def _has_identity(product: dict) -> bool:
+        return bool((product.get("title") or "").strip()) and bool((product.get("handle") or "").strip())
 
     @staticmethod
     def _has_readable_stock_flag(vinyl_variants: list) -> bool:
