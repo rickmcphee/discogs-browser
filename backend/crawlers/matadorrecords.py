@@ -219,8 +219,9 @@ class Crawler:
             return vendor
         # A product carrying more than one credit is a split, and the row
         # takes the first credit only. The catalog keeps a release's primary
-        # artist alone (discogs.parse_release reads artists[0]) and the Track
-        # tab's library match is an exact artist equality, so a joined
+        # artist alone (discogs.parse_release reads artists[0]) and the
+        # library match behind the Store tab's Collection and Wantlist
+        # filters is an exact artist equality, so a joined
         # "Jay Reatard / Sonic Youth" could never match anything. The store
         # serialises tags alphabetically, which is the only order the payload
         # offers: a split whose Discogs primary artist sorts second will not

@@ -10,8 +10,8 @@ Matador Records is the New York independent label behind Pavement, Yo La
 Tengo, Interpol, Spoon, Cat Power, Belle and Sebastian, Kurt Vile, Queens of
 the Stone Age, Snail Mail, Julien Baker, Lucy Dacus and Mdou Moctar, among
 others. Its official store is not covered by any bundled crawler, so none of
-that stock reaches the Store tab and none of it is priced against a user's
-library on the Track tab.
+that stock reaches the Store tab and none of it is matched against a user's
+library under the Store tab's Collection and Wantlist filters.
 
 The store runs Shopify (`powered-by: Shopify`,
 `matadorrecordsprod.myshopify.com`), so `shopify_catalog.iter_products()`
@@ -169,8 +169,8 @@ the CD is listed and `Adore Life — LP` the day the CD goes out of print, and
 that flip re-keys the row and orphans the listings, judgments and saves hanging
 off the old identity — over a change to a *sibling* that never yielded. The
 descriptor is the pressing, a property of the variant itself, so the row's
-identity depends on nothing but its own variant. The Track tab's library match
-is unaffected: `_library_release_match_sql` matches a catalog title as an
+identity depends on nothing but its own variant. The library match behind the
+Store tab's Collection and Wantlist filters is unaffected: `_library_release_match_sql` matches a catalog title as an
 exact-or-prefix-with-space, and `Adore Life — LP` starts with `Adore Life `.
 
 ### Artist: `vendor`, unless it is the label

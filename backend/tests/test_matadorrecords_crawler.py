@@ -375,8 +375,9 @@ def test_every_spelling_of_the_label_vendor_defers_to_tags(vendor):
 @respx.mock
 async def test_a_split_is_credited_to_its_first_artist_tag(crawler):
     # Altered: the captured split flipped available. The catalog keeps a
-    # release's primary artist alone and the Track tab's library match is an
-    # exact artist equality, so a joined "Jay Reatard / Sonic Youth" could
+    # release's primary artist alone and the library match behind the Store
+    # tab's Collection and Wantlist filters is an exact artist equality, so a
+    # joined "Jay Reatard / Sonic Youth" could
     # never match; the first credit, in the store's alphabetical tag order,
     # is the row's artist.
     _mock_pages(_lp_only(_SPLIT_SINGLE_PRODUCT, available=True))
