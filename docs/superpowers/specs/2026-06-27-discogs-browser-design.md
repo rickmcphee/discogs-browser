@@ -255,6 +255,7 @@ being claimed. See
 | `crawl_schedule_mode` | `"missing"` | `"missing"` (skip already-priced) or `"all"` |
 | `ebay_app_id` | `""` | eBay Developer App ID (client_id) for Browse API OAuth |
 | `ebay_cert_id` | `""` | eBay Developer Cert ID (client_secret) for Browse API OAuth |
+| `crawl_library_only` | `false` | Added 2026-09-05: price only stock items someone saved or holds a matching collection/wantlist record for; see [`2026-09-05-library-only-marketplace-crawl-design.md`](../../specifications/shaping/2026-09-05-library-only-marketplace-crawl-design.md) |
 
 ---
 
