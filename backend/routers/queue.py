@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends
 
 import db
 from admin import require_admin
-from config import load_config
+from config import load_config, crawl_library_only
 from crawl_manager import crawl_manager
 
 router = APIRouter()
@@ -46,7 +46,9 @@ def queue_summary():
     # also just better shape: nothing should hold a pooled connection while
     # doing unrelated I/O on another pool. app_user has no grant on app_config,
     # which is why this cannot simply move inside.
-    crawl_delay_seconds = float(load_config().get("crawl_delay_seconds", 30))
+    config = load_config()
+    crawl_delay_seconds = float(config.get("crawl_delay_seconds", 30))
+    library_only = crawl_library_only(config)
     with db.get_app_pool().connection() as conn:
         # One snapshot for the whole report. db.queue_summary runs several
         # queries -- totals, drain rate, fan-out, activity, in-progress -- and
@@ -71,7 +73,7 @@ def queue_summary():
         # safely: it is a module constant coerced to int here, never anything
         # request-derived.
         conn.execute(f"SET LOCAL statement_timeout = {int(QUERY_TIMEOUT_MS)}")
-        summary = db.queue_summary(conn, crawl_delay_seconds)
+        summary = db.queue_summary(conn, crawl_delay_seconds, library_only)
     # Process-local, and labelled as such by the tab. Every other number here is
     # global database state, but there is no durable record of whether another
     # Machine's pool is up -- so this says "this machine" rather than quietly
@@ -85,9 +87,11 @@ def queue_summary():
 @router.get("/queue/crawlers/{crawler_id}/next", dependencies=[Depends(require_admin)])
 def queue_next(crawler_id: int, limit: int = 25):
     limit = max(1, min(limit, NEXT_LIMIT_MAX))
+    # Same ordering as the summary: config first, app connection second.
+    library_only = crawl_library_only()
     with db.get_app_pool().connection() as conn:
         # One statement, so the cap is exact here rather than arithmetic. Same
         # reason as the summary: this runs on the same pool the crawl workers
         # claim through, and the client abandoning the request does not stop it.
         conn.execute(f"SET LOCAL statement_timeout = {int(QUERY_TIMEOUT_MS)}")
-        return {"items": db.queue_next_for_crawler(conn, crawler_id, limit)}
+        return {"items": db.queue_next_for_crawler(conn, crawler_id, limit, library_only)}

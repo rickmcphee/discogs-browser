@@ -138,6 +138,19 @@ def load_config() -> dict:
     return row["data"] if row else {}
 
 
+# Whether marketplace crawlers should price only the stock items someone
+# actually wants -- saved, or matching a record in some user's collection or
+# wantlist -- rather than every item every enabled store lists. Off is the
+# original behaviour. Read fresh at each decision point (the worker's claim,
+# each store's enqueue during a stock sync, every sweep) rather than cached,
+# so flipping it in Settings takes effect on the next batch the way enabling
+# or disabling a crawler does. See db._stock_item_crawlable.
+def crawl_library_only(config=None) -> bool:
+    if config is None:
+        config = load_config()
+    return bool(config.get("crawl_library_only", False))
+
+
 def save_config(data: dict):
     import db
     from psycopg.types.json import Jsonb
