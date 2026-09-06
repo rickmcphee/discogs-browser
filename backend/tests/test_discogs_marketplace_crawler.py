@@ -659,5 +659,5 @@ async def test_the_http_status_is_named_when_markup_is_not_recognised(browser_pa
     page = _FakePage(browser_page, "redesigned.html")
     page.response = SimpleNamespace(status=403, headers={"cf-mitigated": "challenge"})
 
-    with pytest.raises(RuntimeError, match="HTTP 403"):
+    with pytest.raises(RuntimeError, match="HTTP 403, cf-mitigated=challenge"):
         await Crawler().search(RELEASE, page)

@@ -269,7 +269,7 @@ class Crawler:
 
         raise RuntimeError(
             f"Discogs listings markup not recognised for release {discogs_id} "
-            f"(HTTP {status}, page title {title!r}, "
+            f"(HTTP {status}, cf-mitigated={mitigated}, page title {title!r}, "
             f"{num_for_sale if num_for_sale is not None else 'unknown'} "
             f"copies for sale per the marketplace API) -- re-check the selectors in "
             f"{__name__} against {url}"
