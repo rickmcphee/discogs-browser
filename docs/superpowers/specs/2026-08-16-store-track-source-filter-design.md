@@ -2,7 +2,7 @@
 
 _2026-08-16_
 
-**Amendment (2026-09-06, branch `claude/store-cheapest-filter-x4tdwl`):** the Track tab is gone, so the Source filter has one host: the Store tab, whose `Filter: …` popover now carries Track's Collection and Wantlist as filters. The shared hidden-source set this design describes is unchanged. See [`2026-09-06-track-tab-fold-design.md`](../../specifications/shaping/2026-09-06-track-tab-fold-design.md).
+**Amendment (2026-09-06, branch `claude/store-cheapest-filter-x4tdwl`):** the Track tab is gone, so the Source filter has one host: the Store tab, whose `Filter` popover now carries Track's Collection and Wantlist as filters. The shared hidden-source set this design describes is unchanged. See [`2026-09-06-track-tab-fold-design.md`](../../specifications/shaping/2026-09-06-track-tab-fold-design.md).
 
 ## Overview
 
