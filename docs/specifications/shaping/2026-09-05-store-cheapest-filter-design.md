@@ -236,7 +236,7 @@ feature that fits without it. It should be its own branch, with a look at
 
 **Amendment (2026-09-06):** the first option shipped — see
 [`2026-09-06-store-filter-popover-design.md`](2026-09-06-store-filter-popover-design.md).
-The dropdown and this checkbox are now one `Filter: …` popover; the
+The dropdown and this checkbox are now one `Filter` popover; the
 `Source` fold-in was considered there and left as this section's remaining
 option. The "A checkbox, where the filters are" decision above still holds
 for the control, which is now inside the panel rather than beside the

@@ -34,15 +34,15 @@ beforeEach(() => {
   localStorage.clear()
 })
 
-// The row-set filter lives behind a "Filter: …" popover now, not a <select>.
-// The trigger reads the current value, so assertions read it back off the
-// trigger's text rather than opening the panel; choosing a value opens the
-// panel (idempotently -- it stays open across choices) and clicks the radio.
+// The row-set filter lives behind a popover now, not a <select>.
+// The trigger is a fixed "Filter" and shows nothing of the state, so reading
+// the value means opening the panel (idempotently -- it stays open across
+// choices) and finding the checked radio; choosing a value clicks one.
 const FILTER_LABELS: Record<string, string> = {
   all: 'All', recommended: 'Recommended', saved: 'Saved', overlapped: 'Overlapped',
   collection: 'Collection', wantlist: 'Wantlist',
 }
-const filterButton = () => screen.getByRole('button', { name: /^Filter:/ })
+const filterButton = () => screen.getByRole('button', { name: 'Filter' })
 function openFilter() {
   const button = filterButton()
   if (button.getAttribute('aria-expanded') !== 'true') fireEvent.click(button)
@@ -52,9 +52,9 @@ function chooseFilter(value: string) {
   fireEvent.click(screen.getByRole('radio', { name: FILTER_LABELS[value] }))
 }
 function filterValue(): string {
-  const label = (filterButton().textContent ?? '').replace(/^Filter: /, '').replace(/ · Cheapest$/, '')
-  const entry = Object.entries(FILTER_LABELS).find(([, l]) => l === label)
-  return entry ? entry[0] : label
+  openFilter()
+  const checked = screen.getAllByRole('radio').find((r) => (r as HTMLInputElement).checked) as HTMLInputElement | undefined
+  return checked?.value ?? ''
 }
 function cheapestBox(): HTMLInputElement {
   openFilter()
