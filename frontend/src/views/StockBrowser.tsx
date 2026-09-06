@@ -24,6 +24,11 @@ interface Props {
    *  stock_items and takes only what can actually move that count. */
   inventoryGeneration?: number
   judgmentGeneration?: number
+  /** Ticks on collection-sync events. Only the Collection and Wantlist
+   *  filters read library_items, so it drives a refetch only while one of
+   *  them is active -- under any other filter a library sync cannot move a
+   *  row, and this pane stays mounted while hidden. */
+  libraryGeneration?: number
   isAdmin?: boolean
   hasPriceField?: boolean
 }
@@ -67,7 +72,7 @@ function StockBrowser({
   recommendedAvailable = false, hiddenCrawlerIds = NO_HIDDEN_CRAWLER_IDS,
   crawlers = NO_CRAWLERS, onHiddenCrawlerIdsChange = NOOP_HIDDEN_CRAWLER_IDS_CHANGE,
   hiddenCrawlerIdsLoaded = true, syncGeneration, inventoryGeneration, judgmentGeneration,
-  isAdmin = false, hasPriceField = true,
+  libraryGeneration, isAdmin = false, hasPriceField = true,
 }: Props) {
   const isMobile = useIsMobile()
   const [items, setItems] = useState<StockItem[]>([])
@@ -110,6 +115,9 @@ function StockBrowser({
   const [pendingSaves, setPendingSaves] = useState<Set<string>>(new Set())
   const PER_PAGE = 250
   const tableScrollRef = useRef<HTMLDivElement>(null)
+  // A collection sync only moves rows the library filters show; everywhere
+  // else the tick is pinned so it cannot cause a refetch.
+  const libraryTick = libraryScopeFor(filter) ? (libraryGeneration ?? 0) : 0
 
   const [prevHiddenCrawlerIds, setPrevHiddenCrawlerIds] = useState(hiddenCrawlerIds)
   if (hiddenCrawlerIds !== prevHiddenCrawlerIds) {
@@ -171,7 +179,7 @@ function StockBrowser({
     let latest = true
     load(() => latest)
     return () => { latest = false }
-  }, [load, syncGeneration, retryTick])
+  }, [load, syncGeneration, retryTick, libraryTick])
   useEffect(() => {
     if (!recommendedAvailable && filter === 'recommended') {
       setFilter('all')
@@ -205,7 +213,7 @@ function StockBrowser({
       hiddenCrawlerIds,
     }).then((list) => { if (latest) setArtists(list) })
     return () => { latest = false }
-  }, [filter, hiddenCrawlerIds, syncGeneration, retryTick, hiddenCrawlerIdsLoaded])
+  }, [filter, hiddenCrawlerIds, syncGeneration, retryTick, hiddenCrawlerIdsLoaded, libraryTick])
   // A refetched list can re-case the selected artist's label, or drop it
   // entirely -- see reconcileSelectedArtist. A pure re-casing keeps the current
   // sort and page (it's still the same artist); losing the artist delegates to
@@ -396,6 +404,7 @@ function StockBrowser({
                   refreshKey={
                     (inventoryGeneration ?? 0)
                     + (filter === 'recommended' ? (judgmentGeneration ?? 0) : 0)
+                    + libraryTick
                     + retryTick
                   }
                   disabled={!hiddenCrawlerIdsLoaded}

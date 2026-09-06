@@ -994,6 +994,25 @@ describe('StockBrowser Cheapest filter', () => {
     await waitFor(() => expect(getStockStats).toHaveBeenCalledWith(expect.objectContaining({ cheapest: true })))
   })
 
+  it('refetches on a collection-sync tick under a library filter, and ignores it under any other', async () => {
+    const { rerender } = render(<StockBrowser libraryGeneration={0} />)
+    await waitFor(() => expect(getStock).toHaveBeenCalledTimes(1))
+    // Under All a library sync cannot move a row, and this pane stays
+    // mounted while hidden, so the tick must not cost a request.
+    rerender(<StockBrowser libraryGeneration={1} />)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(getStock).toHaveBeenCalledTimes(1)
+
+    chooseFilter('collection')
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ libraryScope: 'collection' })))
+    const listCalls = getStock.mock.calls.length
+    const artistCalls = getStockArtists.mock.calls.length
+    rerender(<StockBrowser libraryGeneration={2} />)
+    await waitFor(() => expect(getStock.mock.calls.length).toBe(listCalls + 1))
+    await waitFor(() => expect(getStockArtists.mock.calls.length).toBe(artistCalls + 1))
+    expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ libraryScope: 'collection' }))
+  })
+
   it('passes a library filter through to the Stats panel, so its totals narrow with the list', async () => {
     render(<StockBrowser />)
     await waitFor(() => expect(getStock).toHaveBeenCalled())

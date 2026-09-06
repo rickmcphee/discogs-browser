@@ -91,6 +91,18 @@ Out of scope:
   restores (it used to be rejected as a Track value). The old Track key is
   simply never read again; clearing it is not worth a line of code.
 
+- **A collection sync refetches the library filters.** Collection and
+  Wantlist read `library_items`, which the collection sync rewrites, but
+  `StockBrowser` only ever listened to the stock-sync generations — Track
+  had the same gap, and the pane stays mounted while hidden, so a user
+  who synced and came back to an active library filter kept stale rows,
+  artists and Stats until an unrelated stock event. `StockBrowser` now
+  takes `libraryGeneration` (App's collection-sync counter) and folds it
+  into the list, sidebar and Stats refetch keys only while a library
+  filter is active; under any other filter the tick is pinned to zero so a
+  sync cannot cost a request the rows could not use. (Raised by Copilot on
+  PR #300.)
+
 - **Store-only gates become unconditional, not inverted.** The bookmark
   column, the Stats button and the Cheapest checkbox were `scope ===
   'store' &&`; with one scope they just render. Nothing that Track hid is
