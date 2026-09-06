@@ -239,6 +239,166 @@ async def test_sync_collection_enqueues_crawl_queue_for_missing_listings(pg_sche
     assert [(q["discogs_id"], q["status"]) for q in queued] == [("r111", "pending"), ("r222", "pending")]
 
 
+@pytest.fixture
+def library_only_on(pg_schema):
+    """The sync's restoration of store-item rows runs only under
+    crawl_library_only; with it off every live item already has a row."""
+    import config
+    config.save_config({"crawl_library_only": True})
+    yield
+    config.save_config({})
+
+
+@respx.mock
+async def test_sync_collection_leaves_store_items_alone_when_library_only_is_off(pg_schema, monkeypatch):
+    """Off, the restoration is skipped outright rather than run to insert
+    nothing: it would scan the whole stock inventory against this library
+    under the reconciliation lock for no row."""
+    import config
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        db.register_crawler(conn, "Stock Site", "/src.py", crawler_type="catalog")
+        store_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Stock Site'").fetchone()["id"]
+        db.replace_stock_items(conn, store_id, [
+            {"artist": "Artist", "title": "Album (Deluxe)", "url": "https://x/1", "price": 5.0, "currency": "USD"},
+        ])
+        conn.execute("DELETE FROM crawl_queue")
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        return_value=_collection_page(111, total_pages=1)
+    )
+    respx.get(url__regex=r"https://api\.discogs\.com/releases/\d+").mock(
+        return_value=httpx.Response(200, json={"identifiers": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    with patch("db.enqueue_crawl_queue_for_library_stock_items") as restore:
+        manager = CrawlManager()
+        await manager._sync_collection(user["id"], "all")
+    assert "sync_error" not in [e["status"] for e in manager.recent_events()]
+    restore.assert_not_called()
+    with db.get_admin_pool().connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM crawl_queue WHERE item_key IS NOT NULL").fetchone()["count"] == 0
+
+
+@respx.mock
+async def test_sync_collection_queues_store_items_even_when_a_later_page_fails(pg_schema, monkeypatch, library_only_on):
+    """Every collection page commits as it lands, so a sync that then fails on
+    the wantlist has still made those records real library membership -- and
+    the matching store items are owed their queue rows on that exit too."""
+    import config
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        db.register_crawler(conn, "Amazon", "/x.py")
+        db.register_crawler(conn, "Stock Site", "/src.py", crawler_type="catalog")
+        store_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Stock Site'").fetchone()["id"]
+        db.replace_stock_items(conn, store_id, [
+            {"artist": "Artist", "title": "Album (Deluxe)", "url": "https://x/1", "price": 5.0, "currency": "USD"},
+        ])
+        conn.execute("DELETE FROM crawl_queue")
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        return_value=_collection_page(111, total_pages=1)
+    )
+    respx.get(url__regex=r"https://api\.discogs\.com/releases/\d+").mock(
+        return_value=httpx.Response(200, json={"identifiers": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(500, text="boom")
+    )
+
+    manager = CrawlManager()
+    await manager._sync_collection(user["id"], "all")
+    assert "sync_error" in [e["status"] for e in manager.recent_events()]
+
+    deluxe_key = db.compute_item_key("Artist", "Album (Deluxe)", "https://x/1")
+    with db.get_admin_pool().connection() as conn:
+        row = conn.execute("SELECT status FROM crawl_queue WHERE item_key = %s", [deluxe_key]).fetchone()
+    assert row is not None and row["status"] == "pending"
+
+
+@respx.mock
+async def test_sync_collection_queues_store_items_matching_the_synced_records(pg_schema, monkeypatch, library_only_on):
+    """A record arriving in the library makes matching store items wanted, and
+    under library-only crawling their queue rows may have been swept while
+    nobody wanted them -- so the sync restores the missing ones. Only the
+    missing ones: a done row stays done, and an unrelated item gets nothing."""
+    import config
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_KEY", "k")
+    monkeypatch.setattr(config, "DISCOGS_CONSUMER_SECRET", "s")
+    monkeypatch.setattr(config, "TOKEN_ENCRYPTION_KEY", "kL8mN2pQ7rT5vX9yB3cF6hJ1kM4nP8sU2wZ5aD7eG0i=")
+
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        conn.execute(
+            "UPDATE users SET discogs_oauth_token_encrypted = %s, discogs_oauth_secret_encrypted = %s WHERE id = %s",
+            [token_encryption.encrypt("tok"), token_encryption.encrypt("sec"), user["id"]],
+        )
+        db.register_crawler(conn, "Amazon", "/x.py")
+        db.register_crawler(conn, "Stock Site", "/src.py", crawler_type="catalog")
+        store_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Stock Site'").fetchone()["id"]
+        db.replace_stock_items(conn, store_id, [
+            {"artist": "Artist", "title": "Album (Deluxe)", "url": "https://x/1", "price": 5.0, "currency": "USD"},
+            {"artist": "Artist", "title": "Album", "url": "https://x/2", "price": 5.0, "currency": "USD"},
+            {"artist": "Someone Else", "title": "Other", "url": "https://x/3", "price": 5.0, "currency": "USD"},
+        ])
+        conn.execute("DELETE FROM crawl_queue")
+        done_key = db.compute_item_key("Artist", "Album", "https://x/2")
+        db.enqueue_crawl_queue_for_stock_item(conn, done_key)
+        conn.execute("UPDATE crawl_queue SET status = 'done' WHERE item_key = %s", [done_key])
+        conn.commit()
+
+    respx.get("https://api.discogs.com/users/alice/collection/fields").mock(
+        return_value=httpx.Response(200, json={"fields": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/collection/folders/0/releases").mock(
+        return_value=_collection_page(111, total_pages=1)
+    )
+    respx.get(url__regex=r"https://api\.discogs\.com/releases/\d+").mock(
+        return_value=httpx.Response(200, json={"identifiers": []})
+    )
+    respx.get("https://api.discogs.com/users/alice/wants").mock(
+        return_value=httpx.Response(200, json={"pagination": {"pages": 1}, "wants": []})
+    )
+
+    manager = CrawlManager()
+    await manager._sync_collection(user["id"], "all")
+    assert "sync_error" not in [e["status"] for e in manager.recent_events()]
+
+    deluxe_key = db.compute_item_key("Artist", "Album (Deluxe)", "https://x/1")
+    with db.get_admin_pool().connection() as conn:
+        rows = conn.execute(
+            "SELECT item_key, status FROM crawl_queue WHERE item_key IS NOT NULL ORDER BY item_key"
+        ).fetchall()
+    assert sorted((r["item_key"], r["status"]) for r in rows) == sorted([(deluxe_key, "pending"), (done_key, "done")])
+
+
 @respx.mock
 async def test_sync_broadcasts_sanitized_error_when_fields_fetch_fails(pg_schema, monkeypatch):
     # Pins the guard around discogs.fetch_collection_fields to the exception
@@ -2561,10 +2721,10 @@ async def test_drain_one_batch_reverts_a_cancelled_claim_instead_of_orphaning_it
     real_claim = db.claim_crawl_queue_batch
     started = threading.Event()
 
-    def slow_claim(conn, worker_id, limit):
+    def slow_claim(conn, worker_id, limit, library_only=False):
         started.set()
         time.sleep(0.05)
-        return real_claim(conn, worker_id, limit)
+        return real_claim(conn, worker_id, limit, library_only)
 
     with patch("db.claim_crawl_queue_batch", side_effect=slow_claim):
         task = asyncio.ensure_future(manager._drain_one_batch("worker-test", {}, pages={}))
@@ -4892,10 +5052,10 @@ async def test_sync_stock_sweeps_dead_stock_jobs_at_end_of_run(pg_schema):
     real_delete = db.delete_dead_stock_crawl_queue_rows
     call_count = 0
 
-    def _counting_delete(conn):
+    def _counting_delete(conn, library_only=False):
         nonlocal call_count
         call_count += 1
-        return real_delete(conn)
+        return real_delete(conn, library_only)
 
     manager = CrawlManager()
     with patch("crawler.load_enabled_crawlers", return_value=[fake_plugin, fake_plugin_b]), \
@@ -5342,3 +5502,85 @@ async def test_worker_stock_item_match_stores_the_name_the_crawler_reported(pg_s
     with db.get_admin_pool().connection() as conn:
         listing = conn.execute("SELECT listing_title FROM listings WHERE item_key = 'key1'").fetchone()
     assert listing["listing_title"] == "The listing as Amazon names it"
+
+
+# ---------------------------------------------------------------------------
+# crawl_library_only
+# ---------------------------------------------------------------------------
+
+async def test_worker_leaves_a_stock_item_nobody_wants_unclaimed_under_library_only(pg_schema):
+    """_drain_one_batch reads the setting on every claim and passes it to
+    claim_crawl_queue_batch, so switching it on takes effect on the next batch
+    with no restart, the same way enabling or disabling a crawler does."""
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Amazon", "/x.py")
+        crawler_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        _stock_item_with_source(conn, "key1")
+        db.enqueue_crawl_queue_for_stock_item(conn, "key1")
+        conn.commit()
+
+    manager = CrawlManager()
+    manager._browser = MagicMock()
+    manager._stealth = MagicMock()
+    fake_plugin = AsyncMock()
+    fake_plugin.search = AsyncMock(return_value=[])
+    fake_plugin._db_id = crawler_id
+    fake_plugin._db_site_name = "Amazon"
+
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("config.load_config", return_value={"crawl_delay_seconds": 0, "crawl_library_only": True}):
+        claimed = await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+
+    assert claimed == 0
+    fake_plugin.search.assert_not_called()
+    with db.get_admin_pool().connection() as conn:
+        assert conn.execute("SELECT status FROM crawl_queue WHERE item_key = 'key1'").fetchone()["status"] == "pending"
+
+    # Someone saves it: the very next batch picks it up, no restart, no re-sync.
+    with db.get_admin_pool().connection() as conn:
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        db.save_stock_item(conn, user["id"], "key1")
+        conn.commit()
+    with patch("crawler._new_context", new=AsyncMock(return_value=(MagicMock(), MagicMock()))), \
+         patch("config.load_config", return_value={"crawl_delay_seconds": 0, "crawl_library_only": True}):
+        claimed = await manager._drain_one_batch("worker-test", {crawler_id: fake_plugin}, pages={})
+    assert claimed == 1
+    fake_plugin.search.assert_called_once()
+
+
+async def test_sync_stock_enqueues_only_wanted_items_under_library_only(pg_schema):
+    """The stock sync reads the setting per source and passes it to the
+    enqueue, so an item nobody wants never gets a queue row while the setting
+    is on -- and the end-of-run sweep reads it too."""
+    with db.get_admin_pool().connection() as conn:
+        db.register_crawler(conn, "Stock Site", "/x.py", crawler_type="catalog")
+        db.register_crawler(conn, "Amazon", "/amazon.py", crawler_type="release")
+        user = db.create_user(conn, discogs_user_id=1, discogs_username="alice")
+        db.upsert_catalog_release(conn, {
+            "discogs_id": "r1", "artist": "Wanted Artist", "title": "Wanted Title", "year": None,
+            "label": None, "format": None, "discogs_price": None, "barcode": None,
+            "cover_image_url": None, "discogs_url": None,
+        })
+        db.upsert_library_item(conn, user["id"], "r1", in_collection=True)
+        conn.commit()
+
+    fake_plugin = AsyncMock()
+
+    async def _items():
+        yield {"artist": "Wanted Artist", "title": "Wanted Title", "url": "https://x/1", "price": 5.0, "currency": "USD"}
+        yield {"artist": "Unwanted Artist", "title": "Unwanted Title", "url": "https://x/2", "price": 5.0, "currency": "USD"}
+
+    fake_plugin.crawl_catalog = lambda: _items()
+    fake_plugin._db_site_name = "Stock Site"
+    with db.get_admin_pool().connection() as conn:
+        fake_plugin._db_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Stock Site'").fetchone()["id"]
+
+    manager = CrawlManager()
+    with patch("crawler.load_enabled_crawlers", return_value=[fake_plugin]), \
+         patch("config.load_config", return_value={"crawl_library_only": True}):
+        await manager._sync_stock()
+
+    with db.get_admin_pool().connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM stock_items").fetchone()["count"] == 2
+        keys = [r["item_key"] for r in conn.execute("SELECT item_key FROM crawl_queue").fetchall()]
+    assert keys == [db.compute_item_key("Wanted Artist", "Wanted Title", "https://x/1")]
