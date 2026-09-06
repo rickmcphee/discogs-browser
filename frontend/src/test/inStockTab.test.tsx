@@ -181,6 +181,24 @@ describe('In Stock tab', () => {
     await waitFor(() => expect(getPriceStatus.mock.calls.length).toBeGreaterThan(1))
   })
 
+  it('refetches the library views after a sync fails partway through, since earlier pages have committed', async () => {
+    render(<App />)
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0))
+    await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
+    // A Store view under a library filter reads the same rows the sync
+    // rewrites, so it has to move with the Collection tab.
+    fireEvent.click(screen.getByText('Store'))
+    fireEvent.click(screen.getByRole('button', { name: /^Filter:/ }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Wantlist' }))
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ libraryScope: 'wantlist' })))
+    const stockCalls = getStock.mock.calls.length
+
+    getLastCrawlSource().emit({ status: 'sync_error', error: 'boom', id: 1 })
+
+    await waitFor(() => expect(getStock.mock.calls.length).toBeGreaterThan(stockCalls))
+    expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ libraryScope: 'wantlist' }))
+  })
+
   it('does not let a slow bootstrap price-status response overwrite a newer post-sync one', async () => {
     let resolveBootstrap: (v: { any_price_paid: boolean }) => void = () => {}
     getPriceStatus

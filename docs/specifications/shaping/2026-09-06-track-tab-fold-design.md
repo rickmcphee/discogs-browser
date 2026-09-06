@@ -100,8 +100,13 @@ Out of scope:
   takes `libraryGeneration` (App's collection-sync counter) and folds it
   into the list, sidebar and Stats refetch keys only while a library
   filter is active; under any other filter the tick is pinned to zero so a
-  sync cannot cost a request the rows could not use. (Raised by Copilot on
-  PR #300.)
+  sync cannot cost a request the rows could not use. That counter now also
+  advances on `sync_error`: each page's writes commit before the next page
+  starts, and wantlist pages commit without a `sync_progress`, so on a late
+  failure the error is the only event that says the rows moved — which
+  `fetchPriceStatus` in the same handler already acted on. The Collection
+  and Wantlist tabs read the same counter and gain the same refetch. (Both
+  raised by Copilot on PR #300.)
 
 - **Store-only gates become unconditional, not inverted.** The bookmark
   column, the Stats button and the Cheapest checkbox were `scope ===

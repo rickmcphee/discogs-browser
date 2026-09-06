@@ -460,8 +460,12 @@ export default function App() {
         setSyncStatus(`Sync failed: ${event.error}`, event.id ?? null)
         // Each page's writes (including price_paid) commit before the next page
         // starts, so a sync that fails partway through can still have changed
-        // stored prices -- refetch regardless of which scope errored.
+        // stored prices -- refetch regardless of which scope errored. The same
+        // goes for the rows themselves: wantlist pages commit without a
+        // sync_progress, so on a late failure this event is the only signal
+        // the library views get that their rows moved.
         fetchPriceStatus()
+        setSyncGeneration(g => g + 1)
         return
       }
       if (event.status === 'plex_match_started') {
