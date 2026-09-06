@@ -236,6 +236,8 @@ class Crawler:
         # spv.py gives: a dimension is not a format claim.
         if _VINYL_WORD_RE.search(descriptor):
             return True
+        if _MERCH_RE.search(descriptor):
+            return False
         return bool(_INCH_RE.search(descriptor))
 
     @classmethod
