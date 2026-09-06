@@ -1,18 +1,18 @@
 import { useState, useEffect, useCallback, useRef, memo } from 'react'
 import { getStock, getStockArtists, saveStockItem, unsaveStockItem } from '../api/client'
-import type { StockItem, StockSortField, SortOrder, StockScope, LibraryScope, Crawler } from '../api/types'
+import type { StockItem, StockSortField, SortOrder, LibraryScope, Crawler } from '../api/types'
 import { navButtonClass, dismissButtonClass } from '../styles/buttons'
-import { textInputClass, selectClass } from '../styles/inputs'
+import { textInputClass } from '../styles/inputs'
 import { reconcileSelectedArtist } from './artistSelection'
 import SourceFilter from '../components/SourceFilter'
 import StockStats from '../components/StockStats'
+import StockFilter from '../components/StockFilter'
 import { formatPrice } from './formatPrice'
 import { useIsMobile } from '../hooks/useMediaQuery'
 import { ArtistSidebar, ArtistSheetButton } from '../components/ArtistFilter'
 import MobileSort, { type SortOption } from '../components/MobileSort'
 
 interface Props {
-  scope?: StockScope
   recommendedAvailable?: boolean
   hiddenCrawlerIds?: number[]
   crawlers?: Crawler[]
@@ -24,6 +24,11 @@ interface Props {
    *  stock_items and takes only what can actually move that count. */
   inventoryGeneration?: number
   judgmentGeneration?: number
+  /** Ticks on collection-sync events. Only the filters that read
+   *  library_items (Collection, Wantlist, Overlapped, Recommended) can have a
+   *  row moved by one, so it drives a refetch only while one of them is
+   *  active -- this pane stays mounted while hidden. */
+  libraryGeneration?: number
   isAdmin?: boolean
   hasPriceField?: boolean
 }
@@ -31,8 +36,8 @@ interface Props {
 const NO_HIDDEN_CRAWLER_IDS: number[] = []
 const NO_CRAWLERS: Crawler[] = []
 const NOOP_HIDDEN_CRAWLER_IDS_CHANGE = () => {}
-const STORE_FILTERS = ['all', 'recommended', 'saved', 'overlapped'] as const
-const TRACK_FILTERS = ['all', 'collection', 'wantlist'] as const satisfies readonly LibraryScope[]
+const STORE_FILTERS = ['all', 'recommended', 'saved', 'overlapped', 'collection', 'wantlist'] as const
+const LIBRARY_DEPENDENT_FILTERS: ReadonlySet<string> = new Set(['collection', 'wantlist', 'overlapped', 'recommended'])
 
 // The name shown for a row is what the source called the item when the
 // crawler reported one, since a release-crawler match is by artist/title and
@@ -50,8 +55,10 @@ function titleTooltip(item: StockItem): string | undefined {
   return undefined
 }
 
-function trackLibraryScope(value: string): LibraryScope | undefined {
-  return (TRACK_FILTERS as readonly string[]).includes(value) ? (value as LibraryScope) : undefined
+// Collection and Wantlist narrow to the user's library at release level; the
+// other filters send no scope at all.
+function libraryScopeFor(value: string): LibraryScope | undefined {
+  return value === 'collection' || value === 'wantlist' ? value : undefined
 }
 
 function BookmarkIcon({ filled }: { filled: boolean }) {
@@ -63,19 +70,18 @@ function BookmarkIcon({ filled }: { filled: boolean }) {
 }
 
 function StockBrowser({
-  scope = 'store', recommendedAvailable = false, hiddenCrawlerIds = NO_HIDDEN_CRAWLER_IDS,
+  recommendedAvailable = false, hiddenCrawlerIds = NO_HIDDEN_CRAWLER_IDS,
   crawlers = NO_CRAWLERS, onHiddenCrawlerIdsChange = NOOP_HIDDEN_CRAWLER_IDS_CHANGE,
   hiddenCrawlerIdsLoaded = true, syncGeneration, inventoryGeneration, judgmentGeneration,
-  isAdmin = false, hasPriceField = true,
+  libraryGeneration, isAdmin = false, hasPriceField = true,
 }: Props) {
   const isMobile = useIsMobile()
   const [items, setItems] = useState<StockItem[]>([])
-  const [total, setTotal] = useState(0)
   // Rows in the paginated set -- what pages divide by. A Cost sort in list
   // view flattens each item's comparison rows into one ordering, so a page
   // there holds PER_PAGE rows rather than PER_PAGE items; every other request
-  // pages by item, where this just matches `total`. `total` still drives the
-  // "N items" label, which has to keep agreeing with the Stats breakdown.
+  // pages by item, where this just matches the response's `total`. Nothing
+  // here renders that item count: the Stats panel surfaces it.
   const [rowTotal, setRowTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
@@ -84,19 +90,19 @@ function StockBrowser({
   const [sort, setSort] = useState<StockSortField>('artist')
   const [order, setOrder] = useState<SortOrder>('asc')
   const [filter, setFilter] = useState<string>(() => {
-    const allowed: readonly string[] = scope === 'track' ? TRACK_FILTERS : STORE_FILTERS
-    const stored = localStorage.getItem(`stockFilter_${scope}`)
+    const allowed: readonly string[] = STORE_FILTERS
+    const stored = localStorage.getItem('stockFilter_store')
     return stored && allowed.includes(stored) ? stored : 'all'
   })
   const [viewMode, setViewMode] = useState<'list' | 'tiles'>(
-    () => (localStorage.getItem(`collectionViewMode_${scope}`) === 'tiles' ? 'tiles' : 'list')
+    () => (localStorage.getItem('collectionViewMode_store') === 'tiles' ? 'tiles' : 'list')
   )
-  // Store only: one record, one row, the cheapest store's. Track is left
-  // alone -- it reads as "every place this record I follow is in stock", and
-  // hiding the dearer stores there hides half the answer.
-  const [cheapest, setCheapest] = useState(
-    () => scope === 'store' && localStorage.getItem('stockCheapest') === 'true'
-  )
+  // Only the lowest-priced store's row for each record -- rows at the floor,
+  // so a tie keeps both and each currency keeps its own (see
+  // db._cheapest_clause). Stacks on every filter, Collection and Wantlist
+  // included: under those it reads as "the cheapest place to buy a record I
+  // follow", and unticking it is one click away.
+  const [cheapest, setCheapest] = useState(() => localStorage.getItem('stockCheapest') === 'true')
   const [hasLoaded, setHasLoaded] = useState(false)
   // Bumped after every toggleSaved attempt (success or failure) to trigger a
   // race-guarded refetch through the same effects load()/getStockArtists
@@ -110,6 +116,12 @@ function StockBrowser({
   const [pendingSaves, setPendingSaves] = useState<Set<string>>(new Set())
   const PER_PAGE = 250
   const tableScrollRef = useRef<HTMLDivElement>(null)
+  // A collection sync only moves rows under a filter that reads
+  // library_items -- Collection and Wantlist directly, Overlapped through the
+  // collected-artist clause, Recommended through its not-owned gate (see
+  // db._stock_filter_sql). Under All and Saved the tick is pinned so it cannot
+  // cause a refetch.
+  const libraryTick = LIBRARY_DEPENDENT_FILTERS.has(filter) ? (libraryGeneration ?? 0) : 0
 
   const [prevHiddenCrawlerIds, setPrevHiddenCrawlerIds] = useState(hiddenCrawlerIds)
   if (hiddenCrawlerIds !== prevHiddenCrawlerIds) {
@@ -143,12 +155,12 @@ function StockBrowser({
       search: search || undefined,
       artist: selectedArtist || undefined,
       sort, order, page, per_page: PER_PAGE,
-      libraryScope: scope === 'track' ? trackLibraryScope(filter) : undefined,
-      recommended: scope === 'store' && filter === 'recommended',
-      saved: scope === 'store' && filter === 'saved',
-      overlapped: scope === 'store' && filter === 'overlapped',
+      libraryScope: libraryScopeFor(filter),
+      recommended: filter === 'recommended',
+      saved: filter === 'saved',
+      overlapped: filter === 'overlapped',
       hiddenCrawlerIds,
-      cheapest: scope === 'store' && cheapest,
+      cheapest,
       // Tiles render own rows only, so asking for comparison rows there would
       // spend a whole page of the flattened Cost ordering on rows the grid
       // then drops -- leaving it near-empty. Grouped sorts are unaffected
@@ -157,13 +169,12 @@ function StockBrowser({
     })
     if (!isLatest()) return
     setItems(result.items)
-    setTotal(result.total)
     setRowTotal(result.row_total)
     setHasLoaded(true)
-  }, [search, selectedArtist, sort, order, page, filter, hiddenCrawlerIds, scope, hiddenCrawlerIdsLoaded, viewMode, cheapest])
+  }, [search, selectedArtist, sort, order, page, filter, hiddenCrawlerIds, hiddenCrawlerIdsLoaded, viewMode, cheapest])
 
   // syncGeneration ticks on every stock_sync_progress/stock_sync_complete SSE
-  // event so the store/track tabs repaint as crawlers add items, same as
+  // event so the Store tab repaints as crawlers add items, same as
   // RecordBrowser's syncGeneration does for collection sync. Kept in this
   // same effect as `load` (rather than a second `if (syncGeneration) load()`
   // effect) so a syncGeneration tick and an unrelated load-identity change
@@ -172,7 +183,7 @@ function StockBrowser({
     let latest = true
     load(() => latest)
     return () => { latest = false }
-  }, [load, syncGeneration, retryTick])
+  }, [load, syncGeneration, retryTick, libraryTick])
   useEffect(() => {
     if (!recommendedAvailable && filter === 'recommended') {
       setFilter('all')
@@ -199,14 +210,14 @@ function StockBrowser({
     // clearing an artist the newest response still lists.
     let latest = true
     getStockArtists({
-      libraryScope: scope === 'track' ? trackLibraryScope(filter) : undefined,
-      recommended: scope === 'store' && filter === 'recommended',
-      saved: scope === 'store' && filter === 'saved',
-      overlapped: scope === 'store' && filter === 'overlapped',
+      libraryScope: libraryScopeFor(filter),
+      recommended: filter === 'recommended',
+      saved: filter === 'saved',
+      overlapped: filter === 'overlapped',
       hiddenCrawlerIds,
     }).then((list) => { if (latest) setArtists(list) })
     return () => { latest = false }
-  }, [scope, filter, hiddenCrawlerIds, syncGeneration, retryTick, hiddenCrawlerIdsLoaded])
+  }, [filter, hiddenCrawlerIds, syncGeneration, retryTick, hiddenCrawlerIdsLoaded, libraryTick])
   // A refetched list can re-case the selected artist's label, or drop it
   // entirely -- see reconcileSelectedArtist. A pure re-casing keeps the current
   // sort and page (it's still the same artist); losing the artist delegates to
@@ -218,11 +229,9 @@ function StockBrowser({
     if (next) setSelectedArtist(next)
     else selectArtist('')
   }, [artists, selectedArtist])
-  useEffect(() => { localStorage.setItem(`collectionViewMode_${scope}`, viewMode) }, [viewMode, scope])
-  useEffect(() => { localStorage.setItem(`stockFilter_${scope}`, filter) }, [filter, scope])
-  useEffect(() => {
-    if (scope === 'store') localStorage.setItem('stockCheapest', String(cheapest))
-  }, [cheapest, scope])
+  useEffect(() => { localStorage.setItem('collectionViewMode_store', viewMode) }, [viewMode])
+  useEffect(() => { localStorage.setItem('stockFilter_store', filter) }, [filter])
+  useEffect(() => { localStorage.setItem('stockCheapest', String(cheapest)) }, [cheapest])
   useEffect(() => { tableScrollRef.current?.scrollTo({ top: 0 }) }, [selectedArtist])
 
   function changeFilter(value: string) {
@@ -240,10 +249,11 @@ function StockBrowser({
       return
     }
     // The backend's discogs_price sort key is pinned to collection scope -- a
-    // wantlist row has no paid price -- so under Wantlist it silently degrades
-    // to artist order. Resetting the sort keeps the visible sort indicator
-    // honest instead of leaving state claiming an order the rows aren't in.
-    if (value === 'wantlist' && sort === 'discogs_price') {
+    // wantlist row has no paid price -- so anywhere but Collection it silently
+    // degrades to artist order. Resetting the sort keeps the visible sort
+    // indicator honest instead of leaving state claiming an order the rows
+    // aren't in; the Price column itself only renders under Collection.
+    if (value !== 'collection' && sort === 'discogs_price') {
       setSort('artist')
       setOrder('asc')
     }
@@ -274,7 +284,6 @@ function StockBrowser({
       const patched = prev.map((it) => (it.item_key === item.item_key ? { ...it, saved: next } : it))
       return filter === 'saved' && !next ? patched.filter((it) => it.item_key !== item.item_key) : patched
     })
-    if (filter === 'saved' && !next) setTotal((t) => t - 1)
     try {
       // Bumping retryTick -- rather than calling load()/getStockArtists
       // directly -- routes the refetch through the same isLatest-guarded
@@ -308,16 +317,19 @@ function StockBrowser({
   }
 
   const totalPages = Math.ceil(rowTotal / PER_PAGE)
-  const colCount = scope === 'track' ? (hasPriceField ? 7 : 6) : 7
-  const priceSortable = scope === 'track' && filter !== 'wantlist'
+  // The discogs price is what the user paid, which only a collection row has,
+  // so the column and its sort exist only under the Collection filter -- and
+  // only while the user has any price data at all.
+  const showPrice = filter === 'collection' && hasPriceField
+  const colCount = showPrice ? 8 : 7
   const emptyMessage =
-    scope === 'store' && filter === 'recommended' ? 'Nothing recommended is in stock right now.'
-    : scope === 'store' && filter === 'saved' ? "You haven't saved anything yet."
-    : scope === 'store' && filter === 'overlapped' ? 'Nothing by an artist in your collection is in stock right now.'
-    : scope === 'store' ? (isAdmin ? 'No in-stock items yet. Click Refresh under Store Management in Settings.' : 'No in-stock items yet. Check back after the next store sync.')
+    filter === 'recommended' ? 'Nothing recommended is in stock right now.'
+    : filter === 'saved' ? "You haven't saved anything yet."
+    : filter === 'overlapped' ? 'Nothing by an artist in your collection is in stock right now.'
     : filter === 'collection' ? 'Nothing in your collection is in stock right now.'
     : filter === 'wantlist' ? 'Nothing on your wantlist is in stock right now.'
-    : "Nothing you're tracking is in stock right now."
+    : isAdmin ? 'No in-stock items yet. Click Refresh under Store Management in Settings.'
+    : 'No in-stock items yet. Check back after the next store sync.'
 
   // Mirrors the column headers below, gated the same way: the discogs price is
   // only a column, and only sortable, where the table shows one.
@@ -325,9 +337,7 @@ function StockBrowser({
     { field: 'artist', label: 'Artist' },
     { field: 'title', label: 'Title' },
     { field: 'format', label: 'Format' },
-    ...(scope === 'track' && hasPriceField && priceSortable
-      ? [{ field: 'discogs_price', label: 'Price' } as SortOption<StockSortField>]
-      : []),
+    ...(showPrice ? [{ field: 'discogs_price', label: 'Price' } as SortOption<StockSortField>] : []),
     { field: 'price', label: 'Cost' },
     { field: 'source', label: 'Source' },
   ]
@@ -349,10 +359,8 @@ function StockBrowser({
             and `md:contents` dissolving the mobile grouping wrapper above the
             breakpoint. */}
         <div className="px-3 py-2 border-b border-gray-800 bg-gray-950 flex flex-col gap-2 md:flex-row md:items-center md:gap-0 md:px-4 md:py-3">
-          {/* The count rides on the search line rather than the control line:
-              it is the one thing here that is not a control, and giving it a
-              row of its own cost the list a row of chrome. Store omits it --
-              the Stats button beside the toolbar already surfaces the total. */}
+          {/* No item count on the search line: the Stats button beside the
+              toolbar already surfaces the total. */}
           <div className="flex w-full items-center gap-3 md:contents">
             <div className="relative flex-1 md:w-full md:max-w-md md:flex-initial">
               <input
@@ -370,9 +378,6 @@ function StockBrowser({
                 <span aria-hidden="true">✕</span>
               </button>
             </div>
-            {scope !== 'store' && (
-              <span className="shrink-0 text-xs text-gray-500 md:ml-3 md:shrink">{total} items</span>
-            )}
           </div>
           <div className="flex flex-wrap items-center gap-1.5 md:contents">
             {isMobile && (
@@ -383,10 +388,10 @@ function StockBrowser({
                 <MobileSort options={sortOptions} sort={sort} order={order} onSort={toggleSort} />
               )}
               <SourceFilter crawlers={crawlers} hiddenCrawlerIds={hiddenCrawlerIds} onChange={onHiddenCrawlerIdsChange} disabled={!hiddenCrawlerIdsLoaded} />
-              {scope === 'store' && (
-                <StockStats
+              <StockStats
                   search={search || undefined}
                   artist={selectedArtist || undefined}
+                  libraryScope={libraryScopeFor(filter)}
                   recommended={filter === 'recommended'}
                   saved={filter === 'saved'}
                   overlapped={filter === 'overlapped'}
@@ -403,42 +408,18 @@ function StockBrowser({
                   refreshKey={
                     (inventoryGeneration ?? 0)
                     + (filter === 'recommended' ? (judgmentGeneration ?? 0) : 0)
+                    + libraryTick
                     + retryTick
                   }
                   disabled={!hiddenCrawlerIdsLoaded}
                 />
-              )}
-              <select
-                value={filter}
-                onChange={(e) => changeFilter(e.target.value)}
-                className={`px-3 py-2 text-sm md:py-1 ${selectClass()}`}
-              >
-                {scope === 'track' ? (
-                  <>
-                    <option value="all">All</option>
-                    <option value="collection">Collection</option>
-                    <option value="wantlist">Wantlist</option>
-                  </>
-                ) : (
-                  <>
-                    <option value="all">All</option>
-                    <option value="recommended" disabled={!recommendedAvailable}>Recommended</option>
-                    <option value="saved">Saved</option>
-                    <option value="overlapped">Overlapped</option>
-                  </>
-                )}
-              </select>
-              {scope === 'store' && (
-                <label className="flex h-11 select-none items-center gap-1.5 px-1 text-sm text-gray-300 hover:text-white md:h-auto">
-                  <input
-                    type="checkbox"
-                    checked={cheapest}
-                    onChange={(e) => { setCheapest(e.target.checked); setPage(1) }}
-                    className="accent-white"
-                  />
-                  Cheapest
-                </label>
-              )}
+              <StockFilter
+                filter={filter}
+                onFilterChange={changeFilter}
+                recommendedAvailable={recommendedAvailable}
+                cheapest={cheapest}
+                onCheapestChange={(value) => { setCheapest(value); setPage(1) }}
+              />
               <button
                 onClick={() => setViewMode('list')}
                 title="List view"
@@ -494,7 +475,6 @@ function StockBrowser({
                       ) : (
                         <div className="w-full aspect-square bg-gray-800 rounded" />
                       )}
-                      {scope === 'store' && (
                         <button
                           onClick={(e) => { e.preventDefault(); toggleSaved(item) }}
                           title={item.saved ? 'Remove from saved' : 'Save for later'}
@@ -503,7 +483,6 @@ function StockBrowser({
                         >
                           <BookmarkIcon filled={item.saved} />
                         </button>
-                      )}
                     </div>
                     <div className="mt-1.5 text-sm text-gray-200 truncate group-hover:text-white" title={item.reason ?? undefined}>{item.artist}</div>
                     <div className="text-xs text-gray-400 truncate" title={titleTooltip(item)}>{displayTitle(item)}</div>
@@ -529,7 +508,7 @@ function StockBrowser({
                   item.source || null,
                   // "Price" is the discogs price, as in the table header; the
                   // link on the right is "Cost", what this store wants for it.
-                  scope === 'track' && hasPriceField && item.discogs_price ? `Price ${item.discogs_price}` : null,
+                  showPrice && item.discogs_price ? `Price ${item.discogs_price}` : null,
                 ].filter(Boolean).join(' · ')
                 return (
                   <li key={item.id} className="flex items-center gap-3 px-3 py-2 text-left">
@@ -550,7 +529,6 @@ function StockBrowser({
                       <a href={item.url} target="_blank" rel="noreferrer" className="px-2 py-3 text-sm font-medium text-green-400 hover:text-green-300">
                         {item.price != null ? formatPrice(item.price, item.currency) : 'View'}
                       </a>
-                      {scope === 'store' && (
                         <button
                           onClick={() => toggleSaved(item)}
                           title={item.saved ? 'Remove from saved' : 'Save for later'}
@@ -559,7 +537,6 @@ function StockBrowser({
                         >
                           <BookmarkIcon filled={item.saved} />
                         </button>
-                      )}
                     </div>
                   </li>
                 )
@@ -590,16 +567,12 @@ function StockBrowser({
                     Format {sort === 'format' ? (order === 'asc' ? '↑' : '↓') : ''}
                   </button>
                 </th>
-                {scope === 'track' && hasPriceField && (
-                  priceSortable ? (
-                    <th className="text-center" aria-sort={sort === 'discogs_price' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}>
-                      <button type="button" onClick={() => toggleSort('discogs_price')} className={`${sortButtonClass} text-center`}>
-                        Price {sort === 'discogs_price' ? (order === 'asc' ? '↑' : '↓') : ''}
-                      </button>
-                    </th>
-                  ) : (
-                    <th className="text-center px-3 py-2">Price</th>
-                  )
+                {showPrice && (
+                  <th className="text-center" aria-sort={sort === 'discogs_price' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                    <button type="button" onClick={() => toggleSort('discogs_price')} className={`${sortButtonClass} text-center`}>
+                      Price {sort === 'discogs_price' ? (order === 'asc' ? '↑' : '↓') : ''}
+                    </button>
+                  </th>
                 )}
                 <th className="text-center" aria-sort={sort === 'price' ? (order === 'asc' ? 'ascending' : 'descending') : 'none'}>
                   <button type="button" onClick={() => toggleSort('price')} className={`${sortButtonClass} text-center`}>
@@ -611,7 +584,7 @@ function StockBrowser({
                     Source {sort === 'source' ? (order === 'asc' ? '↑' : '↓') : ''}
                   </button>
                 </th>
-                {scope === 'store' && <th className="w-8 px-3 py-2"></th>}
+                <th className="w-8 px-3 py-2"></th>
               </tr>
             </thead>
             <tbody>
@@ -634,7 +607,7 @@ function StockBrowser({
                   <td className="px-3 py-2 text-right text-gray-200" title={item.reason ?? undefined}>{item.artist}</td>
                   <td className="px-3 py-2 text-left text-gray-300" title={titleTooltip(item)}>{displayTitle(item)}</td>
                   <td className="px-3 py-2 text-gray-400">{item.format ?? '—'}</td>
-                  {scope === 'track' && hasPriceField && (
+                  {showPrice && (
                     <td className="px-3 py-2 text-gray-400">{item.discogs_price ?? '—'}</td>
                   )}
                   <td className="px-3 py-2">
@@ -643,7 +616,6 @@ function StockBrowser({
                     </a>
                   </td>
                   <td className="px-3 py-2 text-gray-400">{item.source}</td>
-                  {scope === 'store' && (
                     <td className="px-3 py-2">
                       <button
                         onClick={() => toggleSaved(item)}
@@ -654,7 +626,6 @@ function StockBrowser({
                         <BookmarkIcon filled={item.saved} />
                       </button>
                     </td>
-                  )}
                 </tr>
               ))}
             </tbody>

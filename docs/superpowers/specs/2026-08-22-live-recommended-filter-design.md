@@ -2,6 +2,8 @@
 
 _2026-08-22_
 
+**Amendment (2026-09-06, branch `claude/store-cheapest-filter-x4tdwl`, second PR):** "the Store tab's filter dropdown" below is now a `Filter: …` popover with a radio per option (`frontend/src/components/StockFilter.tsx`); `Recommended` stays selectable during a refresh exactly as described, it is just a radio rather than an `<option>`. See [`docs/specifications/shaping/2026-09-06-store-filter-popover-design.md`](../../specifications/shaping/2026-09-06-store-filter-popover-design.md).
+
 ## Overview
 
 The Store tab's "Recommended" filter option is disabled for the entire

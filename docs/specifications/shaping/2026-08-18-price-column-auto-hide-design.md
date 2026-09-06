@@ -2,6 +2,8 @@
 
 Date: 2026-08-18
 
+**Amendment (2026-09-06, branch `claude/store-cheapest-filter-x4tdwl`):** the Track tab is gone, and with it the Price column's every-filter rendering: under the Store tab the discogs price column now renders only with the Collection filter (and only while `hasPriceField` holds), sortable whenever shown, with the sort resetting to artist on leaving Collection. The `hasPriceField` wiring this design describes is unchanged and now reaches Store's `StockBrowser`. See [`2026-09-06-track-tab-fold-design.md`](2026-09-06-track-tab-fold-design.md).
+
 ## Problem
 
 The Discogs `Price` column (`library_items.price_paid`, wire name `discogs_price` — see

@@ -3,6 +3,8 @@
 Date: 2026-09-05
 Branch: `claude/marketplace-search-result-names-iea0xg`
 
+**Amendment (2026-09-06, branch `claude/store-cheapest-filter-x4tdwl`):** the Track tab is gone. Its Collection and Wantlist filters are now options in the Store tab's `Filter: …` popover, sending the same `library_scope`, and every reference below to the Track tab, a Track scope, or a "Store/Track" pair reads as the Store tab under those filters. See [`2026-09-06-track-tab-fold-design.md`](2026-09-06-track-tab-fold-design.md).
+
 ## Problem
 
 A release crawler that searches by name (Amazon, eBay, eBay/CCmusic; not
