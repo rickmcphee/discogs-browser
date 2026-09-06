@@ -91,9 +91,11 @@ function StockBrowser({
   const [viewMode, setViewMode] = useState<'list' | 'tiles'>(
     () => (localStorage.getItem('collectionViewMode_store') === 'tiles' ? 'tiles' : 'list')
   )
-  // One record, one row, the cheapest store's. Stacks on every filter,
-  // Collection and Wantlist included: under those it reads as "the cheapest
-  // place to buy a record I follow", and unticking it is one click away.
+  // Only the lowest-priced store's row for each record -- rows at the floor,
+  // so a tie keeps both and each currency keeps its own (see
+  // db._cheapest_clause). Stacks on every filter, Collection and Wantlist
+  // included: under those it reads as "the cheapest place to buy a record I
+  // follow", and unticking it is one click away.
   const [cheapest, setCheapest] = useState(() => localStorage.getItem('stockCheapest') === 'true')
   const [hasLoaded, setHasLoaded] = useState(false)
   // Bumped after every toggleSaved attempt (success or failure) to trigger a

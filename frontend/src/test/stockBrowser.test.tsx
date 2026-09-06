@@ -993,6 +993,17 @@ describe('StockBrowser Cheapest filter', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Stats' }))
     await waitFor(() => expect(getStockStats).toHaveBeenCalledWith(expect.objectContaining({ cheapest: true })))
   })
+
+  it('passes a library filter through to the Stats panel, so its totals narrow with the list', async () => {
+    render(<StockBrowser />)
+    await waitFor(() => expect(getStock).toHaveBeenCalled())
+    chooseFilter('collection')
+    await waitFor(() => expect(getStock).toHaveBeenLastCalledWith(expect.objectContaining({ libraryScope: 'collection' })))
+    fireEvent.click(screen.getByRole('button', { name: 'Stats' }))
+    await waitFor(() => expect(getStockStats).toHaveBeenLastCalledWith(expect.objectContaining({ libraryScope: 'collection' })))
+    chooseFilter('wantlist')
+    await waitFor(() => expect(getStockStats).toHaveBeenLastCalledWith(expect.objectContaining({ libraryScope: 'wantlist' })))
+  })
 })
 
 describe('StockBrowser Source filter', () => {

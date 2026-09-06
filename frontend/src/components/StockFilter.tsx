@@ -98,7 +98,7 @@ function StockFilter({
         Cheapest
       </label>
       <p className="mt-1 text-xs text-gray-500">
-        One row per record: the lowest-priced store that has it.
+        Only the lowest-priced store for each record. Ties and other currencies stay.
       </p>
     </>
   )

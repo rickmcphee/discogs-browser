@@ -92,9 +92,14 @@ Out of scope:
   cannot show up on a tab it does not apply to. `StockBrowser` already
   gates the state the same way.
 
-- **A one-line hint under Cheapest.** "One row per record: the lowest-priced
-  store that has it." The checkbox's meaning is not self-evident from one
-  word, and the panel has the room the toolbar never did.
+- **A one-line hint under Cheapest.** "Only the lowest-priced store for each
+  record. Ties and other currencies stay." The checkbox's meaning is not
+  self-evident from one word, and the panel has the room the toolbar never
+  did. The second sentence is there because the first alone over-promises:
+  `_cheapest_clause` keeps every row at a record's price floor, so two
+  stores at one price both stay, and a EUR store and a USD store for one
+  record are two floors — see the Cheapest design's "Ties stay" and
+  currency decisions. (Raised by Copilot on PR #300.)
 
 ## Testing
 

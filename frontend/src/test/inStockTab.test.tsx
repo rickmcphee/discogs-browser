@@ -993,9 +993,10 @@ describe('Source filter save chaining', () => {
     await waitFor(() => expect(screen.getByText('Store')).toBeInTheDocument())
     fireEvent.click(screen.getByText('Store'))
     // Store is the only pane with a SourceFilter now that Track has folded
-    // into it, so findAll is one button long; kept as a list so a second
-    // pane growing one would fail here loudly rather than silently.
+    // into it, so there is exactly one Source button; a second pane growing
+    // one would fail the length check rather than silently take index 0.
     const sourceButtons = await screen.findAllByRole('button', { name: 'Source' })
+    expect(sourceButtons).toHaveLength(1)
     fireEvent.click(sourceButtons[0])
     return screen.findByRole('checkbox', { name: 'Epitaph' })
   }

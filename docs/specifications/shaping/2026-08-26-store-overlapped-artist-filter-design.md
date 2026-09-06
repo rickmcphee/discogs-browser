@@ -5,7 +5,7 @@ Branch: `claude/store-overlapped-artist-filter-i3cp7i`
 
 **Amendment (2026-09-06, branch `claude/store-cheapest-filter-x4tdwl`):** the Track tab is gone. Its Collection and Wantlist filters are now options in the Store tab's `Filter: …` popover, sending the same `library_scope`, and every reference below to the Track tab, a Track scope, or a "Store/Track" pair reads as the Store tab under those filters. See [`2026-09-06-track-tab-fold-design.md`](2026-09-06-track-tab-fold-design.md).
 
-**Amendment (2026-09-06, branch `claude/store-cheapest-filter-x4tdwl`, second PR):** "the Store branch of the dropdown" below is now a `Filter: …` popover with a radio per option (`frontend/src/components/StockFilter.tsx`); `Overlapped` is still last, `STORE_FILTERS` and the `overlapped` request flag are unchanged, and the Track panel still has no `Overlapped` entry. See [`2026-09-06-store-filter-popover-design.md`](2026-09-06-store-filter-popover-design.md).
+**Amendment (2026-09-06, branch `claude/store-cheapest-filter-x4tdwl`, second PR):** "the Store branch of the dropdown" below is now a `Filter: …` popover with a radio per option (`frontend/src/components/StockFilter.tsx`). `Overlapped` keeps its place after `Saved`, but is no longer last: `STORE_FILTERS` gained `collection` and `wantlist` behind it when the Track tab folded into Store (see the note above), and there is no Track panel any more. The `overlapped` request flag is unchanged. See [`2026-09-06-store-filter-popover-design.md`](2026-09-06-store-filter-popover-design.md).
 
 ## Problem
 
