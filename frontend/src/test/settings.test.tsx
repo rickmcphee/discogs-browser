@@ -13,6 +13,7 @@ const { getSettings, saveSettings, setCrawlerEnabled } = vi.hoisted(() => ({
     ebay_app_id: '',
     ebay_cert_id: '',
     stock_schedule: '',
+    crawl_library_only: false,
   }),
   saveSettings: vi.fn().mockResolvedValue(undefined),
   setCrawlerEnabled: vi.fn().mockResolvedValue({ ok: true, discarded: 0 }),
@@ -122,6 +123,39 @@ describe('Settings', () => {
     await advanceBy(800)
     expect(screen.getByText('Invalid cron expression')).toBeInTheDocument()
     expect(screen.queryByText(/"detail"/)).not.toBeInTheDocument()
+  })
+
+  it('shows the Library only checkbox to an admin, reflecting the saved setting', async () => {
+    renderSettings()
+    await waitFor(() => expect(getSettings).toHaveBeenCalled())
+    const box = screen.getByLabelText('Library only') as HTMLInputElement
+    expect(box.type).toBe('checkbox')
+    expect(box.checked).toBe(false)
+  })
+
+  it('renders the Library only checkbox checked when the server says it is on', async () => {
+    getSettings.mockResolvedValueOnce({
+      crawl_delay_seconds: 30, consecutive_failure_limit: 10, crawl_schedule: '',
+      crawl_schedule_mode: 'missing', ebay_app_id: '', ebay_cert_id: '', stock_schedule: '',
+      crawl_library_only: true,
+    })
+    renderSettings()
+    await waitFor(() => expect((screen.getByLabelText('Library only') as HTMLInputElement).checked).toBe(true))
+  })
+
+  it('auto-saves the Library only checkbox like any other field', async () => {
+    vi.useFakeTimers()
+    renderSettings()
+    await settle()
+    fireEvent.click(screen.getByLabelText('Library only'))
+    expect(saveSettings).not.toHaveBeenCalled()
+    await advanceBy(800)
+    expect(saveSettings).toHaveBeenCalledWith(expect.objectContaining({ crawl_library_only: true }))
+  })
+
+  it('does not show the Library only checkbox to a non-admin', async () => {
+    renderSettings({ crawlers: CRAWLERS, isAdmin: false })
+    expect(screen.queryByLabelText('Library only')).not.toBeInTheDocument()
   })
 
   it('does not render the removed screenshot-interval or shuffle rows', async () => {

@@ -6,6 +6,7 @@ from unittest.mock import patch
 import psycopg
 import pytest
 
+import config
 import db
 import scheduler
 from routers import settings as settings_router
@@ -77,6 +78,7 @@ def test_post_settings_rejects_an_invalid_cron_without_persisting_it(
         "crawl_delay_seconds": 30, "consecutive_failure_limit": 10,
         "crawl_schedule": "0 3 * * *", "crawl_schedule_mode": "missing",
         "ebay_app_id": "keep-me", "ebay_cert_id": "", "stock_schedule": "0 4 * * *",
+        "crawl_library_only": False,
     }
     assert client.post("/api/settings", json=good, headers={"X-Requested-With": "fetch"}).status_code == 200
 
@@ -545,3 +547,146 @@ def test_user_hidden_crawlers_are_isolated_between_users(pg_test_db, authed_clie
 
     r = bob_client.get("/api/user-hidden-crawlers")
     assert r.json() == {"hidden_crawler_ids": []}
+
+
+# --- crawl_library_only -------------------------------------------------------
+
+_SETTINGS_BODY = {
+    "crawl_delay_seconds": 30, "consecutive_failure_limit": 10, "crawl_schedule": "",
+    "crawl_schedule_mode": "missing", "ebay_app_id": "", "ebay_cert_id": "", "stock_schedule": "",
+}
+
+
+# This file's tests share one database with no per-test truncation, and the
+# tests below all build the same "one unwanted stock row" fixture and assert
+# on the whole queue -- so they clear that state, and the setting itself, on
+# both sides. Depends on authed_client_factory so the schema exists first.
+@pytest.fixture
+def clean_library_only_state(pg_test_db, authed_client_factory):
+    def _reset():
+        with db.get_admin_pool().connection() as conn:
+            conn.execute("TRUNCATE crawl_queue, stock_items, stock_item_saves, stock_item_identities CASCADE")
+            conn.commit()
+        config.save_config({})
+    _reset()
+    yield
+    _reset()
+
+
+def _unwanted_pending_stock_row(conn):
+    """One pending stock row from an enabled store that nobody saved or owns."""
+    db.register_crawler(conn, "Store", "/src.py", crawler_type="catalog")
+    store_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Store'").fetchone()["id"]
+    db.register_crawler(conn, "Amazon", "/price.py")
+    conn.execute("INSERT INTO stock_item_identities (item_key, artist, title) VALUES ('unwanted', 'A', 'T')")
+    conn.execute(
+        "INSERT INTO stock_items (crawler_id, artist, title, url, item_key) "
+        "VALUES (%s, 'A', 'T', 'https://x/1', 'unwanted')",
+        [store_id],
+    )
+    db.enqueue_crawl_queue_for_stock_item(conn, "unwanted")
+    return store_id
+
+
+def test_get_settings_reports_library_only_off_by_default(clean_library_only_state, authed_client_factory):
+    client = _admin_client(authed_client_factory)
+    r = client.get("/api/settings")
+    assert r.status_code == 200
+    assert r.json()["crawl_library_only"] is False
+
+
+def test_post_settings_round_trips_library_only(clean_library_only_state, authed_client_factory):
+    client = _admin_client(authed_client_factory)
+    r = client.post(
+        "/api/settings", json=dict(_SETTINGS_BODY, crawl_library_only=True),
+        headers={"X-Requested-With": "fetch"},
+    )
+    assert r.status_code == 200
+    assert client.get("/api/settings").json()["crawl_library_only"] is True
+    assert config.crawl_library_only() is True
+
+
+def test_switching_library_only_on_sweeps_queued_stock_rows_nobody_wants(clean_library_only_state, authed_client_factory, caplog):
+    """The claim would skip these rows anyway; the sweep is so they do not sit
+    pending -- unclaimable, but counted -- until the next stock sync."""
+    with db.get_admin_pool().connection() as conn:
+        _unwanted_pending_stock_row(conn)
+        conn.commit()
+    client = _admin_client(authed_client_factory)
+
+    with caplog.at_level(logging.INFO, logger="routers.settings"):
+        r = client.post(
+            "/api/settings", json=dict(_SETTINGS_BODY, crawl_library_only=True),
+            headers={"X-Requested-With": "fetch"},
+        )
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "discarded": 1}
+    with db.get_admin_pool().connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 0
+    assert any("Library-only crawling switched on: 1" in rec.getMessage() for rec in caplog.records)
+
+
+def test_saving_settings_with_library_only_already_on_does_not_sweep_again(clean_library_only_state, authed_client_factory):
+    """Every other field's auto-save hits this endpoint too; only the off->on
+    edge pays for a sweep of the pending backlog."""
+    config.save_config({"crawl_library_only": True})
+    with db.get_admin_pool().connection() as conn:
+        _unwanted_pending_stock_row(conn)
+        conn.commit()
+    client = _admin_client(authed_client_factory)
+
+    r = client.post(
+        "/api/settings", json=dict(_SETTINGS_BODY, crawl_library_only=True),
+        headers={"X-Requested-With": "fetch"},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "discarded": 0}
+    with db.get_admin_pool().connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 1
+
+
+def test_switching_library_only_off_sweeps_nothing_and_enqueues_nothing(clean_library_only_state, authed_client_factory):
+    """Switching off restores nothing itself: the next stock sync re-enqueues
+    every item every enabled store lists, which is where those rows came from."""
+    config.save_config({"crawl_library_only": True})
+    client = _admin_client(authed_client_factory)
+    r = client.post("/api/settings", json=_SETTINGS_BODY, headers={"X-Requested-With": "fetch"})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "discarded": 0}
+    assert config.crawl_library_only() is False
+    with db.get_admin_pool().connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 0
+
+
+def test_switching_library_only_on_leaves_a_saved_items_row_alone(clean_library_only_state, authed_client_factory):
+    with db.get_admin_pool().connection() as conn:
+        _unwanted_pending_stock_row(conn)
+        user = db.create_user(conn, discogs_user_id=2, discogs_username="bob")
+        db.save_stock_item(conn, user["id"], "unwanted")
+        conn.commit()
+    client = _admin_client(authed_client_factory)
+
+    r = client.post(
+        "/api/settings", json=dict(_SETTINGS_BODY, crawl_library_only=True),
+        headers={"X-Requested-With": "fetch"},
+    )
+    assert r.json() == {"ok": True, "discarded": 0}
+    with db.get_admin_pool().connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 1
+
+
+def test_patch_crawler_disable_sweeps_unwanted_stock_rows_under_library_only(clean_library_only_state, authed_client_factory):
+    """The crawler toggle's sweep reads the setting too: with it on, toggling
+    any crawler clears rows nobody wants, whatever store they came from."""
+    config.save_config({"crawl_library_only": True})
+    with db.get_admin_pool().connection() as conn:
+        _unwanted_pending_stock_row(conn)
+        amazon_id = conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+        conn.commit()
+    client = _admin_client(authed_client_factory)
+
+    r = client.patch(f"/api/crawlers/{amazon_id}", json={"enabled": False}, headers={"X-Requested-With": "fetch"})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "discarded": 1, "backfilled": 0}
+    with db.get_admin_pool().connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM crawl_queue").fetchone()["count"] == 0
