@@ -2,9 +2,9 @@
 
 Date: 2026-08-16
 
-**Amendment (2026-09-06, branch `claude/store-cheapest-filter-x4tdwl`):** the Track tab is gone. Its Collection and Wantlist filters are now options in the Store tab's `Filter: …` popover, sending the same `library_scope`, and every reference below to the Track tab, a Track scope, or a "Store/Track" pair reads as the Store tab under those filters. See [`2026-09-06-track-tab-fold-design.md`](2026-09-06-track-tab-fold-design.md).
+**Amendment (2026-09-06, branch `claude/store-cheapest-filter-x4tdwl`):** the Track tab is gone. Its Collection and Wantlist filters are now options in the Store tab's `Filter` popover, sending the same `library_scope`, and every reference below to the Track tab, a Track scope, or a "Store/Track" pair reads as the Store tab under those filters. See [`2026-09-06-track-tab-fold-design.md`](2026-09-06-track-tab-fold-design.md).
 
-**Amendment (2026-09-06, branch `claude/store-cheapest-filter-x4tdwl`, second PR):** the Store filter dropdown that the `Saved` option below joins is now a `Filter: …` popover with a radio per option (`frontend/src/components/StockFilter.tsx`); `STORE_FILTERS`, the `saved` request flag and the `stockFilter_store` persistence are unchanged. See [`2026-09-06-store-filter-popover-design.md`](2026-09-06-store-filter-popover-design.md).
+**Amendment (2026-09-06, branch `claude/store-cheapest-filter-x4tdwl`, second PR):** the Store filter dropdown that the `Saved` option below joins is now a `Filter` popover with a radio per option (`frontend/src/components/StockFilter.tsx`); `STORE_FILTERS`, the `saved` request flag and the `stockFilter_store` persistence are unchanged. See [`2026-09-06-store-filter-popover-design.md`](2026-09-06-store-filter-popover-design.md).
 
 ## Problem
 

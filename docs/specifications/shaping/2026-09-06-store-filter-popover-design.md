@@ -25,7 +25,7 @@ one question ("which rows").
 
 Touches:
 
-- `frontend/src/components/StockFilter.tsx` — new: the `Filter: …` trigger
+- `frontend/src/components/StockFilter.tsx` — new: the `Filter` trigger
   and its panel, holding the scope radios (Store: All / Recommended / Saved
   / Overlapped; Track: All / Collection / Wantlist) and, on Store, the
   Cheapest checkbox.
@@ -73,6 +73,16 @@ Out of scope:
   lights up (`navButtonClass(true)`) whenever the state is not the default,
   as `Source` does when it is narrowing the view. `max-w-48 truncate` bounds
   the longest reading (`Filter: Recommended · Cheapest`).
+
+  **Amendment (2026-09-06, reversed at the user's request):** the trigger
+  is a fixed `Filter`, lit only while its panel is open, like `Stats`. The
+  user's view is that the toolbar does not need to show what is selected —
+  the panel is one click away and is where the state lives — so the label
+  no longer reads the value and nothing lights up for a non-default state.
+  The tests that read the value off the trigger now open the panel and read
+  the checked radio instead. Every later note in these specs that wrote the
+  trigger with its value (`Filter: All`, `Filter: Saved`, and so on) now
+  writes it as `Filter`.
 
 - **Radios, not a nested select.** The scope is a single choice, which is
   what a radio group is; a `<select>` inside a panel would be a dropdown
