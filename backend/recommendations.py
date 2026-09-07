@@ -64,7 +64,7 @@ def _log_usage(response, label: str):
     )
 
 
-def _resolve_entries(parsed, batch: list[dict]) -> list[dict]:
+def _resolve_entries(parsed, batch: list[dict], label: str) -> list[dict]:
     """Map each response entry's ordinal back to its item_key.
 
     The prompt has always required one entry per item in the same order, so the
@@ -72,7 +72,11 @@ def _resolve_entries(parsed, batch: list[dict]) -> list[dict]:
     checkable. It was not, while items were addressed by digest:
     `stock_item_judgments` has no foreign key on `item_key`, so a key the model
     mistyped or invented was written as a judgment against a row that need not
-    exist, while the real item stayed unjudged and was paid for again next run."""
+    exist, while the real item stayed unjudged and was paid for again next run.
+
+    `label` names the run for the same reason the usage line carries it: these
+    warnings are the record of a model misbehaving on one user's batch, and
+    concurrent runs interleave them into a single stream."""
     results = []
     seen = set()
     for entry in parsed:
@@ -82,13 +86,15 @@ def _resolve_entries(parsed, batch: list[dict]) -> list[dict]:
         # bool is an int in Python, and `true` is a plausible thing for a model
         # to emit into a numeric field; it must not index into the batch.
         if isinstance(n, bool) or not isinstance(n, int):
-            log.warning("Dropping judgment entry with non-integer n: %r", n)
+            log.warning("Dropping %s judgment entry with non-integer n: %r", label, n)
             continue
         if not 1 <= n <= len(batch):
-            log.warning("Dropping judgment entry with out-of-range n: %r (batch of %d)", n, len(batch))
+            log.warning(
+                "Dropping %s judgment entry with out-of-range n: %r (batch of %d)", label, n, len(batch)
+            )
             continue
         if n in seen:
-            log.warning("Dropping duplicate judgment entry for n=%d", n)
+            log.warning("Dropping duplicate %s judgment entry for n=%d", label, n)
             continue
         seen.add(n)
         results.append({
@@ -122,7 +128,7 @@ def judge_batch(client, taste_listing: list[str], batch: list[dict], label: str 
         text = response.content[0].text.strip()
         if text.startswith("```"):
             text = "\n".join(line for line in text.splitlines() if not line.startswith("```")).strip()
-        return _resolve_entries(json.loads(text), batch)
+        return _resolve_entries(json.loads(text), batch, label)
     except Exception as e:
         log.error("Judgment batch for %s failed: %s", label, e, exc_info=True)
         return []

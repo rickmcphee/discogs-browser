@@ -278,6 +278,25 @@ def test_judge_batch_names_the_run_in_the_truncation_warning(caplog):
     assert any("for alice" in r.getMessage() and "cap" in r.getMessage() for r in caplog.records)
 
 
+def test_judge_batch_names_the_run_in_every_validation_warning(caplog):
+    """A dropped entry is the record of the model misbehaving on one user's
+    batch; concurrent runs interleave these into one stream, so each has to say
+    whose batch it was, exactly as the usage line does."""
+    from recommendations import judge_batch
+    client = _client_returning(json.dumps([
+        {"n": "1", "recommended": True, "reason": "non-integer"},
+        {"n": 9, "recommended": True, "reason": "out of range"},
+        {"n": 1, "recommended": True, "reason": "first"},
+        {"n": 1, "recommended": False, "reason": "duplicate"},
+    ]))
+    with caplog.at_level(logging.INFO, logger="recommendations"):
+        judge_batch(client, [], _items("k1", "k2"), "alice")
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 3
+    assert all("alice" in w for w in warnings)
+
+
 def test_judge_batch_labels_the_run_without_a_caller_supplied_name(caplog):
     """The default has to be legible too -- an unlabelled line in a shared
     stream is the thing this guards against."""

@@ -23,41 +23,41 @@ cd backend && TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/di
 
 ## Task 1: Address items by ordinal in the request
 
-- [ ] In `backend/recommendations.py`, change `build_batch_content` to render each item as `{"n": <1-based>, "artist": ..., "title": ...}`, emitted with `json.dumps` rather than an f-string so a quote in a title cannot produce malformed JSON in the prompt.
-- [ ] Leave the block structure alone: `cache_control` stays on the taste-listing block, and the items block stays uncached and last.
-- [ ] Update `backend/recommendations_prompt.md` so the documented request and response shapes use `n`.
+- [x] In `backend/recommendations.py`, change `build_batch_content` to render each item as `{"n": <1-based>, "artist": ..., "title": ...}`, emitted with `json.dumps` rather than an f-string so a quote in a title cannot produce malformed JSON in the prompt.
+- [x] Leave the block structure alone: `cache_control` stays on the taste-listing block, and the items block stays uncached and last.
+- [x] Update `backend/recommendations_prompt.md` so the documented request and response shapes use `n`.
 
 ## Task 2: Map the response back by ordinal
 
-- [ ] In `judge_batch`, resolve each response entry's `n` to `batch[n - 1]["item_key"]`. The returned dict shape stays `{"item_key", "recommended", "reason"}` — `_run_judgment_phase`'s handling of the result, and `db.upsert_stock_judgments`, must not need changing. (Task 3 does add one argument to the call itself; nothing about what comes back.)
-- [ ] Drop and log entries whose `n` is missing, not an integer (rejecting `bool`, which is an `int` in Python), or outside `1..len(batch)`.
-- [ ] Drop and log a repeated `n`; the first entry for an index wins.
-- [ ] Keep dropping entries missing `recommended`, as the `item_key` version did.
+- [x] In `judge_batch`, resolve each response entry's `n` to `batch[n - 1]["item_key"]`. The returned dict shape stays `{"item_key", "recommended", "reason"}` — `_run_judgment_phase`'s handling of the result, and `db.upsert_stock_judgments`, must not need changing. (Task 3 does add one argument to the call itself; nothing about what comes back.)
+- [x] Drop and log entries whose `n` is missing, not an integer (rejecting `bool`, which is an `int` in Python), or outside `1..len(batch)`.
+- [x] Drop and log a repeated `n`; the first entry for an index wins.
+- [x] Keep dropping entries missing `recommended`, as the `item_key` version did.
 
 ## Task 3: Log what the batch cost
 
-- [ ] After a successful call, log `input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens` and `output_tokens` off `response.usage`, read defensively so a response missing `usage` or any counter logs `None` instead of raising inside the logging path.
-- [ ] Keep it one line per batch at INFO, next to the existing per-batch progress line in `crawl_manager`.
-- [ ] Name the run on that line. Judgment runs are per-user, several can be in flight at once on different Anthropic keys, and each batch goes through `asyncio.to_thread` — unlabelled counters interleave into a stream nobody can attribute, and attribution is the point. Add a `label` argument to `judge_batch` and pass the `username` `_run_judgment_phase` already holds; carry it on the truncation warning and the failure log too. Default it to a placeholder that reads as unlabelled rather than blank.
-- [ ] Update the `judge_batch` doubles in `test_crawl_manager.py` for the new argument, including the two tests that unpack its positional args.
+- [x] After a successful call, log `input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens` and `output_tokens` off `response.usage`, read defensively so a response missing `usage` or any counter logs `None` instead of raising inside the logging path.
+- [x] Keep it one line per batch at INFO, next to the existing per-batch progress line in `crawl_manager`.
+- [x] Name the run on that line. Judgment runs are per-user, several can be in flight at once on different Anthropic keys, and each batch goes through `asyncio.to_thread` — unlabelled counters interleave into a stream nobody can attribute, and attribution is the point. Add a `label` argument to `judge_batch` and pass the `username` `_run_judgment_phase` already holds; carry it on the truncation warning and the failure log too. Default it to a placeholder that reads as unlabelled rather than blank.
+- [x] Update the `judge_batch` doubles in `test_crawl_manager.py` for the new argument, including the two tests that unpack its positional args.
 
 ## Task 4: Report a `max_tokens` stop as itself
 
-- [ ] When `response.stop_reason == "max_tokens"`, log a warning naming the cap and return `[]` without parsing. Caller behaviour is unchanged (items stay unjudged and retry next run); only the diagnosis improves.
+- [x] When `response.stop_reason == "max_tokens"`, log a warning naming the cap and return `[]` without parsing. Caller behaviour is unchanged (items stay unjudged and retry next run); only the diagnosis improves.
 
 ## Task 5: Tests
 
-- [ ] `build_batch_content` emits 1-based `n`, no `item_key`, and keeps `cache_control` on the taste block only.
-- [ ] An item whose artist or title contains a double quote renders as valid JSON.
-- [ ] A well-formed response maps `n` back to the right `item_key`, including when response order differs from request order.
-- [ ] `n` of `0`, `len(batch) + 1`, a non-integer, `true`, and a repeated value are each dropped rather than mis-assigned.
-- [ ] `response.usage` is logged; a response with no `usage` attribute does not raise.
-- [ ] `stop_reason == "max_tokens"` returns `[]` and logs a warning, with no JSON parse error.
-- [ ] Run the file and confirm every test passes.
+- [x] `build_batch_content` emits 1-based `n`, no `item_key`, and keeps `cache_control` on the taste block only.
+- [x] An item whose artist or title contains a double quote renders as valid JSON.
+- [x] A well-formed response maps `n` back to the right `item_key`, including when response order differs from request order.
+- [x] `n` of `0`, `len(batch) + 1`, a non-integer, `true`, and a repeated value are each dropped rather than mis-assigned.
+- [x] `response.usage` is logged; a response with no `usage` attribute does not raise.
+- [x] `stop_reason == "max_tokens"` returns `[]` and logs a warning, with no JSON parse error.
+- [x] Run the file and confirm every test passes.
 
 ## Task 6: Pre-PR spec-drift check
 
-- [ ] `grep -rl` across both `docs/superpowers/specs/` and `docs/specifications/shaping/` for `item_key`, `judge_batch`, `build_batch_content`, `recommendations_prompt`, and the response shape; confirm each match still describes what shipped.
-- [ ] Amend any drifted spec in place as its own commit on this branch.
-- [ ] While in each spec: delete any crawler/store/source/plugin/test count found, never update one.
-- [ ] Record in the PR description what drift was found and fixed, or that none was.
+- [x] `grep -rl` across both `docs/superpowers/specs/` and `docs/specifications/shaping/` for `item_key`, `judge_batch`, `build_batch_content`, `recommendations_prompt`, and the response shape; confirm each match still describes what shipped.
+- [x] Amend any drifted spec in place as its own commit on this branch.
+- [x] While in each spec: delete any crawler/store/source/plugin/test count found, never update one.
+- [x] Record in the PR description what drift was found and fixed, or that none was.
