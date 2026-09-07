@@ -1,0 +1,939 @@
+import httpx
+import respx
+import pytest
+from crawlers.dongiovannirecords import Crawler
+
+_PRODUCTS_URL = "https://dongiovannirecords.com/collections/vinyl/products.json"
+
+# Fixtures marked "captured" are live products fetched from the store on
+# 2026-09-07, trimmed to the fields the crawler reads (image URLs shortened).
+# Ones marked "altered" are captured products with one field changed to reach
+# a branch the live data never takes; "invented" products exercise guards the
+# live catalog cannot -- each says so at its definition.
+
+# Captured: the store's dominant shape -- `vendor` is the artist, the title
+# is `Artist "Album" <format>`, and the sole variant names a colour.
+_KISS_BIG_PRODUCT = {
+    "title": 'Ailbhe Reddy "Kiss Big" 12"',
+    "vendor": "Ailbhe Reddy",
+    "handle": "ailbhe-reddy-kiss-big-12",
+    "product_type": '12"',
+    "tags": ["preorder"],
+    "images": [{"src": "https://cdn.shopify.com/KissBig.png"}],
+    "variants": [
+        {"id": 47965814751475, "title": "Red", "price": "24.99",
+         "available": True, "featured_image": {"src": "https://cdn.shopify.com/KissBig_Red.png"}},
+    ],
+}
+
+# Captured: a plain in-stock record with no pre-order tag.
+_FIRE_PRODUCT = {
+    "title": 'Amy Klein "Fire" 12"',
+    "vendor": "Amy Klein",
+    "handle": "amy-klein-fire-12",
+    "product_type": '12"',
+    "tags": [],
+    "images": [{"src": "https://cdn.shopify.com/Fire.jpg"}],
+    "variants": [
+        {"id": 40001, "title": "Black", "price": "22.99",
+         "available": True, "featured_image": None},
+    ],
+}
+
+# Captured: a three-colour product, two of them sold out, none of the
+# variants carrying an image of its own.
+_TEENAGE_HALLOWEEN_PRODUCT = {
+    "title": 'Teenage Halloween "Teenage Halloween" 12"',
+    "vendor": "Teenage Halloween",
+    "handle": "teenage-halloween-teenage-halloween-12",
+    "product_type": '12"',
+    "tags": [],
+    "images": [{"src": "https://cdn.shopify.com/TeenageHalloween.jpg"}],
+    "variants": [
+        {"id": 40010, "title": "Black", "price": "23.99", "available": True, "featured_image": None},
+        {"id": 40011, "title": "Electric Smoke", "price": "23.99", "available": False, "featured_image": None},
+        {"id": 40012, "title": "Light Blue (Transparent)", "price": "23.99", "available": False, "featured_image": None},
+    ],
+}
+
+# Captured: a double LP. The `2x12"` descriptor is kept in the row title
+# exactly as the store writes it.
+_OPEN_THE_GATES_PRODUCT = {
+    "title": 'Irreversible Entanglements "Open The Gates" 2x12"',
+    "vendor": "Irreversible Entanglements",
+    "handle": "irreversible-entanglements-open-the-gates-2x12",
+    "product_type": '2x12"',
+    "tags": [],
+    "images": [{"src": "https://cdn.shopify.com/OpenTheGates.jpg"}],
+    "variants": [
+        {"id": 40020, "title": "Sands Of Time", "price": "29.99", "available": True,
+         "featured_image": {"src": "https://cdn.shopify.com/Gates_Sands.jpg"}},
+        {"id": 40021, "title": "Neptune Blue", "price": "29.99", "available": True,
+         "featured_image": {"src": "https://cdn.shopify.com/Gates_Neptune.jpg"}},
+    ],
+}
+
+# Captured: a 7".
+_SISSYBEARS_PRODUCT = {
+    "title": 'Alice Bag "Alice Bag & The Sissybears" 7"',
+    "vendor": "Alice Bag",
+    "handle": "alice-bag-alice-bag-the-sissybears-7",
+    "product_type": '7"',
+    "tags": [],
+    "images": [{"src": "https://cdn.shopify.com/Sissybears.jpg"}],
+    "variants": [
+        {"id": 40030, "title": "Yellow", "price": "9.99", "available": False, "featured_image": None},
+    ],
+}
+
+# Captured: the one product where `vendor` and the title's own artist prefix
+# disagree. The store truncates the credit in the title at 100 characters,
+# mid-word (`Marissa Nadler a`); `vendor` carries its own ellipsis.
+_LONDON_ENSEMBLE_PRODUCT = {
+    "title": ('The London Experimental Ensemble with Richard Thompson, Wesley Stace, '
+              'Sivert Høyem, Marissa Nadler a "Child Ballads: The Final Six" 2x12"'),
+    "vendor": ("The London Experimental Ensemble with Richard Thompson, Wesley Stace, "
+               "Sivert Høyem, Marissa Nadler..."),
+    "handle": "the-london-experimental-ensemble-child-ballads-the-final-six-2x12",
+    "product_type": '2x12"',
+    "tags": [],
+    "images": [{"src": "https://cdn.shopify.com/ChildBallads.jpg"}],
+    "variants": [
+        {"id": 40040, "title": "Black", "price": "29.99", "available": True, "featured_image": None},
+    ],
+}
+
+# Captured pair: one record the store splits across two products, one colour
+# each, at consecutive handles. Same artist, same album, same format --
+# only the handle and the colour tell them apart.
+_DEAD_BEST_BLACK_PRODUCT = {
+    "title": 'Dead Best "Dead Best" 12"',
+    "vendor": "Dead Best",
+    "handle": "dead-best-dead-best-12",
+    "product_type": '12"',
+    "tags": [],
+    "images": [{"src": "https://cdn.shopify.com/DeadBest_Black.jpg"}],
+    "variants": [
+        {"id": 40050, "title": "Black", "price": "21.99", "available": True, "featured_image": None},
+    ],
+}
+_DEAD_BEST_YELLOW_PRODUCT = {
+    "title": 'Dead Best "Dead Best" 12"',
+    "vendor": "Dead Best",
+    "handle": "dead-best-dead-best-13",
+    "product_type": '12"',
+    "tags": [],
+    "images": [{"src": "https://cdn.shopify.com/DeadBest_Yellow.jpg"}],
+    "variants": [
+        {"id": 40051, "title": "Yellow", "price": "20.99", "available": True, "featured_image": None},
+    ],
+}
+
+# Captured: a pre-order whose only variant is sold out. The store renders it
+# unavailable; the row is skipped like any other sold-out variant, and no
+# marker is written for a row that never exists.
+_SOLD_OUT_PREORDER_PRODUCT = {
+    "title": 'Lee Bains "Free South 2025" 12"',
+    "vendor": "Lee Bains + The Glory Fires",
+    "handle": "lee-bains-free-south-2025-12",
+    "product_type": '12"',
+    "tags": ["preorder"],
+    "images": [{"src": "https://cdn.shopify.com/FreeSouth.jpg"}],
+    "variants": [
+        {"id": 40060, "title": "Black", "price": "25.99", "available": False, "featured_image": None},
+    ],
+}
+
+# Captured from the store's `all` collection, not from the vinyl shelf: a CD
+# titled exactly like the records. Shelved here it would parse perfectly, and
+# only the descriptor keeps it out.
+_CD_PRODUCT = {
+    "title": 'Ailbhe Reddy "Kiss Big" CD',
+    "vendor": "Ailbhe Reddy",
+    "handle": "ailbhe-reddy-kiss-big-cd",
+    "product_type": "CD",
+    "tags": [],
+    "images": [{"src": "https://cdn.shopify.com/KissBigCD.png"}],
+    "variants": [
+        {"id": 40070, "title": "CD", "price": "12.99", "available": True, "featured_image": None},
+    ],
+}
+
+# Captured from the store's `all` collection: a T-shirt, likewise titled to
+# the store's one convention.
+_SHIRT_PRODUCT = {
+    "title": 'Bad Moves "Logo" T-Shirt',
+    "vendor": "Bad Moves",
+    "handle": "bad-moves-logo-t-shirt",
+    "product_type": "T-Shirt",
+    "tags": [],
+    "images": [{"src": "https://cdn.shopify.com/BadMovesLogoTee.jpg"}],
+    "variants": [
+        {"id": 40080, "title": "Small", "price": "24.99", "available": True, "featured_image": None},
+    ],
+}
+
+# Captured from the store's `all` collection: a book. It follows the quoted
+# convention but names no format at all, which is what every live record does
+# name -- so the parse, not the gate, is what keeps it out.
+_BOOK_PRODUCT = {
+    "title": 'Larry Livermore "Spy Rock Memories"',
+    "vendor": "Larry Livermore",
+    "handle": "larry-livermore-spy-rock-memories",
+    "product_type": "Hardcover Book",
+    "tags": [],
+    "images": [{"src": "https://cdn.shopify.com/SpyRock.jpg"}],
+    "variants": [
+        {"id": 40110, "title": "Hardcover", "price": "19.99", "available": True, "featured_image": None},
+    ],
+}
+
+# Captured from the store's `all` collection: a pin, the same shape.
+_PIN_PRODUCT = {
+    "title": 'Teenage Halloween "Cloud"',
+    "vendor": "Teenage Halloween",
+    "handle": "teenage-halloween-cloud-pin",
+    "product_type": "Pins",
+    "tags": [],
+    "images": [{"src": "https://cdn.shopify.com/CloudPin.jpg"}],
+    "variants": [
+        {"id": 40120, "title": "Enamel", "price": "8.00", "available": True, "featured_image": None},
+    ],
+}
+
+# Captured from the store's `all` collection: the one non-record in the store
+# that does name a format, and names one no reject word covered until `Zine`
+# was added.
+_ZINE_PRODUCT = {
+    "title": 'Liz Pelly "P.S. Eliot: 2007-2011" Zine',
+    "vendor": "Liz Pelly",
+    "handle": "liz-pelly-p-s-eliot-2007-2011-zine",
+    "product_type": "Paperback Book",
+    "tags": [],
+    "images": [{"src": "https://cdn.shopify.com/PSEliotZine.jpg"}],
+    "variants": [
+        {"id": 40130, "title": "Zine", "price": "10.00", "available": True, "featured_image": None},
+    ],
+}
+
+# Captured from the store's `all` collection: a bundle. It carries no quoted
+# album, so the title parse excludes it even without the bundle rule.
+_BUNDLE_PRODUCT = {
+    "title": "Bad Moves Vinyl Bundle",
+    "vendor": "Bad Moves",
+    "handle": "bad-moves-vinyl-bundle",
+    "product_type": "",
+    "tags": [],
+    "images": [{"src": "https://cdn.shopify.com/BadMovesBundle.jpg"}],
+    "variants": [
+        {"id": 40090, "title": "Black", "price": "60.00", "available": True, "featured_image": None},
+    ],
+}
+
+# Invented: the bundle the rule actually exists for -- shelved in `vinyl` and
+# written to the store's usual convention, so the title parses and the
+# descriptor's own "Vinyl" would admit it through the format gate.
+_CONVENTIONAL_BUNDLE_PRODUCT = {
+    "title": 'Bad Moves "Untenable" Vinyl Bundle',
+    "vendor": "Bad Moves",
+    "handle": "bad-moves-untenable-vinyl-bundle",
+    "product_type": '12"',
+    "tags": [],
+    "images": [{"src": "https://cdn.shopify.com/UntenableBundle.jpg"}],
+    "variants": [
+        {"id": 40100, "title": "Black", "price": "55.00", "available": True, "featured_image": None},
+    ],
+}
+
+
+def _page_response(products):
+    return httpx.Response(200, json={"products": products})
+
+
+def _mock_pages(*products, empty_page=2):
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(
+        return_value=_page_response(list(products)))
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": str(empty_page)}).mock(
+        return_value=_page_response([]))
+
+
+def _one_pressing(product, index=0, **overrides):
+    # A captured product reduced to one of its variants, so a test can alter
+    # that variant without carrying the siblings along.
+    return {**product, "variants": [{**product["variants"][index], **overrides}]}
+
+
+@pytest.fixture
+def crawler():
+    return Crawler()
+
+
+@respx.mock
+async def test_crawl_catalog_yields_item_fields(crawler):
+    _mock_pages(_FIRE_PRODUCT)
+    items = [item async for item in crawler.crawl_catalog()]
+    assert items == [{
+        "artist": "Amy Klein",
+        "title": 'Fire 12" — Black',
+        "format": "Vinyl",
+        "price": 22.99,
+        "currency": "USD",
+        "url": "https://dongiovannirecords.com/products/amy-klein-fire-12",
+        "cover_image_url": "https://cdn.shopify.com/Fire.jpg",
+    }]
+
+
+def test_plugin_identity():
+    assert Crawler.site_name == "Don Giovanni Records"
+    assert Crawler.base_url == "https://dongiovannirecords.com"
+    assert Crawler.crawler_type == "catalog"
+    assert Crawler.genre == "punk"
+    assert Crawler.genre_summary
+
+
+# --- the title parse ---------------------------------------------------
+
+@pytest.mark.parametrize("title,expected", [
+    ('Ailbhe Reddy "Kiss Big" 12"', ("Ailbhe Reddy", "Kiss Big", '12"')),
+    ('Irreversible Entanglements "Open The Gates" 2x12"',
+     ("Irreversible Entanglements", "Open The Gates", '2x12"')),
+    ('Alice Bag "Alice Bag & The Sissybears" 7"',
+     ("Alice Bag", "Alice Bag & The Sissybears", '7"')),
+    # Apostrophes live inside album names all over this catalog and never
+    # stand in for the closing quote.
+    ('Modern Hut "I Don\'t Want To Get Adjusted To This World" 12"',
+     ("Modern Hut", "I Don't Want To Get Adjusted To This World", '12"')),
+    ('Jeffrey Lewis "It\'s The Ones Who\'ve Cracked That The Light Shines Through" 12"',
+     ("Jeffrey Lewis", "It's The Ones Who've Cracked That The Light Shines Through", '12"')),
+    ('Jenny Mae "What\'s Wrong With Me?" 12"',
+     ("Jenny Mae", "What's Wrong With Me?", '12"')),
+    # A parenthesised pressing the store put in the album name itself.
+    ('Bad Moves "Untenable (Ice Blue)" 12"',
+     ("Bad Moves", "Untenable (Ice Blue)", '12"')),
+    ('Worriers "Imaginary Life (10th Anniversary Deluxe Edition)" 12"',
+     ("Worriers", "Imaginary Life (10th Anniversary Deluxe Edition)", '12"')),
+    # A colon inside the album.
+    ('Dead Best "GOD: Out Of Order" 12"', ("Dead Best", "GOD: Out Of Order", '12"')),
+    # Whitespace is collapsed before the parse ever runs.
+    ('  Amy   Klein   "Fire"   12"  ', ("Amy Klein", "Fire", '12"')),
+    # Curly quotes are admitted though the store writes none.
+    ('Amy Klein “Fire” 12"', ("Amy Klein", "Fire", '12"')),
+    # A descriptor glued straight onto the closing quote -- the `\d` arm of
+    # the closing lookahead. This store does not write it; a sibling Shopify
+    # store does.
+    ('Amy Klein "Fire"12"', ("Amy Klein", "Fire", '12"')),
+    # The trailing inch marker can never be read as the album's opening
+    # quote, because the artist group excludes quotes outright.
+    ('Bert Susanka "Well Qualified To Represent The L.B. Sea!" 2x12"',
+     ("Bert Susanka", "Well Qualified To Represent The L.B. Sea!", '2x12"')),
+])
+def test_title_parse(title, expected):
+    assert Crawler._parse_title(title) == expected
+
+
+@pytest.mark.parametrize("title", [
+    None,
+    "",
+    "   ",
+    # A quote anywhere ahead of the album is not an opening quote: the artist
+    # group excludes quotes, so the album's opening quote is always the
+    # title's first and a stray inch marker cannot start one.
+    'Amy Klein 12" "Fire" LP',
+    # A quote inside the album is not a closing quote either, for the mirror
+    # reason -- so a nested quotation is skipped rather than parsed into a
+    # severed album.
+    'Amy Klein "The "Big" One" 12"',
+    'Amy Klein "" 12" Vinyl',
+    # No quoted album at all -- the shape the store's bundles and its books
+    # take.
+    "Bad Moves LP + Shirt",
+    "Larry Livermore How To Ruin A Record Label",
+    # An opening quote with nothing after it.
+    'Amy Klein "',
+    # An empty album.
+    'Amy Klein "" 12"',
+    # A quoted album and nothing after it. The convention is both halves, and
+    # the products that stop here are the store's books, pins and stickers.
+    'Larry Livermore "Spy Rock Memories"',
+    'Teenage Halloween "Cloud"',
+    'Amy Klein "Fire"',
+    'Amy Klein "Fire"   ',
+])
+def test_unparseable_titles_yield_nothing(title):
+    assert Crawler._parse_title(title) == ("", "", "")
+
+
+@respx.mock
+async def test_a_product_whose_title_does_not_parse_is_skipped(crawler):
+    _mock_pages(_FIRE_PRODUCT, {**_FIRE_PRODUCT, "title": "Amy Klein Fire LP",
+                                "handle": "amy-klein-fire-lp"})
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["url"] for i in items] == [
+        "https://dongiovannirecords.com/products/amy-klein-fire-12"]
+
+
+# --- the artist comes from vendor -------------------------------------
+
+@respx.mock
+async def test_the_artist_comes_from_vendor_not_the_title(crawler):
+    _mock_pages({**_FIRE_PRODUCT, "vendor": "Amy Klein & Friends"})
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["artist"] for i in items] == ["Amy Klein & Friends"]
+
+
+@respx.mock
+async def test_the_truncated_title_credit_never_reaches_the_row(crawler):
+    _mock_pages(_LONDON_ENSEMBLE_PRODUCT)
+    items = [item async for item in crawler.crawl_catalog()]
+    # The title severs the credit at "Marissa Nadler a"; vendor does not.
+    assert items[0]["artist"] == _LONDON_ENSEMBLE_PRODUCT["vendor"]
+    assert not items[0]["artist"].endswith("Nadler a")
+    assert items[0]["title"] == 'Child Ballads: The Final Six 2x12" — Black'
+
+
+@respx.mock
+async def test_a_blank_vendor_does_not_fall_back_to_the_title(crawler):
+    # The fallback is deliberately absent: it would keep the artist-source
+    # guard from ever firing and would re-key every row whose credit the two
+    # sources spell differently.
+    _mock_pages(_FIRE_PRODUCT, {**_KISS_BIG_PRODUCT, "vendor": "   "})
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["artist"] for i in items] == ["Amy Klein"]
+
+
+@respx.mock
+async def test_vendor_whitespace_is_collapsed(crawler):
+    _mock_pages({**_FIRE_PRODUCT, "vendor": "  Amy   Klein  "})
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["artist"] for i in items] == ["Amy Klein"]
+
+
+@respx.mock
+async def test_a_catalog_with_no_vendor_raises(crawler):
+    _mock_pages({**_FIRE_PRODUCT, "vendor": ""})
+    with pytest.raises(RuntimeError, match="artist-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_one_vendorless_product_among_real_rows_does_not_raise(crawler):
+    _mock_pages(_FIRE_PRODUCT, {**_KISS_BIG_PRODUCT, "vendor": ""})
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["artist"] for i in items] == ["Amy Klein"]
+
+
+@respx.mock
+async def test_a_catalog_with_no_parseable_title_raises(crawler):
+    _mock_pages({**_FIRE_PRODUCT, "title": "Amy Klein Fire LP"})
+    with pytest.raises(RuntimeError, match="album-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_the_two_source_guards_are_independent(crawler):
+    # Every product has a vendor and none has a parseable title: the album
+    # guard must still fire. Tallied together, the working source would hide
+    # the dark one.
+    _mock_pages({**_FIRE_PRODUCT, "title": "Amy Klein Fire LP"},
+                {**_KISS_BIG_PRODUCT, "title": "Ailbhe Reddy Kiss Big LP"})
+    with pytest.raises(RuntimeError, match="album-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_a_shelf_of_only_other_media_does_not_raise_source_drift(crawler):
+    # Both sources are readable; the products are simply not records. That is
+    # a legitimately empty result, not drift -- which is why neither tally is
+    # nested inside the format gate.
+    _mock_pages(_CD_PRODUCT, _SHIRT_PRODUCT)
+    assert [item async for item in crawler.crawl_catalog()] == []
+
+
+# --- the row's title ---------------------------------------------------
+
+@respx.mock
+async def test_the_row_title_leads_with_the_album_so_it_prefix_matches_a_library_title(crawler):
+    _mock_pages(_FIRE_PRODUCT)
+    items = [item async for item in crawler.crawl_catalog()]
+    # db._library_release_match_sql matches a catalog title that equals the
+    # library title or begins with it followed by a space.
+    assert items[0]["title"].startswith("Fire ")
+
+
+@respx.mock
+async def test_the_format_descriptor_is_kept_in_the_row_title(crawler):
+    _mock_pages(_OPEN_THE_GATES_PRODUCT, _SISSYBEARS_PRODUCT)
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["title"] for i in items] == [
+        'Open The Gates 2x12" — Sands Of Time',
+        'Open The Gates 2x12" — Neptune Blue',
+    ]
+
+
+@respx.mock
+async def test_the_whole_title_is_collapsed_before_it_is_parsed(crawler):
+    # The collapse happens once, on the raw title, so the album and the
+    # descriptor are already clean by the time they are joined -- the row's
+    # identity must never carry the store's stray double space.
+    _mock_pages({**_FIRE_PRODUCT, "title": ' Amy  Klein "Fire  Escape"   12" '})
+    items = [item async for item in crawler.crawl_catalog()]
+    assert items[0]["title"] == 'Fire Escape 12" — Black'
+
+
+# --- the format gate ---------------------------------------------------
+
+@pytest.mark.parametrize("descriptor", [
+    '12"', '2x12"', '7"', '10"', "LP", "2xLP", "Vinyl", "Picture Disc",
+    "Test Pressing", '12" Vinyl',
+    # A vinyl word beside another medium is still a record.
+    "LP + Bonus CD",
+    # Undeclared but present: the shelf has already said it is a record, so
+    # an unrecognised descriptor is admitted. Silence is handled at the parse
+    # instead, and never reaches here.
+    "Box Set", "Deluxe Edition", "Gatefold", "Coloured",
+])
+def test_format_gate_admits_records_and_undeclared_descriptors(descriptor):
+    assert Crawler._is_vinyl(descriptor) is True
+
+
+@pytest.mark.parametrize("descriptor", [
+    # The store's own product_type vocabulary for everything that is not a
+    # record.
+    "CD", "2xCD", "Cassette", "DVD", "Blu-Ray",
+    "T-Shirt", "T Shirt", "Tshirt", "Girls T-shirt", "Tank Top",
+    "Longsleeve", "Crewneck Sweatshirt", "Hoodie",
+    "Books", "Paperback Book", "Hardcover Book",
+    "Pins", "Stickers & Decals", "Bag", "Tote", "Zine",
+])
+def test_format_gate_rejects_other_media_and_merch(descriptor):
+    assert Crawler._is_vinyl(descriptor) is False
+
+
+@respx.mock
+@pytest.mark.parametrize("product", [_CD_PRODUCT, _SHIRT_PRODUCT])
+async def test_non_vinyl_products_shelved_here_yield_nothing(crawler, product):
+    _mock_pages(_FIRE_PRODUCT, product)
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["artist"] for i in items] == ["Amy Klein"]
+
+
+@respx.mock
+async def test_an_album_name_resembling_another_medium_does_not_decide_the_format(crawler):
+    # The gate reads the descriptor only. `ABCD` contains "CD" and `Bag` is a
+    # merch word, and neither may reject the record it names.
+    _mock_pages({**_FIRE_PRODUCT, "title": 'Amy Klein "ABCD" 12"'},
+                {**_FIRE_PRODUCT, "title": 'Alice Bag "Bag" 12"',
+                 "vendor": "Alice Bag", "handle": "alice-bag-bag-12"})
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["title"] for i in items] == ['ABCD 12" — Black', 'Bag 12" — Black']
+
+
+@respx.mock
+@pytest.mark.parametrize("product", [_BOOK_PRODUCT, _PIN_PRODUCT, _ZINE_PRODUCT])
+async def test_the_stores_non_records_stay_out_even_when_mis_shelved(crawler, product):
+    # None of these is in the vinyl collection today. Each is titled to the
+    # store's one convention, so shelved here it would parse and, before the
+    # format rules below, publish as a record.
+    _mock_pages(_FIRE_PRODUCT, product)
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["artist"] for i in items] == ["Amy Klein"]
+
+
+@respx.mock
+async def test_a_record_naming_an_unrecognised_format_is_still_admitted(crawler):
+    # Rejecting silence must not turn into rejecting novelty: a format the
+    # store adds later stays in on the shelf's own claim.
+    _mock_pages({**_FIRE_PRODUCT, "title": 'Amy Klein "Fire" Deluxe Box Set'})
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["title"] for i in items] == ["Fire Deluxe Box Set — Black"]
+
+
+@respx.mock
+async def test_a_catalog_that_stopped_naming_formats_raises(crawler):
+    # The fail-safe for the rule above: a store-wide loss of the trailing
+    # format empties the album tally rather than silently emptying the walk
+    # and letting replace_stock_items() delete the previous snapshot.
+    _mock_pages({**_FIRE_PRODUCT, "title": 'Amy Klein "Fire"'},
+                {**_KISS_BIG_PRODUCT, "title": 'Ailbhe Reddy "Kiss Big"'})
+    with pytest.raises(RuntimeError, match="album-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_a_merch_word_in_the_album_does_not_reject_the_record(crawler):
+    # The sharper version of the test above: with no record word in the
+    # descriptor to admit it early, the gate's reject arm is what runs -- and
+    # it must still read the descriptor alone, or this album's own "Bag"
+    # would throw the record out.
+    _mock_pages({**_FIRE_PRODUCT, "title": 'Alice Bag "Bag" Box Set',
+                 "vendor": "Alice Bag", "handle": "alice-bag-bag-box-set"})
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["title"] for i in items] == ["Bag Box Set — Black"]
+
+
+@respx.mock
+async def test_a_lowercase_word_ending_in_a_medium_word_is_not_a_medium(crawler):
+    # The word boundaries are what keep "Records" from matching "CD" and
+    # "Helps" from matching "LP".
+    _mock_pages({**_FIRE_PRODUCT, "title": 'Amy Klein "Fire" Gatefold 12"'})
+    items = [item async for item in crawler.crawl_catalog()]
+    assert items[0]["title"] == 'Fire Gatefold 12" — Black'
+
+
+# --- bundles -----------------------------------------------------------
+
+@pytest.mark.parametrize("title", [
+    "Bad Moves Vinyl Bundle",
+    'Bad Moves "Untenable" Vinyl Bundle',
+    'Bad Moves "Untenable" Bundles',
+])
+def test_bundles_are_not_records(title):
+    assert Crawler._parse_title(title) == ("", "", "")
+
+
+@respx.mock
+@pytest.mark.parametrize("product", [_BUNDLE_PRODUCT, _CONVENTIONAL_BUNDLE_PRODUCT])
+async def test_a_bundle_yields_nothing(crawler, product):
+    _mock_pages(_FIRE_PRODUCT, product)
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["artist"] for i in items] == ["Amy Klein"]
+
+
+# --- variants ----------------------------------------------------------
+
+@respx.mock
+async def test_the_colour_is_appended_to_every_row(crawler):
+    _mock_pages(_OPEN_THE_GATES_PRODUCT)
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["title"] for i in items] == [
+        'Open The Gates 2x12" — Sands Of Time',
+        'Open The Gates 2x12" — Neptune Blue',
+    ]
+
+
+@respx.mock
+async def test_a_product_reduced_to_one_colour_still_carries_it(crawler):
+    # Keyed on the variant count instead, a sibling being delisted would
+    # re-title the survivor and orphan everything keyed on its old identity.
+    _mock_pages(_one_pressing(_OPEN_THE_GATES_PRODUCT))
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["title"] for i in items] == ['Open The Gates 2x12" — Sands Of Time']
+
+
+@respx.mock
+async def test_placeholder_variant_carries_the_title_alone(crawler):
+    _mock_pages(_one_pressing(_FIRE_PRODUCT, title="Default Title"))
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["title"] for i in items] == ['Fire 12"']
+
+
+@respx.mock
+async def test_placeholder_matching_is_case_insensitive(crawler):
+    _mock_pages(_one_pressing(_FIRE_PRODUCT, title="  default TITLE  "))
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["title"] for i in items] == ['Fire 12"']
+
+
+@respx.mock
+async def test_placeholder_on_a_multi_variant_product_is_skipped(crawler):
+    # A placeholder beside real colours is malformed data: admitted, its row
+    # would share the title, the URL and so the item_key with nothing, but
+    # would claim an identity the product's real pressings do not own.
+    _mock_pages({**_OPEN_THE_GATES_PRODUCT, "variants": [
+        {**_OPEN_THE_GATES_PRODUCT["variants"][0], "title": "Default Title"},
+        _OPEN_THE_GATES_PRODUCT["variants"][1],
+    ]})
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["title"] for i in items] == ['Open The Gates 2x12" — Neptune Blue']
+
+
+@respx.mock
+async def test_blank_variant_title_is_skipped(crawler):
+    _mock_pages({**_OPEN_THE_GATES_PRODUCT, "variants": [
+        {**_OPEN_THE_GATES_PRODUCT["variants"][0], "title": "   "},
+        _OPEN_THE_GATES_PRODUCT["variants"][1],
+    ]})
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["title"] for i in items] == ['Open The Gates 2x12" — Neptune Blue']
+
+
+@respx.mock
+async def test_variant_title_whitespace_is_collapsed(crawler):
+    _mock_pages(_one_pressing(_FIRE_PRODUCT, title="  Coke  Bottle   Clear "))
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["title"] for i in items] == ['Fire 12" — Coke Bottle Clear']
+
+
+@respx.mock
+async def test_a_variant_title_containing_quotes_is_carried_verbatim(crawler):
+    _mock_pages(_one_pressing(_FIRE_PRODUCT, title='"Needle Drop" B/W splatter'))
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["title"] for i in items] == ['Fire 12" — "Needle Drop" B/W splatter']
+
+
+@respx.mock
+async def test_the_same_record_split_across_two_products_keeps_two_identities(crawler):
+    _mock_pages(_DEAD_BEST_BLACK_PRODUCT, _DEAD_BEST_YELLOW_PRODUCT)
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [(i["title"], i["url"], i["price"]) for i in items] == [
+        ('Dead Best 12" — Black',
+         "https://dongiovannirecords.com/products/dead-best-dead-best-12", 21.99),
+        ('Dead Best 12" — Yellow',
+         "https://dongiovannirecords.com/products/dead-best-dead-best-13", 20.99),
+    ]
+
+
+@respx.mock
+async def test_junk_variant_entries_are_ignored(crawler):
+    _mock_pages({**_FIRE_PRODUCT, "variants": [
+        "not a dict", None, 42, _FIRE_PRODUCT["variants"][0]]})
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["title"] for i in items] == ['Fire 12" — Black']
+
+
+# --- availability and pre-orders ---------------------------------------
+
+@respx.mock
+async def test_sold_out_variant_is_skipped_beside_its_in_stock_siblings(crawler):
+    _mock_pages(_TEENAGE_HALLOWEEN_PRODUCT)
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["title"] for i in items] == ['Teenage Halloween 12" — Black']
+
+
+@respx.mock
+@pytest.mark.parametrize("available", [False, "false", "true", 1, 0, None, "yes"])
+async def test_only_the_literal_true_admits_a_variant(crawler, available):
+    # Beside a well-formed product, so the walk is non-empty and the answer
+    # is this variant being skipped rather than the stock-source guard
+    # firing -- which is what test_a_catalog_with_no_readable_availability
+    # covers instead.
+    _mock_pages(_FIRE_PRODUCT, _one_pressing(_KISS_BIG_PRODUCT, available=available))
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["artist"] for i in items] == ["Amy Klein"]
+
+
+@respx.mock
+async def test_a_missing_available_key_is_not_in_stock(crawler):
+    variant = {k: v for k, v in _KISS_BIG_PRODUCT["variants"][0].items() if k != "available"}
+    _mock_pages(_FIRE_PRODUCT, {**_KISS_BIG_PRODUCT, "variants": [variant]})
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["artist"] for i in items] == ["Amy Klein"]
+
+
+@respx.mock
+async def test_a_preorder_row_is_marked_before_the_colour(crawler):
+    _mock_pages(_KISS_BIG_PRODUCT)
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["title"] for i in items] == ['Kiss Big 12" (Pre-Order) — Red']
+
+
+@respx.mock
+async def test_the_preorder_marker_is_written_on_every_colour(crawler):
+    _mock_pages({**_OPEN_THE_GATES_PRODUCT, "tags": ["preorder"]})
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["title"] for i in items] == [
+        'Open The Gates 2x12" (Pre-Order) — Sands Of Time',
+        'Open The Gates 2x12" (Pre-Order) — Neptune Blue',
+    ]
+
+
+@respx.mock
+async def test_the_preorder_tag_is_matched_case_insensitively(crawler):
+    _mock_pages({**_FIRE_PRODUCT, "tags": ["  PreOrder  "]})
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["title"] for i in items] == ['Fire 12" (Pre-Order) — Black']
+
+
+@respx.mock
+async def test_an_untagged_product_carries_no_marker(crawler):
+    _mock_pages({**_FIRE_PRODUCT, "tags": ["sync", "preorders"]})
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["title"] for i in items] == ['Fire 12" — Black']
+
+
+@respx.mock
+async def test_a_sold_out_preorder_is_skipped_with_no_bypass(crawler):
+    _mock_pages(_FIRE_PRODUCT, _SOLD_OUT_PREORDER_PRODUCT)
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["artist"] for i in items] == ["Amy Klein"]
+
+
+# --- prices ------------------------------------------------------------
+
+@pytest.mark.parametrize("raw", [
+    None, "", "   ", "free", "$21.99", True, False, "nan", "inf", "-inf",
+    float("nan"), float("inf"), "0", 0, "-1", -1.0, [], {},
+])
+def test_unusable_price_yields_none(raw):
+    assert Crawler._price({"price": raw}) is None
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("24.99", 24.99), ("21.99", 21.99), (29.99, 29.99), ("30", 30.0), (4.99, 4.99),
+])
+def test_usable_price_is_parsed(raw, expected):
+    assert Crawler._price({"price": raw}) == expected
+
+
+@respx.mock
+async def test_missing_price_key_yields_none(crawler):
+    # Beside a priced product, so an isolated null stays an ordinary row
+    # rather than tripping the price-source guard.
+    variant = {k: v for k, v in _KISS_BIG_PRODUCT["variants"][0].items() if k != "price"}
+    _mock_pages(_FIRE_PRODUCT, {**_KISS_BIG_PRODUCT, "variants": [variant]})
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["price"] for i in items] == [22.99, None]
+
+
+@respx.mock
+@pytest.mark.parametrize("mutate", [{"price": None}, {"price": "free"}])
+async def test_a_catalog_that_yielded_rows_but_no_prices_raises(crawler, mutate):
+    _mock_pages(_one_pressing(_FIRE_PRODUCT, **mutate))
+    with pytest.raises(RuntimeError, match="price-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_one_priced_row_is_enough_to_satisfy_the_price_guard(crawler):
+    _mock_pages(_FIRE_PRODUCT, _one_pressing(_KISS_BIG_PRODUCT, price=None))
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["price"] for i in items] == [22.99, None]
+
+
+@respx.mock
+async def test_an_empty_catalog_does_not_trip_the_price_guard(crawler):
+    _mock_pages(_one_pressing(_FIRE_PRODUCT, available=False, price=None))
+    assert [item async for item in crawler.crawl_catalog()] == []
+
+
+# --- identity ----------------------------------------------------------
+
+@respx.mock
+@pytest.mark.parametrize("missing", ["title", "handle"])
+async def test_product_missing_its_identity_is_skipped(crawler, missing):
+    _mock_pages(_FIRE_PRODUCT, {**_KISS_BIG_PRODUCT, missing: "  "})
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["artist"] for i in items] == ["Amy Klein"]
+
+
+@respx.mock
+async def test_catalog_without_handles_raises(crawler):
+    _mock_pages({**_FIRE_PRODUCT, "handle": ""})
+    with pytest.raises(RuntimeError, match="identity-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_a_handle_less_product_among_yielded_rows_does_not_raise(crawler):
+    _mock_pages(_FIRE_PRODUCT, {**_KISS_BIG_PRODUCT, "handle": ""})
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["artist"] for i in items] == ["Amy Klein"]
+
+
+@respx.mock
+async def test_a_sold_out_product_missing_its_handle_still_raises(crawler):
+    _mock_pages(_one_pressing(_FIRE_PRODUCT, available=False),
+                {**_KISS_BIG_PRODUCT, "handle": ""})
+    with pytest.raises(RuntimeError, match="identity-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_a_handle_on_a_non_record_does_not_satisfy_the_identity_guard(crawler):
+    # The identity tally is nested inside the format gate: a shirt's missing
+    # handle says nothing about a walk of records.
+    _mock_pages({**_CD_PRODUCT, "handle": ""})
+    assert [item async for item in crawler.crawl_catalog()] == []
+
+
+# --- stock readability -------------------------------------------------
+
+@respx.mock
+@pytest.mark.parametrize("available", ["false", "true", 1, None])
+async def test_a_catalog_with_no_readable_availability_raises(crawler, available):
+    _mock_pages(_one_pressing(_FIRE_PRODUCT, available=available))
+    with pytest.raises(RuntimeError, match="stock-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_one_unreadable_product_among_real_rows_does_not_raise(crawler):
+    _mock_pages(_FIRE_PRODUCT, _one_pressing(_KISS_BIG_PRODUCT, available="false"))
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["artist"] for i in items] == ["Amy Klein"]
+
+
+@respx.mock
+async def test_a_genuinely_sold_out_shelf_is_a_legitimate_empty_result(crawler):
+    _mock_pages(_SISSYBEARS_PRODUCT, _SOLD_OUT_PREORDER_PRODUCT)
+    assert [item async for item in crawler.crawl_catalog()] == []
+
+
+@respx.mock
+async def test_one_unreadable_variant_does_not_vouch_for_its_readable_sibling(crawler):
+    # all(), not any(): the black pressing is a readable False and the
+    # coloured one is the string "false", so the product yields nothing and
+    # must not vouch for an emptiness half its own doing.
+    _mock_pages({**_OPEN_THE_GATES_PRODUCT, "variants": [
+        {**_OPEN_THE_GATES_PRODUCT["variants"][0], "available": False},
+        {**_OPEN_THE_GATES_PRODUCT["variants"][1], "available": "false"},
+    ]})
+    with pytest.raises(RuntimeError, match="stock-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_a_product_with_no_usable_variants_is_not_readable(crawler):
+    _mock_pages({**_FIRE_PRODUCT, "variants": []})
+    with pytest.raises(RuntimeError, match="stock-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+# --- covers, URLs, pagination ------------------------------------------
+
+@respx.mock
+async def test_variant_featured_image_wins_over_product_image(crawler):
+    _mock_pages(_KISS_BIG_PRODUCT)
+    items = [item async for item in crawler.crawl_catalog()]
+    assert items[0]["cover_image_url"] == "https://cdn.shopify.com/KissBig_Red.png"
+
+
+@respx.mock
+async def test_cover_falls_back_to_product_image(crawler):
+    _mock_pages(_TEENAGE_HALLOWEEN_PRODUCT)
+    items = [item async for item in crawler.crawl_catalog()]
+    assert items[0]["cover_image_url"] == "https://cdn.shopify.com/TeenageHalloween.jpg"
+
+
+@respx.mock
+async def test_cover_image_is_none_when_product_has_no_images(crawler):
+    _mock_pages({**_FIRE_PRODUCT, "images": []})
+    items = [item async for item in crawler.crawl_catalog()]
+    assert items[0]["cover_image_url"] is None
+
+
+@respx.mock
+async def test_url_is_built_from_the_handle_as_written(crawler):
+    _mock_pages({**_FIRE_PRODUCT, "handle": "  amy-klein-fire-12  "})
+    items = [item async for item in crawler.crawl_catalog()]
+    assert items[0]["url"] == "https://dongiovannirecords.com/products/amy-klein-fire-12"
+
+
+@respx.mock
+async def test_empty_collection_raises(crawler):
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(
+        return_value=_page_response([]))
+    with pytest.raises(RuntimeError, match="returned no products"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_pagination_walks_every_page(crawler):
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(
+        return_value=_page_response([_FIRE_PRODUCT]))
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "2"}).mock(
+        return_value=_page_response([_KISS_BIG_PRODUCT]))
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "3"}).mock(
+        return_value=_page_response([]))
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["artist"] for i in items] == ["Amy Klein", "Ailbhe Reddy"]
