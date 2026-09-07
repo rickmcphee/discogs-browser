@@ -99,6 +99,32 @@ function BookmarkIcon({ filled }: { filled: boolean }) {
 // itself is in the tab order for one reason only: a reason long enough to
 // clip has to be scrollable by keyboard, which Safari will not do for a
 // container it cannot focus.
+// True unless the element is definitely out of sight -- outside the viewport,
+// or outside anything that clips it on the way up. Stated as "not outside"
+// rather than "inside" on purpose: an element with no box yet answers that it
+// is visible, which is what a just-mounted panel needs, and is the only
+// answer available under jsdom, where every rect is zero.
+function isAnchorInView(anchor: HTMLElement): boolean {
+  const rect = anchor.getBoundingClientRect()
+  let top = 0
+  let left = 0
+  let bottom = window.innerHeight
+  let right = window.innerWidth
+  for (let parent = anchor.parentElement; parent; parent = parent.parentElement) {
+    const { overflowX, overflowY } = getComputedStyle(parent)
+    if (!/auto|scroll|hidden/.test(overflowX + overflowY)) continue
+    const box = parent.getBoundingClientRect()
+    // No box, no clipping. Keeps a laid-out-nowhere ancestor from swallowing
+    // the whole viewport into an empty rect.
+    if (box.width === 0 && box.height === 0) continue
+    top = Math.max(top, box.top)
+    left = Math.max(left, box.left)
+    bottom = Math.min(bottom, box.bottom)
+    right = Math.min(right, box.right)
+  }
+  return !(rect.bottom < top || rect.top > bottom || rect.right < left || rect.left > right)
+}
+
 function ReasonPopover({ item, anchor, onClose }: { item: StockItem; anchor: HTMLElement; onClose: () => void }) {
   const panelRef = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState<Placement | null>(null)
@@ -114,18 +140,19 @@ function ReasonPopover({ item, anchor, onClose }: { item: StockItem; anchor: HTM
   useLayoutEffect(() => {
     function place() {
       const panel = panelRef.current
-      if (!panel || !anchor.isConnected) return
-      const viewport = { width: window.innerWidth, height: window.innerHeight }
-      const rect = anchor.getBoundingClientRect()
-      // Scrolled out of sight entirely: the panel names no record, so leaving
-      // it clamped into view beside unrelated rows would say nothing about
-      // which row it came from. Strictly outside, so the all-zero rect a
-      // detached or unlaid-out element reports is not read as off-screen --
-      // an anchor flush against an edge is still an anchor.
-      if (rect.bottom < 0 || rect.top > viewport.height || rect.right < 0 || rect.left > viewport.width) {
+      if (!panel) return
+      // A view-mode or breakpoint switch mounts this popover afresh against
+      // the anchor from the tree it replaced, which the same commit detaches.
+      // The parent's own check ran a render too early to see that, so closing
+      // here is what ends it -- without this the panel would sit hidden and
+      // the new icon would keep claiming to be expanded until some unrelated
+      // render came along.
+      if (!anchor.isConnected || !isAnchorInView(anchor)) {
         onClose()
         return
       }
+      const viewport = { width: window.innerWidth, height: window.innerHeight }
+      const rect = anchor.getBoundingClientRect()
       const box = panel.getBoundingClientRect()
       natural.current ??= { width: box.width, height: box.height }
       setPos(placeReasonPopover(rect, natural.current, viewport))
@@ -266,10 +293,11 @@ function StockBrowser({
   // and via the disabled button), so at most one request per item_key is ever
   // outstanding and there is nothing left to reconcile out of order.
   const [pendingSaves, setPendingSaves] = useState<Set<string>>(new Set())
-  // The item whose justification the reason popover is showing, with the icon
-  // it is pinned to, or null when nothing is open. Held as the item rather
-  // than a key so the popover keeps its content through a refetch that drops
-  // the row; the anchor is the element it measures itself against.
+  // What the open popover shows and what it measures itself against: the item
+  // whose justification is on screen, and the icon it is pinned to. Null when
+  // nothing is open. The popover renders beside that icon, so a refetch that
+  // drops the row takes the panel with it -- which is why this state has to be
+  // cleared from here rather than by the popover itself.
   const [reason, setReason] = useState<{ item: StockItem; anchor: HTMLElement } | null>(null)
   const PER_PAGE = 250
   const tableScrollRef = useRef<HTMLDivElement>(null)

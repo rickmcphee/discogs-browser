@@ -110,9 +110,9 @@ Out of scope:
   backdrop click dismiss it; focus moves into the panel on open and returns
   to the icon that opened it on close.
 - ~~**The opener is handed over, not looked up.**~~ *Superseded: opening moves
-  no focus, so there is nothing to restore on an ordinary dismissal — only
-  Escape pressed from inside the panel hands focus back, and it has the icon
-  to hand.* The click passed its own `currentTarget` into the dialog's state
+  no focus, so there is nothing to restore unless the panel was given some —
+  and when it was, every dismissal path hands it back, not Escape alone. The
+  icon is to hand either way.* The click passed its own `currentTarget` into the dialog's state
   rather than letting the dialog read `document.activeElement` on mount,
   because Safari does not focus a button on pointer activation. The click
   still hands over its `currentTarget`, but as the element the popover
@@ -198,8 +198,15 @@ icon.**
   would not run, and an effect without a list is the same thing with an extra
   pass and a lint warning. Scrolling the row out of sight closes it too: the
   panel names no record, so clamped into view beside unrelated rows it would
-  say nothing about where it came from. Strictly outside, so the all-zero rect
-  an unlaid-out element reports is not mistaken for off-screen.
+  say nothing about where it came from. Out of sight means out of *its own
+  scroll container* as much as off the viewport: the table and the card list
+  are their own, under a toolbar, so a row scrolled above one is invisible
+  while its viewport coordinates are still positive. Phrased as "not
+  definitely outside" rather than "inside", so an element with no box yet —
+  every element, under jsdom — answers that it is visible. The popover also
+  closes itself when it finds its anchor detached: a view-mode switch mounts
+  it afresh against the icon from the tree it replaced, a commit after the
+  parent's own check could have seen that.
 - **Dismissal listens for touch as well as mouse.** A tap emits `mousedown`
   only as a compatibility event, and a touch scroll emits none at all, so a
   mouse-only listener would leave the popover open on a phone. Both events,
@@ -269,7 +276,8 @@ icon.**
   query cannot tell that from closed.
 - A refetch that drops the row closes it *and* leaves it closed when the row
   returns — absence while the list is empty proves nothing on its own.
-- Scrolling the row out of sight closes it.
+- Scrolling the row out of sight closes it, whether it leaves the viewport or
+  only the table's own scroll container.
 - Closing a focused panel by clicking its icon returns focus to that icon,
   not just closing by Escape.
 - It does not name the record, on a comparison row carrying a

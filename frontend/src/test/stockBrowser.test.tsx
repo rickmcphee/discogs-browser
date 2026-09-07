@@ -8,6 +8,14 @@ const items = [
   { id: 2, item_key: 'k2', is_own: true, artist: 'NAILS', title: 'Every Bridge Burning — Forest Green LP', format: 'Vinyl', price: 25.99, currency: 'USD', url: 'https://shop.nuclearblast.com/products/nails', cover_image_url: null, source: 'Nuclear Blast', last_seen: '2026-07-05T00:00:00Z', discogs_price: '42.50', saved: false },
 ]
 
+function rectOf(left: number, top: number, right: number, bottom: number): DOMRect {
+  return {
+    left, top, right, bottom, x: left, y: top,
+    width: right - left, height: bottom - top,
+    toJSON: () => ({}),
+  } as DOMRect
+}
+
 const getStock = vi.fn()
 const getStockArtists = vi.fn()
 const saveStockItem = vi.fn()
@@ -604,6 +612,25 @@ describe('StockBrowser', () => {
     expect(screen.getByTitle('Recommendation details').getAttribute('aria-expanded')).toBe('false')
   })
 
+  it('closes the popover when its row scrolls out of the table, not just off the viewport', async () => {
+    // The table is its own scroll container under a toolbar, so a row scrolled
+    // above it is invisible while its viewport coordinates are still positive.
+    getStock.mockResolvedValue(judged(true))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    const info = screen.getByTitle('Recommendation details')
+    fireEvent.click(info)
+    expect(screen.getByRole("note")).toBeTruthy()
+
+    const scroller = info.closest('.overflow-auto') as HTMLElement
+    expect(scroller).not.toBeNull()
+    scroller.getBoundingClientRect = () => rectOf(120, 200, 1280, 700)
+    info.getBoundingClientRect = () => rectOf(1200, 60, 1244, 104)
+    fireEvent.scroll(scroller, {})
+    await waitFor(() => expect(info.getAttribute('aria-expanded')).toBe('false'))
+    expect(screen.queryByRole("note")).toBeNull()
+  })
+
   it('closes the popover when its row is scrolled out of sight', async () => {
     // Clamping an off-screen anchor into view would leave the panel beside
     // unrelated rows, saying nothing about which row it came from -- it names
@@ -615,9 +642,7 @@ describe('StockBrowser', () => {
     fireEvent.click(info)
     expect(screen.getByRole("note")).toBeTruthy()
 
-    info.getBoundingClientRect = () => ({
-      top: -80, bottom: -36, left: 1200, right: 1244, width: 44, height: 44, x: 1200, y: -80, toJSON: () => ({}),
-    })
+    info.getBoundingClientRect = () => rectOf(1200, -80, 1244, -36)
     fireEvent.scroll(document, {})
     await waitFor(() => expect(info.getAttribute('aria-expanded')).toBe('false'))
     expect(screen.queryByRole("note")).toBeNull()
