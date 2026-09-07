@@ -146,7 +146,13 @@ export interface StockItem {
   cover_image_url: string | null
   source: string
   last_seen: string
+  // The user's judgment of this item, when one exists: true recommends it,
+  // false rejects it, null means it has not been judged. `reason` is its
+  // one-line justification -- written for a recommendation by the judgment
+  // run, and for either polarity by a CSV import -- and null whenever there
+  // is none to show.
   reason: string | null
+  recommended: boolean | null
   is_own: boolean
   discogs_price: string | null
   saved: boolean
