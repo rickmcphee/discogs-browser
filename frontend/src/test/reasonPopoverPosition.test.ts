@@ -120,7 +120,7 @@ describe('placeReasonPopover', () => {
     expect(maxHeight).toBe(viewport.height - anchor.top - anchor.height - REASON_POPOVER_GAP - REASON_POPOVER_EDGE)
     // Clear of the icon, and on screen, which it could not be at full height.
     expect(top).toBeGreaterThanOrEqual(anchor.top + anchor.height)
-    expect(top + (maxHeight ?? TALL.height)).toBeLessThanOrEqual(viewport.height)
+    expect(top + maxHeight).toBeLessThanOrEqual(viewport.height)
     expect(left).toBe(viewport.width - TALL.width - REASON_POPOVER_EDGE)
   })
 
@@ -130,11 +130,11 @@ describe('placeReasonPopover', () => {
     const { top, maxHeight } = placeReasonPopover(anchor, TALL, viewport)
     expect(top).toBe(REASON_POPOVER_EDGE)
     expect(maxHeight).toBe(anchor.top - REASON_POPOVER_GAP - REASON_POPOVER_EDGE)
-    expect(top + (maxHeight ?? 0)).toBeLessThanOrEqual(anchor.top)
+    expect(top + maxHeight).toBeLessThanOrEqual(anchor.top)
   })
 
-  it('reports no height cap when the panel fits as it is', () => {
-    expect(placeReasonPopover(anchorAt(1200, 400), PANEL, VIEWPORT).maxHeight).toBeUndefined()
+  it('reports the height the panel asked for when it fits as it is', () => {
+    expect(placeReasonPopover(anchorAt(1200, 400), PANEL, VIEWPORT).maxHeight).toBe(PANEL.height)
   })
 
   it('would rather cover the icon than shrink to a sliver', () => {
@@ -142,7 +142,7 @@ describe('placeReasonPopover', () => {
     // an unreadable one beside it, and Escape still dismisses.
     const viewport = { width: 320, height: 44 + 2 * REASON_POPOVER_MIN_HEIGHT - 4 }
     const { maxHeight } = placeReasonPopover(anchorAt(220, 78, 44), TALL, viewport)
-    expect(maxHeight).toBeUndefined()
+    expect(maxHeight).toBe(TALL.height)
   })
 
   it('prefers the top edge when the panel is taller than the viewport', () => {

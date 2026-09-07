@@ -536,17 +536,19 @@ describe('StockBrowser', () => {
     expect(info.nextElementSibling).toBe(popover)
   })
 
-  it('caps the popover against the viewport, not just at a fixed size', async () => {
-    // A short landscape viewport, or a zoomed one, can leave less room than
-    // the panel's own 16rem.
+  it('takes its height from the placement and its width from the viewport', async () => {
+    // The height is the placement's to give -- it is the only thing that knows
+    // what room the icon leaves -- so the panel carries no height class to go
+    // stale against a resize.
     getStock.mockResolvedValue(judged(true))
     render(<StockBrowser recommendedAvailable />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     fireEvent.click(screen.getByTitle('Recommendation details'))
 
-    const { className } = screen.getByRole("note")
-    expect(className).toContain('max-h-[min(16rem,calc(100dvh-1rem))]')
-    expect(className).toContain('max-w-[calc(100vw-1rem)]')
+    const popover = screen.getByRole("note") as HTMLElement
+    expect(popover.className).not.toContain('max-h-')
+    expect(popover.style.maxHeight).not.toBe('')
+    expect(popover.className).toContain('max-w-[calc(100vw-1rem)]')
   })
 
   it('returns focus to the icon when Escape closes a popover being read', async () => {

@@ -119,10 +119,14 @@ Out of scope:
   measures itself against.
 - **The panel caps its size and scrolls.** A reason is free text — a CSV
   import writes it unbounded — so a long one would otherwise run off the
-  screen. The cap is against the viewport as well as a fixed size
-  (`max-h-[min(16rem,calc(100dvh-1rem))]`, `max-w-[calc(100vw-1rem)]`): a
-  short landscape viewport, or a zoomed one, can leave less room than 16rem,
-  and placement can only move an oversized box, not shrink it.
+  screen. Width is capped in CSS (`w-64 max-w-[calc(100vw-1rem)]`); height
+  comes from the placement, which is the only thing that knows what room the
+  icon leaves, and is applied inline. It is measured from the panel's content
+  rather than its rendered box — the box carries the cap the last placement
+  gave it, and reading that back would find room the panel does not have,
+  lengthen it, and jitter on every scroll. Measuring instead of caching is
+  what keeps a resize honest: a panel opened in a narrow viewport that then
+  grows is re-measured rather than placed against the size it used to be.
 
 **Amendment (2026-09-07, second PR): a popover, opened and closed by its own
 icon.**
@@ -143,12 +147,9 @@ icon.**
   Where it fits neither whole — a landscape phone, or any viewport at high
   zoom — it takes the roomier side and reports the height that will hold it
   there, scrolling what it cannot show, rather than being clamped over the
-  icon. The measurement behind that is the size the panel *wants*, taken once
-  and kept: feeding a shortened panel back in would find room it does not
-  have, lengthen it again, and jitter on every scroll. The one case it will
-  still cover the icon is a viewport barely taller than the icon itself, where
-  the alternative is a sliver too short to read; Escape and a press outside
-  remain.
+  icon. The one case it will still cover the icon is a viewport barely taller
+  than the icon itself, where the alternative is a sliver too short to read;
+  Escape and a press outside remain.
 - **Positioned fixed, measured after render.** The table and the card list
   are both `overflow-auto`, so a popover positioned inside them would be
   clipped for a row at the top or bottom edge — unrecoverably, since
@@ -267,8 +268,9 @@ icon.**
   to text content whether or not a name is present.
 - The popover is positioned fixed, with coordinates and visibility set — the
   geometry itself belongs to `reasonPopoverPosition.test.ts`.
-- It is capped against the viewport, focusable, `role="note"`, and rendered
-  as the icon's next sibling.
+- Its height comes from the placement rather than a class, its width is
+  capped in CSS, and it is focusable, `role="note"`, and rendered as the
+  icon's next sibling.
 - A touch outside it closes it, as a mouse press does.
 - Escape pressed while the panel has focus returns that focus to the icon.
 - A view-mode switch closes it, asserted through the icon's `aria-expanded`
@@ -297,9 +299,11 @@ scroll in both axes and room beside a half-visible icon is not room on screen
 (an icon *entirely* off screen never reaches the placement — the popover
 closes first); is clamped at the top and bottom for a row at either edge
 of the viewport, including a panel taller than the viewport itself; and
-reports a `maxHeight` on the roomier side of an icon that a short viewport
-leaves no room beside, above or below — none when the panel fits as it is,
-and none when even the roomier side is too short to be worth reading.
+reports a `maxHeight` throughout — the height the panel asked for wherever
+that fits, and on the roomier side of an icon that a short viewport leaves no
+room beside, above or below, the room actually available there; the height
+asked for again where even the roomier side is too short to be worth
+reading.
 
 `frontend/src/test/mobileLayout.test.tsx`:
 

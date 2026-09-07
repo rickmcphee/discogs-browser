@@ -24,13 +24,17 @@ export const REASON_POPOVER_EDGE = 8
 // covering the icon is the lesser evil -- Escape and a press outside still
 // dismiss it.
 export const REASON_POPOVER_MIN_HEIGHT = 80
+// How tall the popover will grow for its own sake before it starts scrolling,
+// whatever room the viewport has. A glance at one sentence, not a page of it.
+export const REASON_POPOVER_MAX_HEIGHT = 256
 
 export interface Placement {
   top: number
   left: number
-  /** Set only where the panel has to be shortened to clear the icon; the
-   *  panel's own CSS cap applies when it is absent. */
-  maxHeight?: number
+  /** The height to hold the panel to — its own desired height wherever that
+   *  fits, and the room available where it does not. Always set, so the panel
+   *  never depends on a CSS cap the placement cannot see. */
+  maxHeight: number
 }
 
 function clamp(value: number, lowest: number, highest: number): number {
@@ -65,10 +69,10 @@ export function placeReasonPopover(anchor: Rect, panel: Size, viewport: Viewport
   const beside = clamp(anchor.top + anchor.height / 2 - panel.height / 2, REASON_POPOVER_EDGE, lastTop)
 
   const toLeft = anchor.left - panel.width - REASON_POPOVER_GAP
-  if (fitsAcross(toLeft)) return { top: beside, left: toLeft }
+  if (fitsAcross(toLeft)) return { top: beside, left: toLeft, maxHeight: panel.height }
 
   const toRight = anchor.right + REASON_POPOVER_GAP
-  if (fitsAcross(toRight)) return { top: beside, left: toRight }
+  if (fitsAcross(toRight)) return { top: beside, left: toRight, maxHeight: panel.height }
 
   // Stacked. Horizontally it starts at the icon's own left edge, which keeps
   // it near what it describes, and vertically it takes whichever side of the
@@ -76,10 +80,10 @@ export function placeReasonPopover(anchor: Rect, panel: Size, viewport: Viewport
   // since a second click there is how it closes.
   const left = clamp(anchor.left, REASON_POPOVER_EDGE, lastLeft)
   const below = anchor.top + anchor.height + REASON_POPOVER_GAP
-  if (fitsDown(below)) return { top: below, left }
+  if (fitsDown(below)) return { top: below, left, maxHeight: panel.height }
 
   const above = anchor.top - panel.height - REASON_POPOVER_GAP
-  if (fitsDown(above)) return { top: above, left }
+  if (fitsDown(above)) return { top: above, left, maxHeight: panel.height }
 
   // Taller than the space on either side of the icon. Nothing can keep the
   // panel whole, on screen and off the icon at once, and the icon is what
@@ -98,5 +102,5 @@ export function placeReasonPopover(anchor: Rect, panel: Size, viewport: Viewport
   // An icon with almost no room on either side of it -- a viewport barely
   // taller than the icon itself. A readable panel over the icon beats an
   // unreadable one beside it; Escape and a press outside still dismiss it.
-  return { top: beside, left }
+  return { top: beside, left, maxHeight: panel.height }
 }

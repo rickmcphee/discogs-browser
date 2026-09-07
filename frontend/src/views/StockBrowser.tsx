@@ -8,7 +8,12 @@ import SourceFilter from '../components/SourceFilter'
 import StockStats from '../components/StockStats'
 import StockFilter from '../components/StockFilter'
 import { formatPrice } from './formatPrice'
-import { placeReasonPopover, type Placement, type Size } from './reasonPopoverPosition'
+import {
+  placeReasonPopover,
+  REASON_POPOVER_EDGE,
+  REASON_POPOVER_MAX_HEIGHT,
+  type Placement,
+} from './reasonPopoverPosition'
 import { useIsMobile } from '../hooks/useMediaQuery'
 import { ArtistSidebar, ArtistSheetButton } from '../components/ArtistFilter'
 import MobileSort, { type SortOption } from '../components/MobileSort'
@@ -128,11 +133,6 @@ function isAnchorInView(anchor: HTMLElement): boolean {
 function ReasonPopover({ item, anchor, onClose }: { item: StockItem; anchor: HTMLElement; onClose: () => void }) {
   const panelRef = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState<Placement | null>(null)
-  // The size the panel wants, measured once. Placement can shorten the panel,
-  // and measuring the shortened one would feed that back into the next
-  // placement -- which would then find room it does not have, lengthen it
-  // again, and jitter on every scroll.
-  const natural = useRef<Size | null>(null)
 
   // Measured after render and before paint, so the panel never shows at the
   // origin first. Its own width and height are inputs to the placement, which
@@ -153,9 +153,18 @@ function ReasonPopover({ item, anchor, onClose }: { item: StockItem; anchor: HTM
       }
       const viewport = { width: window.innerWidth, height: window.innerHeight }
       const rect = anchor.getBoundingClientRect()
+      // The height the panel wants, not the height it currently has: it is
+      // given a maxHeight below, and measuring that back would find room it
+      // does not have, lengthen the panel again, and jitter on every scroll.
+      // scrollHeight is the content's own height whatever cap is applied, and
+      // the difference between the box and the client area is the border it
+      // leaves out.
       const box = panel.getBoundingClientRect()
-      natural.current ??= { width: box.width, height: box.height }
-      setPos(placeReasonPopover(rect, natural.current, viewport))
+      const wanted = panel.scrollHeight + (box.height - panel.clientHeight)
+      setPos(placeReasonPopover(rect, {
+        width: box.width,
+        height: Math.min(wanted, REASON_POPOVER_MAX_HEIGHT, viewport.height - 2 * REASON_POPOVER_EDGE),
+      }, viewport))
     }
     place()
     // Capturing, so the table's own overflow container counts: the panel is
@@ -234,7 +243,7 @@ function ReasonPopover({ item, anchor, onClose }: { item: StockItem; anchor: HTM
         maxHeight: pos?.maxHeight,
         visibility: pos ? 'visible' : 'hidden',
       }}
-      className="fixed z-50 max-h-[min(16rem,calc(100dvh-1rem))] w-64 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 shadow-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80"
+      className="fixed z-50 w-64 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 shadow-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80"
     >
       {/* A reason only exists on a judged item, so the polarity is never
           unknown here -- and it has to be said, since an item can be judged
