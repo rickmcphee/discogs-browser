@@ -88,7 +88,9 @@ Out of scope:
   the judgment would put one on nearly every row in the Store tab and open
   an empty popup from each. The icon's promise is "there is something to
   read here", and it only makes that promise when there is.
-- **The popup names the target, not the row.** Its subtitle renders
+- ~~**The popup names the target, not the row.**~~ *Superseded: the popover
+  names no record at all — see "It does not name the record" in the amendment
+  below.* Its subtitle rendered
   `item.title` rather than `displayTitle()`'s substituted name. A judgment is
   made against an `item_key`; a comparison row shows what its marketplace
   called the thing it matched, which the listing-title design exists because
@@ -162,7 +164,11 @@ icon.**
   own — which is also why it renders as the icon's sibling, so Tab from the
   icon reaches it. Escape returns focus to the icon when it was inside the
   panel. That is the whole of the focus handling: no trap, no restoration on
-  every close, no backdrop.
+  every close, no backdrop. The panel carries no `aria-label`: it is the
+  `aria-describedby` target, and per accname a name on it would win the text
+  alternative outright — the icon would describe itself as "Recommendation
+  details" rather than reading out the justification, which is the whole
+  point of the reference.
 - **It closes when its icon goes away.** A view-mode or breakpoint switch
   rebuilds the row in a different tree, leaving the node the panel was
   measured against detached — and a detached node reports a zero rect, which
@@ -224,7 +230,10 @@ icon.**
   second one.
 - The open icon reports `aria-expanded="true"` and points both
   `aria-controls` and `aria-describedby` at the popover's id; a closed one
-  reports `aria-expanded="false"` and neither reference.
+  reports `aria-expanded="false"` and neither reference. Its accessible
+  description resolves to the justification — documenting the unnamed panel
+  rather than guarding it, since jsdom's description computation falls back
+  to text content whether or not a name is present.
 - The popover is positioned fixed, with coordinates and visibility set — the
   geometry itself belongs to `reasonPopoverPosition.test.ts`.
 - It is capped against the viewport, focusable, `role="note"`, and rendered
@@ -246,9 +255,11 @@ icon.**
 gap to the icon's left and centred on it; flips right when the left cannot
 hold it and the right can; stacks below — clear of the icon's own band — on a
 narrow screen where neither side fits, and above when below is short; still
-sits beside an icon that has room, however narrow the screen; and is clamped
-at the top and bottom for a row at either edge of the viewport, including a
-panel taller than the viewport itself.
+sits beside an icon that has room, however narrow the screen; stays on screen
+for an anchor scrolled past any of the four viewport edges, since the
+containers scroll in both axes and room beside an off-screen icon is not room
+on screen; and is clamped at the top and bottom for a row at either edge of
+the viewport, including a panel taller than the viewport itself.
 
 `frontend/src/test/mobileLayout.test.tsx`:
 
