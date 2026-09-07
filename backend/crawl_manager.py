@@ -1478,7 +1478,9 @@ class CrawlManager:
             judged = 0
             for i in range(0, len(unjudged), recommendations.BATCH_SIZE):
                 batch = unjudged[i:i + recommendations.BATCH_SIZE]
-                results = await asyncio.to_thread(recommendations.judge_batch, client, taste_listing, batch)
+                results = await asyncio.to_thread(
+                    recommendations.judge_batch, client, taste_listing, batch, username
+                )
                 recommended_in_batch = 0
                 if results:
                     with user_scope(user_id) as conn:
