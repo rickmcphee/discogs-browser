@@ -28,13 +28,14 @@ _COLLECTION_SLUG = "vinyl"
 #
 # What the closing quote's lookahead adds, on top of those exclusions, is a
 # rejection rather than a choice: the quote must be followed by whitespace,
-# a digit or the end. A nested quotation (`"The "Big" One"`) then fails to
-# parse at all instead of yielding a severed album of `The` and a descriptor
-# of `Big" One" 12"`, which is the same skip-rather-than-guess this crawler
-# applies everywhere else. The `\d` arm keeps a descriptor glued onto the
-# closing quote (`"Album"12"`) readable; this store does not write it but a
-# sibling Shopify store does. Curly quotes are admitted though the store
-# writes none: they are the commonest way a storefront's copy drifts.
+# a digit or the end, so a closing quote glued to a letter (`"Fire"X`) fails
+# to parse rather than being guessed at. It does NOT by itself reject a
+# nested quotation -- `"The " Big"` has whitespace after the inner quote and
+# satisfies the lookahead -- which is what _STRAY_QUOTE_RE below is for. The
+# `\d` arm keeps a descriptor glued onto the closing quote (`"Album"12"`)
+# readable; this store does not write it but a sibling Shopify store does.
+# Curly quotes are admitted though the store writes none: they are the
+# commonest way a storefront's copy drifts.
 _TITLE_RE = re.compile(
     r'^(?:[^"“]*?)\s*["“]'
     r'(?P<album>[^"“”]+?)'
@@ -49,6 +50,15 @@ _TITLE_RE = re.compile(
 # release and its price is not any record's price, so the rule sits ahead of
 # both the parse and the gate.
 _BUNDLE_RE = re.compile(r"\bbundles?\b", re.IGNORECASE)
+# In this store's titles every quote left after the album is an inch marker,
+# and an inch marker always follows its digits (`12"`, `2x12"`, `7"`). A quote
+# anywhere else in the descriptor is the tail of a nested quotation the album
+# group stopped short of -- `Artist "The " Big" 12"` otherwise parses to an
+# album of `The` and a descriptor of `Big" 12"`, which the inch marker in that
+# descriptor then admits as a record. The closing lookahead alone does not
+# catch it, because the inner quote there IS followed by whitespace; it only
+# rejects the glued-letter spelling (`"Fire"X`). Found in review on PR #323.
+_STRAY_QUOTE_RE = re.compile(r'(?<![0-9])["“”]')
 # The shelf has already said the product is a record, so the descriptor gate
 # is negative: a record word admits outright, then a word naming another
 # medium or a merch item rejects, and anything else is admitted on the
@@ -146,7 +156,7 @@ class Crawler:
             # shirt's missing handle says nothing about whether this walk's
             # emptiness can be trusted.
             elif self._record(product) is not None:
-                if not self._has_identity(product):
+                if not self._has_identity(product) or self._unusable_in_stock(product):
                     identity_missing += 1
                 elif not self._has_readable_stock_flag(self._pressings(product)):
                     unreadable_stock += 1
@@ -324,6 +334,8 @@ class Crawler:
         # which is exactly what that guard's message already claims to cover.
         if not album or not descriptor:
             return "", ""
+        if _STRAY_QUOTE_RE.search(descriptor):
+            return "", ""
         return album, descriptor
 
     @staticmethod
@@ -366,6 +378,23 @@ class Crawler:
     @staticmethod
     def _has_identity(product: dict) -> bool:
         return bool((product.get("title") or "").strip()) and bool((product.get("handle") or "").strip())
+
+    @classmethod
+    def _unusable_in_stock(cls, product: dict) -> bool:
+        """Does an IN-STOCK variant get dropped for want of a usable title?
+
+        The variant title is part of the row's identity, so a variant without
+        one cannot be published -- but it is in stock, and its absence must
+        not read as a pressing that sold out. Left uncounted, a product whose
+        in-stock variant has a blank title and whose named sibling is sold out
+        yields nothing while every guard passes, and the snapshot is deleted.
+        Found in review on PR #323.
+        """
+        kept = [v for v, _ in cls._pressings(product)]
+        return any(
+            v.get("available") is True and not any(v is k for k in kept)
+            for v in product.get("variants") or [] if isinstance(v, dict)
+        )
 
     @staticmethod
     def _has_readable_stock_flag(pressings: list) -> bool:

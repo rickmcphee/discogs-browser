@@ -342,8 +342,14 @@ def test_title_parse(title, expected):
     'Amy Klein 12" "Fire" LP',
     # A quote inside the album is not a closing quote either, for the mirror
     # reason -- so a nested quotation is skipped rather than parsed into a
-    # severed album.
+    # severed album. The second spelling puts whitespace ahead of the inner
+    # quote, which satisfies the closing lookahead: only the stray-quote
+    # check on the descriptor rejects it. Found in review on PR #323.
     'Amy Klein "The "Big" One" 12"',
+    'Amy Klein "The " Big" 12"',
+    'Amy Klein "A " B " C" 12"',
+    # A closing quote glued to a letter -- what the lookahead does reject.
+    'Amy Klein "Fire"X 12"',
     'Amy Klein "" 12" Vinyl',
     # No quoted album at all -- the shape the store's bundles and its books
     # take.
@@ -970,6 +976,55 @@ async def test_a_catalog_with_no_readable_availability_raises(crawler, available
 @respx.mock
 async def test_one_unreadable_product_among_real_rows_does_not_raise(crawler):
     _mock_pages(_FIRE_PRODUCT, _one_pressing(_KISS_BIG_PRODUCT, available="false"))
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["artist"] for i in items] == ["Amy Klein"]
+
+
+@respx.mock
+async def test_an_in_stock_variant_with_no_usable_title_is_identity_drift(crawler):
+    # The blank-titled variant is in stock but cannot be published, and its
+    # named sibling is sold out -- so the product yields nothing while
+    # _has_readable_stock_flag still reports the sibling readable. Uncounted,
+    # this looks like a shelf that sold out and the snapshot is deleted.
+    # Found in review on PR #323.
+    _mock_pages({**_FIRE_PRODUCT, "variants": [
+        {"title": "   ", "price": "22.99", "available": True, "featured_image": None},
+        {"title": "Black", "price": "22.99", "available": False, "featured_image": None},
+    ]})
+    with pytest.raises(RuntimeError, match="identity-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_a_placeholder_beside_a_sold_out_sibling_is_identity_drift(crawler):
+    # Same hole via the other route a variant is dropped: the placeholder on a
+    # multi-variant product names no pressing, so an in-stock one is just as
+    # unpublishable as a blank title.
+    _mock_pages({**_OPEN_THE_GATES_PRODUCT, "variants": [
+        {**_OPEN_THE_GATES_PRODUCT["variants"][0], "title": "Default Title", "available": True},
+        {**_OPEN_THE_GATES_PRODUCT["variants"][1], "available": False},
+    ]})
+    with pytest.raises(RuntimeError, match="identity-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_a_sold_out_variant_with_no_usable_title_is_not_drift(crawler):
+    # Only an IN-STOCK dropped variant says a row went missing; a sold-out one
+    # would not have yielded anyway.
+    _mock_pages({**_FIRE_PRODUCT, "variants": [
+        {"title": "", "price": "22.99", "available": False, "featured_image": None},
+        {"title": "Black", "price": "22.99", "available": False, "featured_image": None},
+    ]})
+    assert [item async for item in crawler.crawl_catalog()] == []
+
+
+@respx.mock
+async def test_a_dropped_in_stock_variant_beside_real_rows_does_not_raise(crawler):
+    _mock_pages(_FIRE_PRODUCT, {**_KISS_BIG_PRODUCT, "variants": [
+        {"title": "  ", "price": "24.99", "available": True, "featured_image": None},
+        {"title": "Red", "price": "24.99", "available": False, "featured_image": None},
+    ]})
     items = [item async for item in crawler.crawl_catalog()]
     assert [i["artist"] for i in items] == ["Amy Klein"]
 

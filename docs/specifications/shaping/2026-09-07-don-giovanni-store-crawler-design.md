@@ -171,12 +171,20 @@ The parse is therefore:
 - **The closing quote's lookahead adds a rejection, not a choice.** With the
   exclusions above the closing quote is already deterministic — it is the
   next one — so requiring whitespace, a digit or the end after it only ever
-  refuses a parse. What it refuses is a nested quotation: `Artist "The "Big"
-  One" 12"` fails outright rather than yielding a severed album of `The` and
-  a descriptor of `Big" One" 12"`, which is the same skip-rather-than-guess
-  the rest of this crawler applies. The `\d` arm keeps a descriptor glued
-  onto the closing quote (`"Album"12"`) readable — this store does not write
-  it, but Earache's does.
+  refuses a parse. What it refuses is a closing quote glued to a letter
+  (`"Fire"X`), which fails outright rather than being guessed at. The `\d`
+  arm keeps a descriptor glued onto the closing quote (`"Album"12"`)
+  readable — this store does not write it, but Earache's does.
+- **A quote left in the descriptor is an inch marker, or it is drift.** The
+  lookahead above does *not* on its own reject a nested quotation: in
+  `Artist "The " Big" 12"` the inner quote is followed by whitespace, so it
+  satisfies the lookahead and the parse yields an album of `The` and a
+  descriptor of `Big" 12"` — which the inch marker inside that descriptor
+  then admits as a record. The first draft of this document claimed the
+  lookahead covered this; it does not. Every quote this store leaves after
+  the album is an inch marker, and an inch marker always follows its digits
+  (`12"`, `2x12"`, `7"`), so a quote in the descriptor that is not preceded
+  by a digit rejects the parse. Found in review on PR #323.
 - Curly quotes are admitted on both sides even though the store writes none.
   They cost one character each and are the commonest way a Shopify store's
   copy drifts.
@@ -338,6 +346,17 @@ Eight products are multi-variant the ordinary way (`Teenage Halloween
 "Teenage Halloween" 12"` carries Black, Electric Smoke and Light Blue, two
 of them sold out).
 
+**A variant dropped for want of a usable title is identity drift when it is
+in stock.** The colour is part of the row's identity, so a variant without
+one cannot be published — but if it is in stock, its absence must not read as
+a pressing that sold out. A product whose in-stock variant has a blank title
+and whose named sibling is sold out otherwise yields nothing while
+`_has_readable_stock_flag` still reports that sibling readable, every guard
+passes, and the snapshot is deleted. The same applies to the placeholder on a
+multi-variant product, which is the other route a variant gets dropped. Only
+an *in-stock* dropped variant counts: a sold-out one would not have yielded
+anyway. Found in review on PR #323.
+
 **Availability** comes from `variant.available`, which is a real boolean on
 every one of the 167 live variants (140 `true`, 27 `false`). Only the
 literal `True` admits: the string `"false"` is truthy, so a falsiness test
@@ -477,9 +496,11 @@ products records keeping distinct identities; sold-out variants skipped
 beside in-stock siblings; only the literal `True` admitting; a tagged
 pre-order yielding a row byte-identical to the one it would yield untagged,
 and the sold-out pre-order skipped; the `+`-merch combo rule and the
-record-plus-bonus-disc descriptor it must not swallow; the two guard holes
-found in review — a title-less product counted before the format gate, and
-the two sources satisfied by different products; price parsing
+record-plus-bonus-disc descriptor it must not swallow; the guard holes
+found in review — a title-less product counted before the format gate, the
+two sources satisfied by different products, and an in-stock variant dropped
+for want of a usable title beside a sold-out sibling; the nested-quotation
+shapes the closing lookahead does not catch; price parsing
 of every unusable shape; cover resolution and its fallbacks; URL
 construction; pagination; and every guard above, each in both the raising and
 the non-raising direction.
