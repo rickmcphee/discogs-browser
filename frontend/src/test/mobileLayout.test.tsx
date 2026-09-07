@@ -443,7 +443,7 @@ describe('mobile touch targets', () => {
 })
 
 describe('mobile StockBrowser', () => {
-  it('renders the recommendation reason, which on touch has no hover to reveal it', async () => {
+  it('renders the recommendation reason inline, which on touch has no hover to reveal it', async () => {
     getStock.mockResolvedValue({
       total: 1, row_total: 1, page: 1, per_page: 250,
       items: [{ ...stockItem, reason: 'Shares a label and era with three records you own.' }],
@@ -451,6 +451,23 @@ describe('mobile StockBrowser', () => {
     render(<StockBrowser />)
     await screen.findByText('The Great Satan')
     expect(screen.getByText('Shares a label and era with three records you own.')).toBeInTheDocument()
+  })
+
+  it('opens the reason dialog from a full-size info button beside the save button', async () => {
+    getStock.mockResolvedValue({
+      total: 1, row_total: 1, page: 1, per_page: 250,
+      items: [{ ...stockItem, reason: 'Shares a label and era with three records you own.', recommended: true }],
+    })
+    render(<StockBrowser />)
+    await screen.findByText('The Great Satan')
+    const info = screen.getByRole('button', { name: 'Recommendation details' })
+    expect(info).toHaveClass('h-11', 'w-11')
+    expect(info.nextElementSibling).toBe(screen.getByRole('button', { name: 'Save for later' }))
+
+    fireEvent.click(info)
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByRole('heading', { name: 'Recommended' })).toBeInTheDocument()
+    expect(dialog.textContent).toContain('Shares a label and era with three records you own.')
   })
 
   it('renders cards keeping the cost link and the save button as the row actions', async () => {

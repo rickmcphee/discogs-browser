@@ -379,6 +379,59 @@ def test_get_stock_items_saved_state_shared_across_comparison_rows(admin_conn):
         assert all(r["saved"] for r in rows_for_item)
 
 
+def test_get_stock_items_carries_the_judgment_verdict_beside_its_reason(admin_conn):
+    # The row's info button needs the verdict, not just the reason: an item
+    # judged against can still carry a note saying why (a CSV import writes
+    # one), and rendering that under recommendation framing says the opposite
+    # of what the judgment recorded.
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    admin_conn.commit()
+    yes_key = _make_amazon_item(admin_conn, artist="Artist Yes", title="Album Yes", url="https://x/yes")
+    no_key = _make_amazon_item(admin_conn, artist="Artist No", title="Album No", url="https://x/no")
+    unjudged_key = _make_amazon_item(admin_conn, artist="Artist None", title="Album None", url="https://x/none")
+    db.upsert_stock_judgments(admin_conn, alice["id"], [
+        {"item_key": yes_key, "recommended": True, "reason": "yes please"},
+        {"item_key": no_key, "recommended": False, "reason": "no thanks"},
+    ])
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        result = db.get_stock_items(conn, alice["id"])
+    by_key = {r["item_key"]: r for r in result["items"]}
+    assert (by_key[yes_key]["recommended"], by_key[yes_key]["reason"]) == (True, "yes please")
+    assert (by_key[no_key]["recommended"], by_key[no_key]["reason"]) == (False, "no thanks")
+    assert (by_key[unjudged_key]["recommended"], by_key[unjudged_key]["reason"]) == (None, None)
+
+
+def test_get_stock_items_comparison_rows_carry_owns_judgment(admin_conn):
+    alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
+    db.register_crawler(admin_conn, "Nuclear Blast", "/x.py", crawler_type="catalog")
+    db.register_crawler(admin_conn, "Amazon", "/y.py", crawler_type="release")
+    admin_conn.commit()
+    store_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Nuclear Blast'").fetchone()["id"]
+    amazon_id = admin_conn.execute("SELECT id FROM crawlers WHERE site_name = 'Amazon'").fetchone()["id"]
+    item_key = db.replace_stock_items(admin_conn, store_id, [
+        {"artist": "Artist A", "title": "Album A", "url": "https://x/1", "price": 10.0, "currency": "USD"},
+    ])[0]
+    db.upsert_stock_item_listing(admin_conn, item_key, amazon_id, "https://amazon/1", 12.5, None, "USD", "New")
+    admin_conn.commit()
+    db.upsert_stock_judgments(admin_conn, alice["id"], [
+        {"item_key": item_key, "recommended": True, "reason": "great fit"},
+    ])
+    admin_conn.commit()
+
+    with db.user_scope(alice["id"]) as conn:
+        grouped = db.get_stock_items(conn, alice["id"])
+        # The flat path builds its rows from a different SELECT, so it needs
+        # its own check that the verdict rides along.
+        flat = db.get_stock_items(conn, alice["id"], sort="price")
+
+    for result in (grouped, flat):
+        rows = [r for r in result["items"] if r["item_key"] == item_key]
+        assert len(rows) == 2
+        assert all((r["recommended"], r["reason"]) == (True, "great fit") for r in rows)
+
+
 def test_get_distinct_stock_artists_saved_only_filters(admin_conn):
     alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
     admin_conn.commit()

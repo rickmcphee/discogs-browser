@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, memo } from 'react'
+import { useState, useEffect, useCallback, useId, useRef, memo } from 'react'
 import { getStock, getStockArtists, saveStockItem, unsaveStockItem } from '../api/client'
 import type { StockItem, StockSortField, SortOrder, LibraryScope, Crawler } from '../api/types'
 import { navButtonClass, dismissButtonClass } from '../styles/buttons'
@@ -38,19 +38,22 @@ const NO_CRAWLERS: Crawler[] = []
 const NOOP_HIDDEN_CRAWLER_IDS_CHANGE = () => {}
 const STORE_FILTERS = ['all', 'recommended', 'saved', 'overlapped', 'collection', 'wantlist'] as const
 const LIBRARY_DEPENDENT_FILTERS: ReadonlySet<string> = new Set(['collection', 'wantlist', 'overlapped', 'recommended'])
+// Names the control, not its content: the justification itself is behind the
+// click now, so a hover that gave it away would be the tooltip all over again.
+const REASON_BUTTON_TITLE = 'Recommendation details'
 
 // The name shown for a row is what the source called the item when the
 // crawler reported one, since a release-crawler match is by artist/title and
 // can be a different pressing than the target. The target's own title moves
-// to the hover text so the substitution stays visible; a recommendation
-// reason keeps that slot when there is one. The thumbnail's alt text is not
-// substituted: the image is the target's own cover, not the listing's.
+// to the hover text so the substitution stays visible -- it has that slot to
+// itself now that a judgment's reason is read from the info popup rather than
+// a tooltip. The thumbnail's alt text is not substituted: the image is the
+// target's own cover, not the listing's.
 function displayTitle(item: StockItem): string {
   return item.listing_title ?? item.title
 }
 
 function titleTooltip(item: StockItem): string | undefined {
-  if (item.reason) return item.reason
   if (item.listing_title && item.listing_title !== item.title) return item.title
   return undefined
 }
@@ -61,11 +64,101 @@ function libraryScopeFor(value: string): LibraryScope | undefined {
   return value === 'collection' || value === 'wantlist' ? value : undefined
 }
 
+function InfoIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <circle cx="8" cy="8" r="6.25" />
+      <path d="M8 7.25v4" strokeLinecap="round" />
+      <path d="M8 4.75h.01" strokeLinecap="round" />
+    </svg>
+  )
+}
+
 function BookmarkIcon({ filled }: { filled: boolean }) {
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" fill={filled ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.5">
       <path d="M4 2h8a1 1 0 0 1 1 1v11l-5-3-5 3V3a1 1 0 0 1 1-1Z" strokeLinejoin="round" />
     </svg>
+  )
+}
+
+// A judgment's justification, on demand. It replaces the native `title`
+// tooltip the reason used to ride in, which announced nothing on the row,
+// could not be reached on touch at all, and contended with the listing-title
+// tooltip for the one slot both wanted.
+function ReasonDialog({ item, onClose }: { item: StockItem; onClose: () => void }) {
+  const panelRef = useRef<HTMLDivElement>(null)
+  const headingId = useId()
+
+  // `aria-modal` promises interaction is confined to the dialog, so Tab has to
+  // actually be confined -- same obligation, and same shape of answer, as
+  // Sheet's trap. Focus goes back to the info button that opened this on close.
+  useEffect(() => {
+    const restore = document.activeElement as HTMLElement | null
+    panelRef.current?.focus()
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        onClose()
+        return
+      }
+      if (e.key !== 'Tab') return
+      const panel = panelRef.current
+      if (!panel) return
+      const focusable = Array.from(panel.querySelectorAll<HTMLElement>('button:not([disabled]), a[href]'))
+      const first = focusable[0] ?? panel
+      const last = focusable[focusable.length - 1] ?? panel
+      const active = document.activeElement
+      if (!panel.contains(active)) {
+        e.preventDefault()
+        first.focus()
+      } else if (e.shiftKey && (active === first || active === panel)) {
+        e.preventDefault()
+        last.focus()
+      } else if (!e.shiftKey && active === last) {
+        e.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('keydown', onKeyDown)
+      restore?.focus?.()
+    }
+  }, [onClose])
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div
+        ref={panelRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={headingId}
+        className="relative z-10 w-full max-w-sm rounded-xl border border-gray-700 bg-gray-900 p-6 shadow-xl focus:outline-none"
+      >
+        {/* A reason only exists on a judged item, so the polarity is never
+            unknown here -- and it has to be said, since an item can be judged
+            against and still carry a note explaining why. */}
+        <h2 id={headingId} className="text-white font-semibold text-lg">
+          {item.recommended ? 'Recommended' : 'Not recommended'}
+        </h2>
+        <p className="mt-1 text-sm text-gray-500">{item.artist} — {displayTitle(item)}</p>
+        <p className="mt-4 text-sm text-gray-200">{item.reason}</p>
+        <button onClick={onClose} className={`mt-5 w-full px-4 py-3 text-sm ${dismissButtonClass()}`}>
+          Close
+        </button>
+      </div>
+      {/* Pointer-only dismiss, hidden from assistive tech and untabbable, so
+          the trap above has nothing to reach around -- Escape and the Close
+          button are the keyboard routes out. */}
+      <button
+        type="button"
+        aria-hidden="true"
+        tabIndex={-1}
+        onClick={onClose}
+        className="absolute inset-0 z-0 bg-black/60"
+      />
+    </div>
   )
 }
 
@@ -114,6 +207,10 @@ function StockBrowser({
   // and via the disabled button), so at most one request per item_key is ever
   // outstanding and there is nothing left to reconcile out of order.
   const [pendingSaves, setPendingSaves] = useState<Set<string>>(new Set())
+  // The item whose justification the reason dialog is showing, or null when it
+  // is closed. Held as the item rather than a key so the dialog keeps its
+  // content through a refetch that drops the row.
+  const [reasonItem, setReasonItem] = useState<StockItem | null>(null)
   const PER_PAGE = 250
   const tableScrollRef = useRef<HTMLDivElement>(null)
   // A collection sync only moves rows under a filter that reads
@@ -258,6 +355,8 @@ function StockBrowser({
       setOrder('asc')
     }
   }
+
+  const closeReason = useCallback(() => setReasonItem(null), [])
 
   function toggleSort(field: StockSortField) {
     if (sort === field) {
@@ -475,16 +574,27 @@ function StockBrowser({
                       ) : (
                         <div className="w-full aspect-square bg-gray-800 rounded" />
                       )}
+                      <div className="absolute top-1 right-1 flex items-center gap-1">
+                        {item.reason && (
+                          <button
+                            onClick={(e) => { e.preventDefault(); setReasonItem(item) }}
+                            title={REASON_BUTTON_TITLE}
+                            className="flex h-11 w-11 items-center justify-center rounded-full bg-gray-950/70 text-white hover:bg-gray-950 md:h-auto md:w-auto md:p-1"
+                          >
+                            <InfoIcon />
+                          </button>
+                        )}
                         <button
                           onClick={(e) => { e.preventDefault(); toggleSaved(item) }}
                           title={item.saved ? 'Remove from saved' : 'Save for later'}
                           disabled={pendingSaves.has(item.item_key)}
-                          className="absolute top-1 right-1 flex h-11 w-11 items-center justify-center rounded-full bg-gray-950/70 text-white hover:bg-gray-950 disabled:opacity-40 md:h-auto md:w-auto md:p-1"
+                          className="flex h-11 w-11 items-center justify-center rounded-full bg-gray-950/70 text-white hover:bg-gray-950 disabled:opacity-40 md:h-auto md:w-auto md:p-1"
                         >
                           <BookmarkIcon filled={item.saved} />
                         </button>
+                      </div>
                     </div>
-                    <div className="mt-1.5 text-sm text-gray-200 truncate group-hover:text-white" title={item.reason ?? undefined}>{item.artist}</div>
+                    <div className="mt-1.5 text-sm text-gray-200 truncate group-hover:text-white">{item.artist}</div>
                     <div className="text-xs text-gray-400 truncate" title={titleTooltip(item)}>{displayTitle(item)}</div>
                   </a>
                 ))}
@@ -518,7 +628,7 @@ function StockBrowser({
                       <div className="w-14 h-14 shrink-0 bg-gray-800 rounded" />
                     )}
                     <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm text-gray-200" title={item.reason ?? undefined}>{item.artist}</div>
+                      <div className="truncate text-sm text-gray-200">{item.artist}</div>
                       <div className="truncate text-sm text-gray-300" title={titleTooltip(item)}>{displayTitle(item)}</div>
                       {meta && <div className="truncate text-xs text-gray-500">{meta}</div>}
                       {item.reason && (
@@ -529,6 +639,15 @@ function StockBrowser({
                       <a href={item.url} target="_blank" rel="noreferrer" className="px-2 py-3 text-sm font-medium text-green-400 hover:text-green-300">
                         {item.price != null ? formatPrice(item.price, item.currency) : 'View'}
                       </a>
+                        {item.reason && (
+                          <button
+                            onClick={() => setReasonItem(item)}
+                            title={REASON_BUTTON_TITLE}
+                            className={`w-11 h-11 flex items-center justify-center ${dismissButtonClass()}`}
+                          >
+                            <InfoIcon />
+                          </button>
+                        )}
                         <button
                           onClick={() => toggleSaved(item)}
                           title={item.saved ? 'Remove from saved' : 'Save for later'}
@@ -584,7 +703,7 @@ function StockBrowser({
                     Source {sort === 'source' ? (order === 'asc' ? '↑' : '↓') : ''}
                   </button>
                 </th>
-                <th className="w-8 px-3 py-2"></th>
+                <th className="w-20 px-3 py-2"></th>
               </tr>
             </thead>
             <tbody>
@@ -604,7 +723,7 @@ function StockBrowser({
                       <div className="w-10 h-10 bg-gray-800 rounded" />
                     )}
                   </td>
-                  <td className="px-3 py-2 text-right text-gray-200" title={item.reason ?? undefined}>{item.artist}</td>
+                  <td className="px-3 py-2 text-right text-gray-200">{item.artist}</td>
                   <td className="px-3 py-2 text-left text-gray-300" title={titleTooltip(item)}>{displayTitle(item)}</td>
                   <td className="px-3 py-2 text-gray-400">{item.format ?? '—'}</td>
                   {showPrice && (
@@ -617,14 +736,25 @@ function StockBrowser({
                   </td>
                   <td className="px-3 py-2 text-gray-400">{item.source}</td>
                     <td className="px-3 py-2">
-                      <button
-                        onClick={() => toggleSaved(item)}
-                        title={item.saved ? 'Remove from saved' : 'Save for later'}
-                        disabled={pendingSaves.has(item.item_key)}
-                        className={`p-1 disabled:opacity-40 ${dismissButtonClass()}`}
-                      >
-                        <BookmarkIcon filled={item.saved} />
-                      </button>
+                      <div className="flex items-center justify-end gap-1">
+                        {item.reason && (
+                          <button
+                            onClick={() => setReasonItem(item)}
+                            title={REASON_BUTTON_TITLE}
+                            className={`p-1 ${dismissButtonClass()}`}
+                          >
+                            <InfoIcon />
+                          </button>
+                        )}
+                        <button
+                          onClick={() => toggleSaved(item)}
+                          title={item.saved ? 'Remove from saved' : 'Save for later'}
+                          disabled={pendingSaves.has(item.item_key)}
+                          className={`p-1 disabled:opacity-40 ${dismissButtonClass()}`}
+                        >
+                          <BookmarkIcon filled={item.saved} />
+                        </button>
+                      </div>
                     </td>
                 </tr>
               ))}
@@ -642,6 +772,8 @@ function StockBrowser({
           </div>
         )}
       </div>
+
+      {reasonItem && <ReasonDialog item={reasonItem} onClose={closeReason} />}
     </div>
   )
 }

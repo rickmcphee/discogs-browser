@@ -330,31 +330,98 @@ describe('StockBrowser', () => {
     expect(filterValue()).toBe('overlapped')
   })
 
-  it('shows a recommendation reason as a tooltip on the artist and title cells', async () => {
-    getStock.mockResolvedValue({
+  // The justification is behind the info button now -- see
+  // docs/specifications/shaping/2026-09-07-recommendation-info-popup-design.md.
+  // A hover carrying it would be the tooltip these tests used to assert.
+  function judged(recommended: boolean) {
+    return {
       total: 1, row_total: 1, page: 1, per_page: 250,
-      items: [{ ...items[0], reason: 'Similar to your hardcore collection' }],
-    })
+      items: [{ ...items[0], reason: 'Similar to your hardcore collection', recommended }],
+    }
+  }
+
+  it('leaves the artist and title cells without a reason tooltip', async () => {
+    getStock.mockResolvedValue(judged(true))
     render(<StockBrowser recommendedAvailable />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     const artistCell = screen.getAllByText('Rob Zombie').map((el) => el.closest('td')).find((td) => td)
-    expect(artistCell?.getAttribute('title')).toBe('Similar to your hardcore collection')
-    expect(screen.getByText('The Great Satan — Ghostly Black Vinyl').getAttribute('title')).toBe('Similar to your hardcore collection')
+    expect(artistCell?.getAttribute('title')).toBeNull()
+    expect(screen.getByText('The Great Satan — Ghostly Black Vinyl').getAttribute('title')).toBeNull()
   })
 
-  it('shows a recommendation reason as a tooltip on the tile-view artist and title text', async () => {
-    getStock.mockResolvedValue({
-      total: 1, row_total: 1, page: 1, per_page: 250,
-      items: [{ ...items[0], reason: 'Similar to your hardcore collection' }],
-    })
+  it('leaves the tile-view artist and title text without a reason tooltip', async () => {
+    getStock.mockResolvedValue(judged(true))
     render(<StockBrowser recommendedAvailable />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     fireEvent.click(screen.getByTitle('Tile view'))
     await waitFor(() => {
       const artistText = screen.getAllByText('Rob Zombie').map((el) => (el.tagName === 'DIV' ? el : null)).find((el) => el)
-      expect(artistText?.getAttribute('title')).toBe('Similar to your hardcore collection')
-      expect(screen.getByText('The Great Satan — Ghostly Black Vinyl').getAttribute('title')).toBe('Similar to your hardcore collection')
+      expect(artistText?.getAttribute('title')).toBeNull()
+      expect(screen.getByText('The Great Satan — Ghostly Black Vinyl').getAttribute('title')).toBeNull()
     })
+  })
+
+  it('shows no info button on an item carrying no reason', async () => {
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    expect(screen.queryByTitle('Recommendation details')).toBeNull()
+  })
+
+  it('opens the reason in a dialog from the info button', async () => {
+    getStock.mockResolvedValue(judged(true))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    expect(screen.queryByRole('dialog')).toBeNull()
+
+    fireEvent.click(screen.getByTitle('Recommendation details'))
+    const dialog = screen.getByRole('dialog')
+    expect(dialog.textContent).toContain('Similar to your hardcore collection')
+    expect(dialog.textContent).toContain('Recommended')
+  })
+
+  it('heads a rejected item\'s dialog with the negative verdict', async () => {
+    getStock.mockResolvedValue(judged(false))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByTitle('Recommendation details'))
+    expect(screen.getByRole('heading', { name: 'Not recommended' })).toBeTruthy()
+  })
+
+  it('closes the reason dialog from its Close button and from Escape', async () => {
+    getStock.mockResolvedValue(judged(true))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+
+    fireEvent.click(screen.getByTitle('Recommendation details'))
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+
+    fireEvent.click(screen.getByTitle('Recommendation details'))
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('puts the info button immediately left of the save button in the row', async () => {
+    getStock.mockResolvedValue(judged(true))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    const info = screen.getByTitle('Recommendation details')
+    const save = screen.getByTitle('Save for later')
+    expect(info.parentElement).toBe(save.parentElement)
+    expect(info.nextElementSibling).toBe(save)
+  })
+
+  it('keeps the info button beside the save button in tile view', async () => {
+    getStock.mockResolvedValue(judged(true))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByTitle('Tile view'))
+    await waitFor(() => expect(screen.getByTitle('Recommendation details')).toBeTruthy())
+    const info = screen.getByTitle('Recommendation details')
+    expect(info.nextElementSibling).toBe(screen.getByTitle('Save for later'))
+
+    fireEvent.click(info)
+    expect(screen.getByRole('dialog').textContent).toContain('Similar to your hardcore collection')
   })
 
   it('passes hiddenCrawlerIds through to getStock', async () => {
