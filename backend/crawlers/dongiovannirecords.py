@@ -150,15 +150,12 @@ class Crawler:
             # the other still working, and gated, a shelf that legitimately
             # filled up with CDs would raise source drift.
             has_artist = bool(self._artist(product))
-            # [0] is the album, which is exactly what _record gates a row on
-            # -- so this tally cannot raise on a catalog the crawler could in
-            # fact read.
-            has_album = bool(self._parse_title(product.get("title"))[0])
+            album, descriptor = self._parse_title(product.get("title"))
             if has_artist:
                 artist_ok += 1
-            if has_album:
+            if album:
                 parsed_ok += 1
-            if has_artist and has_album:
+            if has_artist and album:
                 # The two tallies above are independent on purpose, so that
                 # one source going dark cannot hide behind the other still
                 # working. But independence alone lets them be satisfied by
@@ -169,39 +166,42 @@ class Crawler:
                 # format gate, so a shelf that legitimately filled up with
                 # CDs still satisfies it. Found in review on PR #323.
                 sources_ok += 1
+
             title_text = " ".join((product.get("title") or "").split())
             if not title_text:
-                # A title-less product cannot be classified at all -- _record
-                # reads the title, so it can never reach the checks below,
-                # and it might have been a record. Counted here rather than
-                # inside the gate, or a partial loss of `title` would leave
-                # an empty walk looking like a shelf that merely sold out.
-                # Found in review on PR #323.
+                # A title-less product cannot be classified at all -- the
+                # parse reads the title, so nothing below can say anything
+                # about it, and it might have been a record. Counted, or a
+                # partial loss of `title` would leave an empty walk looking
+                # like a shelf that merely sold out.
                 identity_missing += 1
-            elif not has_artist or (not has_album and not self._bundle_shaped(title_text)):
-                # The product has a title, but one of the two sources failed
-                # on *it*, so this crawler never classified it as record-or-
-                # not. That is different from a CD or a bundle, which are
-                # classified and then deliberately skipped -- and different
-                # from the catalog-wide tallies above, which only notice a
-                # source vanishing from EVERY product. One well-formed
-                # sold-out record keeps those non-zero while an unreadable
-                # in-stock product beside it goes uncounted, and the walk
-                # completes empty. Found in review on PR #323.
+            elif (album and not self._is_vinyl(descriptor)) or (
+                    not album and self._bundle_shaped(title_text)):
+                # Read and deliberately skipped: a CD, a shirt, a bundle.
+                # None of them could yield a record whatever its `vendor`
+                # says, so a source failing on one is evidence of nothing --
+                # counted, a blank-vendored CD would raise on a shelf that
+                # had merely sold out, keeping stale rows alive. This test
+                # comes FIRST for that reason. Found in review on PR #323.
+                pass
+            elif not has_artist or not album:
+                # Never read at all: one of the two sources failed on this
+                # product, so the crawler cannot say whether it was a record.
+                # The catalog-wide tallies above only notice a source
+                # vanishing from EVERY product; one well-formed sold-out
+                # record keeps them non-zero while this one goes uncounted.
                 unclassifiable += 1
-            # These are nested inside the gate, because only a product that
-            # reads as a record could have yielded a row: a mis-shelved
-            # shirt's missing handle says nothing about whether this walk's
-            # emptiness can be trusted.
-            elif self._record(product) is not None:
-                # Kept apart from identity_missing so the guard below can name
-                # which identity failed: the product's, or a variant's. They
-                # are different drifts with different fixes, and one message
-                # covering both told an operator neither. Found in review on
-                # PR #323.
+            else:
+                # A record: both sources read, and the format gate admits it.
+                # These tallies are nested here because only such a product
+                # could have yielded a row -- a mis-shelved shirt's missing
+                # handle says nothing about whether this walk's emptiness can
+                # be trusted.
                 if not self._has_identity(product):
                     identity_missing += 1
                 elif self._unusable_dropped_variant(product):
+                    # Kept apart from identity_missing so the guard can name
+                    # which identity failed: the product's, or a variant's.
                     variant_identity_missing += 1
                 elif not self._has_readable_stock_flag(product):
                     unreadable_stock += 1
@@ -371,6 +371,13 @@ class Crawler:
         (`Lee Bains + The Glory Fires Youth Detention 12"`) would be too.
         Found in review on PR #323, over two passes.
         """
+        # The precondition the docstring names is enforced, not assumed: a
+        # title carrying any quote is not one of these shapes, and a record
+        # that lost only its format (`Artist "Pins + Needles"`) would
+        # otherwise satisfy the second heuristic and be waved through as a
+        # known bundle. Found in review on PR #323.
+        if any(q in title for q in _QUOTE_CHARS):
+            return False
         return bool(_TERMINAL_BUNDLE_RE.search(title)) or (
             "+" in title and bool(_MERCH_RE.search(title)))
 

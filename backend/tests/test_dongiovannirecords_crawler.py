@@ -517,6 +517,13 @@ async def test_an_unreadable_product_among_real_rows_does_not_raise(crawler):
     ('Amy Klein Bundle of Joy 12"', False),
     ("Bundle of Joy", False),
     ("Bad Moves Vinyl Bundles", True),
+    # The docstring's precondition is enforced, not assumed: these shapes are
+    # about titles written WITHOUT a quoted album, so any quote disqualifies.
+    # A record that lost only its format would otherwise satisfy the second
+    # heuristic. Found in review on PR #323.
+    ('Artist "Pins + Needles"', False),
+    ('Artist "Album Bundle"', False),
+    ('Artist "Untenable" LP + Shirt', False),
 ])
 def test_the_unquoted_bundle_shapes_are_recognised(title, shaped):
     assert Crawler._bundle_shaped(title) is shaped
@@ -578,6 +585,37 @@ async def test_a_sole_blank_titled_variant_that_is_sold_out_is_readable(crawler)
 async def test_a_product_with_no_variants_at_all_is_still_unreadable(crawler):
     _mock_pages({**_FIRE_PRODUCT, "variants": []})
     with pytest.raises(RuntimeError, match="stock-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+@pytest.mark.parametrize("product", [_CD_PRODUCT, _SHIRT_PRODUCT])
+async def test_a_blank_vendored_non_record_is_not_classification_drift(crawler, product):
+    # Its descriptor already says it is not a record, so the missing vendor
+    # is evidence of nothing -- counted, it would raise on a shelf that had
+    # merely sold out and keep stale rows alive. Found in review on PR #323.
+    _mock_pages(_one_pressing(_FIRE_PRODUCT, available=False),
+                {**product, "vendor": ""})
+    assert [item async for item in crawler.crawl_catalog()] == []
+
+
+@respx.mock
+async def test_a_blank_vendored_record_is_still_classification_drift(crawler):
+    # The exemption is for products the gate rejects, not for every missing
+    # vendor: this one's descriptor reads as a record.
+    _mock_pages(_one_pressing(_FIRE_PRODUCT, available=False),
+                {**_KISS_BIG_PRODUCT, "vendor": ""})
+    with pytest.raises(RuntimeError, match="classification drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_a_quoted_title_that_lost_only_its_format_is_drift(crawler):
+    # `Artist "Pins + Needles"` carries a `+` and a merch word, so it matched
+    # the unquoted-bundle heuristic before the precondition was enforced.
+    _mock_pages(_one_pressing(_FIRE_PRODUCT, available=False),
+                {**_KISS_BIG_PRODUCT, "title": 'Amy Klein "Pins + Needles"'})
+    with pytest.raises(RuntimeError, match="classification drift"):
         [item async for item in crawler.crawl_catalog()]
 
 

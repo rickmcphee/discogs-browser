@@ -382,6 +382,14 @@ read at all**: a CD is classified by the format gate, and neither it nor a
 bundle counts, so a legitimately sold-out shelf full of CDs still returns
 empty without raising. Found in review on PR #323.
 
+The classified test runs **first**, ahead of the source checks, and that order
+is load-bearing. A product whose descriptor already says "not a record" could
+not have yielded one whatever its `vendor` says, so a source failing on it is
+evidence of nothing — checked afterwards, a blank-vendored CD would raise on a
+shelf that had merely sold out, keeping stale rows alive. The exemption is for
+products the gate rejects, not for every missing vendor: a blank-vendored
+product whose descriptor reads as a record still counts.
+
 The bundle exemption has to recognise a shape the gate never sees. The store's
 combos carry no quoted album — `Bad Moves LP + Shirt`,
 `Bad Moves Shirt + All Vinyl` — so they do not parse, never reach the gate's
@@ -398,6 +406,12 @@ needs **both** halves, or a record title that lost its quotes but kept a `+`
 in its artist credit (`Lee Bains + The Glory Fires Youth Detention 12"`)
 would be too. This is exemption-only and never rejects a row; the gate's own
 bundle rejection stays broad.
+
+The helper also *enforces* its own precondition rather than assuming it. It
+describes bundles written without a quoted album, so any quote in the title
+disqualifies — otherwise a record that lost only its trailing format
+(`Artist "Pins + Needles"`, which carries both a `+` and a merch word) would
+satisfy the second heuristic and be waved through as a known shape.
 
 **A variant dropped for want of a usable title is identity drift unless it is
 provably sold out.** The colour is part of the row's identity, so a variant without
