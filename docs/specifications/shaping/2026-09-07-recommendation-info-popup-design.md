@@ -218,7 +218,12 @@ icon.**
   reason is read, and leaves it alone. The popover also closes itself when it
   finds its anchor detached: a view-mode switch mounts it afresh against the
   icon from the tree it replaced, a commit after the parent's own check could
-  have seen that.
+  have seen that. And when it finds the anchor off the screen entirely, which
+  a refetch can do without any scroll at all — a sync inserting rows above
+  this one in the current sort moves it, and the placement re-runs on the new
+  item. That check claims only "on screen", which geometry answers; whether
+  the row is *visible* is the question a scroll dismisses rather than
+  computes.
 - **Dismissal listens for touch as well as mouse.** A tap emits `mousedown`
   only as a compatibility event, and a touch scroll emits none at all, so a
   mouse-only listener would leave the popover open on a phone. Both events,
@@ -290,6 +295,9 @@ icon.**
 - A refetch that drops the row closes it *and* leaves it closed when the row
   returns — absence while the list is empty proves nothing on its own.
 - A scroll of the list closes it; a scroll inside the panel does not.
+- A refetch that moves its row off the screen closes it, with no scroll
+  involved — the fetches return fresh objects, as the real one does, since
+  that is what re-runs the placement.
 - Closing a focused panel by clicking its icon returns focus to that icon,
   not just closing by Escape.
 - It does not name the record, on a comparison row carrying a

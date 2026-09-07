@@ -625,6 +625,28 @@ describe('StockBrowser', () => {
     expect(info.getAttribute('aria-expanded')).toBe('false')
   })
 
+  it('closes when a refetch moves its row off the screen without a scroll', async () => {
+    // A sync that inserts rows above this one in the current sort moves it
+    // without any scroll event. Following it would clamp the panel to an edge
+    // beside rows it has nothing to do with.
+    // Fresh objects per fetch, as a real response gives: the placement re-runs
+    // on the new item, which is what carries the moved row into it.
+    getStock.mockImplementation(async () => judged(true))
+    const { rerender } = render(<StockBrowser recommendedAvailable syncGeneration={1} />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    const info = screen.getByTitle('Recommendation details')
+    fireEvent.click(info)
+    expect(screen.getByRole("note")).toBeTruthy()
+
+    info.getBoundingClientRect = () => ({
+      top: 2000, bottom: 2044, left: 1200, right: 1244, width: 44, height: 44,
+      x: 1200, y: 2000, toJSON: () => ({}),
+    }) as unknown as DOMRect
+    rerender(<StockBrowser recommendedAvailable syncGeneration={2} />)
+    await waitFor(() => expect(info.getAttribute('aria-expanded')).toBe('false'))
+    expect(screen.queryByRole("note")).toBeNull()
+  })
+
   it('stays open while the reason itself is scrolled', async () => {
     // The panel's own overflow is how a long reason is read.
     getStock.mockResolvedValue(judged(true))

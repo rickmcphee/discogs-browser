@@ -155,6 +155,18 @@ function ReasonPopover({ item, anchor, onClose }: { item: StockItem; anchor: HTM
         insets: safeAreaInsets(),
       }
       const rect = anchor.getBoundingClientRect()
+      // A refetch can move the row without any scroll -- a sync that inserts
+      // rows above it in the current sort -- and this effect re-runs on the
+      // new item. Placing against an anchor that has left the screen would
+      // clamp the panel to an edge beside rows it has nothing to do with. The
+      // claim here is only "on screen at all", which geometry can answer;
+      // whether it is *visible* is what a scroll now dismisses rather than
+      // computes. Strictly outside, so the all-zero rect an unlaid-out
+      // element reports is not read as gone.
+      if (rect.bottom < 0 || rect.top > viewport.height || rect.right < 0 || rect.left > viewport.width) {
+        onClose()
+        return
+      }
       // The height the panel wants, not the height it currently has: it is
       // given a maxHeight below, and measuring that back would find room it
       // does not have, lengthen the panel again, and jitter on every scroll.
