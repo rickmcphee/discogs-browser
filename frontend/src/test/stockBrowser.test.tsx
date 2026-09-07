@@ -544,6 +544,53 @@ describe('StockBrowser', () => {
     expect(popover.textContent).not.toContain('Standard Black LP')
   })
 
+  it('closes when focus lands outside it, which a keyboard reaches before any press', async () => {
+    // Enter on a button emits `click` with no `mousedown`, so activating one
+    // of App's nav tabs by keyboard never reached the press-outside listener.
+    // App parks the Store view under `hidden` rather than unmounting it, so a
+    // popover that survived that would go on measuring an anchor with no
+    // layout box and write those zeros back as its own size.
+    getStock.mockResolvedValue(judged(true))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    const icon = screen.getByTitle('Recommendation details')
+    fireEvent.click(icon)
+    expect(icon.getAttribute('aria-expanded')).toBe('true')
+
+    const elsewhere = document.createElement('button')
+    document.body.appendChild(elsewhere)
+    fireEvent.focusIn(elsewhere)
+
+    expect(icon.getAttribute('aria-expanded')).toBe('false')
+    elsewhere.remove()
+  })
+
+  it('stays open when focus moves into the panel, which is how a long reason is scrolled', async () => {
+    getStock.mockResolvedValue(judged(true))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    const icon = screen.getByTitle('Recommendation details')
+    fireEvent.click(icon)
+
+    fireEvent.focusIn(screen.getByRole('note'))
+    expect(icon.getAttribute('aria-expanded')).toBe('true')
+  })
+
+  it('breaks a reason with no spaces in it rather than letting it run past the panel', async () => {
+    // The CSV import strips a reason and stores it, with no bound on length
+    // or on how long a single token may be.
+    getStock.mockResolvedValue({
+      total: 1, row_total: 1, page: 1, per_page: 250,
+      items: [{ ...items[0], reason: `https://example.com/${'a'.repeat(300)}`, recommended: false }],
+    })
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByTitle('Recommendation details'))
+
+    const reason = screen.getByRole('note').querySelector('p:last-of-type')
+    expect(reason?.className).toContain('break-words')
+  })
+
   it('re-places the popover from its current size when the window resizes', async () => {
     // The panel's own width and height are inputs to the placement, and both
     // they and the viewport can change while it is open -- a phone turned on

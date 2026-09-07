@@ -237,10 +237,18 @@ icon.**
   item. That check claims only "on screen", which geometry answers; whether
   the row is *visible* is the question a scroll dismisses rather than
   computes.
-- **Dismissal listens for touch as well as mouse.** A tap emits `mousedown`
-  only as a compatibility event, and a touch scroll emits none at all, so a
-  mouse-only listener would leave the popover open on a phone. Both events,
-  matching `StockFilter`.
+- **Dismissal listens for touch as well as mouse, and for focus as well as
+  either.** A tap emits `mousedown` only as a compatibility event, and a touch
+  scroll emits none at all, so a mouse-only listener would leave the popover
+  open on a phone. Both events, matching `StockFilter`. A keyboard presses
+  nothing at all: Enter on a button emits `click` with no `mousedown` before
+  it, so activating one of `App`'s nav tabs that way left the popover open —
+  and `App` parks the whole Store view under `hidden` rather than unmounting
+  it, so what survived went on measuring an anchor with no layout box and
+  wrote those zeros back as its own size. Focus has to reach a control before
+  a keyboard can activate it, so `focusin` catches that first, with the same
+  two exemptions the pointer listener has: into the panel is how a long reason
+  is scrolled, and onto the icon is the toggle's own business.
 - **It names the record only where the row does not.** The modal named it
   unconditionally, to keep a comparison row's substituted `listing_title`
   from crediting the judgment to a pressing the judge never saw. Being
@@ -290,7 +298,8 @@ icon.**
   that click fired too, since the outside-dismiss listener sees it first and
   has to let it through.
 - Escape closes it, and so does a press outside it; a press inside it does
-  not.
+  not. Focus landing outside closes it too, which is what a keyboard reaches
+  a nav tab with; focus landing inside the panel does not.
 - A click on another row's icon moves the popover rather than opening a
   second one.
 - The open icon reports `aria-expanded="true"` and points both
@@ -324,7 +333,10 @@ icon.**
   target on a comparison row whose `listing_title` names another pressing.
 - Resizing the window re-places it from the panel's current size and the new
   viewport, rather than from what either measured when it opened.
-- A long reason scrolls inside it rather than growing it.
+- A long reason scrolls inside it rather than growing it, and one with no
+  spaces in it — a URL, an identifier — breaks rather than running past the
+  panel the placement has just fitted to the safe screen. The CSV import
+  bounds neither its length nor its tokens.
 - Neither tile button is inside the listing link, and clicking one never
   reaches it.
 - The info button sits before the save button in the row's actions.

@@ -250,13 +250,30 @@ function ReasonPopover({ item, anchor, onClose }: { item: StockItem; anchor: HTM
       if (panelRef.current?.contains(target) || anchor.contains(target)) return
       onClose()
     }
+    // Focus landing outside as well, because a keyboard never presses: Enter
+    // on a button emits `click` with no `mousedown` before it, so activating
+    // one of App's nav tabs that way left this open. That matters more than
+    // it sounds -- App parks the whole Store view under `hidden` rather than
+    // unmounting it, so a popover that survives the switch goes on measuring
+    // an anchor with no layout box and writes those zeros back as its own
+    // size. Focus has to reach the tab before it can be activated, so this
+    // catches it first. The same exemptions: focus moving into the panel is
+    // how a long reason is scrolled, and moving to the icon is the toggle's
+    // own business.
+    function onFocusIn(e: FocusEvent) {
+      const target = e.target as Node
+      if (panelRef.current?.contains(target) || anchor.contains(target)) return
+      onClose()
+    }
     document.addEventListener('keydown', onKeyDown)
     document.addEventListener('mousedown', onPointerDown)
     document.addEventListener('touchstart', onPointerDown)
+    document.addEventListener('focusin', onFocusIn)
     return () => {
       document.removeEventListener('keydown', onKeyDown)
       document.removeEventListener('mousedown', onPointerDown)
       document.removeEventListener('touchstart', onPointerDown)
+      document.removeEventListener('focusin', onFocusIn)
     }
   }, [anchor, onClose])
 
@@ -305,9 +322,13 @@ function ReasonPopover({ item, anchor, onClose }: { item: StockItem; anchor: HTM
           the gray-500 of the app's other secondary text -- on gray-900 that
           is ~3.7:1, and this is the line that says which record. */}
       {namesAnotherPressing(item) && (
-        <p className="text-xs text-gray-400">{item.artist} — {item.title}</p>
+        <p className="text-xs text-gray-400 break-words">{item.artist} — {item.title}</p>
       )}
-      <p className="mt-1 text-sm text-gray-200">{item.reason}</p>
+      {/* break-words because a reason is arbitrary imported text -- the CSV
+          import strips it and stores it, with no bound on length or on how
+          long a single token may be. One unbroken URL would otherwise run
+          past a panel the placement has just fitted to the safe screen. */}
+      <p className="mt-1 text-sm text-gray-200 break-words">{item.reason}</p>
     </div>
   )
 }
