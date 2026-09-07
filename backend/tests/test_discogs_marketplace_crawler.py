@@ -96,7 +96,9 @@ class _FakePage:
         self.wait_until = None
         self.urls = []
         # What goto() answers with; None stands in for Playwright's
-        # same-document case, which the crawler has to tolerate anyway.
+        # same-document case, which the crawler has to tolerate anyway. A
+        # list is consumed one entry per goto() (last sticking) like the
+        # fixtures, so a test can make one of several reads unclean.
         self.response = None
 
     async def goto(self, url, wait_until=None, timeout=None):
@@ -104,6 +106,8 @@ class _FakePage:
         self.urls.append(url)
         html = self._htmls[0] if len(self._htmls) == 1 else self._htmls.pop(0)
         await self._real.set_content(html, wait_until="domcontentloaded")
+        if isinstance(self.response, list):
+            return self.response[0] if len(self.response) == 1 else self.response.pop(0)
         return self.response
 
     async def title(self):
@@ -226,7 +230,10 @@ async def test_no_usa_sellers_is_not_reported_as_broken_markup(browser_page, mon
         return 20
 
     monkeypatch.setattr(dm, "_release_num_for_sale", _stats)
-    page = _FakePage(browser_page, ["unrecognised_empty_state.html", "usa_listings.html"])
+    page = _FakePage(
+        browser_page,
+        ["unrecognised_empty_state.html", "usa_listings.html", "unrecognised_empty_state.html"],
+    )
 
     assert await Crawler().search(RELEASE, page) == []
 
@@ -236,12 +243,16 @@ async def test_the_second_read_drops_the_ships_from_filter_and_nothing_else(brow
         return 20
 
     monkeypatch.setattr(dm, "_release_num_for_sale", _stats)
-    page = _FakePage(browser_page, ["unrecognised_empty_state.html", "usa_listings.html"])
+    page = _FakePage(
+        browser_page,
+        ["unrecognised_empty_state.html", "usa_listings.html", "unrecognised_empty_state.html"],
+    )
     await Crawler().search(RELEASE, page)
 
     assert "ships_from" in page.urls[0]
     assert "ships_from" not in page.urls[1]
     assert page.urls[1] == "https://www.discogs.com/sell/release/249504?sort=price%2Casc"
+    assert page.urls[2] == page.urls[0], "the empty filtered page must be confirmed on its own URL"
 
 
 async def test_a_real_restyle_still_raises_because_neither_read_parses(browser_page, monkeypatch):
@@ -343,6 +354,98 @@ async def test_a_clean_response_is_required_before_the_filter_can_explain_an_emp
         await Crawler().search(RELEASE, page)
 
     assert len(page.urls) == 1, "an unclean response should not spend a second page load"
+
+
+async def test_a_slow_filtered_page_is_not_mistaken_for_an_absence_of_sellers(
+    browser_page, monkeypatch
+):
+    """`_read_when_ready` reports an exhausted deadline and unknown markup
+    identically, so a clean 200 whose listings were merely late looks exactly
+    like "no USA sellers" -- and the unfiltered read, made moments later
+    against a site that has since sped up, would have vouched for it. The
+    second filtered read finds the listings instead, which beats both the
+    empty result that would have cleared a real USA price and the raise.
+    """
+    async def _stats(release_id):
+        return 20
+
+    monkeypatch.setattr(dm, "_release_num_for_sale", _stats)
+    page = _FakePage(
+        browser_page,
+        ["unrecognised_empty_state.html", "usa_listings.html", "usa_listings.html"],
+    )
+
+    results = await Crawler().search(RELEASE, page)
+
+    assert [r["price"] for r in results] == [6.50, 9.25, 12.99]
+
+
+async def test_the_confirming_read_wants_no_listings_not_a_recognised_empty_state(
+    browser_page, monkeypatch
+):
+    """Demanding a *recognised* empty state here would retire the fix.
+
+    The premise of this whole path is that Discogs's empty state is markup
+    this crawler cannot name -- if the confirming read had to recognise one,
+    the very case this exists for could never reach the empty result, and
+    every import-only release would go on raising. What must reproduce is the
+    absence of listings from a clean response, which `redesigned.html` (clean,
+    unrecognised, no listings) is.
+    """
+    async def _stats(release_id):
+        return 20
+
+    monkeypatch.setattr(dm, "_release_num_for_sale", _stats)
+    page = _FakePage(
+        browser_page,
+        ["unrecognised_empty_state.html", "usa_listings.html", "redesigned.html"],
+    )
+
+    assert await Crawler().search(RELEASE, page) == []
+
+
+async def test_an_unclean_unfiltered_response_cannot_vouch_for_the_filter(
+    browser_page, monkeypatch
+):
+    """The verification read is held to the standard the first read is.
+
+    Its body is an error page that happens to carry a container we parse; a
+    read whose own response was a block cannot be evidence for the empty
+    result any more than the first response could.
+    """
+    async def _stats(release_id):
+        return 20
+
+    monkeypatch.setattr(dm, "_release_num_for_sale", _stats)
+    page = _FakePage(
+        browser_page,
+        ["unrecognised_empty_state.html", "usa_listings.html", "unrecognised_empty_state.html"],
+    )
+    page.response = [
+        None,
+        SimpleNamespace(status=403, headers={"cf-mitigated": "challenge"}),
+        None,
+    ]
+
+    with pytest.raises(RuntimeError, match="was unreadable too"):
+        await Crawler().search(RELEASE, page)
+
+
+async def test_an_unclean_confirming_read_cannot_produce_the_empty_result(
+    browser_page, monkeypatch
+):
+    async def _stats(release_id):
+        return 20
+
+    monkeypatch.setattr(dm, "_release_num_for_sale", _stats)
+    page = _FakePage(
+        browser_page,
+        ["unrecognised_empty_state.html", "usa_listings.html", "unrecognised_empty_state.html"],
+    )
+    page.response = [None, None, SimpleNamespace(status=503, headers={})]
+
+    with pytest.raises(RuntimeError, match="never confirmed"):
+        await Crawler().search(RELEASE, page)
 
 
 async def test_unreadable_page_raises_when_the_stats_api_will_not_answer(browser_page, monkeypatch):
