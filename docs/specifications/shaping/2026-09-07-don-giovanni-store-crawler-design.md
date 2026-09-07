@@ -184,11 +184,18 @@ The parse is therefore:
   lookahead covered this; it does not. Every quote this store leaves after
   the album is an inch marker, and an inch marker always follows its digits
   (`12"`, `2x12"`, `7"`), so a quote in the descriptor that is not preceded
-  by a digit rejects the parse. The digit exemption covers `"`, `”` and `″`
-  only — a **left** curly quote is never an inch marker (the format gate does
-  not accept it as one either), so it is rejected wherever it appears, and
-  `12“` is drift rather than an unrecognised descriptor the gate would admit
-  by default. Found in review on PR #323, over two passes.
+  by a digit rejects the parse. The exemption covers exactly the three
+  characters the format gate accepts as an inch marker — `"`, `”` and `″` — so
+  a **left** curly quote is rejected wherever it appears, and a stray `″` is
+  drift like any other quote rather than an unrecognised descriptor the gate
+  would admit by default.
+
+  The digit rule alone is not enough, because a nested quotation whose inner
+  content ends in digits satisfies it twice over: `Artist "The " 54" 12"`
+  parses to an album of `The` and a descriptor of `54" 12"`. Every live
+  descriptor carries exactly **one** quote, so a second one rejects the parse
+  as well. Found in review on PR #323, over three passes — whether a stray
+  quote is drift, then which characters count, then how many.
 - Curly quotes are admitted on both sides even though the store writes none.
   They cost one character each and are the commonest way a Shopify store's
   copy drifts.
@@ -381,10 +388,16 @@ combos carry no quoted album — `Bad Moves LP + Shirt`,
 `+`/merch rule, and contain no literal "bundle" either; counted as
 unclassifiable, one mis-shelved here would raise on a shelf that had merely
 sold out. `_bundle_shaped()` therefore mirrors both of the gate's rules
-against the raw title, and requires **both** halves of the second: a record
-title that lost its quotes but kept a `+` in its artist credit
-(`Lee Bains + The Glory Fires Youth Detention 12"`) names no merch, so it
-still counts as drift. This is exemption-only and never rejects a row.
+against the raw title — but **narrower than the gate applies them**, because
+the two directions of error cost differently. In the gate a false positive
+skips one row; here a false exemption lets an unreadable product pass for a
+known shape and the whole snapshot be deleted. So the bundle word must *end*
+the title, or a real record that lost its album quotes
+(`Amy Klein Bundle of Joy 12"`) would be waved through; and the `+` shape
+needs **both** halves, or a record title that lost its quotes but kept a `+`
+in its artist credit (`Lee Bains + The Glory Fires Youth Detention 12"`)
+would be too. This is exemption-only and never rejects a row; the gate's own
+bundle rejection stays broad.
 
 **A variant dropped for want of a usable title is identity drift unless it is
 provably sold out.** The colour is part of the row's identity, so a variant without

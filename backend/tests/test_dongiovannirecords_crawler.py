@@ -322,6 +322,10 @@ def test_plugin_identity():
     # quote, because the leading group excludes quotes outright.
     ('Bert Susanka "Well Qualified To Represent The L.B. Sea!" 2x12"',
      ("Well Qualified To Represent The L.B. Sea!", '2x12"')),
+    # The one-quote rule must not reject a legitimate inch marker, in any of
+    # the three spellings the format gate accepts.
+    ('Amy Klein "Fire" 12\u2033', ("Fire", "12\u2033")),
+    ('Amy Klein "Fire" 12\u201d', ("Fire", "12\u201d")),
     # A title that omits the artist entirely still carries a readable album
     # and format. The leading group is allowed to be empty on purpose: the
     # credit comes from `vendor`, so this row is built correctly from a
@@ -340,6 +344,14 @@ def test_title_parse(title, expected):
     # group excludes quotes, so the album's opening quote is always the
     # title's first and a stray inch marker cannot start one.
     'Amy Klein 12" "Fire" LP',
+    # A descriptor carries at most one inch marker. Two quotes are the tail of
+    # a nested quotation, and the digit exemption alone cannot see it when the
+    # inner content ends in digits. Found in review on PR #323.
+    'Amy Klein "The " 54" 12"',
+    'Amy Klein "A " 7" 12"',
+    # A double prime is an inch marker after a digit and drift anywhere else,
+    # exactly like the straight and right-curly forms.
+    'Amy Klein "Fire" Deluxe\u2033',
     # A left curly quote is never an inch marker, so the digit exemption in
     # the stray-quote check must not cover it. Found in review on PR #323.
     'Amy Klein "Fire" 12\u201c',
@@ -497,6 +509,14 @@ async def test_an_unreadable_product_among_real_rows_does_not_raise(crawler):
     # kept a `+` in the artist credit is still drift, not a known shape.
     ('Lee Bains + The Glory Fires Youth Detention 12"', False),
     ("Amy Klein Fire LP", False),
+    # The word must END the title. A real record that lost its album quotes
+    # would otherwise be waved through as a known shape, and beside a sold-out
+    # product the crawl would complete empty and delete the snapshot. The
+    # gate's own rejection stays broad; only this exemption narrows.
+    # Found in review on PR #323.
+    ('Amy Klein Bundle of Joy 12"', False),
+    ("Bundle of Joy", False),
+    ("Bad Moves Vinyl Bundles", True),
 ])
 def test_the_unquoted_bundle_shapes_are_recognised(title, shaped):
     assert Crawler._bundle_shaped(title) is shaped
@@ -511,6 +531,26 @@ async def test_an_unquoted_combo_bundle_is_a_classified_skip(crawler):
     _mock_pages(_one_pressing(_FIRE_PRODUCT, available=False),
                 {**_KISS_BIG_PRODUCT, "title": "Bad Moves LP + Shirt"})
     assert [item async for item in crawler.crawl_catalog()] == []
+
+
+@respx.mock
+async def test_a_record_that_lost_its_quotes_and_says_bundle_is_still_drift(crawler):
+    # `Amy Klein "Bundle of Joy" 12"` is a real record; stripped of its album
+    # quotes it must not pass for the store's bundle shape.
+    # Found in review on PR #323.
+    _mock_pages(_one_pressing(_FIRE_PRODUCT, available=False),
+                {**_KISS_BIG_PRODUCT, "title": 'Amy Klein Bundle of Joy 12"'})
+    with pytest.raises(RuntimeError, match="classification drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_an_album_containing_bundle_still_keeps_its_row_when_quoted(crawler):
+    # The narrowed exemption must not disturb the gate's own broad rejection,
+    # nor the album that prompted it.
+    _mock_pages({**_FIRE_PRODUCT, "title": 'Amy Klein "Bundle of Joy" 12"'})
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["title"] for i in items] == ['Bundle of Joy 12" — Black']
 
 
 @respx.mock

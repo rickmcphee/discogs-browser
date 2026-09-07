@@ -66,12 +66,23 @@ _BUNDLE_RE = re.compile(r"\bbundles?\b", re.IGNORECASE)
 # descriptor then admits as a record. The closing lookahead alone does not
 # catch it, because the inner quote there IS followed by whitespace; it only
 # rejects the glued-letter spelling (`"Fire"X`). Found in review on PR #323.
-# The digit exemption is for inch markers only, and a LEFT curly quote is
-# never one -- _VINYL_WORD_RE does not accept it as such either. Exempting it
-# after a digit let `12“` through as an unrecognised descriptor, which the
-# gate then admits by default. It can only ever open a quotation, so it is
-# rejected wherever it appears. Found in review on PR #323.
-_STRAY_QUOTE_RE = re.compile(r'(?<![0-9])["”]|“')
+# The digit exemption is for inch markers only, so it covers exactly the three
+# characters _VINYL_WORD_RE accepts as one -- `"`, `”` and `″` -- and only
+# after a digit. A LEFT curly quote is never an inch marker under either rule,
+# so it is rejected wherever it appears; `12“` was otherwise reaching the
+# gate's default-admit branch as an unrecognised descriptor.
+_STRAY_QUOTE_RE = re.compile(r'(?<![0-9])["”″]|“')
+# One inch marker is a descriptor; two quotes are the tail of a nested
+# quotation the album group stopped short of. Every live descriptor carries
+# exactly one (`12"`, `2x12"`, `7"`), and the digit exemption alone cannot
+# tell them apart -- `Artist "The " 54" 12"` parses to an album of `The` and a
+# descriptor of `54" 12"` whose quotes both follow digits. Found in review on
+# PR #323, over three passes: whether a stray quote is drift, then which
+# characters count, then how many.
+_QUOTE_CHARS = '"“”″'
+# Exemption-only, and narrower than _BUNDLE_RE on purpose -- see
+# _bundle_shaped for why the two differ.
+_TERMINAL_BUNDLE_RE = re.compile(r"\bbundles?\s*$", re.IGNORECASE)
 # The shelf has already said the product is a record, so the descriptor gate
 # is negative: a record word admits outright, then a word naming another
 # medium or a merch item rejects, and anything else is admitted on the
@@ -344,18 +355,24 @@ class Crawler:
         whether that skip is a known shape or evidence of drift.
 
         Two shapes, matching the two rules the format gate applies to a
-        descriptor. The literal word (`Bad Moves Vinyl Bundle`), and a `+`
-        joining something to merch (`Bad Moves LP + Shirt`,
+        descriptor. A TERMINAL `Bundle`/`Bundles` (`Bad Moves Vinyl Bundle`),
+        and a `+` joining something to merch (`Bad Moves LP + Shirt`,
         `Bad Moves Shirt + All Vinyl`) -- the store's live combos, which carry
         no quoted album and so never reach the gate at all.
 
-        Both halves of the second shape are required, which is what keeps it
-        from exempting real drift: a record title that lost its quotes but
-        kept a `+` in the artist credit (`Lee Bains + The Glory Fires Youth
-        Detention 12"`) names no merch, so it still counts. Found in review on
-        PR #323.
+        Both shapes are deliberately narrower here than the gate's own rules,
+        because the two directions of error cost differently. In the gate, a
+        false positive skips one row; here, a false exemption lets an
+        unreadable product pass for a known shape and the whole snapshot be
+        deleted. So the word must END the title, or a real record that lost
+        its album quotes (`Amy Klein Bundle of Joy 12"`) would be waved
+        through; and the second shape needs BOTH halves, or a record title
+        that lost its quotes but kept a `+` in the artist credit
+        (`Lee Bains + The Glory Fires Youth Detention 12"`) would be too.
+        Found in review on PR #323, over two passes.
         """
-        return bool(_BUNDLE_RE.search(title)) or ("+" in title and bool(_MERCH_RE.search(title)))
+        return bool(_TERMINAL_BUNDLE_RE.search(title)) or (
+            "+" in title and bool(_MERCH_RE.search(title)))
 
     @staticmethod
     def _artist(product: dict) -> str:
@@ -402,6 +419,8 @@ class Crawler:
         if not album or not descriptor:
             return "", ""
         if _STRAY_QUOTE_RE.search(descriptor):
+            return "", ""
+        if sum(descriptor.count(q) for q in _QUOTE_CHARS) > 1:
             return "", ""
         return album, descriptor
 
