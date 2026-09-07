@@ -357,14 +357,20 @@ class Crawler:
         # rendered no listings for a reason that has nothing to do with the
         # filter, and letting a later request's success speak for it would
         # turn a block page into "no USA sellers".
-        verdict = "was not consulted, this response being too unclean for an empty page to be attributable to the filter"
+        verdict = (
+            "The unfiltered page was not consulted: this response was too unclean for "
+            "an empty page to be attributed to the ships_from filter"
+        )
         if trustworthy:
             unfiltered = await self._verify_read(
                 page, self.unfiltered_url(release_id),
                 f"checking whether the ships_from filter explains the empty page for {discogs_id}",
             )
             if not unfiltered.recognised:
-                verdict = "was unreadable too"
+                verdict = (
+                    "The same release read without the ships_from filter "
+                    "was unreadable too"
+                )
             else:
                 # `_read_when_ready` reports an exhausted deadline and
                 # unknown markup identically, so the first read cannot tell
@@ -392,9 +398,10 @@ class Crawler:
                     # as the second clears the release's stored price and
                     # hides the breakage that caused it.
                     verdict = (
-                        "parsed, but the filtered page's listing rows would not yield a "
-                        "price on either read, so its emptiness is a price shape this "
-                        "crawler no longer reads rather than an absence of USA sellers"
+                        "The unfiltered page parsed, but the filtered page's listing "
+                        "rows would not yield a price on either read, so this is a "
+                        "price shape this crawler no longer reads rather than an "
+                        "absence of USA sellers"
                     )
                 # With rows ruled out, what has to reproduce is the *absence
                 # of listings*, not a recognised empty state. The premise of
@@ -419,18 +426,17 @@ class Crawler:
                     return []
                 else:
                     verdict = (
-                        "parsed, but the confirming re-read of the filtered page did not "
-                        "answer cleanly, so its empty state was never confirmed"
+                        "The unfiltered page parsed, but the confirming re-read of the "
+                        "filtered page did not answer cleanly, so its empty state was "
+                        "never confirmed"
                     )
 
         raise RuntimeError(
             f"Discogs listings markup not recognised for release {discogs_id} "
             f"(HTTP {status}, cf-mitigated={mitigated}, page title {title!r}, "
             f"{num_for_sale if num_for_sale is not None else 'unknown'} "
-            f"copies for sale per the marketplace API; reading the same release "
-            f"without the ships_from filter {verdict}, so an absence of USA "
-            f"sellers does not account for this) -- re-check the selectors in "
-            f"{__name__} against {url}"
+            f"copies for sale per the marketplace API). {verdict}. "
+            f"Re-check the selectors in {__name__} against {url}"
         )
 
     async def _verify_read(self, page, url: str, what: str):
