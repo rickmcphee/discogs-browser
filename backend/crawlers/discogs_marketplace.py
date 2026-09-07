@@ -297,7 +297,7 @@ class Crawler:
             raise BotDetectedError()
         trustworthy = _response_is_clean(response) or challenge_cleared
 
-        listings, recognised, _ = await self._read_when_ready(page, url)
+        listings, recognised, candidates = await self._read_when_ready(page, url)
         if listings:
             best = listings[0]
             log.info(
@@ -305,6 +305,23 @@ class Crawler:
                 discogs_id, len(listings), best.get("currency"), best.get("price"),
             )
             return listings
+
+        # Rows that settled without yielding a price are direct evidence that
+        # this release has USA listings the crawler can no longer read, and
+        # they outrank every empty answer below -- the stats API reporting
+        # zero, or a confirming read that happens to find no rows, would
+        # otherwise clear the release's stored price with the contradiction
+        # in plain sight. Checked after the listings above, so rows that were
+        # merely mid-render when first seen still return their prices.
+        if candidates:
+            raise RuntimeError(
+                f"Discogs listings markup not recognised for release {discogs_id} "
+                f"(HTTP {status}, cf-mitigated={mitigated}, page title {title!r}). "
+                f"The filtered page's listing rows would not yield a price, so this "
+                f"is a price shape this crawler no longer reads rather than an "
+                f"absence of USA sellers. Re-check the selectors in {__name__} "
+                f"against {url}"
+            )
 
         # An empty state is only an answer if this page can be believed. On a
         # response that was neither clean nor a challenge we watched clear,
@@ -442,9 +459,11 @@ class Crawler:
     async def _verify_read(self, page, url: str, what: str):
         """Navigate to `url` again and read it with the same selectors.
 
-        Returns (listings, recognised, answered). `answered` is whether the
-        response itself was clean; `recognised` additionally requires the DOM
-        to have rendered something known. The two are separate because the
+        Returns a `_Read`. `answered` is whether the response itself could
+        be believed and the document actually parsed; `recognised`
+        additionally requires the DOM to have rendered something known; and
+        `candidates` is whether listing rows were present at all, however
+        unreadable their prices. They are separate because the
         callers want different strengths of evidence: proving the selectors
         still work needs a page we positively recognise, while confirming an
         absence of listings only needs a clean response that produced none --
@@ -478,6 +497,17 @@ class Crawler:
         if _is_challenge_title(title):
             log.warning("[Discogs] bot interstitial did not clear on %s while %s", url, what)
             raise BotDetectedError()
+
+        if not title.strip():
+            # This module treats an empty title as unsettled everywhere else,
+            # and a document that never got as far as its <title> cannot be
+            # read as having no listings: that is the destructive answer, and
+            # nothing here has actually parsed.
+            log.warning(
+                "[Discogs] %s never settled a title while %s, so nothing it rendered "
+                "can stand as evidence", url, what,
+            )
+            return _Read([], False, False, False)
 
         if not (_response_is_clean(response) or challenge_cleared):
             log.warning(
@@ -521,8 +551,9 @@ class Crawler:
                 return [], False, candidates
             await page.wait_for_timeout(_POLL_INTERVAL_MS)
 
-    async def _read_listings(self, page, url: str) -> list[dict]:
-        """Every listing row the page rendered, cheapest first.
+    async def _read_listings(self, page, url: str):
+        """(listings, candidates): every listing row the page rendered,
+        cheapest first, and whether it had listing rows at all.
 
         Sorted here rather than trusting the `sort=price,asc` URL parameter --
         that parameter has never been confirmed against the live page, and a

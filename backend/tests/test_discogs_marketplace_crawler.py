@@ -522,6 +522,61 @@ async def test_rows_whose_prices_will_not_parse_are_breakage_not_an_empty_shelf(
     with pytest.raises(RuntimeError, match="price shape this crawler no longer reads"):
         await Crawler().search(RELEASE, page)
 
+    assert len(page.urls) == 1, (
+        "rows that settled without a price are evidence on their own; corroborating "
+        "them costs two page loads and cannot change the answer"
+    )
+
+
+async def test_rows_that_only_appear_on_the_confirming_read_are_breakage_too(
+    browser_page, monkeypatch
+):
+    """The first read saw no rows at all, so the guard above cannot fire.
+
+    Rows that render late still have to be told apart from an empty shelf, or
+    a price shape change that is merely slow to paint is recorded as an
+    absence of USA sellers.
+    """
+    async def _stats(release_id):
+        return 20
+
+    monkeypatch.setattr(dm, "_release_num_for_sale", _stats)
+    page = _FakePage(
+        browser_page,
+        ["unrecognised_empty_state.html", "usa_listings.html",
+         "rows_with_unreadable_prices.html"],
+    )
+
+    with pytest.raises(RuntimeError, match="price shape this crawler no longer reads"):
+        await Crawler().search(RELEASE, page)
+
+    assert len(page.urls) == 3
+
+
+async def test_a_verification_read_that_never_settles_a_title_cannot_confirm(
+    browser_page, monkeypatch
+):
+    """An empty title is unsettled everywhere else in this module.
+
+    A document that never got as far as its <title> has not parsed, so
+    reading "no listings" off it would be the destructive answer drawn from a
+    page that rendered nothing at all -- and unlike a challenge, an empty
+    title raises no bot detection to stop it.
+    """
+    async def _stats(release_id):
+        return 20
+
+    monkeypatch.setattr(dm, "_release_num_for_sale", _stats)
+    monkeypatch.setattr(dm, "_SETTLE_TIMEOUT_MS", 300)
+    page = _FakePage(
+        browser_page,
+        ["unrecognised_empty_state.html", "usa_listings.html", "unrecognised_empty_state.html"],
+        titles=[LISTED_TITLE, LISTED_TITLE, ""],
+    )
+
+    with pytest.raises(RuntimeError, match="never confirmed"):
+        await Crawler().search(RELEASE, page)
+
 
 async def test_a_page_with_no_listing_rows_at_all_is_still_an_empty_shelf(
     browser_page, monkeypatch
