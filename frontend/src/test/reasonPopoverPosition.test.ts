@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { placeReasonPopover, REASON_POPOVER_GAP, REASON_POPOVER_EDGE } from '../views/reasonPopoverPosition'
+import {
+  placeReasonPopover,
+  REASON_POPOVER_GAP,
+  REASON_POPOVER_EDGE,
+  REASON_POPOVER_MIN_HEIGHT,
+} from '../views/reasonPopoverPosition'
 
 // jsdom measures every element as a zero-sized box at the origin, so the
 // geometry cannot be asserted through a rendered popover. It lives here
@@ -99,6 +104,45 @@ describe('placeReasonPopover', () => {
     const { top } = placeReasonPopover(anchorAt(1200, VIEWPORT.height - 10), PANEL, VIEWPORT)
     expect(top).toBeGreaterThanOrEqual(REASON_POPOVER_EDGE)
     expect(top + PANEL.height).toBeLessThanOrEqual(VIEWPORT.height)
+  })
+
+  // A panel at its full CSS cap, which is where the short-viewport cases bite.
+  const TALL = { width: 256, height: 256 }
+
+  it('shortens the panel rather than covering the icon in a short viewport', () => {
+    // A landscape phone, or any viewport at high zoom: this panel fits on
+    // neither side of the icon and neither above nor below it. Clamping it
+    // into view would put it over the control that closes it.
+    const viewport = { width: 320, height: 300 }
+    const anchor = anchorAt(220, 128, 44)
+    const { top, left, maxHeight } = placeReasonPopover(anchor, TALL, viewport)
+    expect(top).toBe(anchor.top + anchor.height + REASON_POPOVER_GAP)
+    expect(maxHeight).toBe(viewport.height - anchor.top - anchor.height - REASON_POPOVER_GAP - REASON_POPOVER_EDGE)
+    // Clear of the icon, and on screen, which it could not be at full height.
+    expect(top).toBeGreaterThanOrEqual(anchor.top + anchor.height)
+    expect(top + (maxHeight ?? TALL.height)).toBeLessThanOrEqual(viewport.height)
+    expect(left).toBe(viewport.width - TALL.width - REASON_POPOVER_EDGE)
+  })
+
+  it('shortens against the top edge when above is the roomier side', () => {
+    const viewport = { width: 320, height: 300 }
+    const anchor = anchorAt(220, 220, 44)
+    const { top, maxHeight } = placeReasonPopover(anchor, TALL, viewport)
+    expect(top).toBe(REASON_POPOVER_EDGE)
+    expect(maxHeight).toBe(anchor.top - REASON_POPOVER_GAP - REASON_POPOVER_EDGE)
+    expect(top + (maxHeight ?? 0)).toBeLessThanOrEqual(anchor.top)
+  })
+
+  it('reports no height cap when the panel fits as it is', () => {
+    expect(placeReasonPopover(anchorAt(1200, 400), PANEL, VIEWPORT).maxHeight).toBeUndefined()
+  })
+
+  it('would rather cover the icon than shrink to a sliver', () => {
+    // A viewport barely taller than the icon: a readable panel over it beats
+    // an unreadable one beside it, and Escape still dismisses.
+    const viewport = { width: 320, height: 44 + 2 * REASON_POPOVER_MIN_HEIGHT - 4 }
+    const { maxHeight } = placeReasonPopover(anchorAt(220, 78, 44), TALL, viewport)
+    expect(maxHeight).toBeUndefined()
   })
 
   it('prefers the top edge when the panel is taller than the viewport', () => {

@@ -8,7 +8,7 @@ import SourceFilter from '../components/SourceFilter'
 import StockStats from '../components/StockStats'
 import StockFilter from '../components/StockFilter'
 import { formatPrice } from './formatPrice'
-import { placeReasonPopover } from './reasonPopoverPosition'
+import { placeReasonPopover, type Placement, type Size } from './reasonPopoverPosition'
 import { useIsMobile } from '../hooks/useMediaQuery'
 import { ArtistSidebar, ArtistSheetButton } from '../components/ArtistFilter'
 import MobileSort, { type SortOption } from '../components/MobileSort'
@@ -101,7 +101,12 @@ function BookmarkIcon({ filled }: { filled: boolean }) {
 // container it cannot focus.
 function ReasonPopover({ item, anchor, onClose }: { item: StockItem; anchor: HTMLElement; onClose: () => void }) {
   const panelRef = useRef<HTMLDivElement>(null)
-  const [pos, setPos] = useState<{ top: number; left: number } | null>(null)
+  const [pos, setPos] = useState<Placement | null>(null)
+  // The size the panel wants, measured once. Placement can shorten the panel,
+  // and measuring the shortened one would feed that back into the next
+  // placement -- which would then find room it does not have, lengthen it
+  // again, and jitter on every scroll.
+  const natural = useRef<Size | null>(null)
 
   // Measured after render and before paint, so the panel never shows at the
   // origin first. Its own width and height are inputs to the placement, which
@@ -121,7 +126,9 @@ function ReasonPopover({ item, anchor, onClose }: { item: StockItem; anchor: HTM
         onClose()
         return
       }
-      setPos(placeReasonPopover(rect, panel.getBoundingClientRect(), viewport))
+      const box = panel.getBoundingClientRect()
+      natural.current ??= { width: box.width, height: box.height }
+      setPos(placeReasonPopover(rect, natural.current, viewport))
     }
     place()
     // Capturing, so the table's own overflow container counts: the panel is
@@ -194,7 +201,12 @@ function ReasonPopover({ item, anchor, onClose }: { item: StockItem; anchor: HTM
       // own, Safari does not, and the clipped tail has to be reachable
       // somehow. Rendered next to its icon so Tab reaches it from there.
       tabIndex={0}
-      style={{ top: pos?.top ?? 0, left: pos?.left ?? 0, visibility: pos ? 'visible' : 'hidden' }}
+      style={{
+        top: pos?.top ?? 0,
+        left: pos?.left ?? 0,
+        maxHeight: pos?.maxHeight,
+        visibility: pos ? 'visible' : 'hidden',
+      }}
       className="fixed z-50 max-h-[min(16rem,calc(100dvh-1rem))] w-64 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 shadow-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80"
     >
       {/* A reason only exists on a judged item, so the polarity is never

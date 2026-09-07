@@ -20,6 +20,18 @@ export interface Viewport {
 // margin it will leave against a viewport edge.
 export const REASON_POPOVER_GAP = 8
 export const REASON_POPOVER_EDGE = 8
+// Below this, a shrunken panel is a sliver rather than something to read, and
+// covering the icon is the lesser evil -- Escape and a press outside still
+// dismiss it.
+export const REASON_POPOVER_MIN_HEIGHT = 80
+
+export interface Placement {
+  top: number
+  left: number
+  /** Set only where the panel has to be shortened to clear the icon; the
+   *  panel's own CSS cap applies when it is absent. */
+  maxHeight?: number
+}
 
 function clamp(value: number, lowest: number, highest: number): number {
   // Lowest wins a crossed range: a panel too big for the space is pinned to
@@ -34,10 +46,12 @@ function clamp(value: number, lowest: number, highest: number): number {
  * flips to the icon's right only when the left cannot hold it *and* the right
  * can -- a flip that has to be clamped back over the icon would bury the
  * control that closes it. When neither side fits, it stacks below the icon, or
- * above when below is short. Fixed coordinates rather than a position inside
- * the table, which is `overflow-auto` and would clip a row at its top edge
- * with no scroll to recover it. */
-export function placeReasonPopover(anchor: Rect, panel: Size, viewport: Viewport): { top: number; left: number } {
+ * above when below is short, and where it fits neither whole it takes the
+ * roomier side and reports the `maxHeight` that will hold it there. Fixed
+ * coordinates rather than a position inside the table, which is
+ * `overflow-auto` and would clip a row at its top edge with no scroll to
+ * recover it. */
+export function placeReasonPopover(anchor: Rect, panel: Size, viewport: Viewport): Placement {
   const lastLeft = viewport.width - panel.width - REASON_POPOVER_EDGE
   const lastTop = viewport.height - panel.height - REASON_POPOVER_EDGE
 
@@ -67,9 +81,22 @@ export function placeReasonPopover(anchor: Rect, panel: Size, viewport: Viewport
   const above = anchor.top - panel.height - REASON_POPOVER_GAP
   if (fitsDown(above)) return { top: above, left }
 
-  // Taller than the space on either side of the icon, or an icon that is not
-  // on screen at all: nothing can both avoid the overlap and stay in view, so
-  // fall back to the clamped reading position and let Escape or a press
-  // outside dismiss it.
+  // Taller than the space on either side of the icon. Nothing can keep the
+  // panel whole, on screen and off the icon at once, and the icon is what
+  // gives: clamping the panel into view would put it over the control that
+  // closes it. So it takes the roomier side and is shortened to fit there,
+  // scrolling what it cannot show.
+  const roomBelow = viewport.height - (anchor.top + anchor.height) - REASON_POPOVER_GAP - REASON_POPOVER_EDGE
+  const roomAbove = anchor.top - REASON_POPOVER_GAP - REASON_POPOVER_EDGE
+  const roomier = Math.max(roomBelow, roomAbove)
+  if (roomier >= REASON_POPOVER_MIN_HEIGHT) {
+    return roomBelow >= roomAbove
+      ? { top: anchor.top + anchor.height + REASON_POPOVER_GAP, left, maxHeight: roomBelow }
+      : { top: REASON_POPOVER_EDGE, left, maxHeight: roomAbove }
+  }
+
+  // An icon with almost no room on either side of it -- a viewport barely
+  // taller than the icon itself. A readable panel over the icon beats an
+  // unreadable one beside it; Escape and a press outside still dismiss it.
   return { top: beside, left }
 }
