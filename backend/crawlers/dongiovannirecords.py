@@ -11,6 +11,15 @@ from shopify_catalog import iter_products, resolve_cover_image
 # published to the online store -- so the walk's own exhaustion is the
 # catalog, confirmed to return the same product ids at limit=250 and limit=50.
 _COLLECTION_SLUG = "vinyl"
+# Every character this crawler treats as a quote. One definition, used by the
+# title regex's two exclusions, by the stray-quote check and by the
+# descriptor's one-quote cap -- because each time these were spelled out
+# separately they drifted apart, and every such disagreement has been a bug:
+# a left curly the gate would not accept as an inch marker but the stray check
+# exempted, then a double prime the stray check rejected but the album group
+# still admitted. Found in review on PR #323, twice.
+_QUOTE_CHARS = '"“”″'
+_OPENING_QUOTES = '"“'   # the two a title can open an album with
 # `Artist "Album" <format>`. The store leads every product with
 # `Artist "Album"`, records and CDs and shirts alike; the trailing format is
 # universal only on the vinyl shelf, and its books, pins and stickers stop at
@@ -20,7 +29,10 @@ _COLLECTION_SLUG = "vinyl"
 # asymmetry is what the both-halves-required rule below turns into a filter.
 #
 # Neither the leading group nor the album group may contain a quote, which is
-# what pins all three. The leading group excluding them makes the album's
+# what pins all three. Both classes are built from the constants above rather
+# than spelled out, so they cannot fall out of step with the rest of the
+# crawler's idea of a quote -- the leading group excludes the two characters
+# that can OPEN an album, the album group excludes every quote there is. The leading group excluding them makes the album's
 # OPENING quote always the title's first, so the trailing inch marker can
 # never be read as one. It is non-capturing: the credit comes from `vendor`,
 # so whatever sits ahead of the album is never read, and it is deliberately
@@ -41,8 +53,8 @@ _COLLECTION_SLUG = "vinyl"
 # Curly quotes are admitted though the store writes none: they are the
 # commonest way a storefront's copy drifts.
 _TITLE_RE = re.compile(
-    r'^(?:[^"“]*?)\s*["“]'
-    r'(?P<album>[^"“”]+?)'
+    r'^(?:[^' + re.escape(_OPENING_QUOTES) + r']*?)\s*[' + re.escape(_OPENING_QUOTES) + r']'
+    r'(?P<album>[^' + re.escape(_QUOTE_CHARS) + r']+?)'
     r'["”](?=[\s\d]|$)\s*'
     r'(?P<rest>.*)$'
 )
@@ -79,7 +91,6 @@ _STRAY_QUOTE_RE = re.compile(r'(?<![0-9])["”″]|“')
 # descriptor of `54" 12"` whose quotes both follow digits. Found in review on
 # PR #323, over three passes: whether a stray quote is drift, then which
 # characters count, then how many.
-_QUOTE_CHARS = '"“”″'
 # Exemption-only, and narrower than _BUNDLE_RE on purpose -- see
 # _bundle_shaped for why the two differ.
 _TERMINAL_BUNDLE_RE = re.compile(r"\bbundles?\s*$", re.IGNORECASE)

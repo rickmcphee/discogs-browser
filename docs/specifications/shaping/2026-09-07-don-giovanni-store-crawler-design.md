@@ -146,11 +146,19 @@ closing quote, unlike Earache's catalog.
 The parse is therefore:
 
 ```
-^(?:[^"“]*?)\s*["“](?P<album>[^"“”]+?)["”](?=[\s\d]|$)\s*(?P<rest>.*)$
+^(?:[^"“]*?)\s*["“](?P<album>[^"“”″]+?)["”](?=[\s\d]|$)\s*(?P<rest>.*)$
 ```
 
 - **Neither the leading group nor the album group may contain a quote**, and
-  between them that is what pins all three of the title's quotes. The
+  between them that is what pins all three of the title's quotes. Both
+  character classes are *derived from one constant* in the code rather than
+  spelled out — the leading group excludes the two characters that can open an
+  album, the album group excludes every quote there is. Each time they were
+  written out separately they drifted apart, and every such disagreement has
+  been a bug: a left curly the gate would not accept as an inch marker but the
+  stray-quote check exempted, then a double prime that check rejected while
+  the album group still admitted it (so `Artist "The ″ Big" 12"` parsed and
+  emitted a malformed album). Found in review on PR #323, twice. The
   leading group excluding them makes the album's **opening** quote always
   the title's first, so the trailing inch marker can never be mistaken for
   it. The album excluding them is what makes a fourth quote junk rather than

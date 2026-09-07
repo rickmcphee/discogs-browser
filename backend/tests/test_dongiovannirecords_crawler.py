@@ -349,6 +349,12 @@ def test_title_parse(title, expected):
     # inner content ends in digits. Found in review on PR #323.
     'Amy Klein "The " 54" 12"',
     'Amy Klein "A " 7" 12"',
+    # A double prime inside the album is drift too. The album group excludes
+    # every character the crawler calls a quote, not just three of the four --
+    # both classes are now built from one constant so they cannot disagree.
+    # Found in review on PR #323.
+    'Amy Klein "The \u2033 Big" 12"',
+    'Amy Klein "\u2033" 12"',
     # A double prime is an inch marker after a digit and drift anywhere else,
     # exactly like the straight and right-curly forms.
     'Amy Klein "Fire" Deluxe\u2033',
