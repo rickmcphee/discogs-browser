@@ -73,7 +73,7 @@ Out of scope:
 ## Decisions carried from brainstorming
 
 - **Store scope only**, not Track. Asked and confirmed with the user.
-- **Both list and tile views** get the bookmark icon, not list-only. (2026-08-27, branch `claude/mobile-optimized-web-qmv4u4`: and the mobile card list, which replaces the table below 768px, carries it too — as one of the card's two right-hand actions beside the cost link. See [`2026-08-27-mobile-web-experience-design.md`](2026-08-27-mobile-web-experience-design.md).)
+- **Both list and tile views** get the bookmark icon, not list-only. (2026-08-27, branch `claude/mobile-optimized-web-qmv4u4`: and the mobile card list, which replaces the table below 768px, carries it too — as one of the card's right-hand actions beside the cost link. See [`2026-08-27-mobile-web-experience-design.md`](2026-08-27-mobile-web-experience-design.md).) **(2026-09-07, branch `claude/recommendation-info-icon-popup-6n4r87`:** that set was two — cost and save — until the info button joined it, between them, on a card whose item carries a judgment reason. See the Table amendment below and [`2026-09-07-recommendation-info-popup-design.md`](2026-09-07-recommendation-info-popup-design.md).**)**
   Asked and confirmed with the user.
 - **Unsaving under the Saved filter removes the row immediately** (no lag
   until next reload). Asked and confirmed with the user — standard
@@ -426,6 +426,20 @@ cover-art column's empty header at line 305):
 </td>
 ```
 
+**Amendment (2026-09-07, branch `claude/recommendation-info-icon-popup-6n4r87`):**
+the bookmark may no longer have that cell to itself. A row whose item
+carries a judgment *reason* — not every judged item; a judgment recorded
+without one renders no button, which is most of them — puts an info button
+immediately to the bookmark's left, the two wrapped in a `flex items-center
+justify-end gap-1` div, and the header widened from `w-8` to `w-20` to hold
+the pair. `colCount` is unchanged — it is still one column. The tile overlay
+gained the same conditional pairing: the absolutely-positioned element below
+is now a flex row that holds the bookmark, preceded by the info button on
+the rows that have a reason to show. See
+[`2026-09-07-recommendation-info-popup-design.md`](2026-09-07-recommendation-info-popup-design.md),
+which is authoritative on that condition, and the further amendment under
+"Tiles" below, which takes that row out of the tile's listing link.
+
 added after the existing Source cell (line 372). `colCount` (line 163),
 currently `scope === 'track' ? 7 : 6`, becomes `scope === 'store' ? 7 :
 7` collapsed to a flat `7` — Store's count goes from 6 to 7 (gaining the
@@ -469,7 +483,21 @@ image, sibling to the `<img>`/placeholder `<div>`:
 
 `e.preventDefault()` on the button's click stops the enclosing `<a>` from
 navigating to the listing URL when the user meant to toggle the bookmark,
-not open the item. Rendered only when `scope === 'store'`, matching the
+not open the item.
+
+**Amendment (2026-09-07, branch `claude/recommendation-info-icon-popup-6n4r87`):**
+the button is no longer enclosed, so there is no navigation left to
+prevent and the guard is gone. The tile is a `group relative` wrapper
+holding two siblings: an `<a className="block">` over the cover and the
+artist/title text, and the absolutely-positioned action group. A control
+nested inside a control is invalid however its click is handled, and
+assistive tech is not obliged to expose the inner one — which mattered
+once the group gained an info button whose whole job is to be the
+reachable replacement for a tooltip. The click can no longer reach the
+anchor at all, which is what
+`stockBrowser.test.tsx` asserts now in place of the `defaultPrevented`
+check. See
+[`2026-09-07-recommendation-info-popup-design.md`](2026-09-07-recommendation-info-popup-design.md). Rendered only when `scope === 'store'`, matching the
 table. The tile view's `items.filter((item) => item.is_own)` (line 273)
 is untouched — it already limits tiles to one per record, so this needs no
 `item_key`-dedup handling beyond what the toggle handler already does.

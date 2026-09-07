@@ -271,6 +271,19 @@ export interface StockItem {
 }
 ```
 
+**Amendment (2026-09-07, branch `claude/recommendation-info-icon-popup-6n4r87`):**
+this block is a snapshot of the shape at the split, not a live one, and it
+has fallen behind: `listing_title`
+([`2026-09-05-marketplace-listing-title-design.md`](2026-09-05-marketplace-listing-title-design.md)),
+`discogs_price`
+([`2026-08-09-collection-price-paid-design.md`](2026-08-09-collection-price-paid-design.md)),
+`saved`
+([`2026-08-16-store-saved-items-design.md`](2026-08-16-store-saved-items-design.md))
+and now `recommended` — the judgment verdict beside `reason`, see
+[`2026-09-07-recommendation-info-popup-design.md`](2026-09-07-recommendation-info-popup-design.md)
+— have all been added since. `frontend/src/api/types.ts` is the live shape;
+read this one for what the split established, not for the current interface.
+
 `frontend/src/views/StockBrowser.tsx`:
 
 - Props gain `scope?: 'store' | 'collection'` (default `'store'`).
