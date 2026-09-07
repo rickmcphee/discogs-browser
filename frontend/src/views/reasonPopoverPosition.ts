@@ -21,26 +21,47 @@ export interface Viewport {
 export const REASON_POPOVER_GAP = 8
 export const REASON_POPOVER_EDGE = 8
 
+function clamp(value: number, lowest: number, highest: number): number {
+  // Lowest wins a crossed range: a panel too big for the space is pinned to
+  // the top-left edge rather than pushed off the opposite one.
+  return Math.max(lowest, Math.min(value, highest))
+}
+
 /** Viewport coordinates for the reason popover, placed to the left of its icon.
  *
  * Left, because that is where the space is: the icon sits in the row's
- * right-hand action group, so the row's own width is free on that side. The
- * popover flips to the icon's right only when the left cannot hold it, and is
- * clamped to the viewport on both axes either way -- it is positioned fixed
- * rather than inside the scrolling table precisely so a row at the very top or
- * bottom edge is not clipped by an ancestor's overflow. */
+ * right-hand action group, so the row's own width is free on that side. It
+ * flips to the icon's right only when the left cannot hold it *and* the right
+ * can -- a flip that has to be clamped back over the icon would bury the
+ * control that closes it. When neither side fits, it stacks below the icon, or
+ * above when below is short. Fixed coordinates rather than a position inside
+ * the table, which is `overflow-auto` and would clip a row at its top edge
+ * with no scroll to recover it. */
 export function placeReasonPopover(anchor: Rect, panel: Size, viewport: Viewport): { top: number; left: number } {
-  let left = anchor.left - panel.width - REASON_POPOVER_GAP
-  if (left < REASON_POPOVER_EDGE) {
-    left = Math.min(anchor.right + REASON_POPOVER_GAP, viewport.width - panel.width - REASON_POPOVER_EDGE)
-  }
-  // A panel wider than the viewport can leave the flip below the edge margin
-  // too, so the clamp is applied to whichever side won.
-  left = Math.max(REASON_POPOVER_EDGE, left)
+  const lastLeft = viewport.width - panel.width - REASON_POPOVER_EDGE
+  const lastTop = viewport.height - panel.height - REASON_POPOVER_EDGE
 
-  const centred = anchor.top + anchor.height / 2 - panel.height / 2
-  const lowest = viewport.height - panel.height - REASON_POPOVER_EDGE
-  const top = Math.max(REASON_POPOVER_EDGE, Math.min(centred, lowest))
+  const beside = clamp(anchor.top + anchor.height / 2 - panel.height / 2, REASON_POPOVER_EDGE, lastTop)
 
-  return { top, left }
+  const toLeft = anchor.left - panel.width - REASON_POPOVER_GAP
+  if (toLeft >= REASON_POPOVER_EDGE) return { top: beside, left: toLeft }
+
+  const toRight = anchor.right + REASON_POPOVER_GAP
+  if (toRight <= lastLeft) return { top: beside, left: toRight }
+
+  // Stacked. Horizontally it starts at the icon's own left edge, which keeps
+  // it near what it describes, and vertically it takes whichever side of the
+  // icon can hold it -- covering the icon is the one thing it must not do,
+  // since a second click there is how it closes.
+  const left = clamp(anchor.left, REASON_POPOVER_EDGE, lastLeft)
+  const below = anchor.top + anchor.height + REASON_POPOVER_GAP
+  if (below <= lastTop) return { top: below, left }
+
+  const above = anchor.top - panel.height - REASON_POPOVER_GAP
+  if (above >= REASON_POPOVER_EDGE) return { top: above, left }
+
+  // Taller than the space on either side of the icon: nothing can avoid the
+  // overlap, so fall back to the reading position and let Escape or a press
+  // outside dismiss it.
+  return { top: beside, left }
 }

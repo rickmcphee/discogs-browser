@@ -49,10 +49,12 @@ Touches:
   `null` is "no judgment", distinct from `false`.
 - `frontend/src/views/StockBrowser.tsx` — an `InfoIcon` button immediately
   left of the save bookmark in all three views (tiles, mobile cards,
-  desktop table); a modal holding the justification (an anchored popover
-  from the second PR, `ReasonPopover`, with its placement arithmetic in
-  `frontend/src/views/reasonPopoverPosition.ts`); `titleTooltip()` loses
-  its reason branch and the artist elements lose `title={item.reason}`.
+  desktop table); `ReasonPopover`, anchored to that button and holding the
+  justification, rendered as its sibling so Tab reaches it, with its
+  placement arithmetic in `frontend/src/views/reasonPopoverPosition.ts`;
+  `titleTooltip()` loses its reason branch and the artist elements lose
+  `title={item.reason}`. (The first PR shipped a centred modal here; the
+  second replaced it — see the amendment at the top.)
 - `frontend/src/test/stockBrowser.test.tsx` also loses the assertion that the
   tile bookmark's `e.preventDefault()` stops the enclosing link, which the
   restructure makes moot.
@@ -111,9 +113,12 @@ Out of scope:
   `document.activeElement` on mount, because Safari does not focus a button on
   pointer activation. The click still hands over its `currentTarget`, but as
   the element the popover measures itself against.
-- **The panel caps its height and scrolls.** A reason is free text — a CSV
+- **The panel caps its size and scrolls.** A reason is free text — a CSV
   import writes it unbounded — so a long one would otherwise run off the
-  screen. (`max-h-64` on the popover, where the modal used `max-h-[85dvh]`.)
+  screen. The cap is against the viewport as well as a fixed size
+  (`max-h-[min(16rem,calc(100dvh-1rem))]`, `max-w-[calc(100vw-1rem)]`): a
+  short landscape viewport, or a zoomed one, can leave less room than 16rem,
+  and placement can only move an oversized box, not shrink it.
 
 **Amendment (2026-09-07, second PR): a popover, opened and closed by its own
 icon.**
@@ -127,8 +132,10 @@ icon.**
   the thing that opened it is always right there.
 - **Anchored to the icon's left.** That is where the space is: the icon sits
   in the row's right-hand action group, so the row's own width is free on
-  that side. It flips to the right only when the left cannot hold it, and is
-  clamped to the viewport on both axes.
+  that side. It flips to the right only when the left cannot hold it *and*
+  the right can — a flip that had to be clamped back would land on the icon,
+  burying the control that closes it — and when neither side fits it stacks
+  below, or above where below is short. Clamped to the viewport throughout.
 - **Positioned fixed, measured after render.** The table and the card list
   are both `overflow-auto`, so a popover positioned inside them would be
   clipped for a row at the top or bottom edge — unrecoverably, since
@@ -141,12 +148,28 @@ icon.**
   that arithmetic, pure and tested on its own — jsdom measures every element
   as a zero-sized box at the origin, so this geometry cannot be asserted
   through a rendered component.
-- **It takes no focus and holds nothing focusable.** A glance at one sentence
-  should not move the caret or trap Tab. It stays out of the tab order and
-  reaches assistive tech through `aria-describedby` on the icon, with
-  `aria-expanded` saying whether it is open — the disclosure pattern for a
-  control that reveals text rather than a dialog that owns interaction. This
-  is what retires the focus trap, the focus restoration and the backdrop.
+- **It takes no focus, but it can be given some.** A glance at one sentence
+  should not move the caret or trap Tab, so nothing is focused on open and
+  there is no trap; the relationship to the icon is `aria-describedby` with
+  `aria-expanded`, the disclosure pattern for a control that reveals text
+  rather than a dialog that owns interaction. The panel is still
+  `tabIndex={0}` and rendered as the icon's sibling, because the reason can
+  outrun it: Chrome and Firefox hand a scroll container to the keyboard
+  themselves, Safari does not, and the clipped tail has to be reachable.
+  Escape returns focus to the icon when it was inside the panel. That is
+  the whole of the focus handling — no trap, no restoration on every close,
+  no backdrop.
+- **It closes when its icon goes away.** A view-mode or breakpoint switch
+  rebuilds the row in a different tree, leaving the node the panel was
+  measured against detached — and a detached node reports a zero rect, which
+  the next scroll would turn into a jump to the viewport corner. The check
+  runs on every render and before paint, so the stale position is never
+  shown. A refetch that drops the row needs nothing extra: the popover is
+  rendered beside its icon, so it goes with it.
+- **Dismissal listens for touch as well as mouse.** A tap emits `mousedown`
+  only as a compatibility event, and a touch scroll emits none at all, so a
+  mouse-only listener would leave the popover open on a phone. Both events,
+  matching `StockFilter`.
 - **It does not name the record.** The modal did, to keep a comparison row's
   substituted `listing_title` from crediting the judgment to a pressing the
   judge never saw. A popover pinned to the row it belongs to cannot be
@@ -199,6 +222,14 @@ icon.**
   popover's id; a closed one reports neither.
 - The popover is positioned fixed, with coordinates and visibility set — the
   geometry itself belongs to `reasonPopoverPosition.test.ts`.
+- It is capped against the viewport, focusable, and rendered as the icon's
+  next sibling.
+- A touch outside it closes it, as a mouse press does.
+- Escape pressed while the panel has focus returns that focus to the icon.
+- A view-mode switch closes it, asserted through the icon's `aria-expanded`
+  rather than the panel's absence: an unplaced panel is hidden, and a role
+  query cannot tell that from closed.
+- A refetch that drops the row closes it.
 - It does not name the record, on a comparison row carrying a
   `listing_title` least of all.
 - A long reason scrolls inside it rather than growing it.
@@ -208,9 +239,11 @@ icon.**
 
 `frontend/src/test/reasonPopoverPosition.test.ts` (new): the popover sits a
 gap to the icon's left and centred on it; flips right when the left cannot
-hold it; is pulled back in rather than overhanging the right edge after that
-flip; and is clamped at the top and bottom for a row at either edge of the
-viewport, including a panel taller than the viewport itself.
+hold it and the right can; stacks below — clear of the icon's own band — on a
+narrow screen where neither side fits, and above when below is short; still
+sits beside an icon that has room, however narrow the screen; and is clamped
+at the top and bottom for a row at either edge of the viewport, including a
+panel taller than the viewport itself.
 
 `frontend/src/test/mobileLayout.test.tsx`:
 

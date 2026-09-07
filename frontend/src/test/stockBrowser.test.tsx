@@ -501,14 +501,87 @@ describe('StockBrowser', () => {
     expect(popover.textContent).not.toContain('Ghostly Black Vinyl')
   })
 
-  it('scrolls a long reason inside the popover', async () => {
-    // A reason is free text: a CSV import writes it unbounded.
+  it('scrolls a long reason inside the popover, and lets a keyboard reach it', async () => {
+    // A reason is free text: a CSV import writes it unbounded. Safari does not
+    // hand a scroll container to the keyboard on its own, so the panel is
+    // focusable and sits next to its icon in the DOM for Tab to find.
+    getStock.mockResolvedValue(judged(true))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    const info = screen.getByTitle('Recommendation details')
+    fireEvent.click(info)
+
+    const popover = screen.getByRole('tooltip')
+    expect(popover.className).toContain('overflow-y-auto')
+    expect(popover.getAttribute('tabindex')).toBe('0')
+    expect(info.nextElementSibling).toBe(popover)
+  })
+
+  it('caps the popover against the viewport, not just at a fixed size', async () => {
+    // A short landscape viewport, or a zoomed one, can leave less room than
+    // the panel's own 16rem.
     getStock.mockResolvedValue(judged(true))
     render(<StockBrowser recommendedAvailable />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     fireEvent.click(screen.getByTitle('Recommendation details'))
-    expect(screen.getByRole('tooltip').className).toContain('overflow-y-auto')
-    expect(screen.getByRole('tooltip').className).toContain('max-h-64')
+
+    const { className } = screen.getByRole('tooltip')
+    expect(className).toContain('max-h-[min(16rem,calc(100dvh-1rem))]')
+    expect(className).toContain('max-w-[calc(100vw-1rem)]')
+  })
+
+  it('returns focus to the icon when Escape closes a popover being read', async () => {
+    getStock.mockResolvedValue(judged(true))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    const info = screen.getByTitle('Recommendation details')
+    fireEvent.click(info)
+
+    screen.getByRole('tooltip').focus()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('tooltip')).toBeNull()
+    expect(document.activeElement).toBe(info)
+  })
+
+  it('closes the popover on a touch outside it', async () => {
+    // A tap emits mousedown only as a compatibility event, and a touch scroll
+    // emits none -- so the dismissal cannot listen for mouse input alone.
+    getStock.mockResolvedValue(judged(true))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByTitle('Recommendation details'))
+
+    fireEvent.touchStart(document.body)
+    expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+
+  it('closes the popover when the view switches out from under its icon', async () => {
+    // The tile grid is a different tree, so the icon the panel was measured
+    // against is detached -- and a detached node reports a zero rect, which
+    // the next scroll would turn into a jump to the corner.
+    getStock.mockResolvedValue(judged(true))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByTitle('Recommendation details'))
+    expect(screen.getByRole('tooltip')).toBeTruthy()
+
+    fireEvent.click(screen.getByTitle('Tile view'))
+    // The icon's own state is what proves it closed rather than merely went
+    // invisible: an unplaced panel is hidden, which a role query cannot see.
+    await waitFor(() => expect(screen.getByTitle('Recommendation details').getAttribute('aria-expanded')).toBe('false'))
+    expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+
+  it('closes the popover when a refetch drops the row it belongs to', async () => {
+    getStock.mockResolvedValue(judged(true))
+    const { rerender } = render(<StockBrowser recommendedAvailable syncGeneration={1} />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByTitle('Recommendation details'))
+    expect(screen.getByRole('tooltip')).toBeTruthy()
+
+    getStock.mockResolvedValue({ total: 0, row_total: 0, page: 1, per_page: 250, items: [] })
+    rerender(<StockBrowser recommendedAvailable syncGeneration={2} />)
+    await waitFor(() => expect(screen.queryByRole('tooltip')).toBeNull())
   })
 
   it('puts the info button immediately left of the save button in the row', async () => {

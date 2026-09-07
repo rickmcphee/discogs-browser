@@ -99,13 +99,23 @@ function ReasonPopover({ item, anchor, onClose }: { item: StockItem; anchor: HTM
   const panelRef = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null)
 
+  // The anchor can go out from under the popover: a breakpoint or view-mode
+  // switch rebuilds the row in a different tree, leaving the node this was
+  // measured against detached. A detached node reports a zero rect, which the
+  // next scroll would turn into a jump to the viewport corner. Unconditional,
+  // because nothing about this component's own props changes when it happens,
+  // and before paint, so the stale position is never shown.
+  useLayoutEffect(() => {
+    if (!anchor.isConnected) onClose()
+  })
+
   // Measured after render and before paint, so the panel never shows at the
   // origin first. Its own width and height are inputs to the placement, which
   // is why this cannot be a static class.
   useLayoutEffect(() => {
     function place() {
       const panel = panelRef.current
-      if (!panel) return
+      if (!panel || !anchor.isConnected) return
       const box = panel.getBoundingClientRect()
       setPos(placeReasonPopover(anchor.getBoundingClientRect(), box, {
         width: window.innerWidth,
@@ -126,21 +136,29 @@ function ReasonPopover({ item, anchor, onClose }: { item: StockItem; anchor: HTM
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') onClose()
+      if (e.key !== 'Escape') return
+      // Escape pressed while reading a long reason would otherwise leave focus
+      // on the body when the panel goes.
+      if (panelRef.current?.contains(document.activeElement)) anchor.focus()
+      onClose()
     }
     // Pointer-down, and never on the anchor: a press on the icon is the
     // toggle's own second click, and closing here first would leave the click
-    // that follows to reopen what it was meant to close.
-    function onPointerDown(e: MouseEvent) {
+    // that follows to reopen what it was meant to close. Touch as well as
+    // mouse, matching StockFilter -- a tap emits mousedown only as a
+    // compatibility event, and a touch scroll emits none at all.
+    function onPointerDown(e: MouseEvent | TouchEvent) {
       const target = e.target as Node
       if (panelRef.current?.contains(target) || anchor.contains(target)) return
       onClose()
     }
     document.addEventListener('keydown', onKeyDown)
     document.addEventListener('mousedown', onPointerDown)
+    document.addEventListener('touchstart', onPointerDown)
     return () => {
       document.removeEventListener('keydown', onKeyDown)
       document.removeEventListener('mousedown', onPointerDown)
+      document.removeEventListener('touchstart', onPointerDown)
     }
   }, [anchor, onClose])
 
@@ -149,8 +167,13 @@ function ReasonPopover({ item, anchor, onClose }: { item: StockItem; anchor: HTM
       ref={panelRef}
       id={REASON_PANEL_ID}
       role="tooltip"
+      // Focusable because the reason is free text and can outrun the panel:
+      // Chrome and Firefox hand a scroll container to the keyboard on their
+      // own, Safari does not, and the clipped tail has to be reachable
+      // somehow. Rendered next to its icon so Tab reaches it from there.
+      tabIndex={0}
       style={{ top: pos?.top ?? 0, left: pos?.left ?? 0, visibility: pos ? 'visible' : 'hidden' }}
-      className="fixed z-50 max-h-64 w-64 overflow-y-auto rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 shadow-xl"
+      className="fixed z-50 max-h-[min(16rem,calc(100dvh-1rem))] w-64 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 shadow-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80"
     >
       {/* A reason only exists on a judged item, so the polarity is never
           unknown here -- and it has to be said, since an item can be judged
@@ -592,15 +615,20 @@ function StockBrowser({
                     </a>
                     <div className="absolute top-1 right-1 flex items-center gap-1">
                       {item.reason && (
-                        <button
-                          onClick={(e) => toggleReason(e, item)}
-                          title={REASON_BUTTON_TITLE}
-                          aria-expanded={reason?.item.id === item.id}
-                          aria-describedby={reason?.item.id === item.id ? REASON_PANEL_ID : undefined}
-                          className="flex h-11 w-11 items-center justify-center rounded-full bg-gray-950/70 text-white hover:bg-gray-950 md:h-auto md:w-auto md:p-1"
-                        >
-                          <InfoIcon />
-                        </button>
+                        <>
+                          <button
+                            onClick={(e) => toggleReason(e, item)}
+                            title={REASON_BUTTON_TITLE}
+                            aria-expanded={reason?.item.id === item.id}
+                            aria-describedby={reason?.item.id === item.id ? REASON_PANEL_ID : undefined}
+                            className="flex h-11 w-11 items-center justify-center rounded-full bg-gray-950/70 text-white hover:bg-gray-950 md:h-auto md:w-auto md:p-1"
+                          >
+                            <InfoIcon />
+                          </button>
+                          {reason?.item.id === item.id && (
+                            <ReasonPopover item={item} anchor={reason.anchor} onClose={closeReason} />
+                          )}
+                        </>
                       )}
                       <button
                         onClick={() => toggleSaved(item)}
@@ -658,15 +686,20 @@ function StockBrowser({
                         {item.price != null ? formatPrice(item.price, item.currency) : 'View'}
                       </a>
                         {item.reason && (
-                          <button
-                            onClick={(e) => toggleReason(e, item)}
-                            title={REASON_BUTTON_TITLE}
-                            aria-expanded={reason?.item.id === item.id}
-                            aria-describedby={reason?.item.id === item.id ? REASON_PANEL_ID : undefined}
-                            className={`w-11 h-11 flex items-center justify-center ${dismissButtonClass()}`}
-                          >
-                            <InfoIcon />
-                          </button>
+                          <>
+                            <button
+                              onClick={(e) => toggleReason(e, item)}
+                              title={REASON_BUTTON_TITLE}
+                              aria-expanded={reason?.item.id === item.id}
+                              aria-describedby={reason?.item.id === item.id ? REASON_PANEL_ID : undefined}
+                              className={`w-11 h-11 flex items-center justify-center ${dismissButtonClass()}`}
+                            >
+                              <InfoIcon />
+                            </button>
+                            {reason?.item.id === item.id && (
+                              <ReasonPopover item={item} anchor={reason.anchor} onClose={closeReason} />
+                            )}
+                          </>
                         )}
                         <button
                           onClick={() => toggleSaved(item)}
@@ -758,15 +791,20 @@ function StockBrowser({
                     <td className="px-3 py-2">
                       <div className="flex items-center justify-end gap-1">
                         {item.reason && (
-                          <button
-                            onClick={(e) => toggleReason(e, item)}
-                            title={REASON_BUTTON_TITLE}
-                            aria-expanded={reason?.item.id === item.id}
-                            aria-describedby={reason?.item.id === item.id ? REASON_PANEL_ID : undefined}
-                            className={`p-1 ${dismissButtonClass()}`}
-                          >
-                            <InfoIcon />
-                          </button>
+                          <>
+                            <button
+                              onClick={(e) => toggleReason(e, item)}
+                              title={REASON_BUTTON_TITLE}
+                              aria-expanded={reason?.item.id === item.id}
+                              aria-describedby={reason?.item.id === item.id ? REASON_PANEL_ID : undefined}
+                              className={`p-1 ${dismissButtonClass()}`}
+                            >
+                              <InfoIcon />
+                            </button>
+                            {reason?.item.id === item.id && (
+                              <ReasonPopover item={item} anchor={reason.anchor} onClose={closeReason} />
+                            )}
+                          </>
                         )}
                         <button
                           onClick={() => toggleSaved(item)}
@@ -795,7 +833,6 @@ function StockBrowser({
         )}
       </div>
 
-      {reason && <ReasonPopover item={reason.item} anchor={reason.anchor} onClose={closeReason} />}
     </div>
   )
 }

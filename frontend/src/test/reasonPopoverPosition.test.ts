@@ -24,21 +24,39 @@ describe('placeReasonPopover', () => {
     expect(top + PANEL.height / 2).toBe(anchor.top + anchor.height / 2)
   })
 
-  it('flips to the icon\'s right when the left cannot hold it', () => {
-    // A phone, where the row's actions are still at the right edge but the
-    // panel is nearly as wide as the screen.
+  it('flips to the icon\'s right when the left cannot hold it and the right can', () => {
     const anchor = anchorAt(60, 300)
-    const { left } = placeReasonPopover(anchor, PANEL, { width: 390, height: 844 })
+    const { left } = placeReasonPopover(anchor, PANEL, { width: 640, height: 844 })
     expect(left).toBe(anchor.right + REASON_POPOVER_GAP)
   })
 
-  it('pulls the flipped panel back in rather than letting it overhang the right', () => {
-    // A narrow screen where the icon is far enough left to flip, but the panel
-    // would not fit between it and the right edge.
-    const viewport = { width: 320, height: 640 }
-    const { left } = placeReasonPopover(anchorAt(40, 300), PANEL, viewport)
+  it('stacks below rather than flipping onto the icon it has to be clicked to close', () => {
+    // A phone: the icon is near the card's right-hand actions and 256px fits
+    // on neither side of it. Flipping right and clamping back would put the
+    // panel over its own toggle, which is the one place it must not go.
+    const viewport = { width: 375, height: 812 }
+    const anchor = anchorAt(264, 300, 44)
+    const { top, left } = placeReasonPopover(anchor, PANEL, viewport)
+    expect(top).toBe(anchor.top + anchor.height + REASON_POPOVER_GAP)
     expect(left).toBe(viewport.width - PANEL.width - REASON_POPOVER_EDGE)
-    expect(left + PANEL.width).toBeLessThanOrEqual(viewport.width)
+    // Clear of the icon's own band, so the second click still reaches it.
+    expect(top).toBeGreaterThanOrEqual(anchor.top + anchor.height)
+  })
+
+  it('stacks above when there is no room below', () => {
+    const viewport = { width: 375, height: 812 }
+    const anchor = anchorAt(264, 700, 44)
+    const { top } = placeReasonPopover(anchor, PANEL, viewport)
+    expect(top + PANEL.height).toBe(anchor.top - REASON_POPOVER_GAP)
+    expect(top + PANEL.height).toBeLessThanOrEqual(anchor.top)
+  })
+
+  it('still sits beside an icon that has room on its left, however narrow the screen', () => {
+    const viewport = { width: 375, height: 812 }
+    const anchor = anchorAt(320, 300, 44)
+    const { top, left } = placeReasonPopover(anchor, PANEL, viewport)
+    expect(left + PANEL.width).toBe(anchor.left - REASON_POPOVER_GAP)
+    expect(top + PANEL.height / 2).toBe(anchor.top + anchor.height / 2)
   })
 
   it('never places a panel wider than the viewport off the left edge', () => {
