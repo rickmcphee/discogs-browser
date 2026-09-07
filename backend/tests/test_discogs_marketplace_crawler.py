@@ -595,6 +595,40 @@ async def test_a_page_with_no_listing_rows_at_all_is_still_an_empty_shelf(
     assert await Crawler().search(RELEASE, page) == []
 
 
+async def test_an_unsettled_title_on_the_first_read_cannot_answer_either(
+    browser_page, monkeypatch
+):
+    """The rule `_verify_read()` applies, applied where it started.
+
+    An empty title reaches the trust gate without tripping the bot check,
+    because `_is_challenge_title("")` is false -- so a document that never
+    parsed could hand back a recognised empty state and clear the release's
+    stored price. Parsed listings are unaffected: they return before the gate.
+    """
+    async def _stats(release_id):
+        return 20
+
+    monkeypatch.setattr(dm, "_release_num_for_sale", _stats)
+    monkeypatch.setattr(dm, "_SETTLE_TIMEOUT_MS", 300)
+    page = _FakePage(browser_page, "no_usa_listings.html", titles=[""])
+
+    with pytest.raises(RuntimeError, match="never settled a title"):
+        await Crawler().search(RELEASE, page)
+
+    assert len(page.urls) == 1
+
+
+async def test_listings_still_answer_when_the_title_never_settles(browser_page, monkeypatch):
+    """The gate must not reach positive data: rows that parsed are an answer
+    whatever the title did, and refusing them would lose a real price."""
+    monkeypatch.setattr(dm, "_SETTLE_TIMEOUT_MS", 300)
+    page = _FakePage(browser_page, "usa_listings.html", titles=[""])
+
+    results = await Crawler().search(RELEASE, page)
+
+    assert [r["price"] for r in results] == [6.50, 9.25, 12.99]
+
+
 async def test_unreadable_page_raises_when_the_stats_api_will_not_answer(browser_page, monkeypatch):
     async def _stats(release_id):
         return None

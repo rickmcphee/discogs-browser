@@ -295,7 +295,13 @@ class Crawler:
                 discogs_id, status, mitigated,
             )
             raise BotDetectedError()
-        trustworthy = _response_is_clean(response) or challenge_cleared
+        # A title that never settled means the document never parsed, which
+        # `_verify_read()` already refuses to read an answer out of. The first
+        # read is held to it too: an empty title reaches here without tripping
+        # the bot check, since `_is_challenge_title("")` is false. Parsed
+        # listings are unaffected -- they return above, before this gate.
+        title_settled = bool(title.strip())
+        trustworthy = title_settled and (_response_is_clean(response) or challenge_cleared)
 
         listings, recognised, candidates = await self._read_when_ready(page, url)
         if listings:
@@ -375,6 +381,9 @@ class Crawler:
         # filter, and letting a later request's success speak for it would
         # turn a block page into "no USA sellers".
         verdict = (
+            "The unfiltered page was not consulted: this read never settled a title, so "
+            "nothing it rendered can stand as evidence"
+            if not title_settled else
             "The unfiltered page was not consulted: this response was too unclean for "
             "an empty page to be attributed to the ships_from filter"
         )
@@ -415,10 +424,10 @@ class Crawler:
                     # as the second clears the release's stored price and
                     # hides the breakage that caused it.
                     verdict = (
-                        "The unfiltered page parsed, but the filtered page's listing "
-                        "rows would not yield a price on either read, so this is a "
-                        "price shape this crawler no longer reads rather than an "
-                        "absence of USA sellers"
+                        "The unfiltered page parsed, and the filtered page's listing "
+                        "rows rendered only on the confirming read, where they would "
+                        "not yield a price -- so this is a price shape this crawler no "
+                        "longer reads rather than an absence of USA sellers"
                     )
                 # With rows ruled out, what has to reproduce is the *absence
                 # of listings*, not a recognised empty state. The premise of
