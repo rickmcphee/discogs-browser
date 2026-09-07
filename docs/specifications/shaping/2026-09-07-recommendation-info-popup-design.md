@@ -3,6 +3,15 @@
 Date: 2026-09-07
 Branch: `claude/recommendation-info-icon-popup-6n4r87`
 
+**Amendment (2026-09-07, same branch, second PR — the first merged as #320):**
+the justification is shown in an **anchored popover**, not the centred modal
+this document argued for. The modal read as too formal for a glance at one
+sentence: it dimmed the page, took focus, and asked for a deliberate Close.
+The popover opens on a click of the info icon, closes on a second click of
+that same icon, and sits to the icon's left. Everything else here stands —
+what the icon means, when it appears, the verdict it carries, where it sits
+in the row. The reversed and superseded parts are marked inline below.
+
 ## Problem
 
 A judged stock item's justification — `stock_item_judgments.reason`, written
@@ -40,14 +49,17 @@ Touches:
   `null` is "no judgment", distinct from `false`.
 - `frontend/src/views/StockBrowser.tsx` — an `InfoIcon` button immediately
   left of the save bookmark in all three views (tiles, mobile cards,
-  desktop table); a modal holding the justification; `titleTooltip()` loses
+  desktop table); a modal holding the justification (an anchored popover
+  from the second PR, `ReasonPopover`, with its placement arithmetic in
+  `frontend/src/views/reasonPopoverPosition.ts`); `titleTooltip()` loses
   its reason branch and the artist elements lose `title={item.reason}`.
 - `frontend/src/test/stockBrowser.test.tsx` also loses the assertion that the
   tile bookmark's `e.preventDefault()` stops the enclosing link, which the
   restructure makes moot.
 - Tests: `frontend/src/test/stockBrowser.test.tsx`,
   `frontend/src/test/mobileLayout.test.tsx`,
-  `backend/tests/test_stock_crud.py`.
+  `backend/tests/test_stock_crud.py`, and (second PR)
+  `frontend/src/test/reasonPopoverPosition.test.ts`.
 
 Out of scope:
 
@@ -86,21 +98,60 @@ Out of scope:
   misreading `recommendations_prompt.md` avoids by withholding the text.
   `null` (no judgment) cannot reach the popup: no judgment means no reason
   means no icon.
-- **A modal, not a popover.** The justification is a sentence of prose with
-  no anchor relationship to the row's other controls, and the same component
-  has to work on a phone. A centred modal matches the ones `App.tsx`
-  already renders, needs no positioning logic, and reads identically at
-  every width. Escape and a backdrop click dismiss it; focus moves into the
-  panel on open and returns to the icon that opened it on close.
-- **The opener is handed over, not looked up.** The click passes its own
+- ~~**A modal, not a popover.**~~ *Reversed — see the amendment below.* The
+  justification is a sentence of prose with no anchor relationship to the
+  row's other controls, and the same component has to work on a phone. A
+  centred modal matches the ones `App.tsx` already renders, needs no
+  positioning logic, and reads identically at every width. Escape and a
+  backdrop click dismiss it; focus moves into the panel on open and returns
+  to the icon that opened it on close.
+- ~~**The opener is handed over, not looked up.**~~ *Superseded: nothing takes
+  focus now, so there is none to give back.* The click passed its own
   `currentTarget` into the dialog's state rather than letting the dialog read
-  `document.activeElement` on mount: Safari does not focus a button on
-  pointer activation, so the lookup would find the body and give focus back
-  to nothing. jsdom behaves the same way, which is what the test asserts on.
-  A restore target that a refetch has since detached is skipped.
+  `document.activeElement` on mount, because Safari does not focus a button on
+  pointer activation. The click still hands over its `currentTarget`, but as
+  the element the popover measures itself against.
 - **The panel caps its height and scrolls.** A reason is free text — a CSV
-  import writes it unbounded — so on a short viewport a long one would push
-  the Close button past the bottom edge of a panel that could not scroll.
+  import writes it unbounded — so a long one would otherwise run off the
+  screen. (`max-h-64` on the popover, where the modal used `max-h-[85dvh]`.)
+
+**Amendment (2026-09-07, second PR): a popover, opened and closed by its own
+icon.**
+
+- **The icon is the whole control.** A click opens the popover, a second
+  click on the same icon closes it, and a click on another row's icon moves
+  it there rather than opening a second. Escape closes it, and so does a
+  press anywhere outside it — but never a press on the icon itself, which
+  belongs to the toggle: dismissing there would leave the click that follows
+  to reopen what it was meant to close. There is no Close button, because
+  the thing that opened it is always right there.
+- **Anchored to the icon's left.** That is where the space is: the icon sits
+  in the row's right-hand action group, so the row's own width is free on
+  that side. It flips to the right only when the left cannot hold it, and is
+  clamped to the viewport on both axes.
+- **Positioned fixed, measured after render.** The table and the card list
+  are both `overflow-auto`, so a popover positioned inside them would be
+  clipped for a row at the top or bottom edge — unrecoverably, since
+  overflow above the container does not become scrollable. Fixed coordinates
+  computed from the icon's own rect avoid that in every view, and are
+  recomputed on scroll (capturing, so the table's own scroll counts) and on
+  resize. The panel's size is an input to that placement, so it is measured
+  in a layout effect and held hidden for the frame before it is placed.
+  `placeReasonPopover` (`frontend/src/views/reasonPopoverPosition.ts`) is
+  that arithmetic, pure and tested on its own — jsdom measures every element
+  as a zero-sized box at the origin, so this geometry cannot be asserted
+  through a rendered component.
+- **It takes no focus and holds nothing focusable.** A glance at one sentence
+  should not move the caret or trap Tab. It stays out of the tab order and
+  reaches assistive tech through `aria-describedby` on the icon, with
+  `aria-expanded` saying whether it is open — the disclosure pattern for a
+  control that reveals text rather than a dialog that owns interaction. This
+  is what retires the focus trap, the focus restoration and the backdrop.
+- **It does not name the record.** The modal did, to keep a comparison row's
+  substituted `listing_title` from crediting the judgment to a pressing the
+  judge never saw. A popover pinned to the row it belongs to cannot be
+  ambiguous about which row that is, so the line goes and the hazard with
+  it.
 - **The icon is the row's third action, in the actions group.** Immediately
   left of the bookmark in each view, so the row's controls stay in one
   place: cost link, info, save. In tiles the bookmark is an overlay on the
@@ -135,30 +186,38 @@ Out of scope:
 - The tooltip tests are inverted: an item with a reason renders no
   `title` on its artist cell or its tile-view artist text, in either view.
 - An item with a reason renders an info button; one without renders none.
-- Clicking the info button opens a dialog holding the reason, headed
+- Clicking the info button opens a popover holding the reason, labelled
   "Recommended" for `recommended: true` and "Not recommended" for `false`.
-- A comparison row's dialog names the target, not the row's own
-  `listing_title` — it fails if the subtitle takes the substituted name.
-- The dialog closes on its Close button and on Escape, and closing hands
-  focus back to the info button — a click never focuses it in jsdom, so this
-  fails outright if the dialog looks its opener up instead of being given it.
-- The panel is capped and scrollable rather than able to overflow a short
-  viewport.
-- A backdrop click closes the dialog — its own dismissal path, and the only
-  pointer route out.
-- Tab and Shift+Tab stay inside the dialog from every starting point the
-  trap branches on — the panel itself, the first and last controls, and
-  focus that has escaped it entirely.
+- A second click on the same icon closes it — with the press that precedes
+  that click fired too, since the outside-dismiss listener sees it first and
+  has to let it through.
+- Escape closes it, and so does a press outside it; a press inside it does
+  not.
+- A click on another row's icon moves the popover rather than opening a
+  second one.
+- The open icon reports `aria-expanded` and points `aria-describedby` at the
+  popover's id; a closed one reports neither.
+- The popover is positioned fixed, with coordinates and visibility set — the
+  geometry itself belongs to `reasonPopoverPosition.test.ts`.
+- It does not name the record, on a comparison row carrying a
+  `listing_title` least of all.
+- A long reason scrolls inside it rather than growing it.
 - Neither tile button is inside the listing link, and clicking one never
   reaches it.
 - The info button sits before the save button in the row's actions.
 
+`frontend/src/test/reasonPopoverPosition.test.ts` (new): the popover sits a
+gap to the icon's left and centred on it; flips right when the left cannot
+hold it; is pulled back in rather than overhanging the right edge after that
+flip; and is clamped at the top and bottom for a row at either edge of the
+viewport, including a panel taller than the viewport itself.
+
 `frontend/src/test/mobileLayout.test.tsx`:
 
-- The card's info button opens the same dialog, and its touch target is
-  44px.
-- A card with a reason does not render it inline, and the dialog it opens
-  heads a `recommended: false` item "Not recommended".
+- The card's info button opens the same popover and closes it on a second
+  click, and its touch target is 44px.
+- A card with a reason does not render it inline, and the popover it opens
+  labels a `recommended: false` item "Not recommended".
 
 `backend/tests/test_stock_crud.py` (where the rest of `get_stock_items`'
 per-row payload is covered):
