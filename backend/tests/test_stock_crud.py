@@ -403,7 +403,7 @@ def test_get_stock_items_carries_the_judgment_verdict_beside_its_reason(admin_co
     assert (by_key[unjudged_key]["recommended"], by_key[unjudged_key]["reason"]) == (None, None)
 
 
-def test_get_stock_items_comparison_rows_carry_owns_judgment(admin_conn):
+def test_get_stock_items_comparison_rows_carry_the_judgment_of_the_item_they_hang_under(admin_conn):
     alice = db.create_user(admin_conn, discogs_user_id=1, discogs_username="alice")
     db.register_crawler(admin_conn, "Nuclear Blast", "/x.py", crawler_type="catalog")
     db.register_crawler(admin_conn, "Amazon", "/y.py", crawler_type="release")

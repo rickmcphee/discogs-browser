@@ -415,6 +415,31 @@ describe('StockBrowser', () => {
     expect(document.activeElement).toBe(info)
   })
 
+  it('names the target in the dialog, not a comparison row\'s substituted title', async () => {
+    // The judgment is made against an item_key. A comparison row displays the
+    // marketplace's name for what it matched, which can be another pressing --
+    // crediting the reason to that would attribute it to a record the judge
+    // never saw.
+    getStock.mockResolvedValue({
+      total: 1, row_total: 2, page: 1, per_page: 250,
+      items: [
+        { ...items[0], reason: 'Similar to your hardcore collection', recommended: true },
+        {
+          ...items[0], id: 'k1:Amazon', is_own: false, source: 'Amazon',
+          listing_title: 'Rob Zombie - The Great Satan [Standard Black LP]',
+          reason: 'Similar to your hardcore collection', recommended: true,
+        },
+      ],
+    })
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('Rob Zombie - The Great Satan [Standard Black LP]')).toBeTruthy())
+
+    fireEvent.click(screen.getAllByTitle('Recommendation details')[1])
+    const dialog = screen.getByRole('dialog')
+    expect(dialog.textContent).toContain('The Great Satan — Ghostly Black Vinyl')
+    expect(dialog.textContent).not.toContain('Standard Black LP')
+  })
+
   it('closes the reason dialog on a backdrop click', async () => {
     // Its own dismissal path: an aria-hidden, untabbable button behind the
     // panel. Layered wrong or wired to nothing, the pointer route out is gone

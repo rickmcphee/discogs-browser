@@ -74,6 +74,12 @@ Out of scope:
   the judgment would put one on nearly every row in the Store tab and open
   an empty popup from each. The icon's promise is "there is something to
   read here", and it only makes that promise when there is.
+- **The popup names the target, not the row.** Its subtitle renders
+  `item.title` rather than `displayTitle()`'s substituted name. A judgment is
+  made against an `item_key`; a comparison row shows what its marketplace
+  called the thing it matched, which the listing-title design exists because
+  it can be another pressing. Crediting the reason to that name would
+  attribute it to a record the judge never saw.
 - **The popup names the polarity.** "Recommended" or "Not recommended" as
   the heading, from the new `recommended` field. Without it, a rejection's
   imported reason would render under recommendation framing — the exact
@@ -131,6 +137,8 @@ Out of scope:
 - An item with a reason renders an info button; one without renders none.
 - Clicking the info button opens a dialog holding the reason, headed
   "Recommended" for `recommended: true` and "Not recommended" for `false`.
+- A comparison row's dialog names the target, not the row's own
+  `listing_title` — it fails if the subtitle takes the substituted name.
 - The dialog closes on its Close button and on Escape, and closing hands
   focus back to the info button — a click never focuses it in jsdom, so this
   fails outright if the dialog looks its opener up instead of being given it.
