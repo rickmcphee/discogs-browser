@@ -8,7 +8,7 @@ import SourceFilter from '../components/SourceFilter'
 import StockStats from '../components/StockStats'
 import StockFilter from '../components/StockFilter'
 import { formatPrice } from './formatPrice'
-import { placeReasonPopover, type Insets, type Placement } from './reasonPopoverPosition'
+import { placeReasonPopover, reasonPopoverMaxWidth, type Insets, type Placement } from './reasonPopoverPosition'
 import { useIsMobile } from '../hooks/useMediaQuery'
 import { ArtistSidebar, ArtistSheetButton } from '../components/ArtistFilter'
 import MobileSort, { type SortOption } from '../components/MobileSort'
@@ -170,19 +170,24 @@ function ReasonPopover({ item, anchor, onClose }: { item: StockItem; anchor: HTM
       // The size the panel wants, which is not the size it currently has: the
       // last placement capped it, and measuring that back would keep it there
       // -- a panel opened on a narrow screen would never widen again when the
-      // screen did. The caps come off for the measurement and the placement
-      // decides them afresh. Width first, because the height depends on it:
-      // measure a 256px-wide panel and the text has not yet reflowed to the
-      // narrower one it is about to be given, so the height comes out short.
-      // Written and read in a layout effect, so nothing uncapped is painted.
+      // screen did. So the caps come off and the placement decides them
+      // afresh. Written and read inside a layout effect, so nothing uncapped
+      // is painted.
       panel.style.maxWidth = ''
       panel.style.maxHeight = ''
+      const natural = panel.getBoundingClientRect().width
+      // Then the width goes back on before the height is read, because the
+      // height depends on it: the text reflows to whatever width the screen
+      // leaves, and a height measured at the wider layout comes out short --
+      // clipping the reason into a scrollbar with room to spare below it.
+      panel.style.maxWidth = `${Math.min(natural, reasonPopoverMaxWidth(viewport))}px`
       const box = panel.getBoundingClientRect()
       const placement = placeReasonPopover(rect, {
-        width: box.width,
+        width: natural,
         // scrollHeight is the content's own height whatever cap is applied,
         // and the difference between the box and the client area is the
-        // border it leaves out.
+        // border it leaves out. Both read at the capped width, so they are
+        // measurements of the same panel.
         height: panel.scrollHeight + (box.height - panel.clientHeight),
       }, viewport)
       // Put them back here rather than leaving it to the render setPos

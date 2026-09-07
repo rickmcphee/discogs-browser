@@ -53,6 +53,16 @@ export interface Placement {
   maxWidth: number
 }
 
+/** The widest the popover may render on this screen. Exported because the
+ *  panel has to be held to it *before* its content height is measured -- the
+ *  text reflows to this width, and a height read at a wider layout comes out
+ *  short. `placeReasonPopover` applies the same cap, so passing it an
+ *  already-capped width changes nothing. */
+export function reasonPopoverMaxWidth(viewport: Viewport): number {
+  const insets = viewport.insets ?? NO_INSETS
+  return viewport.width - insets.left - insets.right - 2 * REASON_POPOVER_EDGE
+}
+
 function clamp(value: number, lowest: number, highest: number): number {
   // Lowest wins a crossed range: a panel too big for the space is pinned to
   // the top-left edge rather than pushed off the opposite one.
@@ -81,7 +91,7 @@ export function placeReasonPopover(anchor: Rect, panel: Size, viewport: Viewport
   // The safe screen, not the raw viewport: capping height against
   // `viewport.height` alone lets a panel through that is taller than the room
   // between the insets, and then every bound crosses its own start.
-  const width = Math.min(panel.width, viewport.width - insets.left - insets.right - 2 * REASON_POPOVER_EDGE)
+  const width = Math.min(panel.width, reasonPopoverMaxWidth(viewport))
   const height = Math.min(
     panel.height,
     REASON_POPOVER_MAX_HEIGHT,

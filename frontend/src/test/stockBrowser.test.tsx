@@ -703,17 +703,43 @@ describe('StockBrowser', () => {
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     fireEvent.click(screen.getByTitle('Recommendation details'))
 
-    const popover = screen.getByRole("note") as HTMLElement
-    let widthWhenMeasured = ''
+    const popover = screen.getByRole('note') as HTMLElement
+    const widthsWhenMeasured: string[] = []
     popover.getBoundingClientRect = function () {
-      widthWhenMeasured = this.style.maxWidth
-      return { top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0, x: 0, y: 0, toJSON: () => ({}) } as DOMRect
+      widthsWhenMeasured.push(this.style.maxWidth)
+      return boxAt(0, 0, 256, 96)
     }
+    setViewport(240, 768)
     fireEvent(window, new Event('resize'))
 
-    expect(widthWhenMeasured).toBe('')
+    // The first measurement is the width the panel would take given the room.
+    expect(widthsWhenMeasured[0]).toBe('')
     // And put back, since React will not re-write a value it thinks is set.
-    expect(popover.style.maxWidth).not.toBe('')
+    expect(popover.style.maxWidth).toBe('224px')
+  })
+
+  it('reflows the text to the width it will get before measuring its height', async () => {
+    // scrollHeight read at the uncapped width is the height of a panel that
+    // is about to be narrowed: the text has not wrapped yet, so the reason
+    // gets clipped into a scrollbar with vertical room going spare.
+    getStock.mockResolvedValue(judged(true))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByTitle('Recommendation details'))
+
+    const popover = screen.getByRole('note') as HTMLElement
+    let widthWhenHeightRead: string | undefined
+    Object.defineProperty(popover, 'scrollHeight', {
+      configurable: true,
+      get() { widthWhenHeightRead = this.style.maxWidth; return 0 },
+    })
+    popover.getBoundingClientRect = () => boxAt(0, 0, 256, 96)
+    setViewport(240, 768)
+    fireEvent(window, new Event('resize'))
+
+    // 240 less the 8px margin on each side: the width the placement will
+    // give it, not the 256px it asks for.
+    expect(widthWhenHeightRead).toBe('224px')
   })
 
   it('closes when a refetch moves its row off the screen without a scroll', async () => {
