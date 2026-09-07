@@ -2,6 +2,7 @@ import math
 import re
 import time
 import urllib.parse
+from collections import namedtuple
 from typing import Optional
 
 import httpx
@@ -13,6 +14,15 @@ from logging_config import get_logger
 log = get_logger("crawlers.discogs_marketplace")
 
 _AMOUNT_RE = re.compile(r"[\d,]+\.\d{2}")
+
+# `candidates` is separate from `recognised` because a page whose listing rows
+# match `_ROW_SELECTORS` but whose prices none of them yield is not the same
+# page as one with no listing rows at all -- the first is a price shape this
+# crawler no longer reads, the second is an absence of sellers. Collapsing them
+# lets a changed price format be reported as "nothing ships from the USA",
+# which clears the release's stored price instead of naming the breakage.
+# `answered` is whether the response itself could be believed at all.
+_Read = namedtuple("_Read", "listings recognised answered candidates")
 
 _USER_AGENT = "DiscogsCollectionBrowser/1.0 +https://github.com/local/discogs-browser"
 
@@ -124,6 +134,22 @@ def _parse_amount(text: str) -> Optional[float]:
     return float(match.group()) if match else None
 
 
+def _response_is_clean(response) -> bool:
+    """Whether a response is sound enough to read a destructive conclusion from.
+
+    None is Playwright's same-document case, which carries no status to
+    doubt. Anything else has to have answered without an error status and
+    without Cloudflare marking it as mitigated: an error body that happens to
+    contain a container we recognise would otherwise be read as a listings
+    page or an empty state, and the empty result clears a stored price.
+    """
+    if response is None:
+        return True
+    if response.status >= 400:
+        return False
+    return not response.headers.get("cf-mitigated")
+
+
 async def _release_num_for_sale(release_id: str) -> Optional[int]:
     """How many copies Discogs itself says are for sale, or None if it won't say.
 
@@ -160,7 +186,11 @@ async def _release_num_for_sale(release_id: str) -> Optional[int]:
         return None
 
 
-async def _await_settled_title(page) -> str:
+def _is_challenge_title(title: str) -> bool:
+    return any(c in title.lower() for c in _CHALLENGE_TITLES)
+
+
+async def _await_settled_title(page):
     """Wait out Cloudflare's interstitial and return the page's settled title.
 
     The challenge is always what renders first, so reading the title straight
@@ -171,15 +201,28 @@ async def _await_settled_title(page) -> str:
     An empty title is unsettled too, not evidence of a real page: navigation
     resolves at `commit`, before the parser has necessarily reached <title>,
     and a challenge read at that instant would otherwise pass the bot check
-    and go on to be reported as unrecognised markup."""
+    and go on to be reported as unrecognised markup.
+
+    Returns (title, challenge_cleared). The second half is what lets a caller
+    trust a page whose *response* looks bad: `page.goto()` reports the
+    navigation it started, and a challenge that clears does so by reloading,
+    so the 403 or 503 Cloudflare served with the interstitial stays on that
+    response while the DOM underneath becomes the real page. Having watched
+    the title turn from a challenge into a real one is the evidence that this
+    is what happened, and it is the only signal here that separates a cleared
+    challenge from a block page that simply never said so. An empty title
+    that fills in is not that -- it is just the parser catching up -- so only
+    a title that was actually a challenge counts."""
     deadline = time.monotonic() + _SETTLE_TIMEOUT_MS / 1000
+    challenge_seen = False
     title = await page.title()
-    while not title.strip() or any(c in title.lower() for c in _CHALLENGE_TITLES):
+    while not title.strip() or _is_challenge_title(title):
+        challenge_seen = challenge_seen or _is_challenge_title(title)
         if time.monotonic() >= deadline:
-            return title
+            return title, False
         await page.wait_for_timeout(500)
         title = await page.title()
-    return title
+    return title, challenge_seen
 
 
 class Crawler:
@@ -201,6 +244,16 @@ class Crawler:
     def search_url(cls, release: dict) -> str:
         release_id = release["discogs_id"][1:]
         query = urllib.parse.urlencode({"ships_from": "United States", "sort": "price,asc"})
+        return f"https://www.discogs.com/sell/release/{release_id}?{query}"
+
+    @classmethod
+    def unfiltered_url(cls, release_id: str) -> str:
+        """The same release's marketplace page with no `ships_from` filter.
+
+        Differs from search_url() in that one parameter and nothing else, so
+        reading it answers exactly one question -- whether the filter is what
+        emptied the page -- rather than several at once."""
+        query = urllib.parse.urlencode({"sort": "price,asc"})
         return f"https://www.discogs.com/sell/release/{release_id}?{query}"
 
     async def search(self, release: dict, page) -> list[dict]:
@@ -235,15 +288,22 @@ class Crawler:
                 status, discogs_id, mitigated,
             )
 
-        title = await _await_settled_title(page)
-        if any(c in title.lower() for c in _CHALLENGE_TITLES):
+        title, challenge_cleared = await _await_settled_title(page)
+        if _is_challenge_title(title):
             log.warning(
                 "[Discogs] bot interstitial did not clear for release %s (HTTP %s, cf-mitigated=%s)",
                 discogs_id, status, mitigated,
             )
             raise BotDetectedError()
+        # A title that never settled means the document never parsed, which
+        # `_verify_read()` already refuses to read an answer out of. The first
+        # read is held to it too: an empty title reaches here without tripping
+        # the bot check, since `_is_challenge_title("")` is false. Parsed
+        # listings are unaffected -- they return above, before this gate.
+        title_settled = bool(title.strip())
+        trustworthy = title_settled and (_response_is_clean(response) or challenge_cleared)
 
-        listings, recognised = await self._read_when_ready(page, url)
+        listings, recognised, candidates = await self._read_when_ready(page, url)
         if listings:
             best = listings[0]
             log.info(
@@ -252,7 +312,34 @@ class Crawler:
             )
             return listings
 
-        if recognised:
+        # Rows that settled without yielding a price are direct evidence that
+        # this release has USA listings the crawler can no longer read, and
+        # they outrank every empty answer below -- the stats API reporting
+        # zero, or a confirming read that happens to find no rows, would
+        # otherwise clear the release's stored price with the contradiction
+        # in plain sight. Checked after the listings above, so rows that were
+        # merely mid-render when first seen still return their prices.
+        if candidates:
+            raise RuntimeError(
+                f"Discogs listings markup not recognised for release {discogs_id} "
+                f"(HTTP {status}, cf-mitigated={mitigated}, page title {title!r}). "
+                f"The filtered page's listing rows would not yield a price, so this "
+                f"is a price shape this crawler no longer reads rather than an "
+                f"absence of USA sellers. Re-check the selectors in {__name__} "
+                f"against {url}"
+            )
+
+        # An empty state is only an answer if this page can be believed. On a
+        # response that was neither clean nor a challenge we watched clear,
+        # it falls through to the checks below instead of returning here --
+        # an error body carrying markup we happen to recognise would
+        # otherwise clear the release's stored price, and those checks demand
+        # far better evidence than one page's DOM. Parsed listings are not
+        # gated the same way: they are positive data, they cannot erase
+        # anything, and refusing them would throw away the correct answer
+        # every time a challenge cleared -- the case this crawler is built
+        # around.
+        if recognised and trustworthy:
             log.info("[Discogs] no USA-shipping listings for release %s", discogs_id)
             return []
 
@@ -267,19 +354,219 @@ class Crawler:
             log.info("[Discogs] release %s has no copies for sale at all", discogs_id)
             return []
 
+        # Copies existing is not the same as copies existing *under this
+        # crawl's filter*, and conflating the two is what made this raise on
+        # pages it had read perfectly well. `num_for_sale` is a worldwide
+        # count -- the stats API has no `ships_from` parameter -- while the
+        # page just read was narrowed to United States sellers. A release
+        # pressed for Europe with every copy still in Europe therefore lands
+        # here on a page that rendered an honest "nothing matches", and the
+        # worldwide count, being non-zero, reported it as broken markup. It
+        # can never do otherwise: the zero branch above is reachable only for
+        # a release with no copies anywhere on earth.
+        #
+        # What settles it is re-reading the same release unfiltered with the
+        # same selectors. Recognising that page proves the markup is still
+        # understood, which leaves the filter as the only thing that could
+        # have emptied the first one. Not recognising it means the selectors
+        # really have gone stale, and the complaint below stands.
+        # Two things have to hold before an empty page can be blamed on the
+        # filter, and each needs its own read. The unfiltered page must parse,
+        # which proves the selectors still work; and the filtered page must
+        # render empty *again*, which proves its first empty rendering was
+        # what the site had rather than a slow one caught mid-flight. Neither
+        # is worth asking unless this response was itself clean -- a 4xx/5xx,
+        # or a `cf-mitigated` body whose title missed the challenge list,
+        # rendered no listings for a reason that has nothing to do with the
+        # filter, and letting a later request's success speak for it would
+        # turn a block page into "no USA sellers".
+        verdict = (
+            "The unfiltered page was not consulted: this read never settled a title, so "
+            "nothing it rendered can stand as evidence"
+            if not title_settled else
+            "The unfiltered page was not consulted: this response was too unclean for "
+            "an empty page to be attributed to the ships_from filter"
+        )
+        if trustworthy:
+            unfiltered = await self._verify_read(
+                page, self.unfiltered_url(release_id),
+                f"checking whether the ships_from filter explains the empty page for {discogs_id}",
+            )
+            if unfiltered.candidates and not unfiltered.listings:
+                # A page can render an empty-state marker *and* listing rows
+                # whose prices will not parse, and `_read_when_ready()` calls
+                # that recognised on the strength of the marker alone. Rows
+                # take precedence here as they do on the other two reads:
+                # they are evidence the price markup is broken, which is the
+                # opposite of the validation this branch is looking for.
+                verdict = (
+                    "The unfiltered page's own listing rows would not yield a price, so "
+                    "this is a price shape this crawler no longer reads rather than an "
+                    "absence of USA sellers"
+                )
+            elif not unfiltered.recognised:
+                verdict = (
+                    "The same release read without the ships_from filter "
+                    "was unreadable too"
+                )
+            elif not unfiltered.answered:
+                # Kept apart from the line above because they send an operator
+                # to different places. This one parsed; what it could not do is
+                # vouch for anything, its own response having been a block page
+                # or a document that never settled a title. Calling that
+                # "unreadable" would point at selectors that just demonstrably
+                # worked.
+                verdict = (
+                    "The same release read without the ships_from filter parsed, but its "
+                    "own response could not be trusted, so it cannot corroborate an empty "
+                    "filtered page"
+                )
+            else:
+                # `_read_when_ready` reports an exhausted deadline and
+                # unknown markup identically, so the first read cannot tell
+                # "no USA sellers" from "this page was slow just now". Only a
+                # second filtered read separates them -- and if the listings
+                # were merely late, it finds them, which beats both the empty
+                # result and the raise.
+                confirm = await self._verify_read(
+                    page, url, f"confirming the empty filtered page for {discogs_id}",
+                )
+                listings = confirm.listings
+                if listings:
+                    log.info(
+                        "[Discogs] release %s: %d USA-shipping listing(s) on a second "
+                        "read, cheapest %s %s -- the first read was early, not empty",
+                        discogs_id, len(listings),
+                        listings[0].get("currency"), listings[0].get("price"),
+                    )
+                    return listings
+                elif confirm.candidates:
+                    # Listing rows are there; their prices are what this
+                    # crawler could not read. That is a price shape it no
+                    # longer understands, not an absence of USA sellers, and
+                    # the two must not share an answer -- reporting the first
+                    # as the second clears the release's stored price and
+                    # hides the breakage that caused it.
+                    verdict = (
+                        "The unfiltered page parsed, and the filtered page's listing "
+                        "rows rendered only on the confirming read, where they would "
+                        "not yield a price -- so this is a price shape this crawler no "
+                        "longer reads rather than an absence of USA sellers"
+                    )
+                # With rows ruled out, what has to reproduce is the *absence
+                # of listings*, not a recognised empty state. The premise of
+                # this whole path is that Discogs's empty state is one this
+                # crawler cannot name -- demanding it here would mean the
+                # case this exists for could never reach the empty result at
+                # all. Two independent windows finding no listing rows,
+                # either side of an unfiltered read that parsed, is what
+                # separates "no USA sellers" from "slow just then";
+                # recognising the real empty markup would settle it at the
+                # first read and retire this path entirely.
+                elif confirm.answered:
+                    log.info(
+                        "[Discogs] no USA-shipping listings for release %s (%s for sale "
+                        "worldwide, the unfiltered page parsed and the filtered page "
+                        "rendered no listings twice, so the ships_from filter emptied "
+                        "it rather than stale selectors)",
+                        discogs_id,
+                        f"{num_for_sale} copies" if num_for_sale is not None
+                        else "an unknown number of copies",
+                    )
+                    return []
+                else:
+                    verdict = (
+                        "The unfiltered page parsed, but the confirming re-read of the "
+                        "filtered page did not answer cleanly, so its empty state was "
+                        "never confirmed"
+                    )
+
         raise RuntimeError(
             f"Discogs listings markup not recognised for release {discogs_id} "
             f"(HTTP {status}, cf-mitigated={mitigated}, page title {title!r}, "
             f"{num_for_sale if num_for_sale is not None else 'unknown'} "
-            f"copies for sale per the marketplace API) -- re-check the selectors in "
-            f"{__name__} against {url}"
+            f"copies for sale per the marketplace API). {verdict}. "
+            f"Re-check the selectors in {__name__} against {url}"
         )
+
+    async def _verify_read(self, page, url: str, what: str):
+        """Navigate to `url` again and read it with the same selectors.
+
+        Returns a `_Read`. `answered` is whether the response itself could
+        be believed and the document actually parsed; `recognised`
+        additionally requires the DOM to have rendered something known; and
+        `candidates` is whether listing rows were present at all, however
+        unreadable their prices. They are separate because the
+        callers want different strengths of evidence: proving the selectors
+        still work needs a page we positively recognise, while confirming an
+        absence of listings only needs a clean response that produced none --
+        Discogs's empty state is markup this crawler cannot name, which is
+        the whole reason this path exists. Neither is available from an
+        unclean response: a block page or an error body cannot be evidence
+        for the destructive empty result any more than the first response
+        could, and may well contain a container we would parse.
+
+        Stalls and interstitials are re-raised in the shapes the first read
+        gives them, never folded into the caller's markup complaint, because
+        the pool keys its recovery on the exception type. A Playwright
+        timeout is what makes `CrawlManager._process_claimed_rows` discard
+        this crawler's browser context, so a navigation that stalls here has
+        to escape as one or the dead socket pool is inherited by every job
+        after it; and `BotDetectedError` is what makes `_paced_search` reset
+        the context and retry, which a challenge on this read deserves as
+        much as a challenge on the first.
+        """
+        try:
+            response = await page.goto(url, wait_until="commit", timeout=_NAVIGATION_TIMEOUT_MS)
+        except PlaywrightTimeoutError:
+            log.warning(
+                "[Discogs] no response from %s within %ds while %s",
+                url, _NAVIGATION_TIMEOUT_MS // 1000, what,
+            )
+            raise
+
+
+        title, challenge_cleared = await _await_settled_title(page)
+        if _is_challenge_title(title):
+            log.warning("[Discogs] bot interstitial did not clear on %s while %s", url, what)
+            raise BotDetectedError()
+
+        # Read before judging the response. `answered` gates the evidence a
+        # caller may use to *corroborate an empty result*, and nothing else --
+        # so listings parsed here are still returned, because they are
+        # positive data that cannot erase anything, and discarding them over
+        # a stale status or a title would throw away a real price for the
+        # same bad reason this branch declined to gate the first read's.
+        listings, recognised, candidates = await self._read_when_ready(page, url)
+
+        if not title.strip():
+            # An empty title means the document never parsed, which this
+            # module treats as unsettled everywhere else. It cannot support
+            # the destructive answer, whatever else it rendered.
+            log.warning(
+                "[Discogs] %s never settled a title while %s, so nothing it rendered "
+                "can corroborate an empty result", url, what,
+            )
+            return _Read(listings, recognised, False, candidates)
+
+        if not (_response_is_clean(response) or challenge_cleared):
+            log.warning(
+                "[Discogs] %s answered HTTP %s (cf-mitigated=%s) while %s, so its markup "
+                "cannot corroborate an empty result",
+                url, response.status if response is not None else None,
+                response.headers.get("cf-mitigated") if response is not None else None, what,
+            )
+            return _Read(listings, recognised, False, candidates)
+
+        return _Read(listings, recognised, True, candidates)
 
     async def _read_when_ready(self, page, url: str):
         """Poll until a row actually parses or a visible empty state renders.
 
-        Returns (listings, recognised); recognised is False only if the
-        deadline passed with neither.
+        Returns (listings, recognised, candidates); recognised is False only
+        if the deadline passed with neither, and candidates says whether the
+        page had listing rows at all -- which is what separates a price shape
+        this crawler can no longer read from an absence of sellers.
 
         Waiting for a price-shaped node to attach would be weaker than what
         the caller needs. _parse_row() rejects a matched row whose price is a
@@ -291,17 +578,21 @@ class Crawler:
         """
         deadline = time.monotonic() + _LISTINGS_TIMEOUT_MS / 1000
         while True:
-            listings = await self._read_listings(page, url)
+            listings, candidates = await self._read_listings(page, url)
             if listings:
-                return listings, True
+                return listings, True, candidates
             if await self._empty_state_rendered(page):
-                return [], True
+                return [], True, candidates
             if time.monotonic() >= deadline:
-                return [], False
+                # The final observation rather than any made along the way: a
+                # skeleton row that appears and is replaced should not leave
+                # the settled page looking like it had listings.
+                return [], False, candidates
             await page.wait_for_timeout(_POLL_INTERVAL_MS)
 
-    async def _read_listings(self, page, url: str) -> list[dict]:
-        """Every listing row the page rendered, cheapest first.
+    async def _read_listings(self, page, url: str):
+        """(listings, candidates): every listing row the page rendered,
+        cheapest first, and whether it had listing rows at all.
 
         Sorted here rather than trusting the `sort=price,asc` URL parameter --
         that parameter has never been confirmed against the live page, and a
@@ -314,19 +605,22 @@ class Crawler:
         # first selector that matched anything would raise on a page whose
         # listings a later container would have found.
         listings = []
+        candidates = False
         for selector in _ROW_SELECTORS:
             rows = page.locator(selector)
-            for i in range(await rows.count()):
+            count = await rows.count()
+            candidates = candidates or count > 0
+            for i in range(count):
                 parsed = await self._parse_row(rows.nth(i), url)
                 if parsed:
                     listings.append(parsed)
             if listings:
                 break
         if not listings:
-            return []
+            return [], candidates
 
         listings.sort(key=lambda x: (x["price"] is None, x["price"] or 0.0, x["shipping"] or 0.0))
-        return listings
+        return listings, candidates
 
     async def _parse_row(self, row, url: str) -> Optional[dict]:
         price_el = row.locator("[data-pricevalue], td.item_price .price").first
