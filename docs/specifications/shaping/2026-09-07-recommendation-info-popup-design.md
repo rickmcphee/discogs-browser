@@ -149,7 +149,14 @@ icon.**
   there, scrolling what it cannot show, rather than being clamped over the
   icon. The one case it will still cover the icon is a viewport barely taller
   than the icon itself, where the alternative is a sliver too short to read;
-  Escape and a press outside remain.
+  Escape and a press outside remain. The viewport it clamps against is the
+  *safe* one: `window.innerWidth`/`innerHeight` count a notch and a home
+  indicator as usable screen, the app's own layout does not (`px-safe` in
+  `index.css`, whose comment names the landscape-notch case), and a popover
+  clamped under a notch is unreadable at exactly the edge it was pushed to.
+  The insets come off a throwaway element carrying them as real padding —
+  `env()` cannot be read from script, and a custom property holding one comes
+  back unresolved.
 - **Positioned fixed, measured after render.** The table and the card list
   are both `overflow-auto`, so a popover positioned inside them would be
   clipped for a row at the top or bottom edge — unrecoverably, since
@@ -180,6 +187,9 @@ icon.**
   focus/blur rather than a live `activeElement` read: focus has usually moved
   on by cleanup time, and where the browser moved it to the icon itself the
   blur clears the flag, so this never takes focus back from where it belongs.
+  With `preventScroll`, since one of the ways this closes is the user
+  scrolling — focusing an icon they have just scrolled away from would have
+  the browser scroll it back and undo them.
   That is the whole of the focus handling: no trap, no restoration when the
   panel never had focus, no backdrop. The panel carries no `aria-label`: it is the
   `aria-describedby` target, and per accname a name on it would win the text
@@ -303,7 +313,8 @@ reports a `maxHeight` throughout — the height the panel asked for wherever
 that fits, and on the roomier side of an icon that a short viewport leaves no
 room beside, above or below, the room actually available there; the height
 asked for again where even the roomier side is too short to be worth
-reading.
+reading; and stays out of the safe-area insets a notched screen reserves,
+on the left, the right and the bottom.
 
 `frontend/src/test/mobileLayout.test.tsx`:
 

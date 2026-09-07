@@ -12,6 +12,7 @@ import {
   placeReasonPopover,
   REASON_POPOVER_EDGE,
   REASON_POPOVER_MAX_HEIGHT,
+  type Insets,
   type Placement,
 } from './reasonPopoverPosition'
 import { useIsMobile } from '../hooks/useMediaQuery'
@@ -104,6 +105,29 @@ function BookmarkIcon({ filled }: { filled: boolean }) {
 // itself is in the tab order for one reason only: a reason long enough to
 // clip has to be scrollable by keyboard, which Safari will not do for a
 // container it cannot focus.
+// `env()` cannot be read from script, and a custom property holding one comes
+// back unresolved, so the value is taken off a throwaway element that has the
+// insets as real padding. Created and removed per call: this runs when the
+// popover opens or the viewport resizes, not per frame, and a probe left in
+// the document is a thing to explain later. Everything without safe areas --
+// every desktop, and jsdom -- reports zero.
+function safeAreaInsets(): Insets {
+  const probe = document.createElement('div')
+  probe.style.cssText = 'position:fixed;top:0;left:0;visibility:hidden;pointer-events:none;'
+    + 'padding:env(safe-area-inset-top) env(safe-area-inset-right)'
+    + ' env(safe-area-inset-bottom) env(safe-area-inset-left)'
+  document.body.appendChild(probe)
+  const style = getComputedStyle(probe)
+  const insets = {
+    top: parseFloat(style.paddingTop) || 0,
+    right: parseFloat(style.paddingRight) || 0,
+    bottom: parseFloat(style.paddingBottom) || 0,
+    left: parseFloat(style.paddingLeft) || 0,
+  }
+  probe.remove()
+  return insets
+}
+
 function ReasonPopover({ item, anchor, onClose }: { item: StockItem; anchor: HTMLElement; onClose: () => void }) {
   const panelRef = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState<Placement | null>(null)
@@ -125,7 +149,11 @@ function ReasonPopover({ item, anchor, onClose }: { item: StockItem; anchor: HTM
         onClose()
         return
       }
-      const viewport = { width: window.innerWidth, height: window.innerHeight }
+      const viewport = {
+        width: window.innerWidth,
+        height: window.innerHeight,
+        insets: safeAreaInsets(),
+      }
       const rect = anchor.getBoundingClientRect()
       // The height the panel wants, not the height it currently has: it is
       // given a maxHeight below, and measuring that back would find room it
@@ -171,7 +199,10 @@ function ReasonPopover({ item, anchor, onClose }: { item: StockItem; anchor: HTM
   // so this never steals focus back from somewhere it belongs.
   const hadFocus = useRef(false)
   useEffect(() => () => {
-    if (hadFocus.current && anchor.isConnected) anchor.focus()
+    // preventScroll, because one of the ways this closes is the user
+    // scrolling: focusing an anchor they have just scrolled away from would
+    // have the browser scroll it back and undo them.
+    if (hadFocus.current && anchor.isConnected) anchor.focus({ preventScroll: true })
   }, [anchor])
 
   useEffect(() => {

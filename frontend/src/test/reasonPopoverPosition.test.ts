@@ -145,6 +145,29 @@ describe('placeReasonPopover', () => {
     expect(maxHeight).toBe(TALL.height)
   })
 
+  it('keeps clear of the safe-area insets a notched screen reserves', () => {
+    // A landscape phone: window.innerWidth counts the notch as usable screen,
+    // the app's own layout does not (px-safe), and neither should the popover.
+    const insets = { top: 0, right: 44, bottom: 21, left: 44 }
+    const viewport = { width: 812, height: 375, insets }
+
+    // Room to the icon's left, but only into the notch.
+    const near = placeReasonPopover(anchorAt(310, 180, 44), PANEL, viewport)
+    expect(near.left).toBeGreaterThanOrEqual(insets.left + REASON_POPOVER_EDGE)
+
+    // Room to the icon's right, but only into the home indicator's side.
+    const far = placeReasonPopover(anchorAt(480, 180, 44), PANEL, viewport)
+    expect(far.left + PANEL.width).toBeLessThanOrEqual(viewport.width - insets.right)
+  })
+
+  it('keeps a stacked panel out of the bottom inset', () => {
+    const insets = { top: 0, right: 0, bottom: 34, left: 0 }
+    const viewport = { width: 375, height: 500, insets }
+    const anchor = anchorAt(264, 180, 44)
+    const { top, maxHeight } = placeReasonPopover(anchor, { width: 256, height: 256 }, viewport)
+    expect(top + maxHeight).toBeLessThanOrEqual(viewport.height - insets.bottom - REASON_POPOVER_EDGE)
+  })
+
   it('prefers the top edge when the panel is taller than the viewport', () => {
     const tall = { width: 256, height: 900 }
     const { top } = placeReasonPopover(anchorAt(1200, 400), tall, VIEWPORT)

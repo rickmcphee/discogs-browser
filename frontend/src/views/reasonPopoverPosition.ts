@@ -11,10 +11,24 @@ export interface Size {
   height: number
 }
 
+export interface Insets {
+  top: number
+  right: number
+  bottom: number
+  left: number
+}
+
 export interface Viewport {
   width: number
   height: number
+  /** Safe-area insets, where the screen has them. `window.innerWidth` and
+   *  `innerHeight` count the notch and the home indicator as usable screen,
+   *  and the app's own layout does not (see `px-safe` in `index.css`), so the
+   *  popover should not either. Absent means none, which is every desktop. */
+  insets?: Insets
 }
+
+const NO_INSETS: Insets = { top: 0, right: 0, bottom: 0, left: 0 }
 
 // Distance between the popover and the icon it belongs to, and the smallest
 // margin it will leave against a viewport edge.
@@ -56,17 +70,20 @@ function clamp(value: number, lowest: number, highest: number): number {
  * `overflow-auto` and would clip a row at its top edge with no scroll to
  * recover it. */
 export function placeReasonPopover(anchor: Rect, panel: Size, viewport: Viewport): Placement {
-  const lastLeft = viewport.width - panel.width - REASON_POPOVER_EDGE
-  const lastTop = viewport.height - panel.height - REASON_POPOVER_EDGE
+  const insets = viewport.insets ?? NO_INSETS
+  const firstLeft = REASON_POPOVER_EDGE + insets.left
+  const firstTop = REASON_POPOVER_EDGE + insets.top
+  const lastLeft = viewport.width - insets.right - panel.width - REASON_POPOVER_EDGE
+  const lastTop = viewport.height - insets.bottom - panel.height - REASON_POPOVER_EDGE
 
   // Both edges, for every candidate. The anchor is not necessarily on screen:
   // the table scrolls horizontally and the list vertically, so a row can be
   // scrolled past either edge while its popover is open, and a candidate that
   // clears the near edge can still land the panel off the far one.
-  const fitsAcross = (left: number) => left >= REASON_POPOVER_EDGE && left <= lastLeft
-  const fitsDown = (top: number) => top >= REASON_POPOVER_EDGE && top <= lastTop
+  const fitsAcross = (left: number) => left >= firstLeft && left <= lastLeft
+  const fitsDown = (top: number) => top >= firstTop && top <= lastTop
 
-  const beside = clamp(anchor.top + anchor.height / 2 - panel.height / 2, REASON_POPOVER_EDGE, lastTop)
+  const beside = clamp(anchor.top + anchor.height / 2 - panel.height / 2, firstTop, lastTop)
 
   const toLeft = anchor.left - panel.width - REASON_POPOVER_GAP
   if (fitsAcross(toLeft)) return { top: beside, left: toLeft, maxHeight: panel.height }
@@ -78,7 +95,7 @@ export function placeReasonPopover(anchor: Rect, panel: Size, viewport: Viewport
   // it near what it describes, and vertically it takes whichever side of the
   // icon can hold it -- covering the icon is the one thing it must not do,
   // since a second click there is how it closes.
-  const left = clamp(anchor.left, REASON_POPOVER_EDGE, lastLeft)
+  const left = clamp(anchor.left, firstLeft, lastLeft)
   const below = anchor.top + anchor.height + REASON_POPOVER_GAP
   if (fitsDown(below)) return { top: below, left, maxHeight: panel.height }
 
@@ -90,13 +107,14 @@ export function placeReasonPopover(anchor: Rect, panel: Size, viewport: Viewport
   // gives: clamping the panel into view would put it over the control that
   // closes it. So it takes the roomier side and is shortened to fit there,
   // scrolling what it cannot show.
-  const roomBelow = viewport.height - (anchor.top + anchor.height) - REASON_POPOVER_GAP - REASON_POPOVER_EDGE
-  const roomAbove = anchor.top - REASON_POPOVER_GAP - REASON_POPOVER_EDGE
+  const roomBelow = viewport.height - insets.bottom - (anchor.top + anchor.height)
+    - REASON_POPOVER_GAP - REASON_POPOVER_EDGE
+  const roomAbove = anchor.top - REASON_POPOVER_GAP - firstTop
   const roomier = Math.max(roomBelow, roomAbove)
   if (roomier >= REASON_POPOVER_MIN_HEIGHT) {
     return roomBelow >= roomAbove
       ? { top: anchor.top + anchor.height + REASON_POPOVER_GAP, left, maxHeight: roomBelow }
-      : { top: REASON_POPOVER_EDGE, left, maxHeight: roomAbove }
+      : { top: firstTop, left, maxHeight: roomAbove }
   }
 
   // An icon with almost no room on either side of it -- a viewport barely
