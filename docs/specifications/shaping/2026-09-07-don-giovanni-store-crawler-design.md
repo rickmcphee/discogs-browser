@@ -130,8 +130,12 @@ A blank `vendor` therefore skips the product, and a store-wide blank raises.
 `vendor` gives the artist but not the album, so the title is still parsed —
 for the album and the format descriptor only.
 
-The convention is uniform across the entire store, records and non-records
-alike: `Artist "Album" <format>`. Every one of the 158 titles in the
+The **quoted-album** half of the convention is uniform across the entire
+store, records and non-records alike: every product leads with
+`Artist "Album"`. The trailing `<format>` is universal *within the vinyl
+collection* but not outside it — the store's books, pins and stickers stop at
+the quoted album, which is the asymmetry the parse rule below turns into a
+filter. Every one of the 158 titles in the
 collection contains **exactly three** straight double quotes and no
 typographic ones: the album's opening quote, its closing quote, and the inch
 marker that ends the format. Apostrophes appear inside album names
@@ -223,6 +227,22 @@ under the Cheapest filter. This is pre-existing — `earache.py` already emits
 `2x12"` descriptors and hits it identically — and fixing it means changing a
 shared module that keys every row in the Store tab, so it belongs in its own
 change rather than riding along with a new crawler.
+
+### A `+` joining a record to merch is a bundle
+
+`_BUNDLE_RE` catches only the literal word, so the store's other combo shape
+slips past it: `Bad Moves "Untenable" LP + Shirt` parses, and the format gate
+would then admit it on its own `LP` before ever reaching a merch word. Its
+price is a bundle's, not any record's.
+
+So the gate checks for a `+` beside a merch word **first**, ahead of the
+record word that would otherwise admit outright. `LP + Bonus CD` stays a
+record — one item, one price, and no merch word in it — and because the gate
+reads the descriptor alone, an album called `Pins + Needles` keeps its row.
+
+This also forced the merch vocabulary wider than the `product_type` list it
+was read off: those say `T-Shirt`, while the store's bundle titles say a bare
+`Shirt`. Found in review on PR #323.
 
 ### Format gate: the shelf claims, a named medium rejects
 
@@ -323,13 +343,28 @@ every one of the 167 live variants (140 `true`, 27 `false`). Only the
 literal `True` admits: the string `"false"` is truthy, so a falsiness test
 would publish a sold-out record as in stock.
 
-**Pre-orders** are marked. Nine products in the collection carry a `preorder`
-tag, and the tag is trustworthy: it agrees exactly, in both directions, with
-the store's own `preorders` collection restricted to vinyl — nine tagged,
-nine shelved, no product in one and not the other. A tagged product's row
-title gets ` (Pre-Order)` appended before the colour, which is the dominant
-convention among the bundled catalog crawlers and tells the user the record
-is not shipping yet.
+**Pre-orders are not marked**, and the row a tagged product yields is
+byte-identical to the row it would yield untagged. Nine products in the
+collection carry a `preorder` tag, and the tag is trustworthy — it agrees
+exactly, in both directions, with the store's own `preorders` collection
+restricted to vinyl. The tag is nonetheless never read.
+
+The first draft appended ` (Pre-Order)` to the title, on the grounds that it
+is a common convention among the bundled catalog crawlers and tells the user
+the record is not shipping yet. Review on PR #323 pointed out what that costs.
+`compute_item_key` hashes artist, title and URL, so a marker that disappears
+when the record ships re-keys every one of that product's pressings at
+exactly the moment a waiting user cares most, orphaning the saves and stock
+judgments held against the old key. That is the same churn the colour rule
+below refuses in as many words, and accepting it here would have been
+inconsistent within one file.
+
+The bundled crawlers are genuinely split on this — `counterintuitiverecords.py`
+writes a marker, `earache.py`, `spkr.py` and `musiconvinyl.py` do not, and the
+split runs right up to the present — so there was no settled convention to
+defer to and the argument had to decide it. Stable identity wins: there is no
+field in the yielded row for pre-order status anyway, so the choice was
+between putting it in the identity and not surfacing it.
 
 There is **no pre-order bypass**: a pre-order whose variant reports
 `available: false` (`Lee Bains "Free South 2025" 12"`) is skipped like any
@@ -379,6 +414,7 @@ has simply sold out is empty legitimately.
 | --- | --- | --- |
 | collection | `products_seen == 0` | the shelf renamed, removed, or the endpoint changed shape |
 | artist-source | `artist_ok == 0` | `vendor` emptied store-wide — the sole artist source |
+| combined-source | `sources_ok == 0` | both sources alive but never on the same product — a case neither row below can see |
 | album-source | `parsed_ok == 0` | the store abandoning the quoted-album title convention. Tallies the album — the same value `_record` gates a row on — so it cannot raise on a catalog the crawler could in fact read |
 | price-source | `yielded and not priced` | `price` removed or retyped store-wide |
 | identity-source | `not yielded and identity_missing` | `title`/`handle` lost store-wide |
@@ -389,10 +425,24 @@ Two structural notes on the tallies:
 - **`artist_ok` and `parsed_ok` are tallied independently of each other**,
   because they are independent sources — `vendor` and the title — and
   conflating them would let one going dark hide behind the other still
-  working.
-- **`identity_missing` and `unreadable_stock` are nested inside the format
-  gate**, because only a product that reads as a record could have yielded a
-  row; a shirt's missing handle says nothing about whether this walk's
+  working. Independence alone, though, lets them be satisfied by *different*
+  products: one with a vendor and an unreadable title, another with a
+  readable title and no vendor, leaves both non-zero while no product carries
+  what a row needs, and the walk completes empty. `sources_ok` counts the
+  products where both co-occur and is what makes that case raise. It is taken
+  *before* the format gate, so a shelf that legitimately filled up with CDs
+  still satisfies it — those titles carry a vendor and a readable album too.
+  Found in review on PR #323.
+- **A title-less product is counted toward `identity_missing` before the
+  format gate**, not inside it. `_record` reads the title, so a product
+  without one can never reach the checks nested in the gate, and it cannot be
+  classified at all — it might have been a record. Counted only inside, a
+  *partial* loss of `title` would leave an empty walk looking like a shelf
+  that merely sold out, and the snapshot would be deleted. Found in review on
+  PR #323.
+- **`identity_missing` and `unreadable_stock` are otherwise nested inside the
+  format gate**, because only a product that reads as a record could have
+  yielded a row; a shirt's missing handle says nothing about whether this walk's
   emptiness can be trusted. `unreadable_stock` uses `all()`, not `any()`: one
   readable variant does not make a product readable, or a product whose black
   pressing is a readable `False` and whose coloured pressing carries the
@@ -424,8 +474,12 @@ including with no record word in the descriptor to admit it early; the
 bundle rule; colour appended to every
 row; the placeholder admitted only as a sole variant; the two split-across-
 products records keeping distinct identities; sold-out variants skipped
-beside in-stock siblings; only the literal `True` admitting; the pre-order
-marker written and the sold-out pre-order skipped without one; price parsing
+beside in-stock siblings; only the literal `True` admitting; a tagged
+pre-order yielding a row byte-identical to the one it would yield untagged,
+and the sold-out pre-order skipped; the `+`-merch combo rule and the
+record-plus-bonus-disc descriptor it must not swallow; the two guard holes
+found in review — a title-less product counted before the format gate, and
+the two sources satisfied by different products; price parsing
 of every unusable shape; cover resolution and its fallbacks; URL
 construction; pagination; and every guard above, each in both the raising and
 the non-raising direction.

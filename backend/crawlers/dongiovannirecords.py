@@ -1,7 +1,7 @@
 import math
 import re
 from typing import AsyncIterator, Optional, Tuple
-from shopify_catalog import iter_products, has_tag, resolve_cover_image
+from shopify_catalog import iter_products, resolve_cover_image
 
 # The store's own format shelf, at the URL the request named. It is exactly
 # the store's records in both directions, confirmed 2026-09-07: every product
@@ -11,7 +11,6 @@ from shopify_catalog import iter_products, has_tag, resolve_cover_image
 # published to the online store -- so the walk's own exhaustion is the
 # catalog, confirmed to return the same product ids at limit=250 and limit=50.
 _COLLECTION_SLUG = "vinyl"
-_PREORDER_TAG = "preorder"
 # `Artist "Album" <format>` -- the convention the whole store follows, records
 # and CDs and shirts alike. Every live title carries exactly three quotes: the
 # album's opening one, its closing one, and the format's inch marker.
@@ -70,9 +69,12 @@ _VINYL_WORD_RE = re.compile(
 # (`Liz Pelly "P.S. Eliot: 2007-2011" Zine`). A mis-shelved one would parse
 # perfectly and publish as a record, since the store titles these exactly
 # like the records (`Bad Moves "Logo" T-Shirt`).
-_NON_VINYL_RE = re.compile(
-    r"(?<![a-z])(?:\d+\s*[x×]\s*)?(?:cds?|cassettes?|dvds?|blu-?\s?rays?)\b"
-    r"|\bt-?\s?shirts?\b|\btees?\b|\btank\s+tops?\b|\blongsleeves?\b"
+_OTHER_MEDIA_RE = re.compile(
+    r"(?<![a-z])(?:\d+\s*[x×]\s*)?(?:cds?|cassettes?|dvds?|blu-?\s?rays?)\b",
+    re.IGNORECASE,
+)
+_MERCH_RE = re.compile(
+    r"\b(?:t-?\s?)?shirts?\b|\btees?\b|\btank\s+tops?\b|\blongsleeves?\b"
     r"|\bsweatshirts?\b|\bcrewnecks?\b|\bhoodies?\b"
     r"|\bbooks?\b|\bpaperbacks?\b|\bhardcovers?\b|\bzines?\b"
     r"|\bpins?\b|\bstickers?\b|\bdecals?\b|\bbags?\b|\btotes?\b",
@@ -99,6 +101,7 @@ class Crawler:
         products_seen = 0
         artist_ok = 0
         parsed_ok = 0
+        sources_ok = 0
         identity_missing = 0
         unreadable_stock = 0
         yielded = 0
@@ -110,18 +113,39 @@ class Crawler:
             # independent sources: nested, one going dark would hide behind
             # the other still working, and gated, a shelf that legitimately
             # filled up with CDs would raise source drift.
-            if self._artist(product):
+            has_artist = bool(self._artist(product))
+            # [0] is the album, which is exactly what _record gates a row on
+            # -- so this tally cannot raise on a catalog the crawler could in
+            # fact read.
+            has_album = bool(self._parse_title(product.get("title"))[0])
+            if has_artist:
                 artist_ok += 1
-            if self._parse_title(product.get("title"))[0]:
-                # [0] is the album, which is exactly what _record gates a row
-                # on -- so this tally cannot raise on a catalog the crawler
-                # could in fact read.
+            if has_album:
                 parsed_ok += 1
-            # These two are nested inside the gate, because only a product
-            # that reads as a record could have yielded a row: a mis-shelved
+            if has_artist and has_album:
+                # The two tallies above are independent on purpose, so that
+                # one source going dark cannot hide behind the other still
+                # working. But independence alone lets them be satisfied by
+                # *different* products: one with a vendor and an unreadable
+                # title, another with a readable title and no vendor, leaves
+                # both non-zero while no product has what a row needs. This
+                # third tally is what makes that case raise. Taken before the
+                # format gate, so a shelf that legitimately filled up with
+                # CDs still satisfies it. Found in review on PR #323.
+                sources_ok += 1
+            if not (product.get("title") or "").strip():
+                # A title-less product cannot be classified at all -- _record
+                # reads the title, so it can never reach the checks below,
+                # and it might have been a record. Counted here rather than
+                # inside the gate, or a partial loss of `title` would leave
+                # an empty walk looking like a shelf that merely sold out.
+                # Found in review on PR #323.
+                identity_missing += 1
+            # These are nested inside the gate, because only a product that
+            # reads as a record could have yielded a row: a mis-shelved
             # shirt's missing handle says nothing about whether this walk's
             # emptiness can be trusted.
-            if self._record(product) is not None:
+            elif self._record(product) is not None:
                 if not self._has_identity(product):
                     identity_missing += 1
                 elif not self._has_readable_stock_flag(self._pressings(product)):
@@ -158,6 +182,12 @@ class Crawler:
             raise RuntimeError(
                 f'no product in the {_COLLECTION_SLUG} collection has a title of the form '
                 'Artist "Album" format -- album-source drift')
+        if sources_ok == 0:
+            # Reached only when both sources are alive somewhere but never on
+            # the same product, which neither guard above can see.
+            raise RuntimeError(
+                f"no product in the {_COLLECTION_SLUG} collection carries both a vendor and a "
+                "readable album -- combined-source drift")
         if yielded and not priced:
             # Rows without the emptiness: `_price` answers None for a value
             # it cannot use, so a `price` field removed or retyped
@@ -198,9 +228,14 @@ class Crawler:
         if not cls._has_identity(product):
             return []
         url = f"{cls.base_url}/products/{(product.get('handle') or '').strip()}"
-        # Ahead of the colour rather than after it, so the colour stays the
-        # last thing in the title on every row that has one.
-        base = f"{title} (Pre-Order)" if has_tag(product, _PREORDER_TAG) else title
+        # No ` (Pre-Order)` marker, though the store tags its pre-orders and
+        # the tag is trustworthy. compute_item_key hashes artist, title and
+        # URL, so a marker that disappears when the record ships would re-key
+        # every one of its pressings at exactly the moment a waiting user
+        # cares most, orphaning the saves and judgments held against the old
+        # key. That is the same churn the colour rule below refuses, and it
+        # would be inconsistent to accept it here. The bundled crawlers are
+        # split on this; earache.py and spkr.py omit it on these grounds.
         items = []
         for variant, colour in cls._pressings(product):
             # Only the literal True admits a variant: the string "false" is
@@ -221,7 +256,7 @@ class Crawler:
             # no sibling can share the bare title.
             items.append({
                 "artist": artist,
-                "title": f"{base} — {colour}" if colour else base,
+                "title": f"{title} — {colour}" if colour else title,
                 "format": "Vinyl",
                 "price": cls._price(variant),
                 "currency": "USD",
@@ -295,10 +330,20 @@ class Crawler:
     def _is_vinyl(descriptor: str) -> bool:
         # Read against the descriptor only, never the whole title, so an
         # album named `ABCD` or `Bag` cannot decide the format of the record
-        # it names.
+        # it names -- and so an album named `Pins + Needles` cannot trip the
+        # combo rule below.
+        #
+        # A `+` joining a record to a merch item is a bundle, and it is
+        # checked FIRST because the record word would otherwise admit it
+        # outright. The store sells exactly these (`LP + Shirt`,
+        # `Shirt + All Vinyl`); their price is a bundle's, not any record's.
+        # `LP + Bonus CD` stays a record: one item, one price, and no merch
+        # word in it.
+        if "+" in descriptor and _MERCH_RE.search(descriptor):
+            return False
         if _VINYL_WORD_RE.search(descriptor):
             return True
-        return not _NON_VINYL_RE.search(descriptor)
+        return not (_OTHER_MEDIA_RE.search(descriptor) or _MERCH_RE.search(descriptor))
 
     @classmethod
     def _pressings(cls, product: dict) -> list:

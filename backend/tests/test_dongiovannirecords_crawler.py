@@ -424,6 +424,53 @@ async def test_one_vendorless_product_among_real_rows_does_not_raise(crawler):
 
 
 @respx.mock
+async def test_a_title_less_product_is_counted_toward_identity_drift(crawler):
+    # _record() reads the title, so a title-less product can never reach the
+    # identity check inside the format gate. Counted before it, or a partial
+    # loss of `title` leaves an empty walk looking like a sold-out shelf and
+    # replace_stock_items() deletes the snapshot. Found in review on PR #323.
+    _mock_pages(_one_pressing(_FIRE_PRODUCT, available=False),
+                {**_KISS_BIG_PRODUCT, "title": "  "})
+    with pytest.raises(RuntimeError, match="identity-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_a_title_less_product_among_real_rows_does_not_raise(crawler):
+    _mock_pages(_FIRE_PRODUCT, {**_KISS_BIG_PRODUCT, "title": ""})
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["artist"] for i in items] == ["Amy Klein"]
+
+
+@respx.mock
+async def test_sources_satisfied_by_different_products_raises(crawler):
+    # One product has a vendor and an unreadable title, the other a readable
+    # title and no vendor: artist_ok and parsed_ok are both non-zero, yet no
+    # product carries what a row needs. Without the combined guard this walk
+    # completes empty and deletes the snapshot. Found in review on PR #323.
+    _mock_pages({**_FIRE_PRODUCT, "title": "Amy Klein Fire LP"},
+                {**_KISS_BIG_PRODUCT, "vendor": ""})
+    with pytest.raises(RuntimeError, match="combined-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_one_product_carrying_both_sources_satisfies_the_combined_guard(crawler):
+    _mock_pages(_one_pressing(_FIRE_PRODUCT, available=False),
+                {**_KISS_BIG_PRODUCT, "vendor": ""})
+    assert [item async for item in crawler.crawl_catalog()] == []
+
+
+@respx.mock
+async def test_an_all_cd_shelf_satisfies_the_combined_guard(crawler):
+    # Taken before the format gate on purpose: a shelf that legitimately
+    # filled up with CDs still has products carrying both sources, so it is
+    # a legitimate empty result rather than drift.
+    _mock_pages(_CD_PRODUCT, _SHIRT_PRODUCT)
+    assert [item async for item in crawler.crawl_catalog()] == []
+
+
+@respx.mock
 async def test_a_catalog_with_no_parseable_title_raises(crawler):
     _mock_pages({**_FIRE_PRODUCT, "title": "Amy Klein Fire LP"})
     with pytest.raises(RuntimeError, match="album-source drift"):
@@ -441,7 +488,7 @@ async def test_a_catalog_that_dropped_its_artist_prefixes_still_yields(crawler):
     items = [item async for item in crawler.crawl_catalog()]
     assert [(i["artist"], i["title"]) for i in items] == [
         ("Amy Klein", 'Fire 12" — Black'),
-        ("Ailbhe Reddy", 'Kiss Big 12" (Pre-Order) — Red'),
+        ("Ailbhe Reddy", 'Kiss Big 12" — Red'),
     ]
 
 
@@ -513,6 +560,9 @@ def test_format_gate_admits_records_and_undeclared_descriptors(descriptor):
 
 
 @pytest.mark.parametrize("descriptor", [
+    # A `+` joining a record to merch is a bundle, and the record word must
+    # not admit it first. These are the store's own live combo products.
+    "LP + Shirt", "Shirt + All Vinyl", 'Vinyl + T-Shirt', "12\" + Tote",
     # The store's own product_type vocabulary for everything that is not a
     # record.
     "CD", "2xCD", "Cassette", "DVD", "Blu-Ray",
@@ -573,6 +623,34 @@ async def test_a_catalog_that_stopped_naming_formats_raises(crawler):
                 {**_KISS_BIG_PRODUCT, "title": 'Ailbhe Reddy "Kiss Big"'})
     with pytest.raises(RuntimeError, match="album-source drift"):
         [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_a_record_plus_a_bonus_disc_is_still_a_record(crawler):
+    # The combo rule must not swallow a record that ships with an extra
+    # disc: one item, one price, and no merch word in it.
+    _mock_pages({**_FIRE_PRODUCT, "title": 'Amy Klein "Fire" LP + Bonus CD'})
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["title"] for i in items] == ["Fire LP + Bonus CD — Black"]
+
+
+@respx.mock
+async def test_a_quoted_combo_bundle_yields_nothing(crawler):
+    # `_BUNDLE_RE` only catches the literal word, so this is the shape that
+    # would otherwise reach `_is_vinyl` and be admitted on its own `LP`.
+    _mock_pages(_FIRE_PRODUCT,
+                {**_KISS_BIG_PRODUCT, "title": 'Bad Moves "Untenable" LP + Shirt',
+                 "vendor": "Bad Moves", "handle": "bad-moves-untenable-lp-shirt"})
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["artist"] for i in items] == ["Amy Klein"]
+
+
+@respx.mock
+async def test_an_album_named_like_a_combo_does_not_trip_the_bundle_rule(crawler):
+    # The combo rule reads the descriptor, so this album keeps its row.
+    _mock_pages({**_FIRE_PRODUCT, "title": 'Amy Klein "Pins + Needles" 12"'})
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["title"] for i in items] == ['Pins + Needles 12" — Black']
 
 
 @respx.mock
@@ -737,31 +815,48 @@ async def test_a_missing_available_key_is_not_in_stock(crawler):
 
 
 @respx.mock
-async def test_a_preorder_row_is_marked_before_the_colour(crawler):
+async def test_a_preorder_row_carries_no_marker(crawler):
+    # compute_item_key hashes artist, title and URL, so a marker that
+    # disappears when the record ships would re-key every pressing at exactly
+    # the moment a waiting user cares most. Same churn the colour rule
+    # refuses. Decided in review on PR #323.
     _mock_pages(_KISS_BIG_PRODUCT)
     items = [item async for item in crawler.crawl_catalog()]
-    assert [i["title"] for i in items] == ['Kiss Big 12" (Pre-Order) — Red']
+    assert [i["title"] for i in items] == ['Kiss Big 12" — Red']
 
 
 @respx.mock
-async def test_the_preorder_marker_is_written_on_every_colour(crawler):
+async def test_the_preorder_tag_never_reaches_the_row_identity(crawler):
     _mock_pages({**_OPEN_THE_GATES_PRODUCT, "tags": ["preorder"]})
     items = [item async for item in crawler.crawl_catalog()]
     assert [i["title"] for i in items] == [
-        'Open The Gates 2x12" (Pre-Order) — Sands Of Time',
-        'Open The Gates 2x12" (Pre-Order) — Neptune Blue',
+        'Open The Gates 2x12" — Sands Of Time',
+        'Open The Gates 2x12" — Neptune Blue',
     ]
 
 
 @respx.mock
-async def test_the_preorder_tag_is_matched_case_insensitively(crawler):
-    _mock_pages({**_FIRE_PRODUCT, "tags": ["  PreOrder  "]})
-    items = [item async for item in crawler.crawl_catalog()]
-    assert [i["title"] for i in items] == ['Fire 12" (Pre-Order) — Black']
+async def test_a_products_tags_never_change_its_title(crawler):
+    # The row a tagged product yields is byte-identical to the row it would
+    # yield untagged, so shipping a pre-order cannot orphan anything.
+    _mock_pages({**_FIRE_PRODUCT, "tags": ["preorder", "sync"]})
+    tagged = [item async for item in crawler.crawl_catalog()]
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(
+        return_value=_page_response([{**_FIRE_PRODUCT, "tags": []}]))
+    untagged = [item async for item in crawler.crawl_catalog()]
+    assert tagged == untagged == [{
+        "artist": "Amy Klein",
+        "title": 'Fire 12" — Black',
+        "format": "Vinyl",
+        "price": 22.99,
+        "currency": "USD",
+        "url": "https://dongiovannirecords.com/products/amy-klein-fire-12",
+        "cover_image_url": "https://cdn.shopify.com/Fire.jpg",
+    }]
 
 
 @respx.mock
-async def test_an_untagged_product_carries_no_marker(crawler):
+async def test_an_untagged_product_yields_the_plain_title(crawler):
     _mock_pages({**_FIRE_PRODUCT, "tags": ["sync", "preorders"]})
     items = [item async for item in crawler.crawl_catalog()]
     assert [i["title"] for i in items] == ['Fire 12" — Black']
