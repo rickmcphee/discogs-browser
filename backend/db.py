@@ -3297,7 +3297,7 @@ def _get_stock_offers(
         {cte}
         SELECT s.stock_id, s.item_key, s.artist, s.title, s.listing_title, s.format, s.cover_image_url,
                s.price, s.currency, s.url, s.last_seen, s.is_own,
-               cr.site_name AS source, j.reason AS reason,
+               cr.site_name AS source, j.reason AS reason, j.recommended AS recommended,
                (sv.item_key IS NOT NULL) AS saved,
                (SELECT li.price_paid {_library_match_fragment('%(user_id)s', 'collection')} LIMIT 1) AS discogs_price
         FROM offers s
@@ -3388,6 +3388,7 @@ def get_stock_items(
         f"""
         SELECT s.id, s.artist, s.title, s.listing_title, s.format, s.price, s.currency, s.url, s.cover_image_url,
                s.last_seen, s.item_key, cr.site_name AS source, j.reason AS reason,
+               j.recommended AS recommended,
                (sv.item_key IS NOT NULL) AS saved,
                (SELECT li.price_paid {_library_match_fragment('%(user_id)s', 'collection')} LIMIT 1) AS discogs_price
         FROM stock_items s
@@ -3436,7 +3437,8 @@ def get_stock_items(
                 "format": r["format"], "cover_image_url": r["cover_image_url"],
                 "discogs_price": r["discogs_price"], "saved": r["saved"],
                 "price": c["price"], "currency": c["currency"], "url": c["url"],
-                "source": c["source"], "reason": r["reason"], "last_seen": c["last_checked"],
+                "source": c["source"], "reason": r["reason"], "recommended": r["recommended"],
+                "last_seen": c["last_checked"],
                 "is_own": False,
             })
 
