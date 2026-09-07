@@ -107,12 +107,14 @@ Out of scope:
   positioning logic, and reads identically at every width. Escape and a
   backdrop click dismiss it; focus moves into the panel on open and returns
   to the icon that opened it on close.
-- ~~**The opener is handed over, not looked up.**~~ *Superseded: nothing takes
-  focus now, so there is none to give back.* The click passed its own
-  `currentTarget` into the dialog's state rather than letting the dialog read
-  `document.activeElement` on mount, because Safari does not focus a button on
-  pointer activation. The click still hands over its `currentTarget`, but as
-  the element the popover measures itself against.
+- ~~**The opener is handed over, not looked up.**~~ *Superseded: opening moves
+  no focus, so there is nothing to restore on an ordinary dismissal — only
+  Escape pressed from inside the panel hands focus back, and it has the icon
+  to hand.* The click passed its own `currentTarget` into the dialog's state
+  rather than letting the dialog read `document.activeElement` on mount,
+  because Safari does not focus a button on pointer activation. The click
+  still hands over its `currentTarget`, but as the element the popover
+  measures itself against.
 - **The panel caps its size and scrolls.** A reason is free text — a CSV
   import writes it unbounded — so a long one would otherwise run off the
   screen. The cap is against the viewport as well as a fixed size
@@ -148,17 +150,19 @@ icon.**
   that arithmetic, pure and tested on its own — jsdom measures every element
   as a zero-sized box at the origin, so this geometry cannot be asserted
   through a rendered component.
-- **It takes no focus, but it can be given some.** A glance at one sentence
-  should not move the caret or trap Tab, so nothing is focused on open and
-  there is no trap; the relationship to the icon is `aria-describedby` with
-  `aria-expanded`, the disclosure pattern for a control that reveals text
-  rather than a dialog that owns interaction. The panel is still
-  `tabIndex={0}` and rendered as the icon's sibling, because the reason can
-  outrun it: Chrome and Firefox hand a scroll container to the keyboard
-  themselves, Safari does not, and the clipped tail has to be reachable.
-  Escape returns focus to the icon when it was inside the panel. That is
-  the whole of the focus handling — no trap, no restoration on every close,
-  no backdrop.
+- **A disclosure, not a dialog and not a tooltip.** Opening moves no focus
+  and traps nothing. The icon owns the relationship — `aria-expanded` with
+  `aria-controls`, plus `aria-describedby` so a screen reader on the icon
+  hears the reason without travelling to it. The panel is `role="note"`:
+  an ARIA tooltip is a non-focusable description shown on hover or focus,
+  and this is click-controlled and deliberately takes a tab stop, which
+  makes a focusable `tooltip` a pattern assistive tech has no good reading
+  of. It takes that tab stop for one reason — the reason can outrun the
+  panel, and Safari will not hand a scroll container to the keyboard on its
+  own — which is also why it renders as the icon's sibling, so Tab from the
+  icon reaches it. Escape returns focus to the icon when it was inside the
+  panel. That is the whole of the focus handling: no trap, no restoration on
+  every close, no backdrop.
 - **It closes when its icon goes away.** A view-mode or breakpoint switch
   rebuilds the row in a different tree, leaving the node the panel was
   measured against detached — and a detached node reports a zero rect, which
@@ -218,12 +222,13 @@ icon.**
   not.
 - A click on another row's icon moves the popover rather than opening a
   second one.
-- The open icon reports `aria-expanded` and points `aria-describedby` at the
-  popover's id; a closed one reports neither.
+- The open icon reports `aria-expanded="true"` and points both
+  `aria-controls` and `aria-describedby` at the popover's id; a closed one
+  reports `aria-expanded="false"` and neither reference.
 - The popover is positioned fixed, with coordinates and visibility set — the
   geometry itself belongs to `reasonPopoverPosition.test.ts`.
-- It is capped against the viewport, focusable, and rendered as the icon's
-  next sibling.
+- It is capped against the viewport, focusable, `role="note"`, and rendered
+  as the icon's next sibling.
 - A touch outside it closes it, as a mouse press does.
 - Escape pressed while the panel has focus returns that focus to the icon.
 - A view-mode switch closes it, asserted through the icon's `aria-expanded`

@@ -371,10 +371,10 @@ describe('StockBrowser', () => {
     getStock.mockResolvedValue(judged(true))
     render(<StockBrowser recommendedAvailable />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    expect(screen.queryByRole('tooltip')).toBeNull()
+    expect(screen.queryByRole("note")).toBeNull()
 
     fireEvent.click(screen.getByTitle('Recommendation details'))
-    const popover = screen.getByRole('tooltip')
+    const popover = screen.getByRole("note")
     expect(popover.textContent).toContain('Similar to your hardcore collection')
     expect(popover.textContent).toContain('Recommended')
   })
@@ -386,12 +386,12 @@ describe('StockBrowser', () => {
     const info = screen.getByTitle('Recommendation details')
 
     fireEvent.click(info)
-    expect(screen.getByRole('tooltip')).toBeTruthy()
+    expect(screen.getByRole("note")).toBeTruthy()
     // The press that precedes the click reaches the outside-dismiss listener
     // first; it has to ignore the icon, or this click would close and reopen.
     fireEvent.mouseDown(info)
     fireEvent.click(info)
-    expect(screen.queryByRole('tooltip')).toBeNull()
+    expect(screen.queryByRole("note")).toBeNull()
   })
 
   it('labels the rejected verdict in the popover', async () => {
@@ -399,7 +399,7 @@ describe('StockBrowser', () => {
     render(<StockBrowser recommendedAvailable />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     fireEvent.click(screen.getByTitle('Recommendation details'))
-    expect(screen.getByRole('tooltip').textContent).toContain('Not recommended')
+    expect(screen.getByRole("note").textContent).toContain('Not recommended')
   })
 
   it('closes the popover on Escape and on a press outside it', async () => {
@@ -409,11 +409,11 @@ describe('StockBrowser', () => {
 
     fireEvent.click(screen.getByTitle('Recommendation details'))
     fireEvent.keyDown(document, { key: 'Escape' })
-    expect(screen.queryByRole('tooltip')).toBeNull()
+    expect(screen.queryByRole("note")).toBeNull()
 
     fireEvent.click(screen.getByTitle('Recommendation details'))
     fireEvent.mouseDown(document.body)
-    expect(screen.queryByRole('tooltip')).toBeNull()
+    expect(screen.queryByRole("note")).toBeNull()
   })
 
   it('stays open when the press lands inside the popover itself', async () => {
@@ -422,8 +422,8 @@ describe('StockBrowser', () => {
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     fireEvent.click(screen.getByTitle('Recommendation details'))
 
-    fireEvent.mouseDown(screen.getByRole('tooltip'))
-    expect(screen.getByRole('tooltip')).toBeTruthy()
+    fireEvent.mouseDown(screen.getByRole("note"))
+    expect(screen.getByRole("note")).toBeTruthy()
   })
 
   it('moves the popover to another row rather than opening a second one', async () => {
@@ -439,12 +439,12 @@ describe('StockBrowser', () => {
     const [first, second] = screen.getAllByTitle('Recommendation details')
 
     fireEvent.click(first)
-    expect(screen.getByRole('tooltip').textContent).toContain('Similar to your hardcore collection')
+    expect(screen.getByRole("note").textContent).toContain('Similar to your hardcore collection')
 
     fireEvent.mouseDown(second)
     fireEvent.click(second)
-    expect(screen.getAllByRole('tooltip')).toHaveLength(1)
-    expect(screen.getByRole('tooltip').textContent).toContain('Shares a label with three records you own')
+    expect(screen.getAllByRole("note")).toHaveLength(1)
+    expect(screen.getByRole("note").textContent).toContain('Shares a label with three records you own')
   })
 
   it('marks the open icon expanded and points its description at the popover', async () => {
@@ -453,13 +453,17 @@ describe('StockBrowser', () => {
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     const info = screen.getByTitle('Recommendation details')
     expect(info.getAttribute('aria-expanded')).toBe('false')
+    expect(info.getAttribute('aria-controls')).toBeNull()
     expect(info.getAttribute('aria-describedby')).toBeNull()
 
     fireEvent.click(info)
-    // The popover holds no interactive content and takes no focus, so this is
-    // how a screen reader on the icon reaches the reason.
+    // A disclosure: the icon owns the relationship, and describes itself by
+    // the panel so a screen reader on the icon hears the reason without
+    // having to travel to it.
+    const popover = screen.getByRole("note")
     expect(info.getAttribute('aria-expanded')).toBe('true')
-    expect(info.getAttribute('aria-describedby')).toBe(screen.getByRole('tooltip').id)
+    expect(info.getAttribute('aria-controls')).toBe(popover.id)
+    expect(info.getAttribute('aria-describedby')).toBe(popover.id)
   })
 
   it('pins the popover to the viewport rather than to the scrolling table', async () => {
@@ -470,7 +474,7 @@ describe('StockBrowser', () => {
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     fireEvent.click(screen.getByTitle('Recommendation details'))
 
-    const popover = screen.getByRole('tooltip') as HTMLElement
+    const popover = screen.getByRole("note") as HTMLElement
     expect(popover.className).toContain('fixed')
     expect(popover.style.top).not.toBe('')
     expect(popover.style.left).not.toBe('')
@@ -496,7 +500,7 @@ describe('StockBrowser', () => {
     await waitFor(() => expect(screen.getByText('Rob Zombie - The Great Satan [Standard Black LP]')).toBeTruthy())
 
     fireEvent.click(screen.getAllByTitle('Recommendation details')[1])
-    const popover = screen.getByRole('tooltip')
+    const popover = screen.getByRole("note")
     expect(popover.textContent).not.toContain('Standard Black LP')
     expect(popover.textContent).not.toContain('Ghostly Black Vinyl')
   })
@@ -511,7 +515,7 @@ describe('StockBrowser', () => {
     const info = screen.getByTitle('Recommendation details')
     fireEvent.click(info)
 
-    const popover = screen.getByRole('tooltip')
+    const popover = screen.getByRole("note")
     expect(popover.className).toContain('overflow-y-auto')
     expect(popover.getAttribute('tabindex')).toBe('0')
     expect(info.nextElementSibling).toBe(popover)
@@ -525,7 +529,7 @@ describe('StockBrowser', () => {
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     fireEvent.click(screen.getByTitle('Recommendation details'))
 
-    const { className } = screen.getByRole('tooltip')
+    const { className } = screen.getByRole("note")
     expect(className).toContain('max-h-[min(16rem,calc(100dvh-1rem))]')
     expect(className).toContain('max-w-[calc(100vw-1rem)]')
   })
@@ -537,9 +541,9 @@ describe('StockBrowser', () => {
     const info = screen.getByTitle('Recommendation details')
     fireEvent.click(info)
 
-    screen.getByRole('tooltip').focus()
+    screen.getByRole("note").focus()
     fireEvent.keyDown(document, { key: 'Escape' })
-    expect(screen.queryByRole('tooltip')).toBeNull()
+    expect(screen.queryByRole("note")).toBeNull()
     expect(document.activeElement).toBe(info)
   })
 
@@ -552,7 +556,7 @@ describe('StockBrowser', () => {
     fireEvent.click(screen.getByTitle('Recommendation details'))
 
     fireEvent.touchStart(document.body)
-    expect(screen.queryByRole('tooltip')).toBeNull()
+    expect(screen.queryByRole("note")).toBeNull()
   })
 
   it('closes the popover when the view switches out from under its icon', async () => {
@@ -563,13 +567,13 @@ describe('StockBrowser', () => {
     render(<StockBrowser recommendedAvailable />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     fireEvent.click(screen.getByTitle('Recommendation details'))
-    expect(screen.getByRole('tooltip')).toBeTruthy()
+    expect(screen.getByRole("note")).toBeTruthy()
 
     fireEvent.click(screen.getByTitle('Tile view'))
     // The icon's own state is what proves it closed rather than merely went
     // invisible: an unplaced panel is hidden, which a role query cannot see.
     await waitFor(() => expect(screen.getByTitle('Recommendation details').getAttribute('aria-expanded')).toBe('false'))
-    expect(screen.queryByRole('tooltip')).toBeNull()
+    expect(screen.queryByRole("note")).toBeNull()
   })
 
   it('closes the popover when a refetch drops the row it belongs to', async () => {
@@ -577,11 +581,11 @@ describe('StockBrowser', () => {
     const { rerender } = render(<StockBrowser recommendedAvailable syncGeneration={1} />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     fireEvent.click(screen.getByTitle('Recommendation details'))
-    expect(screen.getByRole('tooltip')).toBeTruthy()
+    expect(screen.getByRole("note")).toBeTruthy()
 
     getStock.mockResolvedValue({ total: 0, row_total: 0, page: 1, per_page: 250, items: [] })
     rerender(<StockBrowser recommendedAvailable syncGeneration={2} />)
-    await waitFor(() => expect(screen.queryByRole('tooltip')).toBeNull())
+    await waitFor(() => expect(screen.queryByRole("note")).toBeNull())
   })
 
   it('puts the info button immediately left of the save button in the row', async () => {
@@ -604,7 +608,7 @@ describe('StockBrowser', () => {
     expect(info.nextElementSibling).toBe(screen.getByTitle('Save for later'))
 
     fireEvent.click(info)
-    expect(screen.getByRole('tooltip').textContent).toContain('Similar to your hardcore collection')
+    expect(screen.getByRole("note").textContent).toContain('Similar to your hardcore collection')
   })
 
   it('passes hiddenCrawlerIds through to getStock', async () => {
@@ -1088,7 +1092,7 @@ describe('StockBrowser', () => {
     let reachedLink = false
     link!.addEventListener('click', () => { reachedLink = true })
     fireEvent.click(info)
-    expect(screen.getByRole('tooltip')).toBeTruthy()
+    expect(screen.getByRole("note")).toBeTruthy()
     expect(reachedLink).toBe(false)
   })
 

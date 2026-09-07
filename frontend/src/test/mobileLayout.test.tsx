@@ -457,7 +457,7 @@ describe('mobile StockBrowser', () => {
     expect(screen.queryByText('Shares a label and era with three records you own.')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Recommendation details' }))
-    const popover = screen.getByRole('tooltip')
+    const popover = screen.getByRole("note")
     expect(popover.textContent).toContain('Not recommended')
     expect(popover.textContent).toContain('Shares a label and era with three records you own.')
   })
@@ -474,7 +474,7 @@ describe('mobile StockBrowser', () => {
     expect(info.nextElementSibling).toBe(screen.getByRole('button', { name: 'Save for later' }))
 
     fireEvent.click(info)
-    const popover = screen.getByRole('tooltip')
+    const popover = screen.getByRole("note")
     expect(popover.textContent).toContain('Recommended')
     expect(popover.textContent).toContain('Shares a label and era with three records you own.')
 
@@ -482,7 +482,7 @@ describe('mobile StockBrowser', () => {
     // to reach for.
     fireEvent.mouseDown(info)
     fireEvent.click(info)
-    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+    expect(screen.queryByRole("note")).not.toBeInTheDocument()
   })
 
   it('renders cards keeping the cost link and the save button as the row actions', async () => {

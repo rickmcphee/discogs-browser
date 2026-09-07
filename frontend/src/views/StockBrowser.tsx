@@ -92,9 +92,13 @@ function BookmarkIcon({ filled }: { filled: boolean }) {
 // tooltip for the one slot both wanted.
 //
 // A popover rather than a modal: this is a glance at one sentence, so it opens
-// and closes on the same icon and takes no focus, dims nothing, and needs no
-// Close button. It holds no interactive content, so it stays out of the tab
-// order and reaches assistive tech through the icon's aria-describedby instead.
+// and closes on the same icon, dims nothing, and needs no Close button.
+// Opening moves no focus. It is a disclosure, not a dialog -- the icon owns
+// the relationship through aria-expanded/aria-controls, and describes itself
+// by the panel so a screen reader on the icon hears the reason. The panel
+// itself is in the tab order for one reason only: a reason long enough to
+// clip has to be scrollable by keyboard, which Safari will not do for a
+// container it cannot focus.
 function ReasonPopover({ item, anchor, onClose }: { item: StockItem; anchor: HTMLElement; onClose: () => void }) {
   const panelRef = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null)
@@ -166,7 +170,13 @@ function ReasonPopover({ item, anchor, onClose }: { item: StockItem; anchor: HTM
     <div
       ref={panelRef}
       id={REASON_PANEL_ID}
-      role="tooltip"
+      // `note` rather than `tooltip`: an ARIA tooltip is a non-focusable
+      // description shown on hover or focus, and this is a click-controlled
+      // panel that deliberately takes a tab stop -- a focusable tooltip is a
+      // pattern assistive tech has no good reading of. A note is what this
+      // is: text ancillary to the row it hangs off.
+      role="note"
+      aria-label={REASON_BUTTON_TITLE}
       // Focusable because the reason is free text and can outrun the panel:
       // Chrome and Firefox hand a scroll container to the keyboard on their
       // own, Safari does not, and the clipped tail has to be reachable
@@ -621,6 +631,7 @@ function StockBrowser({
                             title={REASON_BUTTON_TITLE}
                             aria-expanded={reason?.item.id === item.id}
                             aria-describedby={reason?.item.id === item.id ? REASON_PANEL_ID : undefined}
+                            aria-controls={reason?.item.id === item.id ? REASON_PANEL_ID : undefined}
                             className="flex h-11 w-11 items-center justify-center rounded-full bg-gray-950/70 text-white hover:bg-gray-950 md:h-auto md:w-auto md:p-1"
                           >
                             <InfoIcon />
@@ -692,6 +703,7 @@ function StockBrowser({
                               title={REASON_BUTTON_TITLE}
                               aria-expanded={reason?.item.id === item.id}
                               aria-describedby={reason?.item.id === item.id ? REASON_PANEL_ID : undefined}
+                              aria-controls={reason?.item.id === item.id ? REASON_PANEL_ID : undefined}
                               className={`w-11 h-11 flex items-center justify-center ${dismissButtonClass()}`}
                             >
                               <InfoIcon />
@@ -797,6 +809,7 @@ function StockBrowser({
                               title={REASON_BUTTON_TITLE}
                               aria-expanded={reason?.item.id === item.id}
                               aria-describedby={reason?.item.id === item.id ? REASON_PANEL_ID : undefined}
+                              aria-controls={reason?.item.id === item.id ? REASON_PANEL_ID : undefined}
                               className={`p-1 ${dismissButtonClass()}`}
                             >
                               <InfoIcon />
