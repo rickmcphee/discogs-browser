@@ -32,7 +32,24 @@ beforeEach(() => {
   getStock.mockResolvedValue({ total: 2, row_total: 2, page: 1, per_page: 250, items })
   getStockArtists.mockResolvedValue(['NAILS', 'Rob Zombie'])
   localStorage.clear()
+  setViewport(DEFAULT_VIEWPORT.width, DEFAULT_VIEWPORT.height)
 })
+
+// jsdom measures every element as a zero-sized box at the origin, so anything
+// that asserts on where the popover landed has to supply the rects itself.
+const DEFAULT_VIEWPORT = { width: window.innerWidth, height: window.innerHeight }
+
+function setViewport(width: number, height: number) {
+  Object.defineProperty(window, 'innerWidth', { value: width, configurable: true })
+  Object.defineProperty(window, 'innerHeight', { value: height, configurable: true })
+}
+
+function boxAt(left: number, top: number, width: number, height: number): DOMRect {
+  return {
+    left, top, width, height, right: left + width, bottom: top + height,
+    x: left, y: top, toJSON: () => ({}),
+  } as DOMRect
+}
 
 // The row-set filter lives behind a popover now, not a <select>.
 // The trigger is a fixed "Filter" and shows nothing of the state, so reading
@@ -488,11 +505,12 @@ describe('StockBrowser', () => {
     expect(popover.style.visibility).toBe('visible')
   })
 
-  it('leaves the record unnamed in the popover, since the row already names it', async () => {
-    // It used to print the title, which on a comparison row risked crediting
-    // the judgment to the marketplace's own name for another pressing. The
-    // popover is pinned to the row, so it does not name the record at all.
-    getStock.mockResolvedValue({
+  // A judgment is made against an item_key. A comparison row shows the
+  // source's own name for what it matched, which can be another pressing, so
+  // there the popover has to say which record the reason is about; on a row
+  // that already names the target, repeating it is noise.
+  function withComparison() {
+    return {
       total: 1, row_total: 2, page: 1, per_page: 250,
       items: [
         { ...items[0], reason: 'Similar to your hardcore collection', recommended: true },
@@ -502,14 +520,64 @@ describe('StockBrowser', () => {
           reason: 'Similar to your hardcore collection', recommended: true,
         },
       ],
-    })
+    }
+  }
+
+  it('leaves the record unnamed on a row that already names it', async () => {
+    getStock.mockResolvedValue(withComparison())
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('Rob Zombie - The Great Satan [Standard Black LP]')).toBeTruthy())
+
+    fireEvent.click(screen.getAllByTitle('Recommendation details')[0])
+    expect(screen.getByRole('note').textContent).not.toContain('Ghostly Black Vinyl')
+  })
+
+  it('names the target on a row showing a source\'s name for another pressing', async () => {
+    getStock.mockResolvedValue(withComparison())
     render(<StockBrowser recommendedAvailable />)
     await waitFor(() => expect(screen.getByText('Rob Zombie - The Great Satan [Standard Black LP]')).toBeTruthy())
 
     fireEvent.click(screen.getAllByTitle('Recommendation details')[1])
-    const popover = screen.getByRole("note")
+    const popover = screen.getByRole('note')
+    // The target the judge actually saw, not the row's own substituted name.
+    expect(popover.textContent).toContain('Rob Zombie — The Great Satan — Ghostly Black Vinyl')
     expect(popover.textContent).not.toContain('Standard Black LP')
-    expect(popover.textContent).not.toContain('Ghostly Black Vinyl')
+  })
+
+  it('re-places the popover from its current size when the window resizes', async () => {
+    // The panel's own width and height are inputs to the placement, and both
+    // they and the viewport can change while it is open -- a phone turned on
+    // its side, a window dragged narrow. Measuring once and reusing that
+    // leaves the panel placed for a screen it is no longer on.
+    getStock.mockResolvedValue(judged(true))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getAllByTitle('Recommendation details').length).toBeGreaterThan(0))
+
+    const icon = screen.getAllByTitle('Recommendation details')[0]
+    icon.getBoundingClientRect = () => boxAt(100, 200, 24, 24)
+    setViewport(1024, 768)
+
+    fireEvent.click(icon)
+    const popover = screen.getByRole('note')
+    // Measured at jsdom's zero width, so it still fits in the 100px to the
+    // icon's left.
+    expect(popover.style.left).toBe('92px')
+
+    popover.getBoundingClientRect = () => boxAt(0, 0, 256, 96)
+    fireEvent(window, new Event('resize'))
+    // 256px does not fit there, so it flips to the icon's right and centres
+    // on it -- neither of which it could know without measuring again.
+    expect(popover.style.left).toBe('132px')
+    expect(popover.style.top).toBe('164px')
+    expect(popover.style.maxWidth).toBe('256px')
+
+    setViewport(240, 300)
+    fireEvent(window, new Event('resize'))
+    // Neither side of the icon can hold it now, so it stacks above; and it is
+    // cut to the room between the edges rather than kept at the width it had.
+    expect(popover.style.left).toBe('8px')
+    expect(popover.style.top).toBe('96px')
+    expect(popover.style.maxWidth).toBe('224px')
   })
 
   it('scrolls a long reason inside the popover, and lets a keyboard reach it', async () => {

@@ -57,9 +57,15 @@ function displayTitle(item: StockItem): string {
   return item.listing_title ?? item.title
 }
 
+// True when the row's visible name is the source's rather than the target's:
+// a release crawler matches by artist and title, so what it found can be a
+// different pressing -- or, where the match was loose, a different record.
+function namesAnotherPressing(item: StockItem): boolean {
+  return !!item.listing_title && item.listing_title !== item.title
+}
+
 function titleTooltip(item: StockItem): string | undefined {
-  if (item.listing_title && item.listing_title !== item.title) return item.title
-  return undefined
+  return namesAnotherPressing(item) ? item.title : undefined
 }
 
 // Collection and Wantlist narrow to the user's library at release level; the
@@ -192,8 +198,8 @@ function ReasonPopover({ item, anchor, onClose }: { item: StockItem; anchor: HTM
     // mean deciding, on every scroll, whether the row is still *visible* --
     // and the row can be hidden while it is still in the viewport (scrolled
     // out of the table's own overflow container, or under the table's sticky
-    // header), leaving a panel that names no record sitting beside rows it
-    // has nothing to do with. Dismissing is both the simpler rule and the
+    // header), leaving a panel that usually names no record sitting beside
+    // rows it has nothing to do with. Dismissing is both the simpler rule and the
     // one that matches a glance: you moved on. A scroll inside the panel is
     // the opposite -- it is how a long reason is read -- so it stays.
     // Capturing, since the containers that scroll do not bubble it.
@@ -282,11 +288,20 @@ function ReasonPopover({ item, anchor, onClose }: { item: StockItem; anchor: HTM
     >
       {/* A reason only exists on a judged item, so the polarity is never
           unknown here -- and it has to be said, since an item can be judged
-          against and still carry a note explaining why. The record it belongs
-          to is the row the popover is pinned to, so it is not named again. */}
+          against and still carry a note explaining why. */}
       <p className="text-xs font-medium text-gray-400">
         {item.recommended ? 'Recommended' : 'Not recommended'}
       </p>
+      {/* Usually the row this is pinned to says which record it is about, and
+          repeating that is noise the modal could afford and a glance cannot.
+          Not on a row showing a source's own name for what it matched: a
+          judgment is made against an item_key, so there the reason would read
+          as being about a pressing the judge never saw. gray-400 rather than
+          the gray-500 of the app's other secondary text -- on gray-900 that
+          is ~3.7:1, and this is the line that says which record. */}
+      {namesAnotherPressing(item) && (
+        <p className="text-xs text-gray-400">{item.artist} — {item.title}</p>
+      )}
       <p className="mt-1 text-sm text-gray-200">{item.reason}</p>
     </div>
   )

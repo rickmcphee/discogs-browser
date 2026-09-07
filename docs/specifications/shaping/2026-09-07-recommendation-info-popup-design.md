@@ -88,14 +88,15 @@ Out of scope:
   the judgment would put one on nearly every row in the Store tab and open
   an empty popup from each. The icon's promise is "there is something to
   read here", and it only makes that promise when there is.
-- ~~**The popup names the target, not the row.**~~ *Superseded: the popover
-  names no record at all — see "It does not name the record" in the amendment
-  below.* Its subtitle rendered
+- **The popup names the target, not the row** — but only where the row does
+  not. Its subtitle rendered
   `item.title` rather than `displayTitle()`'s substituted name. A judgment is
   made against an `item_key`; a comparison row shows what its marketplace
   called the thing it matched, which the listing-title design exists because
   it can be another pressing. Crediting the reason to that name would
-  attribute it to a record the judge never saw.
+  attribute it to a record the judge never saw. The popover narrows this to
+  the case that needs it — see "It names the record only where the row does
+  not" in the amendment below.
 - **The popup names the polarity.** "Recommended" or "Not recommended" as
   the heading, from the new `recommended` field. Without it, a rejection's
   imported reason would render under recommendation framing — the exact
@@ -216,8 +217,8 @@ icon.**
   changes none of `StockBrowser`'s own inputs, so a dependency-listed effect
   would not run, and an effect without a list is the same thing with an extra
   pass and a lint warning. Scrolling the row out of sight closes it too: the
-  panel names no record, so beside unrelated rows it would say nothing about
-  where it came from. Rather than judge on every scroll whether the row is
+  panel usually names no record, so beside unrelated rows it would say
+  nothing about where it came from. Rather than judge on every scroll whether the row is
   still *visible* — it can be hidden while still in the viewport, scrolled out
   of the table's own overflow container or under its sticky header, and
   occlusion in general is not something geometry answers — a scroll simply
@@ -236,11 +237,15 @@ icon.**
   only as a compatibility event, and a touch scroll emits none at all, so a
   mouse-only listener would leave the popover open on a phone. Both events,
   matching `StockFilter`.
-- **It does not name the record.** The modal did, to keep a comparison row's
-  substituted `listing_title` from crediting the judgment to a pressing the
-  judge never saw. A popover pinned to the row it belongs to cannot be
-  ambiguous about which row that is, so the line goes and the hazard with
-  it.
+- **It names the record only where the row does not.** The modal named it
+  unconditionally, to keep a comparison row's substituted `listing_title`
+  from crediting the judgment to a pressing the judge never saw. Being
+  pinned to its row settles *which row*, which is not the same question: the
+  row itself may be showing a source's own name for what it matched, and
+  then the reason still reads as being about a record the judge never saw.
+  So the line survives, on the rows that need it — `namesAnotherPressing()`,
+  the predicate `titleTooltip()` already used, gates it — and everywhere
+  else the popover is verdict and sentence, which is what a glance wants.
 - **The icon is the row's third action, in the actions group.** Immediately
   left of the bookmark in each view, so the row's controls stay in one
   place: cost link, info, save. In tiles the bookmark is an overlay on the
@@ -287,8 +292,8 @@ icon.**
 - The open icon reports `aria-expanded="true"` and points both
   `aria-controls` and `aria-describedby` at the popover's id; a closed one
   reports `aria-expanded="false"` and neither reference. Its accessible
-  description resolves to the justification — documenting the unnamed panel
-  rather than guarding it, since jsdom's description computation falls back
+  description resolves to the justification — documenting it rather than
+  guarding it, since jsdom's description computation falls back
   to text content whether or not a name is present.
 - The popover is positioned fixed, with coordinates and visibility set — the
   geometry itself belongs to `reasonPopoverPosition.test.ts`.
@@ -310,8 +315,10 @@ icon.**
   that is what re-runs the placement.
 - Closing a focused panel by clicking its icon returns focus to that icon,
   not just closing by Escape.
-- It does not name the record, on a comparison row carrying a
-  `listing_title` least of all.
+- It leaves the record unnamed on a row that already names it, and names the
+  target on a comparison row whose `listing_title` names another pressing.
+- Resizing the window re-places it from the panel's current size and the new
+  viewport, rather than from what either measured when it opened.
 - A long reason scrolls inside it rather than growing it.
 - Neither tile button is inside the listing link, and clicking one never
   reaches it.
