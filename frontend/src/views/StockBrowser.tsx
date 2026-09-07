@@ -104,32 +104,6 @@ function BookmarkIcon({ filled }: { filled: boolean }) {
 // itself is in the tab order for one reason only: a reason long enough to
 // clip has to be scrollable by keyboard, which Safari will not do for a
 // container it cannot focus.
-// True unless the element is definitely out of sight -- outside the viewport,
-// or outside anything that clips it on the way up. Stated as "not outside"
-// rather than "inside" on purpose: an element with no box yet answers that it
-// is visible, which is what a just-mounted panel needs, and is the only
-// answer available under jsdom, where every rect is zero.
-function isAnchorInView(anchor: HTMLElement): boolean {
-  const rect = anchor.getBoundingClientRect()
-  let top = 0
-  let left = 0
-  let bottom = window.innerHeight
-  let right = window.innerWidth
-  for (let parent = anchor.parentElement; parent; parent = parent.parentElement) {
-    const { overflowX, overflowY } = getComputedStyle(parent)
-    if (!/auto|scroll|hidden/.test(overflowX + overflowY)) continue
-    const box = parent.getBoundingClientRect()
-    // No box, no clipping. Keeps a laid-out-nowhere ancestor from swallowing
-    // the whole viewport into an empty rect.
-    if (box.width === 0 && box.height === 0) continue
-    top = Math.max(top, box.top)
-    left = Math.max(left, box.left)
-    bottom = Math.min(bottom, box.bottom)
-    right = Math.min(right, box.right)
-  }
-  return !(rect.bottom < top || rect.top > bottom || rect.right < left || rect.left > right)
-}
-
 function ReasonPopover({ item, anchor, onClose }: { item: StockItem; anchor: HTMLElement; onClose: () => void }) {
   const panelRef = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState<Placement | null>(null)
@@ -147,7 +121,7 @@ function ReasonPopover({ item, anchor, onClose }: { item: StockItem; anchor: HTM
       // here is what ends it -- without this the panel would sit hidden and
       // the new icon would keep claiming to be expanded until some unrelated
       // render came along.
-      if (!anchor.isConnected || !isAnchorInView(anchor)) {
+      if (!anchor.isConnected) {
         onClose()
         return
       }
@@ -167,13 +141,23 @@ function ReasonPopover({ item, anchor, onClose }: { item: StockItem; anchor: HTM
       }, viewport))
     }
     place()
-    // Capturing, so the table's own overflow container counts: the panel is
-    // positioned against the viewport, so a scroll that moves the row has to
-    // move the panel with it.
-    window.addEventListener('scroll', place, true)
+    // A scroll dismisses it rather than moving it. Following the row would
+    // mean deciding, on every scroll, whether the row is still *visible* --
+    // and the row can be hidden while it is still in the viewport (scrolled
+    // out of the table's own overflow container, or under the table's sticky
+    // header), leaving a panel that names no record sitting beside rows it
+    // has nothing to do with. Dismissing is both the simpler rule and the
+    // one that matches a glance: you moved on. A scroll inside the panel is
+    // the opposite -- it is how a long reason is read -- so it stays.
+    // Capturing, since the containers that scroll do not bubble it.
+    function onScroll(e: Event) {
+      if (panelRef.current?.contains(e.target as Node)) return
+      onClose()
+    }
+    window.addEventListener('scroll', onScroll, true)
     window.addEventListener('resize', place)
     return () => {
-      window.removeEventListener('scroll', place, true)
+      window.removeEventListener('scroll', onScroll, true)
       window.removeEventListener('resize', place)
     }
   }, [anchor, item, onClose])

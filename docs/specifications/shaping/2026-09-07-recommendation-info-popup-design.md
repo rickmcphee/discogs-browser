@@ -155,8 +155,8 @@ icon.**
   clipped for a row at the top or bottom edge — unrecoverably, since
   overflow above the container does not become scrollable. Fixed coordinates
   computed from the icon's own rect avoid that in every view, and are
-  recomputed on scroll (capturing, so the table's own scroll counts) and on
-  resize. The panel's size is an input to that placement, so it is measured
+  recomputed on resize (a scroll dismisses the popover rather than moving
+  it — see below). The panel's size is an input to that placement, so it is measured
   in a layout effect and held hidden for the frame before it is placed.
   `placeReasonPopover` (`frontend/src/views/reasonPopoverPosition.ts`) is
   that arithmetic, pure and tested on its own — jsdom measures every element
@@ -198,16 +198,17 @@ icon.**
   changes none of `StockBrowser`'s own inputs, so a dependency-listed effect
   would not run, and an effect without a list is the same thing with an extra
   pass and a lint warning. Scrolling the row out of sight closes it too: the
-  panel names no record, so clamped into view beside unrelated rows it would
-  say nothing about where it came from. Out of sight means out of *its own
-  scroll container* as much as off the viewport: the table and the card list
-  are their own, under a toolbar, so a row scrolled above one is invisible
-  while its viewport coordinates are still positive. Phrased as "not
-  definitely outside" rather than "inside", so an element with no box yet —
-  every element, under jsdom — answers that it is visible. The popover also
-  closes itself when it finds its anchor detached: a view-mode switch mounts
-  it afresh against the icon from the tree it replaced, a commit after the
-  parent's own check could have seen that.
+  panel names no record, so beside unrelated rows it would say nothing about
+  where it came from. Rather than judge on every scroll whether the row is
+  still *visible* — it can be hidden while still in the viewport, scrolled out
+  of the table's own overflow container or under its sticky header, and
+  occlusion in general is not something geometry answers — a scroll simply
+  dismisses it. That is the simpler rule and the one that matches a glance:
+  you moved on. A scroll inside the panel is the opposite, being how a long
+  reason is read, and leaves it alone. The popover also closes itself when it
+  finds its anchor detached: a view-mode switch mounts it afresh against the
+  icon from the tree it replaced, a commit after the parent's own check could
+  have seen that.
 - **Dismissal listens for touch as well as mouse.** A tap emits `mousedown`
   only as a compatibility event, and a touch scroll emits none at all, so a
   mouse-only listener would leave the popover open on a phone. Both events,
@@ -278,8 +279,7 @@ icon.**
   query cannot tell that from closed.
 - A refetch that drops the row closes it *and* leaves it closed when the row
   returns — absence while the list is empty proves nothing on its own.
-- Scrolling the row out of sight closes it, whether it leaves the viewport or
-  only the table's own scroll container.
+- A scroll of the list closes it; a scroll inside the panel does not.
 - Closing a focused panel by clicking its icon returns focus to that icon,
   not just closing by Escape.
 - It does not name the record, on a comparison row carrying a
