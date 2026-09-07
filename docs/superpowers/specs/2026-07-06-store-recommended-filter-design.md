@@ -51,7 +51,7 @@ The Store tab's filter dropdown already has a disabled `Recommended` placeholder
 **Goals**
 - A `Recommended` option in the Store tab's existing filter dropdown, alongside `All` and `Overlapping`.
 - Judgment is computed in the background during the existing stock sync job, not live per-request — the filter itself is a cheap SQL query at read time, same as `Overlapping`.
-- Each recommended item can show a short reason (surfaced as a tooltip), so the feature's quality is visible and debuggable.
+- Each recommended item can show a short reason (surfaced as a tooltip), so the feature's quality is visible and debuggable. **(Amended 2026-09-07, branch `claude/recommendation-info-icon-popup-6n4r87`:** no longer a tooltip. The reason is behind an info button in the row's action group, and opens in a dialog. See [`2026-09-07-recommendation-info-popup-design.md`](../../specifications/shaping/2026-09-07-recommendation-info-popup-design.md).**)**
 - Judgments persist across resyncs — an item already judged isn't re-sent to Claude just because its row got recreated by `replace_stock_items`'s delete+reinsert.
 
 **Non-goals**
@@ -123,7 +123,7 @@ These reuse the same bottom status bar the existing `stock_sync_*` events alread
 `StockBrowser.tsx`:
 - The dropdown's `<option value="recommended" disabled>` becomes conditionally disabled via the new `hasAnthropicKey` prop: `disabled={!hasAnthropicKey}`.
 - `getStock`/`getStockArtists` calls thread a `recommended` boolean through alongside the existing `overlapping` one, keyed off `filter === 'recommended'`.
-- When a row's `reason` is present, it's rendered as a `title` attribute on the artist/title table cells (native browser tooltip) — no new UI chrome.
+- When a row's `reason` is present, it's rendered as a `title` attribute on the artist/title table cells (native browser tooltip) — no new UI chrome. **(Amended 2026-09-07, branch `claude/recommendation-info-icon-popup-6n4r87`:** the `title` attributes are gone. A present `reason` renders an info button immediately left of the row's save bookmark — in the table, the mobile card list and the tile overlay alike — and clicking it opens a dialog holding the reason under the judgment's verdict. `get_stock_items` returns that verdict as `recommended` alongside `reason`, since an item judged against can carry a note too. See [`2026-09-07-recommendation-info-popup-design.md`](../../specifications/shaping/2026-09-07-recommendation-info-popup-design.md).**)**
 - `localStorage` persistence of the selected filter (`stockFilter`) already handles `'recommended'` as a stored value; no change needed there beyond removing the `disabled` gate once a key exists.
 
 ---
@@ -163,7 +163,7 @@ These reuse the same bottom status bar the existing `stock_sync_*` events alread
 - Re-running the sync without any change to the underlying catalog issues no new Claude API calls (all items already judged) and the `Recommended` results stay stable.
 - A newly-appearing stock item (new product from any catalog source) gets judged on the sync after it first appears, without disturbing previously-judged items' verdicts.
 - A single bad batch (simulated API error) doesn't stop the rest of the sync's judgment phase, and its items are retried successfully on the next sync.
-- Hovering a recommended row's artist/title shows the one-line reason as a tooltip.
+- Hovering a recommended row's artist/title shows the one-line reason as a tooltip. **(Amended 2026-09-07, branch `claude/recommendation-info-icon-popup-6n4r87`:** clicking the row's info button shows it in a dialog instead — a hover reached no touch device and announced nothing.**)**
 - Selecting `All` after `Recommended` returns to the unfiltered catalog; typing in the search box while `Recommended` is active narrows within the recommended set rather than replacing it (matches `Overlapping`'s existing search-interaction behavior).
 
 ---
