@@ -392,7 +392,19 @@ class Crawler:
                 page, self.unfiltered_url(release_id),
                 f"checking whether the ships_from filter explains the empty page for {discogs_id}",
             )
-            if not unfiltered.recognised:
+            if unfiltered.candidates and not unfiltered.listings:
+                # A page can render an empty-state marker *and* listing rows
+                # whose prices will not parse, and `_read_when_ready()` calls
+                # that recognised on the strength of the marker alone. Rows
+                # take precedence here as they do on the other two reads:
+                # they are evidence the price markup is broken, which is the
+                # opposite of the validation this branch is looking for.
+                verdict = (
+                    "The unfiltered page's own listing rows would not yield a price, so "
+                    "this is a price shape this crawler no longer reads rather than an "
+                    "absence of USA sellers"
+                )
+            elif not (unfiltered.recognised and unfiltered.answered):
                 verdict = (
                     "The same release read without the ships_from filter "
                     "was unreadable too"
@@ -507,27 +519,33 @@ class Crawler:
             log.warning("[Discogs] bot interstitial did not clear on %s while %s", url, what)
             raise BotDetectedError()
 
+        # Read before judging the response. `answered` gates the evidence a
+        # caller may use to *corroborate an empty result*, and nothing else --
+        # so listings parsed here are still returned, because they are
+        # positive data that cannot erase anything, and discarding them over
+        # a stale status or a title would throw away a real price for the
+        # same bad reason this branch declined to gate the first read's.
+        listings, recognised, candidates = await self._read_when_ready(page, url)
+
         if not title.strip():
-            # This module treats an empty title as unsettled everywhere else,
-            # and a document that never got as far as its <title> cannot be
-            # read as having no listings: that is the destructive answer, and
-            # nothing here has actually parsed.
+            # An empty title means the document never parsed, which this
+            # module treats as unsettled everywhere else. It cannot support
+            # the destructive answer, whatever else it rendered.
             log.warning(
                 "[Discogs] %s never settled a title while %s, so nothing it rendered "
-                "can stand as evidence", url, what,
+                "can corroborate an empty result", url, what,
             )
-            return _Read([], False, False, False)
+            return _Read(listings, recognised, False, candidates)
 
         if not (_response_is_clean(response) or challenge_cleared):
             log.warning(
                 "[Discogs] %s answered HTTP %s (cf-mitigated=%s) while %s, so its markup "
-                "cannot stand as evidence either way",
+                "cannot corroborate an empty result",
                 url, response.status if response is not None else None,
                 response.headers.get("cf-mitigated") if response is not None else None, what,
             )
-            return _Read([], False, False, False)
+            return _Read(listings, recognised, False, candidates)
 
-        listings, recognised, candidates = await self._read_when_ready(page, url)
         return _Read(listings, recognised, True, candidates)
 
     async def _read_when_ready(self, page, url: str):

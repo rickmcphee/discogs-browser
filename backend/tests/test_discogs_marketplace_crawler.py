@@ -629,6 +629,78 @@ async def test_listings_still_answer_when_the_title_never_settles(browser_page, 
     assert [r["price"] for r in results] == [6.50, 9.25, 12.99]
 
 
+async def test_an_empty_marker_beside_unreadable_rows_does_not_validate_the_selectors(
+    browser_page, monkeypatch
+):
+    """`_read_when_ready()` calls a page recognised on an empty-state marker
+    alone, so an unfiltered page carrying that marker *and* listing rows whose
+    prices will not parse would have been read as "the selectors still work" --
+    on the strength of markup that is in fact evidence they do not. Rows take
+    precedence here as they do on the other two reads.
+    """
+    async def _stats(release_id):
+        return 20
+
+    monkeypatch.setattr(dm, "_release_num_for_sale", _stats)
+    page = _FakePage(
+        browser_page,
+        ["unrecognised_empty_state.html", "empty_state_beside_unreadable_rows.html",
+         "unrecognised_empty_state.html"],
+    )
+
+    with pytest.raises(RuntimeError, match="price shape this crawler no longer reads"):
+        await Crawler().search(RELEASE, page)
+
+    assert len(page.urls) == 2, "the unfiltered read already settled it"
+
+
+async def test_a_confirming_read_surfaces_its_listings_despite_a_stale_status(
+    browser_page, monkeypatch
+):
+    """Trust gates the evidence for an *empty* result, not positive data.
+
+    A confirming reload that actually carries listings is a real price, and
+    refusing it over a stale challenge status would discard that price for
+    the same reason the first read deliberately does not gate its own.
+    """
+    async def _stats(release_id):
+        return 20
+
+    monkeypatch.setattr(dm, "_release_num_for_sale", _stats)
+    page = _FakePage(
+        browser_page,
+        ["unrecognised_empty_state.html", "usa_listings.html", "usa_listings.html"],
+    )
+    page.response = [
+        None,
+        None,
+        SimpleNamespace(status=403, headers={"cf-mitigated": "challenge"}),
+    ]
+
+    results = await Crawler().search(RELEASE, page)
+
+    assert [r["price"] for r in results] == [6.50, 9.25, 12.99]
+
+
+async def test_a_confirming_read_surfaces_its_listings_despite_an_unsettled_title(
+    browser_page, monkeypatch
+):
+    async def _stats(release_id):
+        return 20
+
+    monkeypatch.setattr(dm, "_release_num_for_sale", _stats)
+    monkeypatch.setattr(dm, "_SETTLE_TIMEOUT_MS", 300)
+    page = _FakePage(
+        browser_page,
+        ["unrecognised_empty_state.html", "usa_listings.html", "usa_listings.html"],
+        titles=[LISTED_TITLE, LISTED_TITLE, ""],
+    )
+
+    results = await Crawler().search(RELEASE, page)
+
+    assert [r["price"] for r in results] == [6.50, 9.25, 12.99]
+
+
 async def test_unreadable_page_raises_when_the_stats_api_will_not_answer(browser_page, monkeypatch):
     async def _stats(release_id):
         return None
