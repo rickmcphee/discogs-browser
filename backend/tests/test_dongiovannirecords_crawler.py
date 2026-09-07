@@ -322,8 +322,12 @@ def test_plugin_identity():
     # quote, because the leading group excludes quotes outright.
     ('Bert Susanka "Well Qualified To Represent The L.B. Sea!" 2x12"',
      ("Well Qualified To Represent The L.B. Sea!", '2x12"')),
-    # The one-quote rule must not reject a legitimate inch marker, in any of
-    # the three spellings the format gate accepts.
+    # The rule must not reject a legitimate inch marker, in any spelling the
+    # format gate accepts -- including the spaced form, which the digit
+    # lookbehind wrongly refused. Found in review on PR #323.
+    ('Amy Klein "Fire" 12 "', ("Fire", '12 "')),
+    ('Amy Klein "Fire" 12 inch', ("Fire", "12 inch")),
+    # ... and in any of the three quote spellings.
     ('Amy Klein "Fire" 12\u2033', ("Fire", "12\u2033")),
     ('Amy Klein "Fire" 12\u201d', ("Fire", "12\u201d")),
     # A title that omits the artist entirely still carries a readable album
@@ -344,6 +348,11 @@ def test_title_parse(title, expected):
     # group excludes quotes, so the album's opening quote is always the
     # title's first and a stray inch marker cannot start one.
     'Amy Klein 12" "Fire" LP',
+    # A quote embedded in a word is not an inch marker, even though it does
+    # follow a digit -- the digit lookbehind that stood in for the format
+    # gate's own token accepted this. Found in review on PR #323.
+    'Amy Klein "The " Studio54" LP',
+    'Amy Klein "The " 12x" LP',
     # A descriptor carries at most one inch marker. Two quotes are the tail of
     # a nested quotation, and the digit exemption alone cannot see it when the
     # inner content ends in digits. Found in review on PR #323.

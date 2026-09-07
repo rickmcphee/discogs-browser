@@ -70,27 +70,20 @@ _TITLE_RE = re.compile(
 # (`Artist "Bundle of Joy" 12"`), silently dropping a stock row. Found in
 # review on PR #323.
 _BUNDLE_RE = re.compile(r"\bbundles?\b", re.IGNORECASE)
-# In this store's titles every quote left after the album is an inch marker,
-# and an inch marker always follows its digits (`12"`, `2x12"`, `7"`). A quote
-# anywhere else in the descriptor is the tail of a nested quotation the album
-# group stopped short of -- `Artist "The " Big" 12"` otherwise parses to an
-# album of `The` and a descriptor of `Big" 12"`, which the inch marker in that
-# descriptor then admits as a record. The closing lookahead alone does not
-# catch it, because the inner quote there IS followed by whitespace; it only
-# rejects the glued-letter spelling (`"Fire"X`). Found in review on PR #323.
-# The digit exemption is for inch markers only, so it covers exactly the three
-# characters _VINYL_WORD_RE accepts as one -- `"`, `”` and `″` -- and only
-# after a digit. A LEFT curly quote is never an inch marker under either rule,
-# so it is rejected wherever it appears; `12“` was otherwise reaching the
-# gate's default-admit branch as an unrecognised descriptor.
-_STRAY_QUOTE_RE = re.compile(r'(?<![0-9])["”″]|“')
-# One inch marker is a descriptor; two quotes are the tail of a nested
-# quotation the album group stopped short of. Every live descriptor carries
-# exactly one (`12"`, `2x12"`, `7"`), and the digit exemption alone cannot
-# tell them apart -- `Artist "The " 54" 12"` parses to an album of `The` and a
-# descriptor of `54" 12"` whose quotes both follow digits. Found in review on
-# PR #323, over three passes: whether a stray quote is drift, then which
-# characters count, then how many.
+# What a quote is allowed to be in a descriptor: part of one complete inch
+# marker, and nothing else. Every live descriptor is exactly that (`12"`,
+# `2x12"`, `7"`).
+#
+# The token is shared with _VINYL_WORD_RE below rather than approximated,
+# which is the whole point. A "preceded by a digit" lookbehind stood in for it
+# through three review passes and was wrong in both directions: it accepted
+# `Studio54" LP`, where the quote is embedded in a word and the title is the
+# nested-quote shape this rejects, and it refused `12 "`, which the format
+# gate reads as an inch marker perfectly well. Approximating one rule inside
+# another is what produced every quote bug on this crawler. Found in review on
+# PR #323.
+_INCH_MARKER = r'(?<![a-z0-9])(?:\d+\s*[x×]\s*)?\d{1,2}\s*(?:["”″]|inch(?:es)?\b)'
+_INCH_MARKER_RE = re.compile(_INCH_MARKER, re.IGNORECASE)
 # Exemption-only, and narrower than _BUNDLE_RE on purpose -- see
 # _bundle_shaped for why the two differ.
 _TERMINAL_BUNDLE_RE = re.compile(r"\bbundles?\s*$", re.IGNORECASE)
@@ -102,7 +95,7 @@ _TERMINAL_BUNDLE_RE = re.compile(r"\bbundles?\s*$", re.IGNORECASE)
 _VINYL_WORD_RE = re.compile(
     r'(?<![a-z])(?:\d+(?:\.\d+)?\s*[x×]\s*)?lps?\b|\bvinyls?\b'
     r'|\bpicture\s+discs?\b|\btest\s+pressings?\b'
-    r'|(?<![a-z0-9])(?:\d+\s*[x×]\s*)?\d{1,2}\s*(?:"|”|″|inch(?:es)?\b)',
+    r'|' + _INCH_MARKER,
     re.IGNORECASE,
 )
 # Not an invented vocabulary: these are the store's own `product_type` values
@@ -133,6 +126,26 @@ _MERCH_RE = re.compile(
 # Either would otherwise share the title and the product URL, and so the
 # item_key, with every sibling built the same way.
 _PLACEHOLDER_VARIANT = "default title"
+
+
+def _descriptor_quotes_are_clean(descriptor: str) -> bool:
+    """Is every quote in this descriptor part of one complete inch marker?
+
+    Two ways a descriptor's quotes say the parse went wrong, and both are the
+    tail of a nested quotation the album group stopped short of. More than one
+    inch marker (`Artist "The " 54" 12"` leaves `54" 12"`), or a quote that is
+    not inside one at all (`Artist "The " Big" 12"` leaves `Big" 12"`, and
+    `Studio54"` embeds it in a word). Either way the album is severed and the
+    surviving inch marker would admit the row through the format gate.
+
+    Judged against _INCH_MARKER_RE, the same token the gate uses, so the two
+    cannot disagree about what an inch marker is -- every quote bug on this
+    crawler came from one rule approximating the other.
+    """
+    markers = _INCH_MARKER_RE.findall(descriptor)
+    if len(markers) > 1:
+        return False
+    return not any(q in _INCH_MARKER_RE.sub(" ", descriptor) for q in _QUOTE_CHARS)
 
 
 class Crawler:
@@ -436,9 +449,7 @@ class Crawler:
         # which is exactly what that guard's message already claims to cover.
         if not album or not descriptor:
             return "", ""
-        if _STRAY_QUOTE_RE.search(descriptor):
-            return "", ""
-        if sum(descriptor.count(q) for q in _QUOTE_CHARS) > 1:
+        if not _descriptor_quotes_are_clean(descriptor):
             return "", ""
         return album, descriptor
 

@@ -18,8 +18,11 @@ The store runs Shopify (`don-giovanni-records.myshopify.com`), so
 `shopify_catalog.iter_products()` already implements the transport. What
 needed deciding was how to read a row out of the payload, and the payload
 turns out to be the cleanest of any store crawled so far: `vendor` is the
-artist on every product, the title follows one convention with no
-exceptions, and the `vinyl` collection is exactly the store's records.
+artist on every product, the title follows one convention on every product
+that is a single item, and the `vinyl` collection is exactly the store's
+records. (The store's multi-item bundles are the exception, and the one the
+`_bundle_shaped()` classification below exists for — they carry no quoted
+album at all.)
 The design work was therefore less about salvaging a signal than about
 deciding which of two agreeing signals is the source of record, and about
 guarding an unusually tidy payload against becoming untidy.
@@ -131,8 +134,10 @@ A blank `vendor` therefore skips the product, and a store-wide blank raises.
 for the album and the format descriptor only.
 
 The **quoted-album** half of the convention is uniform across the entire
-store, records and non-records alike: every product leads with
-`Artist "Album"`. The trailing `<format>` is universal *within the vinyl
+store, records and non-records alike — every *single-item* product leads with
+`Artist "Album"`. The multi-item bundles do not, which is exactly why they
+need their own classification (see "Bundles" below); everything in this
+section is about the products that do. The trailing `<format>` is universal *within the vinyl
 collection* but not outside it — the store's books, pins and stickers stop at
 the quoted album, which is the asymmetry the parse rule below turns into a
 filter. Every one of the 158 titles in the
