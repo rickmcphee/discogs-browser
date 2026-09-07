@@ -624,8 +624,9 @@ function StockBrowser({
         )}
 
         {/* Card list -- see RecordBrowser for why cards rather than a
-            side-scrolling table. The cost link and the save button stay on the
-            right, where they are the row's two actions. */}
+            side-scrolling table. The row's actions stay on the right: the cost
+            link and the save button always, with the info button between them
+            on a row whose item carries a judgment reason. */}
         {viewMode === 'list' && isMobile && (
           <div className="flex-1 overflow-auto" ref={tableScrollRef}>
             {hasLoaded && items.length === 0 && (

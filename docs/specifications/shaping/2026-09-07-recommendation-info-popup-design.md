@@ -182,6 +182,11 @@ per-row payload is covered):
   describes the card list but never the inline reason line, so nothing
   there drifted when the line was removed. Its rationale lived only in its
   test name, which this branch rewrites in place.
+- [`2026-08-16-store-saved-items-design.md`](2026-08-16-store-saved-items-design.md)
+  also called the bookmark one of the mobile card's *two* right-hand actions
+  beside the cost link — true until the info button joined them. Caught in
+  review, amended in place, along with the same claim in the card list's own
+  code comment.
 - [`2026-08-08-store-collection-split-design.md`](2026-08-08-store-collection-split-design.md)
   prints a `StockItem` interface that ends at `reason`/`is_own`. Missed on
   the first sweep and caught in review; amended. It had already fallen
