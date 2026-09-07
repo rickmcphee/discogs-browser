@@ -29,8 +29,7 @@ under six different option schemes. Each is grounded below.
 
 **In:** a `catalog`-type plugin, `backend/crawlers/spkr.py`, walking the
 store's `vinyl` collection over the public `products.json` endpoint and
-yielding in-stock vinyl as stock items, marked `(Pre-Order)` where the
-store's `pre-order` collection lists them.
+yielding in-stock vinyl as stock items.
 
 **Out:**
 
@@ -195,7 +194,7 @@ for a single-variant product.
 Variant titles are whitespace-collapsed before use, so a double space inside
 one cannot carry into the row's identity.
 
-### Pre-orders: the `pre-order` collection
+### Pre-orders: not marked, not read
 
 The store's `Pre-Order` shelf (`/collections/pre-order`) lists 86 products,
 43 of them vinyl. **Nothing on the product says so**: no pre-order tag (the
@@ -203,27 +202,28 @@ vinyl products carry label tags only), no title marker, no `published_at`
 in the future, and every one of the 69 pressings on those 43 products
 reports `available: true`. The vinyl-collection copy of a pre-order product
 and its pre-order-collection copy differ in `updated_at` and nothing the
-crawler reads.
+crawler reads. Shelf membership is the only signal there is.
 
-So the crawler walks the `pre-order` collection first, keeps the set of
-handles it returns, and suffixes ` (Pre-Order)` on any vinyl row whose
-handle is in it, placed before the pressing: `Monark (Vinyl Gatefold LP)
-(Pre-Order) — NVP236LP`. Handle rather than title, because the handle is the
-identity the URL is built from; a shelf entry with no handle can match
-nothing, since a handle-less vinyl product is skipped before the shelf is
-consulted.
+It is not read, and the rows carry **no ` (Pre-Order)` marker**, on
+`musiconvinyl.py`'s and `darksiderecords.py`'s reasoning: the only place a
+marker could go is the title, and `compute_item_key` hashes
+`artist|title|url`, so a marker that disappears the day the record ships
+would re-key the row on the next sync — `replace_stock_items()` would
+delete the old row and insert a new key, orphaning the listings, judgments
+and saves hanging off the old one. The siblings that do suffix
+` (Pre-Order)` (`iodinerecords.py`, `hammerheart.py`) accept that churn on
+a tag the store itself flips; there is no non-key field for the status in
+the schema, and adding one is outside this crawler's scope.
 
-The shelf walk goes through `iter_products()` like the catalog walk, so a
-renamed or removed shelf raises out of `get_with_retry()` after its retry
-budget rather than completing without the suffix — completing would re-key
-every pre-order row on the next sync. An **empty** shelf is not drift:
-nothing being on pre-order is an ordinary state, and the suffix is display.
-It costs one extra listing page and one empty page per sync.
-
-Availability itself reads Shopify's `available` flag and nothing else, with
-**no pre-order bypass**: a pre-order pressing that reports `false` is gone
+Availability reads Shopify's `available` flag and nothing else, with **no
+pre-order bypass**: a pre-order pressing that reports `false` is gone
 allocation, not not-yet-released. Same call as `iodinerecords.py`,
 `matadorrecords.py` and `hammerheart.py`.
+
+**Amendment (2026-09-07, review round 1):** the first draft walked the
+`pre-order` shelf for its handles and suffixed ` (Pre-Order)` on the
+matching rows. Copilot's review pointed out the re-keying above; the rule
+here is the correction, and the shelf walk went with it.
 
 ### Availability and images
 
@@ -291,7 +291,7 @@ and a falsiness test would publish a sold-out record as in stock.
 | Field | Source |
 | --- | --- |
 | `artist` | `product.title` before the first ` - `; `Various Artists` → `Various` |
-| `title` | `product.title` after the first ` - `, verbatim; `+ " (Pre-Order)"` when the handle is on the pre-order shelf; `+ " — {variant title}"` unless the variant is the placeholder |
+| `title` | `product.title` after the first ` - `, verbatim; `+ " — {variant title}"` unless the variant is the placeholder |
 | `format` | `"Vinyl"`, hardcoded |
 | `price` | `variant.price`, guarded; `None` when unusable |
 | `currency` | `"EUR"`, hardcoded |
@@ -300,12 +300,12 @@ and a falsiness test would publish a sold-out record as in stock.
 
 ## Verification
 
-Replayed `Crawler._items()` over the fully-cached live catalog with the
-cached pre-order handles: 1,058 products walked, all 1,058 pass the type
+Replayed `Crawler._items()` over the fully-cached live catalog: 1,058
+products walked, all 1,058 pass the type
 gate, resolve an artist, carry a handle, and are readable, and **1,452 rows
 yielded** — zero `item_key` collisions, zero blank artists or titles, zero
 whitespace contamination, zero malformed URLs, zero missing covers and zero
-null prices. 69 rows carry the pre-order suffix, 571 are placeholder rows,
+null prices. 571 are placeholder rows,
 28 are credited to `Various`, and ten carry an unescaped `…`.
 
 Unit tests are respx-mocked against captured products, following the
@@ -315,8 +315,7 @@ fail: dropping the type gate, splitting on the last ` - ` instead of the
 first, reading availability by truthiness, dropping the placeholder rule,
 admitting a blank variant title, honouring the placeholder on a
 multi-variant product, turning the variant gate positive, dropping the
-entity unescape, dropping the `Various` rewrite, matching pre-orders by
-title instead of handle, dropping the pre-order suffix, admitting a boolean
+entity unescape, dropping the `Various` rewrite, admitting a boolean
 price, dropping the identity skip, weakening readability to any(), tallying
 the artist on every product, and dropping each guard in turn. Every mutation
 failed at least one test.
@@ -327,7 +326,7 @@ failed at least one test.
 with `Allow: /`, a `Disallow` list covering `/admin`, `/cart`, `/checkout`,
 `/orders`, `/account`, `/search`, `/recommendations/products` and filtered or
 sorted collection URLs, and no `Crawl-delay`. `/collections/vinyl/products.json`
-and `/collections/pre-order/products.json` match no `Disallow` rule. The
+matches no `Disallow` rule. The
 file's preamble points agents at a UCP/MCP endpoint for cart and checkout
 and asks that no agent complete a checkout; this crawler reads the catalog
 only and never touches either.
@@ -335,8 +334,7 @@ only and never touches either.
 Pacing is the pipeline's, not this crawler's: `shopify_catalog.iter_products()`
 routes every page through `catalog_http.get_with_retry()`, which applies the
 configured `crawl_delay_seconds` between pages and never retries a 429. A
-full walk is the pre-order shelf's page plus its empty page, then the vinyl
-collection's five pages plus its empty page.
+full walk is the collection's five pages plus its empty page.
 
 ## Queue fan-out
 

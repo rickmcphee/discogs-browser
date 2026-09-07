@@ -4,7 +4,6 @@ import pytest
 from crawlers.spkr import Crawler
 
 _PRODUCTS_URL = "https://spkr.store/collections/vinyl/products.json"
-_PREORDER_URL = "https://spkr.store/collections/pre-order/products.json"
 
 # Fixtures marked "captured" are live products fetched from the store on
 # 2026-09-07, trimmed to the fields the crawler reads (image URLs shortened).
@@ -44,8 +43,9 @@ _DARVAZA_CD_PRODUCT = {
 }
 
 # Captured: a pre-order (listed in the store's `pre-order` collection, with
-# nothing on the product itself saying so), whose variants are catalogue
-# numbers under a `SKU` option, each with its own image.
+# nothing on the product itself saying so, and every pressing available),
+# whose variants are catalogue numbers under a `SKU` option, each with its
+# own image.
 _MONARK_PRODUCT = {
     "title": "Blodtår - Monark (Vinyl Gatefold LP)",
     "vendor": "details",
@@ -230,14 +230,10 @@ def _page_response(products):
     return httpx.Response(200, json={"products": products})
 
 
-def _mock_pages(*products, empty_page=2, preorders=()):
+def _mock_pages(*products, empty_page=2):
     respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(
         return_value=_page_response(list(products)))
     respx.get(_PRODUCTS_URL, params={"limit": "250", "page": str(empty_page)}).mock(
-        return_value=_page_response([]))
-    respx.get(_PREORDER_URL, params={"limit": "250", "page": "1"}).mock(
-        return_value=_page_response(list(preorders)))
-    respx.get(_PREORDER_URL, params={"limit": "250", "page": "2" if preorders else "1"}).mock(
         return_value=_page_response([]))
 
 
@@ -439,77 +435,17 @@ async def test_various_artists_is_credited_as_various(crawler):
 
 
 @respx.mock
-async def test_preorder_shelf_membership_appends_suffix_before_the_pressing(crawler):
-    _mock_pages(_MONARK_PRODUCT, _DARVAZA_PRODUCT, preorders=[_MONARK_PRODUCT])
+async def test_a_preorder_carries_no_marker_and_no_availability_bypass(crawler):
+    # The pre-order shelf is not read: a title marker would re-key the row
+    # when the record ships. And a pre-order pressing reporting False is
+    # gone allocation, not not-yet-released.
+    _mock_pages(_MONARK_PRODUCT, _one_pressing(_MONARK_PRODUCT, available=False))
     items = [item async for item in crawler.crawl_catalog()]
     assert [i["title"] for i in items] == [
-        "Monark (Vinyl Gatefold LP) (Pre-Order) — NVP236LP",
-        "Monark (Vinyl Gatefold LP) (Pre-Order) — NVP236LPS",
-        "We Are Him (Vinyl Gatefold LP)",
+        "Monark (Vinyl Gatefold LP) — NVP236LP",
+        "Monark (Vinyl Gatefold LP) — NVP236LPS",
     ]
-
-
-@respx.mock
-async def test_preorder_shelf_is_matched_by_handle(crawler):
-    # Altered: a pre-order shelf entry whose title differs from the vinyl
-    # copy's. The handle is the identity, so the row is still marked.
-    _mock_pages(_DARVAZA_PRODUCT, preorders=[{**_DARVAZA_PRODUCT, "title": "Darvaza - We Are Him"}])
-    items = [item async for item in crawler.crawl_catalog()]
-    assert [i["title"] for i in items] == ["We Are Him (Vinyl Gatefold LP) (Pre-Order)"]
-
-
-@respx.mock
-async def test_preorder_shelf_entry_without_a_handle_marks_nothing(crawler):
-    # Altered: a handle-less shelf entry has no identity to match on, and a
-    # handle-less vinyl product is skipped before the shelf is consulted.
-    _mock_pages(_DARVAZA_PRODUCT, preorders=[{**_MONARK_PRODUCT, "handle": ""}, {**_MONARK_PRODUCT, "handle": None}])
-    items = [item async for item in crawler.crawl_catalog()]
-    assert [i["title"] for i in items] == ["We Are Him (Vinyl Gatefold LP)"]
-
-
-@respx.mock
-async def test_an_empty_preorder_shelf_is_not_drift(crawler):
-    _mock_pages(_DARVAZA_PRODUCT, preorders=[])
-    items = [item async for item in crawler.crawl_catalog()]
-    assert len(items) == 1
-
-
-@respx.mock
-async def test_preorder_shelf_is_paginated(crawler):
-    respx.get(_PREORDER_URL, params={"limit": "250", "page": "1"}).mock(
-        return_value=_page_response([_MONARK_PRODUCT]))
-    respx.get(_PREORDER_URL, params={"limit": "250", "page": "2"}).mock(
-        return_value=_page_response([_DARVAZA_PRODUCT]))
-    respx.get(_PREORDER_URL, params={"limit": "250", "page": "3"}).mock(
-        return_value=_page_response([]))
-    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(
-        return_value=_page_response([_DARVAZA_PRODUCT]))
-    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "2"}).mock(
-        return_value=_page_response([]))
-    items = [item async for item in crawler.crawl_catalog()]
-    assert [i["title"] for i in items] == ["We Are Him (Vinyl Gatefold LP) (Pre-Order)"]
-
-
-@respx.mock
-async def test_a_failing_preorder_shelf_raises_rather_than_completing(crawler):
-    # The shelf renamed or removed: raising keeps the previous snapshot,
-    # where a walk that silently dropped the suffix would re-key every
-    # pre-order row.
-    respx.get(_PREORDER_URL, params={"limit": "250", "page": "1"}).mock(
-        return_value=httpx.Response(404))
-    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(
-        return_value=_page_response([_DARVAZA_PRODUCT]))
-    with pytest.raises(httpx.HTTPStatusError):
-        [item async for item in crawler.crawl_catalog()]
-
-
-@respx.mock
-async def test_no_preorder_availability_bypass(crawler):
-    # A pre-order pressing reporting False is gone allocation, not
-    # not-yet-released.
-    _mock_pages(_one_pressing(_MONARK_PRODUCT, available=False), preorders=[_MONARK_PRODUCT])
-    items = [item async for item in crawler.crawl_catalog()]
-    assert items == []
+    assert all("pre-order" not in str(call.request.url) for call in respx.calls)
 
 
 @respx.mock
@@ -805,8 +741,6 @@ async def test_crawl_catalog_paginates_until_empty(crawler):
 
 @respx.mock
 async def test_crawl_catalog_raises_on_http_error(crawler):
-    respx.get(_PREORDER_URL, params={"limit": "250", "page": "1"}).mock(
-        return_value=_page_response([]))
     respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(
         return_value=httpx.Response(503))
     with pytest.raises(httpx.HTTPStatusError):

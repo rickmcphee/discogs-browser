@@ -1,20 +1,21 @@
 import html
 import math
 import re
-from typing import AsyncIterator, Optional, Set, Tuple
+from typing import AsyncIterator, Optional, Tuple
 from shopify_catalog import iter_products, resolve_cover_image
 
 # The store's own format shelf, at the URL the request named. It is the
 # whole vinyl catalog and not a curated subset: confirmed 2026-09-07 that it
 # holds exactly the products the root products.json types `Vinyl`, no more
 # and no fewer. The boxsets that bundle a record sit under `Boxset / Bundle`
-# outside it, and stay out.
+# outside it, and stay out. Its pre-orders are not marked: they carry no
+# tag, no title marker and no distinct availability, and are known only by
+# membership of the store's `pre-order` collection -- which is not read,
+# because the only place a marker could go is the title, and
+# compute_item_key hashes the title, so a marker that disappears when the
+# record ships would re-key the row and orphan its listings, judgments and
+# saves. Same call as musiconvinyl.py and darksiderecords.py.
 _COLLECTION_SLUG = "vinyl"
-# Pre-orders carry no tag, no title marker and no distinct availability --
-# every live one reports available True on every variant -- so membership
-# of the store's `pre-order` collection is the only signal there is. Walked
-# first, for its handles alone; the row itself comes from the vinyl walk.
-_PREORDER_COLLECTION_SLUG = "pre-order"
 # `product_type` here IS the format: `Vinyl` against `CD`, `MC`, `Boxset /
 # Bundle`, `Artbook`, `T-Shirt` and the rest. Matched as the word at the
 # start of the type rather than by equality so a subtype the store might
@@ -82,7 +83,6 @@ class Crawler:
     crawler_type: str = "catalog"
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:
-        preorder_handles = await self._preorder_handles()
         products_seen = 0
         vinyl_seen = 0
         artist_ok = 0
@@ -107,7 +107,7 @@ class Crawler:
                         identity_missing += 1
                     elif not self._has_readable_stock_flag(self._pressings(product)):
                         unreadable_stock += 1
-            for item in self._items(product, preorder_handles):
+            for item in self._items(product):
                 yielded += 1
                 if item["price"] is not None:
                     priced += 1
@@ -163,17 +163,8 @@ class Crawler:
                 f"{_COLLECTION_SLUG} collection yielded no rows while "
                 f"{unreadable_stock} vinyl product(s) carry no readable availability flag -- stock-source drift")
 
-    async def _preorder_handles(self) -> Set[str]:
-        # An empty pre-order shelf is an ordinary state -- nothing is on
-        # pre-order -- so no guard fires on it: the suffix is display, and a
-        # renamed shelf raises out of iter_products() rather than completing.
-        return {
-            (product.get("handle") or "").strip()
-            async for product in iter_products(self.base_url, _PREORDER_COLLECTION_SLUG)
-        }
-
     @classmethod
-    def _items(cls, product: dict, preorder_handles=frozenset()) -> list[dict]:
+    def _items(cls, product: dict) -> list[dict]:
         if not cls._is_vinyl(product):
             return []
         artist, title = cls._artist_title(product.get("title"))
@@ -181,11 +172,7 @@ class Crawler:
             return []
         if not cls._has_identity(product):
             return []
-        handle = (product.get("handle") or "").strip()
-        url = f"{cls.base_url}/products/{handle}"
-        # No pre-order bypass: every live pre-order reports available True.
-        # The shelf only marks the title.
-        base = f"{title} (Pre-Order)" if handle in preorder_handles else title
+        url = f"{cls.base_url}/products/{(product.get('handle') or '').strip()}"
         items = []
         for variant, descriptor in cls._pressings(product):
             # Only the literal True admits a variant: the string "false" is
@@ -193,6 +180,8 @@ class Crawler:
             # in stock. Anything else -- False, "false", 1, None, absent --
             # is skipped, which is also what keeps this filter and
             # _has_readable_stock_flag agreeing on what "readable" means.
+            # No pre-order bypass: every live pre-order reports True on
+            # every pressing, so a False beside one is gone allocation.
             if variant.get("available") is not True:
                 continue
             # The pressing is appended on every row that names one, not only
@@ -204,7 +193,7 @@ class Crawler:
             # no sibling can share the bare title.
             items.append({
                 "artist": artist,
-                "title": f"{base} — {descriptor}" if descriptor else base,
+                "title": f"{title} — {descriptor}" if descriptor else title,
                 "format": "Vinyl",
                 "price": cls._price(variant),
                 "currency": "EUR",
