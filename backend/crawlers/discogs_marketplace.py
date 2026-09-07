@@ -203,6 +203,16 @@ class Crawler:
         query = urllib.parse.urlencode({"ships_from": "United States", "sort": "price,asc"})
         return f"https://www.discogs.com/sell/release/{release_id}?{query}"
 
+    @classmethod
+    def unfiltered_url(cls, release_id: str) -> str:
+        """The same release's marketplace page with no `ships_from` filter.
+
+        Differs from search_url() in that one parameter and nothing else, so
+        reading it answers exactly one question -- whether the filter is what
+        emptied the page -- rather than several at once."""
+        query = urllib.parse.urlencode({"sort": "price,asc"})
+        return f"https://www.discogs.com/sell/release/{release_id}?{query}"
+
     async def search(self, release: dict, page) -> list[dict]:
         discogs_id = release["discogs_id"]
         release_id = discogs_id[1:]
@@ -267,13 +277,80 @@ class Crawler:
             log.info("[Discogs] release %s has no copies for sale at all", discogs_id)
             return []
 
+        # Copies existing is not the same as copies existing *under this
+        # crawl's filter*, and conflating the two is what made this raise on
+        # pages it had read perfectly well. `num_for_sale` is a worldwide
+        # count -- the stats API has no `ships_from` parameter -- while the
+        # page just read was narrowed to United States sellers. A release
+        # pressed for Europe with every copy still in Europe therefore lands
+        # here on a page that rendered an honest "nothing matches", and the
+        # worldwide count, being non-zero, reported it as broken markup. It
+        # can never do otherwise: the zero branch above is reachable only for
+        # a release with no copies anywhere on earth.
+        #
+        # What settles it is re-reading the same release unfiltered with the
+        # same selectors. Recognising that page proves the markup is still
+        # understood, which leaves the filter as the only thing that could
+        # have emptied the first one. Not recognising it means the selectors
+        # really have gone stale, and the complaint below stands.
+        recognised, outcome = await self._read_unfiltered(page, release_id)
+        worldwide = (
+            f"{num_for_sale} copies" if num_for_sale is not None
+            else "an unknown number of copies"
+        )
+        if recognised:
+            log.info(
+                "[Discogs] no USA-shipping listings for release %s (%s for sale "
+                "worldwide, and the unfiltered page parsed, so the ships_from "
+                "filter emptied this one rather than stale selectors)",
+                discogs_id, worldwide,
+            )
+            return []
+
         raise RuntimeError(
             f"Discogs listings markup not recognised for release {discogs_id} "
             f"(HTTP {status}, cf-mitigated={mitigated}, page title {title!r}, "
             f"{num_for_sale if num_for_sale is not None else 'unknown'} "
-            f"copies for sale per the marketplace API) -- re-check the selectors in "
+            f"copies for sale per the marketplace API; reading the same release "
+            f"without the ships_from filter {outcome}, so an absence of USA "
+            f"sellers does not account for this) -- re-check the selectors in "
             f"{__name__} against {url}"
         )
+
+    async def _read_unfiltered(self, page, release_id: str):
+        """Whether the same release's unfiltered page still parses, and why not.
+
+        Returns (recognised, outcome); `outcome` is a phrase for the caller's
+        error message, which is the only place an operator sees the two
+        failures told apart -- a restyle and a challenged second read both
+        leave the complaint standing, but only one of them means the
+        selectors need work.
+
+        Anything short of a recognised page is False, "could not tell" and
+        "could not read" alike: raising costs a crawl, while a wrong empty
+        result clears a price the crawler had already found.
+        """
+        url = self.unfiltered_url(release_id)
+        try:
+            await page.goto(url, wait_until="commit", timeout=_NAVIGATION_TIMEOUT_MS)
+        except PlaywrightTimeoutError:
+            log.warning(
+                "[Discogs] no response from %s, so whether the ships_from filter "
+                "explains the empty page for release r%s is undecided",
+                url, release_id,
+            )
+            return False, "got no response at all"
+
+        title = await _await_settled_title(page)
+        if any(c in title.lower() for c in _CHALLENGE_TITLES):
+            log.warning(
+                "[Discogs] bot interstitial did not clear on the unfiltered page for "
+                "release r%s, so the empty filtered page stays unexplained", release_id,
+            )
+            return False, "hit a bot interstitial that never cleared"
+
+        _, recognised = await self._read_when_ready(page, url)
+        return recognised, "parsed" if recognised else "was unreadable too"
 
     async def _read_when_ready(self, page, url: str):
         """Poll until a row actually parses or a visible empty state renders.

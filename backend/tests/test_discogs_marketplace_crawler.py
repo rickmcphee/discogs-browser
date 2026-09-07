@@ -86,17 +86,24 @@ class _FakePage:
 
     def __init__(self, real_page, fixture, titles=(LISTED_TITLE,)):
         self._real = real_page
-        self._html = (FIXTURES / fixture).read_text(encoding="utf-8")
+        # A sequence is consumed one entry per goto(), the last sticking --
+        # the same shape as `titles`, and what lets a test give the filtered
+        # and unfiltered reads of one release different markup.
+        fixtures = [fixture] if isinstance(fixture, str) else list(fixture)
+        self._htmls = [(FIXTURES / f).read_text(encoding="utf-8") for f in fixtures]
         self._titles = list(titles)
         self.waits = 0
         self.wait_until = None
+        self.urls = []
         # What goto() answers with; None stands in for Playwright's
         # same-document case, which the crawler has to tolerate anyway.
         self.response = None
 
     async def goto(self, url, wait_until=None, timeout=None):
         self.wait_until = wait_until
-        await self._real.set_content(self._html, wait_until="domcontentloaded")
+        self.urls.append(url)
+        html = self._htmls[0] if len(self._htmls) == 1 else self._htmls.pop(0)
+        await self._real.set_content(html, wait_until="domcontentloaded")
         return self.response
 
     async def title(self):
@@ -203,6 +210,74 @@ async def test_unreadable_page_is_a_no_match_when_nothing_is_for_sale(browser_pa
     page = _FakePage(browser_page, "redesigned.html")
 
     assert await Crawler().search(RELEASE, page) == []
+
+
+async def test_no_usa_sellers_is_not_reported_as_broken_markup(browser_page, monkeypatch):
+    """The failure this crawler reported for r37054242.
+
+    `num_for_sale` is a worldwide count and the page is filtered to United
+    States sellers, so a release pressed for Europe with all its copies still
+    in Europe rendered an empty page the crawler could not name, then had the
+    non-zero worldwide count hold that up as proof of stale selectors. Reading
+    the release unfiltered shows the same selectors parsing fine, which leaves
+    only the filter to explain the first page.
+    """
+    async def _stats(release_id):
+        return 20
+
+    monkeypatch.setattr(dm, "_release_num_for_sale", _stats)
+    page = _FakePage(browser_page, ["unrecognised_empty_state.html", "usa_listings.html"])
+
+    assert await Crawler().search(RELEASE, page) == []
+
+
+async def test_the_second_read_drops_the_ships_from_filter_and_nothing_else(browser_page, monkeypatch):
+    async def _stats(release_id):
+        return 20
+
+    monkeypatch.setattr(dm, "_release_num_for_sale", _stats)
+    page = _FakePage(browser_page, ["unrecognised_empty_state.html", "usa_listings.html"])
+    await Crawler().search(RELEASE, page)
+
+    assert "ships_from" in page.urls[0]
+    assert "ships_from" not in page.urls[1]
+    assert page.urls[1] == "https://www.discogs.com/sell/release/249504?sort=price%2Casc"
+
+
+async def test_a_real_restyle_still_raises_because_neither_read_parses(browser_page, monkeypatch):
+    """The check must not become a way for stale selectors to pass unnoticed.
+
+    A restyle breaks the unfiltered page exactly as it breaks the filtered
+    one, so the complaint stands and the breaker still hears about it.
+    """
+    async def _stats(release_id):
+        return 20
+
+    monkeypatch.setattr(dm, "_release_num_for_sale", _stats)
+    page = _FakePage(browser_page, ["redesigned.html", "redesigned.html"])
+
+    with pytest.raises(RuntimeError, match="markup not recognised"):
+        await Crawler().search(RELEASE, page)
+
+
+async def test_an_interstitial_on_the_second_read_leaves_the_complaint_standing(browser_page, monkeypatch):
+    """An undecided check is not an empty result.
+
+    Returning [] on a page that was never read would clear a stored price,
+    which is the exact regression this crawler was rewritten to stop.
+    """
+    async def _stats(release_id):
+        return 20
+
+    monkeypatch.setattr(dm, "_release_num_for_sale", _stats)
+    page = _FakePage(
+        browser_page,
+        ["unrecognised_empty_state.html", "usa_listings.html"],
+        titles=(LISTED_TITLE, "Just a moment..."),
+    )
+
+    with pytest.raises(RuntimeError, match="bot interstitial that never cleared"):
+        await Crawler().search(RELEASE, page)
 
 
 async def test_unreadable_page_raises_when_the_stats_api_will_not_answer(browser_page, monkeypatch):
