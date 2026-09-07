@@ -426,6 +426,16 @@ cover-art column's empty header at line 305):
 </td>
 ```
 
+**Amendment (2026-09-07, branch `claude/recommendation-info-icon-popup-6n4r87`):**
+the bookmark no longer has that cell to itself. A judged item's info button
+sits immediately to its left, both wrapped in a `flex items-center
+justify-end gap-1` div, and the header widened from `w-8` to `w-20` to hold
+the pair. `colCount` is unchanged — it is still one column. The tile overlay
+gained the same pairing: the absolutely-positioned element below is now a
+flex row holding the info button and the bookmark rather than the bookmark
+alone. See
+[`2026-09-07-recommendation-info-popup-design.md`](2026-09-07-recommendation-info-popup-design.md).
+
 added after the existing Source cell (line 372). `colCount` (line 163),
 currently `scope === 'track' ? 7 : 6`, becomes `scope === 'store' ? 7 :
 7` collapsed to a flat `7` — Store's count goes from 6 to 7 (gaining the
