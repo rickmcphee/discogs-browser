@@ -382,6 +382,18 @@ read at all**: a CD is classified by the format gate, and neither it nor a
 bundle counts, so a legitimately sold-out shelf full of CDs still returns
 empty without raising. Found in review on PR #323.
 
+The per-product exemption deliberately does **not** extend to the
+catalog-wide source guards. Review on PR #323 proposed that it should, on the
+grounds that a shelf of nothing but blank-vendored CDs raises `artist_ok == 0`
+and so cannot clear stale rows. Declined: the documented legitimate case is a
+shelf that filled up with CDs, and the store's real CDs and shirts carry
+vendors, so that case already returns empty without raising. Blanking the
+vendor on *every* product as well is a store-wide loss of the only artist
+source — exactly what that guard exists to catch — and exempting it would
+invert the asymmetry the whole guard set rests on, deleting the snapshot on a
+shelf where not one product could be read for an artist. A false raise costs
+an inert no-op; a false empty costs the catalog. A test pins the decision.
+
 The classified test runs **first**, ahead of the source checks, and that order
 is load-bearing. A product whose descriptor already says "not a record" could
 not have yielded one whatever its `vendor` says, so a source failing on it is

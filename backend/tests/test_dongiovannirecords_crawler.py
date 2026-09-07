@@ -641,6 +641,24 @@ async def test_one_product_carrying_both_sources_satisfies_the_combined_guard(cr
 
 
 @respx.mock
+async def test_a_shelf_of_non_records_that_ALSO_lost_every_vendor_raises(crawler):
+    # Deliberate, and declined from review on PR #323. The documented
+    # legitimate case is a shelf that filled up with CDs -- and the store's
+    # real CDs and shirts carry vendors, so it does not raise (the two tests
+    # above). Blanking the vendor on every product as well is not that case:
+    # it is a store-wide loss of the only artist source, which is precisely
+    # what this guard exists to catch.
+    #
+    # Exempting classified non-records from the source-health guards would
+    # invert the asymmetry the whole guard set rests on -- it would DELETE the
+    # snapshot on a shelf where not one product could be read for an artist.
+    # A false raise costs an inert no-op; a false empty costs the catalog.
+    _mock_pages({**_CD_PRODUCT, "vendor": ""}, {**_SHIRT_PRODUCT, "vendor": ""})
+    with pytest.raises(RuntimeError, match="artist-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
 async def test_an_all_cd_shelf_satisfies_the_combined_guard(crawler):
     # Taken before the format gate on purpose: a shelf that legitimately
     # filled up with CDs still has products carrying both sources, so it is
