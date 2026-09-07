@@ -340,6 +340,10 @@ def test_title_parse(title, expected):
     # group excludes quotes, so the album's opening quote is always the
     # title's first and a stray inch marker cannot start one.
     'Amy Klein 12" "Fire" LP',
+    # A left curly quote is never an inch marker, so the digit exemption in
+    # the stray-quote check must not cover it. Found in review on PR #323.
+    'Amy Klein "Fire" 12\u201c',
+    'Amy Klein "Fire" \u201c12',
     # A quote inside the album is not a closing quote either, for the mirror
     # reason -- so a nested quotation is skipped rather than parsed into a
     # severed album. The second spelling puts whitespace ahead of the inner
@@ -482,6 +486,59 @@ async def test_an_unreadable_product_among_real_rows_does_not_raise(crawler):
     _mock_pages(_FIRE_PRODUCT, {**_KISS_BIG_PRODUCT, "vendor": ""})
     items = [item async for item in crawler.crawl_catalog()]
     assert [i["artist"] for i in items] == ["Amy Klein"]
+
+
+@pytest.mark.parametrize("title,shaped", [
+    ("Bad Moves Vinyl Bundle", True),
+    ("Bad Moves LP + Shirt", True),
+    ("Bad Moves Shirt + All Vinyl", True),
+    ("Bad Moves Wearing Out The Refrain Shirt + CD", True),
+    # Both halves are required, so a record title that lost its quotes but
+    # kept a `+` in the artist credit is still drift, not a known shape.
+    ('Lee Bains + The Glory Fires Youth Detention 12"', False),
+    ("Amy Klein Fire LP", False),
+])
+def test_the_unquoted_bundle_shapes_are_recognised(title, shaped):
+    assert Crawler._bundle_shaped(title) is shaped
+
+
+@respx.mock
+async def test_an_unquoted_combo_bundle_is_a_classified_skip(crawler):
+    # It carries no quoted album, so it never reaches the format gate's
+    # `+`/merch rule -- and it has no literal "bundle" either. Counted as
+    # unclassifiable it would raise on a shelf that merely sold out.
+    # Found in review on PR #323.
+    _mock_pages(_one_pressing(_FIRE_PRODUCT, available=False),
+                {**_KISS_BIG_PRODUCT, "title": "Bad Moves LP + Shirt"})
+    assert [item async for item in crawler.crawl_catalog()] == []
+
+
+@respx.mock
+async def test_a_record_title_that_lost_its_quotes_is_still_drift(crawler):
+    # The `+` in the artist credit must not buy an exemption on its own.
+    _mock_pages(_one_pressing(_FIRE_PRODUCT, available=False),
+                {**_KISS_BIG_PRODUCT, "title": 'Lee Bains + The Glory Fires Youth Detention 12"'})
+    with pytest.raises(RuntimeError, match="classification drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_a_sole_blank_titled_variant_that_is_sold_out_is_readable(crawler):
+    # Readability is judged against the raw variant set, not the pressings
+    # kept from it: this product keeps none, but its only variant is a
+    # readable False, so the shelf is legitimately sold out and must not
+    # raise. Found in review on PR #323.
+    _mock_pages({**_FIRE_PRODUCT, "variants": [
+        {"title": "  ", "price": "22.99", "available": False, "featured_image": None},
+    ]})
+    assert [item async for item in crawler.crawl_catalog()] == []
+
+
+@respx.mock
+async def test_a_product_with_no_variants_at_all_is_still_unreadable(crawler):
+    _mock_pages({**_FIRE_PRODUCT, "variants": []})
+    with pytest.raises(RuntimeError, match="stock-source drift"):
+        [item async for item in crawler.crawl_catalog()]
 
 
 @respx.mock

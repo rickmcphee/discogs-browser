@@ -184,7 +184,11 @@ The parse is therefore:
   lookahead covered this; it does not. Every quote this store leaves after
   the album is an inch marker, and an inch marker always follows its digits
   (`12"`, `2x12"`, `7"`), so a quote in the descriptor that is not preceded
-  by a digit rejects the parse. Found in review on PR #323.
+  by a digit rejects the parse. The digit exemption covers `"`, `”` and `″`
+  only — a **left** curly quote is never an inch marker (the format gate does
+  not accept it as one either), so it is rejected wherever it appears, and
+  `12“` is drift rather than an unrecognised descriptor the gate would admit
+  by default. Found in review on PR #323, over two passes.
 - Curly quotes are admitted on both sides even though the store writes none.
   They cost one character each and are the commonest way a Shopify store's
   copy drifts.
@@ -367,9 +371,20 @@ record.
 `unclassifiable` counts a product whose *own* sources failed, and the walk
 raises when nothing was yielded and one exists. The distinction it turns on is
 between a product that was **read and then skipped** and one that was **never
-read at all**: a CD is classified by the format gate and a bundle by the
-bundle rule, and neither counts, so a legitimately sold-out shelf full of CDs
-still returns empty without raising. Found in review on PR #323.
+read at all**: a CD is classified by the format gate, and neither it nor a
+bundle counts, so a legitimately sold-out shelf full of CDs still returns
+empty without raising. Found in review on PR #323.
+
+The bundle exemption has to recognise a shape the gate never sees. The store's
+combos carry no quoted album — `Bad Moves LP + Shirt`,
+`Bad Moves Shirt + All Vinyl` — so they do not parse, never reach the gate's
+`+`/merch rule, and contain no literal "bundle" either; counted as
+unclassifiable, one mis-shelved here would raise on a shelf that had merely
+sold out. `_bundle_shaped()` therefore mirrors both of the gate's rules
+against the raw title, and requires **both** halves of the second: a record
+title that lost its quotes but kept a `+` in its artist credit
+(`Lee Bains + The Glory Fires Youth Detention 12"`) names no merch, so it
+still counts as drift. This is exemption-only and never rejects a row.
 
 **A variant dropped for want of a usable title is identity drift unless it is
 provably sold out.** The colour is part of the row's identity, so a variant without
@@ -499,6 +514,16 @@ Two structural notes on the tallies:
   *partial* loss of `title` would leave an empty walk looking like a shelf
   that merely sold out, and the snapshot would be deleted. Found in review on
   PR #323.
+- **Stock readability is judged against the raw variant set, not the pressings
+  kept from it.** A product whose sole variant has a blank title and a
+  readable `False` is genuinely sold out but keeps no pressings at all, and
+  keying on those raised stock drift over a product that could be read
+  perfectly — preserving stale in-stock rows. A product with no variants
+  whatsoever still says nothing and stays unreadable. The check reads only the
+  kept pressings for the flags themselves, which is complete because
+  `_unusable_dropped_variant` runs first and has already established that
+  every *dropped* entry is a literal `False`: the two are a pair and must stay
+  in that order. Found in review on PR #323.
 - **`identity_missing` and `unreadable_stock` are otherwise nested inside the
   format gate**, because only a product that reads as a record could have
   yielded a row; a shirt's missing handle says nothing about whether this walk's

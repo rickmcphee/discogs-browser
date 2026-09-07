@@ -66,7 +66,12 @@ _BUNDLE_RE = re.compile(r"\bbundles?\b", re.IGNORECASE)
 # descriptor then admits as a record. The closing lookahead alone does not
 # catch it, because the inner quote there IS followed by whitespace; it only
 # rejects the glued-letter spelling (`"Fire"X`). Found in review on PR #323.
-_STRAY_QUOTE_RE = re.compile(r'(?<![0-9])["“”]')
+# The digit exemption is for inch markers only, and a LEFT curly quote is
+# never one -- _VINYL_WORD_RE does not accept it as such either. Exempting it
+# after a digit let `12“` through as an unrecognised descriptor, which the
+# gate then admits by default. It can only ever open a quotation, so it is
+# rejected wherever it appears. Found in review on PR #323.
+_STRAY_QUOTE_RE = re.compile(r'(?<![0-9])["”]|“')
 # The shelf has already said the product is a record, so the descriptor gate
 # is negative: a record word admits outright, then a word naming another
 # medium or a merch item rejects, and anything else is admitted on the
@@ -162,7 +167,7 @@ class Crawler:
                 # an empty walk looking like a shelf that merely sold out.
                 # Found in review on PR #323.
                 identity_missing += 1
-            elif not has_artist or (not has_album and not _BUNDLE_RE.search(title_text)):
+            elif not has_artist or (not has_album and not self._bundle_shaped(title_text)):
                 # The product has a title, but one of the two sources failed
                 # on *it*, so this crawler never classified it as record-or-
                 # not. That is different from a CD or a bundle, which are
@@ -187,7 +192,7 @@ class Crawler:
                     identity_missing += 1
                 elif self._unusable_dropped_variant(product):
                     variant_identity_missing += 1
-                elif not self._has_readable_stock_flag(self._pressings(product)):
+                elif not self._has_readable_stock_flag(product):
                     unreadable_stock += 1
             for item in self._items(product):
                 yielded += 1
@@ -331,6 +336,28 @@ class Crawler:
         return artist, f"{album} {descriptor}"
 
     @staticmethod
+    def _bundle_shaped(title: str) -> bool:
+        """Is this title one of the store's bundles, written without a quoted album?
+
+        Only for the `unclassifiable` tally, never for rejecting a row: a
+        title that does not parse is skipped either way, and this decides
+        whether that skip is a known shape or evidence of drift.
+
+        Two shapes, matching the two rules the format gate applies to a
+        descriptor. The literal word (`Bad Moves Vinyl Bundle`), and a `+`
+        joining something to merch (`Bad Moves LP + Shirt`,
+        `Bad Moves Shirt + All Vinyl`) -- the store's live combos, which carry
+        no quoted album and so never reach the gate at all.
+
+        Both halves of the second shape are required, which is what keeps it
+        from exempting real drift: a record title that lost its quotes but
+        kept a `+` in the artist credit (`Lee Bains + The Glory Fires Youth
+        Detention 12"`) names no merch, so it still counts. Found in review on
+        PR #323.
+        """
+        return bool(_BUNDLE_RE.search(title)) or ("+" in title and bool(_MERCH_RE.search(title)))
+
+    @staticmethod
     def _artist(product: dict) -> str:
         # `vendor` is a real credit on every product here -- never blank,
         # never the label's own name -- and the title carries the same credit
@@ -450,14 +477,29 @@ class Crawler:
                 return True
         return False
 
-    @staticmethod
-    def _has_readable_stock_flag(pressings: list) -> bool:
+    @classmethod
+    def _has_readable_stock_flag(cls, product: dict) -> bool:
+        # Emptiness is judged against the RAW variant set, not the pressings
+        # kept from it. A product whose sole variant has a blank title and a
+        # readable False is genuinely sold out, but keeps no pressings at
+        # all, and keying on those raised stock drift over a product that
+        # could be read perfectly -- preserving stale in-stock rows. A
+        # product with no variants whatsoever still says nothing and stays
+        # unreadable. Found in review on PR #323.
+        #
+        # Reads only the kept pressings for the flags themselves, which is
+        # complete because _unusable_dropped_variant runs first in the caller
+        # and has already established that every DROPPED entry is a literal
+        # False. The two are a pair and must stay in that order.
+        #
         # all(), not any(): one readable variant does not make the product
         # readable. A product whose black pressing is a readable False and
         # whose coloured pressing carries the string "false" yields nothing,
         # and under any() would vouch for an emptiness half its own doing.
-        return bool(pressings) and all(
-            isinstance(v.get("available"), bool) for v, _ in pressings)
+        if not (product.get("variants") or []):
+            return False
+        return all(
+            isinstance(v.get("available"), bool) for v, _ in cls._pressings(product))
 
     @staticmethod
     def _price(variant: dict) -> Optional[float]:
