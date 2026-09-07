@@ -11,9 +11,13 @@ from shopify_catalog import iter_products, resolve_cover_image
 # published to the online store -- so the walk's own exhaustion is the
 # catalog, confirmed to return the same product ids at limit=250 and limit=50.
 _COLLECTION_SLUG = "vinyl"
-# `Artist "Album" <format>` -- the convention the whole store follows, records
-# and CDs and shirts alike. Every live title carries exactly three quotes: the
-# album's opening one, its closing one, and the format's inch marker.
+# `Artist "Album" <format>`. The store leads every product with
+# `Artist "Album"`, records and CDs and shirts alike; the trailing format is
+# universal only on the vinyl shelf, and its books, pins and stickers stop at
+# the quoted album. So every live title IN THIS COLLECTION carries exactly
+# three quotes -- the album's opening one, its closing one, and the format's
+# inch marker -- while the store at large carries two on some products. That
+# asymmetry is what the both-halves-required rule below turns into a filter.
 #
 # Neither the leading group nor the album group may contain a quote, which is
 # what pins all three. The leading group excluding them makes the album's
@@ -47,8 +51,12 @@ _TITLE_RE = re.compile(
 # already excludes every live one -- but a bundle written to the store's usual
 # convention (`Bad Moves "Untenable" Vinyl Bundle`) would parse, and its
 # descriptor's own `Vinyl` would then admit it. A bundle is not a Discogs
-# release and its price is not any record's price, so the rule sits ahead of
-# both the parse and the gate.
+# release and its price is not any record's price.
+#
+# Read against the DESCRIPTOR, like the combo rule, and not the whole title:
+# scanning the title discards an album that legitimately contains the word
+# (`Artist "Bundle of Joy" 12"`), silently dropping a stock row. Found in
+# review on PR #323.
 _BUNDLE_RE = re.compile(r"\bbundles?\b", re.IGNORECASE)
 # In this store's titles every quote left after the album is an inch marker,
 # and an inch marker always follows its digits (`12"`, `2x12"`, `7"`). A quote
@@ -114,6 +122,7 @@ class Crawler:
         sources_ok = 0
         unclassifiable = 0
         identity_missing = 0
+        variant_identity_missing = 0
         unreadable_stock = 0
         yielded = 0
         priced = 0
@@ -169,8 +178,15 @@ class Crawler:
             # shirt's missing handle says nothing about whether this walk's
             # emptiness can be trusted.
             elif self._record(product) is not None:
-                if not self._has_identity(product) or self._unusable_dropped_variant(product):
+                # Kept apart from identity_missing so the guard below can name
+                # which identity failed: the product's, or a variant's. They
+                # are different drifts with different fixes, and one message
+                # covering both told an operator neither. Found in review on
+                # PR #323.
+                if not self._has_identity(product):
                     identity_missing += 1
+                elif self._unusable_dropped_variant(product):
+                    variant_identity_missing += 1
                 elif not self._has_readable_stock_flag(self._pressings(product)):
                     unreadable_stock += 1
             for item in self._items(product):
@@ -238,6 +254,11 @@ class Crawler:
             raise RuntimeError(
                 f"{_COLLECTION_SLUG} collection yielded no rows while "
                 f"{identity_missing} record(s) carry no title or handle -- identity-source drift")
+        if not yielded and variant_identity_missing:
+            raise RuntimeError(
+                f"{_COLLECTION_SLUG} collection yielded no rows while "
+                f"{variant_identity_missing} record(s) dropped a variant that carries no usable "
+                "title and is not provably sold out -- variant-identity drift")
         if not yielded and unreadable_stock:
             # An empty result is only trustworthy when every product that
             # could have yielded a row was readable and simply out of stock.
@@ -337,8 +358,6 @@ class Crawler:
         album leads.
         """
         collapsed = " ".join((title or "").split())
-        if _BUNDLE_RE.search(collapsed):
-            return "", ""
         m = _TITLE_RE.match(collapsed)
         if m is None:
             return "", ""
@@ -372,6 +391,8 @@ class Crawler:
         # `Shirt + All Vinyl`); their price is a bundle's, not any record's.
         # `LP + Bonus CD` stays a record: one item, one price, and no merch
         # word in it.
+        if _BUNDLE_RE.search(descriptor):
+            return False
         if "+" in descriptor and _MERCH_RE.search(descriptor):
             return False
         if _VINYL_WORD_RE.search(descriptor):
@@ -418,10 +439,16 @@ class Crawler:
         review on PR #323.
         """
         kept = [v for v, _ in cls._pressings(product)]
-        return any(
-            v.get("available") is not False and not any(v is k for k in kept)
-            for v in product.get("variants") or [] if isinstance(v, dict)
-        )
+        for variant in product.get("variants") or []:
+            if not isinstance(variant, dict):
+                # A junk entry carries no availability at all, so it can never
+                # be proven sold out. _pressings drops it before anything
+                # reads it, which is right for building rows and wrong for
+                # trusting an empty one. Found in review on PR #323.
+                return True
+            if variant.get("available") is not False and not any(variant is k for k in kept):
+                return True
+        return False
 
     @staticmethod
     def _has_readable_stock_flag(pressings: list) -> bool:

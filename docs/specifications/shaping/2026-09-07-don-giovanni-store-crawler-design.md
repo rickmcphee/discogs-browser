@@ -256,8 +256,11 @@ was read off: those say `T-Shirt`, while the store's bundle titles say a bare
 
 The shelf currently holds nothing but records, so the gate rejects nothing
 today. It is written anyway, because of what the rest of the store looks
-like: **every** product in it — CD, cassette, T-shirt alike — uses the same
-`Artist "Album" <format>` title as the records.
+like: its CDs, cassettes and apparel use the same full `Artist "Album"
+<format>` title as the records, and only the descriptor tells them apart.
+(Its books, pins and stickers stop at the quoted album instead, so they never
+reach this gate at all — the both-halves-required rule above is what excludes
+those. Two rules, two categories.)
 
 ```
 Ailbhe Reddy "Kiss Big" CD
@@ -308,11 +311,17 @@ The store sells bundles (`Bad Moves LP + Shirt`, `Bad Moves Vinyl Bundle`,
 None is in the `vinyl` collection and none carries a quoted album, so the
 title parse alone excludes every live one.
 
-A one-line title rule is written down anyway. If a bundle were ever shelved
-in `vinyl` *and* written to the store's usual convention — a plausible
+A one-line rule is written down anyway. If a bundle were ever shelved in
+`vinyl` *and* written to the store's usual convention — a plausible
 `Bad Moves "Untenable" Vinyl Bundle` — the title would parse and the
-descriptor's own `Vinyl` would admit it through the format gate. The rule
-sits ahead of both, on the whole title.
+descriptor's own `Vinyl` would admit it through the format gate.
+
+The rule reads the **descriptor**, not the whole title, for the same reason
+the `+`-merch rule does. Scanning the title discards an album that
+legitimately contains the word — `Artist "Bundle of Joy" 12"` — and since
+this crawler's output replaces a snapshot wholesale, that silently drops an
+existing stock row rather than merely failing to add one. Found in review on
+PR #323.
 
 ### Variants, availability and pre-orders
 
@@ -369,7 +378,14 @@ a pressing that sold out. A product whose in-stock variant has a blank title
 and whose named sibling is sold out otherwise yields nothing while
 `_has_readable_stock_flag` still reports that sibling readable, every guard
 passes, and the snapshot is deleted. The same applies to the placeholder on a
-multi-variant product, which is the other route a variant gets dropped.
+multi-variant product, which is the other route a variant gets dropped, and
+to a non-mapping junk entry, which carries no availability at all and so can
+never be proven sold out — `_pressings()` drops it before anything reads it,
+which is right for building rows and wrong for trusting an empty one.
+
+This is counted and reported **apart from** the product's own identity: a
+blank variant title is a different drift from a missing `handle`, with a
+different fix, and one message covering both told an operator neither.
 
 Only the literal `False` proves the dropped variant was safely sold out.
 Every other value — `True`, the string `"true"`, `1`, `None`, absent — leaves
@@ -457,6 +473,7 @@ has simply sold out is empty legitimately.
 | artist-source | `artist_ok == 0` | `vendor` emptied store-wide — the sole artist source |
 | combined-source | `sources_ok == 0` | both sources alive but never on the same product — a case neither row below can see |
 | classification | nothing yielded, `unclassifiable > 0` | a source failed on *one* product, which the catalog-wide rows above cannot see |
+| variant-identity | nothing yielded, `variant_identity_missing > 0` | a record dropped a variant carrying no usable title without it being provably sold out |
 | album-source | `parsed_ok == 0` | the store abandoning the quoted-album title convention. Tallies the album — the same value `_record` gates a row on — so it cannot raise on a catalog the crawler could in fact read |
 | price-source | `yielded and not priced` | `price` removed or retyped store-wide |
 | identity-source | `not yielded and identity_missing` | `title`/`handle` lost store-wide |

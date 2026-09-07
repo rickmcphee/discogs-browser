@@ -641,9 +641,12 @@ async def test_an_album_name_resembling_another_medium_does_not_decide_the_forma
 @respx.mock
 @pytest.mark.parametrize("product", [_BOOK_PRODUCT, _PIN_PRODUCT, _ZINE_PRODUCT])
 async def test_the_stores_non_records_stay_out_even_when_mis_shelved(crawler, product):
-    # None of these is in the vinyl collection today. Each is titled to the
-    # store's one convention, so shelved here it would parse and, before the
-    # format rules below, publish as a record.
+    # None of these is in the vinyl collection today, and they are excluded by
+    # two different rules: the book and the pin name no format at all, so the
+    # parse rejects them and they never reach the gate; only the zine carries
+    # a descriptor, and it is the gate's reject vocabulary that keeps it out.
+    # Both paths matter, because the store titles all three exactly like its
+    # records.
     _mock_pages(_FIRE_PRODUCT, product)
     items = [item async for item in crawler.crawl_catalog()]
     assert [i["artist"] for i in items] == ["Amy Klein"]
@@ -709,10 +712,23 @@ async def test_a_merch_word_in_the_album_does_not_reject_the_record(crawler):
     assert [i["title"] for i in items] == ["Bag Box Set — Black"]
 
 
+@pytest.mark.parametrize("descriptor,expected", [
+    # An embedded `lp` must not admit. Paired with a rejecting medium and no
+    # disc size, so a false match is observable: if `\blps?\b` matched inside
+    # "Helps" the descriptor would be admitted instead of rejected.
+    ("Helps CD", False),
+    ("Scalpel Cassette", False),
+    # An embedded `cd` must not reject. "Mcdonalds" is the contiguous case;
+    # with nothing else to decide, a false match would flip this to False.
+    ("Mcdonalds Box Set", True),
+    ("Mcdonalds Gatefold", True),
+])
+def test_a_medium_word_embedded_in_another_word_does_not_decide_the_format(descriptor, expected):
+    assert Crawler._is_vinyl(descriptor) is expected
+
+
 @respx.mock
-async def test_a_lowercase_word_ending_in_a_medium_word_is_not_a_medium(crawler):
-    # The word boundaries are what keep "Records" from matching "CD" and
-    # "Helps" from matching "LP".
+async def test_a_descriptor_naming_no_medium_keeps_its_row(crawler):
     _mock_pages({**_FIRE_PRODUCT, "title": 'Amy Klein "Fire" Gatefold 12"'})
     items = [item async for item in crawler.crawl_catalog()]
     assert items[0]["title"] == 'Fire Gatefold 12" — Black'
@@ -720,13 +736,19 @@ async def test_a_lowercase_word_ending_in_a_medium_word_is_not_a_medium(crawler)
 
 # --- bundles -----------------------------------------------------------
 
-@pytest.mark.parametrize("title", [
-    "Bad Moves Vinyl Bundle",
-    'Bad Moves "Untenable" Vinyl Bundle',
-    'Bad Moves "Untenable" Bundles',
-])
-def test_bundles_are_not_records(title):
-    assert Crawler._parse_title(title) == ("", "")
+@pytest.mark.parametrize("descriptor", ["Vinyl Bundle", "Bundles", "LP Bundle"])
+def test_a_bundle_descriptor_is_not_a_record(descriptor):
+    assert Crawler._is_vinyl(descriptor) is False
+
+
+@respx.mock
+async def test_an_album_containing_the_word_bundle_keeps_its_row(crawler):
+    # The rule reads the descriptor, not the whole title: scanning the title
+    # would discard this album and silently drop an existing stock row.
+    # Found in review on PR #323.
+    _mock_pages({**_FIRE_PRODUCT, "title": 'Amy Klein "Bundle of Joy" 12"'})
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["title"] for i in items] == ['Bundle of Joy 12" — Black']
 
 
 @respx.mock
@@ -1019,7 +1041,7 @@ async def test_one_unreadable_product_among_real_rows_does_not_raise(crawler):
 
 
 @respx.mock
-async def test_an_in_stock_variant_with_no_usable_title_is_identity_drift(crawler):
+async def test_an_in_stock_variant_with_no_usable_title_is_variant_identity_drift(crawler):
     # The blank-titled variant is in stock but cannot be published, and its
     # named sibling is sold out -- so the product yields nothing while
     # _has_readable_stock_flag still reports the sibling readable. Uncounted,
@@ -1029,7 +1051,7 @@ async def test_an_in_stock_variant_with_no_usable_title_is_identity_drift(crawle
         {"title": "   ", "price": "22.99", "available": True, "featured_image": None},
         {"title": "Black", "price": "22.99", "available": False, "featured_image": None},
     ]})
-    with pytest.raises(RuntimeError, match="identity-source drift"):
+    with pytest.raises(RuntimeError, match="variant-identity drift"):
         [item async for item in crawler.crawl_catalog()]
 
 
@@ -1042,7 +1064,7 @@ async def test_a_placeholder_beside_a_sold_out_sibling_is_identity_drift(crawler
         {**_OPEN_THE_GATES_PRODUCT["variants"][0], "title": "Default Title", "available": True},
         {**_OPEN_THE_GATES_PRODUCT["variants"][1], "available": False},
     ]})
-    with pytest.raises(RuntimeError, match="identity-source drift"):
+    with pytest.raises(RuntimeError, match="variant-identity drift"):
         [item async for item in crawler.crawl_catalog()]
 
 
@@ -1057,7 +1079,33 @@ async def test_a_dropped_variant_not_provably_sold_out_is_drift(crawler, availab
         {"title": "  ", "price": "22.99", "available": available, "featured_image": None},
         {"title": "Black", "price": "22.99", "available": False, "featured_image": None},
     ]})
-    with pytest.raises(RuntimeError, match="identity-source drift"):
+    with pytest.raises(RuntimeError, match="variant-identity drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_a_non_mapping_variant_is_never_provably_sold_out(crawler):
+    # _pressings drops a junk entry before anything reads it, which is right
+    # for building rows and wrong for trusting an empty one: it carries no
+    # availability, so it cannot be proven sold out and the readable sibling
+    # beside it must not vouch for the emptiness. Found in review on PR #323.
+    _mock_pages({**_FIRE_PRODUCT, "variants": [
+        None,
+        {"title": "Black", "price": "22.99", "available": False, "featured_image": None},
+    ]})
+    with pytest.raises(RuntimeError, match="variant-identity drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_variant_identity_drift_is_named_apart_from_product_identity(crawler):
+    # The product's own title and handle are present; only the variant's
+    # identity failed, and the message must say so. Found in review on PR #323.
+    _mock_pages({**_FIRE_PRODUCT, "variants": [
+        {"title": "  ", "price": "22.99", "available": True, "featured_image": None},
+        {"title": "Black", "price": "22.99", "available": False, "featured_image": None},
+    ]})
+    with pytest.raises(RuntimeError, match="variant-identity drift"):
         [item async for item in crawler.crawl_catalog()]
 
 
