@@ -140,6 +140,15 @@ icon.**
   the right can — a flip that had to be clamped back would land on the icon,
   burying the control that closes it — and when neither side fits it stacks
   below, or above where below is short. Clamped to the viewport throughout.
+  Where it fits neither whole — a landscape phone, or any viewport at high
+  zoom — it takes the roomier side and reports the height that will hold it
+  there, scrolling what it cannot show, rather than being clamped over the
+  icon. The measurement behind that is the size the panel *wants*, taken once
+  and kept: feeding a shortened panel back in would find room it does not
+  have, lengthen it again, and jitter on every scroll. The one case it will
+  still cover the icon is a viewport barely taller than the icon itself, where
+  the alternative is a sliver too short to read; Escape and a press outside
+  remain.
 - **Positioned fixed, measured after render.** The table and the card list
   are both `overflow-auto`, so a popover positioned inside them would be
   clipped for a row at the top or bottom edge — unrecoverably, since
@@ -278,8 +287,11 @@ sits beside an icon that has room, however narrow the screen; stays on screen
 for an icon straddling any of the four viewport edges, since the containers
 scroll in both axes and room beside a half-visible icon is not room on screen
 (an icon *entirely* off screen never reaches the placement — the popover
-closes first); and is clamped at the top and bottom for a row at either edge
-of the viewport, including a panel taller than the viewport itself.
+closes first); is clamped at the top and bottom for a row at either edge
+of the viewport, including a panel taller than the viewport itself; and
+reports a `maxHeight` on the roomier side of an icon that a short viewport
+leaves no room beside, above or below — none when the panel fits as it is,
+and none when even the roomier side is too short to be worth reading.
 
 `frontend/src/test/mobileLayout.test.tsx`:
 
