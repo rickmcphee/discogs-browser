@@ -294,38 +294,39 @@ def test_plugin_identity():
 # --- the title parse ---------------------------------------------------
 
 @pytest.mark.parametrize("title,expected", [
-    ('Ailbhe Reddy "Kiss Big" 12"', ("Ailbhe Reddy", "Kiss Big", '12"')),
-    ('Irreversible Entanglements "Open The Gates" 2x12"',
-     ("Irreversible Entanglements", "Open The Gates", '2x12"')),
-    ('Alice Bag "Alice Bag & The Sissybears" 7"',
-     ("Alice Bag", "Alice Bag & The Sissybears", '7"')),
+    ('Ailbhe Reddy "Kiss Big" 12"', ("Kiss Big", '12"')),
+    ('Irreversible Entanglements "Open The Gates" 2x12"', ("Open The Gates", '2x12"')),
+    ('Alice Bag "Alice Bag & The Sissybears" 7"', ("Alice Bag & The Sissybears", '7"')),
     # Apostrophes live inside album names all over this catalog and never
     # stand in for the closing quote.
     ('Modern Hut "I Don\'t Want To Get Adjusted To This World" 12"',
-     ("Modern Hut", "I Don't Want To Get Adjusted To This World", '12"')),
+     ("I Don't Want To Get Adjusted To This World", '12"')),
     ('Jeffrey Lewis "It\'s The Ones Who\'ve Cracked That The Light Shines Through" 12"',
-     ("Jeffrey Lewis", "It's The Ones Who've Cracked That The Light Shines Through", '12"')),
-    ('Jenny Mae "What\'s Wrong With Me?" 12"',
-     ("Jenny Mae", "What's Wrong With Me?", '12"')),
+     ("It's The Ones Who've Cracked That The Light Shines Through", '12"')),
+    ('Jenny Mae "What\'s Wrong With Me?" 12"', ("What's Wrong With Me?", '12"')),
     # A parenthesised pressing the store put in the album name itself.
-    ('Bad Moves "Untenable (Ice Blue)" 12"',
-     ("Bad Moves", "Untenable (Ice Blue)", '12"')),
+    ('Bad Moves "Untenable (Ice Blue)" 12"', ("Untenable (Ice Blue)", '12"')),
     ('Worriers "Imaginary Life (10th Anniversary Deluxe Edition)" 12"',
-     ("Worriers", "Imaginary Life (10th Anniversary Deluxe Edition)", '12"')),
+     ("Imaginary Life (10th Anniversary Deluxe Edition)", '12"')),
     # A colon inside the album.
-    ('Dead Best "GOD: Out Of Order" 12"', ("Dead Best", "GOD: Out Of Order", '12"')),
+    ('Dead Best "GOD: Out Of Order" 12"', ("GOD: Out Of Order", '12"')),
     # Whitespace is collapsed before the parse ever runs.
-    ('  Amy   Klein   "Fire"   12"  ', ("Amy Klein", "Fire", '12"')),
+    ('  Amy   Klein   "Fire"   12"  ', ("Fire", '12"')),
     # Curly quotes are admitted though the store writes none.
-    ('Amy Klein “Fire” 12"', ("Amy Klein", "Fire", '12"')),
+    ('Amy Klein \u201cFire\u201d 12"', ("Fire", '12"')),
     # A descriptor glued straight onto the closing quote -- the `\d` arm of
     # the closing lookahead. This store does not write it; a sibling Shopify
     # store does.
-    ('Amy Klein "Fire"12"', ("Amy Klein", "Fire", '12"')),
+    ('Amy Klein "Fire"12"', ("Fire", '12"')),
     # The trailing inch marker can never be read as the album's opening
-    # quote, because the artist group excludes quotes outright.
+    # quote, because the leading group excludes quotes outright.
     ('Bert Susanka "Well Qualified To Represent The L.B. Sea!" 2x12"',
-     ("Bert Susanka", "Well Qualified To Represent The L.B. Sea!", '2x12"')),
+     ("Well Qualified To Represent The L.B. Sea!", '2x12"')),
+    # A title that omits the artist entirely still carries a readable album
+    # and format. The leading group is allowed to be empty on purpose: the
+    # credit comes from `vendor`, so this row is built correctly from a
+    # field this title never touches, and rejecting it would lose it.
+    ('"Album" 12"', ("Album", '12"')),
 ])
 def test_title_parse(title, expected):
     assert Crawler._parse_title(title) == expected
@@ -360,7 +361,7 @@ def test_title_parse(title, expected):
     'Amy Klein "Fire"   ',
 ])
 def test_unparseable_titles_yield_nothing(title):
-    assert Crawler._parse_title(title) == ("", "", "")
+    assert Crawler._parse_title(title) == ("", "")
 
 
 @respx.mock
@@ -427,6 +428,21 @@ async def test_a_catalog_with_no_parseable_title_raises(crawler):
     _mock_pages({**_FIRE_PRODUCT, "title": "Amy Klein Fire LP"})
     with pytest.raises(RuntimeError, match="album-source drift"):
         [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_a_catalog_that_dropped_its_artist_prefixes_still_yields(crawler):
+    # The album-source guard tallies the album, which is what _record gates a
+    # row on -- not the discarded prefix ahead of it. Tallying the prefix
+    # would raise here, throwing away a catalog every row of which the
+    # crawler reads correctly, because the credit comes from `vendor`.
+    _mock_pages({**_FIRE_PRODUCT, "title": '"Fire" 12"'},
+                {**_KISS_BIG_PRODUCT, "title": '"Kiss Big" 12"'})
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [(i["artist"], i["title"]) for i in items] == [
+        ("Amy Klein", 'Fire 12" — Black'),
+        ("Ailbhe Reddy", 'Kiss Big 12" (Pre-Order) — Red'),
+    ]
 
 
 @respx.mock
@@ -588,7 +604,7 @@ async def test_a_lowercase_word_ending_in_a_medium_word_is_not_a_medium(crawler)
     'Bad Moves "Untenable" Bundles',
 ])
 def test_bundles_are_not_records(title):
-    assert Crawler._parse_title(title) == ("", "", "")
+    assert Crawler._parse_title(title) == ("", "")
 
 
 @respx.mock

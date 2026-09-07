@@ -142,17 +142,28 @@ closing quote, unlike Earache's catalog.
 The parse is therefore:
 
 ```
-^(?P<artist>[^"“]*?)\s*["“](?P<album>[^"“”]+?)["”](?=[\s\d]|$)\s*(?P<rest>.*)$
+^(?:[^"“]*?)\s*["“](?P<album>[^"“”]+?)["”](?=[\s\d]|$)\s*(?P<rest>.*)$
 ```
 
-- **Neither the artist group nor the album group may contain a quote**, and
-  between them that is what pins all three of the title's quotes. The artist
-  excluding them makes the album's **opening** quote always the title's
-  first, so the trailing inch marker can never be mistaken for it; the
-  artist's capture is then discarded, because the credit comes from
-  `vendor`, but the group itself is load-bearing. The album excluding them
-  is what makes a fourth quote junk rather than an album, so `Artist "" 12"`
-  parses to nothing instead of to an album of `" 12`.
+- **Neither the leading group nor the album group may contain a quote**, and
+  between them that is what pins all three of the title's quotes. The
+  leading group excluding them makes the album's **opening** quote always
+  the title's first, so the trailing inch marker can never be mistaken for
+  it. The album excluding them is what makes a fourth quote junk rather than
+  an album, so `Artist "" 12"` parses to nothing instead of to an album of
+  `" 12`.
+- **The leading group is non-capturing, and may be empty.** Whatever sits
+  ahead of the album is never read — the credit comes from `vendor` — so the
+  group exists only to pin the opening quote, and the parse returns the
+  album and the format alone. Both parts of that matter. Emptiness is
+  allowed because a title that omits the artist (`"Album" 12"`) still
+  carries a readable album and format, and the row built from `vendor` is
+  correct; requiring a prefix would drop it for naming something the crawler
+  does not use. And not returning the prefix is what keeps the album-source
+  guard honest: while the parse returned it, that guard tallied the prefix
+  while row emission gated on the album, so a store that dropped its artist
+  prefixes would have raised on a catalog every row of which this crawler
+  reads perfectly. Found in review on PR #323.
 - **The closing quote's lookahead adds a rejection, not a choice.** With the
   exclusions above the closing quote is already deterministic — it is the
   next one — so requiring whitespace, a digit or the end after it only ever
@@ -368,7 +379,7 @@ has simply sold out is empty legitimately.
 | --- | --- | --- |
 | collection | `products_seen == 0` | the shelf renamed, removed, or the endpoint changed shape |
 | artist-source | `artist_ok == 0` | `vendor` emptied store-wide — the sole artist source |
-| album-source | `parsed_ok == 0` | the store abandoning the quoted-album title convention |
+| album-source | `parsed_ok == 0` | the store abandoning the quoted-album title convention. Tallies the album — the same value `_record` gates a row on — so it cannot raise on a catalog the crawler could in fact read |
 | price-source | `yielded and not priced` | `price` removed or retyped store-wide |
 | identity-source | `not yielded and identity_missing` | `title`/`handle` lost store-wide |
 | stock-source | `not yielded and unreadable_stock` | `available` retyped store-wide |

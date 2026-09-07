@@ -16,13 +16,16 @@ _PREORDER_TAG = "preorder"
 # and CDs and shirts alike. Every live title carries exactly three quotes: the
 # album's opening one, its closing one, and the format's inch marker.
 #
-# Neither the artist group nor the album group may contain a quote, which is
-# what pins all three. The artist excluding them makes the album's OPENING
-# quote always the title's first, so the trailing inch marker can never be
-# read as one; the artist's capture is then discarded, because the credit
-# comes from `vendor`, but the group itself is load-bearing. The album
-# excluding them is what makes a fourth quote junk rather than an album, so
-# `Artist "" 12"` parses to nothing instead of to an album of `" 12`.
+# Neither the leading group nor the album group may contain a quote, which is
+# what pins all three. The leading group excluding them makes the album's
+# OPENING quote always the title's first, so the trailing inch marker can
+# never be read as one. It is non-capturing: the credit comes from `vendor`,
+# so whatever sits ahead of the album is never read, and it is deliberately
+# allowed to be empty -- a title that omits the artist (`"Album" 12"`) still
+# carries a readable album and format, and rejecting it would drop a row the
+# crawler can build correctly from `vendor`. The album excluding quotes is
+# what makes a fourth quote junk rather than an album, so `Artist "" 12"`
+# parses to nothing instead of to an album of `" 12`.
 #
 # What the closing quote's lookahead adds, on top of those exclusions, is a
 # rejection rather than a choice: the quote must be followed by whitespace,
@@ -34,7 +37,7 @@ _PREORDER_TAG = "preorder"
 # sibling Shopify store does. Curly quotes are admitted though the store
 # writes none: they are the commonest way a storefront's copy drifts.
 _TITLE_RE = re.compile(
-    r'^(?P<artist>[^"“]*?)\s*["“]'
+    r'^(?:[^"“]*?)\s*["“]'
     r'(?P<album>[^"“”]+?)'
     r'["”](?=[\s\d]|$)\s*'
     r'(?P<rest>.*)$'
@@ -110,6 +113,9 @@ class Crawler:
             if self._artist(product):
                 artist_ok += 1
             if self._parse_title(product.get("title"))[0]:
+                # [0] is the album, which is exactly what _record gates a row
+                # on -- so this tally cannot raise on a catalog the crawler
+                # could in fact read.
                 parsed_ok += 1
             # These two are nested inside the gate, because only a product
             # that reads as a record could have yielded a row: a mis-shelved
@@ -230,7 +236,7 @@ class Crawler:
         artist = cls._artist(product)
         if not artist:
             return None
-        _, album, descriptor = cls._parse_title(product.get("title"))
+        album, descriptor = cls._parse_title(product.get("title"))
         if not album:
             return None
         if not cls._is_vinyl(descriptor):
@@ -247,12 +253,14 @@ class Crawler:
         return " ".join((product.get("vendor") or "").split())
 
     @staticmethod
-    def _parse_title(title) -> Tuple[str, str, str]:
-        """Split `Artist "Album" format` -- ("", "", "") when the title is not of that form.
+    def _parse_title(title) -> Tuple[str, str]:
+        """The album and format in `Artist "Album" format` -- ("", "") when the title is not of that form.
 
-        Only the album and the format are used; the artist is returned for
-        the album-source guard's sake, which asks whether the store still
-        writes its titles the way this crawler reads them.
+        The artist is not returned, because it is not read from here: the
+        credit comes from `vendor`. Returning it once meant the album-source
+        guard could tally the artist prefix while row emission gated on the
+        album, so a store that dropped its artist prefixes would have raised
+        on a catalog this crawler could still read perfectly.
 
         The format is kept, and kept after the album, on both counts
         deliberately. title_key folds a disc size away for the Cheapest
@@ -264,10 +272,10 @@ class Crawler:
         """
         collapsed = " ".join((title or "").split())
         if _BUNDLE_RE.search(collapsed):
-            return "", "", ""
+            return "", ""
         m = _TITLE_RE.match(collapsed)
         if m is None:
-            return "", "", ""
+            return "", ""
         album = m.group("album").strip()
         descriptor = m.group("rest").strip()
         # Both halves are required, because the convention is both halves.
@@ -280,8 +288,8 @@ class Crawler:
         # trailing format empties `parsed_ok` and raises album-source drift,
         # which is exactly what that guard's message already claims to cover.
         if not album or not descriptor:
-            return "", "", ""
-        return m.group("artist").strip(), album, descriptor
+            return "", ""
+        return album, descriptor
 
     @staticmethod
     def _is_vinyl(descriptor: str) -> bool:
