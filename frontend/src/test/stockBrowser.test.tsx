@@ -415,6 +415,38 @@ describe('StockBrowser', () => {
     expect(document.activeElement).toBe(info)
   })
 
+  it('confines Tab and Shift+Tab to the dialog', async () => {
+    // `aria-modal` claims interaction is confined to the panel; these are the
+    // branches that make that true rather than a promise a screen reader acts
+    // on. jsdom does not move focus on Tab by itself, so what each assertion
+    // turns on is the handler having cancelled the event and placed focus.
+    getStock.mockResolvedValue(judged(true))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByTitle('Recommendation details'))
+    const panel = screen.getByRole('dialog')
+    const close = screen.getByRole('button', { name: 'Close' })
+    expect(document.activeElement).toBe(panel)
+
+    // Shift+Tab off the panel's leading edge wraps to the last control.
+    expect(fireEvent.keyDown(document, { key: 'Tab', shiftKey: true })).toBe(false)
+    expect(document.activeElement).toBe(close)
+
+    // Tab off the last control wraps back to the first.
+    expect(fireEvent.keyDown(document, { key: 'Tab' })).toBe(false)
+    expect(document.activeElement).toBe(close)
+
+    // Shift+Tab off the first control wraps to the last.
+    expect(fireEvent.keyDown(document, { key: 'Tab', shiftKey: true })).toBe(false)
+    expect(document.activeElement).toBe(close)
+
+    // Focus that has escaped the panel entirely is pulled back in.
+    const outside = screen.getByTitle('Recommendation details')
+    outside.focus()
+    expect(fireEvent.keyDown(document, { key: 'Tab' })).toBe(false)
+    expect(document.activeElement).toBe(close)
+  })
+
   it('scrolls the dialog rather than pushing its Close button off a short viewport', async () => {
     // A reason is free text: a CSV import writes it unbounded.
     getStock.mockResolvedValue(judged(true))
@@ -891,30 +923,46 @@ describe('StockBrowser', () => {
     await waitFor(() => expect(screen.getAllByTitle('Save for later').length).toBeGreaterThanOrEqual(1))
   })
 
-  it('clicking the tile bookmark button calls saveStockItem and prevents the enclosing tile link from navigating', async () => {
+  it('clicking the tile bookmark button saves without reaching the listing link', async () => {
     saveStockItem.mockResolvedValue({ saved: true })
     render(<StockBrowser />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     fireEvent.click(screen.getByTitle('Tile view'))
     await waitFor(() => expect(screen.getAllByTitle('Save for later').length).toBeGreaterThanOrEqual(1))
     const button = screen.getAllByTitle('Save for later')[0]
-    // The bookmark button sits inside an <a> that links out to the product
-    // page. Its onClick calls e.preventDefault() specifically so that click
-    // doesn't also trigger the anchor's navigation. preventDefault() on the
-    // bubbling click event suppresses the anchor's default action regardless
-    // of which descendant called it, so listening on the anchor itself and
-    // checking defaultPrevented after the click proves the guard actually
-    // ran -- a stronger assertion than just checking saveStockItem was
-    // called, which would still pass even if preventDefault silently did
-    // nothing.
-    const anchor = button.closest('a')
-    expect(anchor).not.toBeNull()
-    let capturedEvent: Event | null = null
-    anchor!.addEventListener('click', (e) => { capturedEvent = e })
+    // The button used to sit inside the tile's <a>, kept from navigating by an
+    // e.preventDefault() this test used to assert on. It is a sibling of that
+    // link now -- a control inside a control is invalid however the click is
+    // handled -- so the guarantee is structural: the click cannot reach the
+    // anchor at all, and there is no preventDefault left to prove.
+    expect(button.closest('a')).toBeNull()
+    const link = screen.getByText('The Great Satan — Ghostly Black Vinyl').closest('a')
+    expect(link).toHaveAttribute('href', 'https://shop.nuclearblast.com/products/rob-zombie')
+    let reachedLink = false
+    link!.addEventListener('click', () => { reachedLink = true })
     fireEvent.click(button)
     expect(saveStockItem).toHaveBeenCalledWith('k1')
-    expect(capturedEvent).not.toBeNull()
-    expect((capturedEvent as unknown as Event).defaultPrevented).toBe(true)
+    expect(reachedLink).toBe(false)
+  })
+
+  it('keeps the tile info button out of the listing link too', async () => {
+    getStock.mockResolvedValue({
+      total: 1, row_total: 1, page: 1, per_page: 250,
+      items: [{ ...items[0], reason: 'Similar to your hardcore collection', recommended: true }],
+    })
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByTitle('Tile view'))
+    await waitFor(() => expect(screen.getByTitle('Recommendation details')).toBeTruthy())
+    const info = screen.getByTitle('Recommendation details')
+    expect(info.closest('a')).toBeNull()
+
+    const link = screen.getByText('The Great Satan — Ghostly Black Vinyl').closest('a')
+    let reachedLink = false
+    link!.addEventListener('click', () => { reachedLink = true })
+    fireEvent.click(info)
+    expect(screen.getByRole('dialog')).toBeTruthy()
+    expect(reachedLink).toBe(false)
   })
 
   it('unsaving under the Saved filter removes the row', async () => {

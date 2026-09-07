@@ -479,7 +479,21 @@ image, sibling to the `<img>`/placeholder `<div>`:
 
 `e.preventDefault()` on the button's click stops the enclosing `<a>` from
 navigating to the listing URL when the user meant to toggle the bookmark,
-not open the item. Rendered only when `scope === 'store'`, matching the
+not open the item.
+
+**Amendment (2026-09-07, branch `claude/recommendation-info-icon-popup-6n4r87`):**
+the button is no longer enclosed, so there is no navigation left to
+prevent and the guard is gone. The tile is a `group relative` wrapper
+holding two siblings: an `<a className="block">` over the cover and the
+artist/title text, and the absolutely-positioned action group. A control
+nested inside a control is invalid however its click is handled, and
+assistive tech is not obliged to expose the inner one — which mattered
+once the group gained an info button whose whole job is to be the
+reachable replacement for a tooltip. The click can no longer reach the
+anchor at all, which is what
+`stockBrowser.test.tsx` asserts now in place of the `defaultPrevented`
+check. See
+[`2026-09-07-recommendation-info-popup-design.md`](2026-09-07-recommendation-info-popup-design.md). Rendered only when `scope === 'store'`, matching the
 table. The tile view's `items.filter((item) => item.is_own)` (line 273)
 is untouched — it already limits tiles to one per record, so this needs no
 `item_key`-dedup handling beyond what the toggle handler already does.

@@ -42,6 +42,9 @@ Touches:
   left of the save bookmark in all three views (tiles, mobile cards,
   desktop table); a modal holding the justification; `titleTooltip()` loses
   its reason branch and the artist elements lose `title={item.reason}`.
+- `frontend/src/test/stockBrowser.test.tsx` also loses the assertion that the
+  tile bookmark's `e.preventDefault()` stops the enclosing link, which the
+  restructure makes moot.
 - Tests: `frontend/src/test/stockBrowser.test.tsx`,
   `frontend/src/test/mobileLayout.test.tsx`,
   `backend/tests/test_stock_crud.py`.
@@ -94,7 +97,16 @@ Out of scope:
 - **The icon is the row's third action, in the actions group.** Immediately
   left of the bookmark in each view, so the row's controls stay in one
   place: cost link, info, save. In tiles the bookmark is an overlay on the
-  cover, so both buttons share one absolutely-positioned flex row.
+  cover, so both buttons share one absolutely-positioned flex row — and that
+  row moved out of the tile's listing link, which had been wrapping it. A
+  control inside a control is invalid whatever its click handler does, and
+  an info button that exists to be reachable where a tooltip was not cannot
+  sit in a structure assistive tech may decline to expose. The tile is now a
+  plain wrapper over two siblings, the link and the action group; the
+  `e.preventDefault()` that used to hold the nesting together is gone with
+  it. See the amendment in
+  [`2026-08-16-store-saved-items-design.md`](2026-08-16-store-saved-items-design.md),
+  which specified the nested form.
 - **`titleTooltip()` keeps only the substitution.** With the reason gone
   from hover text, the title tooltip does what its own design asked for
   unconditionally: it shows the target title whenever `listing_title`
@@ -115,6 +127,11 @@ Out of scope:
   fails outright if the dialog looks its opener up instead of being given it.
 - The panel is capped and scrollable rather than able to overflow a short
   viewport.
+- Tab and Shift+Tab stay inside the dialog from every starting point the
+  trap branches on — the panel itself, the first and last controls, and
+  focus that has escaped it entirely.
+- Neither tile button is inside the listing link, and clicking one never
+  reaches it.
 - The info button sits before the save button in the row's actions.
 
 `frontend/src/test/mobileLayout.test.tsx`:

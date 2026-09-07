@@ -364,10 +364,9 @@ function StockBrowser({
 
   const closeReason = useCallback(() => setReason(null), [])
 
-  // preventDefault for the tile, whose button sits inside the listing link --
-  // a no-op in the table and the card list, where nothing encloses it.
+  // Takes the event for its currentTarget: the dialog restores focus to the
+  // button that opened it, and cannot read that back off the document.
   function openReason(e: ReactMouseEvent<HTMLButtonElement>, item: StockItem) {
-    e.preventDefault()
     setReason({ item, opener: e.currentTarget })
   }
 
@@ -570,14 +569,15 @@ function StockBrowser({
             {items.length > 0 && (
               <div className="grid gap-3 p-3 md:gap-4 md:p-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))' }}>
                 {items.filter((item) => item.is_own).map((item) => (
-                  <a
-                    key={item.id}
-                    href={item.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="group"
-                  >
-                    <div className="relative">
+                  // The card is a plain wrapper, with the listing link and the
+                  // action group as siblings inside it. The buttons used to sit
+                  // within the link, held harmless by an e.preventDefault() --
+                  // but a control nested in a control is invalid whatever the
+                  // click does, and assistive tech is not obliged to expose the
+                  // inner one, which for an info button that exists to replace
+                  // an unreachable tooltip defeats the point.
+                  <div key={item.id} className="group relative">
+                    <a href={item.url} target="_blank" rel="noreferrer" className="block">
                       {item.cover_image_url ? (
                         <img
                           src={item.cover_image_url}
@@ -587,29 +587,29 @@ function StockBrowser({
                       ) : (
                         <div className="w-full aspect-square bg-gray-800 rounded" />
                       )}
-                      <div className="absolute top-1 right-1 flex items-center gap-1">
-                        {item.reason && (
-                          <button
-                            onClick={(e) => openReason(e, item)}
-                            title={REASON_BUTTON_TITLE}
-                            className="flex h-11 w-11 items-center justify-center rounded-full bg-gray-950/70 text-white hover:bg-gray-950 md:h-auto md:w-auto md:p-1"
-                          >
-                            <InfoIcon />
-                          </button>
-                        )}
+                      <div className="mt-1.5 text-sm text-gray-200 truncate group-hover:text-white">{item.artist}</div>
+                      <div className="text-xs text-gray-400 truncate" title={titleTooltip(item)}>{displayTitle(item)}</div>
+                    </a>
+                    <div className="absolute top-1 right-1 flex items-center gap-1">
+                      {item.reason && (
                         <button
-                          onClick={(e) => { e.preventDefault(); toggleSaved(item) }}
-                          title={item.saved ? 'Remove from saved' : 'Save for later'}
-                          disabled={pendingSaves.has(item.item_key)}
-                          className="flex h-11 w-11 items-center justify-center rounded-full bg-gray-950/70 text-white hover:bg-gray-950 disabled:opacity-40 md:h-auto md:w-auto md:p-1"
+                          onClick={(e) => openReason(e, item)}
+                          title={REASON_BUTTON_TITLE}
+                          className="flex h-11 w-11 items-center justify-center rounded-full bg-gray-950/70 text-white hover:bg-gray-950 md:h-auto md:w-auto md:p-1"
                         >
-                          <BookmarkIcon filled={item.saved} />
+                          <InfoIcon />
                         </button>
-                      </div>
+                      )}
+                      <button
+                        onClick={() => toggleSaved(item)}
+                        title={item.saved ? 'Remove from saved' : 'Save for later'}
+                        disabled={pendingSaves.has(item.item_key)}
+                        className="flex h-11 w-11 items-center justify-center rounded-full bg-gray-950/70 text-white hover:bg-gray-950 disabled:opacity-40 md:h-auto md:w-auto md:p-1"
+                      >
+                        <BookmarkIcon filled={item.saved} />
+                      </button>
                     </div>
-                    <div className="mt-1.5 text-sm text-gray-200 truncate group-hover:text-white">{item.artist}</div>
-                    <div className="text-xs text-gray-400 truncate" title={titleTooltip(item)}>{displayTitle(item)}</div>
-                  </a>
+                  </div>
                 ))}
               </div>
             )}
