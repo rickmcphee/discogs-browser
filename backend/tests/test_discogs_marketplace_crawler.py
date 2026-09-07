@@ -448,6 +448,57 @@ async def test_an_unclean_confirming_read_cannot_produce_the_empty_result(
         await Crawler().search(RELEASE, page)
 
 
+async def test_a_cleared_challenge_still_answers_despite_its_stale_error_status(
+    browser_page,
+):
+    """`page.goto()` reports the navigation it started, and a challenge clears
+    by reloading -- so the 403 Cloudflare served with the interstitial stays
+    on that response while the DOM underneath becomes the real page. Judging
+    the page by that stale status would throw away the correct answer on
+    exactly the case `_await_settled_title` exists to serve, and on this site
+    that case is routine rather than exotic.
+    """
+    page = _FakePage(
+        browser_page, "no_usa_listings.html",
+        titles=["Just a moment...", "Just a moment...", LISTED_TITLE],
+    )
+    page.response = SimpleNamespace(status=403, headers={"cf-mitigated": "challenge"})
+
+    assert await Crawler().search(RELEASE, page) == []
+    assert len(page.urls) == 1, "a believable page needs no corroboration"
+
+
+async def test_parsed_listings_survive_a_stale_challenge_status(browser_page):
+    page = _FakePage(
+        browser_page, "usa_listings.html",
+        titles=["Just a moment...", LISTED_TITLE],
+    )
+    page.response = SimpleNamespace(status=403, headers={"cf-mitigated": "challenge"})
+
+    results = await Crawler().search(RELEASE, page)
+
+    assert [r["price"] for r in results] == [6.50, 9.25, 12.99]
+
+
+async def test_a_block_page_that_never_showed_a_challenge_cannot_answer_empty(
+    browser_page, monkeypatch
+):
+    """The counterpart: an unclean response we never watched a challenge clear
+    on is an error body, and one that happens to carry markup we recognise
+    would clear the release's stored price. It falls through to the
+    corroborating reads instead of answering here.
+    """
+    async def _stats(release_id):
+        return 20
+
+    monkeypatch.setattr(dm, "_release_num_for_sale", _stats)
+    page = _FakePage(browser_page, "no_usa_listings.html")
+    page.response = SimpleNamespace(status=403, headers={"cf-mitigated": "challenge"})
+
+    with pytest.raises(RuntimeError, match="was not consulted"):
+        await Crawler().search(RELEASE, page)
+
+
 async def test_unreadable_page_raises_when_the_stats_api_will_not_answer(browser_page, monkeypatch):
     async def _stats(release_id):
         return None

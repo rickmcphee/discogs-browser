@@ -176,7 +176,11 @@ async def _release_num_for_sale(release_id: str) -> Optional[int]:
         return None
 
 
-async def _await_settled_title(page) -> str:
+def _is_challenge_title(title: str) -> bool:
+    return any(c in title.lower() for c in _CHALLENGE_TITLES)
+
+
+async def _await_settled_title(page):
     """Wait out Cloudflare's interstitial and return the page's settled title.
 
     The challenge is always what renders first, so reading the title straight
@@ -187,15 +191,28 @@ async def _await_settled_title(page) -> str:
     An empty title is unsettled too, not evidence of a real page: navigation
     resolves at `commit`, before the parser has necessarily reached <title>,
     and a challenge read at that instant would otherwise pass the bot check
-    and go on to be reported as unrecognised markup."""
+    and go on to be reported as unrecognised markup.
+
+    Returns (title, challenge_cleared). The second half is what lets a caller
+    trust a page whose *response* looks bad: `page.goto()` reports the
+    navigation it started, and a challenge that clears does so by reloading,
+    so the 403 or 503 Cloudflare served with the interstitial stays on that
+    response while the DOM underneath becomes the real page. Having watched
+    the title turn from a challenge into a real one is the evidence that this
+    is what happened, and it is the only signal here that separates a cleared
+    challenge from a block page that simply never said so. An empty title
+    that fills in is not that -- it is just the parser catching up -- so only
+    a title that was actually a challenge counts."""
     deadline = time.monotonic() + _SETTLE_TIMEOUT_MS / 1000
+    challenge_seen = False
     title = await page.title()
-    while not title.strip() or any(c in title.lower() for c in _CHALLENGE_TITLES):
+    while not title.strip() or _is_challenge_title(title):
+        challenge_seen = challenge_seen or _is_challenge_title(title)
         if time.monotonic() >= deadline:
-            return title
+            return title, False
         await page.wait_for_timeout(500)
         title = await page.title()
-    return title
+    return title, challenge_seen
 
 
 class Crawler:
@@ -261,13 +278,14 @@ class Crawler:
                 status, discogs_id, mitigated,
             )
 
-        title = await _await_settled_title(page)
-        if any(c in title.lower() for c in _CHALLENGE_TITLES):
+        title, challenge_cleared = await _await_settled_title(page)
+        if _is_challenge_title(title):
             log.warning(
                 "[Discogs] bot interstitial did not clear for release %s (HTTP %s, cf-mitigated=%s)",
                 discogs_id, status, mitigated,
             )
             raise BotDetectedError()
+        trustworthy = _response_is_clean(response) or challenge_cleared
 
         listings, recognised = await self._read_when_ready(page, url)
         if listings:
@@ -278,7 +296,17 @@ class Crawler:
             )
             return listings
 
-        if recognised:
+        # An empty state is only an answer if this page can be believed. On a
+        # response that was neither clean nor a challenge we watched clear,
+        # it falls through to the checks below instead of returning here --
+        # an error body carrying markup we happen to recognise would
+        # otherwise clear the release's stored price, and those checks demand
+        # far better evidence than one page's DOM. Parsed listings are not
+        # gated the same way: they are positive data, they cannot erase
+        # anything, and refusing them would throw away the correct answer
+        # every time a challenge cleared -- the case this crawler is built
+        # around.
+        if recognised and trustworthy:
             log.info("[Discogs] no USA-shipping listings for release %s", discogs_id)
             return []
 
@@ -320,7 +348,7 @@ class Crawler:
         # filter, and letting a later request's success speak for it would
         # turn a block page into "no USA sellers".
         verdict = "was not consulted, this response being too unclean for an empty page to be attributable to the filter"
-        if _response_is_clean(response):
+        if trustworthy:
             _, selectors_work, _ = await self._verify_read(
                 page, self.unfiltered_url(release_id),
                 f"checking whether the ships_from filter explains the empty page for {discogs_id}",
@@ -414,12 +442,12 @@ class Crawler:
             )
             raise
 
-        title = await _await_settled_title(page)
-        if any(c in title.lower() for c in _CHALLENGE_TITLES):
+        title, challenge_cleared = await _await_settled_title(page)
+        if _is_challenge_title(title):
             log.warning("[Discogs] bot interstitial did not clear on %s while %s", url, what)
             raise BotDetectedError()
 
-        if not _response_is_clean(response):
+        if not (_response_is_clean(response) or challenge_cleared):
             log.warning(
                 "[Discogs] %s answered HTTP %s (cf-mitigated=%s) while %s, so its markup "
                 "cannot stand as evidence either way",
