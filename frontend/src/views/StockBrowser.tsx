@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useId, useRef, memo } from 'react'
+import { useState, useEffect, useCallback, useId, useRef, memo, type MouseEvent as ReactMouseEvent } from 'react'
 import { getStock, getStockArtists, saveStockItem, unsaveStockItem } from '../api/client'
 import type { StockItem, StockSortField, SortOrder, LibraryScope, Crawler } from '../api/types'
 import { navButtonClass, dismissButtonClass } from '../styles/buttons'
@@ -86,15 +86,19 @@ function BookmarkIcon({ filled }: { filled: boolean }) {
 // tooltip the reason used to ride in, which announced nothing on the row,
 // could not be reached on touch at all, and contended with the listing-title
 // tooltip for the one slot both wanted.
-function ReasonDialog({ item, onClose }: { item: StockItem; onClose: () => void }) {
+function ReasonDialog({ item, opener, onClose }: { item: StockItem; opener: HTMLElement | null; onClose: () => void }) {
   const panelRef = useRef<HTMLDivElement>(null)
   const headingId = useId()
 
   // `aria-modal` promises interaction is confined to the dialog, so Tab has to
   // actually be confined -- same obligation, and same shape of answer, as
-  // Sheet's trap. Focus goes back to the info button that opened this on close.
+  // Sheet's trap. Focus goes back to the info button that opened this on close;
+  // `opener` is that button, handed over by the click, because Safari does not
+  // focus a button on pointer activation -- reading document.activeElement here
+  // would hand focus back to the body. A row dropped by a refetch while the
+  // dialog is open leaves a detached node, which is nobody's focus to take.
   useEffect(() => {
-    const restore = document.activeElement as HTMLElement | null
+    const restore = opener ?? (document.activeElement as HTMLElement | null)
     panelRef.current?.focus()
     function onKeyDown(e: KeyboardEvent) {
       if (e.key === 'Escape') {
@@ -122,9 +126,9 @@ function ReasonDialog({ item, onClose }: { item: StockItem; onClose: () => void 
     document.addEventListener('keydown', onKeyDown)
     return () => {
       document.removeEventListener('keydown', onKeyDown)
-      restore?.focus?.()
+      if (restore?.isConnected) restore.focus?.()
     }
-  }, [onClose])
+  }, [onClose, opener])
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -134,7 +138,7 @@ function ReasonDialog({ item, onClose }: { item: StockItem; onClose: () => void 
         role="dialog"
         aria-modal="true"
         aria-labelledby={headingId}
-        className="relative z-10 w-full max-w-sm rounded-xl border border-gray-700 bg-gray-900 p-6 shadow-xl focus:outline-none"
+        className="relative z-10 max-h-[85dvh] w-full max-w-sm overflow-y-auto rounded-xl border border-gray-700 bg-gray-900 p-6 shadow-xl focus:outline-none"
       >
         {/* A reason only exists on a judged item, so the polarity is never
             unknown here -- and it has to be said, since an item can be judged
@@ -207,10 +211,12 @@ function StockBrowser({
   // and via the disabled button), so at most one request per item_key is ever
   // outstanding and there is nothing left to reconcile out of order.
   const [pendingSaves, setPendingSaves] = useState<Set<string>>(new Set())
-  // The item whose justification the reason dialog is showing, or null when it
-  // is closed. Held as the item rather than a key so the dialog keeps its
-  // content through a refetch that drops the row.
-  const [reasonItem, setReasonItem] = useState<StockItem | null>(null)
+  // The item whose justification the reason dialog is showing, with the button
+  // that opened it, or null when it is closed. Held as the item rather than a
+  // key so the dialog keeps its content through a refetch that drops the row,
+  // and the opener is carried because the dialog cannot read it back off the
+  // document -- see ReasonDialog.
+  const [reason, setReason] = useState<{ item: StockItem; opener: HTMLElement | null } | null>(null)
   const PER_PAGE = 250
   const tableScrollRef = useRef<HTMLDivElement>(null)
   // A collection sync only moves rows under a filter that reads
@@ -356,7 +362,14 @@ function StockBrowser({
     }
   }
 
-  const closeReason = useCallback(() => setReasonItem(null), [])
+  const closeReason = useCallback(() => setReason(null), [])
+
+  // preventDefault for the tile, whose button sits inside the listing link --
+  // a no-op in the table and the card list, where nothing encloses it.
+  function openReason(e: ReactMouseEvent<HTMLButtonElement>, item: StockItem) {
+    e.preventDefault()
+    setReason({ item, opener: e.currentTarget })
+  }
 
   function toggleSort(field: StockSortField) {
     if (sort === field) {
@@ -577,7 +590,7 @@ function StockBrowser({
                       <div className="absolute top-1 right-1 flex items-center gap-1">
                         {item.reason && (
                           <button
-                            onClick={(e) => { e.preventDefault(); setReasonItem(item) }}
+                            onClick={(e) => openReason(e, item)}
                             title={REASON_BUTTON_TITLE}
                             className="flex h-11 w-11 items-center justify-center rounded-full bg-gray-950/70 text-white hover:bg-gray-950 md:h-auto md:w-auto md:p-1"
                           >
@@ -641,7 +654,7 @@ function StockBrowser({
                       </a>
                         {item.reason && (
                           <button
-                            onClick={() => setReasonItem(item)}
+                            onClick={(e) => openReason(e, item)}
                             title={REASON_BUTTON_TITLE}
                             className={`w-11 h-11 flex items-center justify-center ${dismissButtonClass()}`}
                           >
@@ -739,7 +752,7 @@ function StockBrowser({
                       <div className="flex items-center justify-end gap-1">
                         {item.reason && (
                           <button
-                            onClick={() => setReasonItem(item)}
+                            onClick={(e) => openReason(e, item)}
                             title={REASON_BUTTON_TITLE}
                             className={`p-1 ${dismissButtonClass()}`}
                           >
@@ -773,7 +786,7 @@ function StockBrowser({
         )}
       </div>
 
-      {reasonItem && <ReasonDialog item={reasonItem} onClose={closeReason} />}
+      {reason && <ReasonDialog item={reason.item} opener={reason.opener} onClose={closeReason} />}
     </div>
   )
 }

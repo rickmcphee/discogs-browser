@@ -82,6 +82,15 @@ Out of scope:
   already renders, needs no positioning logic, and reads identically at
   every width. Escape and a backdrop click dismiss it; focus moves into the
   panel on open and returns to the icon that opened it on close.
+- **The opener is handed over, not looked up.** The click passes its own
+  `currentTarget` into the dialog's state rather than letting the dialog read
+  `document.activeElement` on mount: Safari does not focus a button on
+  pointer activation, so the lookup would find the body and give focus back
+  to nothing. jsdom behaves the same way, which is what the test asserts on.
+  A restore target that a refetch has since detached is skipped.
+- **The panel caps its height and scrolls.** A reason is free text — a CSV
+  import writes it unbounded — so on a short viewport a long one would push
+  the Close button past the bottom edge of a panel that could not scroll.
 - **The icon is the row's third action, in the actions group.** Immediately
   left of the bookmark in each view, so the row's controls stay in one
   place: cost link, info, save. In tiles the bookmark is an overlay on the
@@ -101,7 +110,11 @@ Out of scope:
 - An item with a reason renders an info button; one without renders none.
 - Clicking the info button opens a dialog holding the reason, headed
   "Recommended" for `recommended: true` and "Not recommended" for `false`.
-- The dialog closes on its Close button and on Escape.
+- The dialog closes on its Close button and on Escape, and closing hands
+  focus back to the info button — a click never focuses it in jsdom, so this
+  fails outright if the dialog looks its opener up instead of being given it.
+- The panel is capped and scrollable rather than able to overflow a short
+  viewport.
 - The info button sits before the save button in the row's actions.
 
 `frontend/src/test/mobileLayout.test.tsx`:

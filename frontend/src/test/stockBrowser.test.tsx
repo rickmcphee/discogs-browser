@@ -401,6 +401,30 @@ describe('StockBrowser', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 
+  it('hands focus back to the info button that opened the dialog', async () => {
+    // jsdom, like Safari, does not focus a button on click -- so a dialog that
+    // read document.activeElement on mount would restore focus to the body.
+    getStock.mockResolvedValue(judged(true))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    const info = screen.getByTitle('Recommendation details')
+
+    fireEvent.click(info)
+    expect(screen.getByRole('dialog').contains(document.activeElement)).toBe(true)
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(document.activeElement).toBe(info)
+  })
+
+  it('scrolls the dialog rather than pushing its Close button off a short viewport', async () => {
+    // A reason is free text: a CSV import writes it unbounded.
+    getStock.mockResolvedValue(judged(true))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByTitle('Recommendation details'))
+    expect(screen.getByRole('dialog').className).toContain('overflow-y-auto')
+    expect(screen.getByRole('dialog').className).toContain('max-h-[85dvh]')
+  })
+
   it('puts the info button immediately left of the save button in the row', async () => {
     getStock.mockResolvedValue(judged(true))
     render(<StockBrowser recommendedAvailable />)
