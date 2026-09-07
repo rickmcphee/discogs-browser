@@ -124,7 +124,12 @@ Out of scope:
   ends, and a cap beside it in CSS is a cap it can contradict — bounds
   enforced against a width or height the panel does not actually have put it
   somewhere it does not actually fit. `w-64` remains as the width it asks
-  for. It is measured from the panel's content
+  for. The measurement takes the caps off first, width before height since
+  the text reflows: measuring a capped panel would keep it capped, so one
+  opened on a narrow screen would never widen again when the screen did. They
+  go back on imperatively rather than by the render that follows, because the
+  clear went behind React, which does not re-write a style value it believes
+  is already applied. It is measured from the panel's content
   rather than its rendered box — the box carries the cap the last placement
   gave it, and reading that back would find room the panel does not have,
   lengthen it, and jitter on every scroll. Measuring instead of caching is
@@ -289,6 +294,9 @@ icon.**
   geometry itself belongs to `reasonPopoverPosition.test.ts`.
 - Both its caps come from the placement rather than a class, and it is
   focusable, `role="note"`, and rendered as the icon's next sibling.
+- It is measured with those caps off, so a panel narrowed once can widen
+  again — asserted by watching what the caps are at the moment the placement
+  reads the box.
 - A touch outside it closes it, as a mouse press does.
 - Escape pressed while the panel has focus returns that focus to the icon.
 - A view-mode switch closes it, asserted through the icon's `aria-expanded`

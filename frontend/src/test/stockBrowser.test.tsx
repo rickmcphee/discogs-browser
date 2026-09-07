@@ -626,6 +626,28 @@ describe('StockBrowser', () => {
     expect(info.getAttribute('aria-expanded')).toBe('false')
   })
 
+  it('measures the panel uncapped, so it can widen again after it has narrowed', async () => {
+    // The last placement's caps are on the panel when the next one measures
+    // it. Left there, a popover opened on a narrow screen would keep that
+    // width for as long as it stayed open, however much room appeared.
+    getStock.mockResolvedValue(judged(true))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByTitle('Recommendation details'))
+
+    const popover = screen.getByRole("note") as HTMLElement
+    let widthWhenMeasured = ''
+    popover.getBoundingClientRect = function () {
+      widthWhenMeasured = this.style.maxWidth
+      return { top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0, x: 0, y: 0, toJSON: () => ({}) } as DOMRect
+    }
+    fireEvent(window, new Event('resize'))
+
+    expect(widthWhenMeasured).toBe('')
+    // And put back, since React will not re-write a value it thinks is set.
+    expect(popover.style.maxWidth).not.toBe('')
+  })
+
   it('closes when a refetch moves its row off the screen without a scroll', async () => {
     // A sync that inserts rows above this one in the current sort moves it
     // without any scroll event. Following it would clamp the panel to an edge

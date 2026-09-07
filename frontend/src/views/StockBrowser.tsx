@@ -161,17 +161,31 @@ function ReasonPopover({ item, anchor, onClose }: { item: StockItem; anchor: HTM
         onClose()
         return
       }
-      // The height the panel wants, not the height it currently has: it is
-      // given a maxHeight below, and measuring that back would find room it
-      // does not have, lengthen the panel again, and jitter on every scroll.
-      // scrollHeight is the content's own height whatever cap is applied, and
-      // the difference between the box and the client area is the border it
-      // leaves out.
+      // The size the panel wants, which is not the size it currently has: the
+      // last placement capped it, and measuring that back would keep it there
+      // -- a panel opened on a narrow screen would never widen again when the
+      // screen did. The caps come off for the measurement and the placement
+      // decides them afresh. Width first, because the height depends on it:
+      // measure a 256px-wide panel and the text has not yet reflowed to the
+      // narrower one it is about to be given, so the height comes out short.
+      // Written and read in a layout effect, so nothing uncapped is painted.
+      panel.style.maxWidth = ''
+      panel.style.maxHeight = ''
       const box = panel.getBoundingClientRect()
-      setPos(placeReasonPopover(rect, {
+      const placement = placeReasonPopover(rect, {
         width: box.width,
+        // scrollHeight is the content's own height whatever cap is applied,
+        // and the difference between the box and the client area is the
+        // border it leaves out.
         height: panel.scrollHeight + (box.height - panel.clientHeight),
-      }, viewport))
+      }, viewport)
+      // Put them back here rather than leaving it to the render setPos
+      // schedules: the clear above went behind React, which will not re-write
+      // a style value it already believes is applied -- so a placement that
+      // returns what it returned last time would leave the panel uncapped.
+      panel.style.maxWidth = `${placement.maxWidth}px`
+      panel.style.maxHeight = `${placement.maxHeight}px`
+      setPos(placement)
     }
     place()
     // A scroll dismisses it rather than moving it. Following the row would
