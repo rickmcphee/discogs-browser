@@ -59,9 +59,10 @@ Out of scope:
   to produce and to every future judgment's token cost, not a UI change, so
   it is left for its own decision. Until then the icon appears on positive
   judgments and on imported negative ones that carry a reason.
-- **The mobile card's inline reason line.** Kept. It exists because touch
-  has no hover; the popup now covers that, so the line is redundant rather
-  than wrong, and removing it is a separate call about mobile row density.
+- *(Reversed during review — see the Decisions entry below.)* The mobile
+  card's inline reason line was kept at first, on the grounds that it
+  answers a different need (touch has no hover) and that removing it was a
+  call about row density this change didn't have to make.
 - **`RecordBrowser`.** Judgments are a Store-tab concept; the Collection and
   Wantlist tabs render no reason.
 
@@ -107,6 +108,14 @@ Out of scope:
   it. See the amendment in
   [`2026-08-16-store-saved-items-design.md`](2026-08-16-store-saved-items-design.md),
   which specified the nested form.
+- **The mobile card no longer prints the reason inline.** It was the
+  stand-in for a hover a touch device cannot perform, and the info button is
+  that stand-in now — on the same row, in the same action group as every
+  other view. Keeping both would be merely redundant; what settles it is
+  that the line carried no verdict, so a rejection's imported note read as a
+  recommendation there — the exact misreading the popup's heading exists to
+  prevent, left standing on the one surface that had a second copy of the
+  text.
 - **`titleTooltip()` keeps only the substitution.** With the reason gone
   from hover text, the title tooltip does what its own design asked for
   unconditionally: it shows the target title whenever `listing_title`
@@ -127,6 +136,8 @@ Out of scope:
   fails outright if the dialog looks its opener up instead of being given it.
 - The panel is capped and scrollable rather than able to overflow a short
   viewport.
+- A backdrop click closes the dialog — its own dismissal path, and the only
+  pointer route out.
 - Tab and Shift+Tab stay inside the dialog from every starting point the
   trap branches on — the panel itself, the first and last controls, and
   focus that has escaped it entirely.
@@ -138,6 +149,8 @@ Out of scope:
 
 - The card's info button opens the same dialog, and its touch target is
   44px.
+- A card with a reason does not render it inline, and the dialog it opens
+  heads a `recommended: false` item "Not recommended".
 
 `backend/tests/test_stock_crud.py` (where the rest of `get_stock_items`'
 per-row payload is covered):
@@ -159,5 +172,10 @@ per-row payload is covered):
   Amended: there is one claimant now.
 - [`2026-08-27-mobile-web-experience-design.md`](2026-08-27-mobile-web-experience-design.md)
   describes the card list but never the inline reason line, so nothing
-  there drifted. The line's rationale lives only in its test name, which
-  this branch updates in place.
+  there drifted when the line was removed. Its rationale lived only in its
+  test name, which this branch rewrites in place.
+- [`2026-08-08-store-collection-split-design.md`](2026-08-08-store-collection-split-design.md)
+  prints a `StockItem` interface that ends at `reason`/`is_own`. Missed on
+  the first sweep and caught in review; amended. It had already fallen
+  behind by three fields before `recommended`, so the amendment names them
+  and points at `types.ts` as the live shape rather than restating it.

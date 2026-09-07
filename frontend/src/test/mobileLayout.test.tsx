@@ -443,14 +443,23 @@ describe('mobile touch targets', () => {
 })
 
 describe('mobile StockBrowser', () => {
-  it('renders the recommendation reason inline, which on touch has no hover to reveal it', async () => {
+  it('keeps the reason out of the card body, where it carried no verdict', async () => {
+    // It used to print inline, as the stand-in for a hover a touch device
+    // cannot perform. The info button is that stand-in now, and unlike the
+    // line it says whether the item was recommended -- so an imported
+    // rejection's note no longer reads as a recommendation.
     getStock.mockResolvedValue({
       total: 1, row_total: 1, page: 1, per_page: 250,
-      items: [{ ...stockItem, reason: 'Shares a label and era with three records you own.' }],
+      items: [{ ...stockItem, reason: 'Shares a label and era with three records you own.', recommended: false }],
     })
     render(<StockBrowser />)
     await screen.findByText('The Great Satan')
-    expect(screen.getByText('Shares a label and era with three records you own.')).toBeInTheDocument()
+    expect(screen.queryByText('Shares a label and era with three records you own.')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Recommendation details' }))
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByRole('heading', { name: 'Not recommended' })).toBeInTheDocument()
+    expect(dialog.textContent).toContain('Shares a label and era with three records you own.')
   })
 
   it('opens the reason dialog from a full-size info button beside the save button', async () => {

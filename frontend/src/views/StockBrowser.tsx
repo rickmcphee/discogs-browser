@@ -647,9 +647,11 @@ function StockBrowser({
                       <div className="truncate text-sm text-gray-200">{item.artist}</div>
                       <div className="truncate text-sm text-gray-300" title={titleTooltip(item)}>{displayTitle(item)}</div>
                       {meta && <div className="truncate text-xs text-gray-500">{meta}</div>}
-                      {item.reason && (
-                        <div className="text-xs italic text-gray-500">{item.reason}</div>
-                      )}
+                      {/* The reason used to print here, as the stand-in for a
+                          hover a touch device cannot perform. The info button
+                          to the right is that stand-in now, and it carries the
+                          verdict with it -- which this line never did, so an
+                          imported rejection's note read as a recommendation. */}
                     </div>
                     <div className="flex shrink-0 items-center gap-1">
                       <a href={item.url} target="_blank" rel="noreferrer" className="px-2 py-3 text-sm font-medium text-green-400 hover:text-green-300">

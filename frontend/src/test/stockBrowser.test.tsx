@@ -415,6 +415,21 @@ describe('StockBrowser', () => {
     expect(document.activeElement).toBe(info)
   })
 
+  it('closes the reason dialog on a backdrop click', async () => {
+    // Its own dismissal path: an aria-hidden, untabbable button behind the
+    // panel. Layered wrong or wired to nothing, the pointer route out is gone
+    // and nothing else here would notice.
+    getStock.mockResolvedValue(judged(true))
+    const { container } = render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByTitle('Recommendation details'))
+
+    const backdrop = container.querySelector('button[aria-hidden="true"]')
+    expect(backdrop).not.toBeNull()
+    fireEvent.click(backdrop!)
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
   it('confines Tab and Shift+Tab to the dialog', async () => {
     // `aria-modal` claims interaction is confined to the panel; these are the
     // branches that make that true rather than a promise a screen reader acts
