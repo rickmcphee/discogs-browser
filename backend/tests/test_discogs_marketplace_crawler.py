@@ -411,7 +411,9 @@ async def test_an_unclean_unfiltered_response_cannot_vouch_for_the_filter(
 
     Its body is an error page that happens to carry a container we parse; a
     read whose own response was a block cannot be evidence for the empty
-    result any more than the first response could.
+    result any more than the first response could. The diagnostic has to name
+    *that*, though: the page parsed, so pointing an operator at the selectors
+    would send them after markup that just demonstrably worked.
     """
     async def _stats(release_id):
         return 20
@@ -427,7 +429,7 @@ async def test_an_unclean_unfiltered_response_cannot_vouch_for_the_filter(
         None,
     ]
 
-    with pytest.raises(RuntimeError, match="was unreadable too"):
+    with pytest.raises(RuntimeError, match="own response could not be trusted"):
         await Crawler().search(RELEASE, page)
 
 

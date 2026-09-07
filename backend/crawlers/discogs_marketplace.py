@@ -404,10 +404,22 @@ class Crawler:
                     "this is a price shape this crawler no longer reads rather than an "
                     "absence of USA sellers"
                 )
-            elif not (unfiltered.recognised and unfiltered.answered):
+            elif not unfiltered.recognised:
                 verdict = (
                     "The same release read without the ships_from filter "
                     "was unreadable too"
+                )
+            elif not unfiltered.answered:
+                # Kept apart from the line above because they send an operator
+                # to different places. This one parsed; what it could not do is
+                # vouch for anything, its own response having been a block page
+                # or a document that never settled a title. Calling that
+                # "unreadable" would point at selectors that just demonstrably
+                # worked.
+                verdict = (
+                    "The same release read without the ships_from filter parsed, but its "
+                    "own response could not be trusted, so it cannot corroborate an empty "
+                    "filtered page"
                 )
             else:
                 # `_read_when_ready` reports an exhausted deadline and
