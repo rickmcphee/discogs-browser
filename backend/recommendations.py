@@ -22,9 +22,9 @@ def build_batch_content(taste_listing: list[str], batch: list[dict]) -> list[dic
     bill -- output bills well above input, so the echo was the expensive half."""
     taste_text = "\n".join(taste_listing) if taste_listing else "(empty — no collection or wishlist yet)"
     # ensure_ascii=False, or this saving reverses itself on the catalog's
-    # international half: the default turns "Bjork" (with its umlaut) into a
-    # \uXXXX escape and a Japanese name into nothing but escapes, and those
-    # sequences tokenize far worse than the characters they replace.
+    # international half: the default turns "Björk" into a \uXXXX escape and a
+    # Japanese name into nothing but escapes, and those sequences tokenize far
+    # worse than the characters they replace.
     items_text = "\n".join(
         json.dumps({"n": n, "artist": item["artist"], "title": item["title"]}, ensure_ascii=False)
         for n, item in enumerate(batch, start=1)

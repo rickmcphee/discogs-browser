@@ -4,7 +4,7 @@
 
 **Goal:** Stop paying to ship a SHA-256 digest to the model and back on every judged item, and make what a judgment run actually costs observable, so the prompt caching already in place can be verified rather than assumed.
 
-**Architecture:** `build_batch_content` addresses each item by a 1-based ordinal `n` instead of its `item_key`; the model answers in the same currency and `judge_batch` maps `n` back to `batch[n - 1]["item_key"]` before returning. `judge_batch`'s return shape is unchanged, so `crawl_manager._run_judgment_phase` and `db.upsert_stock_judgments` are untouched. The ordinal makes the ordering contract the prompt always relied on checkable — out-of-range and duplicate indices are dropped and logged rather than written as judgments against rows that may not exist. Alongside it, `response.usage`'s four counters are logged per batch and a `max_tokens` stop is reported as itself instead of surfacing as a JSON parse error.
+**Architecture:** `build_batch_content` addresses each item by a 1-based ordinal `n` instead of its `item_key`; the model answers in the same currency and `judge_batch` maps `n` back to `batch[n - 1]["item_key"]` before returning. `judge_batch`'s return shape is unchanged, so `_run_judgment_phase`'s result handling, `db.upsert_stock_judgments` and the write contract behind it are untouched. The ordinal makes the ordering contract the prompt always relied on checkable — out-of-range and duplicate indices are dropped and logged rather than written as judgments against rows that may not exist. Alongside it, `response.usage`'s four counters are logged per batch and a `max_tokens` stop is reported as itself instead of surfacing as a JSON parse error. Those counters have to say whose run they came from, which is the one interface change on the caller: `_run_judgment_phase` passes the username it already holds as a new `label` argument on the `judge_batch` call.
 
 **Tech Stack:** Python ≥3.9, the `anthropic` SDK, pytest with `asyncio_mode = "auto"`. `test_recommendations.py` fakes the client with `MagicMock` rather than intercepting HTTP — see the docstring on `_client_returning` for why (the SDK's transport dependency changed underneath a `respx` mock once already).
 
@@ -29,7 +29,7 @@ cd backend && TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/di
 
 ## Task 2: Map the response back by ordinal
 
-- [ ] In `judge_batch`, resolve each response entry's `n` to `batch[n - 1]["item_key"]`. The returned dict shape stays `{"item_key", "recommended", "reason"}` — `crawl_manager` and `db.upsert_stock_judgments` must not need changing.
+- [ ] In `judge_batch`, resolve each response entry's `n` to `batch[n - 1]["item_key"]`. The returned dict shape stays `{"item_key", "recommended", "reason"}` — `_run_judgment_phase`'s handling of the result, and `db.upsert_stock_judgments`, must not need changing. (Task 3 does add one argument to the call itself; nothing about what comes back.)
 - [ ] Drop and log entries whose `n` is missing, not an integer (rejecting `bool`, which is an `int` in Python), or outside `1..len(batch)`.
 - [ ] Drop and log a repeated `n`; the first entry for an index wins.
 - [ ] Keep dropping entries missing `recommended`, as the `item_key` version did.
@@ -38,6 +38,8 @@ cd backend && TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/di
 
 - [ ] After a successful call, log `input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens` and `output_tokens` off `response.usage`, read defensively so a response missing `usage` or any counter logs `None` instead of raising inside the logging path.
 - [ ] Keep it one line per batch at INFO, next to the existing per-batch progress line in `crawl_manager`.
+- [ ] Name the run on that line. Judgment runs are per-user, several can be in flight at once on different Anthropic keys, and each batch goes through `asyncio.to_thread` — unlabelled counters interleave into a stream nobody can attribute, and attribution is the point. Add a `label` argument to `judge_batch` and pass the `username` `_run_judgment_phase` already holds; carry it on the truncation warning and the failure log too. Default it to a placeholder that reads as unlabelled rather than blank.
+- [ ] Update the `judge_batch` doubles in `test_crawl_manager.py` for the new argument, including the two tests that unpack its positional args.
 
 ## Task 4: Report a `max_tokens` stop as itself
 

@@ -71,12 +71,20 @@ than the caching saves.
   `max_tokens` stop is reported as itself.
 - `backend/recommendations_prompt.md` — the documented request and response
   shapes follow.
+- `backend/crawl_manager.py` — one line: `_run_judgment_phase` passes the
+  username it already holds to `judge_batch`, for the usage line's
+  attribution.
 - `backend/tests/test_recommendations.py` — coverage for the mapping, the
-  validation rules it makes possible, and the two new log paths.
+  validation rules it makes possible, and the new log paths.
+- `backend/tests/test_crawl_manager.py` — the `judge_batch` doubles take the
+  new argument, and the two tests that already assert "alice's own key and
+  taste" now assert her name on the label too.
 
-`crawl_manager.py` is untouched: `judge_batch` keeps returning
-`[{"item_key", "recommended", "reason"}]`, so `upsert_stock_judgments` and
-everything downstream of it are unaffected.
+`crawl_manager.py`'s *result*-processing path is what stays untouched:
+`judge_batch` keeps returning `[{"item_key", "recommended", "reason"}]`, so
+`upsert_stock_judgments`, the per-batch progress broadcast and everything
+downstream of them are unaffected. The only change to the caller is the extra
+argument on the call itself.
 
 ## Design
 
