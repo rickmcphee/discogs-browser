@@ -457,12 +457,12 @@ describe('mobile StockBrowser', () => {
     expect(screen.queryByText('Shares a label and era with three records you own.')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Recommendation details' }))
-    const dialog = screen.getByRole('dialog')
-    expect(within(dialog).getByRole('heading', { name: 'Not recommended' })).toBeInTheDocument()
-    expect(dialog.textContent).toContain('Shares a label and era with three records you own.')
+    const popover = screen.getByRole('tooltip')
+    expect(popover.textContent).toContain('Not recommended')
+    expect(popover.textContent).toContain('Shares a label and era with three records you own.')
   })
 
-  it('opens the reason dialog from a full-size info button beside the save button', async () => {
+  it('opens and closes the reason popover from a full-size info button beside the save button', async () => {
     getStock.mockResolvedValue({
       total: 1, row_total: 1, page: 1, per_page: 250,
       items: [{ ...stockItem, reason: 'Shares a label and era with three records you own.', recommended: true }],
@@ -474,9 +474,15 @@ describe('mobile StockBrowser', () => {
     expect(info.nextElementSibling).toBe(screen.getByRole('button', { name: 'Save for later' }))
 
     fireEvent.click(info)
-    const dialog = screen.getByRole('dialog')
-    expect(within(dialog).getByRole('heading', { name: 'Recommended' })).toBeInTheDocument()
-    expect(dialog.textContent).toContain('Shares a label and era with three records you own.')
+    const popover = screen.getByRole('tooltip')
+    expect(popover.textContent).toContain('Recommended')
+    expect(popover.textContent).toContain('Shares a label and era with three records you own.')
+
+    // The icon is the whole control on touch too -- there is no Close button
+    // to reach for.
+    fireEvent.mouseDown(info)
+    fireEvent.click(info)
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
   })
 
   it('renders cards keeping the cost link and the save button as the row actions', async () => {

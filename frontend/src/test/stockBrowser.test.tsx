@@ -367,59 +367,120 @@ describe('StockBrowser', () => {
     expect(screen.queryByTitle('Recommendation details')).toBeNull()
   })
 
-  it('opens the reason in a dialog from the info button', async () => {
+  it('opens the reason in a popover from the info button', async () => {
     getStock.mockResolvedValue(judged(true))
     render(<StockBrowser recommendedAvailable />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.queryByRole('tooltip')).toBeNull()
 
     fireEvent.click(screen.getByTitle('Recommendation details'))
-    const dialog = screen.getByRole('dialog')
-    expect(dialog.textContent).toContain('Similar to your hardcore collection')
-    expect(dialog.textContent).toContain('Recommended')
+    const popover = screen.getByRole('tooltip')
+    expect(popover.textContent).toContain('Similar to your hardcore collection')
+    expect(popover.textContent).toContain('Recommended')
   })
 
-  it('heads a rejected item\'s dialog with the negative verdict', async () => {
-    getStock.mockResolvedValue(judged(false))
-    render(<StockBrowser recommendedAvailable />)
-    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    fireEvent.click(screen.getByTitle('Recommendation details'))
-    expect(screen.getByRole('heading', { name: 'Not recommended' })).toBeTruthy()
-  })
-
-  it('closes the reason dialog from its Close button and from Escape', async () => {
-    getStock.mockResolvedValue(judged(true))
-    render(<StockBrowser recommendedAvailable />)
-    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-
-    fireEvent.click(screen.getByTitle('Recommendation details'))
-    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
-    expect(screen.queryByRole('dialog')).toBeNull()
-
-    fireEvent.click(screen.getByTitle('Recommendation details'))
-    fireEvent.keyDown(document, { key: 'Escape' })
-    expect(screen.queryByRole('dialog')).toBeNull()
-  })
-
-  it('hands focus back to the info button that opened the dialog', async () => {
-    // jsdom, like Safari, does not focus a button on click -- so a dialog that
-    // read document.activeElement on mount would restore focus to the body.
+  it('closes the popover on a second click of the same icon', async () => {
     getStock.mockResolvedValue(judged(true))
     render(<StockBrowser recommendedAvailable />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     const info = screen.getByTitle('Recommendation details')
 
     fireEvent.click(info)
-    expect(screen.getByRole('dialog').contains(document.activeElement)).toBe(true)
-    fireEvent.keyDown(document, { key: 'Escape' })
-    expect(document.activeElement).toBe(info)
+    expect(screen.getByRole('tooltip')).toBeTruthy()
+    // The press that precedes the click reaches the outside-dismiss listener
+    // first; it has to ignore the icon, or this click would close and reopen.
+    fireEvent.mouseDown(info)
+    fireEvent.click(info)
+    expect(screen.queryByRole('tooltip')).toBeNull()
   })
 
-  it('names the target in the dialog, not a comparison row\'s substituted title', async () => {
-    // The judgment is made against an item_key. A comparison row displays the
-    // marketplace's name for what it matched, which can be another pressing --
-    // crediting the reason to that would attribute it to a record the judge
-    // never saw.
+  it('labels the rejected verdict in the popover', async () => {
+    getStock.mockResolvedValue(judged(false))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByTitle('Recommendation details'))
+    expect(screen.getByRole('tooltip').textContent).toContain('Not recommended')
+  })
+
+  it('closes the popover on Escape and on a press outside it', async () => {
+    getStock.mockResolvedValue(judged(true))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+
+    fireEvent.click(screen.getByTitle('Recommendation details'))
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('tooltip')).toBeNull()
+
+    fireEvent.click(screen.getByTitle('Recommendation details'))
+    fireEvent.mouseDown(document.body)
+    expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+
+  it('stays open when the press lands inside the popover itself', async () => {
+    getStock.mockResolvedValue(judged(true))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByTitle('Recommendation details'))
+
+    fireEvent.mouseDown(screen.getByRole('tooltip'))
+    expect(screen.getByRole('tooltip')).toBeTruthy()
+  })
+
+  it('moves the popover to another row rather than opening a second one', async () => {
+    getStock.mockResolvedValue({
+      total: 2, row_total: 2, page: 1, per_page: 250,
+      items: [
+        { ...items[0], reason: 'Similar to your hardcore collection', recommended: true },
+        { ...items[1], reason: 'Shares a label with three records you own', recommended: true },
+      ],
+    })
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('Every Bridge Burning — Forest Green LP')).toBeTruthy())
+    const [first, second] = screen.getAllByTitle('Recommendation details')
+
+    fireEvent.click(first)
+    expect(screen.getByRole('tooltip').textContent).toContain('Similar to your hardcore collection')
+
+    fireEvent.mouseDown(second)
+    fireEvent.click(second)
+    expect(screen.getAllByRole('tooltip')).toHaveLength(1)
+    expect(screen.getByRole('tooltip').textContent).toContain('Shares a label with three records you own')
+  })
+
+  it('marks the open icon expanded and points its description at the popover', async () => {
+    getStock.mockResolvedValue(judged(true))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    const info = screen.getByTitle('Recommendation details')
+    expect(info.getAttribute('aria-expanded')).toBe('false')
+    expect(info.getAttribute('aria-describedby')).toBeNull()
+
+    fireEvent.click(info)
+    // The popover holds no interactive content and takes no focus, so this is
+    // how a screen reader on the icon reaches the reason.
+    expect(info.getAttribute('aria-expanded')).toBe('true')
+    expect(info.getAttribute('aria-describedby')).toBe(screen.getByRole('tooltip').id)
+  })
+
+  it('pins the popover to the viewport rather than to the scrolling table', async () => {
+    // Positioned fixed, so a row at either edge of the table's overflow
+    // container is not clipped by it. placeReasonPopover covers the geometry.
+    getStock.mockResolvedValue(judged(true))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByTitle('Recommendation details'))
+
+    const popover = screen.getByRole('tooltip') as HTMLElement
+    expect(popover.className).toContain('fixed')
+    expect(popover.style.top).not.toBe('')
+    expect(popover.style.left).not.toBe('')
+    expect(popover.style.visibility).toBe('visible')
+  })
+
+  it('leaves the record unnamed in the popover, since the row already names it', async () => {
+    // It used to print the title, which on a comparison row risked crediting
+    // the judgment to the marketplace's own name for another pressing. The
+    // popover is pinned to the row, so it does not name the record at all.
     getStock.mockResolvedValue({
       total: 1, row_total: 2, page: 1, per_page: 250,
       items: [
@@ -435,66 +496,19 @@ describe('StockBrowser', () => {
     await waitFor(() => expect(screen.getByText('Rob Zombie - The Great Satan [Standard Black LP]')).toBeTruthy())
 
     fireEvent.click(screen.getAllByTitle('Recommendation details')[1])
-    const dialog = screen.getByRole('dialog')
-    expect(dialog.textContent).toContain('The Great Satan — Ghostly Black Vinyl')
-    expect(dialog.textContent).not.toContain('Standard Black LP')
+    const popover = screen.getByRole('tooltip')
+    expect(popover.textContent).not.toContain('Standard Black LP')
+    expect(popover.textContent).not.toContain('Ghostly Black Vinyl')
   })
 
-  it('closes the reason dialog on a backdrop click', async () => {
-    // Its own dismissal path: an aria-hidden, untabbable button behind the
-    // panel. Layered wrong or wired to nothing, the pointer route out is gone
-    // and nothing else here would notice.
-    getStock.mockResolvedValue(judged(true))
-    const { container } = render(<StockBrowser recommendedAvailable />)
-    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    fireEvent.click(screen.getByTitle('Recommendation details'))
-
-    const backdrop = container.querySelector('button[aria-hidden="true"]')
-    expect(backdrop).not.toBeNull()
-    fireEvent.click(backdrop!)
-    expect(screen.queryByRole('dialog')).toBeNull()
-  })
-
-  it('confines Tab and Shift+Tab to the dialog', async () => {
-    // `aria-modal` claims interaction is confined to the panel; these are the
-    // branches that make that true rather than a promise a screen reader acts
-    // on. jsdom does not move focus on Tab by itself, so what each assertion
-    // turns on is the handler having cancelled the event and placed focus.
-    getStock.mockResolvedValue(judged(true))
-    render(<StockBrowser recommendedAvailable />)
-    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    fireEvent.click(screen.getByTitle('Recommendation details'))
-    const panel = screen.getByRole('dialog')
-    const close = screen.getByRole('button', { name: 'Close' })
-    expect(document.activeElement).toBe(panel)
-
-    // Shift+Tab off the panel's leading edge wraps to the last control.
-    expect(fireEvent.keyDown(document, { key: 'Tab', shiftKey: true })).toBe(false)
-    expect(document.activeElement).toBe(close)
-
-    // Tab off the last control wraps back to the first.
-    expect(fireEvent.keyDown(document, { key: 'Tab' })).toBe(false)
-    expect(document.activeElement).toBe(close)
-
-    // Shift+Tab off the first control wraps to the last.
-    expect(fireEvent.keyDown(document, { key: 'Tab', shiftKey: true })).toBe(false)
-    expect(document.activeElement).toBe(close)
-
-    // Focus that has escaped the panel entirely is pulled back in.
-    const outside = screen.getByTitle('Recommendation details')
-    outside.focus()
-    expect(fireEvent.keyDown(document, { key: 'Tab' })).toBe(false)
-    expect(document.activeElement).toBe(close)
-  })
-
-  it('scrolls the dialog rather than pushing its Close button off a short viewport', async () => {
+  it('scrolls a long reason inside the popover', async () => {
     // A reason is free text: a CSV import writes it unbounded.
     getStock.mockResolvedValue(judged(true))
     render(<StockBrowser recommendedAvailable />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     fireEvent.click(screen.getByTitle('Recommendation details'))
-    expect(screen.getByRole('dialog').className).toContain('overflow-y-auto')
-    expect(screen.getByRole('dialog').className).toContain('max-h-[85dvh]')
+    expect(screen.getByRole('tooltip').className).toContain('overflow-y-auto')
+    expect(screen.getByRole('tooltip').className).toContain('max-h-64')
   })
 
   it('puts the info button immediately left of the save button in the row', async () => {
@@ -517,7 +531,7 @@ describe('StockBrowser', () => {
     expect(info.nextElementSibling).toBe(screen.getByTitle('Save for later'))
 
     fireEvent.click(info)
-    expect(screen.getByRole('dialog').textContent).toContain('Similar to your hardcore collection')
+    expect(screen.getByRole('tooltip').textContent).toContain('Similar to your hardcore collection')
   })
 
   it('passes hiddenCrawlerIds through to getStock', async () => {
@@ -1001,7 +1015,7 @@ describe('StockBrowser', () => {
     let reachedLink = false
     link!.addEventListener('click', () => { reachedLink = true })
     fireEvent.click(info)
-    expect(screen.getByRole('dialog')).toBeTruthy()
+    expect(screen.getByRole('tooltip')).toBeTruthy()
     expect(reachedLink).toBe(false)
   })
 
