@@ -4182,10 +4182,13 @@ async def test_judgment_phase_uses_calling_users_own_key_and_taste(pg_schema, mo
     # was actually called with alice's own Anthropic client (keyed off her
     # anthropic_api_key column) and her own taste listing (empty here, since
     # alice has no collection/wishlist), not some other user's or a global one.
-    client_arg, taste_arg, batch_arg = mock_judge.call_args[0]
+    client_arg, taste_arg, batch_arg, label_arg = mock_judge.call_args[0]
     assert client_arg.api_key == "sk-alice"
     assert taste_arg == []
     assert batch_arg[0]["artist"] == "Artist A"
+    # Same claim, applied to the usage counters judge_batch logs: they name
+    # this user, so one run's spend can't be read as another's.
+    assert label_arg == "alice"
 
 
 async def test_judgment_phase_does_not_touch_another_users_key_taste_or_judgments(pg_schema):
@@ -4227,9 +4230,11 @@ async def test_judgment_phase_does_not_touch_another_users_key_taste_or_judgment
         manager = CrawlManager()
         await manager._run_judgment_phase(alice["id"])
 
-    client_arg, taste_arg, _ = mock_judge.call_args[0]
+    client_arg, taste_arg, _, label_arg = mock_judge.call_args[0]
     assert client_arg.api_key == "sk-alice"
     assert taste_arg == ["Alice Fave - Album X"]
+    # The usage counters this run logs must not read as bob's either.
+    assert label_arg == "alice20"
 
     with db.get_admin_pool().connection() as conn:
         judgments = conn.execute("SELECT user_id, reason FROM stock_item_judgments").fetchall()
@@ -4256,7 +4261,7 @@ async def test_judgment_phase_first_batchs_judgments_survive_a_later_batchs_fail
 
     call_count = {"n": 0}
 
-    def _judge_side_effect(client, taste, batch):
+    def _judge_side_effect(client, taste, batch, label=""):
         call_count["n"] += 1
         if call_count["n"] == 1:
             return [{"item_key": item["item_key"], "recommended": False, "reason": "first batch ok"} for item in batch]
@@ -4519,7 +4524,10 @@ async def test_run_judgment_phase_logs_per_batch_progress(pg_schema, monkeypatch
 
     monkeypatch.setattr(recommendations, "BATCH_SIZE", 2)
 
-    def _fake_judge(client, taste, batch):
+    seen_labels = []
+
+    def _fake_judge(client, taste, batch, label=""):
+        seen_labels.append(label)
         return [
             {"item_key": item["item_key"], "recommended": item["artist"] == "Rob Zombie", "reason": None}
             for item in batch
@@ -4530,6 +4538,10 @@ async def test_run_judgment_phase_logs_per_batch_progress(pg_schema, monkeypatch
     manager = CrawlManager()
     with caplog.at_level("INFO", logger="crawl_manager"):
         await manager._run_judgment_phase(alice["id"])
+
+    # Several users' runs can be in flight at once, each on its own Anthropic
+    # key, so judge_batch's own usage line has to name whose batch it was.
+    assert seen_labels == ["alice4", "alice4"]
 
     batch_logs = [r.message for r in caplog.records if "Judged batch" in r.message]
     assert len(batch_logs) == 2
@@ -4554,7 +4566,7 @@ async def test_run_judgment_phase_logs_true_backlog_size_when_limit_smaller(pg_s
         ])
         conn.commit()
 
-    monkeypatch.setattr(recommendations, "judge_batch", lambda client, taste, batch: [
+    monkeypatch.setattr(recommendations, "judge_batch", lambda client, taste, batch, label="": [
         {"item_key": item["item_key"], "recommended": False, "reason": None} for item in batch
     ])
 
@@ -4581,7 +4593,7 @@ async def test_run_judgment_phase_respects_zero_as_unlimited(pg_schema, monkeypa
         ])
         conn.commit()
 
-    monkeypatch.setattr(recommendations, "judge_batch", lambda client, taste, batch: [
+    monkeypatch.setattr(recommendations, "judge_batch", lambda client, taste, batch, label="": [
         {"item_key": item["item_key"], "recommended": False, "reason": None} for item in batch
     ])
 
@@ -4606,7 +4618,7 @@ async def test_run_judgment_phase_does_not_block_event_loop(pg_schema, monkeypat
         ])
         conn.commit()
 
-    def slow_judge_batch(client, taste, batch):
+    def slow_judge_batch(client, taste, batch, label=""):
         time.sleep(0.3)
         return [{"item_key": item["item_key"], "recommended": False, "reason": None} for item in batch]
 
