@@ -464,6 +464,13 @@ describe('StockBrowser', () => {
     expect(info.getAttribute('aria-expanded')).toBe('true')
     expect(info.getAttribute('aria-controls')).toBe(popover.id)
     expect(info.getAttribute('aria-describedby')).toBe(popover.id)
+    // What that reference is worth: the description resolves to the
+    // justification. The panel is deliberately unnamed for this reason -- per
+    // accname an aria-label on it would win outright and describe the icon as
+    // itself -- though jsdom's description computation falls back to text
+    // content either way, so this assertion documents the intent rather than
+    // guarding it.
+    expect(info).toHaveAccessibleDescription(/Similar to your hardcore collection/)
   })
 
   it('pins the popover to the viewport rather than to the scrolling table', async () => {

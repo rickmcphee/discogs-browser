@@ -74,6 +74,33 @@ describe('placeReasonPopover', () => {
     expect(top).toBe(VIEWPORT.height - PANEL.height - REASON_POPOVER_EDGE)
   })
 
+  it('stays on screen when the table has been scrolled past the icon', () => {
+    // The table scrolls horizontally, so a row's actions can sit beyond the
+    // right edge with the popover still open. Room to that anchor's left is
+    // not the same as room on screen.
+    const { left } = placeReasonPopover(anchorAt(1400, 400), PANEL, VIEWPORT)
+    expect(left).toBeLessThanOrEqual(VIEWPORT.width - PANEL.width - REASON_POPOVER_EDGE)
+    expect(left).toBeGreaterThanOrEqual(REASON_POPOVER_EDGE)
+  })
+
+  it('stays on screen when the icon has been scrolled off the left', () => {
+    const { left } = placeReasonPopover(anchorAt(-400, 400), PANEL, VIEWPORT)
+    expect(left).toBeGreaterThanOrEqual(REASON_POPOVER_EDGE)
+    expect(left + PANEL.width).toBeLessThanOrEqual(VIEWPORT.width)
+  })
+
+  it('stays on screen when the row has been scrolled above the viewport', () => {
+    const { top } = placeReasonPopover(anchorAt(1200, -300), PANEL, VIEWPORT)
+    expect(top).toBeGreaterThanOrEqual(REASON_POPOVER_EDGE)
+    expect(top + PANEL.height).toBeLessThanOrEqual(VIEWPORT.height)
+  })
+
+  it('stays on screen when the row has been scrolled below the viewport', () => {
+    const { top } = placeReasonPopover(anchorAt(1200, 1200), PANEL, VIEWPORT)
+    expect(top).toBeGreaterThanOrEqual(REASON_POPOVER_EDGE)
+    expect(top + PANEL.height).toBeLessThanOrEqual(VIEWPORT.height)
+  })
+
   it('prefers the top edge when the panel is taller than the viewport', () => {
     const tall = { width: 256, height: 900 }
     const { top } = placeReasonPopover(anchorAt(1200, 400), tall, VIEWPORT)

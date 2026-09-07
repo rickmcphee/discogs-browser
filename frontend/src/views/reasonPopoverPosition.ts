@@ -41,13 +41,20 @@ export function placeReasonPopover(anchor: Rect, panel: Size, viewport: Viewport
   const lastLeft = viewport.width - panel.width - REASON_POPOVER_EDGE
   const lastTop = viewport.height - panel.height - REASON_POPOVER_EDGE
 
+  // Both edges, for every candidate. The anchor is not necessarily on screen:
+  // the table scrolls horizontally and the list vertically, so a row can be
+  // scrolled past either edge while its popover is open, and a candidate that
+  // clears the near edge can still land the panel off the far one.
+  const fitsAcross = (left: number) => left >= REASON_POPOVER_EDGE && left <= lastLeft
+  const fitsDown = (top: number) => top >= REASON_POPOVER_EDGE && top <= lastTop
+
   const beside = clamp(anchor.top + anchor.height / 2 - panel.height / 2, REASON_POPOVER_EDGE, lastTop)
 
   const toLeft = anchor.left - panel.width - REASON_POPOVER_GAP
-  if (toLeft >= REASON_POPOVER_EDGE) return { top: beside, left: toLeft }
+  if (fitsAcross(toLeft)) return { top: beside, left: toLeft }
 
   const toRight = anchor.right + REASON_POPOVER_GAP
-  if (toRight <= lastLeft) return { top: beside, left: toRight }
+  if (fitsAcross(toRight)) return { top: beside, left: toRight }
 
   // Stacked. Horizontally it starts at the icon's own left edge, which keeps
   // it near what it describes, and vertically it takes whichever side of the
@@ -55,13 +62,14 @@ export function placeReasonPopover(anchor: Rect, panel: Size, viewport: Viewport
   // since a second click there is how it closes.
   const left = clamp(anchor.left, REASON_POPOVER_EDGE, lastLeft)
   const below = anchor.top + anchor.height + REASON_POPOVER_GAP
-  if (below <= lastTop) return { top: below, left }
+  if (fitsDown(below)) return { top: below, left }
 
   const above = anchor.top - panel.height - REASON_POPOVER_GAP
-  if (above >= REASON_POPOVER_EDGE) return { top: above, left }
+  if (fitsDown(above)) return { top: above, left }
 
-  // Taller than the space on either side of the icon: nothing can avoid the
-  // overlap, so fall back to the reading position and let Escape or a press
+  // Taller than the space on either side of the icon, or an icon that is not
+  // on screen at all: nothing can both avoid the overlap and stay in view, so
+  // fall back to the clamped reading position and let Escape or a press
   // outside dismiss it.
   return { top: beside, left }
 }

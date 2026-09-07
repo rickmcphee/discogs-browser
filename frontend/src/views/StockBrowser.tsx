@@ -176,7 +176,11 @@ function ReasonPopover({ item, anchor, onClose }: { item: StockItem; anchor: HTM
       // pattern assistive tech has no good reading of. A note is what this
       // is: text ancillary to the row it hangs off.
       role="note"
-      aria-label={REASON_BUTTON_TITLE}
+      // Deliberately unnamed: this panel is the icon's aria-describedby
+      // target, and an aria-label here would win the text-alternative
+      // computation outright -- the icon would describe itself as
+      // "Recommendation details" instead of reading out the justification,
+      // which is the entire point of the relationship.
       // Focusable because the reason is free text and can outrun the panel:
       // Chrome and Firefox hand a scroll container to the keyboard on their
       // own, Safari does not, and the clipped tail has to be reachable
