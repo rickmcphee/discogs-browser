@@ -427,14 +427,18 @@ cover-art column's empty header at line 305):
 ```
 
 **Amendment (2026-09-07, branch `claude/recommendation-info-icon-popup-6n4r87`):**
-the bookmark no longer has that cell to itself. A judged item's info button
-sits immediately to its left, both wrapped in a `flex items-center
+the bookmark may no longer have that cell to itself. A row whose item
+carries a judgment *reason* — not every judged item; a judgment recorded
+without one renders no button, which is most of them — puts an info button
+immediately to the bookmark's left, the two wrapped in a `flex items-center
 justify-end gap-1` div, and the header widened from `w-8` to `w-20` to hold
 the pair. `colCount` is unchanged — it is still one column. The tile overlay
-gained the same pairing: the absolutely-positioned element below is now a
-flex row holding the info button and the bookmark rather than the bookmark
-alone. See
-[`2026-09-07-recommendation-info-popup-design.md`](2026-09-07-recommendation-info-popup-design.md).
+gained the same conditional pairing: the absolutely-positioned element below
+is now a flex row that holds the bookmark, preceded by the info button on
+the rows that have a reason to show. See
+[`2026-09-07-recommendation-info-popup-design.md`](2026-09-07-recommendation-info-popup-design.md),
+which is authoritative on that condition, and the further amendment under
+"Tiles" below, which takes that row out of the tile's listing link.
 
 added after the existing Source cell (line 372). `colCount` (line 163),
 currently `scope === 'track' ? 7 : 6`, becomes `scope === 'store' ? 7 :

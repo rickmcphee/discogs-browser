@@ -146,7 +146,10 @@ function ReasonDialog({ item, opener, onClose }: { item: StockItem; opener: HTML
         <h2 id={headingId} className="text-white font-semibold text-lg">
           {item.recommended ? 'Recommended' : 'Not recommended'}
         </h2>
-        <p className="mt-1 text-sm text-gray-500">{item.artist} — {displayTitle(item)}</p>
+        {/* gray-400, not the gray-500 the app's other secondary text uses:
+            on gray-900 that is ~3.7:1, under AA for 14px, and this line is
+            what says which record the reason is about. */}
+        <p className="mt-1 text-sm text-gray-400">{item.artist} — {displayTitle(item)}</p>
         <p className="mt-4 text-sm text-gray-200">{item.reason}</p>
         <button onClick={onClose} className={`mt-5 w-full px-4 py-3 text-sm ${dismissButtonClass()}`}>
           Close
