@@ -119,9 +119,12 @@ Out of scope:
   measures itself against.
 - **The panel caps its size and scrolls.** A reason is free text — a CSV
   import writes it unbounded — so a long one would otherwise run off the
-  screen. Width is capped in CSS (`w-64 max-w-[calc(100vw-1rem)]`); height
-  comes from the placement, which is the only thing that knows what room the
-  icon leaves, and is applied inline. It is measured from the panel's content
+  screen. Both caps come from the placement and are applied inline: it is the
+  only thing that knows what room the icon leaves and where the safe screen
+  ends, and a cap beside it in CSS is a cap it can contradict — bounds
+  enforced against a width or height the panel does not actually have put it
+  somewhere it does not actually fit. `w-64` remains as the width it asks
+  for. It is measured from the panel's content
   rather than its rendered box — the box carries the cap the last placement
   gave it, and reading that back would find room the panel does not have,
   lengthen it, and jitter on every scroll. Measuring instead of caching is
@@ -284,9 +287,8 @@ icon.**
   to text content whether or not a name is present.
 - The popover is positioned fixed, with coordinates and visibility set — the
   geometry itself belongs to `reasonPopoverPosition.test.ts`.
-- Its height comes from the placement rather than a class, its width is
-  capped in CSS, and it is focusable, `role="note"`, and rendered as the
-  icon's next sibling.
+- Both its caps come from the placement rather than a class, and it is
+  focusable, `role="note"`, and rendered as the icon's next sibling.
 - A touch outside it closes it, as a mouse press does.
 - Escape pressed while the panel has focus returns that focus to the icon.
 - A view-mode switch closes it, asserted through the icon's `aria-expanded`
@@ -321,8 +323,10 @@ reports a `maxHeight` throughout — the height the panel asked for wherever
 that fits, and on the roomier side of an icon that a short viewport leaves no
 room beside, above or below, the room actually available there; the height
 asked for again where even the roomier side is too short to be worth
-reading; and stays out of the safe-area insets a notched screen reserves,
-on the left, the right and the bottom.
+reading; and stays out of the safe-area insets a notched screen reserves —
+capping its own height and width to the room between them, since a cap taken
+from the raw viewport lets through a panel bigger than the bounds being
+enforced, and then every bound crosses its own start.
 
 `frontend/src/test/mobileLayout.test.tsx`:
 

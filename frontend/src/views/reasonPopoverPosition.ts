@@ -45,10 +45,12 @@ export const REASON_POPOVER_MAX_HEIGHT = 256
 export interface Placement {
   top: number
   left: number
-  /** The height to hold the panel to — its own desired height wherever that
-   *  fits, and the room available where it does not. Always set, so the panel
-   *  never depends on a CSS cap the placement cannot see. */
+  /** The size to hold the panel to. Both always set: the panel depends on no
+   *  CSS cap the placement cannot see, because a cap it cannot see is a cap it
+   *  can contradict — bounds enforced against a width or height the panel does
+   *  not actually have put it somewhere it does not actually fit. */
   maxHeight: number
+  maxWidth: number
 }
 
 function clamp(value: number, lowest: number, highest: number): number {
@@ -73,8 +75,20 @@ export function placeReasonPopover(anchor: Rect, panel: Size, viewport: Viewport
   const insets = viewport.insets ?? NO_INSETS
   const firstLeft = REASON_POPOVER_EDGE + insets.left
   const firstTop = REASON_POPOVER_EDGE + insets.top
-  const lastLeft = viewport.width - insets.right - panel.width - REASON_POPOVER_EDGE
-  const lastTop = viewport.height - insets.bottom - panel.height - REASON_POPOVER_EDGE
+
+  // The size the panel will be held to, decided here rather than by a class,
+  // so the bounds below are enforced against the panel that actually renders.
+  // The safe screen, not the raw viewport: capping height against
+  // `viewport.height` alone lets a panel through that is taller than the room
+  // between the insets, and then every bound crosses its own start.
+  const width = Math.min(panel.width, viewport.width - insets.left - insets.right - 2 * REASON_POPOVER_EDGE)
+  const height = Math.min(
+    panel.height,
+    REASON_POPOVER_MAX_HEIGHT,
+    viewport.height - insets.top - insets.bottom - 2 * REASON_POPOVER_EDGE,
+  )
+  const lastLeft = viewport.width - insets.right - width - REASON_POPOVER_EDGE
+  const lastTop = viewport.height - insets.bottom - height - REASON_POPOVER_EDGE
 
   // Both edges, for every candidate. The anchor is not necessarily on screen:
   // the table scrolls horizontally and the list vertically, so a row can be
@@ -83,13 +97,13 @@ export function placeReasonPopover(anchor: Rect, panel: Size, viewport: Viewport
   const fitsAcross = (left: number) => left >= firstLeft && left <= lastLeft
   const fitsDown = (top: number) => top >= firstTop && top <= lastTop
 
-  const beside = clamp(anchor.top + anchor.height / 2 - panel.height / 2, firstTop, lastTop)
+  const beside = clamp(anchor.top + anchor.height / 2 - height / 2, firstTop, lastTop)
 
-  const toLeft = anchor.left - panel.width - REASON_POPOVER_GAP
-  if (fitsAcross(toLeft)) return { top: beside, left: toLeft, maxHeight: panel.height }
+  const toLeft = anchor.left - width - REASON_POPOVER_GAP
+  if (fitsAcross(toLeft)) return { top: beside, left: toLeft, maxHeight: height, maxWidth: width }
 
   const toRight = anchor.right + REASON_POPOVER_GAP
-  if (fitsAcross(toRight)) return { top: beside, left: toRight, maxHeight: panel.height }
+  if (fitsAcross(toRight)) return { top: beside, left: toRight, maxHeight: height, maxWidth: width }
 
   // Stacked. Horizontally it starts at the icon's own left edge, which keeps
   // it near what it describes, and vertically it takes whichever side of the
@@ -97,10 +111,10 @@ export function placeReasonPopover(anchor: Rect, panel: Size, viewport: Viewport
   // since a second click there is how it closes.
   const left = clamp(anchor.left, firstLeft, lastLeft)
   const below = anchor.top + anchor.height + REASON_POPOVER_GAP
-  if (fitsDown(below)) return { top: below, left, maxHeight: panel.height }
+  if (fitsDown(below)) return { top: below, left, maxHeight: height, maxWidth: width }
 
-  const above = anchor.top - panel.height - REASON_POPOVER_GAP
-  if (fitsDown(above)) return { top: above, left, maxHeight: panel.height }
+  const above = anchor.top - height - REASON_POPOVER_GAP
+  if (fitsDown(above)) return { top: above, left, maxHeight: height, maxWidth: width }
 
   // Taller than the space on either side of the icon. Nothing can keep the
   // panel whole, on screen and off the icon at once, and the icon is what
@@ -113,12 +127,12 @@ export function placeReasonPopover(anchor: Rect, panel: Size, viewport: Viewport
   const roomier = Math.max(roomBelow, roomAbove)
   if (roomier >= REASON_POPOVER_MIN_HEIGHT) {
     return roomBelow >= roomAbove
-      ? { top: anchor.top + anchor.height + REASON_POPOVER_GAP, left, maxHeight: roomBelow }
-      : { top: firstTop, left, maxHeight: roomAbove }
+      ? { top: anchor.top + anchor.height + REASON_POPOVER_GAP, left, maxHeight: roomBelow, maxWidth: width }
+      : { top: firstTop, left, maxHeight: roomAbove, maxWidth: width }
   }
 
   // An icon with almost no room on either side of it -- a viewport barely
   // taller than the icon itself. A readable panel over the icon beats an
   // unreadable one beside it; Escape and a press outside still dismiss it.
-  return { top: beside, left, maxHeight: panel.height }
+  return { top: beside, left, maxHeight: height, maxWidth: width }
 }

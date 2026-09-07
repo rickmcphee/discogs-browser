@@ -8,13 +8,7 @@ import SourceFilter from '../components/SourceFilter'
 import StockStats from '../components/StockStats'
 import StockFilter from '../components/StockFilter'
 import { formatPrice } from './formatPrice'
-import {
-  placeReasonPopover,
-  REASON_POPOVER_EDGE,
-  REASON_POPOVER_MAX_HEIGHT,
-  type Insets,
-  type Placement,
-} from './reasonPopoverPosition'
+import { placeReasonPopover, type Insets, type Placement } from './reasonPopoverPosition'
 import { useIsMobile } from '../hooks/useMediaQuery'
 import { ArtistSidebar, ArtistSheetButton } from '../components/ArtistFilter'
 import MobileSort, { type SortOption } from '../components/MobileSort'
@@ -174,10 +168,9 @@ function ReasonPopover({ item, anchor, onClose }: { item: StockItem; anchor: HTM
       // the difference between the box and the client area is the border it
       // leaves out.
       const box = panel.getBoundingClientRect()
-      const wanted = panel.scrollHeight + (box.height - panel.clientHeight)
       setPos(placeReasonPopover(rect, {
         width: box.width,
-        height: Math.min(wanted, REASON_POPOVER_MAX_HEIGHT, viewport.height - 2 * REASON_POPOVER_EDGE),
+        height: panel.scrollHeight + (box.height - panel.clientHeight),
       }, viewport))
     }
     place()
@@ -268,9 +261,10 @@ function ReasonPopover({ item, anchor, onClose }: { item: StockItem; anchor: HTM
         top: pos?.top ?? 0,
         left: pos?.left ?? 0,
         maxHeight: pos?.maxHeight,
+        maxWidth: pos?.maxWidth,
         visibility: pos ? 'visible' : 'hidden',
       }}
-      className="fixed z-50 w-64 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 shadow-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80"
+      className="fixed z-50 w-64 overflow-y-auto rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 shadow-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80"
     >
       {/* A reason only exists on a judged item, so the polarity is never
           unknown here -- and it has to be said, since an item can be judged

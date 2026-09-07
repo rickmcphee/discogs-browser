@@ -528,10 +528,10 @@ describe('StockBrowser', () => {
     expect(info.nextElementSibling).toBe(popover)
   })
 
-  it('takes its height from the placement and its width from the viewport', async () => {
-    // The height is the placement's to give -- it is the only thing that knows
-    // what room the icon leaves -- so the panel carries no height class to go
-    // stale against a resize.
+  it('takes both of its caps from the placement, not from a class', async () => {
+    // The placement is the only thing that knows what room the icon leaves and
+    // what the safe screen is, so it decides the size; a class beside it could
+    // only contradict the bounds it enforces.
     getStock.mockResolvedValue(judged(true))
     render(<StockBrowser recommendedAvailable />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
@@ -539,8 +539,9 @@ describe('StockBrowser', () => {
 
     const popover = screen.getByRole("note") as HTMLElement
     expect(popover.className).not.toContain('max-h-')
+    expect(popover.className).not.toContain('max-w-')
     expect(popover.style.maxHeight).not.toBe('')
-    expect(popover.className).toContain('max-w-[calc(100vw-1rem)]')
+    expect(popover.style.maxWidth).not.toBe('')
   })
 
   it('returns focus to the icon when Escape closes a popover being read', async () => {

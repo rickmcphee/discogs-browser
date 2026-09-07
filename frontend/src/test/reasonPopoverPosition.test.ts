@@ -17,6 +17,10 @@ function anchorAt(left: number, top: number, size = 24) {
 }
 
 describe('placeReasonPopover', () => {
+  // A panel at its full height, which is where the short-viewport cases bite.
+  const TALL = { width: 256, height: 256 }
+
+
   it('sits to the left of the icon, one gap away', () => {
     const anchor = anchorAt(1200, 400)
     const { left } = placeReasonPopover(anchor, PANEL, VIEWPORT)
@@ -106,9 +110,6 @@ describe('placeReasonPopover', () => {
     expect(top + PANEL.height).toBeLessThanOrEqual(VIEWPORT.height)
   })
 
-  // A panel at its full CSS cap, which is where the short-viewport cases bite.
-  const TALL = { width: 256, height: 256 }
-
   it('shortens the panel rather than covering the icon in a short viewport', () => {
     // A landscape phone, or any viewport at high zoom: this panel fits on
     // neither side of the icon and neither above nor below it. Clamping it
@@ -141,8 +142,12 @@ describe('placeReasonPopover', () => {
     // A viewport barely taller than the icon: a readable panel over it beats
     // an unreadable one beside it, and Escape still dismisses.
     const viewport = { width: 320, height: 44 + 2 * REASON_POPOVER_MIN_HEIGHT - 4 }
-    const { maxHeight } = placeReasonPopover(anchorAt(220, 78, 44), TALL, viewport)
-    expect(maxHeight).toBe(TALL.height)
+    const anchor = anchorAt(220, 78, 44)
+    const { maxHeight } = placeReasonPopover(anchor, TALL, viewport)
+    // The viewport's own cap, not the room on either side of the icon: it
+    // declined to shorten itself into one of those.
+    expect(maxHeight).toBe(viewport.height - 2 * REASON_POPOVER_EDGE)
+    expect(maxHeight).toBeGreaterThan(anchor.top - REASON_POPOVER_GAP - REASON_POPOVER_EDGE)
   })
 
   it('keeps clear of the safe-area insets a notched screen reserves', () => {
@@ -160,6 +165,30 @@ describe('placeReasonPopover', () => {
     expect(far.left + PANEL.width).toBeLessThanOrEqual(viewport.width - insets.right)
   })
 
+  it('caps a beside panel to the room between the insets, not the raw viewport', () => {
+    // Capping height against the raw viewport lets through a panel taller than
+    // the room between the insets, and then every bound crosses its own start
+    // and the panel ends up under the home indicator.
+    const insets = { top: 0, right: 0, bottom: 21, left: 0 }
+    const viewport = { width: 800, height: 260, insets }
+    const { top, maxHeight } = placeReasonPopover(anchorAt(700, 120, 44), TALL, viewport)
+    expect(maxHeight).toBeLessThanOrEqual(
+      viewport.height - insets.top - insets.bottom - 2 * REASON_POPOVER_EDGE,
+    )
+    expect(top + maxHeight).toBeLessThanOrEqual(viewport.height - insets.bottom)
+  })
+
+  it('caps the width to the room between the horizontal insets', () => {
+    const insets = { top: 0, right: 44, bottom: 0, left: 44 }
+    const viewport = { width: 320, height: 700, insets }
+    const { left, maxWidth } = placeReasonPopover(anchorAt(200, 300, 44), PANEL, viewport)
+    expect(maxWidth).toBeLessThanOrEqual(
+      viewport.width - insets.left - insets.right - 2 * REASON_POPOVER_EDGE,
+    )
+    expect(left).toBeGreaterThanOrEqual(insets.left + REASON_POPOVER_EDGE)
+    expect(left + maxWidth).toBeLessThanOrEqual(viewport.width - insets.right)
+  })
+
   it('keeps a stacked panel out of the bottom inset', () => {
     const insets = { top: 0, right: 0, bottom: 34, left: 0 }
     const viewport = { width: 375, height: 500, insets }
@@ -168,9 +197,10 @@ describe('placeReasonPopover', () => {
     expect(top + maxHeight).toBeLessThanOrEqual(viewport.height - insets.bottom - REASON_POPOVER_EDGE)
   })
 
-  it('prefers the top edge when the panel is taller than the viewport', () => {
-    const tall = { width: 256, height: 900 }
-    const { top } = placeReasonPopover(anchorAt(1200, 400), tall, VIEWPORT)
-    expect(top).toBe(REASON_POPOVER_EDGE)
+  it('cuts a panel that asks for more height than the viewport has', () => {
+    const { top, maxHeight } = placeReasonPopover(anchorAt(1200, 400), { width: 256, height: 900 }, VIEWPORT)
+    expect(maxHeight).toBeLessThanOrEqual(VIEWPORT.height - 2 * REASON_POPOVER_EDGE)
+    expect(top).toBeGreaterThanOrEqual(REASON_POPOVER_EDGE)
+    expect(top + maxHeight).toBeLessThanOrEqual(VIEWPORT.height)
   })
 })
