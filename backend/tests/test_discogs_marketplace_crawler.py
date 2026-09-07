@@ -499,6 +499,47 @@ async def test_a_block_page_that_never_showed_a_challenge_cannot_answer_empty(
         await Crawler().search(RELEASE, page)
 
 
+async def test_rows_whose_prices_will_not_parse_are_breakage_not_an_empty_shelf(
+    browser_page, monkeypatch
+):
+    """`_read_listings()` yields nothing both when a page has no listing rows
+    and when it has rows whose prices it cannot read, and only the second is
+    breakage. A price shape this crawler no longer reads, on a filtered page
+    whose unfiltered counterpart still parses, would otherwise be reported as
+    "nothing ships from the USA" -- clearing the release's stored price and
+    hiding the change that caused it.
+    """
+    async def _stats(release_id):
+        return 20
+
+    monkeypatch.setattr(dm, "_release_num_for_sale", _stats)
+    page = _FakePage(
+        browser_page,
+        ["rows_with_unreadable_prices.html", "usa_listings.html",
+         "rows_with_unreadable_prices.html"],
+    )
+
+    with pytest.raises(RuntimeError, match="price shape this crawler no longer reads"):
+        await Crawler().search(RELEASE, page)
+
+
+async def test_a_page_with_no_listing_rows_at_all_is_still_an_empty_shelf(
+    browser_page, monkeypatch
+):
+    """The other side of that distinction, so the new signal cannot quietly
+    turn every confirmed miss into a raise."""
+    async def _stats(release_id):
+        return 20
+
+    monkeypatch.setattr(dm, "_release_num_for_sale", _stats)
+    page = _FakePage(
+        browser_page,
+        ["unrecognised_empty_state.html", "usa_listings.html", "unrecognised_empty_state.html"],
+    )
+
+    assert await Crawler().search(RELEASE, page) == []
+
+
 async def test_unreadable_page_raises_when_the_stats_api_will_not_answer(browser_page, monkeypatch):
     async def _stats(release_id):
         return None
