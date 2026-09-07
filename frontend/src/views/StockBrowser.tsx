@@ -103,16 +103,6 @@ function ReasonPopover({ item, anchor, onClose }: { item: StockItem; anchor: HTM
   const panelRef = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null)
 
-  // The anchor can go out from under the popover: a breakpoint or view-mode
-  // switch rebuilds the row in a different tree, leaving the node this was
-  // measured against detached. A detached node reports a zero rect, which the
-  // next scroll would turn into a jump to the viewport corner. Unconditional,
-  // because nothing about this component's own props changes when it happens,
-  // and before paint, so the stale position is never shown.
-  useLayoutEffect(() => {
-    if (!anchor.isConnected) onClose()
-  })
-
   // Measured after render and before paint, so the panel never shows at the
   // origin first. Its own width and height are inputs to the placement, which
   // is why this cannot be a static class.
@@ -120,11 +110,18 @@ function ReasonPopover({ item, anchor, onClose }: { item: StockItem; anchor: HTM
     function place() {
       const panel = panelRef.current
       if (!panel || !anchor.isConnected) return
-      const box = panel.getBoundingClientRect()
-      setPos(placeReasonPopover(anchor.getBoundingClientRect(), box, {
-        width: window.innerWidth,
-        height: window.innerHeight,
-      }))
+      const viewport = { width: window.innerWidth, height: window.innerHeight }
+      const rect = anchor.getBoundingClientRect()
+      // Scrolled out of sight entirely: the panel names no record, so leaving
+      // it clamped into view beside unrelated rows would say nothing about
+      // which row it came from. Strictly outside, so the all-zero rect a
+      // detached or unlaid-out element reports is not read as off-screen --
+      // an anchor flush against an edge is still an anchor.
+      if (rect.bottom < 0 || rect.top > viewport.height || rect.right < 0 || rect.left > viewport.width) {
+        onClose()
+        return
+      }
+      setPos(placeReasonPopover(rect, panel.getBoundingClientRect(), viewport))
     }
     place()
     // Capturing, so the table's own overflow container counts: the panel is
@@ -136,14 +133,23 @@ function ReasonPopover({ item, anchor, onClose }: { item: StockItem; anchor: HTM
       window.removeEventListener('scroll', place, true)
       window.removeEventListener('resize', place)
     }
-  }, [anchor, item])
+  }, [anchor, item, onClose])
+
+  // Focus is handed back on unmount rather than in any one dismissal path:
+  // Escape, the icon's second click, a press outside and a refetch all remove
+  // the panel, and only the first of those would otherwise restore it. The
+  // flag rather than a live activeElement read because focus has usually moved
+  // on by the time the cleanup runs -- and where it moved to the icon by
+  // itself (every browser but Safari, on the click path) the blur clears it,
+  // so this never steals focus back from somewhere it belongs.
+  const hadFocus = useRef(false)
+  useEffect(() => () => {
+    if (hadFocus.current && anchor.isConnected) anchor.focus()
+  }, [anchor])
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (e.key !== 'Escape') return
-      // Escape pressed while reading a long reason would otherwise leave focus
-      // on the body when the panel goes.
-      if (panelRef.current?.contains(document.activeElement)) anchor.focus()
       onClose()
     }
     // Pointer-down, and never on the anchor: a press on the icon is the
@@ -170,6 +176,8 @@ function ReasonPopover({ item, anchor, onClose }: { item: StockItem; anchor: HTM
     <div
       ref={panelRef}
       id={REASON_PANEL_ID}
+      onFocus={() => { hadFocus.current = true }}
+      onBlur={() => { hadFocus.current = false }}
       // `note` rather than `tooltip`: an ARIA tooltip is a non-focusable
       // description shown on hover or focus, and this is a click-controlled
       // panel that deliberately takes a tab stop -- a focusable tooltip is a
@@ -275,6 +283,15 @@ function StockBrowser({
     setPrevViewMode(viewMode)
     setPage(1)
   }
+
+  // A refetch that drops the row unmounts its popover, which cannot then clear
+  // this state itself -- and a row that came back would find it still set and
+  // reopen unbidden. Adjusted during render, like the two resets above, since
+  // the render that drops the row changes none of this component's own inputs
+  // and so would not re-run a dependency-listed effect. Covers the view-mode
+  // switch too: there the popover stays mounted, but the node it was measured
+  // against does not.
+  if (reason && !reason.anchor.isConnected) setReason(null)
 
   // isLatest gates the commit rather than the request: reconciliation can clear
   // or re-case the selection while a request started under the old one is still
@@ -397,6 +414,8 @@ function StockBrowser({
   }
 
   const closeReason = useCallback(() => setReason(null), [])
+
+
 
   // The icon is the whole control: a second click on the one already showing
   // closes it, and a click on another row's swaps to that one. Compared by

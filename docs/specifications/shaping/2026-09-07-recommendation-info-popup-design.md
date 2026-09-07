@@ -162,20 +162,35 @@ icon.**
   of. It takes that tab stop for one reason — the reason can outrun the
   panel, and Safari will not hand a scroll container to the keyboard on its
   own — which is also why it renders as the icon's sibling, so Tab from the
-  icon reaches it. Escape returns focus to the icon when it was inside the
-  panel. That is the whole of the focus handling: no trap, no restoration on
-  every close, no backdrop. The panel carries no `aria-label`: it is the
+  icon reaches it. Focus is handed back to the icon on unmount when the panel
+  had it — on unmount rather than in one dismissal path, because Escape, the
+  icon's second click, a press outside and a refetch all remove the panel and
+  only the first would otherwise restore it, and because Safari does not focus
+  the icon on the click that closes it. A flag set on the panel's own
+  focus/blur rather than a live `activeElement` read: focus has usually moved
+  on by cleanup time, and where the browser moved it to the icon itself the
+  blur clears the flag, so this never takes focus back from where it belongs.
+  That is the whole of the focus handling: no trap, no restoration when the
+  panel never had focus, no backdrop. The panel carries no `aria-label`: it is the
   `aria-describedby` target, and per accname a name on it would win the text
   alternative outright — the icon would describe itself as "Recommendation
   details" rather than reading out the justification, which is the whole
   point of the reference.
-- **It closes when its icon goes away.** A view-mode or breakpoint switch
-  rebuilds the row in a different tree, leaving the node the panel was
-  measured against detached — and a detached node reports a zero rect, which
-  the next scroll would turn into a jump to the viewport corner. The check
-  runs on every render and before paint, so the stale position is never
-  shown. A refetch that drops the row needs nothing extra: the popover is
-  rendered beside its icon, so it goes with it.
+- **It closes when its icon goes away, or leaves the screen.** A view-mode or
+  breakpoint switch rebuilds the row in a different tree, leaving the node the
+  panel was measured against detached, and a detached node reports a zero rect
+  the next scroll would turn into a jump to the viewport corner. A refetch
+  that drops the row is worse than it looks: the popover unmounts with its
+  icon and so cannot clear the state itself, and a row that came back would
+  find that state still set and reopen unbidden. Both are handled in the
+  parent, adjusting state during render the way the view-mode and
+  hidden-crawler resets above it already do — the render that drops a row
+  changes none of `StockBrowser`'s own inputs, so a dependency-listed effect
+  would not run, and an effect without a list is the same thing with an extra
+  pass and a lint warning. Scrolling the row out of sight closes it too: the
+  panel names no record, so clamped into view beside unrelated rows it would
+  say nothing about where it came from. Strictly outside, so the all-zero rect
+  an unlaid-out element reports is not mistaken for off-screen.
 - **Dismissal listens for touch as well as mouse.** A tap emits `mousedown`
   only as a compatibility event, and a touch scroll emits none at all, so a
   mouse-only listener would leave the popover open on a phone. Both events,
@@ -243,7 +258,11 @@ icon.**
 - A view-mode switch closes it, asserted through the icon's `aria-expanded`
   rather than the panel's absence: an unplaced panel is hidden, and a role
   query cannot tell that from closed.
-- A refetch that drops the row closes it.
+- A refetch that drops the row closes it *and* leaves it closed when the row
+  returns — absence while the list is empty proves nothing on its own.
+- Scrolling the row out of sight closes it.
+- Closing a focused panel by clicking its icon returns focus to that icon,
+  not just closing by Escape.
 - It does not name the record, on a comparison row carrying a
   `listing_title` least of all.
 - A long reason scrolls inside it rather than growing it.
@@ -256,10 +275,11 @@ gap to the icon's left and centred on it; flips right when the left cannot
 hold it and the right can; stacks below — clear of the icon's own band — on a
 narrow screen where neither side fits, and above when below is short; still
 sits beside an icon that has room, however narrow the screen; stays on screen
-for an anchor scrolled past any of the four viewport edges, since the
-containers scroll in both axes and room beside an off-screen icon is not room
-on screen; and is clamped at the top and bottom for a row at either edge of
-the viewport, including a panel taller than the viewport itself.
+for an icon straddling any of the four viewport edges, since the containers
+scroll in both axes and room beside a half-visible icon is not room on screen
+(an icon *entirely* off screen never reaches the placement — the popover
+closes first); and is clamped at the top and bottom for a row at either edge
+of the viewport, including a panel taller than the viewport itself.
 
 `frontend/src/test/mobileLayout.test.tsx`:
 

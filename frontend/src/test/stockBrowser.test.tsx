@@ -583,7 +583,10 @@ describe('StockBrowser', () => {
     expect(screen.queryByRole("note")).toBeNull()
   })
 
-  it('closes the popover when a refetch drops the row it belongs to', async () => {
+  it('closes the popover when a refetch drops the row, and does not reopen it when the row comes back', async () => {
+    // The popover unmounts with its row, so it cannot clear the state itself
+    // -- and state left set would reopen it, unbidden, the moment the row
+    // returned. Absence while the list is empty proves nothing on its own.
     getStock.mockResolvedValue(judged(true))
     const { rerender } = render(<StockBrowser recommendedAvailable syncGeneration={1} />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
@@ -593,6 +596,47 @@ describe('StockBrowser', () => {
     getStock.mockResolvedValue({ total: 0, row_total: 0, page: 1, per_page: 250, items: [] })
     rerender(<StockBrowser recommendedAvailable syncGeneration={2} />)
     await waitFor(() => expect(screen.queryByRole("note")).toBeNull())
+
+    getStock.mockResolvedValue(judged(true))
+    rerender(<StockBrowser recommendedAvailable syncGeneration={3} />)
+    await waitFor(() => expect(screen.getByTitle('Recommendation details')).toBeTruthy())
+    expect(screen.queryByRole("note")).toBeNull()
+    expect(screen.getByTitle('Recommendation details').getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('closes the popover when its row is scrolled out of sight', async () => {
+    // Clamping an off-screen anchor into view would leave the panel beside
+    // unrelated rows, saying nothing about which row it came from -- it names
+    // no record.
+    getStock.mockResolvedValue(judged(true))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    const info = screen.getByTitle('Recommendation details')
+    fireEvent.click(info)
+    expect(screen.getByRole("note")).toBeTruthy()
+
+    info.getBoundingClientRect = () => ({
+      top: -80, bottom: -36, left: 1200, right: 1244, width: 44, height: 44, x: 1200, y: -80, toJSON: () => ({}),
+    })
+    fireEvent.scroll(document, {})
+    await waitFor(() => expect(info.getAttribute('aria-expanded')).toBe('false'))
+    expect(screen.queryByRole("note")).toBeNull()
+  })
+
+  it('hands focus back to the icon when the second click closes a focused popover', async () => {
+    // jsdom, like Safari, does not focus a button on click, so the closing
+    // click would otherwise drop focus on the body.
+    getStock.mockResolvedValue(judged(true))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    const info = screen.getByTitle('Recommendation details')
+    fireEvent.click(info)
+    screen.getByRole("note").focus()
+
+    fireEvent.mouseDown(info)
+    fireEvent.click(info)
+    expect(screen.queryByRole("note")).toBeNull()
+    expect(document.activeElement).toBe(info)
   })
 
   it('puts the info button immediately left of the save button in the row', async () => {
