@@ -293,64 +293,80 @@ class Crawler:
         # understood, which leaves the filter as the only thing that could
         # have emptied the first one. Not recognising it means the selectors
         # really have gone stale, and the complaint below stands.
-        recognised, outcome = await self._read_unfiltered(page, release_id)
-        worldwide = (
-            f"{num_for_sale} copies" if num_for_sale is not None
-            else "an unknown number of copies"
-        )
-        if recognised:
-            log.info(
-                "[Discogs] no USA-shipping listings for release %s (%s for sale "
-                "worldwide, and the unfiltered page parsed, so the ships_from "
-                "filter emptied this one rather than stale selectors)",
-                discogs_id, worldwide,
+        # Gated on the filtered response having been a clean one. A 4xx/5xx,
+        # or a `cf-mitigated` response whose title was not on the challenge
+        # list, rendered no listings for a reason that has nothing to do with
+        # the filter -- and letting a *later* request's success speak for it
+        # would turn a block page into "no USA sellers" and clear the stored
+        # price, the destructive direction this crawler exists to avoid. When
+        # the first response was not clean, the second read is not worth
+        # making: nothing it could say would be about the filter.
+        if (status is None or status < 400) and not mitigated:
+            if await self._unfiltered_page_parses(page, release_id):
+                log.info(
+                    "[Discogs] no USA-shipping listings for release %s (%s for sale "
+                    "worldwide, and the unfiltered page parsed, so the ships_from "
+                    "filter emptied this one rather than stale selectors)",
+                    discogs_id,
+                    f"{num_for_sale} copies" if num_for_sale is not None
+                    else "an unknown number of copies",
+                )
+                return []
+            unfiltered = "was unreadable too"
+        else:
+            unfiltered = (
+                "was not consulted, this response being too unclean for an empty "
+                "page to be attributable to the filter"
             )
-            return []
 
         raise RuntimeError(
             f"Discogs listings markup not recognised for release {discogs_id} "
             f"(HTTP {status}, cf-mitigated={mitigated}, page title {title!r}, "
             f"{num_for_sale if num_for_sale is not None else 'unknown'} "
             f"copies for sale per the marketplace API; reading the same release "
-            f"without the ships_from filter {outcome}, so an absence of USA "
+            f"without the ships_from filter {unfiltered}, so an absence of USA "
             f"sellers does not account for this) -- re-check the selectors in "
             f"{__name__} against {url}"
         )
 
-    async def _read_unfiltered(self, page, release_id: str):
-        """Whether the same release's unfiltered page still parses, and why not.
+    async def _unfiltered_page_parses(self, page, release_id: str) -> bool:
+        """Whether the same release's unfiltered page still parses.
 
-        Returns (recognised, outcome); `outcome` is a phrase for the caller's
-        error message, which is the only place an operator sees the two
-        failures told apart -- a restyle and a challenged second read both
-        leave the complaint standing, but only one of them means the
-        selectors need work.
-
-        Anything short of a recognised page is False, "could not tell" and
-        "could not read" alike: raising costs a crawl, while a wrong empty
-        result clears a price the crawler had already found.
+        False means one thing only -- the page rendered nothing this crawler
+        recognises -- so the caller can read it as "the selectors are stale"
+        rather than "something went wrong somewhere". A stall or an
+        interstitial is not folded in: both are re-raised in the shape the
+        first read gives them, because the pool keys its recovery on the
+        exception type. A Playwright timeout is what makes
+        `CrawlManager._process_claimed_rows` discard this crawler's browser
+        context, so a second navigation that stalls has to escape as one or
+        the dead socket pool is inherited by every job after it; and
+        `BotDetectedError` is what makes `_paced_search` reset the context
+        and retry, which a challenge on this read deserves exactly as much
+        as a challenge on the first. Laundering either into the caller's
+        markup complaint would spend the recovery and blame the selectors.
         """
         url = self.unfiltered_url(release_id)
         try:
             await page.goto(url, wait_until="commit", timeout=_NAVIGATION_TIMEOUT_MS)
         except PlaywrightTimeoutError:
             log.warning(
-                "[Discogs] no response from %s, so whether the ships_from filter "
-                "explains the empty page for release r%s is undecided",
-                url, release_id,
+                "[Discogs] no response from %s within %ds while checking whether the "
+                "ships_from filter explains the empty page for release r%s",
+                url, _NAVIGATION_TIMEOUT_MS // 1000, release_id,
             )
-            return False, "got no response at all"
+            raise
 
         title = await _await_settled_title(page)
         if any(c in title.lower() for c in _CHALLENGE_TITLES):
             log.warning(
                 "[Discogs] bot interstitial did not clear on the unfiltered page for "
-                "release r%s, so the empty filtered page stays unexplained", release_id,
+                "release r%s", release_id,
             )
-            return False, "hit a bot interstitial that never cleared"
+            raise BotDetectedError()
 
         _, recognised = await self._read_when_ready(page, url)
-        return recognised, "parsed" if recognised else "was unreadable too"
+        return recognised
 
     async def _read_when_ready(self, page, url: str):
         """Poll until a row actually parses or a visible empty state renders.

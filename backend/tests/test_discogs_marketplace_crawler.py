@@ -260,11 +260,14 @@ async def test_a_real_restyle_still_raises_because_neither_read_parses(browser_p
         await Crawler().search(RELEASE, page)
 
 
-async def test_an_interstitial_on_the_second_read_leaves_the_complaint_standing(browser_page, monkeypatch):
-    """An undecided check is not an empty result.
+async def test_an_interstitial_on_the_second_read_raises_bot_detected(browser_page, monkeypatch):
+    """The pool keys its recovery on the exception type.
 
-    Returning [] on a page that was never read would clear a stored price,
-    which is the exact regression this crawler was rewritten to stop.
+    `_paced_search()` resets the browser context and retries on
+    `BotDetectedError`; laundering a challenge on this read into the markup
+    complaint would spend that recovery and blame the selectors for an edge
+    that was merely challenging us. It cannot produce the destructive empty
+    result either way.
     """
     async def _stats(release_id):
         return 20
@@ -276,8 +279,70 @@ async def test_an_interstitial_on_the_second_read_leaves_the_complaint_standing(
         titles=(LISTED_TITLE, "Just a moment..."),
     )
 
-    with pytest.raises(RuntimeError, match="bot interstitial that never cleared"):
+    with pytest.raises(BotDetectedError):
         await Crawler().search(RELEASE, page)
+
+
+async def test_a_stalled_second_navigation_raises_the_playwright_timeout(browser_page, monkeypatch):
+    """`_process_claimed_rows` discards this crawler's context only for a
+    Playwright timeout, so a second navigation that stalls has to escape as
+    one -- otherwise the dead socket pool is inherited by every job after
+    it, which is the failure `_discard_context` was added to stop."""
+    async def _stats(release_id):
+        return 20
+
+    monkeypatch.setattr(dm, "_release_num_for_sale", _stats)
+    page = _FakePage(browser_page, ["unrecognised_empty_state.html", "usa_listings.html"])
+
+    real_goto = page.goto
+
+    async def _goto(url, wait_until=None, timeout=None):
+        if "ships_from" not in url:
+            raise PlaywrightTimeoutError("Timeout 30000ms exceeded")
+        return await real_goto(url, wait_until=wait_until, timeout=timeout)
+
+    page.goto = _goto
+
+    with pytest.raises(PlaywrightTimeoutError):
+        await Crawler().search(RELEASE, page)
+
+
+async def test_a_block_page_is_not_explained_away_by_a_readable_unfiltered_page(
+    browser_page, monkeypatch
+):
+    """A later request's success does not vouch for an earlier block.
+
+    A 4xx or a `cf-mitigated` response whose title missed the challenge list
+    rendered no listings for a reason unrelated to the filter, so reading
+    "no USA sellers" off the *second* request would turn a block into a
+    confirmed miss and clear the stored price -- with the unfiltered page
+    parsing perfectly, which is what makes this the destructive direction.
+    """
+    async def _stats(release_id):
+        return 20
+
+    monkeypatch.setattr(dm, "_release_num_for_sale", _stats)
+    page = _FakePage(browser_page, ["unrecognised_empty_state.html", "usa_listings.html"])
+    page.response = SimpleNamespace(status=403, headers={"cf-mitigated": "challenge"})
+
+    with pytest.raises(RuntimeError, match="HTTP 403, cf-mitigated=challenge"):
+        await Crawler().search(RELEASE, page)
+
+
+async def test_a_clean_response_is_required_before_the_filter_can_explain_an_empty_page(
+    browser_page, monkeypatch
+):
+    async def _stats(release_id):
+        return 20
+
+    monkeypatch.setattr(dm, "_release_num_for_sale", _stats)
+    page = _FakePage(browser_page, ["unrecognised_empty_state.html", "usa_listings.html"])
+    page.response = SimpleNamespace(status=503, headers={})
+
+    with pytest.raises(RuntimeError, match="was not consulted"):
+        await Crawler().search(RELEASE, page)
+
+    assert len(page.urls) == 1, "an unclean response should not spend a second page load"
 
 
 async def test_unreadable_page_raises_when_the_stats_api_will_not_answer(browser_page, monkeypatch):
