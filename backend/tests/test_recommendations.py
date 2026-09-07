@@ -218,10 +218,13 @@ def test_judge_batch_logs_usage(caplog):
     from recommendations import judge_batch
     client = _client_returning(json.dumps([{"n": 1, "recommended": False, "reason": None}]))
     with caplog.at_level(logging.INFO, logger="recommendations"):
-        judge_batch(client, [], _items("k1"))
+        judge_batch(client, [], _items("k1"), "alice")
 
     usage_logs = [rec.getMessage() for rec in caplog.records if "Batch usage" in rec.getMessage()]
     assert len(usage_logs) == 1
+    # Runs for different users interleave in one log stream, so an unattributed
+    # counter is not worth much.
+    assert "for alice" in usage_logs[0]
     assert "input=100" in usage_logs[0]
     assert "cache_write=200" in usage_logs[0]
     assert "cache_read=300" in usage_logs[0]
@@ -250,4 +253,38 @@ def test_judge_batch_reports_a_max_tokens_stop_as_itself(caplog):
     assert results == []
     messages = [rec.getMessage() for rec in caplog.records]
     assert any(str(MAX_TOKENS) in m and "cap" in m for m in messages)
-    assert not any("Judgment batch failed" in m for m in messages)
+    assert not any("failed" in m for m in messages)
+
+
+def test_build_batch_content_preserves_non_ascii_names():
+    """json.dumps defaults to ensure_ascii=True, which would expand accented and
+    non-Latin names into escape sequences -- more tokens than the characters
+    they replace, reversing this change's own saving on the catalog's
+    international half."""
+    from recommendations import build_batch_content
+    blocks = build_batch_content([], [{"item_key": "k1", "artist": "Björk", "title": "少年ナイフ"}])
+    assert "Björk" in blocks[1]["text"]
+    assert "少年ナイフ" in blocks[1]["text"]
+    assert "\\u" not in blocks[1]["text"]
+    assert _item_lines(blocks[1]) == [{"n": 1, "artist": "Björk", "title": "少年ナイフ"}]
+
+
+def test_judge_batch_names_the_run_in_the_truncation_warning(caplog):
+    from recommendations import judge_batch
+    client = _client_returning('[{"n": 1, "recommended": true', stop_reason="max_tokens")
+    with caplog.at_level(logging.INFO, logger="recommendations"):
+        judge_batch(client, [], _items("k1"), "alice")
+
+    assert any("for alice" in r.getMessage() and "cap" in r.getMessage() for r in caplog.records)
+
+
+def test_judge_batch_labels_the_run_without_a_caller_supplied_name(caplog):
+    """The default has to be legible too -- an unlabelled line in a shared
+    stream is the thing this guards against."""
+    from recommendations import judge_batch
+    client = _client_returning(json.dumps([{"n": 1, "recommended": False, "reason": None}]))
+    with caplog.at_level(logging.INFO, logger="recommendations"):
+        judge_batch(client, [], _items("k1"))
+
+    usage_logs = [r.getMessage() for r in caplog.records if "Batch usage" in r.getMessage()]
+    assert "for unknown user" in usage_logs[0]

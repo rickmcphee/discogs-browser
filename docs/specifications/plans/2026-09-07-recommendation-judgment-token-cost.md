@@ -1,6 +1,6 @@
 # Recommendation Judgment Token Cost Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: this repo's `CLAUDE.md` mandates `superpowers:subagent-driven-development` for every written implementation plan by default — do not offer `superpowers:executing-plans` as an equal alternative; only fall back to it if the user explicitly asks for inline/in-session execution instead. Steps use checkbox (`- [ ]`) syntax for tracking. (This plan was executed inline in the session that wrote it, which had no superpowers skills installed, with the later tasks shaped by review rounds on the pull request — recorded here as the historical task log the plans tree is for.)
 
 **Goal:** Stop paying to ship a SHA-256 digest to the model and back on every judged item, and make what a judgment run actually costs observable, so the prompt caching already in place can be verified rather than assumed.
 

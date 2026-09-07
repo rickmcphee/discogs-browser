@@ -21,8 +21,12 @@ def build_batch_content(taste_listing: list[str], batch: list[dict]) -> list[dic
     hex tokenizes badly enough that the round trip was a large share of a run's
     bill -- output bills well above input, so the echo was the expensive half."""
     taste_text = "\n".join(taste_listing) if taste_listing else "(empty — no collection or wishlist yet)"
+    # ensure_ascii=False, or this saving reverses itself on the catalog's
+    # international half: the default turns "Bjork" (with its umlaut) into a
+    # \uXXXX escape and a Japanese name into nothing but escapes, and those
+    # sequences tokenize far worse than the characters they replace.
     items_text = "\n".join(
-        json.dumps({"n": n, "artist": item["artist"], "title": item["title"]})
+        json.dumps({"n": n, "artist": item["artist"], "title": item["title"]}, ensure_ascii=False)
         for n, item in enumerate(batch, start=1)
     )
     return [
@@ -38,15 +42,21 @@ def build_batch_content(taste_listing: list[str], batch: list[dict]) -> list[dic
     ]
 
 
-def _log_usage(response):
+def _log_usage(response, label: str):
     """One line per batch naming what it cost. This is the only record of it --
     nothing else in the backend reads `response.usage` -- and it is what makes
     the caching above verifiable: past the first batch of a run,
     cache_read_input_tokens should dominate input_tokens, and
-    cache_creation_input_tokens should be one batch's worth, not every batch's."""
+    cache_creation_input_tokens should be one batch's worth, not every batch's.
+
+    `label` names whose run this was. Judgment runs are per-user and several
+    can be in flight at once (`CrawlManager._judgment_tasks`), each on that
+    user's own Anthropic key, so unlabelled counters interleave into a stream
+    nobody can attribute -- and attributing them is the whole point."""
     usage = getattr(response, "usage", None)
     log.info(
-        "Batch usage: input=%s cache_write=%s cache_read=%s output=%s",
+        "Batch usage for %s: input=%s cache_write=%s cache_read=%s output=%s",
+        label,
         getattr(usage, "input_tokens", None),
         getattr(usage, "cache_creation_input_tokens", None),
         getattr(usage, "cache_read_input_tokens", None),
@@ -89,7 +99,7 @@ def _resolve_entries(parsed, batch: list[dict]) -> list[dict]:
     return results
 
 
-def judge_batch(client, taste_listing: list[str], batch: list[dict]) -> list[dict]:
+def judge_batch(client, taste_listing: list[str], batch: list[dict], label: str = "unknown user") -> list[dict]:
     """One Claude call judging a batch of items. Returns [] on any failure —
     caller leaves those items unjudged for retry on the next sync."""
     try:
@@ -99,14 +109,14 @@ def judge_batch(client, taste_listing: list[str], batch: list[dict]) -> list[dic
             system=[{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": build_batch_content(taste_listing, batch)}],
         )
-        _log_usage(response)
+        _log_usage(response, label)
         # max_tokens is a ceiling the model never sees, so hitting it truncates
         # the array mid-entry and surfaces as an opaque JSON parse error. Name it.
         if getattr(response, "stop_reason", None) == "max_tokens":
             log.warning(
-                "Judgment batch hit the %d-token output cap and was truncated; "
+                "Judgment batch for %s hit the %d-token output cap and was truncated; "
                 "its %d items stay unjudged and retry on the next run",
-                MAX_TOKENS, len(batch),
+                label, MAX_TOKENS, len(batch),
             )
             return []
         text = response.content[0].text.strip()
@@ -114,5 +124,5 @@ def judge_batch(client, taste_listing: list[str], batch: list[dict]) -> list[dic
             text = "\n".join(line for line in text.splitlines() if not line.startswith("```")).strip()
         return _resolve_entries(json.loads(text), batch)
     except Exception as e:
-        log.error("Judgment batch failed: %s", e, exc_info=True)
+        log.error("Judgment batch for %s failed: %s", label, e, exc_info=True)
         return []

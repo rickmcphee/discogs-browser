@@ -86,11 +86,19 @@ everything downstream of it are unaffected.
 "title": ...}` and the model answers `[{"n": ..., "recommended": ...,
 "reason": ...}]`. `judge_batch` resolves `n` back to `batch[n - 1]["item_key"]`.
 
-Each item line is emitted with `json.dumps` rather than an f-string. The
-previous rendering interpolated `artist` and `title` straight into a
-JSON-shaped string with no escaping, so a title containing a double quote
-produced malformed JSON in the prompt. The line is being rewritten anyway;
-emitting it correctly costs nothing.
+Each item line is emitted with `json.dumps(..., ensure_ascii=False)` rather
+than an f-string. The previous rendering interpolated `artist` and `title`
+straight into a JSON-shaped string with no escaping, so a title containing a
+double quote produced malformed JSON in the prompt. The line is being
+rewritten anyway; emitting it correctly costs nothing.
+
+`ensure_ascii=False` is load-bearing rather than cosmetic, and the default
+would have quietly undone this change's own saving on part of the catalog: it
+escapes every non-ASCII character to `\uXXXX`, so an accented name grows and a
+name in a non-Latin script becomes nothing but escapes — more tokens than the
+characters they replace, and a less natural name for the model to reason
+about. The catalog is international enough for this to matter; `db`'s own
+title-casing helper already carries a note about accented names.
 
 ### Validation the index makes possible
 
@@ -121,6 +129,16 @@ makes every other claim in this document checkable on real traffic: on a
 warmed run past the first batch, `cache_read_input_tokens` should dominate
 `input_tokens`, and `cache_creation_input_tokens` should be one batch's worth
 rather than every batch's.
+
+The line has to name *whose* run it was, so `judge_batch` takes the caller's
+username as a `label`. Judgment runs are per-user and several can be in flight
+at once (`CrawlManager._judgment_tasks` is keyed by user), each spending that
+user's own Anthropic key, and each batch runs through `asyncio.to_thread` — so
+unlabelled counters interleave into a stream nobody can attribute back to a
+user or a key. Attribution is the entire point of logging them, so an
+unattributed counter would not have delivered it. The parameter defaults to a
+placeholder rather than being required, because a default that reads as
+unlabelled in the log is the failure this guards against.
 
 ### `max_tokens` reported as itself
 
@@ -180,7 +198,13 @@ during a stock sync pays to judge items about to be deleted and reinserted.
   rather than mis-assigned.
 - An item whose artist or title contains a double quote renders as valid
   JSON.
+- An accented name and a name in a non-Latin script survive into the prompt
+  as themselves, with no `\uXXXX` escape anywhere in the items block.
 - `response.usage` is logged; a response without a `usage` attribute does not
   raise.
+- The usage line and the truncation warning both name the run, and the
+  unlabelled default is legible rather than blank.
+- `_run_judgment_phase` passes the calling user's username down to
+  `judge_batch` for every batch.
 - `stop_reason == "max_tokens"` returns `[]` and logs a warning naming the
   cap, without a JSON parse error.
