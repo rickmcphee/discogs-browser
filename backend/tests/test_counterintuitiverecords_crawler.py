@@ -270,11 +270,54 @@ async def test_hyphenated_word_in_artist_is_not_a_split_point(crawler):
 
 
 @respx.mock
-async def test_split_release_keeps_full_billing_from_title_not_vendor(crawler):
+async def test_split_release_is_credited_to_the_first_billed_artist(crawler):
+    # `discogs.parse_release` stores `artists[0]` and nothing else, and
+    # `db._library_release_match_sql` compares artists with exact case-folded
+    # equality, so a joined billing could never match a library release.
     _mock_walk([_SPLIT_PRODUCT])
     items = await _run(crawler)
-    assert items[0]["artist"] == "Mom Jeans / Grad Life"
+    assert items[0]["artist"] == "Mom Jeans"
     assert items[0]["title"] == "Split — Half Blue/Half Yellow /500"
+
+
+@respx.mock
+async def test_three_way_split_keeps_the_stores_spelling_of_the_first_artist(crawler):
+    # CAPTURED (trimmed): the billing says "Mom Jeans." with the trailing
+    # period the band uses; `vendor` says "Mom Jeans". Reducing the billing
+    # rather than reading `vendor` keeps the spelling likelier to be the
+    # Discogs entity name.
+    product = {**_SPLIT_PRODUCT,
+               "title": 'Mom Jeans. / Prince Daddy / Pictures of Vernon - NOW That\'s What I Call Music Vol. 420 10" (3RD PRESS)',
+               "vendor": "Mom Jeans",
+               "handle": "now-thats-what-i-call-music-vol-420"}
+    _mock_walk([product])
+    items = await _run(crawler)
+    assert items[0]["artist"] == "Mom Jeans."
+    assert items[0]["title"].startswith('NOW That\'s What I Call Music Vol. 420 10" (3RD PRESS) — ')
+
+
+@respx.mock
+async def test_a_slash_inside_an_artist_name_is_not_a_billing_separator(crawler):
+    # INVENTED: the shape the reduction exists to survive. A bare slash split
+    # would clip this to "AC" — the same bug class as the hyphen rule above,
+    # guarded the same way.
+    product = {**_SPLIT_PRODUCT, "title": "AC/DC - Back In Black", "vendor": "AC/DC"}
+    _mock_walk([product])
+    items = await _run(crawler)
+    assert items[0]["artist"] == "AC/DC"
+    assert items[0]["title"].startswith("Back In Black — ")
+
+
+@respx.mock
+async def test_a_slash_in_the_album_is_untouched(crawler):
+    # CAPTURED (trimmed): live albums whose own titles carry a slash. The
+    # reduction reads the artist segment only, so these are unaffected.
+    product = {**_SPLIT_PRODUCT, "title": "Weakened Friends - Crushed / Gloomy Tunes",
+               "vendor": "Weakened Friends"}
+    _mock_walk([product])
+    items = await _run(crawler)
+    assert items[0]["artist"] == "Weakened Friends"
+    assert items[0]["title"] == "Crushed / Gloomy Tunes — Half Blue/Half Yellow /500"
 
 
 @respx.mock
@@ -610,6 +653,16 @@ async def test_raises_when_nothing_yielded_and_a_record_has_no_handle(crawler):
     product = {**_DISTRO_PRODUCT, "handle": ""}
     _mock_walk([product])
     with pytest.raises(RuntimeError, match="identity-source drift"):
+        await _run(crawler)
+
+
+@respx.mock
+async def test_identity_guard_names_the_title_too_not_only_the_handle(crawler):
+    # A blank title still reaches the identity tally when `vendor` supplies
+    # the artist, so the guard must not point operators at the handle alone.
+    product = {**_DISTRO_PRODUCT, "title": "", "vendor": "The Hotelier"}
+    _mock_walk([product])
+    with pytest.raises(RuntimeError, match="carry no title or no handle -- identity-source drift"):
         await _run(crawler)
 
 

@@ -17,7 +17,8 @@
 - **The `product_type` gate enumerates `Vinyl`, `Distro Vinyl` and `Vinyl/CD` positively**, so a type the store adds later stays out by default. The `cf-type-*` tags are not a fallback — they are derived from `product_type` and would drift with it.
 - **The variant gate is negative and its check order is load-bearing:** vinyl word, then inch marker, then another-medium rejection, then admit. Medium-first drops the live `AB Dark Blue / CD Light Blue 2xLP`.
 - **The medium rejection matches on word boundaries, not an anchored exact string** — the store names cassettes by colour (`Pink Tape`, `Yellow Cassette`).
-- **The artist comes from the title's dash split, using `\s+-\s*|\s*-\s+`, with `vendor` only as a fallback.** Vendor-first would drop a band from each of the store's two splits.
+- **The artist comes from the title's dash split, using `\s+-\s*|\s*-\s+`, with `vendor` only as a fallback.**
+- **A split's billing is reduced to the first-billed artist**, because `discogs.parse_release` stores `artists[0]` and `db._library_release_match_sql` compares artists with exact equality — a joined billing can never match a library release. The slash requires whitespace on at least one side, so `AC/DC` is not clipped; the reduction reads the artist segment only, so a slash in the album is untouched.
 - **The row's title is `album + " — " + variant`**, whitespace-collapsed, with the variant appended on every row that names one so `compute_item_key` stays stable.
 - **The `Default Title` placeholder carries the album alone, and only as a product's sole variant.**
 - **Availability comes from `variant.available` and only the literal `True` admits a row; no pre-order bypass, and no marker is written** — the store's pre-order tag is dated, so a marker driven off it would re-key the row when the record shipped.
@@ -57,6 +58,7 @@ cd backend && TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/di
 - [x] **Step 6: Mutation-check that each guard and rule bites** — mutate the crawler once per guard or rule and confirm the tests fail. Every mutation was caught.
 - [x] **Step 7: Run the wider crawler test selection for regressions** (`pytest tests/ -k crawler` with the three test env vars set — the plugin loader imports every module in `backend/crawlers/`, so a syntax error in the new file breaks unrelated tests). Confirmed the one failure and the Playwright-binary errors in that selection are pre-existing, by re-running it with the two new files removed.
 - [x] **Step 8: Commit** via `git commit -F`, with trailers.
+- [x] **Step 9: Address Copilot's PR review** — reduce a split's billing to the first-billed artist (a real matchability bug, verified against `discogs.parse_release` and `db._library_release_match_sql`), and name the title as well as the handle in the identity guard's message. Both re-tested, re-replayed over the cached catalog, and mutation-checked.
 
 ---
 

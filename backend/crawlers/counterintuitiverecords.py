@@ -27,6 +27,18 @@ _VINYL_PRODUCT_TYPES = frozenset({"vinyl", "distro vinyl", "vinyl/cd"})
 # billing hyphen happens to come first; a title whose artist carried the
 # hyphen would not.
 _TITLE_RE = re.compile(r'^(?P<artist>.+?)(?:\s+-\s*|\s*-\s+)(?P<album>.+)$')
+# A split's billing names every band on the record, but a stock row's artist
+# has to be the *first-billed* one to be matchable: `discogs.parse_release`
+# stores `artists[0]` and nothing else, and `db._library_release_match_sql`
+# compares artists with exact case-folded equality (only the title gets the
+# exact-or-prefix treatment). So a joined billing can never match a library
+# release, and both of this store's splits would sit permanently outside the
+# Store tab's Collection and Wantlist filters.
+#
+# Whitespace required on at least one side of the slash, the same bug class
+# as the hyphen above and guarded the same way: an artist whose own name
+# contains a slash (AC/DC) must not be clipped to its first half.
+_BILLING_SPLIT_RE = re.compile(r'(?:\s+/\s*|\s*/\s+)')
 # Shopify's placeholder for a product with exactly one variant. It names no
 # pressing, so a row built on it carries the album title alone -- and only
 # when it IS the product's sole variant: on a multi-variant product the
@@ -141,15 +153,18 @@ class Crawler:
                 f"none of the {yielded} rows from the {_COLLECTION_SLUG} collection carries a price "
                 "-- price-source drift")
         if not yielded and identity_missing:
-            # `handle` is identity, not display: item_key hashes the row's
-            # URL, so a product missing it is skipped rather than emitted
-            # under a fresh identity that would orphan the judgments and
-            # saves keyed on its old one. Skipped rows leave the walk looking
-            # sold out, which is why the same empty-outcome gate as the stock
-            # guard below applies.
+            # Title and handle are identity, not display: item_key hashes the
+            # row's title and URL, so a product missing either is skipped
+            # rather than emitted under a fresh identity that would orphan the
+            # judgments and saves keyed on its old one. Both are named because
+            # `_has_identity` reads both -- a blank title still reaches this
+            # tally when `vendor` supplied the artist, and naming only the
+            # handle would point at the wrong field. Skipped rows leave the
+            # walk looking sold out, which is why the same empty-outcome gate
+            # as the stock guard below applies.
             raise RuntimeError(
                 f"{_COLLECTION_SLUG} collection yielded no rows while {identity_missing} vinyl "
-                "product(s) carry no handle -- identity-source drift")
+                "product(s) carry no title or no handle -- identity-source drift")
         if not yielded and unreadable_stock:
             # An empty result is only trustworthy when every product that
             # could have yielded a row was readable and simply out of stock.
@@ -207,19 +222,23 @@ class Crawler:
     def _is_vinyl_product(product: dict) -> bool:
         return (product.get("product_type") or "").strip().lower() in _VINYL_PRODUCT_TYPES
 
-    @staticmethod
-    def _artist_album(product: dict) -> Tuple[str, str]:
+    @classmethod
+    def _artist_album(cls, product: dict) -> Tuple[str, str]:
         """Split `Artist - Album` out of the product title, falling back to `vendor`.
 
-        The title split wins wherever it parses. `vendor` is the artist's own
-        name on all but one live vinyl product -- unlike the sibling Shopify
-        label stores, where it is the label repeated on every row -- but it is
-        only ever the *primary* artist: the store's two splits are billed
-        fully in the title ("Mom Jeans / Grad Life") and carry one of the
-        bands in `vendor`, so a vendor-first rule would drop the other. The
-        fallback covers the store's own label compilation, whose title
-        ("Counter Intuitive Presents: ...") names no artist and whose vendor
-        is the label that released it.
+        The title split wins wherever it parses, reduced to the first-billed
+        artist so the row can match a library release (see
+        `_BILLING_SPLIT_RE`). Reducing the billing rather than reading
+        `vendor` keeps the store's own spelling of that artist, which is what
+        the Discogs entity name is likelier to be: on the store's three-way
+        split the billing says "Mom Jeans." and `vendor` says "Mom Jeans".
+
+        `vendor` is the fallback. It is the artist's own name on all but one
+        live vinyl product -- unlike the sibling Shopify label stores, where
+        it is the label repeated on every row -- and the one exception is the
+        store's own label compilation, whose title ("Counter Intuitive
+        Presents: ...") names no artist and whose vendor is the label that
+        released it.
         """
         title = " ".join((product.get("title") or "").split())
         m = _TITLE_RE.match(title)
@@ -227,8 +246,13 @@ class Crawler:
             artist = m.group("artist").strip()
             album = m.group("album").strip()
             if artist and album:
-                return artist, album
+                return cls._primary_artist(artist), album
         return " ".join((product.get("vendor") or "").split()), title
+
+    @staticmethod
+    def _primary_artist(billing: str) -> str:
+        """Reduce a multi-artist split billing to the artist billed first."""
+        return _BILLING_SPLIT_RE.split(billing, 1)[0].strip() or billing
 
     @classmethod
     def _vinyl_variants(cls, product: dict) -> list:

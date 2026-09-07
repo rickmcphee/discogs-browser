@@ -152,20 +152,42 @@ hesitation towards it`, and while that one survives a naive split by luck —
 the billing hyphen happens to come first — a title whose *artist* carried a
 hyphen would not.
 
+**A split's billing is then reduced to the first-billed artist.** This was
+found by Copilot's review of the PR and is a real matchability bug, verified
+against the code: `discogs.parse_release()` stores `info["artists"][0]["name"]`
+and nothing else, so a library release's `catalog.artist` is only ever its
+*first-billed* artist; and `_library_release_match_sql()` compares artists
+with **exact** case-folded equality — only the title gets the
+exact-or-prefix-with-space treatment. A joined billing therefore can never
+match a library release, and the store's two splits would have sat
+permanently outside the Store tab's Collection and Wantlist filters:
+
+| Title billing | Row artist | `vendor` |
+| --- | --- | --- |
+| `Mom Jeans / Grad Life` | `Mom Jeans` | `Mom Jeans` |
+| `Mom Jeans. / Prince Daddy / Pictures of Vernon` | `Mom Jeans.` | `Mom Jeans` |
+
+The reduction reads the **billing**, not `vendor`, though `vendor` carries
+the same signal and was what the review suggested. Reducing the billing
+keeps the store's own spelling of that artist, which is the likelier match
+for the Discogs entity name: on the three-way split the billing says
+`Mom Jeans.`, with the trailing period the band uses, where `vendor` says
+`Mom Jeans`. It also needs no second source, so it still works on a product
+whose `vendor` is empty.
+
+The slash needs whitespace on at least one side, for the same reason the
+hyphen does and guarded the same way: an artist whose own name contains a
+slash (`AC/DC`) must not be clipped to its first half. The reduction reads
+the artist segment only, so the three live albums whose own titles carry a
+slash (`Crushed / Gloomy Tunes`, `re: turn / DEPART`, `Play Around the Crit
+/ Compound Eyes 7" Picture Disc`) are untouched.
+
 `vendor` is the fallback, and unusually for a label store it is a good one:
 it holds the artist's own name, not the label's, on all but one vinyl
-product. It is nonetheless only the fallback, because it is only ever the
-**primary** artist. The store's two split releases are billed fully in the
-title and carry one band in `vendor`:
-
-| Title | `vendor` |
-| --- | --- |
-| `Mom Jeans / Grad Life - Split` | `Mom Jeans` |
-| `Mom Jeans. / Prince Daddy / Pictures of Vernon - NOW That's What I Call Music Vol. 420 10" (3RD PRESS)` | `Mom Jeans` |
-
-A vendor-first rule would drop the other bands from both. Across the rest of
-the catalog the two sources agree exactly (108 of 110 parseable titles), so
-the fallback is well grounded where it is used.
+product — where it names the label that released the compilation. Across the
+catalog the two sources agree exactly (108 of 110 parseable titles, the two
+exceptions being the splits above), so the fallback is well grounded where
+it is used.
 
 It is used on exactly one live product: `Counter Intuitive Presents: Cosmic
 Debris, Vol 2`, the store's own tenth-anniversary label compilation, whose
@@ -255,7 +277,7 @@ reads:
 | `artist-source drift` | no vinyl product yields an artist from its title *or* its vendor — both sources gone at once |
 | `format-source drift` | no vinyl product has a variant that reads as a record — variants lost, or all re-titled as another medium |
 | `price-source drift` | rows were yielded but not one carries a price |
-| `identity-source drift` | nothing was yielded while some record carries no title or no handle |
+| `identity-source drift` | nothing was yielded while some record carries no title or no handle (the message names both, because `_has_identity` reads both and a blank title reaches the tally whenever `vendor` supplied the artist) |
 | `stock-source drift` | nothing was yielded while some record carries no readable availability flag |
 
 The tallies feeding them are **nested**, not sibling: a product only counts
@@ -297,8 +319,12 @@ catalog cannot produce). Cases:
 - the `product_type` gate: all three vinyl types admitted; apparel, tapes,
   CDs and the non-product rows excluded; an unknown type excluded by default
 - the title split, including a hyphenated word in the album and in the
-  artist, a split release keeping its full billing, whitespace collapsed,
-  the `vendor` fallback, and a product with neither source skipped
+  artist, whitespace collapsed, the `vendor` fallback, and a product with
+  neither source skipped
+- the primary-artist reduction: a split credited to its first-billed artist,
+  the store's own spelling of that artist kept on the three-way split, a
+  slash inside an artist name (`AC/DC`) not treated as a separator, and a
+  slash in the album left untouched
 - the variant gate: a vinyl word beating another medium word on the live
   `AB Dark Blue / CD Light Blue 2xLP`, inch markers, unformatted colours
   admitted by default, colour-prefixed cassettes rejected, and a colour name
