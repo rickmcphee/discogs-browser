@@ -461,9 +461,47 @@ async def test_sources_satisfied_by_different_products_raises(crawler):
 
 
 @respx.mock
-async def test_one_product_carrying_both_sources_satisfies_the_combined_guard(crawler):
+@pytest.mark.parametrize("broken", [
+    {"vendor": ""},                       # source failure: no artist on this product
+    {"title": "Other Album LP"},          # source failure: title does not parse
+])
+async def test_one_unreadable_product_beside_a_sold_out_one_raises(crawler, broken):
+    # The catalog-wide tallies only notice a source vanishing from EVERY
+    # product. One well-formed sold-out record keeps them all non-zero while
+    # an unreadable product beside it goes uncounted, the walk completes
+    # empty, and replace_stock_items() deletes the snapshot. Found in review
+    # on PR #323.
     _mock_pages(_one_pressing(_FIRE_PRODUCT, available=False),
-                {**_KISS_BIG_PRODUCT, "vendor": ""})
+                {**_KISS_BIG_PRODUCT, **broken})
+    with pytest.raises(RuntimeError, match="classification drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_an_unreadable_product_among_real_rows_does_not_raise(crawler):
+    _mock_pages(_FIRE_PRODUCT, {**_KISS_BIG_PRODUCT, "vendor": ""})
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["artist"] for i in items] == ["Amy Klein"]
+
+
+@respx.mock
+async def test_a_classified_skip_is_not_classification_drift(crawler):
+    # A CD and a bundle were both read successfully and then deliberately
+    # skipped, which is nothing like a product the crawler could not read.
+    # Neither may turn a legitimately sold-out shelf into a raise.
+    _mock_pages(_one_pressing(_FIRE_PRODUCT, available=False),
+                _CD_PRODUCT, _SHIRT_PRODUCT, _BUNDLE_PRODUCT,
+                _CONVENTIONAL_BUNDLE_PRODUCT)
+    assert [item async for item in crawler.crawl_catalog()] == []
+
+
+@respx.mock
+async def test_one_product_carrying_both_sources_satisfies_the_combined_guard(crawler):
+    # A readable record that is simply sold out: the combined guard is
+    # satisfied and the empty result stands. (This case previously paired it
+    # with a vendor-less product, which the classification guard added in
+    # review now raises on -- correctly, since that is the hole it closes.)
+    _mock_pages(_one_pressing(_FIRE_PRODUCT, available=False))
     assert [item async for item in crawler.crawl_catalog()] == []
 
 
@@ -1003,6 +1041,21 @@ async def test_a_placeholder_beside_a_sold_out_sibling_is_identity_drift(crawler
     _mock_pages({**_OPEN_THE_GATES_PRODUCT, "variants": [
         {**_OPEN_THE_GATES_PRODUCT["variants"][0], "title": "Default Title", "available": True},
         {**_OPEN_THE_GATES_PRODUCT["variants"][1], "available": False},
+    ]})
+    with pytest.raises(RuntimeError, match="identity-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+@pytest.mark.parametrize("available", ["true", "false", True, 1, 0, None])
+async def test_a_dropped_variant_not_provably_sold_out_is_drift(crawler, available):
+    # Only the literal False proves a dropped variant was safely sold out. A
+    # blank-titled variant carrying the string "true" is exactly as invisible
+    # as one carrying True, and the readable sold-out sibling beside it must
+    # not vouch for the emptiness. Found in review on PR #323.
+    _mock_pages({**_FIRE_PRODUCT, "variants": [
+        {"title": "  ", "price": "22.99", "available": available, "featured_image": None},
+        {"title": "Black", "price": "22.99", "available": False, "featured_image": None},
     ]})
     with pytest.raises(RuntimeError, match="identity-source drift"):
         [item async for item in crawler.crawl_catalog()]

@@ -346,16 +346,38 @@ Eight products are multi-variant the ordinary way (`Teenage Halloween
 "Teenage Halloween" 12"` carries Black, Electric Smoke and Light Blue, two
 of them sold out).
 
-**A variant dropped for want of a usable title is identity drift when it is
-in stock.** The colour is part of the row's identity, so a variant without
+**The catalog-wide source tallies do not see a *per-product* failure.**
+`artist_ok`, `parsed_ok` and `sources_ok` all count across the shelf, so they
+only notice a source vanishing from every product. One well-formed record
+that is merely sold out keeps all three non-zero while an unreadable product
+beside it — a blank `vendor`, or a title that no longer parses — is skipped by
+`_record()` before the identity and stock tallies ever run. The walk completes
+empty and the snapshot is deleted, even though that product might have been a
+record.
+
+`unclassifiable` counts a product whose *own* sources failed, and the walk
+raises when nothing was yielded and one exists. The distinction it turns on is
+between a product that was **read and then skipped** and one that was **never
+read at all**: a CD is classified by the format gate and a bundle by the
+bundle rule, and neither counts, so a legitimately sold-out shelf full of CDs
+still returns empty without raising. Found in review on PR #323.
+
+**A variant dropped for want of a usable title is identity drift unless it is
+provably sold out.** The colour is part of the row's identity, so a variant without
 one cannot be published — but if it is in stock, its absence must not read as
 a pressing that sold out. A product whose in-stock variant has a blank title
 and whose named sibling is sold out otherwise yields nothing while
 `_has_readable_stock_flag` still reports that sibling readable, every guard
 passes, and the snapshot is deleted. The same applies to the placeholder on a
-multi-variant product, which is the other route a variant gets dropped. Only
-an *in-stock* dropped variant counts: a sold-out one would not have yielded
-anyway. Found in review on PR #323.
+multi-variant product, which is the other route a variant gets dropped.
+
+Only the literal `False` proves the dropped variant was safely sold out.
+Every other value — `True`, the string `"true"`, `1`, `None`, absent — leaves
+it unproven, and unproven is drift: a dropped variant carrying `"true"` is
+exactly as invisible as one carrying `True`, and the readable sold-out sibling
+beside it must not vouch for the emptiness. Found in review on PR #323, in two
+passes — the first established that in-stock dropped variants count, the
+second that "not in stock" is not the same as "provably sold out".
 
 **Availability** comes from `variant.available`, which is a real boolean on
 every one of the 167 live variants (140 `true`, 27 `false`). Only the
@@ -434,6 +456,7 @@ has simply sold out is empty legitimately.
 | collection | `products_seen == 0` | the shelf renamed, removed, or the endpoint changed shape |
 | artist-source | `artist_ok == 0` | `vendor` emptied store-wide — the sole artist source |
 | combined-source | `sources_ok == 0` | both sources alive but never on the same product — a case neither row below can see |
+| classification | nothing yielded, `unclassifiable > 0` | a source failed on *one* product, which the catalog-wide rows above cannot see |
 | album-source | `parsed_ok == 0` | the store abandoning the quoted-album title convention. Tallies the album — the same value `_record` gates a row on — so it cannot raise on a catalog the crawler could in fact read |
 | price-source | `yielded and not priced` | `price` removed or retyped store-wide |
 | identity-source | `not yielded and identity_missing` | `title`/`handle` lost store-wide |
@@ -498,8 +521,10 @@ pre-order yielding a row byte-identical to the one it would yield untagged,
 and the sold-out pre-order skipped; the `+`-merch combo rule and the
 record-plus-bonus-disc descriptor it must not swallow; the guard holes
 found in review — a title-less product counted before the format gate, the
-two sources satisfied by different products, and an in-stock variant dropped
-for want of a usable title beside a sold-out sibling; the nested-quotation
+two sources satisfied by different products, a dropped variant that is not provably
+sold out beside a readable sold-out sibling, in each of its unreadable
+spellings; a per-product source failure beside a sold-out record, and the
+classified skips (a CD, a bundle) that must not be mistaken for one; the nested-quotation
 shapes the closing lookahead does not catch; price parsing
 of every unusable shape; cover resolution and its fallbacks; URL
 construction; pagination; and every guard above, each in both the raising and

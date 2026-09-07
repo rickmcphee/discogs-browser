@@ -112,6 +112,7 @@ class Crawler:
         artist_ok = 0
         parsed_ok = 0
         sources_ok = 0
+        unclassifiable = 0
         identity_missing = 0
         unreadable_stock = 0
         yielded = 0
@@ -143,7 +144,8 @@ class Crawler:
                 # format gate, so a shelf that legitimately filled up with
                 # CDs still satisfies it. Found in review on PR #323.
                 sources_ok += 1
-            if not (product.get("title") or "").strip():
+            title_text = " ".join((product.get("title") or "").split())
+            if not title_text:
                 # A title-less product cannot be classified at all -- _record
                 # reads the title, so it can never reach the checks below,
                 # and it might have been a record. Counted here rather than
@@ -151,12 +153,23 @@ class Crawler:
                 # an empty walk looking like a shelf that merely sold out.
                 # Found in review on PR #323.
                 identity_missing += 1
+            elif not has_artist or (not has_album and not _BUNDLE_RE.search(title_text)):
+                # The product has a title, but one of the two sources failed
+                # on *it*, so this crawler never classified it as record-or-
+                # not. That is different from a CD or a bundle, which are
+                # classified and then deliberately skipped -- and different
+                # from the catalog-wide tallies above, which only notice a
+                # source vanishing from EVERY product. One well-formed
+                # sold-out record keeps those non-zero while an unreadable
+                # in-stock product beside it goes uncounted, and the walk
+                # completes empty. Found in review on PR #323.
+                unclassifiable += 1
             # These are nested inside the gate, because only a product that
             # reads as a record could have yielded a row: a mis-shelved
             # shirt's missing handle says nothing about whether this walk's
             # emptiness can be trusted.
             elif self._record(product) is not None:
-                if not self._has_identity(product) or self._unusable_in_stock(product):
+                if not self._has_identity(product) or self._unusable_dropped_variant(product):
                     identity_missing += 1
                 elif not self._has_readable_stock_flag(self._pressings(product)):
                     unreadable_stock += 1
@@ -207,6 +220,14 @@ class Crawler:
             raise RuntimeError(
                 f"none of the {yielded} rows from the {_COLLECTION_SLUG} collection carries a "
                 "price -- price-source drift")
+        if not yielded and unclassifiable:
+            # Same empty-outcome gate as the two below, and for the same
+            # reason: among real rows an unreadable product is an ordinary
+            # skipped row, but it must never be what an empty result rests on.
+            raise RuntimeError(
+                f"{_COLLECTION_SLUG} collection yielded no rows while "
+                f"{unclassifiable} product(s) could not be read as record or not -- "
+                "classification drift")
         if not yielded and identity_missing:
             # `title` and `handle` are identity, not display: item_key hashes
             # the row's artist, title and URL, so a product missing either is
@@ -380,19 +401,25 @@ class Crawler:
         return bool((product.get("title") or "").strip()) and bool((product.get("handle") or "").strip())
 
     @classmethod
-    def _unusable_in_stock(cls, product: dict) -> bool:
-        """Does an IN-STOCK variant get dropped for want of a usable title?
+    def _unusable_dropped_variant(cls, product: dict) -> bool:
+        """Was a variant dropped for want of a usable title without being provably sold out?
 
         The variant title is part of the row's identity, so a variant without
-        one cannot be published -- but it is in stock, and its absence must
-        not read as a pressing that sold out. Left uncounted, a product whose
-        in-stock variant has a blank title and whose named sibling is sold out
-        yields nothing while every guard passes, and the snapshot is deleted.
-        Found in review on PR #323.
+        one cannot be published -- but its absence must not read as a pressing
+        that sold out. Left uncounted, a product whose unpublishable variant
+        is in stock and whose named sibling is sold out yields nothing while
+        every guard passes, and the snapshot is deleted.
+
+        Only the literal False proves the dropped variant was safely sold out.
+        Every other value -- True, the string "true", 1, None, absent -- leaves
+        it unproven, and unproven is drift: a dropped variant carrying "true"
+        is exactly as invisible as one carrying True, and the readable
+        sold-out sibling beside it must not vouch for the emptiness. Found in
+        review on PR #323.
         """
         kept = [v for v, _ in cls._pressings(product)]
         return any(
-            v.get("available") is True and not any(v is k for k in kept)
+            v.get("available") is not False and not any(v is k for k in kept)
             for v in product.get("variants") or [] if isinstance(v, dict)
         )
 
