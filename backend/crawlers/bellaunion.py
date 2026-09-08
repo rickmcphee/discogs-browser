@@ -1,5 +1,6 @@
 import math
 import re
+import unicodedata
 from typing import AsyncIterator, Optional, Tuple
 from shopify_catalog import iter_products, has_tag, resolve_cover_image
 
@@ -32,9 +33,54 @@ _SPLIT_RE = re.compile(r"\s+-\s+")
 # record without the word `Vinyl`. The lookbehind is what keeps the `lp` in
 # `Help` out, and the disc-count prefix admits `2xLP`, where no word boundary
 # separates the count from the noun.
+# Unicode-aware word boundaries, ported from dongiovannirecords.py, which
+# arrived at them over two review passes. `[a-z]` is ASCII-only even under
+# IGNORECASE, so an accented letter is not a letter to it and the boundary
+# opens: `éLP CD` matched `lp`, the gate admitted on the record word, and the
+# trailing `CD` was never reached. `[^\W\d_]` is "a letter" to Python's
+# Unicode `\w`, which closes that.
+_NOT_AFTER_LETTER = r"(?<![^\W\d_])"
+_NOT_AFTER_LETTER_OR_DIGIT = r"(?<![^\W_])"
+_NOT_BEFORE_LETTER_OR_DIGIT = r"(?![^\W_])"
+# `\w` is still not the whole story: it excludes the combining MARK
+# categories, so in decomposed text the character before `LP` in `éLP CD` is
+# the accent rather than a letter and the boundary opens again -- while the
+# precomposed spelling of the same string is rejected. The same descriptor
+# must not read two ways depending on how it was encoded.
+_MARK_CATEGORIES = frozenset(("Mn", "Mc", "Me"))
+# A mark stands in as a letter, because a mark IS part of the word it
+# follows. Deliberately not an ASCII letter: it appears in no pattern here
+# and matches none of them under IGNORECASE, so folding can only ever close a
+# boundary, never spell a format or merch word into existence.
+_MARK_STAND_IN = "\u00df"
+
+
+def _fold_marks(text: str) -> str:
+    """The text with every combining mark replaced by a letter, for MATCHING ONLY.
+
+    Never for anything emitted: it is a decision-time normalisation, so that
+    the boundaries above see a mark as the word-interior it is.
+    """
+    if text.isascii():
+        return text
+    return "".join(
+        _MARK_STAND_IN if unicodedata.category(ch) in _MARK_CATEGORIES else ch
+        for ch in text
+    )
+
+
+# The quote glyph needs a right-hand boundary of its own, which the
+# spelled-out `inch` alternative gets free from its `\b`: without one,
+# `12"CD` reads as a complete inch marker, the gate admits it on the record
+# word, and the `CD` is never reached. Unicode-aware like the rest, or
+# `12"éCD` walks through the same hole.
+_INCH_MARKER = (
+    _NOT_AFTER_LETTER_OR_DIGIT + r"(?:\d+\s*[x×]\s*)?\d{1,2}\s*"
+    r'(?:["”″]' + _NOT_BEFORE_LETTER_OR_DIGIT + r"|inch(?:es)?\b)"
+)
 _VINYL_WORD_RE = re.compile(
-    r"(?<![a-z])(?:\d+(?:\.\d+)?\s*[x×]\s*)?lps?\b|\bvinyls?\b"
-    r"|(?<![a-z0-9])(?:\d+\s*[x×]\s*)?\d{1,2}\s*(?:\"|”|″|inch(?:es)?\b)",
+    _NOT_AFTER_LETTER + r"(?:\d+(?:\.\d+)?\s*[x×]\s*)?lps?\b|\bvinyls?\b"
+    r"|" + _INCH_MARKER,
     re.IGNORECASE,
 )
 # `casse+tte` rather than `cassette`: the store spells one of its live
@@ -44,7 +90,7 @@ _VINYL_WORD_RE = re.compile(
 # disc media carry the same optional disc-count prefix the record words do,
 # since `\bcds?\b` cannot see the `CD` in `2xCD`.
 _OTHER_MEDIA_RE = re.compile(
-    r"(?<![a-z])(?:\d+\s*[x×]\s*)?(?:cds?|casse+ttes?|tapes?|dvds?|blu-?\s?rays?)\b"
+    _NOT_AFTER_LETTER + r"(?:\d+\s*[x×]\s*)?(?:cds?|casse+ttes?|tapes?|dvds?|blu-?\s?rays?)\b"
     r"|\bdigital\b",
     re.IGNORECASE,
 )
@@ -339,7 +385,7 @@ class Crawler:
         if (product.get("product_type") or "").strip().lower() == "vinyl":
             return True
         return any(
-            _VINYL_WORD_RE.search(descriptor)
+            _VINYL_WORD_RE.search(_fold_marks(descriptor))
             for _, descriptor in cls._pressings(product)
         )
 
@@ -365,13 +411,18 @@ class Crawler:
         `The Fall - Singles Live Vol.1` sells both a plain pressing and a
         shirt bundle under one title.
         """
-        if _BUNDLE_RE.search(descriptor) or _MERCH_RE.search(descriptor):
+        # Every pattern below is matched against the mark-folded descriptor,
+        # never the raw one, so that a decomposed `é` and its precomposed
+        # twin decide the same way. Folding is for matching only; nothing
+        # emitted goes through it.
+        folded = _fold_marks(descriptor)
+        if _BUNDLE_RE.search(folded) or _MERCH_RE.search(folded):
             return False
-        if _VINYL_WORD_RE.search(descriptor):
+        if _VINYL_WORD_RE.search(folded):
             return True
-        if _OTHER_MEDIA_RE.search(descriptor):
+        if _OTHER_MEDIA_RE.search(folded):
             return False
-        return not _GARMENT_SIZE_RE.match(descriptor.strip())
+        return not _GARMENT_SIZE_RE.match(folded.strip())
 
     @classmethod
     def _pressings(cls, product: dict) -> list:

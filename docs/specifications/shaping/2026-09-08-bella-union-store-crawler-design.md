@@ -202,6 +202,36 @@ the typo names no medium the gate knows, the default admits it, and a £6.99
 cassette is published as this crawler's `Vinyl` beside the £28.99 pressings
 — wrong on the Store tab and wrong under the Cheapest filter.
 
+#### The record-word boundaries have to be Unicode-aware
+
+The gate admits on a record word *before* it reads the rejecting vocabulary,
+so a false record-word match publishes a CD at a CD's price under `Vinyl`.
+Two ways that happened, both ported from `dongiovannirecords.py`, which
+reached them over two review passes of its own:
+
+- **`[a-z]` is ASCII-only, even under `IGNORECASE`.** An accented letter is
+  therefore not a letter to it, the left boundary opens, and `éLP CD` matched
+  the embedded `LP` and was admitted ahead of its `CD`. `[^\W\d_]` — "a
+  letter" to Python's Unicode `\w` — closes it.
+- **The inch marker's quote glyph had no right-hand boundary**, which the
+  spelled-out `inch` alternative gets free from its `\b`. So `12"CD` read as
+  a complete inch marker and was admitted before the `CD` was reached.
+
+`\w` alone is still not enough: it excludes the combining mark categories, so
+in decomposed text the character before `LP` in `éLP CD` is the accent rather
+than a letter and the boundary opens again — while the precomposed spelling
+of the same string is rejected. `_fold_marks` replaces marks with a letter
+**for matching only**, so both normal forms of one descriptor decide
+identically. It is applied at every matching site, `_claims_vinyl` included:
+that runs the same record-word pattern over variant titles, and left unfolded
+it would let an embedded `LP` make a non-record claim to be one.
+
+The boundary is applied to the rejecting vocabulary too, and the mirror rule
+is deliberate: an embedded medium word must not *reject* either, so
+`CaféCD Gatefold` stays a record. A glued inch marker is simply not one, and
+the gate falls through to the medium word it was masking. Found in review on
+PR #333.
+
 `_MERCH_RE` covers garments and bags: shirts, tees, hoodies, sweatshirts,
 crewnecks, longsleeves, tank tops, jerseys, caps, hats, totes and bags. That
 is the store's own merch vocabulary, read off its `merch` collection.

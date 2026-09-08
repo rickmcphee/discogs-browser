@@ -1,3 +1,5 @@
+import unicodedata
+
 import httpx
 import respx
 import pytest
@@ -416,6 +418,46 @@ def test_format_gate_rejects_other_media_garments_and_bundles(descriptor):
     assert Crawler._is_vinyl(descriptor) is False
 
 
+@pytest.mark.parametrize("descriptor,expected", [
+    # The word boundaries must hold in any script: `[a-z]` is ASCII-only even
+    # under IGNORECASE, so an accented letter used to count as a separator and
+    # the embedded LP admitted ahead of the CD. Found in review on PR #333.
+    ("\u00e9LP CD", False),
+    # An embedded medium word must not REJECT, which is the mirror rule and
+    # why the boundary is applied to both vocabularies.
+    ("Caf\u00ebCD Gatefold", True),
+    ("M\u00fasic\u00e1CD Gatefold", True),
+    # An embedded `lp` must not admit. Paired with a rejecting medium so a
+    # false match is observable: it would flip these to True.
+    ("Helps CD", False),
+    ("Scalpel Cassette", False),
+    # An embedded `cd` must not reject; with nothing else to decide, a false
+    # match would flip these to False.
+    ("Mcdonalds Boxset", True),
+    # A glued inch marker is not one, so the gate falls through to the medium
+    # word it was masking. Found in review on PR #333.
+    ('12"CD', False),
+    ('12"Cassette', False),
+    # A real inch marker still admits, including over a medium named beside
+    # it -- that is the record-word-wins rule, not a boundary failure.
+    ('12" CD', True),
+    ('12"', True),
+    ("LP CD", True),
+])
+def test_a_medium_word_embedded_in_another_word_does_not_decide_the_format(descriptor, expected):
+    assert Crawler._is_vinyl(descriptor) is expected
+
+
+@pytest.mark.parametrize("descriptor", ["\u00e9LP CD", 'Caf\u00ebCD Gatefold', "M\u00fasic\u00e1CD Gatefold"])
+def test_a_descriptor_reads_the_same_decomposed_as_precomposed(descriptor):
+    # `\w` excludes the combining mark categories, so in decomposed text the
+    # character before `LP` is the accent rather than a letter and the
+    # boundary opens. _fold_marks closes it, and the tell that it works is
+    # that both normal forms of one string decide identically.
+    assert Crawler._is_vinyl(unicodedata.normalize("NFD", descriptor)) is (
+        Crawler._is_vinyl(unicodedata.normalize("NFC", descriptor)))
+
+
 @respx.mock
 async def test_the_cd_beside_a_record_is_not_published(crawler):
     _mock_pages(_SIGNED_PRINT_PRODUCT)
@@ -490,6 +532,33 @@ async def test_a_descriptor_naming_neither_format_is_admitted(crawler):
 ])
 def test_product_claims_a_record(product, claims):
     assert Crawler._claims_vinyl(product) is claims
+
+
+@pytest.mark.parametrize("form", ["NFC", "NFD"])
+def test_the_product_level_claim_reads_variant_titles_the_same_in_either_form(form):
+    # `_claims_vinyl` runs the same record-word pattern over VARIANT titles,
+    # so it needs the same mark folding _is_vinyl uses: undecomposed, the
+    # character before `LP` here is the accent, the boundary opens, and an
+    # embedded `LP` would let a non-record claim to be one.
+    import unicodedata as _ud
+    product = {**_HARP_PRODUCT, "product_type": "", "variants": [
+        {"id": 70, "title": _ud.normalize(form, "\u00e9LP"), "price": "22.99",
+         "available": True, "featured_image": None},
+    ]}
+    assert Crawler._claims_vinyl(product) is False
+
+
+@respx.mock
+async def test_an_untyped_product_claiming_a_record_only_by_an_embedded_lp_yields_nothing(crawler):
+    # End to end: without the folding above the claim holds, the product
+    # reaches the record branch, and the descriptor -- naming no medium -- is
+    # admitted by default, publishing a non-record as Vinyl.
+    _mock_pages(_ARCO_PRODUCT, {**_HARP_PRODUCT, "product_type": "", "variants": [
+        {"id": 71, "title": unicodedata.normalize("NFD", "\u00e9LP"), "price": "22.99",
+         "available": True, "featured_image": None},
+    ]})
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["artist"] for i in items] == ["A.A. Williams"]
 
 
 @respx.mock
