@@ -963,6 +963,49 @@ async def test_a_dropped_variant_that_is_not_provably_sold_out_raises(crawler, a
 
 
 @respx.mock
+@pytest.mark.parametrize("available", [True, "true", 1, None])
+async def test_an_untyped_records_dropped_variant_is_not_read_as_a_non_record(crawler, available):
+    # The store leaves some of its records untyped, and for those the whole
+    # "is this a record" claim rests on a VARIANT title naming one. Blank that
+    # title and the claim collapses -- so without the dropped-variant test
+    # running first, an in-stock record classifies itself as a non-record, is
+    # exempted, and the empty walk goes unguarded while the snapshot is
+    # deleted.
+    _mock_pages({**_HARP_PRODUCT, "variants": [
+        {"id": 60, "title": "   ", "price": "22.99", "available": available,
+         "featured_image": None},
+        {"id": 61, "title": "CD", "price": "9.99", "available": False,
+         "featured_image": None},
+    ]})
+    with pytest.raises(RuntimeError, match="variant-identity drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_an_untyped_records_dropped_variant_that_is_sold_out_does_not_raise(crawler):
+    # The counterpart: only the literal False proves the dropped variant was
+    # safely gone, and then the emptiness rests on nothing unread.
+    _mock_pages({**_HARP_PRODUCT, "variants": [
+        {"id": 62, "title": "   ", "price": "22.99", "available": False,
+         "featured_image": None},
+        {"id": 63, "title": "CD", "price": "9.99", "available": False,
+         "featured_image": None},
+    ]})
+    assert [item async for item in crawler.crawl_catalog()] == []
+
+
+@respx.mock
+async def test_merch_with_a_dropped_variant_is_still_exempt(crawler):
+    # The tag reads no title at all, so it keeps deciding ahead of the
+    # dropped-variant test -- a shirt that loses a size must not raise.
+    _mock_pages(_one_pressing(_ARCO_PRODUCT, available=False),
+                {**_TSHIRT_PRODUCT, "variants": [
+                    {"id": 64, "title": "   ", "price": "22.99", "available": True,
+                     "featured_image": None}]})
+    assert [item async for item in crawler.crawl_catalog()] == []
+
+
+@respx.mock
 async def test_a_dropped_variant_that_is_provably_sold_out_does_not_raise(crawler):
     _mock_pages({**_ARCO_PRODUCT, "variants": [
         {"id": 47, "title": "  ", "price": "22.99", "available": False,

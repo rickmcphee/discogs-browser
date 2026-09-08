@@ -119,23 +119,33 @@ class Crawler:
                 # would leave an empty walk looking like a shelf that had
                 # merely sold out, and the snapshot would be deleted.
                 identity_missing += 1
-            elif has_tag(product, _MERCH_TAG) or not self._claims_vinyl(product):
-                # Read and deliberately skipped: the store's merch, or a
-                # product it publishes with no record among its formats.
-                # Neither could yield a row however its title reads, so a
-                # failed parse on one is evidence of nothing. This test comes
-                # first for that reason.
-                #
-                # Neither test reads the title, which is what makes the
-                # exemption safe on a product whose title did NOT parse. The
-                # tag and the claim are positive determinations from
-                # `tags`, `product_type` and the variant descriptors, not a
-                # guess recovered from the shape of a title that failed --
-                # so an untagged poster or beanie the store names its own way
-                # is exempt, rather than raising drift on a walk that
-                # legitimately sold out. Requiring a readable album here
-                # instead made this branch depend on the one field it must
-                # not. Found in review on PR #333.
+            elif has_tag(product, _MERCH_TAG):
+                # Read and deliberately skipped: the store's own claim that
+                # this is not a record. It could not yield a row however its
+                # title reads, so a failed parse on it is evidence of nothing,
+                # and this test comes first for that reason. The tag is the
+                # one classification here that reads no title at all --
+                # neither the product's nor a variant's -- so it stays safe
+                # on a product whose every other field has drifted.
+                pass
+            elif self._unusable_dropped_variant(product):
+                # BEFORE the claim below, because the claim is not the
+                # title-independent test it looks like: `product_type` is
+                # blank on some of this store's records, and for those the
+                # claim rests entirely on a VARIANT title naming a record.
+                # Blank that variant's title and the claim collapses, so an
+                # in-stock record classifies itself as a non-record, is
+                # exempted, and an empty walk goes unguarded --
+                # replace_stock_items() then deletes a snapshot that was
+                # correct. This test already knew the variant was dropped
+                # without being provably sold out; it just ran too late to
+                # say so. Found in review on PR #333.
+                variant_identity_missing += 1
+            elif not self._claims_vinyl(product):
+                # A product the store publishes with no record among its
+                # formats, read from `product_type` and the variant
+                # descriptors. Safe to exempt now that a dropped variant
+                # cannot be what silenced the claim.
                 pass
             elif not album:
                 # Never read at all: the one source failed on this product,
@@ -152,10 +162,6 @@ class Crawler:
                 # whether this walk's emptiness can be trusted.
                 if not self._has_identity(product):
                     identity_missing += 1
-                elif self._unusable_dropped_variant(product):
-                    # Kept apart from identity_missing so the guard can name
-                    # which identity failed: the product's, or a variant's.
-                    variant_identity_missing += 1
                 elif not self._has_readable_stock_flag(product):
                     unreadable_stock += 1
             for item in self._items(product):

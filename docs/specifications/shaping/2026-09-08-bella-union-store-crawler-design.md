@@ -355,21 +355,31 @@ Structural notes on the tallies:
   failed parse on one is evidence of nothing. That test runs *first*, which
   is what keeps a sold-out CD-only product from raising drift.
 
-  Neither half of that test reads the title, and that is what makes the
-  exemption safe on a product whose title did *not* parse. The `Merch` tag
-  and `_claims_vinyl` are positive determinations from `tags`,
-  `product_type` and the variant descriptors — not a shape recovered from a
-  title that already failed, which is the loose kind of exemption
-  `dongiovannirecords.py`'s design warns against. The first version of this
+  Neither exemption reads the *product* title, and that is what makes them
+  safe on a product whose title did not parse. The first version of this
   branch required a readable album before the claim could exempt anything,
   which made it depend on the one field it must not: an untagged poster or
-  beanie the store named its own way would then have counted as
-  `unclassifiable` and raised drift on a walk that had legitimately sold
-  out, preserving a stale snapshot. A record that lost *both* its title
-  convention and its claim is exempted under the corrected rule, and that is
-  the accepted cost: at that point every signal the crawler has says
-  non-record, so counting it would not identify it either. Found in review
-  on PR #333.
+  beanie the store named its own way counted as `unclassifiable` and raised
+  drift on a walk that had legitimately sold out. A record that lost *both*
+  its title convention and its claim is exempted under the corrected rule,
+  and that is the accepted cost: at that point every signal the crawler has
+  says non-record, so counting it would not identify it either. Found in
+  review on PR #333.
+
+  **The two exemptions are not equally title-independent, and the order of
+  the branch turns on that.** Only the `Merch` tag reads no title at all.
+  `_claims_vinyl` does — for the records this store leaves untyped, its
+  *whole* claim is a variant title naming a record, so blanking that title
+  collapses the claim. An in-stock untyped record then classifies itself as
+  a non-record, takes the exemption, and the empty walk goes unguarded while
+  `replace_stock_items()` deletes a snapshot that was correct.
+  `_unusable_dropped_variant` already knew that variant had been dropped
+  without being provably sold out; it was simply nested *after* the claim
+  and never ran. So the order is: the tag, then the dropped-variant test,
+  then the claim, then the parse. Stating in the previous revision that
+  "neither test reads the title" was the overstatement that left the hole —
+  it was true of the product title and false of the variant titles the claim
+  reads through `_pressings`. Found in review on PR #333.
   `unclassifiable` is 2 on every live walk — the two mis-titled records — and
   the guard is conditioned on an empty result, so that costs nothing until it
   matters.
