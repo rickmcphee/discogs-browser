@@ -1,3 +1,5 @@
+import unicodedata
+
 import httpx
 import respx
 import pytest
@@ -360,6 +362,11 @@ def test_title_parse(title, expected):
     # Found in review on PR #323.
     'Amy Klein "Fire" 12"\u00e9CD',
     'Amy Klein "Fire" 12"\u00faCassette',
+    # And in DECOMPOSED text the accent is its own character, which `\w` does
+    # not count as a letter -- so the same descriptor must not read two ways
+    # depending on how it was encoded. Found in review on PR #323.
+    'Amy Klein "Fire" 12"e\u0301CD',
+    'Amy Klein "Fire" 12"\u0301CD',
     'Amy Klein "Fire" 12"x',
     # A quote embedded in a word is not an inch marker, even though it does
     # follow a digit -- the digit lookbehind that stood in for the format
@@ -367,6 +374,11 @@ def test_title_parse(title, expected):
     'Amy Klein "The " Studio54" LP',
     # Same, with a non-ASCII letter: `\u00c954"` is not an inch marker either.
     'Amy Klein "The " \u00c954" LP',
+    # Decomposed, and after a digit as well as after a letter -- a combining
+    # mark belongs to the character it follows, so neither opens a marker.
+    # Found in review on PR #323.
+    'Amy Klein "The " E\u030154" LP',
+    'Amy Klein "The " 5\u030154" LP',
     'Amy Klein "The " 12x" LP',
     # A descriptor carries at most one inch marker. Two quotes are the tail of
     # a nested quotation, and the digit exemption alone cannot see it when the
@@ -561,6 +573,13 @@ async def test_an_unreadable_product_among_real_rows_does_not_raise(crawler):
     ("Lee Bains + The Glory Fires Bag Album LP", False),
     ("Amy Klein + Friends Tote Bag Record LP", False),
     ("Bad Moves Wearing Out The Refrain Shirt + CD", True),
+    # `Shirt` with a combining mark ON it is not the word `Shirt`, and `\b`
+    # cannot see that -- a mark is not a word character, so the boundary
+    # closes and the bare `\b` rule matched. This exemption is the one that
+    # must stay narrow, since a false exemption is what lets an unreadable
+    # product pass for a known bundle. Found in review on PR #323.
+    ("Bad Moves LP + Shirt\u0301 Extra", False),
+    ("Bad Moves LP + Shirt Extra", True),
 ])
 def test_the_unquoted_bundle_shapes_are_recognised(title, shaped):
     assert Crawler._bundle_shaped(title) is shaped
@@ -782,6 +801,10 @@ async def test_the_whole_title_is_collapsed_before_it_is_parsed(crawler):
 @pytest.mark.parametrize("descriptor", [
     '12"', '2x12"', '7"', '10"', "LP", "2xLP", "Vinyl", "Picture Disc",
     "Test Pressing", '12" Vinyl',
+    # Folding marks for the boundary check must not close a boundary that was
+    # legitimately open: an accented word beside a record word, in either
+    # encoding, is still a record.
+    "Caf\u00e9 LP", "Cafe\u0301 LP",
     # A vinyl word beside another medium is still a record.
     "LP + Bonus CD",
     # Undeclared but present: the shelf has already said it is a record, so
@@ -804,9 +827,34 @@ def test_format_gate_admits_records_and_undeclared_descriptors(descriptor):
     "Longsleeve", "Crewneck Sweatshirt", "Hoodie",
     "Books", "Paperback Book", "Hardcover Book",
     "Pins", "Stickers & Decals", "Bag", "Tote", "Zine",
+    # An embedded medium word must not decide the format, and that holds in
+    # decomposed text too: the character before `LP` here is a combining
+    # acute, which `\w` does not count as a letter, so the boundary opened and
+    # the `LP` admitted the row before the `CD` could reject it.
+    # Found in review on PR #323.
+    "e\u0301LP CD", "\u00e9LP CD",
 ])
 def test_format_gate_rejects_other_media_and_merch(descriptor):
     assert Crawler._is_vinyl(descriptor) is False
+
+
+# Every descriptor above, plus the parse cases, in both Unicode normal forms.
+# The instances are pinned individually above; this pins the PROPERTY, which
+# is the thing that kept breaking -- `\w` is blind to the combining marks, so
+# a boundary that holds in one encoding opened in the other, and each pass
+# fixed the spelling in front of it. Found in review on PR #323.
+@pytest.mark.parametrize("text", [
+    "Cafe\u0301 LP", "e\u0301LP CD", "e\u0301CD Gatefold", "Mu\u0301sicaCD Gatefold",
+    'E\u030154" LP', '5\u030154" LP', '12"e\u0301CD', "Bag Album LP", 'Cafe\u0301 12"',
+    "LP + Shirt", "LP + Bonus CD", "Deluxe", 'Studio54" LP', "Vinyl Bundle",
+])
+def test_the_two_unicode_encodings_of_a_string_are_read_the_same_way(text):
+    nfc, nfd = unicodedata.normalize("NFC", text), unicodedata.normalize("NFD", text)
+    assert Crawler._is_vinyl(nfc) is Crawler._is_vinyl(nfd)
+    assert Crawler._bundle_shaped(nfc) is Crawler._bundle_shaped(nfd)
+    parsed_nfc = Crawler._parse_title(f'Amy Klein "Fire" {nfc}')
+    parsed_nfd = Crawler._parse_title(f'Amy Klein "Fire" {nfd}')
+    assert bool(parsed_nfc[0]) is bool(parsed_nfd[0])
 
 
 @respx.mock

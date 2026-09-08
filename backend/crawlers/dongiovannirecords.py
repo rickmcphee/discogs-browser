@@ -1,5 +1,6 @@
 import math
 import re
+import unicodedata
 from typing import AsyncIterator, Optional, Tuple
 from shopify_catalog import iter_products, resolve_cover_image
 
@@ -101,6 +102,39 @@ _NOT_AFTER_LETTER_OR_DIGIT = r'(?<![^\W_])'
 # the trailing `CD` could reject it. Defined beside its opposite so the two
 # cannot diverge again. Found in review on PR #323.
 _NOT_BEFORE_LETTER_OR_DIGIT = r'(?![^\W_])'
+# ...but `\w` is not the whole story either, because it excludes the combining
+# MARK categories. `title_key._words` documents the same trap for the same
+# reason. In decomposed text `é` is `e` + U+0301, so the character
+# immediately before `LP` in `éLP CD` is the accent -- not a letter to `\w`,
+# and the boundary opens. The precomposed spelling of the identical string is
+# rejected, which is the tell: the same descriptor must not read two ways
+# depending on how it was encoded. Found in review on PR #323.
+_MARK_CATEGORIES = frozenset(("Mn", "Mc", "Me"))
+# A mark stands in as a letter, because a mark IS part of the word it follows
+# -- that is the whole property the boundaries are missing. Deliberately not
+# an ASCII letter: this one appears in no pattern in this module and matches
+# none of them under IGNORECASE, so folding can only ever close a boundary,
+# never spell a format or merch word into existence.
+_MARK_STAND_IN = "\u00df"
+
+
+def _fold_marks(text: str) -> str:
+    r"""The text with every combining mark replaced by a letter, for MATCHING ONLY.
+
+    Never for anything emitted: it is a decision-time normalisation, so that
+    `\w`-based boundaries see a mark as the word-interior it is. Length- and
+    position-preserving, so a quote's position in the result is its position
+    in the original -- which is what lets _descriptor_quotes_are_clean scan
+    the folded string.
+    """
+    if text.isascii():
+        return text
+    return "".join(
+        _MARK_STAND_IN if unicodedata.category(ch) in _MARK_CATEGORIES else ch
+        for ch in text
+    )
+
+
 _INCH_MARKER = (
     _NOT_AFTER_LETTER_OR_DIGIT + r'(?:\d+\s*[x×]\s*)?\d{1,2}\s*'
     # The quote glyph needs a right-hand boundary of its own, which the
@@ -183,10 +217,11 @@ def _descriptor_quotes_are_clean(descriptor: str) -> bool:
     cannot disagree about what an inch marker is -- every quote bug on this
     crawler came from one rule approximating the other.
     """
-    markers = _INCH_MARKER_RE.findall(descriptor)
+    folded = _fold_marks(descriptor)
+    markers = _INCH_MARKER_RE.findall(folded)
     if len(markers) > 1:
         return False
-    return not any(q in _INCH_MARKER_RE.sub(" ", descriptor) for q in _QUOTE_CHARS)
+    return not any(q in _INCH_MARKER_RE.sub(" ", folded) for q in _QUOTE_CHARS)
 
 
 class Crawler:
@@ -323,7 +358,8 @@ class Crawler:
             # skipped row, but it must never be what an empty result rests on.
             raise RuntimeError(
                 f"{_COLLECTION_SLUG} collection yielded no rows while "
-                f"{unclassifiable} product(s) could not be read as record or not -- "
+                f"{unclassifiable} product(s) were neither classified as a non-record nor "
+                "readable as one -- "
                 "classification drift")
         if not yielded and identity_missing:
             # `title` and `handle` are identity, not display: item_key hashes
@@ -444,7 +480,8 @@ class Crawler:
         # known bundle. Found in review on PR #323.
         if any(q in title for q in _QUOTE_CHARS):
             return False
-        return bool(_TERMINAL_BUNDLE_RE.search(title)) or bool(_COMBO_MERCH_RE.search(title))
+        folded = _fold_marks(title)
+        return bool(_TERMINAL_BUNDLE_RE.search(folded)) or bool(_COMBO_MERCH_RE.search(folded))
 
     @staticmethod
     def _artist(product: dict) -> str:
@@ -507,13 +544,14 @@ class Crawler:
         # `Shirt + All Vinyl`); their price is a bundle's, not any record's.
         # `LP + Bonus CD` stays a record: one item, one price, and no merch
         # word in it.
-        if _BUNDLE_RE.search(descriptor):
+        folded = _fold_marks(descriptor)
+        if _BUNDLE_RE.search(folded):
             return False
-        if "+" in descriptor and _MERCH_RE.search(descriptor):
+        if "+" in folded and _MERCH_RE.search(folded):
             return False
-        if _VINYL_WORD_RE.search(descriptor):
+        if _VINYL_WORD_RE.search(folded):
             return True
-        return not (_OTHER_MEDIA_RE.search(descriptor) or _MERCH_RE.search(descriptor))
+        return not (_OTHER_MEDIA_RE.search(folded) or _MERCH_RE.search(folded))
 
     @classmethod
     def _pressings(cls, product: dict) -> list:

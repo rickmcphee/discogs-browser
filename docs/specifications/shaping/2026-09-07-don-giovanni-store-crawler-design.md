@@ -308,13 +308,36 @@ Negative rather than enumerated so that a format the store adds later
 (`10"`, a box set) stays in by default; the shelf has already said the
 product is a record.
 
-**Every word boundary here is Unicode-aware.** `[a-z]` is ASCII-only even
-under `IGNORECASE`, so a lookbehind spelled that way treats an accented letter
-as a separator — `É54" LP` read `54"` as an inch marker, `éLP CD` matched `LP`
-and was admitted before the `CD` could reject it, and `MúsicáCD` matched `CD`
-and was rejected although the word only embeds it. The boundaries are now
-written as "not preceded by a letter" and "not preceded by a letter or digit"
-in any script, from two shared constants. Found in review on PR #323.
+**Every word boundary here is Unicode-aware, and that took three passes.**
+`[a-z]` is ASCII-only even under `IGNORECASE`, so a lookbehind spelled that
+way treats an accented letter as a separator — `É54" LP` read `54"` as an inch
+marker, `éLP CD` matched `LP` and was admitted before the `CD` could reject
+it, and `MúsicáCD` matched `CD` and was rejected although the word only embeds
+it. The boundaries say what they mean instead — "not preceded by a letter",
+"not preceded by a letter or digit", and its mirror on the right — from three
+shared constants. The right-hand one was overlooked in the pass that converted
+the two on the left, in the same commit, so `12"éCD` walked through the hole
+the other two had just been closed against.
+
+`\w` alone is still not the boundary, though, because it excludes the
+combining **mark** categories — the same trap `title_key._words` documents for
+tokenising. In decomposed text `é` is `e` + U+0301, so the character
+immediately before `LP` in `éLP CD` is the accent, which is not a letter to
+`\w`; the boundary opens and the row is admitted before the `CD` is reached.
+The precomposed spelling of the identical string is rejected, and that
+disagreement is the defect: how a title was encoded must not change what it
+means. Python's `re` has no `\p{M}`, and a lookbehind cannot be
+variable-width, so the fix is not in the patterns at all — `_fold_marks`
+replaces every mark with a letter for **matching only**, never for anything
+emitted, which is exactly the property the boundaries were missing (a mark
+belongs to the word it follows). It is length- and position-preserving, so a
+quote's index in the folded string is its index in the original, which is what
+lets the descriptor's quote check scan the folded text. The stand-in is
+deliberately a letter that appears in no pattern in the module and matches
+none of them under `IGNORECASE`, so folding can only ever close a boundary,
+never spell a format or merch word into existence. A test asserts the property
+directly — the two normal forms of a string are read the same way — rather
+than only the instances. Found in review on PR #323, over three passes.
 
 The rejecting vocabulary is not invented — it is the store's own
 `product_type` values, read off the `all` collection: `CD`, `2xCD`,
@@ -496,7 +519,7 @@ the record is not shipping yet. Review on PR #323 pointed out what that costs.
 when the record ships re-keys every one of that product's pressings at
 exactly the moment a waiting user cares most, orphaning the saves and stock
 judgments held against the old key. That is the same churn the colour rule
-below refuses in as many words, and accepting it here would have been
+above refuses in as many words, and accepting it here would have been
 inconsistent within one file.
 
 The bundled crawlers are genuinely split on this — `counterintuitiverecords.py`
@@ -559,8 +582,8 @@ has simply sold out is empty legitimately.
 | variant-identity | nothing yielded, `variant_identity_missing > 0` | a record dropped a variant carrying no usable title without it being provably sold out |
 | album-source | `parsed_ok == 0` | the store abandoning the quoted-album title convention. Tallies the album — the same value `_record` gates a row on — so it cannot raise on a catalog the crawler could in fact read |
 | price-source | `yielded and not priced` | `price` removed or retyped store-wide |
-| identity-source | `not yielded and identity_missing` | `title`/`handle` lost store-wide |
-| stock-source | `not yielded and unreadable_stock` | `available` retyped store-wide |
+| identity-source | `not yielded and identity_missing` | a product lost its `title` or `handle` — one is enough, since the guard only asks whether an *empty* walk rests on one |
+| stock-source | `not yielded and unreadable_stock` | a record's `available` became unreadable, on the same empty-walk terms |
 
 Two structural notes on the tallies:
 
