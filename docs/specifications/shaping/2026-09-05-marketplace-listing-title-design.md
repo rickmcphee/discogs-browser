@@ -53,7 +53,7 @@ the store's edition.
   one, as before).
   **Amendment (2026-09-07, branch `claude/recommendation-info-icon-popup-6n4r87`):**
   the reason no longer contends for that slot — it moved out of hover text
-  entirely, into a dialog behind a per-row info button — so the target title
+  entirely, into a popover behind a per-row info button — so the target title
   has the tooltip unconditionally. See
   [`2026-09-07-recommendation-info-popup-design.md`](2026-09-07-recommendation-info-popup-design.md).
 - `CLAUDE.md` crawler plugin interface, and the 2026-06-27 and 2026-08-11
@@ -100,7 +100,7 @@ Out of scope:
   library item the row was searched for. When a judgment reason already
   occupies the tooltip it wins, since it did before. **(Amended 2026-09-07,
   branch `claude/recommendation-info-icon-popup-6n4r87`:** the reason left
-  the tooltip for an info dialog, so there is one claimant and no ranking —
+  the tooltip for an info popover, so there is one claimant and no ranking —
   and the row that most needed the substitution visible, a recommended one,
   stops being the row that hid it.**)**
 - **No `title` from `discogs_marketplace`.** The listing rows on a sell page
