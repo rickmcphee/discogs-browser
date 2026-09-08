@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useId, useRef, memo, type MouseEvent as ReactMouseEvent } from 'react'
+import { useState, useEffect, useCallback, useLayoutEffect, useRef, memo, type MouseEvent as ReactMouseEvent } from 'react'
 import { getStock, getStockArtists, saveStockItem, unsaveStockItem } from '../api/client'
 import type { StockItem, StockSortField, SortOrder, LibraryScope, Crawler } from '../api/types'
 import { navButtonClass, dismissButtonClass } from '../styles/buttons'
@@ -8,6 +8,7 @@ import SourceFilter from '../components/SourceFilter'
 import StockStats from '../components/StockStats'
 import StockFilter from '../components/StockFilter'
 import { formatPrice } from './formatPrice'
+import { placeReasonPopover, reasonPopoverMaxWidth, type Insets, type Placement } from './reasonPopoverPosition'
 import { useIsMobile } from '../hooks/useMediaQuery'
 import { ArtistSidebar, ArtistSheetButton } from '../components/ArtistFilter'
 import MobileSort, { type SortOption } from '../components/MobileSort'
@@ -41,6 +42,9 @@ const LIBRARY_DEPENDENT_FILTERS: ReadonlySet<string> = new Set(['collection', 'w
 // Names the control, not its content: the justification itself is behind the
 // click now, so a hover that gave it away would be the tooltip all over again.
 const REASON_BUTTON_TITLE = 'Recommendation details'
+// Only one popover is open at a time, so a single id is enough for the
+// aria-describedby that ties it to the icon it belongs to.
+const REASON_PANEL_ID = 'stock-reason-popover'
 
 // The name shown for a row is what the source called the item when the
 // crawler reported one, since a release-crawler match is by artist/title and
@@ -53,9 +57,15 @@ function displayTitle(item: StockItem): string {
   return item.listing_title ?? item.title
 }
 
+// True when the row's visible name is the source's rather than the target's:
+// a release crawler matches by artist and title, so what it found can be a
+// different pressing -- or, where the match was loose, a different record.
+function namesAnotherPressing(item: StockItem): boolean {
+  return !!item.listing_title && item.listing_title !== item.title
+}
+
 function titleTooltip(item: StockItem): string | undefined {
-  if (item.listing_title && item.listing_title !== item.title) return item.title
-  return undefined
+  return namesAnotherPressing(item) ? item.title : undefined
 }
 
 // Collection and Wantlist narrow to the user's library at release level; the
@@ -86,89 +96,239 @@ function BookmarkIcon({ filled }: { filled: boolean }) {
 // tooltip the reason used to ride in, which announced nothing on the row,
 // could not be reached on touch at all, and contended with the listing-title
 // tooltip for the one slot both wanted.
-function ReasonDialog({ item, opener, onClose }: { item: StockItem; opener: HTMLElement | null; onClose: () => void }) {
-  const panelRef = useRef<HTMLDivElement>(null)
-  const headingId = useId()
+//
+// A popover rather than a modal: this is a glance at one sentence, so it opens
+// and closes on the same icon, dims nothing, and needs no Close button.
+// Opening moves no focus. It is a disclosure, not a dialog -- the icon owns
+// the relationship through aria-expanded/aria-controls, and describes itself
+// by the panel so a screen reader on the icon hears the reason. The panel
+// itself is in the tab order for one reason only: a reason long enough to
+// clip has to be scrollable by keyboard, which Safari will not do for a
+// container it cannot focus.
+// `env()` cannot be read from script, and a custom property holding one comes
+// back unresolved, so the value is taken off a throwaway element that has the
+// insets as real padding. Created and removed per call: this runs when the
+// popover opens or the viewport resizes, not per frame, and a probe left in
+// the document is a thing to explain later. Everything without safe areas --
+// every desktop, and jsdom -- reports zero.
+function safeAreaInsets(): Insets {
+  const probe = document.createElement('div')
+  probe.style.cssText = 'position:fixed;top:0;left:0;visibility:hidden;pointer-events:none;'
+    + 'padding:env(safe-area-inset-top) env(safe-area-inset-right)'
+    + ' env(safe-area-inset-bottom) env(safe-area-inset-left)'
+  document.body.appendChild(probe)
+  const style = getComputedStyle(probe)
+  const insets = {
+    top: parseFloat(style.paddingTop) || 0,
+    right: parseFloat(style.paddingRight) || 0,
+    bottom: parseFloat(style.paddingBottom) || 0,
+    left: parseFloat(style.paddingLeft) || 0,
+  }
+  probe.remove()
+  return insets
+}
 
-  // `aria-modal` promises interaction is confined to the dialog, so Tab has to
-  // actually be confined -- same obligation, and same shape of answer, as
-  // Sheet's trap. Focus goes back to the info button that opened this on close;
-  // `opener` is that button, handed over by the click, because Safari does not
-  // focus a button on pointer activation -- reading document.activeElement here
-  // would hand focus back to the body. A row dropped by a refetch while the
-  // dialog is open leaves a detached node, which is nobody's focus to take.
-  useEffect(() => {
-    const restore = opener ?? (document.activeElement as HTMLElement | null)
-    panelRef.current?.focus()
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') {
+function ReasonPopover({ item, anchor, onClose }: { item: StockItem; anchor: HTMLElement; onClose: () => void }) {
+  const panelRef = useRef<HTMLDivElement>(null)
+  const [pos, setPos] = useState<Placement | null>(null)
+
+  // Measured after render and before paint, so the panel never shows at the
+  // origin first. Its own width and height are inputs to the placement, which
+  // is why this cannot be a static class.
+  useLayoutEffect(() => {
+    function place() {
+      const panel = panelRef.current
+      if (!panel) return
+      // A view-mode or breakpoint switch mounts this popover afresh against
+      // the anchor from the tree it replaced, which the same commit detaches.
+      // The parent's own check ran a render too early to see that, so closing
+      // here is what ends it -- without this the panel would sit hidden and
+      // the new icon would keep claiming to be expanded until some unrelated
+      // render came along.
+      if (!anchor.isConnected) {
         onClose()
         return
       }
-      if (e.key !== 'Tab') return
-      const panel = panelRef.current
-      if (!panel) return
-      const focusable = Array.from(panel.querySelectorAll<HTMLElement>('button:not([disabled]), a[href]'))
-      const first = focusable[0] ?? panel
-      const last = focusable[focusable.length - 1] ?? panel
-      const active = document.activeElement
-      if (!panel.contains(active)) {
-        e.preventDefault()
-        first.focus()
-      } else if (e.shiftKey && (active === first || active === panel)) {
-        e.preventDefault()
-        last.focus()
-      } else if (!e.shiftKey && active === last) {
-        e.preventDefault()
-        first.focus()
+      const viewport = {
+        width: window.innerWidth,
+        height: window.innerHeight,
+        insets: safeAreaInsets(),
       }
+      const rect = anchor.getBoundingClientRect()
+      // A refetch can move the row without any scroll -- a sync that inserts
+      // rows above it in the current sort -- and this effect re-runs on the
+      // new item. Placing against an anchor that has left the screen would
+      // clamp the panel to an edge beside rows it has nothing to do with. The
+      // claim here is only "on screen at all", which geometry can answer;
+      // whether it is *visible* is what a scroll now dismisses rather than
+      // computes. Strictly outside, so the all-zero rect an unlaid-out
+      // element reports is not read as gone.
+      if (rect.bottom < 0 || rect.top > viewport.height || rect.right < 0 || rect.left > viewport.width) {
+        onClose()
+        return
+      }
+      // The size the panel wants, which is not the size it currently has: the
+      // last placement capped it, and measuring that back would keep it there
+      // -- a panel opened on a narrow screen would never widen again when the
+      // screen did. So the caps come off and the placement decides them
+      // afresh. Written and read inside a layout effect, so nothing uncapped
+      // is painted.
+      panel.style.maxWidth = ''
+      panel.style.maxHeight = ''
+      const natural = panel.getBoundingClientRect().width
+      // Then the width goes back on before the height is read, because the
+      // height depends on it: the text reflows to whatever width the screen
+      // leaves, and a height measured at the wider layout comes out short --
+      // clipping the reason into a scrollbar with room to spare below it.
+      panel.style.maxWidth = `${Math.min(natural, reasonPopoverMaxWidth(viewport))}px`
+      const box = panel.getBoundingClientRect()
+      const placement = placeReasonPopover(rect, {
+        width: natural,
+        // scrollHeight is the content's own height whatever cap is applied,
+        // and the difference between the box and the client area is the
+        // border it leaves out. Both read at the capped width, so they are
+        // measurements of the same panel.
+        height: panel.scrollHeight + (box.height - panel.clientHeight),
+      }, viewport)
+      // Put them back here rather than leaving it to the render setPos
+      // schedules: the clear above went behind React, which will not re-write
+      // a style value it already believes is applied -- so a placement that
+      // returns what it returned last time would leave the panel uncapped.
+      panel.style.maxWidth = `${placement.maxWidth}px`
+      panel.style.maxHeight = `${placement.maxHeight}px`
+      setPos(placement)
+    }
+    place()
+    // A scroll dismisses it rather than moving it. Following the row would
+    // mean deciding, on every scroll, whether the row is still *visible* --
+    // and the row can be hidden while it is still in the viewport (scrolled
+    // out of the table's own overflow container, or under the table's sticky
+    // header), leaving a panel that usually names no record sitting beside
+    // rows it has nothing to do with. Dismissing is both the simpler rule and the
+    // one that matches a glance: you moved on. A scroll inside the panel is
+    // the opposite -- it is how a long reason is read -- so it stays.
+    // Capturing, since the containers that scroll do not bubble it.
+    function onScroll(e: Event) {
+      if (panelRef.current?.contains(e.target as Node)) return
+      onClose()
+    }
+    window.addEventListener('scroll', onScroll, true)
+    window.addEventListener('resize', place)
+    return () => {
+      window.removeEventListener('scroll', onScroll, true)
+      window.removeEventListener('resize', place)
+    }
+  }, [anchor, item, onClose])
+
+  // Focus is handed back on unmount rather than in any one dismissal path:
+  // Escape, the icon's second click, a press outside and a refetch all remove
+  // the panel, and only the first of those would otherwise restore it. The
+  // flag rather than a live activeElement read because focus has usually moved
+  // on by the time the cleanup runs -- and where it moved to the icon by
+  // itself (every browser but Safari, on the click path) the blur clears it,
+  // so this never steals focus back from somewhere it belongs.
+  const hadFocus = useRef(false)
+  useEffect(() => () => {
+    // preventScroll, because one of the ways this closes is the user
+    // scrolling: focusing an anchor they have just scrolled away from would
+    // have the browser scroll it back and undo them.
+    if (hadFocus.current && anchor.isConnected) anchor.focus({ preventScroll: true })
+  }, [anchor])
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key !== 'Escape') return
+      onClose()
+    }
+    // Pointer-down, and never on the anchor: a press on the icon is the
+    // toggle's own second click, and closing here first would leave the click
+    // that follows to reopen what it was meant to close. Touch as well as
+    // mouse, matching StockFilter -- a tap emits mousedown only as a
+    // compatibility event, and a touch scroll emits none at all.
+    function onPointerDown(e: MouseEvent | TouchEvent) {
+      const target = e.target as Node
+      if (panelRef.current?.contains(target) || anchor.contains(target)) return
+      onClose()
+    }
+    // Focus landing outside as well, because a keyboard never presses: Enter
+    // on a button emits `click` with no `mousedown` before it, so activating
+    // one of App's nav tabs that way left this open. That matters more than
+    // it sounds -- App parks the whole Store view under `hidden` rather than
+    // unmounting it, so a popover that survives the switch goes on measuring
+    // an anchor with no layout box and writes those zeros back as its own
+    // size. Focus has to reach the tab before it can be activated, so this
+    // catches it first. The same exemptions: focus moving into the panel is
+    // how a long reason is scrolled, and moving to the icon is the toggle's
+    // own business.
+    function onFocusIn(e: FocusEvent) {
+      const target = e.target as Node
+      if (panelRef.current?.contains(target) || anchor.contains(target)) return
+      onClose()
     }
     document.addEventListener('keydown', onKeyDown)
+    document.addEventListener('mousedown', onPointerDown)
+    document.addEventListener('touchstart', onPointerDown)
+    document.addEventListener('focusin', onFocusIn)
     return () => {
       document.removeEventListener('keydown', onKeyDown)
-      if (restore?.isConnected) restore.focus?.()
+      document.removeEventListener('mousedown', onPointerDown)
+      document.removeEventListener('touchstart', onPointerDown)
+      document.removeEventListener('focusin', onFocusIn)
     }
-  }, [onClose, opener])
+  }, [anchor, onClose])
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div
-        ref={panelRef}
-        tabIndex={-1}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={headingId}
-        className="relative z-10 max-h-[85dvh] w-full max-w-sm overflow-y-auto rounded-xl border border-gray-700 bg-gray-900 p-6 shadow-xl focus:outline-none"
-      >
-        {/* A reason only exists on a judged item, so the polarity is never
-            unknown here -- and it has to be said, since an item can be judged
-            against and still carry a note explaining why. */}
-        <h2 id={headingId} className="text-white font-semibold text-lg">
-          {item.recommended ? 'Recommended' : 'Not recommended'}
-        </h2>
-        {/* The target's own title, not displayTitle's substituted one: a
-            judgment is made against an item_key, so on a comparison row the
-            marketplace's name for what it matched would attribute the reason
-            to a pressing the judge never saw. gray-400 rather than the
-            gray-500 the app's other secondary text uses -- on gray-900 that
-            is ~3.7:1, under AA for 14px, and this line is what says which
-            record the reason is about. */}
-        <p className="mt-1 text-sm text-gray-400">{item.artist} — {item.title}</p>
-        <p className="mt-4 text-sm text-gray-200">{item.reason}</p>
-        <button onClick={onClose} className={`mt-5 w-full px-4 py-3 text-sm ${dismissButtonClass()}`}>
-          Close
-        </button>
-      </div>
-      {/* Pointer-only dismiss, hidden from assistive tech and untabbable, so
-          the trap above has nothing to reach around -- Escape and the Close
-          button are the keyboard routes out. */}
-      <button
-        type="button"
-        aria-hidden="true"
-        tabIndex={-1}
-        onClick={onClose}
-        className="absolute inset-0 z-0 bg-black/60"
-      />
+    <div
+      ref={panelRef}
+      id={REASON_PANEL_ID}
+      onFocus={() => { hadFocus.current = true }}
+      onBlur={() => { hadFocus.current = false }}
+      // `note` rather than `tooltip`: an ARIA tooltip is a non-focusable
+      // description shown on hover or focus, and this is a click-controlled
+      // panel that deliberately takes a tab stop -- a focusable tooltip is a
+      // pattern assistive tech has no good reading of. A note is what this
+      // is: text ancillary to the row it hangs off.
+      role="note"
+      // Deliberately unnamed: this panel is the icon's aria-describedby
+      // target, and an aria-label here would win the text-alternative
+      // computation outright -- the icon would describe itself as
+      // "Recommendation details" instead of reading out the justification,
+      // which is the entire point of the relationship.
+      // Focusable because the reason is free text and can outrun the panel:
+      // Chrome and Firefox hand a scroll container to the keyboard on their
+      // own, Safari does not, and the clipped tail has to be reachable
+      // somehow. Rendered next to its icon so Tab reaches it from there.
+      tabIndex={0}
+      style={{
+        top: pos?.top ?? 0,
+        left: pos?.left ?? 0,
+        maxHeight: pos?.maxHeight,
+        maxWidth: pos?.maxWidth,
+        visibility: pos ? 'visible' : 'hidden',
+      }}
+      className="fixed z-50 w-64 overflow-y-auto rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 shadow-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80"
+    >
+      {/* A reason only exists on a judged item, so the polarity is never
+          unknown here -- and it has to be said, since an item can be judged
+          against and still carry a note explaining why. */}
+      <p className="text-xs font-medium text-gray-400">
+        {item.recommended ? 'Recommended' : 'Not recommended'}
+      </p>
+      {/* Usually the row this is pinned to says which record it is about, and
+          repeating that is noise the modal could afford and a glance cannot.
+          Not on a row showing a source's own name for what it matched: a
+          judgment is made against an item_key, so there the reason would read
+          as being about a pressing the judge never saw. gray-400 rather than
+          the gray-500 of the app's other secondary text -- on gray-900 that
+          is ~3.7:1, and this is the line that says which record. */}
+      {namesAnotherPressing(item) && (
+        <p className="text-xs text-gray-400 break-words">{item.artist} — {item.title}</p>
+      )}
+      {/* break-words because a reason is arbitrary imported text -- the CSV
+          import strips it and stores it, with no bound on length or on how
+          long a single token may be. One unbroken URL would otherwise run
+          past a panel the placement has just fitted to the safe screen. */}
+      <p className="mt-1 text-sm text-gray-200 break-words">{item.reason}</p>
     </div>
   )
 }
@@ -218,12 +378,12 @@ function StockBrowser({
   // and via the disabled button), so at most one request per item_key is ever
   // outstanding and there is nothing left to reconcile out of order.
   const [pendingSaves, setPendingSaves] = useState<Set<string>>(new Set())
-  // The item whose justification the reason dialog is showing, with the button
-  // that opened it, or null when it is closed. Held as the item rather than a
-  // key so the dialog keeps its content through a refetch that drops the row,
-  // and the opener is carried because the dialog cannot read it back off the
-  // document -- see ReasonDialog.
-  const [reason, setReason] = useState<{ item: StockItem; opener: HTMLElement | null } | null>(null)
+  // What the open popover shows and what it measures itself against: the item
+  // whose justification is on screen, and the icon it is pinned to. Null when
+  // nothing is open. The popover renders beside that icon, so a refetch that
+  // drops the row takes the panel with it -- which is why this state has to be
+  // cleared from here rather than by the popover itself.
+  const [reason, setReason] = useState<{ item: StockItem; anchor: HTMLElement } | null>(null)
   const PER_PAGE = 250
   const tableScrollRef = useRef<HTMLDivElement>(null)
   // A collection sync only moves rows under a filter that reads
@@ -248,6 +408,15 @@ function StockBrowser({
     setPrevViewMode(viewMode)
     setPage(1)
   }
+
+  // A refetch that drops the row unmounts its popover, which cannot then clear
+  // this state itself -- and a row that came back would find it still set and
+  // reopen unbidden. Adjusted during render, like the two resets above, since
+  // the render that drops the row changes none of this component's own inputs
+  // and so would not re-run a dependency-listed effect. Covers the view-mode
+  // switch too: there the popover stays mounted, but the node it was measured
+  // against does not.
+  if (reason && !reason.anchor.isConnected) setReason(null)
 
   // isLatest gates the commit rather than the request: reconciliation can clear
   // or re-case the selection while a request started under the old one is still
@@ -371,10 +540,15 @@ function StockBrowser({
 
   const closeReason = useCallback(() => setReason(null), [])
 
-  // Takes the event for its currentTarget: the dialog restores focus to the
-  // button that opened it, and cannot read that back off the document.
-  function openReason(e: ReactMouseEvent<HTMLButtonElement>, item: StockItem) {
-    setReason({ item, opener: e.currentTarget })
+
+
+  // The icon is the whole control: a second click on the one already showing
+  // closes it, and a click on another row's swaps to that one. Compared by
+  // item id rather than by node, so a refetch between the two clicks cannot
+  // turn the closing click into a reopening one.
+  function toggleReason(e: ReactMouseEvent<HTMLButtonElement>, item: StockItem) {
+    const anchor = e.currentTarget
+    setReason((open) => (open?.item.id === item.id ? null : { item, anchor }))
   }
 
   function toggleSort(field: StockSortField) {
@@ -599,13 +773,21 @@ function StockBrowser({
                     </a>
                     <div className="absolute top-1 right-1 flex items-center gap-1">
                       {item.reason && (
-                        <button
-                          onClick={(e) => openReason(e, item)}
-                          title={REASON_BUTTON_TITLE}
-                          className="flex h-11 w-11 items-center justify-center rounded-full bg-gray-950/70 text-white hover:bg-gray-950 md:h-auto md:w-auto md:p-1"
-                        >
-                          <InfoIcon />
-                        </button>
+                        <>
+                          <button
+                            onClick={(e) => toggleReason(e, item)}
+                            title={REASON_BUTTON_TITLE}
+                            aria-expanded={reason?.item.id === item.id}
+                            aria-describedby={reason?.item.id === item.id ? REASON_PANEL_ID : undefined}
+                            aria-controls={reason?.item.id === item.id ? REASON_PANEL_ID : undefined}
+                            className="flex h-11 w-11 items-center justify-center rounded-full bg-gray-950/70 text-white hover:bg-gray-950 md:h-auto md:w-auto md:p-1"
+                          >
+                            <InfoIcon />
+                          </button>
+                          {reason?.item.id === item.id && (
+                            <ReasonPopover item={item} anchor={reason.anchor} onClose={closeReason} />
+                          )}
+                        </>
                       )}
                       <button
                         onClick={() => toggleSaved(item)}
@@ -663,13 +845,21 @@ function StockBrowser({
                         {item.price != null ? formatPrice(item.price, item.currency) : 'View'}
                       </a>
                         {item.reason && (
-                          <button
-                            onClick={(e) => openReason(e, item)}
-                            title={REASON_BUTTON_TITLE}
-                            className={`w-11 h-11 flex items-center justify-center ${dismissButtonClass()}`}
-                          >
-                            <InfoIcon />
-                          </button>
+                          <>
+                            <button
+                              onClick={(e) => toggleReason(e, item)}
+                              title={REASON_BUTTON_TITLE}
+                              aria-expanded={reason?.item.id === item.id}
+                              aria-describedby={reason?.item.id === item.id ? REASON_PANEL_ID : undefined}
+                              aria-controls={reason?.item.id === item.id ? REASON_PANEL_ID : undefined}
+                              className={`w-11 h-11 flex items-center justify-center ${dismissButtonClass()}`}
+                            >
+                              <InfoIcon />
+                            </button>
+                            {reason?.item.id === item.id && (
+                              <ReasonPopover item={item} anchor={reason.anchor} onClose={closeReason} />
+                            )}
+                          </>
                         )}
                         <button
                           onClick={() => toggleSaved(item)}
@@ -761,13 +951,21 @@ function StockBrowser({
                     <td className="px-3 py-2">
                       <div className="flex items-center justify-end gap-1">
                         {item.reason && (
-                          <button
-                            onClick={(e) => openReason(e, item)}
-                            title={REASON_BUTTON_TITLE}
-                            className={`p-1 ${dismissButtonClass()}`}
-                          >
-                            <InfoIcon />
-                          </button>
+                          <>
+                            <button
+                              onClick={(e) => toggleReason(e, item)}
+                              title={REASON_BUTTON_TITLE}
+                              aria-expanded={reason?.item.id === item.id}
+                              aria-describedby={reason?.item.id === item.id ? REASON_PANEL_ID : undefined}
+                              aria-controls={reason?.item.id === item.id ? REASON_PANEL_ID : undefined}
+                              className={`p-1 ${dismissButtonClass()}`}
+                            >
+                              <InfoIcon />
+                            </button>
+                            {reason?.item.id === item.id && (
+                              <ReasonPopover item={item} anchor={reason.anchor} onClose={closeReason} />
+                            )}
+                          </>
                         )}
                         <button
                           onClick={() => toggleSaved(item)}
@@ -796,7 +994,6 @@ function StockBrowser({
         )}
       </div>
 
-      {reason && <ReasonDialog item={reason.item} opener={reason.opener} onClose={closeReason} />}
     </div>
   )
 }
