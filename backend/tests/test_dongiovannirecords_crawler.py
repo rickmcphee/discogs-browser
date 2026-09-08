@@ -355,6 +355,11 @@ def test_title_parse(title, expected):
     # Found in review on PR #323.
     'Amy Klein "Fire" 12"CD',
     'Amy Klein "Fire" 7"Cassette',
+    # The right-hand boundary must be Unicode-aware too, or an accented
+    # letter slips through the hole the ASCII one left.
+    # Found in review on PR #323.
+    'Amy Klein "Fire" 12"\u00e9CD',
+    'Amy Klein "Fire" 12"\u00faCassette',
     'Amy Klein "Fire" 12"x',
     # A quote embedded in a word is not an inch marker, even though it does
     # follow a digit -- the digit lookbehind that stood in for the format

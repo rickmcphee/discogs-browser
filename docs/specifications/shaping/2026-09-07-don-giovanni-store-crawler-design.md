@@ -198,20 +198,24 @@ The parse is therefore:
   descriptor of `Big" 12"` — which the inch marker inside that descriptor
   then admits as a record. The first draft of this document claimed the
   lookahead covered this; it does not. Every quote this store leaves after
-  the album is an inch marker, and an inch marker always follows its digits
-  (`12"`, `2x12"`, `7"`), so a quote in the descriptor that is not preceded
-  by a digit rejects the parse. The exemption covers exactly the three
-  characters the format gate accepts as an inch marker — `"`, `”` and `″` — so
-  a **left** curly quote is rejected wherever it appears, and a stray `″` is
-  drift like any other quote rather than an unrecognised descriptor the gate
-  would admit by default.
+  the album is an inch marker, so the descriptor may carry **at most one
+  complete inch marker and no quote outside one** — judged against the very
+  same `_INCH_MARKER` token the format gate uses, never a rule that
+  approximates it.
 
-  The digit rule alone is not enough, because a nested quotation whose inner
-  content ends in digits satisfies it twice over: `Artist "The " 54" 12"`
-  parses to an album of `The` and a descriptor of `54" 12"`. Every live
-  descriptor carries exactly **one** quote, so a second one rejects the parse
-  as well. Found in review on PR #323, over three passes — whether a stray
-  quote is drift, then which characters count, then how many.
+  That sharing is the point, and it took four passes to arrive at. Each
+  earlier version substituted "the quote follows a digit" for the gate's
+  definition, and each disagreed with the gate somewhere: it accepted
+  `Studio54" LP`, where the quote is embedded in a word; it refused `12 "`,
+  which the gate reads as a marker perfectly well; and it was satisfied twice
+  over by `Artist "The " 54" 12"`, whose quotes both follow digits. One shared
+  token answers all three, and the one-marker cap is what makes a second
+  marker drift.
+
+  The token's boundaries are Unicode-aware on **both** sides, which took two
+  passes of its own: the left ones were converted first and the right one left
+  ASCII in the same commit, so `12"éCD` remained a complete marker and was
+  admitted before the trailing `CD` could reject it.
 - Curly quotes are admitted on both sides even though the store writes none.
   They cost one character each and are the commonest way a Shopify store's
   copy drifts.

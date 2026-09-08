@@ -29,7 +29,7 @@
 
 Full grounding for every rule above: [`docs/specifications/shaping/2026-09-07-don-giovanni-store-crawler-design.md`](../shaping/2026-09-07-don-giovanni-store-crawler-design.md).
 
-**Running the tests.** These tests mock HTTP with `respx` and never reach the store, but the `*_crawler` autouse fixture in `conftest.py` still resolves through the config layer, so run them with the three test env vars set. From `backend/`:
+**Running the tests.** These tests mock HTTP with `respx` and never reach the store, but the `*_crawler` autouse fixture in `conftest.py` still resolves through the config layer, so run them with the three test env vars set. From the repository root:
 
 ```bash
 cd backend && TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/discogs_browser_test \

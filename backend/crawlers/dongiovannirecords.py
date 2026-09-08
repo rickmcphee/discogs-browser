@@ -95,14 +95,22 @@ _BUNDLE_RE = re.compile(r"\bbundles?\b", re.IGNORECASE)
 # PR #323.
 _NOT_AFTER_LETTER = r'(?<![^\W\d_])'
 _NOT_AFTER_LETTER_OR_DIGIT = r'(?<![^\W_])'
+# The mirror of the one above, and it exists because the first pass at this
+# made the LEFT boundaries Unicode-aware and left the right one ASCII in the
+# same commit -- so `12"éCD` stayed a complete inch marker, admitted before
+# the trailing `CD` could reject it. Defined beside its opposite so the two
+# cannot diverge again. Found in review on PR #323.
+_NOT_BEFORE_LETTER_OR_DIGIT = r'(?![^\W_])'
 _INCH_MARKER = (
     _NOT_AFTER_LETTER_OR_DIGIT + r'(?:\d+\s*[x×]\s*)?\d{1,2}\s*'
     # The quote glyph needs a right-hand boundary of its own, which the
     # spelled-out `inch` alternative gets free from its `\b`: without one,
     # `12"CD` reads as a complete inch marker, the format gate admits it
     # before ever noticing the `CD`, and the quote check sees nothing left
-    # over to object to. Found in review on PR #323.
-    r'(?:["”″](?![A-Za-z0-9])|inch(?:es)?\b)'
+    # over to object to. Unicode-aware like every other boundary here, or
+    # `12"éCD` walks through the same hole. Found in review on PR #323, over
+    # two passes -- the boundary, then its character class.
+    r'(?:["”″]' + _NOT_BEFORE_LETTER_OR_DIGIT + r'|inch(?:es)?\b)'
 )
 _INCH_MARKER_RE = re.compile(_INCH_MARKER, re.IGNORECASE)
 # Exemption-only, and narrower than _BUNDLE_RE on purpose -- see
