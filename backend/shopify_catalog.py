@@ -32,6 +32,12 @@ async def iter_products(base_url: str, collection_slug: str) -> AsyncIterator[di
     pages that did answer survive -- _sync_stock discards a catalog crawl's entire
     result when it raises, and the ceiling is not a failure.
 
+    An empty `products` LIST is exhaustion, and the only thing that is. A
+    missing, null or retyped field raises: reading it as exhaustion would stop
+    the walk silently, past every drift guard a crawler can write, because
+    from the crawler's side the walk simply ended -- leaving _sync_stock to
+    replace the whole snapshot with a partial prefix.
+
     A 400 anywhere below the ceiling is left to the retry budget and
     ultimately raises, deliberately. It is unexplained rather than expected there,
     and raising is the fail-safe outcome: _sync_stock skips replace_stock_items()
@@ -59,7 +65,21 @@ async def iter_products(base_url: str, collection_slug: str) -> AsyncIterator[di
                 params={"limit": _PAGE_LIMIT, "page": page},
                 delay=delay, failure_limit=failure_limit,
             )
-            products = r.json().get("products", [])
+            products = r.json().get("products")
+            # An empty LIST is exhaustion, and the only thing that is. A
+            # missing, null or retyped field is drift, and reading it as
+            # exhaustion stops the walk in silence: _sync_stock replaces a
+            # crawler's whole snapshot with whatever the walk yielded, so on
+            # a later page that is a partial prefix -- past every drift guard
+            # a crawler can write, because from its side the walk simply
+            # ended -- and on the first page an empty result indistinguishable
+            # from a store that sold out. Raising instead is inert:
+            # _sync_stock skips replace_stock_items() on a raise, leaving the
+            # previous snapshot intact.
+            if not isinstance(products, list):
+                raise RuntimeError(
+                    f"{base_url} {collection_slug} page {page} carries no readable "
+                    "products list -- payload drift")
             if not products:
                 break
             # No log line here: _run_catalog_crawler logs every reported page
