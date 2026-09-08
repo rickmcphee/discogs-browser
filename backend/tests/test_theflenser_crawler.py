@@ -1002,8 +1002,10 @@ async def test_a_non_string_variant_title_is_counted_not_crashed(crawler):
 @respx.mock
 @pytest.mark.parametrize("bad", [123, 4.5, ["Black Vinyl"], {"name": "Black Vinyl"}, True])
 async def test_a_non_string_variant_title_raises_the_named_guard_not_an_attribute_error(crawler, bad):
+    """`pressing-name drift`, not the broader `pressing-source drift`: the
+    specific diagnostic is the whole reason these guards are separate."""
     _mock_walk([_with(_LP_PRODUCT, variants=[{"title": bad, "price": "25.00", "available": True}])])
-    with pytest.raises(RuntimeError, match="pressing-source drift"):
+    with pytest.raises(RuntimeError, match="pressing-name drift"):
         await _run(crawler)
 
 
@@ -1053,3 +1055,47 @@ async def test_a_non_string_field_does_not_abort_a_healthy_catalog(crawler):
         _OFF_SHELF_PRODUCT,
     ])
     assert [i["artist"] for i in await _run(crawler)] == ["Bismuth"]
+
+
+
+# --- guard precedence and handle normalisation (PR #331, fifth round) -------
+
+@respx.mock
+async def test_a_lone_variantless_record_names_its_own_guard(crawler):
+    """`record_variants_seen == 0` is true here too, so ordering the broad
+    guard first made this message unreachable whenever one product was the
+    whole catalog."""
+    _mock_walk([_with(_LP_PRODUCT, variants=[])])
+    with pytest.raises(RuntimeError, match="variant-source drift"):
+        await _run(crawler)
+
+
+@respx.mock
+async def test_a_lone_unnamed_pressing_names_its_own_guard(crawler):
+    _mock_walk([_with(_LP_PRODUCT, variants=[
+        {"title": "   ", "price": "25.00", "available": True},
+    ])])
+    with pytest.raises(RuntimeError, match="pressing-name drift"):
+        await _run(crawler)
+
+
+@respx.mock
+async def test_the_broad_guard_still_names_the_case_it_is_for(crawler):
+    """Variants that exist and are readable, but every one of which reads as
+    another medium — nothing more specific applies."""
+    _mock_walk([_with(_LP_PRODUCT, variants=[
+        {"title": "Jewel Case CD", "price": "12.00", "available": True},
+        {"title": "Cassette", "price": "15.00", "available": True},
+    ])])
+    with pytest.raises(RuntimeError, match="pressing-source drift"):
+        await _run(crawler)
+
+
+@respx.mock
+async def test_a_padded_handle_is_normalised_into_the_url(crawler):
+    """`_has_identity` validates the collapsed handle, so the URL has to be
+    built from the same reading — otherwise a padded handle passes validation
+    and is persisted as a malformed link under a different item_key."""
+    _mock_walk([_with(_PLACEHOLDER_PRODUCT, handle="  alan-sparhawk-white-roses  ")])
+    item, = await _run(crawler)
+    assert item["url"] == "https://nowflensing.com/products/alan-sparhawk-white-roses"

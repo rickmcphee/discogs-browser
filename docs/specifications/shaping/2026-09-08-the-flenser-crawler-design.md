@@ -486,8 +486,8 @@ per rule and the test suite confirmed to fail on every one, including the two
 that initially survived (a substring `product_type` test and a tag-driven gate),
 which exposed two tests that were not isolating the gate they named.
 
-Copilot reviewed PR #331 over four rounds, and every finding was reproduced
-against the code before being fixed and given its own mutation:
+Copilot reviewed PR #331 over successive rounds, and every finding was
+reproduced against the code before being fixed and given its own mutation:
 
 - the nested-quote truncation and its two follow-ons — the inch marker with no
   right-hand boundary, and two separately valid markers vouching for each
@@ -499,7 +499,18 @@ against the code before being fixed and given its own mutation:
 - the Unicode-normalisation hole, where a decomposed accent opened a boundary
   its precomposed equivalent closes;
 - and, on the emitted side of that same issue, an identity left in whatever
-  normalisation the storefront happened to serve.
+  normalisation the storefront happened to serve;
+- a payload field that was not a string reaching `.split()` and aborting the
+  whole source, on the variant title and three sibling fields (see "Reading
+  the payload" above);
+- a handle validated in its collapsed spelling but interpolated into the URL
+  raw, so a padded one was persisted as a malformed link under a different
+  `item_key`;
+- and the broadest drift guard ordered ahead of the specific ones, which made
+  `variant-source drift` and `pressing-name drift` unreachable whenever a
+  single product was the whole catalog. Each of those still raised, so the
+  snapshot was safe throughout; what was lost is the only thing distinct
+  guards are for.
 
 Two suggestions were declined, both recorded above: counting every dropped
 variant rather than the malformed ones, and counting unclassifiable

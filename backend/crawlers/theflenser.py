@@ -409,13 +409,6 @@ class Crawler:
             raise RuntimeError(
                 f"no vinyl product in the {_COLLECTION_SLUG} collection carries a descriptor that "
                 "names a record format -- format-vocabulary drift")
-        if record_variants_seen == 0:
-            # The pressing is read off the variants, so this is the guard that
-            # notices the store losing them or re-titling every one of them as
-            # another medium.
-            raise RuntimeError(
-                f"no vinyl product in the {_COLLECTION_SLUG} collection has a variant that reads "
-                "as a record -- pressing-source drift")
         if yielded and not priced:
             # Rows without the emptiness: `_price` answers None for a value it
             # cannot use, so a `price` field removed or retyped store-wide
@@ -450,6 +443,24 @@ class Crawler:
             raise RuntimeError(
                 f"{_COLLECTION_SLUG} collection yielded no rows while {unnamed_pressings} "
                 "variant(s) carry no readable name -- pressing-name drift")
+        if record_variants_seen == 0:
+            # LAST of the drift guards, not first, though it is the broadest.
+            # It fires on exactly the emptiness the three above diagnose more
+            # precisely -- a record with no variants, or one whose only
+            # variant name is unreadable, leaves record_variants_seen at zero
+            # too -- so ordering it first made `variant-source drift` and
+            # `pressing-name drift` unreachable whenever a single product was
+            # the whole catalog. Every one of these raises, so the snapshot
+            # was safe either way; what was lost is the only thing distinct
+            # guards are for, which is telling an operator WHICH thing broke.
+            # Found in review on PR #331.
+            #
+            # What reaches it now is the case it actually names: variants that
+            # exist and are readable, but every one of which reads as another
+            # medium.
+            raise RuntimeError(
+                f"no vinyl product in the {_COLLECTION_SLUG} collection has a variant that reads "
+                "as a record -- pressing-source drift")
         if not yielded and unreadable_stock:
             # An empty result is only trustworthy when every product that
             # could have yielded a row was readable and simply out of stock.
@@ -471,7 +482,12 @@ class Crawler:
             return []
         if not cls._has_identity(product):
             return []
-        url = f"{cls.base_url}/products/{product.get('handle', '')}"
+        # The SAME normalised handle _has_identity validated, not the raw
+        # field: a handle padded with whitespace passed that check while the
+        # URL kept the padding, producing a malformed link and hashing a
+        # different item_key than the clean spelling would. One reading of a
+        # field, used everywhere. Found in review on PR #331.
+        url = f"{cls.base_url}/products/{_text(product.get('handle'))}"
         items = []
         for variant, pressing in cls._record_variants(product):
             # Only the literal True admits a variant: the string "false" is
