@@ -1,0 +1,353 @@
+# The Flenser crawler design
+
+**Status:** implemented
+**Date:** 2026-09-08
+**Store:** https://nowflensing.com/collections/vinyl (walked at `/collections/all`)
+
+## Problem
+
+The Flenser is a San Francisco label and webstore for experimental black
+metal, doom, shoegaze and dark post-punk. It carries its own catalog — Chat
+Pile, Have a Nice Life, Agriculture, King Woman, Giles Corey, Planning For
+Burial, Bosse-de-Nage, Midwife, Uboa, Ragana, Wreck and Reference — alongside
+a large heavy-underground distro pulling from Profound Lore, 20 Buck Spin,
+Tartarus, Dark Descent, Relapse, Sentient Ruin, Gilead Media, Southern Lord
+and Sacred Bones, plus indie shelves from Kranky, Numero Group, Constellation,
+Thrill Jockey, Sub Pop and Dead Oceans. None of that stock is covered by a
+bundled crawler, so none of it reaches the Store tab and none of it is matched
+against a user's library under the Store tab's Collection and Wantlist filters.
+
+The store runs Shopify (`nowflensing-com.myshopify.com`), so
+`shopify_catalog.iter_products()` already implements the transport. What
+needed deciding was which shelf to walk, how to read an artist out of a title
+convention no sibling crawler shares, and where the format gate has to sit.
+
+## Scope
+
+**In:** a `catalog`-type plugin, `backend/crawlers/theflenser.py`, walking the
+store's `all` collection over the public `products.json` endpoint and yielding
+in-stock vinyl as stock items.
+
+**Out:**
+
+- CDs, cassettes, apparel, books, banners, gift cards, subscription
+  memberships and shipping upgrades, all of which sit in the same collection
+  and are excluded on their `product_type`.
+- The store's scratch-and-dent bin and its multi-record bundles — see
+  "Descriptor gate" below.
+- Any release-type (per-library-item) crawling of this store. This is a
+  catalog source; the Store tab's own crawlers price its items.
+
+## Technical grounding
+
+Everything below was gathered live on 2026-09-08 by fully paginating both the
+`vinyl` shelf and the `all` collection over `products.json`, cross-checking
+the shelf against its own paginated HTML, reading `meta.json`,
+`collections.json` and `robots.txt`, pulling the store's other
+vinyl-named shelves for comparison, tabulating every product type, tag,
+title, descriptor and variant title in the catalog, and caching the payloads
+so every rule below could be replayed against them.
+
+### Collection choice: `all`, not the `vinyl` shelf the request named
+
+The request named `/collections/vinyl`. That shelf walks cleanly — 278
+products over two pages at `limit=250`, and the same 278 handles its own
+paginated HTML lists across six pages, so nothing is repeated or skipped and
+the ceiling in `shopify_catalog.iter_products()` is nowhere near being
+reached. It is nonetheless **not** the store's records:
+
+| | Products |
+| --- | --- |
+| `vinyl` shelf | 278 |
+| Store-wide products carrying a `vinyl` `product_type` segment | 281 |
+| Vinyl-typed products **absent from the shelf** | 3 |
+
+The three are Bismuth "The Eternal Marshes" LP, Glitch "Towards The Gutter"
+LP and Filmmaker "Multiverse Nightmare" LP — all Tartarus distro, all
+published within four minutes of each other on 2025-10-17, all in stock at
+$23, all tagged `Vinyl`, and none of them on the shelf. The store's curation
+of that shelf has already fallen behind its own taxonomy once, and a shelf
+walk would silently inherit every future instance of that.
+
+`all` is Shopify's built-in all-products collection. It returns 754
+products, exactly the `published_products_count` in `meta.json` and exactly
+the same handle set as the store-wide `/products.json`, and it is a strict
+superset of every vinyl-named shelf:
+
+| Shelf | Published products | Note |
+| --- | --- | --- |
+| `vinyl` | 278 | misses the three above |
+| `used-vinyl` | 0 | `collections.json` counts 12; none published |
+| `test-pressings` | 0 | `collections.json` counts 132; none published |
+| `faetooth-vinyl` | 1 | a subset of `vinyl` |
+
+The cost of `all` over the shelf is the pages the walk fetches — four rather
+than two, since the shelf is a fraction of the catalog. That is two extra
+paced requests per stock sync, against three records the shelf would lose
+today and an unknown number later. `collections.json` reporting `vinyl`'s
+`products_count` as 1051 against 278 published is the usual gap — it counts
+products not published to the online store — and is not a shortfall to chase.
+
+`robots.txt` disallows only sort, filter and language-picker crawl traps
+under `/collections/`; the `products.json` path this crawler requests is not
+among them.
+
+`meta.json` reports `"currency":"USD"` and `"country":"US"`, so `currency` is
+hardcoded `"USD"`.
+
+### Format gate, layer one: `product_type`
+
+Store-wide, `product_type` is a clean taxonomy: `Vinyl`, `CD`, `cd`,
+`Apparel`, `Tapes`, `Book`, `Banner`, `Membership Series`, `Upgrade`, `The
+Flenser Gift Card`, and a handful of comma-joined values that name a shelf
+alongside the format (`Vinyl,Distributed titles`, `Vinyl,Flenser Releases`,
+`Flenser Releases,CDs`, `Distributed titles,CDs`,
+`Clearance,Flenser Releases,CDs`).
+
+The gate therefore tests **per comma-separated segment**, not the whole
+string:
+
+- An equality test drops the three records typed `Vinyl,Distributed titles`
+  and `Vinyl,Flenser Releases`.
+- A substring test admits anything whose type merely contains the word —
+  `Vinyl Accessories`, say, if the store ever adds one.
+
+It also enumerates positively, so a type the store adds later stays out by
+default.
+
+**It reads `product_type` and not `tags`, and the payload is unambiguous
+about which is right.** The tag is wrong in *both* directions live:
+
+| Product | `product_type` | `tags` | Is it a record? |
+| --- | --- | --- | --- |
+| Flenser Membership - Series Nine - Vinyl Edition | `Membership Series` | `["vinyl"]` | no |
+| Hum "Inlet" DLP | `Vinyl` | `[]` | yes |
+| Kathryn Mohr "Waiting Room" LP | `Vinyl` | `[]` | yes |
+
+The membership is also the only product in the whole store whose *title*
+names a record format while its type does not, so it is the one case a
+title-driven gate would get wrong too. `product_type` is right on all three
+and on every other product in the catalog.
+
+### Title convention: `Artist "Album" <format>`
+
+Every single-item product in the store follows it. Of the 281 vinyl-typed
+products, 280 carry exactly two quotes and parse; the one that does not is
+`Mamaleek Vinyl Bundle`. All 281 use straight quotes; the store writes no
+curly ones.
+
+**There is no fallback source for either half.** `vendor` on this store is
+the *releasing label* — dozens of distinct values across the vinyl-typed set,
+from `The Flenser` itself down to one-off distro labels — and never the artist,
+unlike the sibling Shopify label stores (`counterintuitiverecords.py`,
+`deathwishinc.py`) where a vendor fallback is reasonable. A vendor fallback
+here would credit every unparseable title to a record label, so a title that
+does not parse yields no row at all. That is also what excludes the store's
+one vinyl-shelved bundle without any bundle-specific rule firing.
+
+The regex's two character classes are asymmetric on purpose. The artist group
+excludes only the characters that can *open* a quotation, which makes the
+album's opening quote the first quote in the string, so a descriptor's own
+inch marker can never be read as one; the album group excludes every quote
+there is, so a stray third quote is junk rather than an album. Curly quotes
+are admitted though the store writes none — the commonest way a storefront's
+copy drifts, and admitting them costs nothing.
+
+### Billing reduction: the slash only, never the ampersand
+
+A stock row's artist has to be the *first-billed* one to be matchable:
+`discogs.parse_release` stores `info["artists"][0]["name"]` and nothing else,
+and `db._library_release_match_sql` compares artists with exact case-folded
+equality (only the title gets the exact-or-prefix-with-space treatment). A
+joined billing can therefore never match a library release.
+
+The store bills these records to more than one artist:
+
+| Separator | Live billings |
+| --- | --- |
+| `/` | Botanist / Oskoreien, Deathgrave / Black Ganion |
+| `&` | Bell Witch & Aerial Ruin (×2), Chat Pile & Hayden Pedigo, Efrim Manuel Menuck & Kevin Doria, Matt Jencik & Midwife, Midwife & Vyva Melinkolya, Ragana & Drowse, Throwing Bricks & Ontaard, Uboa & Whitehorse |
+
+Every live ampersand is in fact a collaboration, so reducing on it would be
+right on every one of them today — and that is not enough. An ampersand is also how
+plenty of *single* acts spell their own name (Belle & Sebastian, Iron & Wine,
+both on labels this store already distros), and clipping one of those would
+not merely miss a library match, it would credit the row to a band that did
+not make the record. A wrong artist is worse than a missed filter match. A
+slash carries no such ambiguity: it is the split-record separator and nothing
+else, so the reduction is slash-only.
+
+Two details of the reduction, both load-bearing and both confirmed against
+the live catalog:
+
+- **Whitespace is required on at least one side of the slash**, the repo's
+  standard guard for this bug class, so an artist whose own name contains one
+  (AC/DC) is not clipped to its first half.
+- **It reads the artist segment only.** These live albums carry a slash in
+  their own title — Agriculture "Living is Easy / The Circle Chant", Chat
+  Pile "This Dungeon Earth / Remove Your Skin Please", Nivhek "After its own
+  death / Walking in a spiral towards the house", Botanist "Botanist / Thief
+  Split", The Jesus Lizard "Goat (Remaster / Reissue)" — and a reduction
+  applied to the album would truncate every one of them.
+
+### Format gate, layer two: the descriptor
+
+`product_type` alone is not enough, and one live product proves it. The store
+shelves a scratch-and-dent bin as `Various "Scratch & Dent" Stock`, typed
+`Vinyl`, whose "variants" are eleven *whole other releases* — a Succumb LP, a
+Loss of Self CD, a Planning for Burial tape set — rather than pressings of one
+record. Admitted, it would emit rows credited to "Various" whose titles are
+other records' titles, at damaged-copy prices.
+
+What separates it from a record is that its descriptor names no format.
+Every other live descriptor does:
+
+| Descriptor | Products | Admitted |
+| --- | --- | --- |
+| `LP` | 216 | yes |
+| `DLP` | 53 | yes |
+| `Deluxe DLP`, `DLP (Deluxe Edition)`, `3LP` | 1 each | yes |
+| `7inch`, `10inch`, `LP + 10inch` | 1 each | yes |
+| `DLP & DVD`, `DLP & Zine`, `DLP & Book (pre-order)` | 1 each | yes |
+| `LP (pre-order)` | 1 | yes |
+| `Stock` | 1 | **no** |
+
+The gate is **positive**, and that is the whole reason it works: a descriptor
+can name a record *and* something else. `DLP & DVD`, `DLP & Zine` and
+`DLP & Book (pre-order)` are all real records in packaging, and a gate that
+rejected on the second noun would drop all three. Naming a vinyl format wins;
+naming anything else alongside it is irrelevant.
+
+Two refinements sit on top of it:
+
+- **A bundle-shaped descriptor is rejected first.** The store's one
+  vinyl-shelved bundle carries no quoted album, so the title parse already
+  excludes it — but a bundle written to the store's usual convention
+  (`Mamaleek "Vinyl Bundle" LP`) would satisfy the format gate on its own
+  `Vinyl`. A bundle is not a Discogs release and its price is not any
+  record's. The check reads the **descriptor**, not the whole title, so an
+  album that legitimately contains the word (`Artist "Bundle of Joy" LP`) is
+  not silently dropped.
+- **`EP` is admitted, and only here.** An EP is as often a CD as a record, so
+  the word names a format without naming a medium — which is all this gate
+  needs, since `product_type` has already said the product is vinyl. Nothing
+  live uses it.
+
+### Variant gate
+
+A variant title on this store is the pressing's colour and usually nothing
+else — 185 distinct values, from `Black Vinyl` to
+`Olive Green and Gold Merge with Baby Blue Splatter Vinyl` — so the gate is
+**negative**: on a vinyl-typed product with a record descriptor, a variant is
+a record unless its own title names another medium.
+
+Its check order is load-bearing rather than stylistic: a vinyl word decides
+*before* another medium word, so a pressing named for both sides of its
+second disc stays a record. That ordering follows `iodinerecords.py` and
+`counterintuitiverecords.py`, where it is a live case rather than a
+hypothetical.
+
+`EP` is deliberately **not** part of the vinyl-medium vocabulary this gate
+reads, though the descriptor gate admits it: a `CD EP` sibling must not be
+admitted by the same word that admits a 12" EP as a product descriptor. The
+two gates ask different questions and read different patterns.
+
+The inch marker admits the quote glyph as well as the spelled-out word,
+though this store spells every one of its own out (`10inch`, `7inch`) and
+writes no quote glyph anywhere. The glyph is genuinely ambiguous in a variant
+title, where the string can be a whole `Artist "Album" Format` title rather
+than a pressing name: the album's closing quote after a digit
+(`... Vol 1 & 2" Tape Set`) reads as a 2-inch record and admits a variant the
+media gate would otherwise reject. That is tolerated rather than machined
+around, on two grounds — the only live title shaped that way is inside the
+scratch-and-dent bin the descriptor gate already drops, and the variant
+gate's default is to admit anyway, so the ambiguity can only reach an outcome
+the gate was already willing to reach. Dropping the glyph instead would trade
+it for a silent loss of any record the store one day describes as a 12",
+which is the worse failure.
+
+### Row title, availability and the placeholder
+
+The row's title is the album, with the pressing appended as ` — {variant}`.
+The pressing is appended on **every** row that names one, not only when the
+product has more than one variant: `compute_item_key` hashes the title, so a
+sibling pressing being listed or delisted must not re-title the surviving
+rows and orphan the listings, judgments and saves keyed on the old identity.
+
+Shopify's `Default Title` placeholder names no pressing, so a row built on it
+carries the album alone — and only as a product's **sole** variant. On a
+multi-variant product the placeholder is malformed data, and a blank name is
+never a pressing; either would otherwise share the bare album title and the
+product URL, and so the `item_key`, with every sibling built the same way. No
+live product carries it alongside other variants; 206 carry it alone.
+
+Availability comes from `variant.available`, which is a `bool` on all 506
+live variants, and **only the literal `True` admits a row**: the string
+`"false"` is truthy, so a falsiness test would publish a sold-out record as in
+stock.
+
+There is **no pre-order bypass and no ` (Pre-Order)` marker**. The store's two
+live pre-orders already report `available: true`, and it announces them in the
+product title (`... LP (pre-order)`) — which the parse leaves in the
+descriptor, outside the album, so the row is titled the same before and after
+the record ships. A marker would re-key the row on the day it stopped being a
+pre-order.
+
+### Prices
+
+Every live price is a decimal string. `_price` answers `None` for anything it
+cannot use, rejecting `bool` *before* `float()` (bool is an `int` subclass, so
+`True` would price a record at 1), and non-finite or non-positive values after
+it.
+
+## Drift guards
+
+`db.replace_stock_items()` DELETEs this crawler's previous snapshot before
+inserting, and `_sync_stock` only skips that call when the crawl raised — so a
+completed-but-empty walk is destructive where a raise is inert. Each guard
+names a distinct way the payload can stop carrying what this crawler reads:
+
+| Guard | Fires when | What it catches |
+| --- | --- | --- |
+| `returned no products` | the walk yielded nothing | collection renamed or removed |
+| `format-taxonomy drift` | no product carries a `vinyl` type segment | the store restyling `product_type` |
+| `title-convention drift` | no vinyl product yields an artist and an album | the store dropping the quoted-title convention |
+| `format-vocabulary drift` | no vinyl product's descriptor names a format | the format moving out of the title, or being written in unknown words |
+| `pressing-source drift` | no vinyl product has a variant reading as a record | variants lost, or re-titled as another medium |
+| `price-source drift` | rows were yielded but none carries a price | `price` removed or retyped store-wide |
+| `identity-source drift` | nothing yielded while a vinyl product has no title or handle | identity fields going away |
+| `stock-source drift` | nothing yielded while a vinyl product's flag is unreadable | `available` retyped |
+
+Two properties of the tallies matter as much as the guards themselves:
+
+- **They are nested, not sibling.** Only a product that is vinyl-typed *and*
+  parses *and* names a format *and* has a variant the gate admits could have
+  yielded a row, so only such a product's identity and stock readability say
+  anything about an empty result. Tallied independently, one product could
+  satisfy each condition while none of them can yield.
+- **They are taken before the availability filter**, so a store that has
+  simply sold out is empty legitimately and trips nothing. `yielded` and
+  `priced` are necessarily counted after it, which is why the guards reading
+  them are each conditioned on a second tally rather than on emptiness alone.
+
+Stock readability is judged with `all()`, not `any()`, over the admitted
+variants: one readable variant does not make the product readable, and a
+product whose black pressing is a readable `False` and whose coloured pressing
+carries the string `"false"` would otherwise vouch for an emptiness half its
+own doing.
+
+## Verification
+
+Replayed over the fully-cached live catalog: 754 products walked → 281
+vinyl-typed → 280 parsed → 279 naming a format → **319 rows across 163
+artists**. No `item_key` collisions, no blank artist or title, no malformed
+URL, no missing cover image, no null price, every row `USD` and `Vinyl`.
+
+Exactly two products are dropped after the type gate, both intentionally:
+`Mamaleek Vinyl Bundle` (no quoted album) and `Various "Scratch & Dent" Stock`
+(descriptor names no format).
+
+Every rule and guard above was mutation-checked — the crawler was mutated once
+per rule and the test suite confirmed to fail on every one, including the two
+that initially survived (a substring `product_type` test and a tag-driven gate),
+which exposed two tests that were not isolating the gate they named.
