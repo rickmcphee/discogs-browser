@@ -64,6 +64,7 @@ class Crawler:
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:
         products_seen = 0
+        type_ok = 0
         vinyl_typed = 0
         artist_ok = 0
         artist_missing = 0
@@ -75,6 +76,14 @@ class Crawler:
         priced = 0
         async for product in iter_products(self.base_url, _COLLECTION_SLUG):
             products_seen += 1
+            # The two gate layers are counted separately, not just as a pair:
+            # a guard that cannot tell which layer rejected a product reports
+            # the wrong field. If every product still types as vinyl but the
+            # titles start naming CDs, a combined tally would claim no vinyl
+            # product_type exists, which is false and sends the next reader to
+            # the wrong source.
+            if self._names_vinyl(product.get("product_type") or ""):
+                type_ok += 1
             # Nested, not sibling tallies: only a product with a vinyl type and
             # an artist could have yielded a row, so only that product's
             # identity and readability say anything about an empty result.
@@ -125,10 +134,19 @@ class Crawler:
         if products_seen == 0:
             raise RuntimeError(
                 f"{_COLLECTION_SLUG} collection returned no products -- renamed, removed, or markup drift")
-        if vinyl_typed == 0:
+        if type_ok == 0:
             raise RuntimeError(
                 f"no product in the {_COLLECTION_SLUG} collection carries a vinyl product_type "
                 "-- format-taxonomy drift")
+        if vinyl_typed == 0:
+            # The type layer is intact and the title layer rejected everything:
+            # either the store re-worded its titles, or the shelf really has
+            # filled with mistyped non-vinyl. Naming the title keeps this
+            # distinct from the taxonomy case above, which is the whole reason
+            # the two tallies are separate.
+            raise RuntimeError(
+                f"every product in the {_COLLECTION_SLUG} collection carries a vinyl "
+                "product_type but names another medium in its title -- title-gate drift")
         if artist_ok == 0:
             # The artist is `vendor` and nothing else on this store: titles are
             # album-only, so there is no second source to fall back to and no

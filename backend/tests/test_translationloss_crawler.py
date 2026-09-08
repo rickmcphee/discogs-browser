@@ -550,6 +550,18 @@ async def test_raises_when_no_product_carries_a_vinyl_type(crawler):
 
 
 @respx.mock
+async def test_a_title_gate_wipeout_names_the_title_not_the_product_type(crawler):
+    # Both products still type as vinyl; only their titles name another medium.
+    # A tally shared by the two gate layers would raise "no vinyl product_type",
+    # which is false here and points at the wrong payload field.
+    a = {**_LP_PRODUCT, "title": "Another Return / CD", "handle": "a"}
+    b = {**_TWO_LP_PRODUCT, "title": "Cornea Cassette", "handle": "b"}
+    _mock_walk([a, b])
+    with pytest.raises(RuntimeError, match="names another medium in its title -- title-gate drift"):
+        await _run(crawler)
+
+
+@respx.mock
 async def test_a_shelf_gone_all_cd_raises_on_the_format_source_not_the_artist(crawler):
     # The CD rows still carry perfectly readable vendors, so a guard order that
     # let the artist tally fire first would point the next reader at a source

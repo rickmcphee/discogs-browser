@@ -143,6 +143,15 @@ album word would drop a real record with nothing to override it. Confirmed
 live that no title on this shelf matches any word in the set, so the layer
 drops nothing today, and the full replay below is unchanged by it.
 
+**Each layer is tallied separately**, and the guards read one tally each.
+Copilot's third review round found the reason: `vinyl_typed` counted only
+products passing *both* layers, so a shelf whose types were all still `12"`
+but whose titles had begun naming CDs would raise "no product carries a vinyl
+`product_type`" — false, and pointing the next reader at a field that never
+changed. That is the same defect as the artist-tally nesting described under
+the drift guards, and it is corrected the same way: a guard has to name the
+source that actually broke.
+
 ### The artist is `vendor`, with no fallback
 
 `vendor` holds the act's own name on every live vinyl product — 134 of 134
@@ -344,6 +353,7 @@ reads:
 | --- | --- |
 | `no products` | the collection returned nothing — renamed, removed, or markup drift |
 | `format-taxonomy drift` | no product carries a vinyl `product_type` — the store moved the format signal |
+| `title-gate drift` | every product still carries a vinyl `product_type`, but the title layer rejected all of them — the store re-worded its titles, or the shelf really has filled with mistyped non-vinyl |
 | `artist-source drift` | no vinyl product carries a vendor — the artist's only source is gone |
 | `pressing-source drift` | no vinyl product has a variant naming a pressing — variants lost, blanked, or left as bare placeholders beside siblings |
 | `artist-source drift` (partial) | nothing was yielded while some vinyl product carries no vendor |
@@ -401,7 +411,8 @@ the live catalog cannot produce). Cases:
   without an edit; a type naming no vinyl format excluded by default
 - the title layer: a CD and a cassette mistyped as a vinyl type rejected on
   their titles, a vinyl word overriding the medium word on a genuine hybrid,
-  and a title naming no format left untouched
+  and a title naming no format left untouched; and a shelf emptied by the
+  title layer raising `title-gate drift` rather than blaming `product_type`
 - the artist read from `vendor` rather than the title, a joined billing left
   joined, a title dash not read as a billing split, a product with no vendor
   skipped, and whitespace collapsed on both fields
