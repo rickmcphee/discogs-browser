@@ -348,6 +348,12 @@ def test_title_parse(title, expected):
     # group excludes quotes, so the album's opening quote is always the
     # title's first and a stray inch marker cannot start one.
     'Amy Klein 12" "Fire" LP',
+    # An inch marker needs a right-hand boundary: glued to a following word,
+    # `12"CD` is not one, and admitting it would publish a CD as vinyl.
+    # Found in review on PR #323.
+    'Amy Klein "Fire" 12"CD',
+    'Amy Klein "Fire" 7"Cassette',
+    'Amy Klein "Fire" 12"x',
     # A quote embedded in a word is not an inch marker, even though it does
     # follow a digit -- the digit lookbehind that stood in for the format
     # gate's own token accepted this. Found in review on PR #323.
@@ -890,6 +896,10 @@ async def test_a_merch_word_in_the_album_does_not_reject_the_record(crawler):
     # with nothing else to decide, a false match would flip this to False.
     ("Mcdonalds Box Set", True),
     ("Mcdonalds Gatefold", True),
+    # A glued inch marker is not one, so the gate falls through to the media
+    # word it was masking. Found in review on PR #323.
+    ('12"CD', False),
+    ('12"Cassette', False),
 ])
 def test_a_medium_word_embedded_in_another_word_does_not_decide_the_format(descriptor, expected):
     assert Crawler._is_vinyl(descriptor) is expected

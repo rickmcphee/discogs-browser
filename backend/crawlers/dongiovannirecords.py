@@ -47,7 +47,8 @@ _OPENING_QUOTES = '"“'   # the two a title can open an album with
 # a digit or the end, so a closing quote glued to a letter (`"Fire"X`) fails
 # to parse rather than being guessed at. It does NOT by itself reject a
 # nested quotation -- `"The " Big"` has whitespace after the inner quote and
-# satisfies the lookahead -- which is what _STRAY_QUOTE_RE below is for. The
+# satisfies the lookahead -- which is what _descriptor_quotes_are_clean is
+# for. The
 # `\d` arm keeps a descriptor glued onto the closing quote (`"Album"12"`)
 # readable; this store does not write it but a sibling Shopify store does.
 # Curly quotes are admitted though the store writes none: they are the
@@ -82,7 +83,15 @@ _BUNDLE_RE = re.compile(r"\bbundles?\b", re.IGNORECASE)
 # gate reads as an inch marker perfectly well. Approximating one rule inside
 # another is what produced every quote bug on this crawler. Found in review on
 # PR #323.
-_INCH_MARKER = r'(?<![a-z0-9])(?:\d+\s*[x×]\s*)?\d{1,2}\s*(?:["”″]|inch(?:es)?\b)'
+_INCH_MARKER = (
+    r'(?<![a-z0-9])(?:\d+\s*[x×]\s*)?\d{1,2}\s*'
+    # The quote glyph needs a right-hand boundary of its own, which the
+    # spelled-out `inch` alternative gets free from its `\b`: without one,
+    # `12"CD` reads as a complete inch marker, the format gate admits it
+    # before ever noticing the `CD`, and the quote check sees nothing left
+    # over to object to. Found in review on PR #323.
+    r'(?:["”″](?![A-Za-z0-9])|inch(?:es)?\b)'
+)
 _INCH_MARKER_RE = re.compile(_INCH_MARKER, re.IGNORECASE)
 # Exemption-only, and narrower than _BUNDLE_RE on purpose -- see
 # _bundle_shaped for why the two differ.
