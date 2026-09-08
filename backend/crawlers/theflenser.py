@@ -535,10 +535,6 @@ class Crawler:
         return cls._classify_variants(product)[0]
 
     @classmethod
-    def _unnamed_pressings(cls, product: dict) -> int:
-        return cls._classify_variants(product)[1]
-
-    @classmethod
     def _classify_variants(cls, product: dict) -> Tuple[list, int]:
         """The variants that read as records, and how many were dropped unread.
 
