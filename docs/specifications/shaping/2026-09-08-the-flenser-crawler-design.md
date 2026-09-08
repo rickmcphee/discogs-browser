@@ -334,14 +334,26 @@ though this store spells every one of its own out (`10inch`, `7inch`) and
 writes no quote glyph anywhere. The glyph is genuinely ambiguous in a variant
 title, where the string can be a whole `Artist "Album" Format` title rather
 than a pressing name: the album's closing quote after a digit
-(`... Vol 1 & 2" Tape Set`) reads as a 2-inch record and admits a variant the
-media gate would otherwise reject. That is tolerated rather than machined
-around, on two grounds — the only live title shaped that way is inside the
-scratch-and-dent bin the descriptor gate already drops, and the variant
-gate's default is to admit anyway, so the ambiguity can only reach an outcome
-the gate was already willing to reach. Dropping the glyph instead would trade
-it for a silent loss of any record the store one day describes as a 12",
-which is the worse failure.
+(`Planning for Burial "Matawan Vol 1 & 2" Tape Set`) reads as a 2-inch record.
+
+**That changes the outcome, and the risk is accepted rather than
+neutralised.** An earlier version of this section claimed the gate's default
+is to admit anyway, so the ambiguity could only reach an outcome the gate was
+already willing to reach. That reasoning does not survive its own example.
+The default to admit applies only when `_NON_VINYL_MEDIA_RE` finds nothing,
+and this title contains `Tape` — so without the false `2"` match the variant
+is *rejected*. The vinyl-medium hit is checked first and wins, which is the
+gate's deliberate "vinyl word before medium word" rule doing exactly what it
+is for, on a quote that is not a vinyl word. Found in review on PR #331.
+
+What the risk is worth: the only live title shaped that way is the one above,
+and it is inside the `Various "Scratch & Dent" Stock` bin that the descriptor
+gate drops before any variant of it is read, so it cannot reach a row today.
+When one does, the cost is a Store row for something that is not a record —
+visible, and correctable by the store or by a rule written against a real
+example. Dropping the glyph from the marker instead would trade that for the
+silent loss of any record the store one day describes as a 12", which is the
+worse failure and the harder one to notice.
 
 ### Row title, availability and the placeholder
 
@@ -432,9 +444,9 @@ These properties of the tallies matter as much as the guards themselves:
   condition while none of them can yield.
 - **The tallies that count what the crawler *dropped* are the deliberate
   exceptions to that** — `identity_missing`, `unnamed_pressings`,
-  `variantless_records`, and `sold_out_pressings`, which is the one of them
-  read in the opposite direction — and they are siblings for the same reason
-  the chain is nested. A product with no identity, a pressing whose name is unreadable,
+  `variantless_records`, and `sold_out_pressings` — the last of which is read
+  in the opposite direction, vouching for an empty result rather than arming a
+  guard. They are siblings for the same reason the chain is nested. A product with no identity, a pressing whose name is unreadable,
   or a record carrying no variants at all could never have yielded a row by
   definition, so nesting them behind "would have yielded" makes them
   unreachable, which is exactly what it did: `identity_missing` could only

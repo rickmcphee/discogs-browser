@@ -4,7 +4,7 @@ import httpx
 import pytest
 import respx
 
-from crawlers.theflenser import Crawler
+from crawlers.theflenser import _NON_VINYL_MEDIA_RE, Crawler
 
 _PRODUCTS_URL = "https://nowflensing.com/collections/all/products.json"
 
@@ -1237,3 +1237,31 @@ def test_a_descriptor_classifies_the_same_in_nfc_and_nfd(crawler, descriptor):
     character, so it opens the boundary `(?<!\\w)lps?` needs and `ÉLP` names a
     record only in NFD."""
     assert crawler._names_a_record(descriptor) == crawler._names_a_record(_nfd(descriptor))
+
+
+# --- the accepted inch-glyph false positive (PR #331, ninth review round) ---
+
+def test_a_quote_after_a_digit_admits_a_variant_the_media_gate_would_reject(crawler):
+    """The documented false positive, pinned rather than left implicit. A
+    variant title that is really a whole `Artist "Album" Format` string puts
+    the album's closing quote right after a digit, which reads as an inch
+    size — and the vinyl-medium hit is checked first, so it overrides the
+    `Tape` the media gate would otherwise reject on. The design doc had
+    claimed the gate's default to admit made this outcome-neutral; it does
+    not, because that default only applies when the media gate finds nothing.
+    Found in review on PR #331."""
+    name = 'Planning for Burial "Matawan Vol 1 & 2" Tape Set'
+    assert crawler._is_record_variant(name) is True
+    assert _NON_VINYL_MEDIA_RE.search(name)
+
+
+@respx.mock
+async def test_the_bin_holding_that_variant_never_reaches_the_variant_gate(crawler):
+    """The other half of why the false positive is tolerated: the only live
+    title shaped that way is inside the scratch-and-dent bin, and the
+    descriptor gate drops the bin before any of its variants is read."""
+    _mock_walk([_LP_PRODUCT, _with(_SCRATCH_AND_DENT_PRODUCT, variants=[
+        {"title": 'Planning for Burial "Matawan Vol 1 & 2" Tape Set',
+         "price": "18.00", "available": True},
+    ])])
+    assert {i["artist"] for i in await _run(crawler)} == {"Agriculture"}
