@@ -134,8 +134,12 @@ _BUNDLE_RE = re.compile(r'\bbundles?\b', re.IGNORECASE)
 # The inch marker admits the quote glyph as well as the spelled-out word, and
 # after _descriptor_carries_no_quote that only ever matters for a VARIANT
 # title: a descriptor carrying a glyph is refused before this pattern sees it.
-# A variant title is never split into album and descriptor, so a quote there
-# is unambiguous and `12" Black Vinyl` reads as the record it is.
+# A variant title is never split into album and descriptor, so no quote there
+# is REFUSED, and `12" Black Vinyl` reads as the record it is. That is not the
+# same as unambiguous: a variant title that is really a whole
+# `Artist "Album" Format` string puts the album's closing quote after a digit,
+# and this pattern reads it as an inch size. Accepted rather than closed --
+# see _is_record_variant.
 #
 # The unit still needs a right-hand boundary of its own, for the format gates
 # rather than for any quote rule: without one the fragment matches the leading
@@ -282,9 +286,11 @@ def _descriptor_carries_no_quote(descriptor: str) -> bool:
     it bought a format the store never uses at the price of a hole three
     rounds could not close. Found in review on PR #331.
 
-    Variant titles are unaffected: they are never split into album and
-    descriptor, so a quote there is unambiguous and _VINYL_MEDIUM_RE still
-    reads it as an inch marker.
+    Variant titles are unaffected by this rule: they are never split into
+    album and descriptor, so no quote in one is refused and _VINYL_MEDIUM_RE
+    still reads it as an inch marker. The glyph is no less ambiguous there --
+    it is just accepted rather than refused, on a different balance of costs
+    that _is_record_variant states.
 
     No _fold_marks here, unlike every other decision in this module. Folding
     exists to stop a combining mark opening a `\w` boundary, and this rule has
@@ -440,7 +446,7 @@ class Crawler:
             # vouch for a catalog that has gone unreadable behind it.
             raise RuntimeError(
                 f"{_COLLECTION_SLUG} collection yielded no rows while {unreadable_stock} vinyl "
-                "product(s) carry no readable availability flag -- stock-source drift")
+                "product(s) carry an unreadable availability flag -- stock-source drift")
         if yielded and not priced:
             # Rows without the emptiness: `_price` answers None for a value it
             # cannot use, so a `price` field removed or retyped store-wide
@@ -585,8 +591,20 @@ class Crawler:
 
     @staticmethod
     def _primary_artist(billing: str) -> str:
-        """Reduce a multi-artist split billing to the artist billed first."""
-        return _BILLING_SPLIT_RE.split(billing, 1)[0].strip() or billing
+        """Reduce a multi-artist split billing to the artist billed first.
+
+        Answers "" when there is no first-billed artist to reduce to, which
+        is what a billing OPENING with the separator gives -- ` / Other` has
+        nothing before the slash. The `or billing` fallback that used to sit
+        here restored the whole malformed string and emitted it as the artist,
+        which is the one shape this reduction can produce that is worse than
+        not reducing at all: `item_key` hashes the artist, so a row keyed on
+        `/ Other` is a permanent identity for a name no band has. Empty falls
+        into the caller's existing `artist` check and yields no row, the same
+        answer this crawler gives every title it cannot read. Found in review
+        on PR #331.
+        """
+        return _BILLING_SPLIT_RE.split(billing, 1)[0].strip()
 
     @staticmethod
     def _names_a_record(descriptor: str) -> bool:
@@ -691,6 +709,25 @@ class Crawler:
 
     @staticmethod
     def _is_record_variant(title: str) -> bool:
+        """Vinyl word before medium word, and admit by default.
+
+        The quote glyph inside _VINYL_MEDIUM_RE carries an ACCEPTED false
+        positive here, and it is accepted rather than neutral. A variant title
+        that is really a whole `Artist "Album" Format` string puts the album's
+        closing quote right after a digit --
+        `Planning for Burial "Matawan Vol 1 & 2" Tape Set` -- which reads as a
+        2-inch record, and the vinyl hit is checked FIRST, so it overrides the
+        `Tape` the media gate would otherwise reject on. The default to admit
+        does not make that harmless: it only applies when the media gate finds
+        nothing, which is exactly not this case.
+
+        Two things make it worth keeping. The only live title shaped that way
+        is inside the scratch-and-dent bin, whose descriptor the format gate
+        rejects before any variant of it is read. And dropping the glyph from
+        the marker trades a visible wrong row for the silent loss of any
+        record the store one day describes as a 12". Found in review on
+        PR #331.
+        """
         folded = _fold_marks(title)
         if _VINYL_MEDIUM_RE.search(folded):
             return True

@@ -716,8 +716,9 @@ async def test_the_ambiguous_nested_shape_is_refused_too(crawler):
 
 @respx.mock
 async def test_a_quote_in_a_variant_name_is_still_an_inch_marker(crawler):
-    """Variant titles are never split into album and descriptor, so a quote
-    there is unambiguous."""
+    """Variant titles are never split into album and descriptor, so no quote
+    in one is refused. Not the same as unambiguous — this is the genuine
+    marker; the accepted false positive has its own test below."""
     _mock_walk([_with(_LP_PRODUCT, variants=[
         {"title": '12" Black Vinyl', "price": "25.00", "available": True},
     ])])
@@ -1265,3 +1266,33 @@ async def test_the_bin_holding_that_variant_never_reaches_the_variant_gate(crawl
          "price": "18.00", "available": True},
     ])])
     assert {i["artist"] for i in await _run(crawler)} == {"Agriculture"}
+
+
+# --- malformed billing (PR #331, tenth review round) ------------------------
+
+@respx.mock
+@pytest.mark.parametrize("billing", ["/ Other", " /  Other", "/ A / B"])
+async def test_a_billing_opening_with_the_separator_yields_no_row(crawler, billing):
+    """There is no first-billed artist to reduce to. The `or billing` fallback
+    restored the whole malformed string and emitted it as the artist, so the
+    row was keyed on a name no band has — and `item_key` hashes the artist, so
+    it would have been keyed that way permanently. Found in review on
+    PR #331."""
+    _mock_walk([_LP_PRODUCT, _with(_PLACEHOLDER_PRODUCT, title=f'{billing} "Album" LP')])
+    items = await _run(crawler)
+    assert {i["artist"] for i in items} == {"Agriculture"}
+
+
+@respx.mock
+async def test_a_catalog_of_malformed_billings_names_the_parse_guard(crawler):
+    """Unreadable identity, so it lands where every unreadable title lands."""
+    _mock_walk([_with(_PLACEHOLDER_PRODUCT, title='/ Other "Album" LP')])
+    with pytest.raises(RuntimeError, match="title-convention drift"):
+        await _run(crawler)
+
+
+def test_a_billing_with_no_separator_is_returned_whole(crawler):
+    """Dropping the fallback must not start trimming ordinary billings."""
+    assert crawler._primary_artist("Godspeed You! Black Emperor") == "Godspeed You! Black Emperor"
+    assert crawler._primary_artist("AC/DC") == "AC/DC"
+    assert crawler._primary_artist("Ragana / Drowse") == "Ragana"

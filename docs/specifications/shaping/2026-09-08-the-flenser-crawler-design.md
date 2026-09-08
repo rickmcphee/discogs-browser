@@ -192,8 +192,11 @@ That trade was weighed the other way in an earlier round — keep the glyph
 rather than lose a hypothetical `12"` — and that was wrong. It bought a format
 the store never uses at the price of a hole three rounds could not close.
 
-Variant titles are unaffected: they are never split into album and descriptor,
-so a quote there is unambiguous and still reads as an inch marker.
+Variant titles are unaffected by this rule: they are never split into album
+and descriptor, so no quote in one is refused, and one still reads as an inch
+marker. That is a different decision, not a claim that the glyph is
+unambiguous there — it is exactly as ambiguous, and the Variant gate section
+below records the false positive that follows and why it is accepted.
 
 **The format and variant gates read mark-folded text.** `\w` excludes the
 combining MARK categories, so a decomposed accent opens a boundary its
@@ -330,8 +333,10 @@ admitted by the same word that admits a 12" EP as a product descriptor. The
 two gates ask different questions and read different patterns.
 
 The inch marker admits the quote glyph as well as the spelled-out word,
-though this store spells every one of its own out (`10inch`, `7inch`) and
-writes no quote glyph anywhere. The glyph is genuinely ambiguous in a variant
+though this store spells every inch size of its own out (`10inch`, `7inch`)
+and uses the glyph as an inch unit nowhere — where it does write one, as
+below, it is an album's closing quote. The glyph is genuinely ambiguous in a
+variant
 title, where the string can be a whole `Artist "Album" Format` title rather
 than a pressing name: the album's closing quote after a digit
 (`Planning for Burial "Matawan Vol 1 & 2" Tape Set`) reads as a 2-inch record.
