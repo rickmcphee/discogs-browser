@@ -803,3 +803,16 @@ async def test_a_skipped_product_with_no_variants_is_still_a_legitimate_empty_re
     _mock_pages({**_RAFFLE_PRODUCT, "variants": []})
     items = [item async for item in crawler.crawl_catalog()]
     assert items == []
+
+
+@respx.mock
+async def test_a_vendor_surviving_only_on_a_sold_out_record_does_not_vouch_for_the_shelf(crawler):
+    # The third way the old tally could be vouched for, and the one Copilot
+    # asked for coverage of: the product keeping its vendor is a perfectly
+    # ordinary record that simply sold out, so nothing about it is skipped or
+    # non-vinyl. The available record that lost its vendor still has admitted
+    # pressings, which is what makes it tally.
+    _mock_pages(_one_pressing(_LOST_THEMES_PRODUCT, available=False),
+                {**_one_pressing(_DISTRO_IN_STOCK), "vendor": ""})
+    with pytest.raises(RuntimeError, match="artist-source drift"):
+        [item async for item in crawler.crawl_catalog()]
