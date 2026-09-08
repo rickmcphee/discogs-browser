@@ -885,6 +885,48 @@ async def test_one_readable_pressing_does_not_vouch_for_an_unreadable_sibling(cr
 
 
 @respx.mock
+async def test_an_unreadable_cd_does_not_condemn_a_readably_sold_out_record(crawler):
+    # Invented: the record is a readable sold-out False, the CD beside it
+    # carries the string "false". No vinyl row could have been missed, so the
+    # empty walk is legitimate and the snapshot must be allowed to clear.
+    # Reading every titled variant raised stock drift here and kept the stale
+    # in-stock rows alive.
+    _mock_pages({**_ARCO_PRODUCT, "variants": [
+        {"id": 52, "title": "Galaxy Teal Vinyl", "price": "22.99", "available": False,
+         "featured_image": None},
+        {"id": 53, "title": "CD", "price": "9.99", "available": "false",
+         "featured_image": None},
+    ]})
+    assert [item async for item in crawler.crawl_catalog()] == []
+
+
+@respx.mock
+async def test_an_unreadable_record_beside_a_readable_cd_still_raises(crawler):
+    # The counterpart, so the narrowing above cannot be mistaken for the guard
+    # going quiet: swap which variant is unreadable and it raises again.
+    _mock_pages({**_ARCO_PRODUCT, "variants": [
+        {"id": 54, "title": "Galaxy Teal Vinyl", "price": "22.99", "available": "false",
+         "featured_image": None},
+        {"id": 55, "title": "CD", "price": "9.99", "available": False,
+         "featured_image": None},
+    ]})
+    with pytest.raises(RuntimeError, match="stock-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_a_cd_only_product_is_vacuously_readable(crawler):
+    # It could never have yielded a row, so its flag says nothing about the
+    # emptiness either way -- and it must not raise on a genuinely sold-out
+    # catalog.
+    _mock_pages(_one_pressing(_ARCO_PRODUCT, available=False),
+                {**_PERADAM_PRODUCT, "variants": [
+                    {"id": 56, "title": "CD", "price": "9.99", "available": "false",
+                     "featured_image": None}]})
+    assert [item async for item in crawler.crawl_catalog()] == []
+
+
+@respx.mock
 async def test_a_product_with_no_variants_at_all_raises(crawler):
     _mock_pages({**_ARCO_PRODUCT, "variants": []})
     with pytest.raises(RuntimeError, match="stock-source drift"):

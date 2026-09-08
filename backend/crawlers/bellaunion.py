@@ -422,6 +422,22 @@ class Crawler:
         # those would raise stock drift over a product read perfectly. A
         # product with no variants whatsoever still says nothing.
         #
+        # The flags themselves are read through the SAME format gate _items
+        # publishes through, because the question this answers is whether a
+        # VINYL row could have been missed. This store sells the record, the
+        # CD and the cassette as variants of one product, so reading every
+        # titled variant let a CD's unreadable flag condemn a record that was
+        # readably sold out: the walk raised, and the previous snapshot -- the
+        # stale in-stock rows -- survived instead of being cleared. The
+        # vinyl-only shelves the sibling crawlers walk cannot express that
+        # case, which is why their version reads every pressing. Found in
+        # review on PR #333.
+        #
+        # A product with no vinyl pressing at all is vacuously readable, which
+        # is right: it could never have yielded a row, so its emptiness rests
+        # on nothing. Store-wide loss of `available` is still caught -- the
+        # vinyl pressings go unreadable too.
+        #
         # all(), not any(): one readable variant does not make a product
         # readable, or a product whose black pressing is a readable False and
         # whose coloured pressing carries the string "false" would vouch for
@@ -430,7 +446,8 @@ class Crawler:
             return False
         return all(
             isinstance(variant.get("available"), bool)
-            for variant, _ in cls._pressings(product)
+            for variant, descriptor in cls._pressings(product)
+            if cls._is_vinyl(descriptor)
         )
 
     @staticmethod

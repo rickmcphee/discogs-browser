@@ -382,6 +382,20 @@ Structural notes on the tallies:
   themselves, which is complete because `_unusable_dropped_variant` runs
   first and has already established that every *dropped* entry is a literal
   `False`: the two are a pair and must stay in that order.
+
+  **The flags are read through the same format gate `_items` publishes
+  through**, because the question the guard answers is whether a *vinyl* row
+  could have been missed. This store sells the record, the CD and the
+  cassette as variants of one product, so reading every titled variant let a
+  CD's unreadable flag condemn a record that was readably sold out: the walk
+  raised, and the stale in-stock rows survived instead of being cleared. The
+  vinyl-only shelves `earache.py` and `dongiovannirecords.py` walk cannot
+  express that case — every variant there is a record — which is why their
+  version reads every pressing, and why copying it here imported an
+  assumption this store breaks. A product with no vinyl pressing at all is
+  then vacuously readable, which is right: it could never have yielded a row.
+  A store-wide loss of `available` is still caught, because the vinyl
+  pressings go unreadable too. Found in review on PR #333.
 - **`identity_missing` and `unreadable_stock` are otherwise nested inside the
   record classification**, because only a product that reads as a record
   could have yielded a row; a mis-shelved shirt's missing handle says nothing
