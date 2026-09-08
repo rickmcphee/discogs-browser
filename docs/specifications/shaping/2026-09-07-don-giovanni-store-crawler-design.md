@@ -154,11 +154,14 @@ The parse is therefore:
 ^(?:[^"“]*?)\s*["“](?P<album>[^"“”″]+?)["”](?=[\s\d]|$)\s*(?P<rest>.*)$
 ```
 
-- **Neither the leading group nor the album group may contain a quote**, and
-  between them that is what pins all three of the title's quotes. Both
-  character classes are *derived from one constant* in the code rather than
-  spelled out — the leading group excludes the two characters that can open an
-  album, the album group excludes every quote there is. Each time they were
+- **The two character classes are asymmetric, deliberately.** The leading
+  group excludes only the two characters that can *open* an album (`"` and
+  `“`), which is what makes the album's opening quote always the title's
+  first; it still admits `”` and `″`, because neither can open a quotation and
+  the prefix is discarded regardless. The album group excludes *every* quote
+  there is, which is what makes a fourth quote junk rather than an album.
+  Between them that pins all three of the title's quotes. Both classes are
+  *derived from constants* in the code rather than spelled out. Each time they were
   written out separately they drifted apart, and every such disagreement has
   been a bug: a left curly the gate would not accept as an inch marker but the
   stray-quote check exempted, then a double prime that check rejected while

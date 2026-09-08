@@ -20,39 +20,42 @@ _COLLECTION_SLUG = "vinyl"
 # still admitted. Found in review on PR #323, twice.
 _QUOTE_CHARS = '"“”″'
 _OPENING_QUOTES = '"“'   # the two a title can open an album with
-# `Artist "Album" <format>`. The store leads every product with
-# `Artist "Album"`, records and CDs and shirts alike; the trailing format is
-# universal only on the vinyl shelf, and its books, pins and stickers stop at
-# the quoted album. So every live title IN THIS COLLECTION carries exactly
-# three quotes -- the album's opening one, its closing one, and the format's
-# inch marker -- while the store at large carries two on some products. That
-# asymmetry is what the both-halves-required rule below turns into a filter.
+# `Artist "Album" <format>`. Every SINGLE-ITEM product in the store leads with
+# `Artist "Album"`, records and CDs and shirts alike; the store's multi-item
+# bundles do not, which is why _bundle_shaped below has to recognise them
+# separately. The trailing format is universal only on the vinyl shelf --
+# books, pins and stickers stop at the quoted album -- so every live title IN
+# THIS COLLECTION carries exactly three quotes: the album's opening one, its
+# closing one, and the format's inch marker. That asymmetry is what the
+# both-halves-required rule below turns into a filter.
 #
-# Neither the leading group nor the album group may contain a quote, which is
-# what pins all three. Both classes are built from the constants above rather
-# than spelled out, so they cannot fall out of step with the rest of the
-# crawler's idea of a quote -- the leading group excludes the two characters
-# that can OPEN an album, the album group excludes every quote there is. The leading group excluding them makes the album's
-# OPENING quote always the title's first, so the trailing inch marker can
-# never be read as one. It is non-capturing: the credit comes from `vendor`,
-# so whatever sits ahead of the album is never read, and it is deliberately
-# allowed to be empty -- a title that omits the artist (`"Album" 12"`) still
-# carries a readable album and format, and rejecting it would drop a row the
-# crawler can build correctly from `vendor`. The album excluding quotes is
-# what makes a fourth quote junk rather than an album, so `Artist "" 12"`
-# parses to nothing instead of to an album of `" 12`.
+# The two character classes are ASYMMETRIC, deliberately, and both are built
+# from the constants above rather than spelled out so they cannot fall out of
+# step with the rest of the crawler's idea of a quote:
 #
-# What the closing quote's lookahead adds, on top of those exclusions, is a
-# rejection rather than a choice: the quote must be followed by whitespace,
-# a digit or the end, so a closing quote glued to a letter (`"Fire"X`) fails
-# to parse rather than being guessed at. It does NOT by itself reject a
-# nested quotation -- `"The " Big"` has whitespace after the inner quote and
-# satisfies the lookahead -- which is what _descriptor_quotes_are_clean is
-# for. The
-# `\d` arm keeps a descriptor glued onto the closing quote (`"Album"12"`)
-# readable; this store does not write it but a sibling Shopify store does.
-# Curly quotes are admitted though the store writes none: they are the
-# commonest way a storefront's copy drifts.
+#   leading group -- excludes only the two characters that can OPEN an album
+#     (`"` and `“`). That is what makes the album's opening quote always the
+#     title's first, so a trailing inch marker can never be read as one. It
+#     deliberately still ADMITS `”` and `″`, because neither can open a
+#     quotation: excluding them would only reject an artist name containing
+#     one, and this group's capture is discarded anyway -- the credit comes
+#     from `vendor`. Non-capturing for that reason, and allowed to be empty,
+#     since a title that omits the artist (`"Album" 12"`) still carries a
+#     readable album and format and the row built from `vendor` is correct.
+#
+#   album group -- excludes EVERY quote there is, so a fourth quote is junk
+#     rather than an album and `Artist "" 12"` parses to nothing instead of
+#     to an album of `" 12`.
+#
+# What the closing quote's lookahead adds is a rejection rather than a choice:
+# the quote must be followed by whitespace, a digit or the end, so a closing
+# quote glued to a letter (`"Fire"X`) fails to parse rather than being guessed
+# at. It does NOT by itself reject a nested quotation -- `"The " Big"` has
+# whitespace after the inner quote and satisfies it -- which is what
+# _descriptor_quotes_are_clean is for. The `\d` arm keeps a descriptor glued
+# onto the closing quote (`"Album"12"`) readable; this store does not write it
+# but a sibling Shopify store does. Curly quotes are admitted though the store
+# writes none: they are the commonest way a storefront's copy drifts.
 _TITLE_RE = re.compile(
     r'^(?:[^' + re.escape(_OPENING_QUOTES) + r']*?)\s*[' + re.escape(_OPENING_QUOTES) + r']'
     r'(?P<album>[^' + re.escape(_QUOTE_CHARS) + r']+?)'

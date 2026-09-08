@@ -344,9 +344,11 @@ def test_title_parse(title, expected):
     None,
     "",
     "   ",
-    # A quote anywhere ahead of the album is not an opening quote: the artist
-    # group excludes quotes, so the album's opening quote is always the
-    # title's first and a stray inch marker cannot start one.
+    # A stray inch marker ahead of the album cannot start one: the leading
+    # group excludes the two OPENING quotes, so the album's opening quote is
+    # always the title's first. It still admits `”` and `″` on purpose --
+    # neither can open a quotation and the prefix is discarded anyway -- which
+    # is why this case names a `"` specifically.
     'Amy Klein 12" "Fire" LP',
     # An inch marker needs a right-hand boundary: glued to a following word,
     # `12"CD` is not one, and admitting it would publish a CD as vinyl.
