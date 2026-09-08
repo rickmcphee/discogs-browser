@@ -32,27 +32,43 @@ _COLLECTION_SLUG = "vinyl"
 # regex would drop every one of them.
 _VINYL_WORD_RE = re.compile(
     r'(?<![a-z])(?:\d+(?:\.\d+)?\s*[x×]\s*)?lps?\b|\bvinyls?\b'
-    r'|\bpicture\s+discs?\b|\btest\s+press(?:ing)?e?s?\b|\bflexi(?:\s*discs?)?\b'
-    r'|(?<![a-z0-9])(?:\d+\s*[x×]\s*)?\d{1,2}\s*(?:"|”|″|inch(?:es)?\b)',
+    r'|\bpicture\s+discs?\b|\btest\s+press(?:ing)?e?s?\b|\bflexi(?:\s*discs?)?\b',
     re.IGNORECASE,
 )
+# The inch marker is a SEPARATE tier, consulted after the merch words rather
+# than beside the explicit format words, because a measurement is not a format
+# claim: as one alternative of _VINYL_WORD_RE a bare `12"` admitted outright
+# and published `12" x 12" Poster` as a record. spv.py orders its own gate
+# this way for the same reason, and this is the shape it settled on.
+#
+# The hyphen is optional because `12-INCH` is established notation in this
+# repo (asianmanrecords.py's _VINYL_TYPES), and `\s*` alone missed it.
+_INCH_RE = re.compile(
+    r'(?<![a-z0-9])(?:\d+\s*[x×]\s*)?\d{1,2}[\s-]*(?:"|”|″|inch(?:es)?\b)',
+    re.IGNORECASE,
+)
+# Not a record in any pressing: what the shelf stocks beside its records as
+# extra variants of a record's own product (`Limited Edition hand numbered
+# posters ...`, `Sacred Bones exclusive Boris Pedal`). Kept apart from the
+# media words below because the two sit on opposite sides of the inch marker
+# -- an inch beside a poster is that poster's size, while an inch beside a CD
+# is a record bundled with one.
+_MERCH_RE = re.compile(r'\bposters?\b|\bprints?\b|\bpedals?\b', re.IGNORECASE)
 # `cd`/`cs` carry the same digit-glued-count lookbehind as the vinyl words,
 # and for the same reason: the shelf spells its box sets `Limited Edition
 # 3xCD Box Set` and `2xCS Box Set`, and \b matches nothing between `3` and
 # `CD`, so a plain \bcds?\b reads neither as a CD.
 #
-# The merch words are the three the shelf actually stocks beside its records
-# (`Limited Edition hand numbered posters ...`, `Sacred Bones exclusive Boris
-# Pedal`) rather than a general merch vocabulary: a word listed here rejects
-# a pressing that happens to mention it, so the cost of guessing wrong is
-# losing a record. A vinyl word still wins, which is what keeps the pressings
-# that come *with* one -- `Limited Edition Smoke Vinyl LP w/ Print Set`.
+# Both this list and _MERCH_RE are only what the shelf forced rather than a
+# general vocabulary: a word listed in either rejects a pressing that happens
+# to mention it, so the cost of guessing wrong is losing a record. An explicit
+# vinyl word still wins over both, which is what keeps the pressings that come
+# *with* one -- `Limited Edition Smoke Vinyl LP w/ Print Set`.
 _NON_VINYL_MEDIA_RE = re.compile(
     r'(?<![a-z])(?:\d+\s*[x×]\s*)?(?:cds?|css?)\b'
     r'|\bcassettes?\b|\btapes?\b|\b8\s*-?\s*tracks?\b'
     r'|\bdvds?\b|\bblu-?\s*rays?\b'
-    r'|\bdigital\b|\bmp3s?\b|\bwavs?\b|\baiffs?\b|\bflacs?\b|\bdownloads?\b'
-    r'|\bposters?\b|\bprints?\b|\bpedals?\b',
+    r'|\bdigital\b|\bmp3s?\b|\bwavs?\b|\baiffs?\b|\bflacs?\b|\bdownloads?\b',
     re.IGNORECASE,
 )
 # A raffle entry is not a pressing and its price is not a record's price: the
@@ -320,7 +336,21 @@ class Crawler:
 
     @staticmethod
     def _is_vinyl(pressing: str) -> bool:
+        """Four tiers, and the order between the middle two is the whole point.
+
+        An explicit format word admits outright, so a record bundled with
+        merch is still a record. Merch is then checked *before* the inch
+        marker, because a measurement is not a format claim: consulted first,
+        a bare `12"` published `12" x 12" Poster` as vinyl. Media stays
+        *after* the marker, because there the pairing reads the other way --
+        `10 INCH + CD` is a record bundled with a CD. Anything left is
+        admitted on the collection's own claim.
+        """
         if _VINYL_WORD_RE.search(pressing):
+            return True
+        if _MERCH_RE.search(pressing):
+            return False
+        if _INCH_RE.search(pressing):
             return True
         return not _NON_VINYL_MEDIA_RE.search(pressing)
 

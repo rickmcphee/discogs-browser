@@ -874,3 +874,50 @@ async def test_a_shelf_of_non_string_variant_titles_raises(crawler):
     _mock_pages(_one_pressing(_LOST_THEMES_PRODUCT, title=7))
     with pytest.raises(RuntimeError, match="variant-identity-source drift"):
         [item async for item in crawler.crawl_catalog()]
+
+
+@pytest.mark.parametrize("name", [
+    '12" x 12" Poster',
+    '18" x 24" Screen Print',
+    '12-inch Poster',
+    '24" Litho Print',
+])
+def test_a_dimension_does_not_make_merch_a_record(name):
+    # A measurement is not a format claim. The bare inch marker used to admit
+    # outright, so a poster sized in inches published as vinyl -- the same
+    # shape spv.py already meets, and for the same reason ordered the same
+    # way. Found by Copilot in review on PR #332.
+    assert Crawler._is_vinyl(name) is False
+
+
+@pytest.mark.parametrize("name", [
+    'Limited Edition Red Glitter Vinyl LP + Poster',
+    'Limited Edition Smoke Vinyl LP w/ Print Set',
+    'Sacred Bones Exclusive Red Splatter on Clear Vinyl w/ Silver foil Jacket + Screen Printed 7"',
+])
+def test_an_explicit_vinyl_word_still_beats_a_merch_word(name):
+    # A record bundled with merch is still a record, so the explicit format
+    # words are consulted before the merch rejection -- which is what keeps
+    # the three live bundles above.
+    assert Crawler._is_vinyl(name) is True
+
+
+@pytest.mark.parametrize("name", [
+    'Black 7"',
+    'Purple Big Bang 7"',
+    '12-inch',
+    '7-INCH',
+    '10 INCH + CD',
+    'Black Vinyl 12"',
+    # The hyphenated spelling beside a media word is the case that actually
+    # needs the optional hyphen: without it the marker does not match, the
+    # media tier rejects, and a 12-inch bundled with a CD is dropped as a CD.
+    # Bare `12-inch` cannot pin it -- the default branch admits that anyway.
+    # Same case spv.py pins, found there in review on PR #165.
+    '12-INCH + CD',
+    '7-inch w/ Cassette',
+])
+def test_an_inch_marker_still_names_a_record_when_no_merch_word_qualifies_it(name):
+    # An inch marker beside a CD is a record plus a CD, unlike an inch marker
+    # beside a poster, which is that poster's size.
+    assert Crawler._is_vinyl(name) is True
