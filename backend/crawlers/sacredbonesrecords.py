@@ -83,10 +83,10 @@ _SKIP_TAGS = frozenset({"raffle", "donation"})
 _BILLING_SPLIT_RE = re.compile(r'(?:\s+/\s*|\s*/\s+)')
 # Shopify's placeholder for a product with exactly one variant. It names no
 # pressing, so a row built on it carries the product title alone -- and only
-# when it IS the sole variant, which is equally why a blank title is treated
-# as the same thing. On a multi-variant product neither is a pressing, and a
-# row built on either would share its title and product URL, and so its
-# item_key, with every sibling built the same way.
+# when it IS the sole variant the store sent, which is equally why a blank
+# title is treated as the same thing. On a multi-variant product neither is a
+# pressing, and a row built on either would share its title and product URL,
+# and so its item_key, with every sibling built the same way.
 _PLACEHOLDER_VARIANT = "default title"
 
 
@@ -285,7 +285,13 @@ class Crawler:
         for variant in variants:
             name = " ".join((variant.get("title") or "").split())
             if not name or name.lower() == _PLACEHOLDER_VARIANT:
-                if len(variants) == 1:
+                # Sole-variant status comes from the payload as sent, not
+                # from what survived the mapping filter: a sibling mangled
+                # into a non-mapping entry is still a sibling, and reading
+                # `variants` here would let the placeholder emit a bare-title
+                # row sharing its title and URL -- and so its item_key --
+                # with whatever that entry was.
+                if len(raw) == 1:
                     pairs.append((variant, ""))
                 else:
                     unreadable += 1

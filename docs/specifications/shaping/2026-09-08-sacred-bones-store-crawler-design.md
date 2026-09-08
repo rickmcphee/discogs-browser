@@ -282,9 +282,10 @@ almost all carry their own, so a row usually shows the colour it is selling.
 ### Replay over the live catalog
 
 Replaying the finished crawler over the fully-cached live shelf: 343 products
-walked → 330 rows across 94 artists. No `item_key` collisions, no blank
+walked → 330 rows across 93 artists. No `item_key` collisions, no blank
 artist or title, no malformed URL, no missing cover, no null price, no row
-whose pressing name mentions another medium.
+whose pressing name mentions another medium. Exactly one row's artist differs
+from its raw vendor — `The Men / Woods`, the shelf's one split billing.
 
 ## Drift guards
 
@@ -303,11 +304,17 @@ reads.
 | identity-source | nothing was yielded *and* some product that would otherwise have produced a row has no `title` or `handle` | `item_key` hashes the title and URL, so such a product is skipped rather than re-identified — and skipping leaves the walk looking sold out |
 | stock-source | nothing was yielded *and* some such product has no readable `available` flag | an empty result is only trustworthy when every product that could have yielded a row was readable and simply out of stock |
 
-The four per-product tallies are taken *before* the availability filter, so a
+All four drift tallies are taken *before* the availability filter, so a
 sold-out product still counts toward them; `yielded` and `priced` are
 necessarily counted after it, which is why the guards reading them are each
 conditioned on a second tally rather than on emptiness alone — a shelf that
 has simply sold out is empty legitimately.
+
+Three of the four count *products*: artist, identity and stock each add one
+per product, and their messages read "record(s)". `unreadable_variants`
+counts *variants* — every entry discarded within a product, plus one for a
+`variants` collection that could not be read at all — and its message reads
+"variant(s)" to match.
 
 Artist, identity and stock share **one bracket**, gated on the product having
 admitted pressings, and each product counts once against the first reason that

@@ -816,3 +816,26 @@ async def test_a_vendor_surviving_only_on_a_sold_out_record_does_not_vouch_for_t
                 {**_one_pressing(_DISTRO_IN_STOCK), "vendor": ""})
     with pytest.raises(RuntimeError, match="artist-source drift"):
         [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+@pytest.mark.parametrize("junk", [None, "nonsense", 7], ids=["none", "string", "int"])
+async def test_a_nameless_variant_beside_a_mangled_sibling_is_not_a_sole_variant(crawler, junk):
+    # Sole-variant status has to come from the payload as sent, not from what
+    # survives the mapping filter: a sibling mangled into a non-mapping entry
+    # is still a sibling. Reading the filtered list instead lets the
+    # placeholder emit a bare-title row that would share its title and URL --
+    # and so its item_key -- with whatever the mangled entry was.
+    _mock_pages({**_DISTRO_PRODUCT, "variants": [
+        {**_DISTRO_PRODUCT["variants"][0], "title": "Default Title", "available": True},
+        junk,
+    ]})
+    with pytest.raises(RuntimeError, match="variant-identity-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_a_genuinely_sole_nameless_variant_still_carries_the_title_alone(crawler):
+    _mock_pages(_pressing(_DISTRO_PRODUCT, "Default Title"))
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["title"] for i in items] == ["London 69"]
