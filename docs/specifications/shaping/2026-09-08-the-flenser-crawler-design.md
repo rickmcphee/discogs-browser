@@ -382,7 +382,7 @@ names a distinct way the payload can stop carrying what this crawler reads:
 | `variant-source drift` | nothing yielded while a record carries no variants at all | the `variants` array emptied or renamed |
 | `stock-source drift` | nothing yielded while a vinyl product's flag is unreadable | `available` retyped |
 
-Three properties of the tallies matter as much as the guards themselves:
+These properties of the tallies matter as much as the guards themselves:
 
 - **The chain is nested, not sibling.** Only a product that is vinyl-typed
   *and* parses *and* names a format *and* has a variant the gate admits could
