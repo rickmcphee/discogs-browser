@@ -116,6 +116,33 @@ mistyped as `12"`. A shelf's curation is not a format guarantee, and the
 gate costs nothing when the shelf is honest — live, all 134 products pass
 it.
 
+### The gate's second layer, on the title
+
+The type layer alone does **not** cover the case just cited as its reason
+for existing, and this was found by Copilot's review of the PR. A *mistyped*
+product — hammerheart's CD typed `12"` — satisfies `_INCH_RE` and would be
+published with `format="Vinyl"`. Verified against the code before fixing: a
+product titled `Another Return / CD` and typed `12"` passed
+`_is_vinyl_product` and yielded a row. What the type layer actually catches
+is a *correctly typed* non-vinyl product shelved on the vinyl collection,
+which is a real protection but a different one, and hammerheart rejects its
+two CDs by reading their **titles**.
+
+So the gate has a second layer, the same shape as hammerheart's: on a
+product whose type reads as vinyl, a title naming another medium is rejected
+**unless** a vinyl word overrides it, so a genuine LP+CD bundle survives.
+The filter fires only on a non-vinyl match, so the common shape here — a
+title naming no format at all (`Crimea`, `S/T`, `Departure Songs`) — never
+reaches the override.
+
+The vocabulary is kept to hammerheart's proven set (`CD`, `DVD`, `Digipak`,
+`Cassette`, `Tape`, plus `Blu-Ray`) rather than widened with `Digital` and
+similar. On a store where most titles carry a format token a wider set would
+be safe, but here a title often carries none, so a word that doubles as an
+album word would drop a real record with nothing to override it. Confirmed
+live that no title on this shelf matches any word in the set, so the layer
+drops nothing today, and the full replay below is unchanged by it.
+
 ### The artist is `vendor`, with no fallback
 
 `vendor` holds the act's own name on every live vinyl product — 134 of 134
@@ -206,12 +233,45 @@ placeholder is malformed data, and a row built on it would share the bare
 album title and the product URL, and so the item_key, with any sibling built
 the same way.
 
-**There is deliberately no variant-level format gate.** `product_type`
-already scopes the format on this store, and confirmed live that no variant
-on a vinyl-typed product names another medium — so a medium-word gate would
-have no work to do, and would only wait to misread a colour that happens to
-name one, the trap `Pink Tape` sprang on
-`counterintuitiverecords.py`.
+**There is deliberately no variant-level format gate**, the title layer
+above notwithstanding — that one reads the product's title, not its
+variants. `product_type` and the title already scope the format on this
+store, and confirmed live that no variant on a vinyl-typed product names
+another medium — so a variant medium-word gate would have no work to do, and
+would only wait to misread a colour that happens to name one, the trap `Pink
+Tape` sprang on `counterintuitiverecords.py`. The asymmetry is deliberate: a
+title is written once per product and a colour name is not, so the same
+vocabulary is safe on the one and hazardous on the other.
+
+### A discarded variant is counted, not silently dropped
+
+`_read_variants` discards three shapes it cannot interpret — a non-mapping
+entry, a blank title, and the placeholder beside a sibling — and it reports
+how many, because those discards are otherwise invisible to every guard.
+Copilot's review of the PR found the hole and it verifies exactly as
+described: an **available** variant with a blank title, sitting beside a
+readable sold-out one, leaves the product with a non-empty `pressings`, a
+readable stock flag and no row. Every guard is satisfied while purchasable
+stock goes unpublished, and a catalog otherwise sold out then completes
+empty — which is precisely what makes `replace_stock_items()` wipe the
+previous snapshot.
+
+The count is folded into the stock tally, whose guard therefore reads "a
+variant this crawler cannot read" rather than "no readable availability
+flag": both are ways a product can look sold out without being sold out, and
+the discarded-variant one is the one with no outward sign.
+
+That tally sits **outside** the `if pressings` branch, unlike the identity
+and pressing tallies. A product whose variants are *all* unreadable has an
+empty `pressings` and so never reaches a nested tally at all, while one
+other product with a readable sold-out pressing is enough to satisfy
+`pressings_seen` on its behalf — the same hole one step further out. It is
+still gated on an empty outcome, so an isolated bad variant among rows that
+did publish stays an ordinary skipped row.
+
+A **sole** placeholder is admitted rather than discarded, so it is not
+counted: a sold-out product built on one is a legitimate empty result, not
+drift.
 
 ### Availability and pre-orders
 
@@ -266,15 +326,17 @@ reads:
 | `pressing-source drift` | no vinyl product has a variant naming a pressing — variants lost, blanked, or left as bare placeholders beside siblings |
 | `price-source drift` | rows were yielded but not one carries a price |
 | `identity-source drift` | nothing was yielded while some record carries no title or no handle (the message names both, because `_has_identity` reads both and a blank title reaches the tally with the artist intact, `vendor` having supplied it) |
-| `stock-source drift` | nothing was yielded while some record carries no readable availability flag |
+| `stock-source drift` | nothing was yielded while some record carries a variant this crawler cannot read — an unreadable `available`, or a variant discarded before availability was ever consulted |
 
 The tallies feeding them are **nested**, not sibling: a product only counts
 toward the pressing, identity and stock tallies if it already passed the
 type gate and carried a vendor, so a non-zero count always means "some
-product would have yielded a row if it were in stock". The two `not yielded`
-guards are gated on an empty outcome so that an isolated bad product among
-real rows stays an ordinary skipped row; the catalog genuinely selling out
-stays a legitimate empty result.
+product would have yielded a row if it were in stock". The one exception is
+the stock tally, which sits outside `if pressings` for the reason given in
+"A discarded variant is counted, not silently dropped" above. The two `not
+yielded` guards are gated on an empty outcome so that an isolated bad
+product among real rows stays an ordinary skipped row; the catalog genuinely
+selling out stays a legitimate empty result.
 
 The artist tally sits **inside** the type gate, unlike
 `counterintuitiverecords.py`'s, and the difference follows from where each
@@ -313,6 +375,9 @@ the live catalog cannot produce). Cases:
   cassette, apparel and the bundle excluded; a `2xCD` not mistaken for a
   counted inch marker; a `7"`, `2x10"` and a word-named `2xLP` admitted
   without an edit; a type naming no vinyl format excluded by default
+- the title layer: a CD and a cassette mistyped as a vinyl type rejected on
+  their titles, a vinyl word overriding the medium word on a genuine hybrid,
+  and a title naming no format left untouched
 - the artist read from `vendor` rather than the title, a joined billing left
   joined, a title dash not read as a billing split, a product with no vendor
   skipped, and whitespace collapsed on both fields
@@ -330,6 +395,11 @@ the live catalog cannot produce). Cases:
 - pagination walking every page until exhausted
 - each drift guard firing, and each not firing when it should not —
   including a non-vinyl vendor being unable to vouch for the artist source
+- a discarded variant reaching the stock guard: an available blank-titled
+  variant beside a readable sold-out one, a product whose variants are all
+  unreadable beside a readable sold-out one, a placeholder beside a sibling,
+  and a non-mapping entry — against an isolated bad variant among rows that
+  did publish, and a sole placeholder, neither of which raises
 
 Every rule above was additionally mutation-checked: the crawler was mutated
 once per guard and per decision (each gate branch, the counted inch prefix,
@@ -338,4 +408,9 @@ scope, placeholder scope, blank-variant handling, availability strictness,
 each price guard, `all()` vs `any()`, tally nesting, the price-drift
 threshold, the empty-outcome gates, both identity fields, non-mapping
 variant handling, the collection slug, the currency, and each guard deleted
-in turn) and the suite was confirmed to fail on every one.
+in turn) and the suite was confirmed to fail on every one. The set was
+extended when the two review findings above were fixed — the title layer
+removed, the title layer stripped of its vinyl override, each of the three
+discard shapes left uncounted, the stock tally re-nested inside `if
+pressings`, and the stock guard reverted to reading the availability flag
+alone — and every one of those is caught too.

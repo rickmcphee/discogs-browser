@@ -1,6 +1,6 @@
 import math
 import re
-from typing import AsyncIterator, Optional
+from typing import AsyncIterator, Optional, Tuple
 
 from shopify_catalog import iter_products, resolve_cover_image
 
@@ -29,6 +29,23 @@ _INCH = r'(?<![a-z0-9])(?:\d+[x×])?\d{1,2}\s*-?\s*(?:"|”|″|inch(?:es)?\b)'
 _VINYL_TYPE_WORD_RE = re.compile(
     r"(?<![a-z])(?:%s)\b" % "|".join(_VINYL_TYPE_WORDS), re.IGNORECASE)
 _INCH_RE = re.compile(_INCH, re.IGNORECASE)
+# Layer two, read off the title. `product_type` cannot see a *mistyped*
+# product, and that is exactly what the hammerheart.py precedent above is
+# about: the two CDs on that store's vinyl shelf are typed 12", and it rejects
+# them by reading their titles. Without this layer such a product satisfies
+# _INCH_RE and publishes with format="Vinyl" -- so the gate would not cover the
+# case cited as its own reason for existing.
+#
+# Same shape as hammerheart's, and the same vocabulary: the filter fires only
+# when a non-vinyl word is present, and a vinyl word overrides it so a genuine
+# LP+CD bundle survives. The set is kept to that proven one rather than widened
+# with "digital" and the like, because a title here often names no format at
+# all ("Crimea", "S/T"), so a word that doubles as an album word would drop a
+# real record with nothing to override it. Live, no title on this shelf carries
+# any of these words, so nothing is dropped today.
+_NON_VINYL_TITLE_RE = re.compile(
+    r"\b\d*[x×]?(?:cds?|dvds?)\b|\bdigipa[kc]k?s?\b|\bcassettes?\b|\btapes?\b|\bblu-?rays?\b",
+    re.IGNORECASE)
 # Shopify's placeholder for a product created with no options. It names no
 # pressing, so a row built on it carries the album title alone -- and only when
 # it IS the product's sole variant: on a multi-variant product the placeholder
@@ -56,22 +73,29 @@ class Crawler:
         priced = 0
         async for product in iter_products(self.base_url, _COLLECTION_SLUG):
             products_seen += 1
-            # Nested, not sibling tallies: only a product with a vinyl type, an
-            # artist AND a usable pressing variant could have yielded a row, so
-            # only that product's identity and stock readability say anything
-            # about an empty result. Tallied independently, one product could
-            # satisfy each condition while none of them can yield.
+            # Nested, not sibling tallies: only a product with a vinyl type and
+            # an artist could have yielded a row, so only that product's
+            # identity and readability say anything about an empty result.
+            # Tallied independently, one product could satisfy each condition
+            # while none of them can yield.
+            #
+            # The readability tally sits OUTSIDE `if pressings`, unlike the
+            # rest: a product whose variants are *all* unreadable has an empty
+            # `pressings` and would slip past every guard, because one other
+            # product with a readable sold-out pressing is enough to satisfy
+            # pressings_seen on its behalf.
             if self._is_vinyl_product(product):
                 vinyl_typed += 1
                 if self._artist(product):
                     artist_ok += 1
-                    pressings = self._pressing_variants(product)
+                    pressings, unreadable_variants = self._read_variants(product)
                     if pressings:
                         pressings_seen += 1
-                        if not self._has_identity(product):
-                            identity_missing += 1
-                        elif not self._has_readable_stock_flag(pressings):
-                            unreadable_stock += 1
+                    if not self._has_identity(product):
+                        identity_missing += 1
+                    elif unreadable_variants or (
+                            pressings and not self._has_readable_stock_flag(pressings)):
+                        unreadable_stock += 1
             for item in self._items(product):
                 yielded += 1
                 if item["price"] is not None:
@@ -137,9 +161,15 @@ class Crawler:
             # unreadable products rather than readable ones is what catches the
             # partial case: one genuinely sold-out product must not vouch for a
             # catalog that has gone unreadable behind it.
+            #
+            # "Cannot read" covers both ways a product can look sold out
+            # without being sold out: a variant whose `available` is not a
+            # boolean, and a variant discarded before availability was ever
+            # consulted. The second is the one with no outward sign -- a
+            # discarded variant leaves a product that looks perfectly readable.
             raise RuntimeError(
                 f"{_COLLECTION_SLUG} collection yielded no rows while {unreadable_stock} vinyl "
-                "product(s) carry no readable availability flag -- stock-source drift")
+                "product(s) carry a variant this crawler cannot read -- stock-source drift")
 
     @classmethod
     def _items(cls, product: dict) -> list:
@@ -192,10 +222,21 @@ class Crawler:
             })
         return items
 
+    @classmethod
+    def _is_vinyl_product(cls, product: dict) -> bool:
+        if not cls._names_vinyl(product.get("product_type") or ""):
+            return False
+        # The title layer only ever removes: a product whose type reads as
+        # vinyl but whose title names another medium with no vinyl word to
+        # override it. A title naming no format at all -- the common case here
+        # -- never reaches the override, because the filter fires only on a
+        # non-vinyl match.
+        title = product.get("title") or ""
+        return not (_NON_VINYL_TITLE_RE.search(title) and not cls._names_vinyl(title))
+
     @staticmethod
-    def _is_vinyl_product(product: dict) -> bool:
-        product_type = product.get("product_type") or ""
-        return bool(_INCH_RE.search(product_type) or _VINYL_TYPE_WORD_RE.search(product_type))
+    def _names_vinyl(text: str) -> bool:
+        return bool(_INCH_RE.search(text) or _VINYL_TYPE_WORD_RE.search(text))
 
     @staticmethod
     def _artist(product: dict) -> str:
@@ -221,30 +262,55 @@ class Crawler:
         return " ".join((product.get("vendor") or "").split())
 
     @classmethod
-    def _pressing_variants(cls, product: dict) -> list:
-        """(variant, descriptor) for each variant a row can be built from.
+    def _read_variants(cls, product: dict) -> Tuple[list, int]:
+        """(pressings, unreadable) for one product.
 
-        No format filtering here, deliberately: `product_type` already scopes
-        the format on this store, and every live variant on a vinyl-typed
-        product names a pressing colour and nothing else. A medium-word gate
-        would have no work to do and would misread a colour that happens to
-        name one -- the trap "Pink Tape" sprang on a sibling store.
+        `pressings` is the (variant, descriptor) pairs a row can be built from.
+        `unreadable` counts the entries discarded because this crawler could
+        not interpret them at all -- a non-mapping entry, a blank title, or the
+        placeholder beside a sibling.
+
+        The count exists because those discards are otherwise invisible, and
+        invisible is destructive here: an *available* variant with a blank
+        title sits beside a readable sold-out one, and the product then has a
+        non-empty `pressings`, a readable stock flag, and no row. Every guard
+        is satisfied while purchasable stock goes unpublished, and a catalog
+        otherwise sold out completes empty -- which is what makes
+        replace_stock_items() wipe the previous snapshot. Reported rather than
+        raised on the spot, so an isolated bad variant among real rows stays an
+        ordinary skipped row.
+
+        No format filtering here, deliberately: `product_type` and the title
+        layer already scope the format on this store, and every live variant on
+        a vinyl-typed product names a pressing colour and nothing else. A
+        medium-word gate would have no work to do and would misread a colour
+        that happens to name one -- the trap "Pink Tape" sprang on a sibling
+        store.
         """
-        pairs = []
+        raw = product.get("variants") or []
         # Non-mapping entries are dropped here, before anything reads them, so a
         # junk entry is an ordinary skipped row rather than an AttributeError
         # from inside the yield loop.
-        variants = [v for v in product.get("variants") or [] if isinstance(v, dict)]
+        variants = [v for v in raw if isinstance(v, dict)]
+        unreadable = len(raw) - len(variants)
+        pairs = []
         for variant in variants:
             title = " ".join((variant.get("title") or "").split())
             if not title:
+                unreadable += 1
                 continue
             if title.lower() == _PLACEHOLDER_VARIANT:
                 if len(variants) == 1:
                     pairs.append((variant, ""))
+                else:
+                    unreadable += 1
                 continue
             pairs.append((variant, title))
-        return pairs
+        return pairs, unreadable
+
+    @classmethod
+    def _pressing_variants(cls, product: dict) -> list:
+        return cls._read_variants(product)[0]
 
     @staticmethod
     def _has_identity(product: dict) -> bool:

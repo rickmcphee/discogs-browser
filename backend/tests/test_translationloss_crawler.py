@@ -241,6 +241,53 @@ async def test_a_type_naming_no_vinyl_format_is_excluded_by_default(crawler):
     assert {i["artist"] for i in items} == {"Trespassers William"}
 
 
+@respx.mock
+async def test_a_cd_mistyped_as_a_vinyl_type_is_rejected_on_its_title(crawler):
+    # INVENTED here, but the exact live shape hammerheart.py documents on its
+    # own vinyl shelf ("ARTCH - Another Return / CD" typed 12"). The type layer
+    # alone reads this as vinyl, so without the title layer it would publish
+    # with format="Vinyl" — leaving the gate not covering the case cited as its
+    # reason for existing.
+    mistyped = {**_LP_PRODUCT, "title": "Another Return / CD", "handle": "another-return"}
+    _mock_walk([mistyped, _TWO_LP_PRODUCT])
+    items = await _run(crawler)
+    assert {i["artist"] for i in items} == {"Trespassers William"}
+
+
+@respx.mock
+async def test_a_cassette_mistyped_as_a_vinyl_type_is_rejected_on_its_title(crawler):
+    mistyped = {**_LP_PRODUCT, "title": "Atheist's Cornea Cassette", "handle": "cornea"}
+    _mock_walk([mistyped, _TWO_LP_PRODUCT])
+    items = await _run(crawler)
+    assert {i["artist"] for i in items} == {"Trespassers William"}
+
+
+@respx.mock
+async def test_a_vinyl_word_overrides_the_medium_word_on_a_hybrid(crawler):
+    # A genuine LP+CD bundle names both; the vinyl word keeps it, exactly as
+    # hammerheart.py's override does.
+    hybrid = {**_LP_PRODUCT, "title": "Departure Songs LP + CD", "handle": "departure-bundle"}
+    _mock_walk([hybrid])
+    items = await _run(crawler)
+    assert [i["title"] for i in items] == [
+        "Departure Songs LP + CD — Orange Edition",
+        "Departure Songs LP + CD — Custom Splatter Edition",
+    ]
+
+
+@respx.mock
+async def test_a_title_naming_no_format_never_reaches_the_title_layer(crawler):
+    # The common shape on this shelf ("Crimea", "S/T"). The filter fires only
+    # on a non-vinyl match, so a title with neither signal is untouched.
+    bare = {**_LP_PRODUCT, "title": "Crimea", "handle": "crimea"}
+    _mock_walk([bare])
+    items = await _run(crawler)
+    assert [i["title"] for i in items] == [
+        "Crimea — Orange Edition",
+        "Crimea — Custom Splatter Edition",
+    ]
+
+
 # --- artist -----------------------------------------------------------------
 
 @respx.mock
@@ -612,6 +659,82 @@ async def test_an_isolated_unreadable_product_among_real_rows_does_not_raise(cra
     _mock_walk([{**_SINGLE_VARIANT_PRODUCT, "handle": ""}, _LP_PRODUCT])
     items = await _run(crawler)
     assert {i["artist"] for i in items} == {"All Out War"}
+
+
+@respx.mock
+async def test_an_available_unreadable_variant_beside_a_sold_out_one_raises(crawler):
+    # The hole a discarded variant opens: the blank-titled variant is
+    # purchasable, but it is dropped before availability is ever consulted, so
+    # the product keeps a non-empty `pressings`, a readable stock flag and no
+    # row. Every guard would be satisfied while real stock went unpublished —
+    # and an otherwise sold-out catalog would then wipe the snapshot.
+    product = {**_LP_PRODUCT, "variants": [
+        {"title": "", "price": "26.99", "available": True},
+        {"title": "Black", "price": "26.99", "available": False},
+    ]}
+    _mock_walk([product])
+    with pytest.raises(RuntimeError, match="cannot read -- stock-source drift"):
+        await _run(crawler)
+
+
+@respx.mock
+async def test_an_all_unreadable_product_raises_beside_a_readable_sold_out_one(crawler):
+    # The same hole one step further out: this product's `pressings` is empty,
+    # so the pressing guard would be satisfied on its behalf by the readable
+    # sold-out record beside it. The readability tally therefore sits outside
+    # the `if pressings` branch.
+    ghost = {**_LP_PRODUCT, "handle": "ghost", "variants": [
+        {"title": "", "price": "26.99", "available": True},
+    ]}
+    _mock_walk([ghost, _TEN_INCH_PRODUCT])
+    with pytest.raises(RuntimeError, match="cannot read -- stock-source drift"):
+        await _run(crawler)
+
+
+@respx.mock
+async def test_a_placeholder_beside_a_sibling_counts_as_unreadable(crawler):
+    product = {**_LP_PRODUCT, "variants": [
+        {"title": "Default Title", "price": "26.99", "available": True},
+        {"title": "Black", "price": "26.99", "available": False},
+    ]}
+    _mock_walk([product])
+    with pytest.raises(RuntimeError, match="cannot read -- stock-source drift"):
+        await _run(crawler)
+
+
+@respx.mock
+async def test_a_non_mapping_variant_counts_as_unreadable(crawler):
+    product = {**_LP_PRODUCT, "variants": [
+        "Orange Edition",
+        {"title": "Black", "price": "26.99", "available": False},
+    ]}
+    _mock_walk([product])
+    with pytest.raises(RuntimeError, match="cannot read -- stock-source drift"):
+        await _run(crawler)
+
+
+@respx.mock
+async def test_an_isolated_unreadable_variant_among_real_rows_does_not_raise(crawler):
+    # The counterpart the guard must not over-reach on: one bad variant beside
+    # rows that did publish stays an ordinary skipped row.
+    broken = {**_LP_PRODUCT, "handle": "broken", "variants": [
+        {"title": "", "price": "26.99", "available": True},
+        {"title": "Black", "price": "26.99", "available": False},
+    ]}
+    _mock_walk([broken, _SINGLE_VARIANT_PRODUCT])
+    items = await _run(crawler)
+    assert {i["artist"] for i in items} == {"Coastlands"}
+
+
+@respx.mock
+async def test_a_sole_placeholder_product_is_readable_and_does_not_raise(crawler):
+    # A sole placeholder is admitted, not discarded, so a sold-out one is an
+    # ordinary legitimate empty result rather than drift.
+    product = {**_SINGLE_VARIANT_PRODUCT, "variants": [
+        {"title": "Default Title", "price": "26.99", "available": False},
+    ]}
+    _mock_walk([product])
+    assert await _run(crawler) == []
 
 
 # --- registration metadata --------------------------------------------------
