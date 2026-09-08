@@ -562,7 +562,7 @@ async def test_a_shelf_gone_all_cd_raises_on_the_format_source_not_the_artist(cr
 @respx.mock
 async def test_raises_when_no_vinyl_product_carries_a_vendor(crawler):
     _mock_walk([{**_LP_PRODUCT, "vendor": ""}, {**_TWO_LP_PRODUCT, "vendor": "   "}])
-    with pytest.raises(RuntimeError, match="artist-source drift"):
+    with pytest.raises(RuntimeError, match="collection carries a vendor -- artist-source drift"):
         await _run(crawler)
 
 
@@ -573,7 +573,7 @@ async def test_a_non_vinyl_vendor_cannot_vouch_for_the_artist_source(crawler):
     # row's vendor would satisfy it and the walk would raise on the variants
     # instead -- naming a source that never broke.
     _mock_walk([_CD_PRODUCT, {**_LP_PRODUCT, "vendor": ""}])
-    with pytest.raises(RuntimeError, match="artist-source drift"):
+    with pytest.raises(RuntimeError, match="collection carries a vendor -- artist-source drift"):
         await _run(crawler)
 
 
@@ -583,7 +583,7 @@ async def test_raises_when_no_vinyl_product_names_a_pressing(crawler):
         {**_LP_PRODUCT, "variants": []},
         {**_TWO_LP_PRODUCT, "variants": [{"title": "", "price": "39.99", "available": True}]},
     ])
-    with pytest.raises(RuntimeError, match="pressing-source drift"):
+    with pytest.raises(RuntimeError, match="has a variant naming a pressing -- pressing-source drift"):
         await _run(crawler)
 
 
@@ -735,6 +735,53 @@ async def test_a_sole_placeholder_product_is_readable_and_does_not_raise(crawler
     ]}
     _mock_walk([product])
     assert await _run(crawler) == []
+
+
+@respx.mock
+async def test_a_vinyl_product_losing_its_vendor_raises_when_nothing_yields(crawler):
+    # artist_ok is a success-only counter: one valid product makes it nonzero,
+    # so a *partial* loss of the vendor source is invisible to it. This
+    # product is available and would have published; it is skipped for want of
+    # an artist, and the sold-out record beside it makes the walk look
+    # legitimately empty.
+    lost = {**_LP_PRODUCT, "vendor": "", "handle": "lost-vendor"}
+    _mock_walk([lost, _TEN_INCH_PRODUCT])
+    with pytest.raises(RuntimeError, match="carry no vendor -- artist-source drift"):
+        await _run(crawler)
+
+
+@respx.mock
+async def test_a_vinyl_product_losing_its_variants_raises_when_nothing_yields(crawler):
+    # Same shape one source over: pressings_seen is satisfied by the sold-out
+    # record, so a product whose variants went away entirely records nothing.
+    lost = {**_LP_PRODUCT, "variants": [], "handle": "lost-variants"}
+    _mock_walk([lost, _TEN_INCH_PRODUCT])
+    with pytest.raises(RuntimeError, match="carry no variants at all -- pressing-source drift"):
+        await _run(crawler)
+
+
+@respx.mock
+async def test_a_partial_source_loss_among_real_rows_does_not_raise(crawler):
+    # Both new guards stay gated on an empty outcome: a single bad product
+    # beside rows that did publish is an ordinary skipped row.
+    lost_vendor = {**_LP_PRODUCT, "vendor": "", "handle": "lost-vendor"}
+    lost_variants = {**_LP_PRODUCT, "variants": [], "handle": "lost-variants"}
+    _mock_walk([lost_vendor, lost_variants, _SINGLE_VARIANT_PRODUCT])
+    items = await _run(crawler)
+    assert {i["artist"] for i in items} == {"Coastlands"}
+
+
+@respx.mock
+async def test_all_variants_unreadable_reports_the_shape_not_a_missing_source(crawler):
+    # A product whose variants are all discarded also has no pressings, so the
+    # two guards would both fire. The unreadable one is the accurate report,
+    # so the missing-pressing tally deliberately excludes it.
+    ghost = {**_LP_PRODUCT, "handle": "ghost", "variants": [
+        {"title": "", "price": "26.99", "available": True},
+    ]}
+    _mock_walk([ghost, _TEN_INCH_PRODUCT])
+    with pytest.raises(RuntimeError, match="cannot read -- stock-source drift"):
+        await _run(crawler)
 
 
 # --- registration metadata --------------------------------------------------

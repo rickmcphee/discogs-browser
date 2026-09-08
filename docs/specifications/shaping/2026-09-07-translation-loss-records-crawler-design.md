@@ -243,6 +243,28 @@ Tape` sprang on `counterintuitiverecords.py`. The asymmetry is deliberate: a
 title is written once per product and a colour name is not, so the same
 vocabulary is safe on the one and hazardous on the other.
 
+### Every source is tracked by its failures, not only its successes
+
+`artist_ok` and `pressings_seen` count products that *had* a vendor and a
+pressing, and a success-only counter cannot see a partial loss: one healthy
+product makes each nonzero, so the total-loss guards above stay quiet while
+some other product's source has gone. Copilot's second review round found
+this, and it reproduces the same way as the discarded-variant hole — a vinyl
+product whose `vendor` went blank is skipped, one sold-out record beside it
+leaves the walk looking legitimately empty, and the skipped product may have
+had stock to sell.
+
+Each source therefore has a matching failure tally — `artist_missing` and
+`pressings_missing` — with its own guard, gated on an empty outcome exactly
+as the identity and stock guards are, so an isolated bad product among rows
+that did publish stays an ordinary skipped row.
+
+`pressings_missing` counts only a product with **no variants to read at
+all**, not one whose variants were read and discarded: the stock tally
+already counts that case and reports it more accurately. Splitting them
+keeps each guard's message pointing at what actually went missing, rather
+than two guards racing to describe one product.
+
 ### A discarded variant is counted, not silently dropped
 
 `_read_variants` discards three shapes it cannot interpret — a non-mapping
@@ -324,6 +346,8 @@ reads:
 | `format-taxonomy drift` | no product carries a vinyl `product_type` — the store moved the format signal |
 | `artist-source drift` | no vinyl product carries a vendor — the artist's only source is gone |
 | `pressing-source drift` | no vinyl product has a variant naming a pressing — variants lost, blanked, or left as bare placeholders beside siblings |
+| `artist-source drift` (partial) | nothing was yielded while some vinyl product carries no vendor |
+| `pressing-source drift` (partial) | nothing was yielded while some vinyl product carries no variants at all |
 | `price-source drift` | rows were yielded but not one carries a price |
 | `identity-source drift` | nothing was yielded while some record carries no title or no handle (the message names both, because `_has_identity` reads both and a blank title reaches the tally with the artist intact, `vendor` having supplied it) |
 | `stock-source drift` | nothing was yielded while some record carries a variant this crawler cannot read — an unreadable `available`, or a variant discarded before availability was ever consulted |
@@ -395,6 +419,10 @@ the live catalog cannot produce). Cases:
 - pagination walking every page until exhausted
 - each drift guard firing, and each not firing when it should not —
   including a non-vinyl vendor being unable to vouch for the artist source
+- partial source loss reaching its guard: a vinyl product losing its vendor
+  and one losing its variants, each raising when nothing else yields, against
+  the same two among rows that did publish, which do not; and a product whose
+  variants are all unreadable reporting the shape rather than a missing source
 - a discarded variant reaching the stock guard: an available blank-titled
   variant beside a readable sold-out one, a product whose variants are all
   unreadable beside a readable sold-out one, a placeholder beside a sibling,

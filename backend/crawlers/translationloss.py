@@ -66,7 +66,9 @@ class Crawler:
         products_seen = 0
         vinyl_typed = 0
         artist_ok = 0
+        artist_missing = 0
         pressings_seen = 0
+        pressings_missing = 0
         identity_missing = 0
         unreadable_stock = 0
         yielded = 0
@@ -86,11 +88,20 @@ class Crawler:
             # pressings_seen on its behalf.
             if self._is_vinyl_product(product):
                 vinyl_typed += 1
-                if self._artist(product):
+                if not self._artist(product):
+                    artist_missing += 1
+                else:
                     artist_ok += 1
                     pressings, unreadable_variants = self._read_variants(product)
                     if pressings:
                         pressings_seen += 1
+                    elif not unreadable_variants:
+                        # No variants to read at all, as against variants read
+                        # and discarded -- which the stock tally below already
+                        # counts, and reports more accurately. Splitting them
+                        # keeps each guard's message pointing at what actually
+                        # went missing.
+                        pressings_missing += 1
                     if not self._has_identity(product):
                         identity_missing += 1
                     elif unreadable_variants or (
@@ -142,6 +153,23 @@ class Crawler:
             raise RuntimeError(
                 f"none of the {yielded} rows from the {_COLLECTION_SLUG} collection carries a price "
                 "-- price-source drift")
+        if not yielded and artist_missing:
+            # artist_ok and pressings_seen are success-only counters: one
+            # healthy product makes each nonzero, so the total-loss guards
+            # above cannot see a *partial* loss of either source. Found by
+            # Copilot's review. A vinyl product whose vendor went away is
+            # skipped, and one sold-out record beside it is enough to leave the
+            # walk looking legitimately empty -- while the skipped product may
+            # have had stock to sell. Gated on an empty outcome, like the two
+            # guards below, so an isolated bad product among real rows stays an
+            # ordinary skipped row.
+            raise RuntimeError(
+                f"{_COLLECTION_SLUG} collection yielded no rows while {artist_missing} vinyl "
+                "product(s) carry no vendor -- artist-source drift")
+        if not yielded and pressings_missing:
+            raise RuntimeError(
+                f"{_COLLECTION_SLUG} collection yielded no rows while {pressings_missing} vinyl "
+                "product(s) carry no variants at all -- pressing-source drift")
         if not yielded and identity_missing:
             # Title and handle are identity, not display: item_key hashes the
             # row's title and URL, so a product missing either is skipped rather
