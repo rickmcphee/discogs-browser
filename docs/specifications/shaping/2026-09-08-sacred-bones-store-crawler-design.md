@@ -91,6 +91,33 @@ A product with no `vendor` is skipped rather than credited from its title.
 There is nothing in the title to fall back to, and inventing a credit would
 re-key rows whose `item_key` hashes the artist.
 
+#### One reduction, and one deliberately not made
+
+A split release's billing names every act on the record, but a stock row's
+artist has to be the *first-billed* one to be matchable: `discogs.parse_release`
+stores `artists[0]` and nothing else, and `db._library_release_match_sql`
+compares artists with exact case-folded equality (only the title gets the
+exact-or-prefix treatment). So a joined billing sits permanently outside the
+Store tab's Collection and Wantlist filters.
+
+A billing joined by a whitespace-flanked slash is therefore reduced to the act
+before it — one live vendor, `The Men / Woods` on their Pickathon split. The
+whitespace is required on at least one side, the repo's standard fix for this
+bug class, so an act whose own name contains a slash (`AC/DC`) is not clipped
+to its first half. Same rule and same regex as `counterintuitiverecords.py`'s
+`_BILLING_SPLIT_RE`.
+
+**`&`, `,` and `and` are deliberately not split**, though the shelf joins acts
+with all three on 20 of its 157 vendors (`Uniform & The Body`, `John Carpenter,
+Cody Carpenter, and Daniel Davies`, `Dean Hurley and Gloria de Oliveira`). Each
+is also an ordinary part of a single act's own name, and nothing in the payload
+separates the two readings — `Mandy, Indiana` is live on this very shelf, and a
+comma split would credit it to `Mandy`. Reducing would silently break the match
+for such a name, which is the failure with no signal to recover from; leaving
+it joined costs a match the store's own spelling was unlikely to win anyway.
+This is the same call `translationloss.py`'s `_artist` makes, on the same
+grounds.
+
 ### The medium is decided per variant, and the gate is negative
 
 The variant title is where the store writes the format, uniformly. That holds
@@ -206,6 +233,13 @@ share its title and product URL, and so its `item_key`, with every sibling
 built the same way. The live shelf has no placeholder variants at all; this
 is the guard for a single-variant product the store adds later.
 
+Those discards are *counted*, not silently dropped. A product all of whose
+variants are discarded has no admitted pressings, so it reaches none of the
+per-product tallies below — and Shopify dropping variant titles store-wide
+would leave every multi-variant product in exactly that state, emptying the
+walk with no guard firing. `_read_variants` therefore returns the count
+alongside the pressings, and it feeds a guard of its own.
+
 Across the whole live shelf the composed titles produce no `item_key`
 collisions: no two admitted variants of one product share a name.
 
@@ -254,22 +288,35 @@ reads.
 | Guard | Raises when | Why it is shaped that way |
 | --- | --- | --- |
 | collection | the walk saw no products at all | the shelf was renamed or removed |
-| artist-source | no product carries a `vendor` | `vendor` is the artist with no fallback, so emptying it store-wide skips every product while the walk still completes. Not gated on having yielded nothing, because that state yields nothing by construction |
 | price-source | rows were yielded but not one carries a price | a `price` field removed or retyped store-wide would re-list the whole catalog priced at nothing, which is worse than the snapshot it replaces. Isolated nulls stay tolerated |
+| artist-source | nothing was yielded *and* some product that would otherwise have produced a row has no `vendor` | `vendor` is the artist with no fallback, so such a product is skipped rather than credited from something else — and skipping leaves the walk looking sold out |
+| variant-identity-source | nothing was yielded *and* some variant could not be interpreted at all | a product whose variants are all discarded has no admitted pressings, so it reaches none of the per-product tallies; without this guard, Shopify dropping variant titles store-wide empties the walk in silence |
 | identity-source | nothing was yielded *and* some product that would otherwise have produced a row has no `title` or `handle` | `item_key` hashes the title and URL, so such a product is skipped rather than re-identified — and skipping leaves the walk looking sold out |
 | stock-source | nothing was yielded *and* some such product has no readable `available` flag | an empty result is only trustworthy when every product that could have yielded a row was readable and simply out of stock |
 
-The identity and stock tallies are taken *before* the availability filter, so
-a sold-out product still counts toward both; `yielded` and `priced` are
+The four per-product tallies are taken *before* the availability filter, so a
+sold-out product still counts toward them; `yielded` and `priced` are
 necessarily counted after it, which is why the guards reading them are each
 conditioned on a second tally rather than on emptiness alone — a shelf that
 has simply sold out is empty legitimately.
 
-The artist tally sits *outside* the format gate and outside the raffle skip,
-because it asks a question about the payload rather than about the shelf's
-contents. Tallied inside the gate, a shelf that legitimately filled up with
-CDs would raise `artist-source drift` while every vendor was perfectly
-readable.
+Artist, identity and stock share **one bracket**, gated on the product having
+admitted pressings, and each product counts once against the first reason that
+applies. The gate is what keeps a CD-only product — or a skipped one, which
+`_read_variants` answers empty for — from tallying toward anything: it would
+never have yielded a row whatever its vendor said, so it can neither raise a
+false alarm on a shelf that legitimately filled up with CDs nor vouch for one
+that broke.
+
+That last half is why the artist question is asked inside the bracket rather
+than over every product walked, and it is the fix for a hole Copilot found in
+review on PR #332. A tally taken outside the gate is satisfied by the raffle's
+own vendor — or by any CD-only product's — while every record on the shelf has
+lost its. Each record then yields nothing, reaches neither the identity nor the
+stock tally, and the walk completes empty having passed every guard, at which
+point `replace_stock_items()` deletes the snapshot. The bracketed form has no
+such hole: a record that lost its vendor still has admitted pressings, so it
+tallies, and an empty walk raises.
 
 `_has_readable_stock_flag` uses every, not any: a product whose black
 pressing is a readable `False` and whose coloured pressing carries the string
@@ -297,8 +344,12 @@ nameless-variant rule in both directions; whitespace collapsing; per-variant
 identity; availability including the literal-`True` rule and the sold-out
 pre-order; junk variant entries; a missing `vendor`, `title` or `handle`;
 price parsing over unusable and usable values; cover-image resolution and
-fallback; URL construction; pagination; and every guard in the table above,
-in both the raising and the non-raising direction.
+fallback; URL construction; pagination; the split-billing reduction and the
+credits deliberately left whole (`AC/DC`, `Mandy, Indiana`, the `&`/`,`/`and`
+forms); and every guard in the table above, in both the raising and the
+non-raising direction — including the two holes Copilot found in review, a
+vendor surviving only on a skipped or non-record product, and a shelf whose
+variants all name no pressing.
 
 Each guard and rule was additionally mutation-checked: mutating the crawler
 once per row of that table, per gate branch and per composition rule fails

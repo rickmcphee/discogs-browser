@@ -61,6 +61,26 @@ _NON_VINYL_MEDIA_RE = re.compile(
 # than the title because that is where the store says what the product is;
 # the prize names themselves say nothing (`Society 25`).
 _SKIP_TAGS = frozenset({"raffle", "donation"})
+# A split release's billing names every act on the record, but a stock row's
+# artist has to be the FIRST-billed one to be matchable: discogs.parse_release
+# stores `artists[0]` and nothing else, and db._library_release_match_sql
+# compares artists with exact case-folded equality (only the title gets the
+# exact-or-prefix treatment). So a joined billing sits permanently outside the
+# Store tab's Collection and Wantlist filters.
+#
+# Whitespace is required on at least one side of the slash, the repo's standard
+# fix for this bug class: an act whose own name contains a slash (AC/DC) must
+# not be clipped to its first half.
+#
+# `&`, `,` and `and` are deliberately NOT split, though the shelf joins acts
+# with all three (`Uniform & The Body`, `John Carpenter, Cody Carpenter, and
+# Daniel Davies`). Each is also an ordinary part of a single act's own name --
+# `Mandy, Indiana` is live on this very shelf -- and nothing in the payload
+# separates the two readings. Reducing would silently break the match for such
+# a name, which is the failure with no signal to recover from; leaving it
+# joined costs a match the store's own spelling was unlikely to win anyway.
+# Same call, on the same grounds, as translationloss.py's `_artist`.
+_BILLING_SPLIT_RE = re.compile(r'(?:\s+/\s*|\s*/\s+)')
 # Shopify's placeholder for a product with exactly one variant. It names no
 # pressing, so a row built on it carries the product title alone -- and only
 # when it IS the sole variant, which is equally why a blank title is treated
@@ -79,25 +99,32 @@ class Crawler:
 
     async def crawl_catalog(self) -> AsyncIterator[dict]:
         products_seen = 0
-        credited = 0
+        artist_missing = 0
         identity_missing = 0
         unreadable_stock = 0
+        unreadable_variants = 0
         yielded = 0
         priced = 0
         async for product in iter_products(self.base_url, _COLLECTION_SLUG):
             products_seen += 1
-            # Tallied over every product walked, outside the format gate and
-            # outside the raffle skip, because it answers a question about
-            # the payload rather than about this shelf's contents: does
-            # `vendor` still carry a credit at all. Tallied inside the gate,
-            # a shelf that legitimately filled up with CDs would raise
-            # "artist-source drift" while every vendor was perfectly readable.
-            artist = self._artist(product)
-            if artist:
-                credited += 1
-            pressings = self._pressings(product)
-            if artist and pressings:
-                if not self._has_identity(product):
+            pressings, unreadable = self._read_variants(product)
+            unreadable_variants += unreadable
+            # One bracket for every way a product that WOULD have yielded a
+            # row failed to, counted once per product against the first
+            # reason that applies. Gating the whole bracket on `pressings`
+            # is what keeps a CD-only product -- or a skipped one, which
+            # _read_variants answers empty for -- from tallying toward
+            # anything: it would never have yielded a row whatever its
+            # vendor said, so it can neither raise a false alarm nor vouch
+            # for the shelf. The artist question in particular has to be
+            # asked here rather than over every product walked: a tally
+            # taken outside the gate is satisfied by the raffle's own
+            # vendor while every record on the shelf has lost its, and the
+            # walk then completes empty having passed every guard.
+            if pressings:
+                if not self._artist(product):
+                    artist_missing += 1
+                elif not self._has_identity(product):
                     identity_missing += 1
                 elif not self._has_readable_stock_flag(pressings):
                     unreadable_stock += 1
@@ -122,14 +149,6 @@ class Crawler:
         if products_seen == 0:
             raise RuntimeError(
                 f"{_COLLECTION_SLUG} collection returned no products -- renamed, removed, or markup drift")
-        if credited == 0:
-            # `vendor` is the artist, with no fallback to the title, so this
-            # is the guard that notices the store emptying the field: every
-            # product would be skipped while the walk still completed. Not
-            # gated on having yielded nothing, because a store-wide blank
-            # vendor yields nothing by construction.
-            raise RuntimeError(
-                f"no product in the {_COLLECTION_SLUG} collection carries a vendor -- artist-source drift")
         if yielded and not priced:
             # Rows without the emptiness: `_price` answers None for a value
             # it cannot use, so a `price` field removed or retyped store-wide
@@ -138,6 +157,27 @@ class Crawler:
             raise RuntimeError(
                 f"none of the {yielded} rows from the {_COLLECTION_SLUG} collection carries a "
                 "price -- price-source drift")
+        if not yielded and artist_missing:
+            # `vendor` is the artist, with no fallback to the title, so a
+            # product that loses it is skipped rather than credited from
+            # something else -- and skipping leaves the walk looking sold
+            # out. Same empty-outcome gate as the two guards below, and for
+            # the same reason: an isolated vendor-less product among real
+            # rows is an ordinary skipped row.
+            raise RuntimeError(
+                f"{_COLLECTION_SLUG} collection yielded no rows while "
+                f"{artist_missing} record(s) carry no vendor -- artist-source drift")
+        if not yielded and unreadable_variants:
+            # Every variant this crawler could not interpret at all: a
+            # non-mapping entry, or one naming no pressing beside a sibling.
+            # Those discards are otherwise invisible, and invisible is
+            # destructive -- Shopify dropping variant titles store-wide
+            # leaves every multi-variant product with nothing to build a row
+            # from, and the bracket above never fires because such a product
+            # has no admitted pressings to gate on.
+            raise RuntimeError(
+                f"{_COLLECTION_SLUG} collection yielded no rows while "
+                f"{unreadable_variants} variant(s) name no pressing -- variant-identity-source drift")
         if not yielded and identity_missing:
             # `title` and `handle` are identity, not display: item_key hashes
             # the row's title and URL, so a product missing either is skipped
@@ -170,7 +210,7 @@ class Crawler:
         title = " ".join((product.get("title") or "").split())
         url = f"{cls.base_url}/products/{(product.get('handle') or '').strip()}"
         items = []
-        for variant, pressing in cls._pressings(product):
+        for variant, pressing in cls._read_variants(product)[0]:
             # Only the literal True admits a variant: the string "false" is
             # truthy, so a falsiness test would publish a sold-out record as
             # in stock. Anything else -- False, "false", 1, None, absent --
@@ -206,28 +246,47 @@ class Crawler:
 
     @staticmethod
     def _artist(product: dict) -> str:
-        return " ".join((product.get("vendor") or "").split())
+        vendor = " ".join((product.get("vendor") or "").split())
+        return _BILLING_SPLIT_RE.split(vendor, 1)[0].strip() or vendor
 
     @classmethod
-    def _pressings(cls, product: dict) -> List[Tuple[dict, str]]:
-        """(variant, pressing name) for each variant this crawler reads as vinyl."""
+    def _read_variants(cls, product: dict) -> Tuple[List[Tuple[dict, str]], int]:
+        """(pressings, unreadable) for one product.
+
+        `pressings` is the (variant, pressing name) pairs a row can be built
+        from. `unreadable` counts the entries discarded because this crawler
+        could not interpret them at all -- a non-mapping entry, or one naming
+        no pressing beside a sibling. That count exists because those discards
+        are otherwise invisible, and invisible is destructive: a product all
+        of whose variants are discarded has no admitted pressings, so it
+        reaches none of the other tallies and an empty walk looks legitimate.
+
+        A skipped product answers empty on both counts. Its variants are not
+        pressings the crawler failed to read, they are entries it was never
+        meant to read, so counting them would raise on a shelf that is
+        working exactly as designed.
+        """
         if cls._is_skipped(product):
-            return []
+            return [], 0
+        raw = product.get("variants") or []
         # Non-mapping entries are dropped here, before anything reads them,
         # so a junk entry is an ordinary skipped row rather than an
         # AttributeError from inside the yield loop.
-        variants = [v for v in product.get("variants") or [] if isinstance(v, dict)]
+        variants = [v for v in raw if isinstance(v, dict)]
+        unreadable = len(raw) - len(variants)
         pairs = []
         for variant in variants:
             name = " ".join((variant.get("title") or "").split())
             if not name or name.lower() == _PLACEHOLDER_VARIANT:
                 if len(variants) == 1:
                     pairs.append((variant, ""))
+                else:
+                    unreadable += 1
                 continue
             if not cls._is_vinyl(name):
                 continue
             pairs.append((variant, name))
-        return pairs
+        return pairs, unreadable
 
     @staticmethod
     def _is_skipped(product: dict) -> bool:

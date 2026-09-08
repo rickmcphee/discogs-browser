@@ -14,14 +14,15 @@
 - No new shared module — reuse `shopify_catalog.iter_products()` and `resolve_cover_image()` unchanged. `strip_vendor_prefix` is deliberately **not** used: the store writes no vendor prefix, and every title that begins with the vendor is a self-titled record. `has_tag` is not used either — the tag check needs its own whitespace-tolerant matching over a set.
 - `format` is hardcoded `"Vinyl"`; `currency` is hardcoded `"USD"` (confirmed via the store's `meta.json`).
 - **`_COLLECTION_SLUG = "vinyl"`.** `collections.json` reports a `products_count` larger than the shelf's published catalog; `products.json` returns the published products and those are what is walked.
-- **The artist is `vendor`, with no fallback to the title.** A product with no vendor is skipped.
+- **The artist is `vendor`, with no fallback to the title.** A product with no vendor is skipped. A billing joined by a whitespace-flanked slash is reduced to the first-billed act (`AC/DC` survives); `&`, `,` and `and` are deliberately **not** split, because each is also part of a single act's own name (`Mandy, Indiana` is live on the shelf).
 - **The row's title is `album — pressing`.** The pressing stays *after* the album so `db._library_release_match_sql`'s prefix test still matches, and is appended on every row that names one.
 - **A variant that names nothing** — `Default Title` or blank — carries the album alone, and only as a product's sole variant.
 - **The format gate reads the variant title only**, vinyl-word first and other-medium second, defaulting to admit. `cd`/`cs` carry the digit-glued-count lookbehind, or `3xCD` and `2xCS` are not read as other media.
 - **Bundles are not excluded**; the raffle is, on its `Raffle`/`Donation` tags.
 - **Availability comes from `variant.available`, literal `True` only; no pre-order bypass, and no marker is written.**
 - **Readability is judged over the admitted variants only**, with every(), not any().
-- **The artist tally sits outside the format gate and the skip**, so an all-CD shelf does not raise `artist-source drift`.
+- **Artist, identity and stock share one tally bracket**, gated on the product having admitted pressings, each product counting once against the first reason that applies — so an all-CD or skipped product neither raises `artist-source drift` on a healthy shelf nor vouches for a broken one.
+- **Discarded variants are counted, not silently dropped**, and feed a `variant-identity-source` guard: a product whose variants are all unreadable has no admitted pressings and so reaches no other tally.
 - No comments except where the WHY is non-obvious.
 - Registration is automatic via `main.py`'s bundled-crawler startup loop — no wiring changes anywhere else.
 - Every commit carries the AI-attribution trailer block required by this repo's `CLAUDE.md`, created via `git commit -F <message-file>`, not `-m`.
@@ -56,6 +57,7 @@ cd backend && TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/di
 - [x] **Step 7: Mutation-check that each guard and rule bites** — mutate the crawler once per guard, gate branch and composition rule and confirm the tests fail, then confirm the file restores byte-identical.
 - [x] **Step 8: Run the wider crawler test selection for regressions** (`pytest tests/ -k crawler` with the three test env vars set — the plugin loader imports every module in `backend/crawlers/`, so a syntax error in the new file breaks unrelated tests), and baseline it without the new files to attribute anything that fails.
 - [x] **Step 9: Commit** via `git commit -F`, with trailers.
+- [x] **Step 10: Address the Copilot review on PR #332** — two real destructive-empty holes in the guards (a vendor surviving only on a skipped or non-record product; a shelf whose variants all name no pressing), each reproduced as a failing test before being fixed, and each mutation-checked afterwards. The review's third finding is declined in part: its mechanism is real, so the unambiguous slash split is adopted, but reducing `&`/`,`/`and` billings is the call this repo made against in `translationloss.py` and the shelf carries the live counterexample (`Mandy, Indiana`).
 
 ---
 

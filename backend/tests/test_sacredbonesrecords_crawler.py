@@ -691,3 +691,81 @@ async def test_pagination_walks_every_page(crawler):
         return_value=_page_response([]))
     items = [item async for item in crawler.crawl_catalog()]
     assert [i["artist"] for i in items] == ["John Carpenter", "Hector Sepulveda"]
+
+
+@respx.mock
+async def test_a_vendor_surviving_only_on_a_skipped_product_does_not_vouch_for_the_shelf(crawler):
+    # The hole Copilot found on PR #332: a tally taken over every product
+    # walked is satisfied by the raffle's own vendor, while the records that
+    # lost theirs yield nothing and reach no other guard -- a silent empty
+    # walk that replace_stock_items() would turn into a deletion.
+    _mock_pages(_RAFFLE_PRODUCT, {**_one_pressing(_LOST_THEMES_PRODUCT), "vendor": ""})
+    with pytest.raises(RuntimeError, match="artist-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_a_vendor_surviving_only_on_a_non_record_does_not_vouch_for_the_shelf(crawler):
+    # Same hole through the format gate rather than the skip: a CD-only
+    # product keeps its vendor and would never have yielded a row anyway.
+    _mock_pages(_one_pressing(_BELAYA_POLOSA_PRODUCT, index=3),
+                {**_one_pressing(_LOST_THEMES_PRODUCT), "vendor": ""})
+    with pytest.raises(RuntimeError, match="artist-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_a_shelf_of_nameless_variants_raises(crawler):
+    # Shopify dropping variant titles store-wide leaves every multi-variant
+    # product with nothing this crawler can name a pressing from, and a
+    # silently empty walk is destructive where a raise is inert.
+    product = {**_LOST_THEMES_PRODUCT, "variants": [
+        {**_LOST_THEMES_PRODUCT["variants"][0], "title": ""},
+        {**_LOST_THEMES_PRODUCT["variants"][1], "title": "Default Title"},
+    ]}
+    _mock_pages(product)
+    with pytest.raises(RuntimeError, match="variant-identity-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_one_nameless_variant_among_real_rows_does_not_raise(crawler):
+    product = {**_LOST_THEMES_PRODUCT, "variants": [
+        {**_LOST_THEMES_PRODUCT["variants"][0]},
+        {**_LOST_THEMES_PRODUCT["variants"][1], "title": ""},
+    ]}
+    _mock_pages(product)
+    items = [item async for item in crawler.crawl_catalog()]
+    assert len(items) == 1
+
+
+@respx.mock
+async def test_a_shelf_of_junk_variant_entries_raises(crawler):
+    _mock_pages({**_DISTRO_PRODUCT, "variants": ["nonsense", None, 7]})
+    with pytest.raises(RuntimeError, match="variant-identity-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_a_split_billing_is_reduced_to_the_first_billed_act(crawler):
+    # discogs.parse_release stores artists[0] and _library_release_match_sql
+    # compares artists with exact equality, so a joined split billing can
+    # never match a library release.
+    _mock_pages(_pressing({**_DISTRO_PRODUCT, "vendor": "The Men / Woods"}, "LP"))
+    items = [item async for item in crawler.crawl_catalog()]
+    assert items[0]["artist"] == "The Men"
+
+
+@pytest.mark.parametrize("vendor", [
+    "AC/DC",
+    "Mandy, Indiana",
+    "Uniform & The Body",
+    "John Carpenter, Cody Carpenter, and Daniel Davies",
+    "Dean Hurley and Gloria de Oliveira",
+])
+def test_a_credit_that_is_not_an_unambiguous_split_is_left_whole(vendor):
+    # The slash needs whitespace on one side, so AC/DC survives; and "&",
+    # "," and "and" are never split at all -- each is an ordinary part of a
+    # single act's own name, with `Mandy, Indiana` live on this very shelf,
+    # and nothing in the payload separates the two readings.
+    assert Crawler._artist({"vendor": vendor}) == vendor
