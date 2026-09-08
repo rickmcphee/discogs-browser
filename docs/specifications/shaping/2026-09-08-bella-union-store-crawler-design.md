@@ -354,6 +354,22 @@ Structural notes on the tallies:
   its formats, could not have yielded a row however their titles read, so a
   failed parse on one is evidence of nothing. That test runs *first*, which
   is what keeps a sold-out CD-only product from raising drift.
+
+  Neither half of that test reads the title, and that is what makes the
+  exemption safe on a product whose title did *not* parse. The `Merch` tag
+  and `_claims_vinyl` are positive determinations from `tags`,
+  `product_type` and the variant descriptors — not a shape recovered from a
+  title that already failed, which is the loose kind of exemption
+  `dongiovannirecords.py`'s design warns against. The first version of this
+  branch required a readable album before the claim could exempt anything,
+  which made it depend on the one field it must not: an untagged poster or
+  beanie the store named its own way would then have counted as
+  `unclassifiable` and raised drift on a walk that had legitimately sold
+  out, preserving a stale snapshot. A record that lost *both* its title
+  convention and its claim is exempted under the corrected rule, and that is
+  the accepted cost: at that point every signal the crawler has says
+  non-record, so counting it would not identify it either. Found in review
+  on PR #333.
   `unclassifiable` is 2 on every live walk — the two mis-titled records — and
   the guard is conditioned on an empty result, so that costs nothing until it
   matters.

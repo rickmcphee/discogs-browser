@@ -119,12 +119,23 @@ class Crawler:
                 # would leave an empty walk looking like a shelf that had
                 # merely sold out, and the snapshot would be deleted.
                 identity_missing += 1
-            elif has_tag(product, _MERCH_TAG) or (album and not self._claims_vinyl(product)):
+            elif has_tag(product, _MERCH_TAG) or not self._claims_vinyl(product):
                 # Read and deliberately skipped: the store's merch, or a
                 # product it publishes with no record among its formats.
                 # Neither could yield a row however its title reads, so a
                 # failed parse on one is evidence of nothing. This test comes
                 # first for that reason.
+                #
+                # Neither test reads the title, which is what makes the
+                # exemption safe on a product whose title did NOT parse. The
+                # tag and the claim are positive determinations from
+                # `tags`, `product_type` and the variant descriptors, not a
+                # guess recovered from the shape of a title that failed --
+                # so an untagged poster or beanie the store names its own way
+                # is exempt, rather than raising drift on a walk that
+                # legitimately sold out. Requiring a readable album here
+                # instead made this branch depend on the one field it must
+                # not. Found in review on PR #333.
                 pass
             elif not album:
                 # Never read at all: the one source failed on this product,

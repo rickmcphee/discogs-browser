@@ -799,6 +799,38 @@ async def test_a_non_record_product_beside_a_sold_out_record_does_not_raise(craw
 
 
 @respx.mock
+async def test_an_unparseable_non_record_beside_a_sold_out_record_does_not_raise(crawler):
+    # Invented: an untagged non-record the store named its own way, so BOTH
+    # the tag and the title parse fail on it. The product-level claim reads
+    # `product_type` and the variant descriptors and never the title, so it
+    # still classifies the product, and a walk that legitimately sold out must
+    # not raise on it.
+    _mock_pages(_one_pressing(_ARCO_PRODUCT, available=False), {
+        "title": "Bella Union Katakana Beanie",
+        "vendor": "Bella Union",
+        "handle": "bella-union-katakana-beanie",
+        "product_type": "",
+        "tags": [],
+        "images": [{"src": "https://cdn.shopify.com/katakana-beanie.jpg"}],
+        "variants": [
+            {"id": 94, "title": "One Size", "price": "17.00", "available": True,
+             "featured_image": None},
+        ],
+    })
+    assert [item async for item in crawler.crawl_catalog()] == []
+
+
+@respx.mock
+async def test_an_unparseable_product_that_claims_a_record_still_raises(crawler):
+    # The counterpart: _FOUR_CALENDAR_PRODUCT is typed `Vinyl`, so the claim
+    # holds and only the title failed. That one IS unclassifiable, and the
+    # pair pins the distinction the branch above turns on.
+    _mock_pages(_one_pressing(_ARCO_PRODUCT, available=False), _FOUR_CALENDAR_PRODUCT)
+    with pytest.raises(RuntimeError, match="classification drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
 async def test_a_title_less_product_beside_a_sold_out_record_raises(crawler):
     # Counted before the format gate: the parse reads the title, so nothing
     # downstream can classify a product without one.
