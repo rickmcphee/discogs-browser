@@ -703,7 +703,11 @@ async def test_product_missing_its_handle_is_skipped(crawler):
 async def test_price_parsing(crawler, price, expected):
     _mock_pages(_ARCO_PRODUCT, _one_pressing(_ALIEN_PRODUCT, price=price))
     items = [item async for item in crawler.crawl_catalog()]
-    assert items[1]["price"] == expected or (items[1]["price"] is None and expected is None)
+    # Pin the row the parametrized price belongs to before reading it, so the
+    # assertion cannot pass on some other row -- and so a mocked page silently
+    # not being served would fail here rather than further down.
+    assert [i["artist"] for i in items] == ["A.A. Williams", "Beach House"]
+    assert items[1]["price"] == expected
 
 
 @respx.mock
