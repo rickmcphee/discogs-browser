@@ -127,9 +127,9 @@ the bulk of it and then `LP`, `Title`, `Variant`, `Edition`, `Color`, `Style`,
 titles still read `LP`, `CD`, `Digital Album MP3`. The axis name is never
 read; the variant title always is.
 
-**The gate is negative**: a vinyl word admits outright, then a word naming
-another medium rejects, and anything else is admitted on the collection's own
-claim. It has to be, and this is the single most load-bearing decision in the
+**The gate is negative**: an explicit vinyl word admits outright, then a word
+naming another medium rejects, and anything else is admitted on the
+collection's own claim. It has to be, and this is the single most load-bearing decision in the
 crawler. Sacred Bones names its coloured pressings *by colour alone* — 50
 distinct variant titles on the live shelf carry no format word whatsoever
 (`Lavender Swirl`, `Clear Pink`, `Sacred Bones Exclusive Black and White
@@ -157,9 +157,39 @@ reads neither as another medium — it would publish a three-CD box set and a
 two-cassette box set as records. This was found by running the gate over the
 live shelf, not by inspection.
 
+#### Four tiers, and why merch sits between them
+
+The gate is four tiers, and the order between the middle two is the whole
+point:
+
+1. an explicit format word (`LP`, `vinyl`, `picture disc`, `test press`,
+   `flexi`) admits outright;
+2. a merch word rejects;
+3. an inch marker admits;
+4. anything left is admitted unless it names another medium.
+
+Tier 1 above tier 2 is what keeps a record bundled with merch — `Limited
+Edition Red Glitter Vinyl LP + Poster` is a record. Tier 2 above tier 3 is
+the correction: **a measurement is not a format claim**. With the inch marker
+sitting in tier 1, as one alternative of the vinyl-word pattern, a bare `12"`
+admitted outright and published `12" x 12" Poster` as a record. Tier 4 stays
+*below* tier 3 because there the pairing reads the other way round — `10 INCH
++ CD` is a record bundled with a CD, where `12" x 12" Poster` is a poster's
+size. `spv.py` orders its own gate identically, for the same reason; this
+matches it rather than inventing a shape. Found by Copilot in review on
+PR #332.
+
+The inch marker also allows an optional hyphen, because `12-INCH` is
+established notation in this repo (`asianmanrecords.py`'s `_VINYL_TYPES`) and
+`\s*` alone missed it. That only changes an outcome in tier 3 beside a media
+word — `12-INCH + CD` would otherwise fall to tier 4 and be dropped as a CD.
+
+Reordering changed no live classification: all 538 distinct variant names on
+the shelf classify identically before and after.
+
 #### Merch words
 
-The gate names `poster`, `print` and `pedal` alongside the media words. These
+The gate names `poster`, `print` and `pedal` in tier 2. These
 are the non-record strays the shelf actually stocks beside its records, as
 extra variants of a record's own product: `Limited Edition hand numbered
 posters designed by Grace O'Conner, limited to 150` ($45, on the *Only Lovers
@@ -170,8 +200,8 @@ branch would admit them.
 The vocabulary is deliberately limited to the words the shelf actually
 forced rather than a general merch lexicon. A word listed here rejects any pressing that merely mentions it, so
 the cost of guessing wrong is losing a record — and the shelf carries no
-apparel to justify `shirt` or `tee`. A vinyl word still wins outright, which
-is what keeps the pressings that come *with* one: `Limited Edition Smoke
+apparel to justify `shirt` or `tee`. An explicit vinyl word still wins
+outright, which is what keeps the pressings that come *with* one: `Limited Edition Smoke
 Vinyl LP w/ Print Set` and `Limited Edition Red Glitter Vinyl LP + Poster`
 are both admitted.
 
