@@ -240,3 +240,33 @@ async def test_iter_products_works_with_no_page_reporter_installed(tmp_config_di
     respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "2"}).mock(return_value=_page_response([]))
     products = [p async for p in iter_products("https://example.myshopify.test", "vinyl")]
     assert [p["id"] for p in products] == [1]
+
+
+@respx.mock
+@pytest.mark.parametrize("body", [{}, {"products": None}, {"products": "nonsense"},
+                                  {"products": {"id": 1}}],
+                         ids=["absent", "null", "string", "object"])
+async def test_iter_products_raises_on_an_unreadable_products_field(tmp_config_dir, body):
+    # An empty LIST is exhaustion; a missing, null or retyped field is not.
+    # Treating them alike stops the walk silently, and a catalog crawler's
+    # caller replaces the previous snapshot with whatever the walk yielded --
+    # so on a later page that is a partial prefix, and on the first page an
+    # empty result no drift guard can distinguish from a sold-out store.
+    save_config({"crawl_delay_seconds": 0})
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(
+        return_value=httpx.Response(200, json=body))
+    with pytest.raises(RuntimeError, match="products"):
+        [p async for p in iter_products("https://example.myshopify.test", "vinyl")]
+
+
+@respx.mock
+async def test_iter_products_raises_on_an_unreadable_products_field_on_a_later_page(tmp_config_dir):
+    # The dangerous case: page 1 answered, so the caller's own guards all see
+    # a healthy walk and nothing marks the result as truncated.
+    save_config({"crawl_delay_seconds": 0})
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "1"}).mock(
+        return_value=_page_response([{"id": 1}]))
+    respx.get(_PRODUCTS_URL, params={"limit": "250", "page": "2"}).mock(
+        return_value=httpx.Response(200, json={}))
+    with pytest.raises(RuntimeError, match="products"):
+        [p async for p in iter_products("https://example.myshopify.test", "vinyl")]
