@@ -268,7 +268,14 @@ class Crawler:
         """
         if cls._is_skipped(product):
             return [], 0
-        raw = product.get("variants") or []
+        raw = product.get("variants")
+        if not isinstance(raw, (list, tuple)) or not raw:
+            # Absent, emptied or retyped. A published Shopify product always
+            # carries at least one variant, so none of those is a product
+            # with nothing for sale -- it is a payload this crawler cannot
+            # read, and reading it as the former is what would let the
+            # collection disappear store-wide in silence.
+            return [], 1
         # Non-mapping entries are dropped here, before anything reads them,
         # so a junk entry is an ordinary skipped row rather than an
         # AttributeError from inside the yield loop.

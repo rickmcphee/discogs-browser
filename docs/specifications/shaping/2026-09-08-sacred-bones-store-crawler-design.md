@@ -240,6 +240,15 @@ would leave every multi-variant product in exactly that state, emptying the
 walk with no guard firing. `_read_variants` therefore returns the count
 alongside the pressings, and it feeds a guard of its own.
 
+The `variants` collection itself counts the same way when it is absent,
+emptied or retyped. A published Shopify product always carries at least one
+variant, so none of those states is a product with nothing for sale — each is
+a payload this crawler cannot read, and reading it as the former is what would
+let the collection disappear store-wide in silence. A *skipped* product is the
+one exception, answering empty on both counts: its variants were never meant
+to be read, so counting them would raise on a shelf working exactly as
+designed.
+
 Across the whole live shelf the composed titles produce no `item_key`
 collisions: no two admitted variants of one product share a name.
 

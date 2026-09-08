@@ -769,3 +769,37 @@ def test_a_credit_that_is_not_an_unambiguous_split_is_left_whole(vendor):
     # single act's own name, with `Mandy, Indiana` live on this very shelf,
     # and nothing in the payload separates the two readings.
     assert Crawler._artist({"vendor": vendor}) == vendor
+
+
+@respx.mock
+@pytest.mark.parametrize("variants", [None, [], {}, "nonsense"], ids=["absent", "empty", "dict", "string"])
+async def test_a_shelf_whose_variants_collection_is_unreadable_raises(crawler, variants):
+    # A published Shopify product always carries at least one variant, so an
+    # absent, emptied or retyped collection is not a product with nothing for
+    # sale -- it is a payload this crawler cannot read, and reading it as the
+    # former empties the walk in silence.
+    _mock_pages({**_LOST_THEMES_PRODUCT, "variants": variants})
+    with pytest.raises(RuntimeError, match="variant-identity-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_a_nameless_variant_beside_a_sold_out_pressing_raises(crawler):
+    # The readable sold-out pressing satisfies the stock guard on its own, so
+    # only counting the discarded sibling explains the empty outcome.
+    product = {**_BELAYA_POLOSA_PRODUCT, "variants": [
+        {**_BELAYA_POLOSA_PRODUCT["variants"][2], "available": False},
+        {**_BELAYA_POLOSA_PRODUCT["variants"][1], "title": ""},
+    ]}
+    _mock_pages(product)
+    with pytest.raises(RuntimeError, match="variant-identity-source drift"):
+        [item async for item in crawler.crawl_catalog()]
+
+
+@respx.mock
+async def test_a_skipped_product_with_no_variants_is_still_a_legitimate_empty_result(crawler):
+    # _read_variants answers empty on both counts for a skipped product, so
+    # its variant list is never read and can never explain an empty walk.
+    _mock_pages({**_RAFFLE_PRODUCT, "variants": []})
+    items = [item async for item in crawler.crawl_catalog()]
+    assert items == []
