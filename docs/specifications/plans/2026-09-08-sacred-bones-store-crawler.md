@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Python ≥3.9 syntax only — no `str | None`; use `Optional[str]` or leave untyped.
-- No new shared module — reuse `shopify_catalog.iter_products()` and `resolve_cover_image()` unchanged. `strip_vendor_prefix` is deliberately **not** used: the store writes no vendor prefix, and every title that begins with the vendor is a self-titled record. `has_tag` is not used either — the tag check needs its own whitespace-tolerant matching over a set.
+- No new shared module — reuse `shopify_catalog.iter_products()` and `resolve_cover_image()`. `iter_products()` gained one change in review (an unreadable `products` field raises instead of reading as exhaustion); `resolve_cover_image()` is untouched. `strip_vendor_prefix` is deliberately **not** used: the store writes no vendor prefix, and every title that begins with the vendor is a self-titled record. `has_tag` is not used either — the tag check needs its own whitespace-tolerant matching over a set.
 - `format` is hardcoded `"Vinyl"`; `currency` is hardcoded `"USD"` (confirmed via the store's `meta.json`).
 - **`_COLLECTION_SLUG = "vinyl"`.** `collections.json` reports a `products_count` larger than the shelf's published catalog; `products.json` returns the published products and those are what is walked.
 - **The artist is `vendor`, with no fallback to the title.** A product with no vendor is skipped. A billing joined by a whitespace-flanked slash is reduced to the first-billed act (`AC/DC` survives); `&`, `,` and `and` are deliberately **not** split, because each is also part of a single act's own name (`Mandy, Indiana` is live on the shelf).
@@ -29,7 +29,7 @@
 
 Full grounding for every rule above: [`docs/specifications/shaping/2026-09-08-sacred-bones-store-crawler-design.md`](../shaping/2026-09-08-sacred-bones-store-crawler-design.md).
 
-**Running the tests.** These tests mock HTTP with `respx` and never reach the store, but the `*_crawler` autouse fixture in `conftest.py` still resolves through the config layer, so run them with the three test env vars set. From `backend/`:
+**Running the tests.** These tests mock HTTP with `respx` and never reach the store, but the `*_crawler` autouse fixture in `conftest.py` still resolves through the config layer, so run them with the three test env vars set, from the repository root:
 
 ```bash
 cd backend && TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/discogs_browser_test \

@@ -240,6 +240,12 @@ would leave every multi-variant product in exactly that state, emptying the
 walk with no guard firing. `_read_variants` therefore returns the count
 alongside the pressings, and it feeds a guard of its own.
 
+A variant whose `title` is a truthy non-string counts the same way. It would
+otherwise reach `.split()` through `or ""` and raise, aborting the whole
+source over one malformed entry — the opposite of the discard-and-keep-going
+rule every other unreadable entry follows. An absent or null title stays
+*nameless* rather than unreadable, which is the placeholder case above.
+
 The `variants` collection itself counts the same way when it is absent,
 emptied or retyped. A published Shopify product always carries at least one
 variant, so none of those states is a product with nothing for sale — each is
@@ -287,6 +293,23 @@ artist or title, no malformed URL, no missing cover, no null price, no row
 whose pressing name mentions another medium. Exactly one row's artist differs
 from its raw vendor — `The Men / Woods`, the shelf's one split billing.
 
+### One change to the shared iterator
+
+`shopify_catalog.iter_products()` read `r.json().get("products", [])` and
+stopped on anything falsy, so a missing, null or retyped `products` field was
+indistinguishable from exhaustion. That is the one drift no crawler-side guard
+can see: from the crawler's side the walk simply ended, so on a later page
+`_sync_stock` replaces the whole snapshot with a partial prefix, and on the
+first page with an empty result no guard can tell from a sold-out store.
+
+An empty *list* is now the only exhaustion; anything else raises, which is
+inert (`_sync_stock` skips `replace_stock_items()` on a raise). Found by
+Copilot in review on PR #332. It is shared code touching every Shopify
+crawler, so the change was made deliberately rather than scoped to this one:
+the endpoint always answers `{"products": [...]}`, no bundled crawler's tests
+mock a body without that key, and the whole Shopify crawler suite passes
+unchanged.
+
 ## Drift guards
 
 `db.replace_stock_items()` DELETEs this crawler's previous snapshot before
@@ -300,7 +323,7 @@ reads.
 | collection | the walk saw no products at all | the shelf was renamed or removed |
 | price-source | rows were yielded but not one carries a price | a `price` field removed or retyped store-wide would re-list the whole catalog priced at nothing, which is worse than the snapshot it replaces. Isolated nulls stay tolerated |
 | artist-source | nothing was yielded *and* some product that would otherwise have produced a row has no `vendor` | `vendor` is the artist with no fallback, so such a product is skipped rather than credited from something else — and skipping leaves the walk looking sold out |
-| variant-identity-source | nothing was yielded *and* some variant could not be interpreted at all | a product whose variants are all discarded has no admitted pressings, so it reaches none of the per-product tallies; without this guard, Shopify dropping variant titles store-wide empties the walk in silence |
+| variant-identity-source | nothing was yielded *and* some variant, or some product's whole `variants` collection, could not be interpreted | a product whose variants are all discarded has no admitted pressings, so it reaches none of the per-product tallies; without this guard, Shopify dropping variant titles store-wide empties the walk in silence. The message names both shapes because the count mixes them and they point at different sources |
 | identity-source | nothing was yielded *and* some product that would otherwise have produced a row has no `title` or `handle` | `item_key` hashes the title and URL, so such a product is skipped rather than re-identified — and skipping leaves the walk looking sold out |
 | stock-source | nothing was yielded *and* some such product has no readable `available` flag | an empty result is only trustworthy when every product that could have yielded a row was readable and simply out of stock |
 

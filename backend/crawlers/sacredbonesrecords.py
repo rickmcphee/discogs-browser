@@ -168,16 +168,20 @@ class Crawler:
                 f"{_COLLECTION_SLUG} collection yielded no rows while "
                 f"{artist_missing} record(s) carry no vendor -- artist-source drift")
         if not yielded and unreadable_variants:
-            # Every variant this crawler could not interpret at all: a
-            # non-mapping entry, or one naming no pressing beside a sibling.
-            # Those discards are otherwise invisible, and invisible is
-            # destructive -- Shopify dropping variant titles store-wide
+            # Everything about a product's variants this crawler could not
+            # interpret: a non-mapping entry, a non-string title, one naming
+            # no pressing beside a sibling, or a `variants` collection that
+            # is absent, empty or retyped. The message names both shapes
+            # because the count mixes them, and they point at different
+            # sources. Those discards are otherwise invisible, and invisible
+            # is destructive -- Shopify dropping variant titles store-wide
             # leaves every multi-variant product with nothing to build a row
             # from, and the bracket above never fires because such a product
             # has no admitted pressings to gate on.
             raise RuntimeError(
                 f"{_COLLECTION_SLUG} collection yielded no rows while "
-                f"{unreadable_variants} variant(s) name no pressing -- variant-identity-source drift")
+                f"{unreadable_variants} variant(s) or variant collection(s) could not be "
+                "interpreted -- variant-identity-source drift")
         if not yielded and identity_missing:
             # `title` and `handle` are identity, not display: item_key hashes
             # the row's title and URL, so a product missing either is skipped
@@ -283,7 +287,16 @@ class Crawler:
         unreadable = len(raw) - len(variants)
         pairs = []
         for variant in variants:
-            name = " ".join((variant.get("title") or "").split())
+            title = variant.get("title")
+            # A truthy non-string would reach .split() through `or ""` and
+            # raise, aborting the whole source over one malformed variant --
+            # the opposite of the discard-and-keep-going rule every other
+            # unreadable entry follows. Absent and None stay nameless rather
+            # than unreadable, which is the documented placeholder case.
+            if title is not None and not isinstance(title, str):
+                unreadable += 1
+                continue
+            name = " ".join((title or "").split())
             if not name or name.lower() == _PLACEHOLDER_VARIANT:
                 # Sole-variant status comes from the payload as sent, not
                 # from what survived the mapping filter: a sibling mangled

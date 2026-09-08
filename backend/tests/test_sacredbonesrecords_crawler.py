@@ -417,9 +417,20 @@ async def test_named_pressings_are_appended_to_every_row(crawler):
 
 
 @respx.mock
-@pytest.mark.parametrize("name", ["Default Title", "default title", "  ", ""])
+@pytest.mark.parametrize("name", ["Default Title", "default title", "  ", "", None])
 async def test_a_nameless_sole_variant_carries_the_title_alone(crawler, name):
+    # None is nameless, not unreadable: it names no pressing, which is exactly
+    # what the placeholder does, so the sole-variant rule handles it. A truthy
+    # non-string is different -- it is not a name at all -- and is counted.
     _mock_pages(_pressing(_DISTRO_PRODUCT, name))
+    items = [item async for item in crawler.crawl_catalog()]
+    assert items[0]["title"] == "London 69"
+
+
+@respx.mock
+async def test_a_sole_variant_with_no_title_key_carries_the_title_alone(crawler):
+    variant = {k: v for k, v in _DISTRO_PRODUCT["variants"][0].items() if k != "title"}
+    _mock_pages({**_DISTRO_PRODUCT, "variants": [{**variant, "available": True}]})
     items = [item async for item in crawler.crawl_catalog()]
     assert items[0]["title"] == "London 69"
 
@@ -839,3 +850,27 @@ async def test_a_genuinely_sole_nameless_variant_still_carries_the_title_alone(c
     _mock_pages(_pressing(_DISTRO_PRODUCT, "Default Title"))
     items = [item async for item in crawler.crawl_catalog()]
     assert [i["title"] for i in items] == ["London 69"]
+
+
+@respx.mock
+@pytest.mark.parametrize("title", [7, 1.5, ["Black LP"], {"name": "Black LP"}],
+                         ids=["int", "float", "list", "dict"])
+async def test_a_non_string_variant_title_is_counted_rather_than_raising(crawler, title):
+    # `or ""` passes a truthy non-string through to .split(), so this used to
+    # abort the whole source with an AttributeError -- one malformed variant
+    # anywhere stopping the store from refreshing at all, which is the
+    # opposite of the documented "isolated unreadable variants are discarded
+    # while valid rows still refresh".
+    _mock_pages({**_BELAYA_POLOSA_PRODUCT, "variants": [
+        {**_BELAYA_POLOSA_PRODUCT["variants"][2]},
+        {**_BELAYA_POLOSA_PRODUCT["variants"][1], "title": title},
+    ]})
+    items = [item async for item in crawler.crawl_catalog()]
+    assert [i["title"] for i in items] == ["Belaya Polosa — Black LP"]
+
+
+@respx.mock
+async def test_a_shelf_of_non_string_variant_titles_raises(crawler):
+    _mock_pages(_one_pressing(_LOST_THEMES_PRODUCT, title=7))
+    with pytest.raises(RuntimeError, match="variant-identity-source drift"):
+        [item async for item in crawler.crawl_catalog()]
