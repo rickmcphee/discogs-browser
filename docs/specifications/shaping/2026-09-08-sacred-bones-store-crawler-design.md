@@ -127,11 +127,14 @@ the bulk of it and then `LP`, `Title`, `Variant`, `Edition`, `Color`, `Style`,
 titles still read `LP`, `CD`, `Digital Album MP3`. The axis name is never
 read; the variant title always is.
 
-**The gate is negative**: an explicit vinyl word admits outright, then a word
-naming another medium rejects, and anything else is admitted on the
-collection's own claim. It has to be, and this is the single most load-bearing decision in the
-crawler. Sacred Bones names its coloured pressings *by colour alone* — 50
-distinct variant titles on the live shelf carry no format word whatsoever
+**The gate is negative**: an explicit vinyl word admits outright, and what is
+left is admitted unless something in the name rejects it — a merch word, or
+another medium — rather than having to prove itself a record. (The full
+ordering, which decides `12" x 12" Poster` against `10 INCH + CD`, is the
+four tiers below.) It has to be negative, and this is the single most
+load-bearing decision in the crawler. Sacred Bones names its coloured
+pressings *by colour alone* — 50 distinct variant titles on the live shelf
+carry no format word whatsoever
 (`Lavender Swirl`, `Clear Pink`, `Sacred Bones Exclusive Black and White
 Galaxy`, `Blue & White Galaxy`, `15th Label Anniversary Limited Edition Royal
 Blue`, `Art Edition Red Fire`). A positive-only regex of the kind the

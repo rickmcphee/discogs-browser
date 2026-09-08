@@ -24,12 +24,13 @@ _COLLECTION_SLUG = "vinyl"
 # store writes it -- uniformly, whether the option axis is named `Format`,
 # `Title`, `Edition`, `Variant` or `LP`.
 #
-# The gate is NEGATIVE: a vinyl word admits outright, then a word naming
-# another medium rejects, and anything else is admitted on the collection's
-# own claim. It has to be. Coloured pressings here are routinely named by
-# colour alone -- `Lavender Swirl`, `Clear Pink`, `Sacred Bones Exclusive
-# Black and White Galaxy`, `Blue & White Galaxy` -- and a positive-only
-# regex would drop every one of them.
+# The gate is NEGATIVE: an explicit vinyl word admits outright, and what is
+# left is admitted unless something in the name rejects it, rather than
+# having to prove itself a record. It has to be. Coloured pressings here are
+# routinely named by colour alone -- `Lavender Swirl`, `Clear Pink`, `Sacred
+# Bones Exclusive Black and White Galaxy`, `Blue & White Galaxy` -- and a
+# positive-only regex would drop every one of them. _is_vinyl below owns the
+# ordering of the rejections, which is where the subtlety is.
 _VINYL_WORD_RE = re.compile(
     r'(?<![a-z])(?:\d+(?:\.\d+)?\s*[x×]\s*)?lps?\b|\bvinyls?\b'
     r'|\bpicture\s+discs?\b|\btest\s+press(?:ing)?e?s?\b|\bflexi(?:\s*discs?)?\b',
