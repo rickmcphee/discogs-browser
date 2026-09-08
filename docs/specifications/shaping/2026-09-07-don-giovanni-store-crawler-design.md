@@ -166,12 +166,9 @@ The parse is therefore:
   been a bug: a left curly the gate would not accept as an inch marker but the
   stray-quote check exempted, then a double prime that check rejected while
   the album group still admitted it (so `Artist "The ″ Big" 12"` parsed and
-  emitted a malformed album). Found in review on PR #323, twice. The
-  leading group excluding them makes the album's **opening** quote always
-  the title's first, so the trailing inch marker can never be mistaken for
-  it. The album excluding them is what makes a fourth quote junk rather than
-  an album, so `Artist "" 12"` parses to nothing instead of to an album of
-  `" 12`.
+  emitted a malformed album). Found in review on PR #323, twice. What the
+  album group's exclusion buys, concretely: `Artist "" 12"` parses to nothing
+  rather than to an album of `" 12`.
 - **The leading group is non-capturing, and may be empty.** Whatever sits
   ahead of the album is never read — the credit comes from `vendor` — so the
   group exists only to pin the opening quote, and the parse returns the
