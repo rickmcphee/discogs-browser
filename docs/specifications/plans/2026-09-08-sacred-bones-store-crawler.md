@@ -45,7 +45,7 @@ cd backend && TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/di
 - Test: `backend/tests/test_sacredbonesrecords_crawler.py`
 
 **Interfaces:**
-- Consumes: `shopify_catalog.iter_products(base_url, collection_slug)`, `resolve_cover_image(product, variant)` — both exist unchanged in `backend/shopify_catalog.py`.
+- Consumes: `shopify_catalog.iter_products(base_url, collection_slug)` and `resolve_cover_image(product, variant)` in `backend/shopify_catalog.py`. `resolve_cover_image()` is unchanged; `iter_products()` gained one change in review (see the Global Constraints above) — an unreadable `products` field raises instead of reading as exhaustion.
 - Produces: a `Crawler` class with the standard `catalog` plugin surface (`site_name`, `base_url`, `genre_summary`, `genre`, `crawler_type`, `async def crawl_catalog()`), yielding `{"artist", "title", "format": "Vinyl", "price", "currency": "USD", "url", "cover_image_url"}`.
 
 - [x] **Step 1: Ground the design against the live store** — identify the platform, walk the collection at two page sizes to confirm pagination is stable, histogram `vendor` and `product_type`, tabulate the tags, the option axes and every variant title, check the title convention for a vendor prefix or a dash separator, find the pre-order signal and check what an unavailable pre-order means, check availability types, prices, images, `meta.json`, `collections.json` and `robots.txt`.

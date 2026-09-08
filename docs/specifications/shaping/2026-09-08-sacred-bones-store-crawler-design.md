@@ -226,8 +226,29 @@ volume numbers (`Occult Architecture Vol 1+2`).
 What remains — a $90 collector's edition, a $70 two-album box, a $150 record
 plus NECA figure — is always an *extra* variant beside the plain pressings of
 the same record, always dearer than them, and its row's title names exactly
-what it is. So it never wins the Store tab's Cheapest filter, and reading one
-costs a user nothing that dropping a real pressing would not cost more.
+what it is.
+
+Those rows **do** survive the Store tab's Cheapest filter. Stating that
+plainly because an earlier draft of this document claimed the opposite, and
+the claim was wrong: `db._cheapest_clause` partitions on `(artist,
+title_key, currency)`, and `title_key` deliberately keeps the words that say
+*which* pressing a row is — colours, `exclusive`, `deluxe`, `collector` — so
+a bundle whose name differs from the plain pressing's lands in its own
+partition and is the floor of it. Measured over the live shelf, 328 of the
+330 rows are alone in their Cheapest group. That follows from appending the
+pressing name at all, which every sibling Shopify crawler does for the same
+`item_key`-stability reason, rather than from anything about bundles.
+
+They are kept anyway, because nothing in the payload separates a bundle from
+a pressing on this store. `box set` cannot: `Limited Edition Dried Blood
+Vinyl Box Set` and `Sacred Bones Exclusive Toxic Pumpkin Vinyl Box Set` *are*
+the Halloween collection, and `3xLP Red Vinyl Boxset w/ 24 Page Booklet` is
+the Xmal release. `bundle` catches two and misses the collector's edition and
+the graphic-novel pairing. `+` is worse still, for the reasons above. What is
+left is a hand-fitted list of one-off strings that goes stale the next time
+the store runs a promotion, and whose failure mode is dropping a real record.
+The accepted cost is one extra row per bundle, each named for exactly what it
+is. Found by Copilot in review on PR #332.
 
 ### The raffle is skipped, on its tags
 
