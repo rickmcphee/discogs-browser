@@ -198,8 +198,18 @@ length- and position-preserving so the quote check's offsets still line up,
 and is decision-time only — nothing emitted is ever folded.
 `dongiovannirecords.py` and `title_key._words` document the same trap.
 
-Found in review on PR #331 over three rounds; no live title is shaped any of
-these ways.
+The **emitted** identity is normalised too, and for a different reason that is
+easy to conflate with the fold: `compute_item_key` hashes the artist and title
+raw, and `db._library_release_match_sql` compares them with a plain
+`LOWER(...)`, neither of which normalises. An NFD album would therefore fail to
+match an otherwise identical NFC catalog title under the Store tab's Collection
+and Wantlist filters, and would lose its `item_key` if the storefront ever
+changed which spelling it served. Rows are composed to NFC on the way out —
+never folded; the stand-in must not reach a row. Every live row is already NFC,
+so this changes nothing today and exists to keep it that way.
+
+Found in review on PR #331 over successive rounds; no live title is shaped any
+of these ways.
 
 ### Billing reduction: the slash only, never the ampersand
 
@@ -450,13 +460,26 @@ per rule and the test suite confirmed to fail on every one, including the two
 that initially survived (a substring `product_type` test and a tag-driven gate),
 which exposed two tests that were not isolating the gate they named.
 
-Copilot's review of PR #331 found eight defects across two rounds — the
-nested-quote truncation and its two follow-ons (the unbounded inch marker, two
-markers vouching for each other), the unreachable identity tally, the unnamed
-in-stock pressing, the tally placement that let an excluded product arm a
-guard, the sole-variant test reading the filtered variant list, and the record
-with no variants at all. Each was reproduced against the code before being
-fixed, and each has its own mutation in that set. None of them changes a
-single live row: the replay above is byte-identical throughout, and no live
-product carries an unreadable pressing name, a missing identity, an empty
-variants array, or an unclean descriptor quote.
+Copilot reviewed PR #331 over four rounds, and every finding was reproduced
+against the code before being fixed and given its own mutation:
+
+- the nested-quote truncation and its two follow-ons — the inch marker with no
+  right-hand boundary, and two separately valid markers vouching for each
+  other;
+- the unreachable identity tally, and the tally placement that let a
+  deliberately excluded product arm a guard;
+- the unnamed in-stock pressing, the record with no variants at all, and the
+  sole-variant test reading the filtered variant list;
+- the Unicode-normalisation hole, where a decomposed accent opened a boundary
+  its precomposed equivalent closes;
+- and, on the emitted side of that same issue, an identity left in whatever
+  normalisation the storefront happened to serve.
+
+Two suggestions were declined, both recorded above: counting every dropped
+variant rather than the malformed ones, and counting unclassifiable
+vinyl-typed products.
+
+None of it changes a single live row. The replay above is byte-identical
+throughout, every live row is already NFC, and no live product carries an
+unreadable pressing name, a missing identity, an empty variants array, or an
+unclean descriptor quote.

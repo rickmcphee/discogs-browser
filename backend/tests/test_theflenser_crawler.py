@@ -946,12 +946,32 @@ def test_a_variant_classifies_the_same_in_nfc_and_nfd(crawler, variant):
 
 
 @respx.mock
-async def test_an_accented_album_is_emitted_unfolded(crawler):
-    """The fold is decision-time only — nothing emitted is ever folded."""
+async def test_an_accented_album_is_emitted_composed_and_unfolded(crawler):
+    """Two separate rules meet here. The fold is decision-time only, so its
+    stand-in must never reach a row; and the emitted identity is composed,
+    because `compute_item_key` hashes it raw and
+    `db._library_release_match_sql` compares it with a plain `LOWER(...)` —
+    neither of which normalises."""
     _mock_walk([_with(_PLACEHOLDER_PRODUCT, title=_nfd('Alan Sparhawk "Ámbar" LP'))])
     item, = await _run(crawler)
-    assert item["title"] == _nfd("Ámbar")
+    assert item["title"] == unicodedata.normalize("NFC", "Ámbar")
     assert "ß" not in item["title"]
+
+
+@respx.mock
+async def test_an_accented_artist_is_emitted_composed(crawler):
+    _mock_walk([_with(_PLACEHOLDER_PRODUCT, title=_nfd('Këkht Aräkh "Night & Love" LP'))])
+    item, = await _run(crawler)
+    assert item["artist"] == unicodedata.normalize("NFC", "Këkht Aräkh")
+
+
+@respx.mock
+async def test_the_pressing_is_composed_into_the_title_too(crawler):
+    _mock_walk([_with(_LP_PRODUCT, variants=[
+        {"title": _nfd("Café au Lait Vinyl"), "price": "25.00", "available": True},
+    ])])
+    item, = await _run(crawler)
+    assert item["title"] == unicodedata.normalize("NFC", "Agriculture — Café au Lait Vinyl")
 
 
 # --- bundle example (PR #331, third review round) ---------------------------

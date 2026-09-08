@@ -224,6 +224,25 @@ def _fold_marks(text: str) -> str:
     )
 
 
+def _canonical(text: str) -> str:
+    """The emitted spelling of an identity field: composed, never folded.
+
+    `compute_item_key` hashes the artist and title raw, and
+    `db._library_release_match_sql` compares them with a plain `LOWER(...)`,
+    which does not normalise -- so an NFD album would neither match an
+    otherwise identical NFC catalog title under the Store tab's Collection and
+    Wantlist filters, nor keep its item_key if the storefront ever changed
+    which spelling it served. Composing on the way out makes the identity
+    canonical in both places.
+
+    Nothing to do with _fold_marks, which is decision-time only and whose
+    stand-in must never reach a row. Found in review on PR #331; every live
+    row is already NFC, so this changes nothing today and exists to keep it
+    that way.
+    """
+    return unicodedata.normalize("NFC", text)
+
+
 def _descriptor_quotes_are_clean(descriptor: str) -> bool:
     """The descriptor carries at most one quote, inside one complete inch marker.
 
@@ -311,8 +330,11 @@ class Crawler:
                         # the handle -- no double count with the check above.
                         if not self._has_identity(product):
                             identity_missing += 1
-                        unnamed_pressings += self._unnamed_pressings(product)
-                        variants = self._record_variants(product)
+                        # One call, both halves: _classify_variants derives
+                        # them in a single pass, so asking it twice would
+                        # re-parse every record's variants for nothing.
+                        variants, unnamed = self._classify_variants(product)
+                        unnamed_pressings += unnamed
                         if variants:
                             record_variants_seen += 1
                             if not self._has_readable_stock_flag(variants):
@@ -452,8 +474,8 @@ class Crawler:
             # nothing, and _record_variants admits it only as a product's sole
             # variant, so no sibling can share the bare title.
             items.append({
-                "artist": artist,
-                "title": f"{album} — {pressing}" if pressing else album,
+                "artist": _canonical(artist),
+                "title": _canonical(f"{album} — {pressing}" if pressing else album),
                 "format": "Vinyl",
                 "price": cls._price(variant),
                 "currency": "USD",
