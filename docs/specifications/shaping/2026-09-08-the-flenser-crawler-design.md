@@ -416,7 +416,7 @@ names a distinct way the payload can stop carrying what this crawler reads:
 | `format-taxonomy drift` | no product carries a `vinyl` type segment | the store restyling `product_type` |
 | `title-convention drift` | no vinyl product yields an artist and an album | the store dropping the quoted-title convention |
 | `format-vocabulary drift` | no vinyl product's descriptor names a format | the format moving out of the title, or being written in unknown words |
-| `pressing-source drift` | no vinyl product has a variant reading as a record | variants lost, or re-titled as another medium |
+| `pressing-source drift` | no vinyl product has a variant reading as a record, and none was dropped unread while readably sold out | variants lost, or re-titled as another medium |
 | `price-source drift` | rows were yielded but none carries a price | `price` removed or retyped store-wide |
 | `identity-source drift` | nothing yielded while a vinyl product has no title or handle | identity fields going away |
 | `pressing-name drift` | nothing yielded while a variant's name is unreadable | a variant retyped, blanked, or given Shopify's placeholder beside siblings |
@@ -431,9 +431,10 @@ These properties of the tallies matter as much as the guards themselves:
   about an empty result. Tallied independently, one product could satisfy each
   condition while none of them can yield.
 - **The tallies that count what the crawler *dropped* are the deliberate
-  exceptions to that** — `identity_missing`, `unnamed_pressings` and
-  `variantless_records` — and they are siblings for the same reason the chain
-  is nested. A product with no identity, a pressing whose name is unreadable,
+  exceptions to that** — `identity_missing`, `unnamed_pressings`,
+  `variantless_records`, and `sold_out_pressings`, which is the one of them
+  read in the opposite direction — and they are siblings for the same reason
+  the chain is nested. A product with no identity, a pressing whose name is unreadable,
   or a record carrying no variants at all could never have yielded a row by
   definition, so nesting them behind "would have yielded" makes them
   unreachable, which is exactly what it did: `identity_missing` could only
@@ -449,14 +450,30 @@ These properties of the tallies matter as much as the guards themselves:
   row anyway, so it neither caused an empty result nor casts doubt on one.
   What is left is the case the guard exists for — an in-stock pressing the
   crawler could not name, which leaves the walk looking sold out when it is
-  not. `variantless_records` is narrowed the same way, to a raw `variants`
+  not.
+
+  That exemption has a second half, and leaving it out took the exemption
+  straight back one guard down. A variant dropped unread is not a *record*
+  variant either, so a record whose only pressing was unreadably named and
+  readably sold out left `record_variants_seen` at zero and reached
+  `pressing-source drift` — a store whose one record was out of stock was told
+  its pressings had stopped being pressings. So the unread drops are split on
+  the availability flag rather than one half being discarded: the in-stock
+  half arms `pressing-name drift`, and the sold-out half vouches for an empty
+  result at `pressing-source drift`, because it is still evidence that the
+  product *has* pressings. The split is scoped to the drops — a variant naming
+  another medium was read correctly and vouches for nothing, so a catalog
+  whose readable variants all name other media still raises, sold out or not.
+  Found in review on PR #331.
+
+  `variantless_records` is narrowed the same way, to a raw `variants`
   array that is empty (which Shopify does not produce) rather than to an empty
   *result*: a record whose only variant names another medium is odd store data
   the gate read correctly, not a broken payload.
 
 - **Where each of them sits is not symmetric, and that asymmetry is the
   point.** A blank title has to be seen *before* the parse — it fails the
-  parse, so that is the only place it can be seen at all. The other two wait
+  parse, so that is the only place it can be seen at all. The rest wait
   until the title and descriptor have established the product is a record, so a product this crawler excludes **on purpose** — the
   scratch-and-dent bin, a bundle — cannot arm a guard with a defect of its own
   and make a genuinely sold-out crawl raise, which would preserve a stale
@@ -528,6 +545,14 @@ reproduced against the code before being fixed and given its own mutation:
   The guards are now ordered most-specific-first, broadest last. Each of them
   raises, so the snapshot was safe throughout; what was lost is the only thing
   distinct guards are for;
+- the same problem a third time, arriving through the tallies rather than the
+  sequence: the sold-out pressing `unnamed_pressings` deliberately exempts
+  reached the broad guard anyway, because an unread variant is not a record
+  variant either. Split rather than discarded, as described above — and the
+  test that had covered it was masking it with a named sold-out sibling;
+- the mark fold in the format gate left with no test of its own once the quote
+  rule stopped folding, since the NFC/NFD title case reaches `_parse_title`
+  only;
 - a `variants` field retyped to a truthy scalar, which `list()` turns into a
   `TypeError` that aborts the whole source. Only a real list is a variants
   collection, and one reading of that field is shared by the classifier and
@@ -541,5 +566,5 @@ vinyl-typed products.
 
 None of it changes a single live row. The replay above is byte-identical
 throughout, every live row is already NFC, and no live product carries an
-unreadable pressing name, a missing identity, an empty variants array, or an
-unclean descriptor quote.
+unreadable pressing name, a missing identity, an empty variants array, or a
+descriptor quote.

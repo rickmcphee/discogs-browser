@@ -312,6 +312,7 @@ class Crawler:
         record_variants_seen = 0
         identity_missing = 0
         unnamed_pressings = 0
+        sold_out_pressings = 0
         variantless_records = 0
         unreadable_stock = 0
         yielded = 0
@@ -355,11 +356,12 @@ class Crawler:
                         # the handle -- no double count with the check above.
                         if not self._has_identity(product):
                             identity_missing += 1
-                        # One call, both halves: _classify_variants derives
+                        # One call, every half: _classify_variants derives
                         # them in a single pass, so asking it twice would
                         # re-parse every record's variants for nothing.
-                        variants, unnamed = self._classify_variants(product)
+                        variants, unnamed, sold_out = self._classify_variants(product)
                         unnamed_pressings += unnamed
+                        sold_out_pressings += sold_out
                         if variants:
                             record_variants_seen += 1
                             if not self._has_readable_stock_flag(variants):
@@ -463,7 +465,7 @@ class Crawler:
             raise RuntimeError(
                 f"no vinyl product in the {_COLLECTION_SLUG} collection carries a descriptor that "
                 "names a record format -- format-vocabulary drift")
-        if record_variants_seen == 0:
+        if record_variants_seen == 0 and not sold_out_pressings:
             # LAST of the drift guards, not first, though it is the broadest.
             # It fires on exactly the emptiness the three above diagnose more
             # precisely -- a record with no variants, or one whose only
@@ -474,6 +476,19 @@ class Crawler:
             # was safe either way; what was lost is the only thing distinct
             # guards are for, which is telling an operator WHICH thing broke.
             # Found in review on PR #331.
+            #
+            # `sold_out_pressings` is the same ordering problem arriving
+            # through the tallies rather than the sequence. A pressing dropped
+            # unread but readably out of stock is exempt from
+            # `pressing-name drift` because it could not have yielded a row --
+            # and then landed here anyway, since an unread variant is not a
+            # record variant either. A store whose only record was out of
+            # stock under a name this crawler could not read was told its
+            # pressings had stopped being pressings. It is evidence the
+            # product HAS pressings, so it vouches for the empty result the
+            # way a named sold-out pressing does. Scoped to that drop alone: a
+            # variant naming another medium never reaches it, so the case
+            # below still raises. Found in review on PR #331.
             #
             # What reaches it now is the case it actually names: variants that
             # exist and are readable, but every one of which reads as another
@@ -602,12 +617,12 @@ class Crawler:
         return list(raw) if isinstance(raw, list) else []
 
     @classmethod
-    def _classify_variants(cls, product: dict) -> Tuple[list, int]:
-        """The variants that read as records, and how many were dropped unread.
+    def _classify_variants(cls, product: dict) -> Tuple[list, int, int]:
+        """The variants that read as records, and the unread drops by stock.
 
-        Both come out of one pass because they are one classification: a
+        All three come out of one pass because they are one classification: a
         variant is a record, a deliberate skip, or unreadable, and asking the
-        second question separately would mean re-deriving the first.
+        later questions separately would mean re-deriving the first.
 
         Unreadable means the payload broke, not that the store listed
         something else: a non-mapping entry, a blank name, or Shopify's
@@ -616,15 +631,21 @@ class Crawler:
         nothing about whether the record is, and counting it would raise on
         an ordinary store.
 
-        A variant readably out of stock is not counted either, whatever its
-        name: it could not have yielded a row anyway, so it neither caused an
-        empty result nor casts doubt on one. Everything else did contribute,
-        which is what makes the count worth a guard -- an in-stock pressing
-        this crawler could not name leaves the walk looking sold out. Found
-        in review on PR #331.
+        The unread drops are split on whether the variant was readably out
+        of stock, because the two say opposite things about an empty result.
+        An in-stock pressing this crawler could not name leaves the walk
+        looking sold out, which is what `pressing-name drift` exists for. A
+        readably sold-out one could not have yielded a row anyway, so it
+        neither caused the empty result nor casts doubt on one -- but it is
+        still a product whose variants ARE pressings, which is the question
+        `pressing-source drift` asks and would otherwise answer wrongly.
+        Reporting only the first half granted the sold-out exemption and then
+        took it straight back one guard down. Both halves found in review on
+        PR #331.
         """
         pairs = []
         unnamed = 0
+        sold_out_unnamed = 0
         # isinstance before list(): a truthy JSON scalar (`1`, `true`) makes
         # list() raise TypeError and abort the whole source, and a string or
         # dict makes it produce nonsense entries. A retyped `variants` is a
@@ -636,12 +657,17 @@ class Crawler:
         # so a junk entry is a counted skip rather than an AttributeError from
         # inside the yield loop.
         variants = [v for v in raw if isinstance(v, dict)]
+        # Counted unread rather than split: a non-mapping entry carries no
+        # availability to read, so it can never be a sold-out drop.
         unnamed += len(raw) - len(variants)
         for variant in variants:
             title = _text(variant.get("title"))
             readably_gone = variant.get("available") is False
             if not title:
-                unnamed += not readably_gone
+                if readably_gone:
+                    sold_out_unnamed += 1
+                else:
+                    unnamed += 1
                 continue
             if title.lower() == _PLACEHOLDER_VARIANT:
                 # len(raw), not len(variants): the filtered list has already
@@ -654,12 +680,14 @@ class Crawler:
                 # on PR #331.
                 if len(raw) == 1:
                     pairs.append((variant, ""))
+                elif readably_gone:
+                    sold_out_unnamed += 1
                 else:
-                    unnamed += not readably_gone
+                    unnamed += 1
                 continue
             if cls._is_record_variant(title):
                 pairs.append((variant, title))
-        return pairs, unnamed
+        return pairs, unnamed, sold_out_unnamed
 
     @staticmethod
     def _is_record_variant(title: str) -> bool:

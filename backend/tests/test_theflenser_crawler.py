@@ -1172,3 +1172,68 @@ async def test_a_retyped_variants_field_is_not_a_crash(crawler, retyped):
 async def test_a_retyped_variants_field_does_not_abort_a_healthy_catalog(crawler):
     _mock_walk([_with(_LP_PRODUCT, variants=1), _OFF_SHELF_PRODUCT])
     assert [i["artist"] for i in await _run(crawler)] == ["Bismuth"]
+
+
+# --- the sold-out exemption, and the format gate's fold (PR #331, eighth
+# --- review round) ----------------------------------------------------------
+
+@respx.mock
+async def test_a_sole_unnamed_pressing_that_is_readably_sold_out_does_not_raise(crawler):
+    """The exemption `_classify_variants` grants was taken straight back one
+    guard down: an unread variant is not a record variant either, so
+    `record_variants_seen` stayed at zero and a store whose only record was
+    out of stock under an unreadable pressing name was told its pressings had
+    stopped being pressings. The sibling in the test above had been masking
+    it."""
+    _mock_walk([_with(_LP_PRODUCT, variants=[
+        {"title": "   ", "price": "25.00", "available": False},
+    ])])
+    assert await _run(crawler) == []
+
+
+@respx.mock
+async def test_a_sold_out_misplaced_placeholder_does_not_raise(crawler):
+    """The other unread drop, exempted the same way. The CD is what makes the
+    placeholder misplaced rather than sole, and is itself a skip rather than a
+    drop — so nothing else in this product is counted."""
+    _mock_walk([_with(_LP_PRODUCT, variants=[
+        {"title": "Jewel Case CD", "price": "12.00", "available": True},
+        {"title": "Default Title", "price": "25.00", "available": False},
+    ])])
+    assert await _run(crawler) == []
+
+
+@respx.mock
+async def test_a_sold_out_variant_naming_another_medium_still_raises(crawler):
+    """The exemption is scoped to the variants dropped UNREAD, not to every
+    variant that happens to be sold out. This one is readably sold out and
+    dropped, but read correctly on the way — the store simply has no record
+    here, which is the drift the broad guard names."""
+    _mock_walk([_with(_LP_PRODUCT, variants=[
+        {"title": "Jewel Case CD", "price": "12.00", "available": False},
+    ])])
+    with pytest.raises(RuntimeError, match="pressing-source drift"):
+        await _run(crawler)
+
+
+@respx.mock
+async def test_an_unnamed_pressing_in_stock_beside_a_sold_out_one_still_raises(crawler):
+    """Splitting the drops must not let the sold-out half absorb the in-stock
+    half: the more specific guard still fires."""
+    _mock_walk([_with(_LP_PRODUCT, variants=[
+        {"title": "   ", "price": "25.00", "available": True},
+        {"title": "  ", "price": "25.00", "available": False},
+    ])])
+    with pytest.raises(RuntimeError, match="pressing-name drift"):
+        await _run(crawler)
+
+
+@pytest.mark.parametrize("descriptor", ["ÉLP", "ÉEP", "É12inch", "Étched LP", "Écru DLP"])
+def test_a_descriptor_classifies_the_same_in_nfc_and_nfd(crawler, descriptor):
+    """The format gate carries the same `\\w` trap as the variant gate, and was
+    the one fold left uncovered: `_parse_title` stopped folding when the quote
+    rule was reduced to "no quote at all", so the NFC/NFD title test above no
+    longer reaches one. Decomposed, the combining acute is not a word
+    character, so it opens the boundary `(?<!\\w)lps?` needs and `ÉLP` names a
+    record only in NFD."""
+    assert crawler._names_a_record(descriptor) == crawler._names_a_record(_nfd(descriptor))
