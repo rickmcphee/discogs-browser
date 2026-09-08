@@ -32,7 +32,24 @@ beforeEach(() => {
   getStock.mockResolvedValue({ total: 2, row_total: 2, page: 1, per_page: 250, items })
   getStockArtists.mockResolvedValue(['NAILS', 'Rob Zombie'])
   localStorage.clear()
+  setViewport(DEFAULT_VIEWPORT.width, DEFAULT_VIEWPORT.height)
 })
+
+// jsdom measures every element as a zero-sized box at the origin, so anything
+// that asserts on where the popover landed has to supply the rects itself.
+const DEFAULT_VIEWPORT = { width: window.innerWidth, height: window.innerHeight }
+
+function setViewport(width: number, height: number) {
+  Object.defineProperty(window, 'innerWidth', { value: width, configurable: true })
+  Object.defineProperty(window, 'innerHeight', { value: height, configurable: true })
+}
+
+function boxAt(left: number, top: number, width: number, height: number): DOMRect {
+  return {
+    left, top, width, height, right: left + width, bottom: top + height,
+    x: left, y: top, toJSON: () => ({}),
+  } as DOMRect
+}
 
 // The row-set filter lives behind a popover now, not a <select>.
 // The trigger is a fixed "Filter" and shows nothing of the state, so reading
@@ -367,60 +384,133 @@ describe('StockBrowser', () => {
     expect(screen.queryByTitle('Recommendation details')).toBeNull()
   })
 
-  it('opens the reason in a dialog from the info button', async () => {
+  it('opens the reason in a popover from the info button', async () => {
     getStock.mockResolvedValue(judged(true))
     render(<StockBrowser recommendedAvailable />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.queryByRole("note")).toBeNull()
 
     fireEvent.click(screen.getByTitle('Recommendation details'))
-    const dialog = screen.getByRole('dialog')
-    expect(dialog.textContent).toContain('Similar to your hardcore collection')
-    expect(dialog.textContent).toContain('Recommended')
+    const popover = screen.getByRole("note")
+    expect(popover.textContent).toContain('Similar to your hardcore collection')
+    expect(popover.textContent).toContain('Recommended')
   })
 
-  it('heads a rejected item\'s dialog with the negative verdict', async () => {
-    getStock.mockResolvedValue(judged(false))
-    render(<StockBrowser recommendedAvailable />)
-    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-    fireEvent.click(screen.getByTitle('Recommendation details'))
-    expect(screen.getByRole('heading', { name: 'Not recommended' })).toBeTruthy()
-  })
-
-  it('closes the reason dialog from its Close button and from Escape', async () => {
-    getStock.mockResolvedValue(judged(true))
-    render(<StockBrowser recommendedAvailable />)
-    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
-
-    fireEvent.click(screen.getByTitle('Recommendation details'))
-    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
-    expect(screen.queryByRole('dialog')).toBeNull()
-
-    fireEvent.click(screen.getByTitle('Recommendation details'))
-    fireEvent.keyDown(document, { key: 'Escape' })
-    expect(screen.queryByRole('dialog')).toBeNull()
-  })
-
-  it('hands focus back to the info button that opened the dialog', async () => {
-    // jsdom, like Safari, does not focus a button on click -- so a dialog that
-    // read document.activeElement on mount would restore focus to the body.
+  it('closes the popover on a second click of the same icon', async () => {
     getStock.mockResolvedValue(judged(true))
     render(<StockBrowser recommendedAvailable />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     const info = screen.getByTitle('Recommendation details')
 
     fireEvent.click(info)
-    expect(screen.getByRole('dialog').contains(document.activeElement)).toBe(true)
-    fireEvent.keyDown(document, { key: 'Escape' })
-    expect(document.activeElement).toBe(info)
+    expect(screen.getByRole("note")).toBeTruthy()
+    // The press that precedes the click reaches the outside-dismiss listener
+    // first; it has to ignore the icon, or this click would close and reopen.
+    fireEvent.mouseDown(info)
+    fireEvent.click(info)
+    expect(screen.queryByRole("note")).toBeNull()
   })
 
-  it('names the target in the dialog, not a comparison row\'s substituted title', async () => {
-    // The judgment is made against an item_key. A comparison row displays the
-    // marketplace's name for what it matched, which can be another pressing --
-    // crediting the reason to that would attribute it to a record the judge
-    // never saw.
+  it('labels the rejected verdict in the popover', async () => {
+    getStock.mockResolvedValue(judged(false))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByTitle('Recommendation details'))
+    expect(screen.getByRole("note").textContent).toContain('Not recommended')
+  })
+
+  it('closes the popover on Escape and on a press outside it', async () => {
+    getStock.mockResolvedValue(judged(true))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+
+    fireEvent.click(screen.getByTitle('Recommendation details'))
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole("note")).toBeNull()
+
+    fireEvent.click(screen.getByTitle('Recommendation details'))
+    fireEvent.mouseDown(document.body)
+    expect(screen.queryByRole("note")).toBeNull()
+  })
+
+  it('stays open when the press lands inside the popover itself', async () => {
+    getStock.mockResolvedValue(judged(true))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByTitle('Recommendation details'))
+
+    fireEvent.mouseDown(screen.getByRole("note"))
+    expect(screen.getByRole("note")).toBeTruthy()
+  })
+
+  it('moves the popover to another row rather than opening a second one', async () => {
     getStock.mockResolvedValue({
+      total: 2, row_total: 2, page: 1, per_page: 250,
+      items: [
+        { ...items[0], reason: 'Similar to your hardcore collection', recommended: true },
+        { ...items[1], reason: 'Shares a label with three records you own', recommended: true },
+      ],
+    })
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('Every Bridge Burning — Forest Green LP')).toBeTruthy())
+    const [first, second] = screen.getAllByTitle('Recommendation details')
+
+    fireEvent.click(first)
+    expect(screen.getByRole("note").textContent).toContain('Similar to your hardcore collection')
+
+    fireEvent.mouseDown(second)
+    fireEvent.click(second)
+    expect(screen.getAllByRole("note")).toHaveLength(1)
+    expect(screen.getByRole("note").textContent).toContain('Shares a label with three records you own')
+  })
+
+  it('marks the open icon expanded and points its description at the popover', async () => {
+    getStock.mockResolvedValue(judged(true))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    const info = screen.getByTitle('Recommendation details')
+    expect(info.getAttribute('aria-expanded')).toBe('false')
+    expect(info.getAttribute('aria-controls')).toBeNull()
+    expect(info.getAttribute('aria-describedby')).toBeNull()
+
+    fireEvent.click(info)
+    // A disclosure: the icon owns the relationship, and describes itself by
+    // the panel so a screen reader on the icon hears the reason without
+    // having to travel to it.
+    const popover = screen.getByRole("note")
+    expect(info.getAttribute('aria-expanded')).toBe('true')
+    expect(info.getAttribute('aria-controls')).toBe(popover.id)
+    expect(info.getAttribute('aria-describedby')).toBe(popover.id)
+    // What that reference is worth: the description resolves to the
+    // justification. The panel is deliberately unnamed for this reason -- per
+    // accname an aria-label on it would win outright and describe the icon as
+    // itself -- though jsdom's description computation falls back to text
+    // content either way, so this assertion documents the intent rather than
+    // guarding it.
+    expect(info).toHaveAccessibleDescription(/Similar to your hardcore collection/)
+  })
+
+  it('pins the popover to the viewport rather than to the scrolling table', async () => {
+    // Positioned fixed, so a row at either edge of the table's overflow
+    // container is not clipped by it. placeReasonPopover covers the geometry.
+    getStock.mockResolvedValue(judged(true))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByTitle('Recommendation details'))
+
+    const popover = screen.getByRole("note") as HTMLElement
+    expect(popover.className).toContain('fixed')
+    expect(popover.style.top).not.toBe('')
+    expect(popover.style.left).not.toBe('')
+    expect(popover.style.visibility).toBe('visible')
+  })
+
+  // A judgment is made against an item_key. A comparison row shows the
+  // source's own name for what it matched, which can be another pressing, so
+  // there the popover has to say which record the reason is about; on a row
+  // that already names the target, repeating it is noise.
+  function withComparison() {
+    return {
       total: 1, row_total: 2, page: 1, per_page: 250,
       items: [
         { ...items[0], reason: 'Similar to your hardcore collection', recommended: true },
@@ -430,71 +520,322 @@ describe('StockBrowser', () => {
           reason: 'Similar to your hardcore collection', recommended: true,
         },
       ],
-    })
+    }
+  }
+
+  it('leaves the record unnamed on a row that already names it', async () => {
+    getStock.mockResolvedValue(withComparison())
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('Rob Zombie - The Great Satan [Standard Black LP]')).toBeTruthy())
+
+    fireEvent.click(screen.getAllByTitle('Recommendation details')[0])
+    expect(screen.getByRole('note').textContent).not.toContain('Ghostly Black Vinyl')
+  })
+
+  it('names the target on a row showing a source\'s name for another pressing', async () => {
+    getStock.mockResolvedValue(withComparison())
     render(<StockBrowser recommendedAvailable />)
     await waitFor(() => expect(screen.getByText('Rob Zombie - The Great Satan [Standard Black LP]')).toBeTruthy())
 
     fireEvent.click(screen.getAllByTitle('Recommendation details')[1])
-    const dialog = screen.getByRole('dialog')
-    expect(dialog.textContent).toContain('The Great Satan — Ghostly Black Vinyl')
-    expect(dialog.textContent).not.toContain('Standard Black LP')
+    const popover = screen.getByRole('note')
+    // The target the judge actually saw, not the row's own substituted name.
+    expect(popover.textContent).toContain('Rob Zombie — The Great Satan — Ghostly Black Vinyl')
+    expect(popover.textContent).not.toContain('Standard Black LP')
   })
 
-  it('closes the reason dialog on a backdrop click', async () => {
-    // Its own dismissal path: an aria-hidden, untabbable button behind the
-    // panel. Layered wrong or wired to nothing, the pointer route out is gone
-    // and nothing else here would notice.
+  it('closes when focus lands outside it, which a keyboard reaches before any press', async () => {
+    // Enter on a button emits `click` with no `mousedown`, so activating one
+    // of App's nav tabs by keyboard never reached the press-outside listener.
+    // App parks the Store view under `hidden` rather than unmounting it, so a
+    // popover that survived that would go on measuring an anchor with no
+    // layout box and write those zeros back as its own size.
     getStock.mockResolvedValue(judged(true))
-    const { container } = render(<StockBrowser recommendedAvailable />)
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    const icon = screen.getByTitle('Recommendation details')
+    fireEvent.click(icon)
+    expect(icon.getAttribute('aria-expanded')).toBe('true')
+
+    const elsewhere = document.createElement('button')
+    document.body.appendChild(elsewhere)
+    fireEvent.focusIn(elsewhere)
+
+    expect(icon.getAttribute('aria-expanded')).toBe('false')
+    elsewhere.remove()
+  })
+
+  it('stays open when focus moves into the panel, which is how a long reason is scrolled', async () => {
+    getStock.mockResolvedValue(judged(true))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    const icon = screen.getByTitle('Recommendation details')
+    fireEvent.click(icon)
+
+    fireEvent.focusIn(screen.getByRole('note'))
+    expect(icon.getAttribute('aria-expanded')).toBe('true')
+  })
+
+  it('breaks a reason with no spaces in it rather than letting it run past the panel', async () => {
+    // The CSV import strips a reason and stores it, with no bound on length
+    // or on how long a single token may be.
+    getStock.mockResolvedValue({
+      total: 1, row_total: 1, page: 1, per_page: 250,
+      items: [{ ...items[0], reason: `https://example.com/${'a'.repeat(300)}`, recommended: false }],
+    })
+    render(<StockBrowser recommendedAvailable />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     fireEvent.click(screen.getByTitle('Recommendation details'))
 
-    const backdrop = container.querySelector('button[aria-hidden="true"]')
-    expect(backdrop).not.toBeNull()
-    fireEvent.click(backdrop!)
-    expect(screen.queryByRole('dialog')).toBeNull()
+    const reason = screen.getByRole('note').querySelector('p:last-of-type')
+    expect(reason?.className).toContain('break-words')
   })
 
-  it('confines Tab and Shift+Tab to the dialog', async () => {
-    // `aria-modal` claims interaction is confined to the panel; these are the
-    // branches that make that true rather than a promise a screen reader acts
-    // on. jsdom does not move focus on Tab by itself, so what each assertion
-    // turns on is the handler having cancelled the event and placed focus.
+  it('re-places the popover from its current size when the window resizes', async () => {
+    // The panel's own width and height are inputs to the placement, and both
+    // they and the viewport can change while it is open -- a phone turned on
+    // its side, a window dragged narrow. Measuring once and reusing that
+    // leaves the panel placed for a screen it is no longer on.
+    getStock.mockResolvedValue(judged(true))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getAllByTitle('Recommendation details').length).toBeGreaterThan(0))
+
+    const icon = screen.getAllByTitle('Recommendation details')[0]
+    icon.getBoundingClientRect = () => boxAt(100, 200, 24, 24)
+    setViewport(1024, 768)
+
+    fireEvent.click(icon)
+    const popover = screen.getByRole('note')
+    // Measured at jsdom's zero width, so it still fits in the 100px to the
+    // icon's left.
+    expect(popover.style.left).toBe('92px')
+
+    popover.getBoundingClientRect = () => boxAt(0, 0, 256, 96)
+    fireEvent(window, new Event('resize'))
+    // 256px does not fit there, so it flips to the icon's right and centres
+    // on it -- neither of which it could know without measuring again.
+    expect(popover.style.left).toBe('132px')
+    expect(popover.style.top).toBe('164px')
+    expect(popover.style.maxWidth).toBe('256px')
+
+    setViewport(240, 300)
+    fireEvent(window, new Event('resize'))
+    // Neither side of the icon can hold it now, so it stacks above; and it is
+    // cut to the room between the edges rather than kept at the width it had.
+    expect(popover.style.left).toBe('8px')
+    expect(popover.style.top).toBe('96px')
+    expect(popover.style.maxWidth).toBe('224px')
+  })
+
+  it('scrolls a long reason inside the popover, and lets a keyboard reach it', async () => {
+    // A reason is free text: a CSV import writes it unbounded. Safari does not
+    // hand a scroll container to the keyboard on its own, so the panel is
+    // focusable and sits next to its icon in the DOM for Tab to find.
+    getStock.mockResolvedValue(judged(true))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    const info = screen.getByTitle('Recommendation details')
+    fireEvent.click(info)
+
+    const popover = screen.getByRole("note")
+    expect(popover.className).toContain('overflow-y-auto')
+    expect(popover.getAttribute('tabindex')).toBe('0')
+    expect(info.nextElementSibling).toBe(popover)
+  })
+
+  it('takes both of its caps from the placement, not from a class', async () => {
+    // The placement is the only thing that knows what room the icon leaves and
+    // what the safe screen is, so it decides the size; a class beside it could
+    // only contradict the bounds it enforces.
     getStock.mockResolvedValue(judged(true))
     render(<StockBrowser recommendedAvailable />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     fireEvent.click(screen.getByTitle('Recommendation details'))
-    const panel = screen.getByRole('dialog')
-    const close = screen.getByRole('button', { name: 'Close' })
-    expect(document.activeElement).toBe(panel)
 
-    // Shift+Tab off the panel's leading edge wraps to the last control.
-    expect(fireEvent.keyDown(document, { key: 'Tab', shiftKey: true })).toBe(false)
-    expect(document.activeElement).toBe(close)
-
-    // Tab off the last control wraps back to the first.
-    expect(fireEvent.keyDown(document, { key: 'Tab' })).toBe(false)
-    expect(document.activeElement).toBe(close)
-
-    // Shift+Tab off the first control wraps to the last.
-    expect(fireEvent.keyDown(document, { key: 'Tab', shiftKey: true })).toBe(false)
-    expect(document.activeElement).toBe(close)
-
-    // Focus that has escaped the panel entirely is pulled back in.
-    const outside = screen.getByTitle('Recommendation details')
-    outside.focus()
-    expect(fireEvent.keyDown(document, { key: 'Tab' })).toBe(false)
-    expect(document.activeElement).toBe(close)
+    const popover = screen.getByRole("note") as HTMLElement
+    expect(popover.className).not.toContain('max-h-')
+    expect(popover.className).not.toContain('max-w-')
+    expect(popover.style.maxHeight).not.toBe('')
+    expect(popover.style.maxWidth).not.toBe('')
   })
 
-  it('scrolls the dialog rather than pushing its Close button off a short viewport', async () => {
-    // A reason is free text: a CSV import writes it unbounded.
+  it('returns focus to the icon when Escape closes a popover being read', async () => {
+    getStock.mockResolvedValue(judged(true))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    const info = screen.getByTitle('Recommendation details')
+    fireEvent.click(info)
+
+    screen.getByRole("note").focus()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole("note")).toBeNull()
+    expect(document.activeElement).toBe(info)
+  })
+
+  it('closes the popover on a touch outside it', async () => {
+    // A tap emits mousedown only as a compatibility event, and a touch scroll
+    // emits none -- so the dismissal cannot listen for mouse input alone.
     getStock.mockResolvedValue(judged(true))
     render(<StockBrowser recommendedAvailable />)
     await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
     fireEvent.click(screen.getByTitle('Recommendation details'))
-    expect(screen.getByRole('dialog').className).toContain('overflow-y-auto')
-    expect(screen.getByRole('dialog').className).toContain('max-h-[85dvh]')
+
+    fireEvent.touchStart(document.body)
+    expect(screen.queryByRole("note")).toBeNull()
+  })
+
+  it('closes the popover when the view switches out from under its icon', async () => {
+    // The tile grid is a different tree, so the icon the panel was measured
+    // against is detached -- and a detached node reports a zero rect, which
+    // the next scroll would turn into a jump to the corner.
+    getStock.mockResolvedValue(judged(true))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByTitle('Recommendation details'))
+    expect(screen.getByRole("note")).toBeTruthy()
+
+    fireEvent.click(screen.getByTitle('Tile view'))
+    // The icon's own state is what proves it closed rather than merely went
+    // invisible: an unplaced panel is hidden, which a role query cannot see.
+    await waitFor(() => expect(screen.getByTitle('Recommendation details').getAttribute('aria-expanded')).toBe('false'))
+    expect(screen.queryByRole("note")).toBeNull()
+  })
+
+  it('closes the popover when a refetch drops the row, and does not reopen it when the row comes back', async () => {
+    // The popover unmounts with its row, so it cannot clear the state itself
+    // -- and state left set would reopen it, unbidden, the moment the row
+    // returned. Absence while the list is empty proves nothing on its own.
+    getStock.mockResolvedValue(judged(true))
+    const { rerender } = render(<StockBrowser recommendedAvailable syncGeneration={1} />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByTitle('Recommendation details'))
+    expect(screen.getByRole("note")).toBeTruthy()
+
+    getStock.mockResolvedValue({ total: 0, row_total: 0, page: 1, per_page: 250, items: [] })
+    rerender(<StockBrowser recommendedAvailable syncGeneration={2} />)
+    await waitFor(() => expect(screen.queryByRole("note")).toBeNull())
+
+    getStock.mockResolvedValue(judged(true))
+    rerender(<StockBrowser recommendedAvailable syncGeneration={3} />)
+    await waitFor(() => expect(screen.getByTitle('Recommendation details')).toBeTruthy())
+    expect(screen.queryByRole("note")).toBeNull()
+    expect(screen.getByTitle('Recommendation details').getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('closes the popover on a scroll, wherever the scroll came from', async () => {
+    // Following the row would mean judging, on every scroll, whether it is
+    // still visible -- and it can be hidden while still in the viewport:
+    // scrolled out of the table's own overflow container, or under its sticky
+    // header. Dismissing is the simpler rule and matches a glance.
+    getStock.mockResolvedValue(judged(true))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    const info = screen.getByTitle('Recommendation details')
+    fireEvent.click(info)
+    expect(screen.getByRole("note")).toBeTruthy()
+
+    const scroller = info.closest('.overflow-auto') as HTMLElement
+    expect(scroller).not.toBeNull()
+    fireEvent.scroll(scroller, {})
+    expect(screen.queryByRole("note")).toBeNull()
+    expect(info.getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('measures the panel uncapped, so it can widen again after it has narrowed', async () => {
+    // The last placement's caps are on the panel when the next one measures
+    // it. Left there, a popover opened on a narrow screen would keep that
+    // width for as long as it stayed open, however much room appeared.
+    getStock.mockResolvedValue(judged(true))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByTitle('Recommendation details'))
+
+    const popover = screen.getByRole('note') as HTMLElement
+    const widthsWhenMeasured: string[] = []
+    popover.getBoundingClientRect = function () {
+      widthsWhenMeasured.push(this.style.maxWidth)
+      return boxAt(0, 0, 256, 96)
+    }
+    setViewport(240, 768)
+    fireEvent(window, new Event('resize'))
+
+    // The first measurement is the width the panel would take given the room.
+    expect(widthsWhenMeasured[0]).toBe('')
+    // And put back, since React will not re-write a value it thinks is set.
+    expect(popover.style.maxWidth).toBe('224px')
+  })
+
+  it('reflows the text to the width it will get before measuring its height', async () => {
+    // scrollHeight read at the uncapped width is the height of a panel that
+    // is about to be narrowed: the text has not wrapped yet, so the reason
+    // gets clipped into a scrollbar with vertical room going spare.
+    getStock.mockResolvedValue(judged(true))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByTitle('Recommendation details'))
+
+    const popover = screen.getByRole('note') as HTMLElement
+    let widthWhenHeightRead: string | undefined
+    Object.defineProperty(popover, 'scrollHeight', {
+      configurable: true,
+      get() { widthWhenHeightRead = this.style.maxWidth; return 0 },
+    })
+    popover.getBoundingClientRect = () => boxAt(0, 0, 256, 96)
+    setViewport(240, 768)
+    fireEvent(window, new Event('resize'))
+
+    // 240 less the 8px margin on each side: the width the placement will
+    // give it, not the 256px it asks for.
+    expect(widthWhenHeightRead).toBe('224px')
+  })
+
+  it('closes when a refetch moves its row off the screen without a scroll', async () => {
+    // A sync that inserts rows above this one in the current sort moves it
+    // without any scroll event. Following it would clamp the panel to an edge
+    // beside rows it has nothing to do with.
+    // Fresh objects per fetch, as a real response gives: the placement re-runs
+    // on the new item, which is what carries the moved row into it.
+    getStock.mockImplementation(async () => judged(true))
+    const { rerender } = render(<StockBrowser recommendedAvailable syncGeneration={1} />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    const info = screen.getByTitle('Recommendation details')
+    fireEvent.click(info)
+    expect(screen.getByRole("note")).toBeTruthy()
+
+    info.getBoundingClientRect = () => ({
+      top: 2000, bottom: 2044, left: 1200, right: 1244, width: 44, height: 44,
+      x: 1200, y: 2000, toJSON: () => ({}),
+    }) as unknown as DOMRect
+    rerender(<StockBrowser recommendedAvailable syncGeneration={2} />)
+    await waitFor(() => expect(info.getAttribute('aria-expanded')).toBe('false'))
+    expect(screen.queryByRole("note")).toBeNull()
+  })
+
+  it('stays open while the reason itself is scrolled', async () => {
+    // The panel's own overflow is how a long reason is read.
+    getStock.mockResolvedValue(judged(true))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    fireEvent.click(screen.getByTitle('Recommendation details'))
+
+    fireEvent.scroll(screen.getByRole("note"), {})
+    expect(screen.getByRole("note")).toBeTruthy()
+  })
+
+  it('hands focus back to the icon when the second click closes a focused popover', async () => {
+    // jsdom, like Safari, does not focus a button on click, so the closing
+    // click would otherwise drop focus on the body.
+    getStock.mockResolvedValue(judged(true))
+    render(<StockBrowser recommendedAvailable />)
+    await waitFor(() => expect(screen.getByText('The Great Satan — Ghostly Black Vinyl')).toBeTruthy())
+    const info = screen.getByTitle('Recommendation details')
+    fireEvent.click(info)
+    screen.getByRole("note").focus()
+
+    fireEvent.mouseDown(info)
+    fireEvent.click(info)
+    expect(screen.queryByRole("note")).toBeNull()
+    expect(document.activeElement).toBe(info)
   })
 
   it('puts the info button immediately left of the save button in the row', async () => {
@@ -517,7 +858,7 @@ describe('StockBrowser', () => {
     expect(info.nextElementSibling).toBe(screen.getByTitle('Save for later'))
 
     fireEvent.click(info)
-    expect(screen.getByRole('dialog').textContent).toContain('Similar to your hardcore collection')
+    expect(screen.getByRole("note").textContent).toContain('Similar to your hardcore collection')
   })
 
   it('passes hiddenCrawlerIds through to getStock', async () => {
@@ -1001,7 +1342,7 @@ describe('StockBrowser', () => {
     let reachedLink = false
     link!.addEventListener('click', () => { reachedLink = true })
     fireEvent.click(info)
-    expect(screen.getByRole('dialog')).toBeTruthy()
+    expect(screen.getByRole("note")).toBeTruthy()
     expect(reachedLink).toBe(false)
   })
 
