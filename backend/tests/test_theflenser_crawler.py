@@ -784,3 +784,121 @@ async def test_an_unnamed_pressing_does_not_raise_while_rows_are_yielded(crawler
         {"title": "Black Vinyl", "price": "25.00", "available": True},
     ])])
     assert [i["title"] for i in await _run(crawler)] == ["Agriculture — Black Vinyl"]
+
+
+# --- second review round (PR #331) ------------------------------------------
+
+@respx.mock
+@pytest.mark.parametrize("descriptor", ['12"CD', '7"Cassette', "12inchesPoster"])
+async def test_an_inch_marker_glued_to_another_word_is_not_a_format(crawler, descriptor):
+    """Without a right-hand boundary the fragment matched the leading `12"` and
+    read a compact disc as a record."""
+    _mock_walk([
+        _LP_PRODUCT,
+        _with(_PLACEHOLDER_PRODUCT, title=f'Alan Sparhawk "White Roses, My God" {descriptor}'),
+    ])
+    assert {i["artist"] for i in await _run(crawler)} == {"Agriculture"}
+
+
+@respx.mock
+async def test_a_nested_quote_glued_to_a_word_is_rejected(crawler):
+    """The unbounded fragment accounted for the stray quote as an inch marker,
+    so the truncated album passed the nested-quote check."""
+    _mock_walk([_LP_PRODUCT, _with(_PLACEHOLDER_PRODUCT, title='Artist "The " 12"CD')])
+    items = await _run(crawler)
+    assert {i["artist"] for i in items} == {"Agriculture"}
+    assert not any(i["title"] == "The" for i in items)
+
+
+@respx.mock
+async def test_two_inch_markers_do_not_vouch_for_each_other(crawler):
+    """Both quotes sit inside a valid marker, so the position check alone
+    passed `54"` that is really the album's closing quote plus junk."""
+    _mock_walk([_LP_PRODUCT, _with(_PLACEHOLDER_PRODUCT, title='Artist "The " 54" 12"')])
+    items = await _run(crawler)
+    assert {i["artist"] for i in items} == {"Agriculture"}
+    assert not any(i["title"] == "The" for i in items)
+
+
+@respx.mock
+async def test_the_placeholder_is_not_sole_beside_a_non_mapping_entry(crawler):
+    """The sole-variant rule is about the product's variants, so it has to be
+    asked of the raw list — the filtered one has already dropped the junk."""
+    _mock_walk([_LP_PRODUCT, _with(_PLACEHOLDER_PRODUCT, variants=[
+        "junk",
+        {"title": "Default Title", "price": "26.00", "available": True},
+    ])])
+    items = await _run(crawler)
+    assert [i["title"] for i in items] == ["Agriculture — Burgundy Vinyl", "Agriculture — Black Vinyl"]
+
+
+@respx.mock
+async def test_an_empty_result_with_a_variantless_record_raises(crawler):
+    """Shopify gives every product a variant, so a record carrying none is a
+    broken payload that leaves no other trace."""
+    _mock_walk([
+        _with(_LP_PRODUCT, variants=[]),
+        _with(_PLACEHOLDER_PRODUCT, variants=[
+            {"title": "Default Title", "price": "26.00", "available": False},
+        ]),
+    ])
+    with pytest.raises(RuntimeError, match="variant-source drift"):
+        await _run(crawler)
+
+
+@respx.mock
+async def test_a_record_whose_only_variant_is_another_medium_does_not_raise(crawler):
+    """Odd store data the gate read correctly, not a broken payload. Paired
+    with a readably sold-out record so the catalog-wide `pressing-source`
+    guard is not what would fire."""
+    _mock_walk([
+        _with(_LP_PRODUCT, variants=[
+            {"title": "Jewel Case CD", "price": "12.00", "available": True},
+        ]),
+        _with(_PLACEHOLDER_PRODUCT, variants=[
+            {"title": "Default Title", "price": "26.00", "available": False},
+        ]),
+    ])
+    assert await _run(crawler) == []
+
+
+@respx.mock
+async def test_an_excluded_bin_cannot_arm_the_identity_guard(crawler):
+    """A product this crawler drops on purpose must not make a genuinely
+    sold-out crawl raise and preserve a stale in-stock snapshot."""
+    _mock_walk([
+        _with(_SCRATCH_AND_DENT_PRODUCT, handle="", variants=[
+            {"title": '   ', "price": "20.00", "available": True},
+        ]),
+        _with(_PLACEHOLDER_PRODUCT, variants=[
+            {"title": "Default Title", "price": "26.00", "available": False},
+        ]),
+    ])
+    assert await _run(crawler) == []
+
+
+@respx.mock
+async def test_an_excluded_bundle_cannot_arm_the_pressing_name_guard(crawler):
+    _mock_walk([
+        _with(_BUNDLE_PRODUCT, variants=[{"title": "  ", "price": "75.00", "available": True}]),
+        _with(_PLACEHOLDER_PRODUCT, variants=[
+            {"title": "Default Title", "price": "26.00", "available": False},
+        ]),
+    ])
+    assert await _run(crawler) == []
+
+
+@respx.mock
+async def test_a_title_less_product_still_raises_though_it_never_parses(crawler):
+    """The blank-title tally stays ahead of the parse — it is the only place a
+    missing title can be seen at all."""
+    _mock_walk([
+        _with(_LP_PRODUCT, title="", variants=[
+            {"title": "Black Vinyl", "price": "25.00", "available": True},
+        ]),
+        _with(_PLACEHOLDER_PRODUCT, variants=[
+            {"title": "Default Title", "price": "26.00", "available": False},
+        ]),
+    ])
+    with pytest.raises(RuntimeError, match="identity-source drift"):
+        await _run(crawler)

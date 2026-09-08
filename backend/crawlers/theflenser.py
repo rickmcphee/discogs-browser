@@ -135,8 +135,17 @@ _BUNDLE_RE = re.compile(r'\bbundles?\b', re.IGNORECASE)
 # reach an outcome the gate was already willing to reach. Dropping the glyph
 # instead would trade that for a silent loss of any record the store one day
 # describes as a 12", which is the worse failure.
+#
+# The unit needs a right-hand boundary of its own. Without one the fragment
+# matches the leading part of `12"CD`, `7"Cassette` and `12inchesPoster`,
+# which reads a compact disc as a record AND -- worse -- accounts for that
+# quote in _descriptor_quotes_are_clean, so `Artist "The " 12"CD` passed the
+# nested-quote check and was emitted under the truncated album `The`. Found in
+# review on PR #331.
+_NOT_BEFORE_LETTER_OR_DIGIT = r'(?![^\W_])'
 _LP = r'(?:\d+\s*[x×]?\s*)?d?lps?'
-_INCH = r'(?:\d+\s*[x×]\s*)?\d{1,2}\s*-?\s*(?:inch(?:es)?|[' + re.escape(_CLOSING_QUOTES + '″') + r'])'
+_INCH = (r'(?:\d+\s*[x×]\s*)?\d{1,2}\s*-?\s*(?:inch(?:es)?|['
+         + re.escape(_CLOSING_QUOTES + '″') + r'])' + _NOT_BEFORE_LETTER_OR_DIGIT)
 # Compiled from the same fragment the two gates below embed, never
 # re-spelled: _descriptor_quotes_are_clean asks "is this quote part of an inch
 # marker" and the gates ask "does this name a format", and the two must agree
@@ -172,18 +181,31 @@ _NON_VINYL_MEDIA_RE = re.compile(
 
 
 def _descriptor_quotes_are_clean(descriptor: str) -> bool:
-    """Every quote in the descriptor is part of one complete inch marker.
+    """The descriptor carries at most one quote, inside one complete inch marker.
 
     What a quote is allowed to be after the album's closing one, and nothing
     else: `12"` is a format, a second `"` left over from a nested quotation is
     evidence the title was mis-parsed. Positions are compared rather than the
     text re-matched, so a quote the inch marker did not consume is caught
     wherever it sits.
+
+    The cap is what makes that a rule rather than a suggestion, and it is not
+    redundant with the position check: two separately valid markers account
+    for both their quotes, so `Artist "The " 54" 12"` passed on the strength
+    of a `54"` that is really the album's closing quote followed by junk, and
+    was emitted under the truncated album `The`. A format descriptor names one
+    inch size; two quote glyphs is a mis-parse far more often than a double
+    format claim, and this store spells its inch sizes out anyway (`10inch`,
+    `7inch`), so the cap costs nothing live. Same cap dongiovannirecords.py
+    puts on its descriptor. Found in review on PR #331.
     """
+    quotes = [i for i, ch in enumerate(descriptor) if ch in _QUOTE_CHARS]
+    if len(quotes) > 1:
+        return False
     accounted = set()
     for m in _INCH_RE.finditer(descriptor):
         accounted.update(range(m.start(), m.end()))
-    return all(i in accounted for i, ch in enumerate(descriptor) if ch in _QUOTE_CHARS)
+    return all(i in accounted for i in quotes)
 
 
 class Crawler:
@@ -201,6 +223,7 @@ class Crawler:
         record_variants_seen = 0
         identity_missing = 0
         unnamed_pressings = 0
+        variantless_records = 0
         unreadable_stock = 0
         yielded = 0
         priced = 0
@@ -213,31 +236,50 @@ class Crawler:
             # independently, one product could satisfy each condition while
             # none of them can yield.
             #
-            # identity_missing and unnamed_pressings are the two deliberate
-            # exceptions, and they are siblings for the same reason the chain
-            # is nested: they count what this crawler DROPPED. A product with
-            # no identity, or a pressing whose name is unreadable, could never
+            # The tallies that count what this crawler DROPPED are the
+            # deliberate exceptions, because a dropped product could never
             # have yielded a row by definition -- so nesting them behind
             # "would have yielded" makes them unreachable, which is exactly
-            # what it did. identity_missing could only ever fire for a missing
-            # handle, never the missing title its own message names, because
-            # a blank title fails the parse two branches earlier. Both found
-            # in review on PR #331.
+            # what it did: identity_missing could only ever fire for a missing
+            # handle, never the missing title its own message names, since a
+            # blank title fails the parse two branches earlier.
+            #
+            # Where each of them sits is the second half of that, and it is
+            # not symmetric. A BLANK TITLE has to be seen before the parse,
+            # which is the only place it can be seen at all. Everything else
+            # waits until the title and descriptor have established the
+            # product is a record, so a product this crawler excludes ON
+            # PURPOSE -- the scratch-and-dent bin, a bundle -- cannot arm a
+            # guard with a defect of its own and make a genuinely sold-out
+            # crawl raise, which would preserve a stale in-stock snapshot.
+            # Both halves found in review on PR #331.
             if self._is_vinyl_product(product):
                 vinyl_typed += 1
-                if not self._has_identity(product):
+                if not (product.get("title") or "").strip():
                     identity_missing += 1
-                unnamed_pressings += self._unnamed_pressings(product)
                 artist, album, descriptor = self._parse_title(product)
                 if artist and album:
                     parsed += 1
                     if self._names_a_record(descriptor):
                         format_ok += 1
+                        # The title is non-blank by now, so this can only be
+                        # the handle -- no double count with the check above.
+                        if not self._has_identity(product):
+                            identity_missing += 1
+                        unnamed_pressings += self._unnamed_pressings(product)
                         variants = self._record_variants(product)
                         if variants:
                             record_variants_seen += 1
                             if not self._has_readable_stock_flag(variants):
                                 unreadable_stock += 1
+                        elif not (product.get("variants") or []):
+                            # A record with no variants AT ALL, which Shopify
+                            # does not produce -- every product has at least
+                            # one. Narrowed to an empty list rather than an
+                            # empty result, because a record whose only
+                            # variant names another medium is odd store data
+                            # the gate read correctly, not a broken payload.
+                            variantless_records += 1
             for item in self._items(product):
                 yielded += 1
                 if item["price"] is not None:
@@ -302,6 +344,14 @@ class Crawler:
             raise RuntimeError(
                 f"{_COLLECTION_SLUG} collection yielded no rows while {identity_missing} vinyl "
                 "product(s) carry no title or no handle -- identity-source drift")
+        if not yielded and variantless_records:
+            # Shopify gives every product at least one variant, so a record
+            # carrying none is a broken payload rather than a sold-out record
+            # -- and one that leaves no other trace, since there is no variant
+            # to be unreadable or unreadably stocked.
+            raise RuntimeError(
+                f"{_COLLECTION_SLUG} collection yielded no rows while {variantless_records} "
+                "record(s) carry no variants at all -- variant-source drift")
         if not yielded and unnamed_pressings:
             # A pressing this crawler could not name is one it dropped, and a
             # dropped in-stock pressing leaves the walk looking sold out --
@@ -444,7 +494,7 @@ class Crawler:
         """
         pairs = []
         unnamed = 0
-        raw = product.get("variants") or []
+        raw = list(product.get("variants") or [])
         # Non-mapping entries are separated here, before anything reads them,
         # so a junk entry is a counted skip rather than an AttributeError from
         # inside the yield loop.
@@ -457,7 +507,15 @@ class Crawler:
                 unnamed += not readably_gone
                 continue
             if title.lower() == _PLACEHOLDER_VARIANT:
-                if len(variants) == 1:
+                # len(raw), not len(variants): the filtered list has already
+                # dropped the junk entries, so a payload like
+                # `["junk", {"title": "Default Title"}]` would read the
+                # placeholder as a sole variant and emit the bare album title
+                # -- and, because a row was yielded, suppress the guard on the
+                # junk entry beside it. The rule is about the product's
+                # variants, so it has to be asked of them all. Found in review
+                # on PR #331.
+                if len(raw) == 1:
                     pairs.append((variant, ""))
                 else:
                     unnamed += not readably_gone

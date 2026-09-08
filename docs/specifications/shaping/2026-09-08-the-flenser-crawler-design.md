@@ -162,12 +162,32 @@ only half the answer: `Artist "The " Big" LP` parses to an album of `The` and
 a descriptor of `Big" LP`, and that descriptor still names a format, so the
 gate downstream waves it through and the row is keyed on a truncated title.
 The fix is a rule about what a quote may be *after* the album's closing one —
-part of one complete inch marker, and nothing else. The check compares
-positions against the same compiled inch-marker pattern the format gates
-embed, rather than re-spelling it, so the two cannot disagree about what an
-inch marker is. A title failing it yields no row at all, which is the only
-safe answer when there is no second source to fall back to. Found in review
-on PR #331; no live title is shaped this way.
+part of one complete inch marker, and nothing else, with a cap of one quote in
+the descriptor. The check compares positions against the same compiled
+inch-marker pattern the format gates embed, rather than re-spelling it, so the
+two cannot disagree about what an inch marker is. A title failing it yields no
+row at all, which is the only safe answer when there is no second source to
+fall back to.
+
+Both halves of that rule earned their place by failing without the other, and
+both failures came from the same direction — a stray quote *accounted for* as
+a legitimate marker:
+
+- **The inch marker needs a right-hand boundary.** Without one the fragment
+  matches the leading part of `12"CD`, `7"Cassette` and `12inchesPoster`,
+  which reads a compact disc as a record and, worse, accounts for that quote —
+  so `Artist "The " 12"CD` passed the check and was emitted under the
+  truncated album `The`.
+- **The cap is not redundant with the position check.** Two separately valid
+  markers account for both their quotes, so `Artist "The " 54" 12"` passed on
+  the strength of a `54"` that is really the album's closing quote followed by
+  junk. A format descriptor names one inch size; two quote glyphs is a
+  mis-parse far more often than a double format claim, and this store spells
+  its inch sizes out anyway, so the cap costs nothing live. It is the same cap
+  `dongiovannirecords.py` puts on its descriptor.
+
+Found in review on PR #331 over two rounds; no live title is shaped any of
+these ways.
 
 ### Billing reduction: the slash only, never the ampersand
 
@@ -333,6 +353,7 @@ names a distinct way the payload can stop carrying what this crawler reads:
 | `price-source drift` | rows were yielded but none carries a price | `price` removed or retyped store-wide |
 | `identity-source drift` | nothing yielded while a vinyl product has no title or handle | identity fields going away |
 | `pressing-name drift` | nothing yielded while a variant's name is unreadable | a variant retyped, blanked, or given Shopify's placeholder beside siblings |
+| `variant-source drift` | nothing yielded while a record carries no variants at all | the `variants` array emptied or renamed |
 | `stock-source drift` | nothing yielded while a vinyl product's flag is unreadable | `available` retyped |
 
 Three properties of the tallies matter as much as the guards themselves:
@@ -360,7 +381,32 @@ Three properties of the tallies matter as much as the guards themselves:
   row anyway, so it neither caused an empty result nor casts doubt on one.
   What is left is the case the guard exists for — an in-stock pressing the
   crawler could not name, which leaves the walk looking sold out when it is
-  not.
+  not. `variantless_records` is narrowed the same way, to a raw `variants`
+  array that is empty (which Shopify does not produce) rather than to an empty
+  *result*: a record whose only variant names another medium is odd store data
+  the gate read correctly, not a broken payload.
+
+- **Where each of those two sits is not symmetric, and that asymmetry is the
+  point.** A blank title has to be seen *before* the parse — it fails the
+  parse, so that is the only place it can be seen at all. Everything else
+  waits until the title and descriptor have established the product is a
+  record, so a product this crawler excludes **on purpose** — the
+  scratch-and-dent bin, a bundle — cannot arm a guard with a defect of its own
+  and make a genuinely sold-out crawl raise, which would preserve a stale
+  in-stock snapshot. Found in review on PR #331.
+
+  That placement also draws the line this guard family works to. A product
+  that fails to parse *could not* have yielded a row — deliberately, for the
+  bin and the bundle — so on its own it is not evidence of drift, and only the
+  catalog-wide version is, which `title-convention drift` and
+  `format-vocabulary drift` already cover. A missing handle or an unreadable
+  variant name is different in kind: there is no legitimate reason for a
+  Shopify product to lack either, so one of those *is* evidence. Counting
+  unclassifiable products instead would permanently arm a guard on the two
+  known-good exclusions, which either makes every empty walk raise — defeating
+  the "genuinely sold out is legitimate" property this design states outright
+  — or requires hardcoding the bin and bundle shapes as exemptions, the
+  brittle special-casing the positive descriptor gate exists to avoid.
 - **They are all taken before the availability filter**, so a store that has
   simply sold out is empty legitimately and trips nothing. `yielded` and
   `priced` are necessarily counted after it, which is why the guards reading
@@ -388,9 +434,13 @@ per rule and the test suite confirmed to fail on every one, including the two
 that initially survived (a substring `product_type` test and a tag-driven gate),
 which exposed two tests that were not isolating the gate they named.
 
-The three defects Copilot's review of PR #331 found — the nested-quote
-truncation, the unreachable identity tally, and the unnamed in-stock pressing
-— were each reproduced against the code before being fixed, and each has its
-own mutation in that set. None of them changes a single live row: the replay
-above is byte-identical before and after, and no live product carries an
-unreadable pressing name, a missing identity, or an unclean descriptor quote.
+Copilot's review of PR #331 found eight defects across two rounds — the
+nested-quote truncation and its two follow-ons (the unbounded inch marker, two
+markers vouching for each other), the unreachable identity tally, the unnamed
+in-stock pressing, the tally placement that let an excluded product arm a
+guard, the sole-variant test reading the filtered variant list, and the record
+with no variants at all. Each was reproduced against the code before being
+fixed, and each has its own mutation in that set. None of them changes a
+single live row: the replay above is byte-identical throughout, and no live
+product carries an unreadable pressing name, a missing identity, an empty
+variants array, or an unclean descriptor quote.
