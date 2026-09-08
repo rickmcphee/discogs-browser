@@ -982,3 +982,74 @@ async def test_a_bundle_word_in_the_album_is_admitted(crawler):
     title, and the shape an earlier comment wrongly claimed this rule caught."""
     _mock_walk([_with(_PLACEHOLDER_PRODUCT, title='Mamaleek "Vinyl Bundle" LP')])
     assert [i["title"] for i in await _run(crawler)] == ["Vinyl Bundle"]
+
+
+# --- non-string payload fields (PR #331, fifth review round) ----------------
+
+@respx.mock
+async def test_a_non_string_variant_title_is_counted_not_crashed(crawler):
+    """`or ""` only covers null or absent — a truthy non-string reached
+    `.split()` and aborted the whole source, which is neither the
+    discard-and-continue behaviour `_classify_variants` documents nor a guard
+    anything names."""
+    _mock_walk([_with(_LP_PRODUCT, variants=[
+        {"title": 123, "price": "25.00", "available": True},
+        {"title": "Black Vinyl", "price": "25.00", "available": True},
+    ])])
+    assert [i["title"] for i in await _run(crawler)] == ["Agriculture — Black Vinyl"]
+
+
+@respx.mock
+@pytest.mark.parametrize("bad", [123, 4.5, ["Black Vinyl"], {"name": "Black Vinyl"}, True])
+async def test_a_non_string_variant_title_raises_the_named_guard_not_an_attribute_error(crawler, bad):
+    _mock_walk([_with(_LP_PRODUCT, variants=[{"title": bad, "price": "25.00", "available": True}])])
+    with pytest.raises(RuntimeError, match="pressing-source drift"):
+        await _run(crawler)
+
+
+@respx.mock
+async def test_a_non_string_product_type_is_not_vinyl(crawler):
+    _mock_walk([_LP_PRODUCT, _with(_PLACEHOLDER_PRODUCT, product_type=123)])
+    assert {i["artist"] for i in await _run(crawler)} == {"Agriculture"}
+
+
+@respx.mock
+async def test_a_non_string_product_title_counts_toward_the_identity_guard(crawler):
+    """It fails the parse like a blank one, so the blank-title tally is the
+    only place it can be seen."""
+    _mock_walk([
+        _with(_LP_PRODUCT, title=123, variants=[
+            {"title": "Black Vinyl", "price": "25.00", "available": True},
+        ]),
+        _with(_PLACEHOLDER_PRODUCT, variants=[
+            {"title": "Default Title", "price": "26.00", "available": False},
+        ]),
+    ])
+    with pytest.raises(RuntimeError, match="identity-source drift"):
+        await _run(crawler)
+
+
+@respx.mock
+async def test_a_non_string_handle_counts_toward_the_identity_guard(crawler):
+    _mock_walk([
+        _with(_LP_PRODUCT, handle=5, variants=[
+            {"title": "Black Vinyl", "price": "25.00", "available": True},
+        ]),
+        _with(_PLACEHOLDER_PRODUCT, variants=[
+            {"title": "Default Title", "price": "26.00", "available": False},
+        ]),
+    ])
+    with pytest.raises(RuntimeError, match="identity-source drift"):
+        await _run(crawler)
+
+
+@respx.mock
+async def test_a_non_string_field_does_not_abort_a_healthy_catalog(crawler):
+    """The whole point: one malformed field must not stop the catalog
+    refreshing."""
+    _mock_walk([
+        _with(_PLACEHOLDER_PRODUCT, title=123),
+        _with(_LP_PRODUCT, product_type=["Vinyl"]),
+        _OFF_SHELF_PRODUCT,
+    ])
+    assert [i["artist"] for i in await _run(crawler)] == ["Bismuth"]

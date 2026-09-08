@@ -224,6 +224,29 @@ def _fold_marks(text: str) -> str:
     )
 
 
+def _text(value) -> str:
+    """A payload string field, whitespace-collapsed, or "" when it is not one.
+
+    Every string field this crawler reads goes through here, and the reason is
+    the `or ""` idiom it replaces: that only covers a NULL or absent field, so
+    a truthy non-string was still handed to `.split()`/`.strip()` and raised an
+    AttributeError from inside the walk, aborting the whole source. One
+    malformed variant title would stop the catalog refreshing for as long as
+    the store served it.
+
+    That is not fail-safe, it is just unexplained: the raise does protect the
+    previous snapshot (`_sync_stock` skips `replace_stock_items()`), but no
+    drift message names it, and it contradicts the discard-and-continue
+    behaviour `_classify_variants` documents for a junk entry. Reading an
+    unreadable field as absent instead routes every case into the guard that
+    already covers it -- a non-string `product_type` is not vinyl, a
+    non-string product title fails the parse and counts toward
+    `identity_missing`, a non-string variant title counts as an unnamed
+    pressing. Found in review on PR #331.
+    """
+    return " ".join(value.split()) if isinstance(value, str) else ""
+
+
 def _canonical(text: str) -> str:
     """The emitted spelling of an identity field: composed, never folded.
 
@@ -319,7 +342,7 @@ class Crawler:
             # Both halves found in review on PR #331.
             if self._is_vinyl_product(product):
                 vinyl_typed += 1
-                if not (product.get("title") or "").strip():
+                if not _text(product.get("title")):
                     identity_missing += 1
                 artist, album, descriptor = self._parse_title(product)
                 if artist and album:
@@ -486,7 +509,7 @@ class Crawler:
 
     @staticmethod
     def _is_vinyl_product(product: dict) -> bool:
-        segments = (product.get("product_type") or "").split(",")
+        segments = _text(product.get("product_type")).split(",")
         return any(s.strip().lower() == _VINYL_PRODUCT_TYPE for s in segments)
 
     @classmethod
@@ -499,7 +522,7 @@ class Crawler:
         own name -- so a vendor fallback would credit every unparseable title
         to a record label. A title that doesn't parse yields no row at all.
         """
-        title = " ".join((product.get("title") or "").split())
+        title = _text(product.get("title"))
         m = _TITLE_RE.match(title)
         if not m:
             return "", "", ""
@@ -565,7 +588,7 @@ class Crawler:
         variants = [v for v in raw if isinstance(v, dict)]
         unnamed += len(raw) - len(variants)
         for variant in variants:
-            title = " ".join((variant.get("title") or "").split())
+            title = _text(variant.get("title"))
             readably_gone = variant.get("available") is False
             if not title:
                 unnamed += not readably_gone
@@ -597,7 +620,7 @@ class Crawler:
 
     @staticmethod
     def _has_identity(product: dict) -> bool:
-        return bool((product.get("title") or "").strip()) and bool((product.get("handle") or "").strip())
+        return bool(_text(product.get("title"))) and bool(_text(product.get("handle")))
 
     @staticmethod
     def _has_readable_stock_flag(record_variants: list) -> bool:

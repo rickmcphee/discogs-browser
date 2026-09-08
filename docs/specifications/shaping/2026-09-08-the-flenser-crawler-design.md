@@ -362,6 +362,32 @@ cannot use, rejecting `bool` *before* `float()` (bool is an `int` subclass, so
 `True` would price a record at 1), and non-finite or non-positive values after
 it.
 
+## Reading the payload
+
+Every string field this crawler reads goes through one helper that returns
+`""` for anything that is not a string. The `or ""` idiom it replaces covers a
+null or absent field only, so a truthy non-string was handed straight to
+`.split()`/`.strip()` and raised an `AttributeError` from inside the walk,
+aborting the whole source — one malformed variant title would stop the catalog
+refreshing for as long as the store served it.
+
+That raise is not fail-safe so much as unexplained. It does protect the
+previous snapshot, since `_sync_stock` skips `replace_stock_items()` on a
+raise, but no drift message names it and it contradicts the
+discard-and-continue behaviour `_classify_variants` documents for a junk
+entry. Reading an unreadable field as *absent* instead routes every case into
+the guard that already covers it:
+
+| Field | Non-string reading | Guard it reaches |
+| --- | --- | --- |
+| `product_type` | not vinyl | `format-taxonomy drift` if catalog-wide |
+| product `title` | fails the parse | `identity-source drift` (the blank-title tally) |
+| `handle` | no identity | `identity-source drift` |
+| variant `title` | unnamed pressing | `pressing-name drift` |
+
+Found in review on PR #331, on the variant title; the other three had the same
+defect and were fixed with it.
+
 ## Drift guards
 
 `db.replace_stock_items()` DELETEs this crawler's previous snapshot before
