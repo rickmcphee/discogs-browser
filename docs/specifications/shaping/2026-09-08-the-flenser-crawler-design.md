@@ -389,15 +389,16 @@ These properties of the tallies matter as much as the guards themselves:
   have yielded a row, so only such a product's stock readability says anything
   about an empty result. Tallied independently, one product could satisfy each
   condition while none of them can yield.
-- **`identity_missing` and `unnamed_pressings` are the two deliberate
-  exceptions to that**, and they are siblings for the same reason the chain is
-  nested: they count what the crawler *dropped*. A product with no identity,
-  or a pressing whose name is unreadable, could never have yielded a row by
-  definition — so nesting them behind "would have yielded" makes them
-  unreachable, which is exactly what it did. `identity_missing` could only
+- **The tallies that count what the crawler *dropped* are the deliberate
+  exceptions to that** — `identity_missing`, `unnamed_pressings` and
+  `variantless_records` — and they are siblings for the same reason the chain
+  is nested. A product with no identity, a pressing whose name is unreadable,
+  or a record carrying no variants at all could never have yielded a row by
+  definition, so nesting them behind "would have yielded" makes them
+  unreachable, which is exactly what it did: `identity_missing` could only
   ever fire for a missing handle, never for the missing title its own message
-  names, because a blank title fails the parse two branches earlier. Both
-  found in review on PR #331.
+  names, because a blank title fails the parse two branches earlier. Found in
+  review on PR #331.
 
   What `unnamed_pressings` counts is narrow, and both halves of the narrowing
   are load-bearing. A variant naming another medium is **not** unreadable — a
@@ -412,11 +413,10 @@ These properties of the tallies matter as much as the guards themselves:
   *result*: a record whose only variant names another medium is odd store data
   the gate read correctly, not a broken payload.
 
-- **Where each of those two sits is not symmetric, and that asymmetry is the
+- **Where each of them sits is not symmetric, and that asymmetry is the
   point.** A blank title has to be seen *before* the parse — it fails the
-  parse, so that is the only place it can be seen at all. Everything else
-  waits until the title and descriptor have established the product is a
-  record, so a product this crawler excludes **on purpose** — the
+  parse, so that is the only place it can be seen at all. The other two wait
+  until the title and descriptor have established the product is a record, so a product this crawler excludes **on purpose** — the
   scratch-and-dent bin, a bundle — cannot arm a guard with a defect of its own
   and make a genuinely sold-out crawl raise, which would preserve a stale
   in-stock snapshot. Found in review on PR #331.
