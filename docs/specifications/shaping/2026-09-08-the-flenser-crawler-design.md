@@ -133,8 +133,8 @@ and on every other product in the catalog.
 
 Every single-item product in the store follows it. Of the 281 vinyl-typed
 products, 280 carry exactly two quotes and parse; the one that does not is
-`Mamaleek Vinyl Bundle`. All 281 use straight quotes; the store writes no
-curly ones.
+`Mamaleek Vinyl Bundle`, which carries none. Every quote in the catalog is a
+straight one; the store writes no curly ones.
 
 **There is no fallback source for either half.** `vendor` on this store is
 the *releasing label* — dozens of distinct values across the vinyl-typed set,
@@ -149,9 +149,25 @@ The regex's two character classes are asymmetric on purpose. The artist group
 excludes only the characters that can *open* a quotation, which makes the
 album's opening quote the first quote in the string, so a descriptor's own
 inch marker can never be read as one; the album group excludes every quote
-there is, so a stray third quote is junk rather than an album. Curly quotes
-are admitted though the store writes none — the commonest way a storefront's
-copy drifts, and admitting them costs nothing.
+there is, so a fourth quote lands in the descriptor rather than in the album.
+Curly quotes are admitted though the store writes none — the commonest way a
+storefront's copy drifts, and admitting them costs nothing. Every quote
+character the crawler knows about is named once and the two subsets derived
+from it, because spelled out separately they drift and every such
+disagreement has been a bug (`dongiovannirecords.py` documents the same trap).
+
+**A nested quotation is rejected rather than guessed at**, which the character
+classes alone do not achieve. The album group stopping at an inner quote is
+only half the answer: `Artist "The " Big" LP` parses to an album of `The` and
+a descriptor of `Big" LP`, and that descriptor still names a format, so the
+gate downstream waves it through and the row is keyed on a truncated title.
+The fix is a rule about what a quote may be *after* the album's closing one —
+part of one complete inch marker, and nothing else. The check compares
+positions against the same compiled inch-marker pattern the format gates
+embed, rather than re-spelling it, so the two cannot disagree about what an
+inch marker is. A title failing it yields no row at all, which is the only
+safe answer when there is no second source to fall back to. Found in review
+on PR #331; no live title is shaped this way.
 
 ### Billing reduction: the slash only, never the ampersand
 
@@ -316,16 +332,36 @@ names a distinct way the payload can stop carrying what this crawler reads:
 | `pressing-source drift` | no vinyl product has a variant reading as a record | variants lost, or re-titled as another medium |
 | `price-source drift` | rows were yielded but none carries a price | `price` removed or retyped store-wide |
 | `identity-source drift` | nothing yielded while a vinyl product has no title or handle | identity fields going away |
+| `pressing-name drift` | nothing yielded while a variant's name is unreadable | a variant retyped, blanked, or given Shopify's placeholder beside siblings |
 | `stock-source drift` | nothing yielded while a vinyl product's flag is unreadable | `available` retyped |
 
-Two properties of the tallies matter as much as the guards themselves:
+Three properties of the tallies matter as much as the guards themselves:
 
-- **They are nested, not sibling.** Only a product that is vinyl-typed *and*
-  parses *and* names a format *and* has a variant the gate admits could have
-  yielded a row, so only such a product's identity and stock readability say
-  anything about an empty result. Tallied independently, one product could
-  satisfy each condition while none of them can yield.
-- **They are taken before the availability filter**, so a store that has
+- **The chain is nested, not sibling.** Only a product that is vinyl-typed
+  *and* parses *and* names a format *and* has a variant the gate admits could
+  have yielded a row, so only such a product's stock readability says anything
+  about an empty result. Tallied independently, one product could satisfy each
+  condition while none of them can yield.
+- **`identity_missing` and `unnamed_pressings` are the two deliberate
+  exceptions to that**, and they are siblings for the same reason the chain is
+  nested: they count what the crawler *dropped*. A product with no identity,
+  or a pressing whose name is unreadable, could never have yielded a row by
+  definition — so nesting them behind "would have yielded" makes them
+  unreachable, which is exactly what it did. `identity_missing` could only
+  ever fire for a missing handle, never for the missing title its own message
+  names, because a blank title fails the parse two branches earlier. Both
+  found in review on PR #331.
+
+  What `unnamed_pressings` counts is narrow, and both halves of the narrowing
+  are load-bearing. A variant naming another medium is **not** unreadable — a
+  CD sibling being in stock says nothing about whether the record is, and
+  counting it would raise on an ordinary store. A variant readably out of
+  stock is not counted either, whatever its name: it could not have yielded a
+  row anyway, so it neither caused an empty result nor casts doubt on one.
+  What is left is the case the guard exists for — an in-stock pressing the
+  crawler could not name, which leaves the walk looking sold out when it is
+  not.
+- **They are all taken before the availability filter**, so a store that has
   simply sold out is empty legitimately and trips nothing. `yielded` and
   `priced` are necessarily counted after it, which is why the guards reading
   them are each conditioned on a second tally rather than on emptiness alone.
@@ -351,3 +387,10 @@ Every rule and guard above was mutation-checked — the crawler was mutated once
 per rule and the test suite confirmed to fail on every one, including the two
 that initially survived (a substring `product_type` test and a tag-driven gate),
 which exposed two tests that were not isolating the gate they named.
+
+The three defects Copilot's review of PR #331 found — the nested-quote
+truncation, the unreachable identity tally, and the unnamed in-stock pressing
+— were each reproduced against the code before being fixed, and each has its
+own mutation in that set. None of them changes a single live row: the replay
+above is byte-identical before and after, and no live product carries an
+unreadable pressing name, a missing identity, or an unclean descriptor quote.

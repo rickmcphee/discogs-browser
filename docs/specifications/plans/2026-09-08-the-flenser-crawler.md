@@ -61,6 +61,7 @@ cd backend && TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/di
 - [x] **Step 6: Mutation-check that each guard and rule bites** — mutate the crawler once per guard or rule and confirm the tests fail. Two mutations initially survived (a substring `product_type` test and a tag-driven gate), exposing two tests that were not isolating the gate they named; both tests were rewritten and every mutation is now caught.
 - [x] **Step 7: Run the wider crawler test selection for regressions** (`pytest tests/ -k crawler` with the three test env vars set — the plugin loader imports every module in `backend/crawlers/`, so a syntax error in the new file breaks unrelated tests).
 - [x] **Step 8: Commit** via `git commit -F`, with trailers.
+- [x] **Step 9: Address Copilot's PR review** — three defects, each reproduced against the code before being fixed and each given its own mutation: a nested quotation truncating the album (`Artist "The " Big" LP` parsed to an album of `The`, then passed the format gate on the leftover `LP`), an `identity-source` tally nested behind the parse so it could only ever fire for a missing handle and never the missing title its message names, and an in-stock pressing dropped for an unreadable name leaving the walk looking sold out. Plus two comment/doc corrections. Re-replayed over the cached catalog: byte-identical, 319 rows.
 
 ---
 

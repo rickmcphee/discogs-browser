@@ -25,8 +25,11 @@ _COLLECTION_SLUG = "all"
 # A product_type here can name more than one taxonomy, comma-joined
 # ("Vinyl,Distributed titles", "Flenser Releases,CDs"), so the test is
 # per-segment rather than on the whole string -- an equality test would drop
-# the three records typed that way, and a substring test would admit
-# "Distributed titles,CDs".
+# the three records typed that way, and a substring test would admit any type
+# that merely contains the word, "Vinyl Accessories" being the obvious one a
+# store adds. Found in review on PR #331: the example here used to name
+# "Distributed titles,CDs", which contains no "vinyl" at all and so is
+# rejected by a substring test too.
 #
 # Read from product_type and NOT from tags, though both look like they say
 # the same thing. The tag is wrong in both directions live: it is on the
@@ -45,16 +48,23 @@ _VINYL_PRODUCT_TYPE = "vinyl"
 # excludes only the characters that can OPEN a quotation, which is what makes
 # the album's opening quote the first quote in the string -- so a descriptor's
 # own inch marker (`12"`) can never be read as one. The album group excludes
-# every quote there is, so a stray third quote is junk rather than an album.
-# Curly quotes are admitted though the store writes none: they are the
-# commonest way a storefront's copy drifts, and admitting them costs nothing.
-_OPENING_QUOTES = '"“'
-_CLOSING_QUOTES = '"”'
-_ALL_QUOTES = '"“”'
+# every quote there is, so a fourth quote lands in the descriptor rather than
+# in the album. Curly quotes are admitted though the store writes none: they
+# are the commonest way a storefront's copy drifts, and admitting them costs
+# nothing.
+#
+# Every quote character this crawler knows about is named ONCE, here, and the
+# two subsets are derived from it. Spelled out separately they drift, and
+# every such disagreement is a bug -- a double prime the album group admitted
+# but the inch marker rejected, or the reverse. Same trap dongiovannirecords.py
+# documents, for the same reason.
+_QUOTE_CHARS = '"“”″'
+_OPENING_QUOTES = '"“'   # the two a title can open an album with
+_CLOSING_QUOTES = '"”'   # the two it can close one with
 _TITLE_RE = re.compile(
     r'^(?P<artist>[^' + re.escape(_OPENING_QUOTES) + r']*?)\s*'
     r'[' + re.escape(_OPENING_QUOTES) + r']'
-    r'(?P<album>[^' + re.escape(_ALL_QUOTES) + r']+?)'
+    r'(?P<album>[^' + re.escape(_QUOTE_CHARS) + r']+?)'
     r'[' + re.escape(_CLOSING_QUOTES) + r']\s*'
     r'(?P<descriptor>.*)$'
 )
@@ -126,7 +136,13 @@ _BUNDLE_RE = re.compile(r'\bbundles?\b', re.IGNORECASE)
 # instead would trade that for a silent loss of any record the store one day
 # describes as a 12", which is the worse failure.
 _LP = r'(?:\d+\s*[x×]?\s*)?d?lps?'
-_INCH = r'(?:\d+\s*[x×]\s*)?\d{1,2}\s*-?\s*(?:inch(?:es)?|["”″])'
+_INCH = r'(?:\d+\s*[x×]\s*)?\d{1,2}\s*-?\s*(?:inch(?:es)?|[' + re.escape(_CLOSING_QUOTES + '″') + r'])'
+# Compiled from the same fragment the two gates below embed, never
+# re-spelled: _descriptor_quotes_are_clean asks "is this quote part of an inch
+# marker" and the gates ask "does this name a format", and the two must agree
+# on what an inch marker is. Approximating one inside the other is what
+# produced every quote bug dongiovannirecords.py records.
+_INCH_RE = re.compile(r'(?<!\w)(?:%s)' % _INCH, re.IGNORECASE)
 _VINYL_MEDIUM_RE = re.compile(
     r'(?<!\w)(?:%s|vinyls?)(?!\w)|(?<!\w)(?:%s)' % (_LP, _INCH),
     re.IGNORECASE,
@@ -155,6 +171,21 @@ _NON_VINYL_MEDIA_RE = re.compile(
 )
 
 
+def _descriptor_quotes_are_clean(descriptor: str) -> bool:
+    """Every quote in the descriptor is part of one complete inch marker.
+
+    What a quote is allowed to be after the album's closing one, and nothing
+    else: `12"` is a format, a second `"` left over from a nested quotation is
+    evidence the title was mis-parsed. Positions are compared rather than the
+    text re-matched, so a quote the inch marker did not consume is caught
+    wherever it sits.
+    """
+    accounted = set()
+    for m in _INCH_RE.finditer(descriptor):
+        accounted.update(range(m.start(), m.end()))
+    return all(i in accounted for i, ch in enumerate(descriptor) if ch in _QUOTE_CHARS)
+
+
 class Crawler:
     site_name: str = "The Flenser"
     base_url: str = "https://nowflensing.com"
@@ -169,19 +200,34 @@ class Crawler:
         format_ok = 0
         record_variants_seen = 0
         identity_missing = 0
+        unnamed_pressings = 0
         unreadable_stock = 0
         yielded = 0
         priced = 0
         async for product in iter_products(self.base_url, _COLLECTION_SLUG):
             products_seen += 1
-            # Nested, not sibling tallies: only a product that is vinyl-typed
-            # AND parses AND names a format AND has a variant the gate admits
-            # could have yielded a row, so only such a product's identity and
-            # stock readability say anything about an empty result. Tallied
+            # Nested, not sibling: only a product that is vinyl-typed AND
+            # parses AND names a format AND has a variant the gate admits
+            # could have yielded a row, so only such a product's stock
+            # readability says anything about an empty result. Tallied
             # independently, one product could satisfy each condition while
             # none of them can yield.
+            #
+            # identity_missing and unnamed_pressings are the two deliberate
+            # exceptions, and they are siblings for the same reason the chain
+            # is nested: they count what this crawler DROPPED. A product with
+            # no identity, or a pressing whose name is unreadable, could never
+            # have yielded a row by definition -- so nesting them behind
+            # "would have yielded" makes them unreachable, which is exactly
+            # what it did. identity_missing could only ever fire for a missing
+            # handle, never the missing title its own message names, because
+            # a blank title fails the parse two branches earlier. Both found
+            # in review on PR #331.
             if self._is_vinyl_product(product):
                 vinyl_typed += 1
+                if not self._has_identity(product):
+                    identity_missing += 1
+                unnamed_pressings += self._unnamed_pressings(product)
                 artist, album, descriptor = self._parse_title(product)
                 if artist and album:
                     parsed += 1
@@ -190,9 +236,7 @@ class Crawler:
                         variants = self._record_variants(product)
                         if variants:
                             record_variants_seen += 1
-                            if not self._has_identity(product):
-                                identity_missing += 1
-                            elif not self._has_readable_stock_flag(variants):
+                            if not self._has_readable_stock_flag(variants):
                                 unreadable_stock += 1
             for item in self._items(product):
                 yielded += 1
@@ -258,6 +302,14 @@ class Crawler:
             raise RuntimeError(
                 f"{_COLLECTION_SLUG} collection yielded no rows while {identity_missing} vinyl "
                 "product(s) carry no title or no handle -- identity-source drift")
+        if not yielded and unnamed_pressings:
+            # A pressing this crawler could not name is one it dropped, and a
+            # dropped in-stock pressing leaves the walk looking sold out --
+            # the same false emptiness the stock guard below exists for,
+            # arriving through the variant's name rather than its flag.
+            raise RuntimeError(
+                f"{_COLLECTION_SLUG} collection yielded no rows while {unnamed_pressings} "
+                "variant(s) carry no readable name -- pressing-name drift")
         if not yielded and unreadable_stock:
             # An empty result is only trustworthy when every product that
             # could have yielded a row was readable and simply out of stock.
@@ -334,9 +386,20 @@ class Crawler:
         m = _TITLE_RE.match(title)
         if not m:
             return "", "", ""
+        descriptor = m.group("descriptor").strip()
+        # A nested quotation is a title this crawler cannot read, not one it
+        # should guess at. The album group stops at the inner quote, so
+        # `Artist "The " Big" LP` would otherwise parse to an album of `The`
+        # and a descriptor of `Big" LP` -- which still names a format, so the
+        # gate downstream would wave it through and the row would be keyed on
+        # a truncated title. Rejecting the parse skips the product instead,
+        # which is the only safe answer when there is no second source to fall
+        # back to. Found in review on PR #331.
+        if not _descriptor_quotes_are_clean(descriptor):
+            return "", "", ""
         artist = m.group("artist").strip()
         album = m.group("album").strip()
-        return cls._primary_artist(artist), album, m.group("descriptor").strip()
+        return cls._primary_artist(artist), album, descriptor
 
     @staticmethod
     def _primary_artist(billing: str) -> str:
@@ -351,22 +414,57 @@ class Crawler:
 
     @classmethod
     def _record_variants(cls, product: dict) -> list:
+        return cls._classify_variants(product)[0]
+
+    @classmethod
+    def _unnamed_pressings(cls, product: dict) -> int:
+        return cls._classify_variants(product)[1]
+
+    @classmethod
+    def _classify_variants(cls, product: dict) -> Tuple[list, int]:
+        """The variants that read as records, and how many were dropped unread.
+
+        Both come out of one pass because they are one classification: a
+        variant is a record, a deliberate skip, or unreadable, and asking the
+        second question separately would mean re-deriving the first.
+
+        Unreadable means the payload broke, not that the store listed
+        something else: a non-mapping entry, a blank name, or Shopify's
+        placeholder sitting on a multi-variant product. A variant naming
+        another medium is NOT unreadable -- a CD sibling being in stock says
+        nothing about whether the record is, and counting it would raise on
+        an ordinary store.
+
+        A variant readably out of stock is not counted either, whatever its
+        name: it could not have yielded a row anyway, so it neither caused an
+        empty result nor casts doubt on one. Everything else did contribute,
+        which is what makes the count worth a guard -- an in-stock pressing
+        this crawler could not name leaves the walk looking sold out. Found
+        in review on PR #331.
+        """
         pairs = []
-        # Non-mapping entries are dropped here, before anything reads them, so
-        # a junk entry is an ordinary skipped row rather than an
-        # AttributeError from inside the yield loop.
-        variants = [v for v in product.get("variants") or [] if isinstance(v, dict)]
+        unnamed = 0
+        raw = product.get("variants") or []
+        # Non-mapping entries are separated here, before anything reads them,
+        # so a junk entry is a counted skip rather than an AttributeError from
+        # inside the yield loop.
+        variants = [v for v in raw if isinstance(v, dict)]
+        unnamed += len(raw) - len(variants)
         for variant in variants:
             title = " ".join((variant.get("title") or "").split())
+            readably_gone = variant.get("available") is False
             if not title:
+                unnamed += not readably_gone
                 continue
             if title.lower() == _PLACEHOLDER_VARIANT:
                 if len(variants) == 1:
                     pairs.append((variant, ""))
+                else:
+                    unnamed += not readably_gone
                 continue
             if cls._is_record_variant(title):
                 pairs.append((variant, title))
-        return pairs
+        return pairs, unnamed
 
     @staticmethod
     def _is_record_variant(title: str) -> bool:

@@ -658,3 +658,129 @@ async def test_a_sold_out_product_still_counts_toward_the_guards(crawler):
         {"title": "Black Vinyl", "price": "25.00", "available": False},
     ])])
     assert await _run(crawler) == []
+
+
+# --- nested quotes (PR #331 review) ----------------------------------------
+
+@respx.mock
+async def test_a_nested_quote_is_rejected_rather_than_truncated(crawler):
+    """The album group stops at the inner quote, so this would otherwise parse
+    to an album of `The` with a descriptor of `Big" LP` that still names a
+    format — a row keyed on a truncated title."""
+    _mock_walk([_LP_PRODUCT, _with(_PLACEHOLDER_PRODUCT, title='Artist "The " Big" LP')])
+    items = await _run(crawler)
+    assert {i["artist"] for i in items} == {"Agriculture"}
+    assert not any(i["title"] == "The" for i in items)
+
+
+@respx.mock
+async def test_a_double_prime_inside_an_album_is_rejected(crawler):
+    _mock_walk([_LP_PRODUCT, _with(_PLACEHOLDER_PRODUCT, title='Artist "Al″bum" LP')])
+    assert {i["artist"] for i in await _run(crawler)} == {"Agriculture"}
+
+
+@respx.mock
+@pytest.mark.parametrize("descriptor", ['12"', '2x12"', '7″', '10 "'])
+async def test_an_inch_marker_is_not_mistaken_for_a_nested_quote(crawler, descriptor):
+    _mock_walk([_with(_PLACEHOLDER_PRODUCT, title=f'Alan Sparhawk "White Roses, My God" {descriptor}')])
+    assert [i["title"] for i in await _run(crawler)] == ["White Roses, My God"]
+
+
+@respx.mock
+async def test_a_stray_quote_beside_a_real_inch_marker_is_still_rejected(crawler):
+    _mock_walk([_LP_PRODUCT, _with(_PLACEHOLDER_PRODUCT, title='Artist "The " Big" 12"')])
+    assert {i["artist"] for i in await _run(crawler)} == {"Agriculture"}
+
+
+@respx.mock
+async def test_a_catalog_of_nested_quotes_raises(crawler):
+    _mock_walk([_with(_LP_PRODUCT, title='Artist "The " Big" LP')])
+    with pytest.raises(RuntimeError, match="title-convention drift"):
+        await _run(crawler)
+
+
+# --- identity and pressing-name guards (PR #331 review) ---------------------
+
+@respx.mock
+async def test_an_empty_result_with_a_title_less_product_raises(crawler):
+    """The identity tally sits beside the parse chain rather than inside it:
+    a blank title fails the parse, so nested behind it this could never fire
+    for the missing title its own message names."""
+    _mock_walk([
+        _with(_LP_PRODUCT, title="", variants=[
+            {"title": "Black Vinyl", "price": "25.00", "available": True},
+        ]),
+        _with(_PLACEHOLDER_PRODUCT, variants=[
+            {"title": "Default Title", "price": "26.00", "available": False},
+        ]),
+    ])
+    with pytest.raises(RuntimeError, match="identity-source drift"):
+        await _run(crawler)
+
+
+@respx.mock
+async def test_a_title_less_product_does_not_raise_while_others_yield(crawler):
+    _mock_walk([_LP_PRODUCT, _with(_PLACEHOLDER_PRODUCT, title="")])
+    assert {i["artist"] for i in await _run(crawler)} == {"Agriculture"}
+
+
+@respx.mock
+async def test_an_unnamed_in_stock_pressing_beside_a_sold_out_one_raises(crawler):
+    """It leaves the walk looking sold out when it is not."""
+    _mock_walk([_with(_LP_PRODUCT, variants=[
+        {"title": "   ", "price": "25.00", "available": True},
+        {"title": "Black Vinyl", "price": "25.00", "available": False},
+    ])])
+    with pytest.raises(RuntimeError, match="pressing-name drift"):
+        await _run(crawler)
+
+
+@respx.mock
+async def test_an_unnamed_pressing_that_is_readably_sold_out_does_not_raise(crawler):
+    """It could not have yielded a row anyway, so it neither caused the empty
+    result nor casts doubt on it."""
+    _mock_walk([_with(_LP_PRODUCT, variants=[
+        {"title": "   ", "price": "25.00", "available": False},
+        {"title": "Black Vinyl", "price": "25.00", "available": False},
+    ])])
+    assert await _run(crawler) == []
+
+
+@respx.mock
+async def test_an_in_stock_cd_sibling_does_not_raise(crawler):
+    """A variant naming another medium is a deliberate skip, not an unreadable
+    one — a CD being in stock says nothing about whether the record is."""
+    _mock_walk([_with(_LP_PRODUCT, variants=[
+        {"title": "Black Vinyl", "price": "25.00", "available": False},
+        {"title": "Jewel Case CD", "price": "12.00", "available": True},
+    ])])
+    assert await _run(crawler) == []
+
+
+@respx.mock
+async def test_an_empty_result_with_a_non_mapping_variant_raises(crawler):
+    _mock_walk([_with(_LP_PRODUCT, variants=[
+        "junk",
+        {"title": "Black Vinyl", "price": "25.00", "available": False},
+    ])])
+    with pytest.raises(RuntimeError, match="pressing-name drift"):
+        await _run(crawler)
+
+
+@respx.mock
+async def test_an_empty_result_with_a_misplaced_placeholder_raises(crawler):
+    _mock_walk([_with(_LP_PRODUCT, variants=[
+        {"title": "Default Title", "price": "25.00", "available": True},
+        {"title": "Black Vinyl", "price": "25.00", "available": False},
+    ])])
+    with pytest.raises(RuntimeError, match="pressing-name drift"):
+        await _run(crawler)
+
+
+@respx.mock
+async def test_an_unnamed_pressing_does_not_raise_while_rows_are_yielded(crawler):
+    _mock_walk([_with(_LP_PRODUCT, variants=[
+        {"title": "   ", "price": "25.00", "available": True},
+        {"title": "Black Vinyl", "price": "25.00", "available": True},
+    ])])
+    assert [i["title"] for i in await _run(crawler)] == ["Agriculture — Black Vinyl"]
