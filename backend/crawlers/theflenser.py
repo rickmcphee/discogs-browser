@@ -266,33 +266,43 @@ def _canonical(text: str) -> str:
     return unicodedata.normalize("NFC", text)
 
 
-def _descriptor_quotes_are_clean(descriptor: str) -> bool:
-    """The descriptor carries at most one quote, inside one complete inch marker.
+def _descriptor_carries_no_quote(descriptor: str) -> bool:
+    """No quote glyph at all after the album's closing one.
 
-    What a quote is allowed to be after the album's closing one, and nothing
-    else: `12"` is a format, a second `"` left over from a nested quotation is
-    evidence the title was mis-parsed. Positions are compared rather than the
-    text re-matched, so a quote the inch marker did not consume is caught
-    wherever it sits.
+    This started as "every quote must sit inside a complete inch marker", then
+    grew a one-quote cap when two markers were found vouching for each other.
+    Both were patches on an ambiguity the string does not actually resolve:
+    `Artist "The " 12" LP` and `Artist "Album" 12"` are the SAME shape --
+    three quotes, the last inside a valid inch marker -- and no rule reading
+    only the descriptor can tell a nested quotation from a legitimate inch
+    size. Each round closed one instance and left the shape open.
 
-    The cap is what makes that a rule rather than a suggestion, and it is not
-    redundant with the position check: two separately valid markers account
-    for both their quotes, so `Artist "The " 54" 12"` passed on the strength
-    of a `54"` that is really the album's closing quote followed by junk, and
-    was emitted under the truncated album `The`. A format descriptor names one
-    inch size; two quote glyphs is a mis-parse far more often than a double
-    format claim, and this store spells its inch sizes out anyway (`10inch`,
-    `7inch`), so the cap costs nothing live. Same cap dongiovannirecords.py
-    puts on its descriptor. Found in review on PR #331.
+    So the glyph is refused outright, and the ambiguity with it. This crawler
+    has no second identity source, so a title it cannot read unambiguously
+    yields no row -- the same answer the nested-quote rule already gives, now
+    applied to the case that was slipping past it.
+
+    The cost is a descriptor written `12"`, which this store does not write:
+    it spells every inch size out (`10inch`, `7inch`), and those still parse,
+    unambiguously, because a spelled-out unit cannot be mistaken for a
+    closing quote. Weighed the other way in an earlier round -- keeping the
+    glyph to avoid losing a hypothetical `12"` -- which was the wrong trade:
+    it bought a format the store never uses at the price of a hole three
+    rounds could not close. Found in review on PR #331.
+
+    Variant titles are unaffected: they are never split into album and
+    descriptor, so a quote there is unambiguous and _VINYL_MEDIUM_RE still
+    reads it as an inch marker.
+
+    No _fold_marks here, unlike every other decision in this module. Folding
+    exists to stop a combining mark opening a `\w` boundary, and this rule has
+    no boundary to open -- a quote is a quote however the text around it is
+    normalised. It was folded while the rule was still "is this quote part of
+    an inch marker"; keeping the call afterwards would have been a no-op
+    dressed as a precaution, which is exactly what a surviving mutation
+    revealed it to be.
     """
-    folded = _fold_marks(descriptor)
-    quotes = [i for i, ch in enumerate(folded) if ch in _QUOTE_CHARS]
-    if len(quotes) > 1:
-        return False
-    accounted = set()
-    for m in _INCH_RE.finditer(folded):
-        accounted.update(range(m.start(), m.end()))
-    return all(i in accounted for i in quotes)
+    return not any(ch in _QUOTE_CHARS for ch in descriptor)
 
 
 class Crawler:
@@ -362,7 +372,7 @@ class Crawler:
                             record_variants_seen += 1
                             if not self._has_readable_stock_flag(variants):
                                 unreadable_stock += 1
-                        elif not (product.get("variants") or []):
+                        elif not self._raw_variants(product):
                             # A record with no variants AT ALL, which Shopify
                             # does not produce -- every product has at least
                             # one. Narrowed to an empty list rather than an
@@ -393,30 +403,15 @@ class Crawler:
             raise RuntimeError(
                 f"no product in the {_COLLECTION_SLUG} collection carries a "
                 f"{_VINYL_PRODUCT_TYPE!r} product_type segment -- format-taxonomy drift")
-        if parsed == 0:
-            # The artist and the album both come out of the title's quoted
-            # form, with no second source -- `vendor` is the releasing label
-            # here, not the artist, so there is nothing to fall back to. This
-            # is the guard that notices the store restyling its titles.
-            raise RuntimeError(
-                f"no vinyl product in the {_COLLECTION_SLUG} collection yields an artist and an "
-                'album from its `Artist "Album"` title -- title-convention drift')
-        if format_ok == 0:
-            # A store whose catalog is records does not stop naming their
-            # format, so zero has no innocent reading: either the convention
-            # moved the format out of the title, or it is being written in
-            # words this gate does not know.
-            raise RuntimeError(
-                f"no vinyl product in the {_COLLECTION_SLUG} collection carries a descriptor that "
-                "names a record format -- format-vocabulary drift")
-        if yielded and not priced:
-            # Rows without the emptiness: `_price` answers None for a value it
-            # cannot use, so a `price` field removed or retyped store-wide
-            # re-lists the whole catalog with no prices, which is worse than
-            # the snapshot it would replace. Isolated nulls stay tolerated.
-            raise RuntimeError(
-                f"none of the {yielded} rows from the {_COLLECTION_SLUG} collection carries a "
-                "price -- price-source drift")
+        # Ordered most specific first, broadest last, and that ordering is
+        # itself a rule the review had to correct twice. Every one of these
+        # raises, so the snapshot is safe whichever fires -- but a broad guard
+        # reaching a case a precise one describes better costs the only thing
+        # separate guards buy, which is telling an operator WHICH thing broke.
+        # `parsed == 0` reported a naming-convention change when every product
+        # had simply lost its title field, and `record_variants_seen == 0`
+        # reported "no variant reads as a record" for a record that had no
+        # variants at all. Found in review on PR #331.
         if not yielded and identity_missing:
             # Title and handle are identity, not display: item_key hashes the
             # row's title and URL, so a product missing either is skipped
@@ -443,6 +438,39 @@ class Crawler:
             raise RuntimeError(
                 f"{_COLLECTION_SLUG} collection yielded no rows while {unnamed_pressings} "
                 "variant(s) carry no readable name -- pressing-name drift")
+        if not yielded and unreadable_stock:
+            # An empty result is only trustworthy when every product that
+            # could have yielded a row was readable and simply out of stock.
+            # Counting unreadable products rather than readable ones is what
+            # catches the partial case: one genuinely sold-out record must not
+            # vouch for a catalog that has gone unreadable behind it.
+            raise RuntimeError(
+                f"{_COLLECTION_SLUG} collection yielded no rows while {unreadable_stock} vinyl "
+                "product(s) carry no readable availability flag -- stock-source drift")
+        if yielded and not priced:
+            # Rows without the emptiness: `_price` answers None for a value it
+            # cannot use, so a `price` field removed or retyped store-wide
+            # re-lists the whole catalog with no prices, which is worse than
+            # the snapshot it would replace. Isolated nulls stay tolerated.
+            raise RuntimeError(
+                f"none of the {yielded} rows from the {_COLLECTION_SLUG} collection carries a "
+                "price -- price-source drift")
+        if parsed == 0:
+            # The artist and the album both come out of the title's quoted
+            # form, with no second source -- `vendor` is the releasing label
+            # here, not the artist, so there is nothing to fall back to. This
+            # is the guard that notices the store restyling its titles.
+            raise RuntimeError(
+                f"no vinyl product in the {_COLLECTION_SLUG} collection yields an artist and an "
+                'album from its `Artist "Album"` title -- title-convention drift')
+        if format_ok == 0:
+            # A store whose catalog is records does not stop naming their
+            # format, so zero has no innocent reading: either the convention
+            # moved the format out of the title, or it is being written in
+            # words this gate does not know.
+            raise RuntimeError(
+                f"no vinyl product in the {_COLLECTION_SLUG} collection carries a descriptor that "
+                "names a record format -- format-vocabulary drift")
         if record_variants_seen == 0:
             # LAST of the drift guards, not first, though it is the broadest.
             # It fires on exactly the emptiness the three above diagnose more
@@ -461,15 +489,6 @@ class Crawler:
             raise RuntimeError(
                 f"no vinyl product in the {_COLLECTION_SLUG} collection has a variant that reads "
                 "as a record -- pressing-source drift")
-        if not yielded and unreadable_stock:
-            # An empty result is only trustworthy when every product that
-            # could have yielded a row was readable and simply out of stock.
-            # Counting unreadable products rather than readable ones is what
-            # catches the partial case: one genuinely sold-out record must not
-            # vouch for a catalog that has gone unreadable behind it.
-            raise RuntimeError(
-                f"{_COLLECTION_SLUG} collection yielded no rows while {unreadable_stock} vinyl "
-                "product(s) carry no readable availability flag -- stock-source drift")
 
     @classmethod
     def _items(cls, product: dict) -> list:
@@ -551,7 +570,7 @@ class Crawler:
         # a truncated title. Rejecting the parse skips the product instead,
         # which is the only safe answer when there is no second source to fall
         # back to. Found in review on PR #331.
-        if not _descriptor_quotes_are_clean(descriptor):
+        if not _descriptor_carries_no_quote(descriptor):
             return "", "", ""
         artist = m.group("artist").strip()
         album = m.group("album").strip()
@@ -572,6 +591,23 @@ class Crawler:
     @classmethod
     def _record_variants(cls, product: dict) -> list:
         return cls._classify_variants(product)[0]
+
+    @staticmethod
+    def _raw_variants(product: dict) -> list:
+        """The product's variants collection, or [] when it is not one.
+
+        isinstance before list(): a truthy JSON scalar (`1`, `true`) makes
+        list() raise TypeError and abort the whole source, and a string or
+        dict makes it invent entries from characters or keys. A retyped
+        `variants` is a broken payload, so it reads as no variants and lands
+        in `variant-source drift`, which is the guard that names it.
+
+        Shared with the `variantless_records` tally rather than re-derived
+        there, because the two disagreeing is what made a retyped field reach
+        the broad `pressing-source drift` instead. Found in review on PR #331.
+        """
+        raw = product.get("variants")
+        return list(raw) if isinstance(raw, list) else []
 
     @classmethod
     def _classify_variants(cls, product: dict) -> Tuple[list, int]:
@@ -597,7 +633,13 @@ class Crawler:
         """
         pairs = []
         unnamed = 0
-        raw = list(product.get("variants") or [])
+        # isinstance before list(): a truthy JSON scalar (`1`, `true`) makes
+        # list() raise TypeError and abort the whole source, and a string or
+        # dict makes it produce nonsense entries. A retyped `variants` is a
+        # broken payload, so it reads as no variants and lands in
+        # `variant-source drift`, which is the guard that names it. Found in
+        # review on PR #331.
+        raw = cls._raw_variants(product)
         # Non-mapping entries are separated here, before anything reads them,
         # so a junk entry is a counted skip rather than an AttributeError from
         # inside the yield loop.

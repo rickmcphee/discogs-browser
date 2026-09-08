@@ -403,7 +403,7 @@ async def test_a_descriptor_naming_no_format_is_dropped(crawler):
 @respx.mock
 @pytest.mark.parametrize("descriptor", [
     "LP", "DLP", "3LP", "2xLP", "Deluxe DLP", "DLP (Deluxe Edition)",
-    "7inch", "10inch", '12"', "LP + 10inch", "DLP & DVD", "DLP & Zine",
+    "7inch", "10inch", "12 inches", "LP + 10inch", "DLP & DVD", "DLP & Zine",
     "DLP & Book (pre-order)", "EP",
 ])
 async def test_every_record_descriptor_is_admitted(crawler, descriptor):
@@ -683,9 +683,45 @@ async def test_a_double_prime_inside_an_album_is_rejected(crawler):
 
 @respx.mock
 @pytest.mark.parametrize("descriptor", ['12"', '2x12"', '7″', '10 "'])
-async def test_an_inch_marker_is_not_mistaken_for_a_nested_quote(crawler, descriptor):
+async def test_a_quote_glyph_descriptor_is_refused(crawler, descriptor):
+    """`Artist "Album" 12"` and `Artist "The " 12" LP` are the same shape —
+    three quotes, the last inside a valid inch marker — so no rule reading the
+    descriptor can tell a legitimate inch size from a nested quotation. The
+    glyph is refused and the ambiguity with it; the store spells its inch
+    sizes out."""
+    _mock_walk([
+        _LP_PRODUCT,
+        _with(_PLACEHOLDER_PRODUCT, title=f'Alan Sparhawk "White Roses, My God" {descriptor}'),
+    ])
+    assert {i["artist"] for i in await _run(crawler)} == {"Agriculture"}
+
+
+@respx.mock
+@pytest.mark.parametrize("descriptor", ["10inch", "7inch", "12 inches", "10 inch"])
+async def test_a_spelled_out_inch_size_still_parses(crawler, descriptor):
+    """A spelled-out unit cannot be mistaken for a closing quote, so it stays
+    unambiguous — and it is what this store actually writes."""
     _mock_walk([_with(_PLACEHOLDER_PRODUCT, title=f'Alan Sparhawk "White Roses, My God" {descriptor}')])
     assert [i["title"] for i in await _run(crawler)] == ["White Roses, My God"]
+
+
+@respx.mock
+async def test_the_ambiguous_nested_shape_is_refused_too(crawler):
+    """The case the earlier per-quote rules kept missing."""
+    _mock_walk([_LP_PRODUCT, _with(_PLACEHOLDER_PRODUCT, title='Artist "The " 12" LP')])
+    items = await _run(crawler)
+    assert {i["artist"] for i in items} == {"Agriculture"}
+    assert not any(i["title"] == "The" for i in items)
+
+
+@respx.mock
+async def test_a_quote_in_a_variant_name_is_still_an_inch_marker(crawler):
+    """Variant titles are never split into album and descriptor, so a quote
+    there is unambiguous."""
+    _mock_walk([_with(_LP_PRODUCT, variants=[
+        {"title": '12" Black Vinyl', "price": "25.00", "available": True},
+    ])])
+    assert [i["title"] for i in await _run(crawler)] == ['Agriculture — 12" Black Vinyl']
 
 
 @respx.mock
@@ -1099,3 +1135,40 @@ async def test_a_padded_handle_is_normalised_into_the_url(crawler):
     _mock_walk([_with(_PLACEHOLDER_PRODUCT, handle="  alan-sparhawk-white-roses  ")])
     item, = await _run(crawler)
     assert item["url"] == "https://nowflensing.com/products/alan-sparhawk-white-roses"
+
+
+
+# --- guard precedence, round six (PR #331) ---------------------------------
+
+@respx.mock
+async def test_a_catalog_that_loses_every_title_names_the_identity_guard(crawler):
+    """`parsed == 0` used to fire first and report a naming-convention change
+    when the titles had simply gone missing."""
+    _mock_walk([_with(_LP_PRODUCT, title=""), _with(_PLACEHOLDER_PRODUCT, title="")])
+    with pytest.raises(RuntimeError, match="identity-source drift"):
+        await _run(crawler)
+
+
+@respx.mock
+async def test_a_catalog_that_restyles_its_titles_still_names_the_parse_guard(crawler):
+    """Titles present but unparseable is a different failure, and keeps its
+    own message."""
+    _mock_walk([_BUNDLE_PRODUCT])
+    with pytest.raises(RuntimeError, match="title-convention drift"):
+        await _run(crawler)
+
+
+@respx.mock
+@pytest.mark.parametrize("retyped", [1, True, "x", {"a": 1}])
+async def test_a_retyped_variants_field_is_not_a_crash(crawler, retyped):
+    """`list()` raises TypeError on a truthy scalar and invents entries from a
+    string or dict; only a real list is a variants collection."""
+    _mock_walk([_with(_LP_PRODUCT, variants=retyped)])
+    with pytest.raises(RuntimeError, match="variant-source drift"):
+        await _run(crawler)
+
+
+@respx.mock
+async def test_a_retyped_variants_field_does_not_abort_a_healthy_catalog(crawler):
+    _mock_walk([_with(_LP_PRODUCT, variants=1), _OFF_SHELF_PRODUCT])
+    assert [i["artist"] for i in await _run(crawler)] == ["Bismuth"]

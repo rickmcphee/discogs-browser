@@ -161,30 +161,39 @@ classes alone do not achieve. The album group stopping at an inner quote is
 only half the answer: `Artist "The " Big" LP` parses to an album of `The` and
 a descriptor of `Big" LP`, and that descriptor still names a format, so the
 gate downstream waves it through and the row is keyed on a truncated title.
-The fix is a rule about what a quote may be *after* the album's closing one —
-part of one complete inch marker, and nothing else, with a cap of one quote in
-the descriptor. The check compares positions against the same compiled
-inch-marker pattern the format gates embed, rather than re-spelling it, so the
-two cannot disagree about what an inch marker is. A title failing it yields no
-row at all, which is the only safe answer when there is no second source to
-fall back to.
-
-Both halves of that rule earned their place by failing without the other, and
-both failures came from the same direction — a stray quote *accounted for* as
-a legitimate marker:
+**The descriptor carries no quote glyph at all.** That is the rule now, and
+it arrived by elimination — three review rounds tried to say what a quote in a
+descriptor is *allowed* to be, and each closed one instance of the same shape
+while leaving the shape open:
 
 - **The inch marker needs a right-hand boundary.** Without one the fragment
-  matches the leading part of `12"CD`, `7"Cassette` and `12inchesPoster`,
-  which reads a compact disc as a record and, worse, accounts for that quote —
-  so `Artist "The " 12"CD` passed the check and was emitted under the
-  truncated album `The`.
-- **The cap is not redundant with the position check.** Two separately valid
-  markers account for both their quotes, so `Artist "The " 54" 12"` passed on
-  the strength of a `54"` that is really the album's closing quote followed by
-  junk. A format descriptor names one inch size; two quote glyphs is a
-  mis-parse far more often than a double format claim, and this store spells
-  its inch sizes out anyway, so the cap costs nothing live. It is the same cap
-  `dongiovannirecords.py` puts on its descriptor.
+  matched the leading part of `12"CD`, `7"Cassette` and `12inchesPoster`,
+  reading a compact disc as a record and accounting for that quote — so
+  `Artist "The " 12"CD` passed and was emitted under the truncated album
+  `The`.
+- **A cap of one quote is not redundant with a position check.** Two
+  separately valid markers account for both their quotes, so
+  `Artist "The " 54" 12"` passed on the strength of a `54"` that is really the
+  album's closing quote followed by junk.
+- **And one quote inside one valid marker still isn't proof.**
+  `Artist "The " 12" LP` and `Artist "Album" 12"` are the *same shape* —
+  three quotes, the last inside a legitimate inch marker. No rule reading only
+  the descriptor can separate them, because the string genuinely does not
+  determine which reading was meant.
+
+So the glyph is refused outright, and the ambiguity with it. A title this
+crawler cannot read unambiguously yields no row, which is the answer the
+nested-quote rule already gave — now applied to the case that kept slipping
+past it. The cost is a descriptor written `12"`, which this store does not
+write: it spells every inch size out (`10inch`, `7inch`), and those still
+parse, because a spelled-out unit cannot be mistaken for a closing quote.
+
+That trade was weighed the other way in an earlier round — keep the glyph
+rather than lose a hypothetical `12"` — and that was wrong. It bought a format
+the store never uses at the price of a hole three rounds could not close.
+
+Variant titles are unaffected: they are never split into album and descriptor,
+so a quote there is unambiguous and still reads as an inch marker.
 
 **Every one of these decisions reads mark-folded text.** `\w` excludes the
 combining MARK categories, so a decomposed accent opens a boundary its
@@ -506,11 +515,19 @@ reproduced against the code before being fixed and given its own mutation:
 - a handle validated in its collapsed spelling but interpolated into the URL
   raw, so a padded one was persisted as a malformed link under a different
   `item_key`;
-- and the broadest drift guard ordered ahead of the specific ones, which made
+- the broadest drift guard ordered ahead of the specific ones, which made
   `variant-source drift` and `pressing-name drift` unreachable whenever a
-  single product was the whole catalog. Each of those still raised, so the
-  snapshot was safe throughout; what was lost is the only thing distinct
-  guards are for.
+  single product was the whole catalog — and, a round later, `parsed == 0`
+  doing the same to `identity-source drift` when every product lost its title.
+  The guards are now ordered most-specific-first, broadest last. Each of them
+  raises, so the snapshot was safe throughout; what was lost is the only thing
+  distinct guards are for;
+- a `variants` field retyped to a truthy scalar, which `list()` turns into a
+  `TypeError` that aborts the whole source. Only a real list is a variants
+  collection, and one reading of that field is shared by the classifier and
+  the `variantless_records` tally — the two disagreeing is what sent a
+  retyped field to the broad guard instead of the one that names it;
+- and the ambiguous single-quote descriptor above.
 
 Two suggestions were declined, both recorded above: counting every dropped
 variant rather than the malformed ones, and counting unclassifiable
